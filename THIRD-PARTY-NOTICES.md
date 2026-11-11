@@ -221,7 +221,7 @@ Files copied into the repository unmodified from another project's release. None
 | jiff | 0.2.23 | Unlicense OR MIT |
 | jiff-static | 0.2.23 | Unlicense OR MIT |
 | jobserver | 0.1.34 | MIT OR Apache-2.0 |
-| js-sys | 0.3.94 | MIT OR Apache-2.0 |
+| js-sys | 0.3.107 | MIT OR Apache-2.0 |
 | kasuari | 0.4.12 | MIT OR Apache-2.0 |
 | lab | 0.11.0 | MIT |
 | lazy_static | 1.5.0 | MIT OR Apache-2.0 |
@@ -436,10 +436,10 @@ Files copied into the repository unmodified from another project's release. None
 | want | 0.3.2 | MIT |
 | wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasip2 | 1.0.2+wasi-0.2.9 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasm-bindgen | 0.2.117 | MIT OR Apache-2.0 |
-| wasm-bindgen-macro | 0.2.117 | MIT OR Apache-2.0 |
-| wasm-bindgen-macro-support | 0.2.117 | MIT OR Apache-2.0 |
-| wasm-bindgen-shared | 0.2.117 | MIT OR Apache-2.0 |
+| wasm-bindgen | 0.2.130 | MIT OR Apache-2.0 |
+| wasm-bindgen-macro | 0.2.130 | MIT OR Apache-2.0 |
+| wasm-bindgen-macro-support | 0.2.130 | MIT OR Apache-2.0 |
+| wasm-bindgen-shared | 0.2.130 | MIT OR Apache-2.0 |
 | wasm-encoder | 0.263.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmi | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_collections | 2.0.0 | MIT/Apache-2.0 |

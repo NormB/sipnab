@@ -14377,15 +14377,37 @@ The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/
 |---|---|
 | `0.5.244` | That release |
 | `0.5` | The newest release in the 0.5 series |
-| `sha-<commit>` | The image built from that commit |
-| `latest` | The newest commit on `main`, which can be ahead of every release |
+| `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
+| `edge` | The newest commit on `main`, which can be ahead of every release |
+| `sha-<commit>` | The image the push of that commit to `main` built |
 
-`latest` is not a release. On 2026-11-03 it was the image of main commit
-`0d8eea1`, which the workflow built after the 0.5.232 tag.
+Until the release after 0.5.245, `latest` followed `main`, as `edge` does
+now. The first release built by the changed workflow moves `latest` to a
+release.
 
-**The image is `linux/amd64` only.** On an arm64 host `docker pull` fails with
-`no matching manifest for linux/arm64/v8 in the manifest list entries`. Use a
-[release tarball](#download-a-release-binary-yourself) or a package there.
+Each tag has one writer. A release is two pushes of one commit, the merge to
+`main` and then the `v*` tag, and each push builds an image of its own. The
+tag push writes the version tags and `latest`. The push to `main` writes
+`edge` and `sha-<commit>`. So `latest` and the version tag of the newest
+release name the same digest, and `sha-<commit>` of that commit names the
+other build. Up to 0.5.245 both pushes wrote `latest` and `sha-<commit>`, and
+for 0.5.245 `latest` and `0.5.245` name different digests.
+
+Every tag names a manifest list with a `linux/amd64` image and a
+`linux/arm64` image. `docker pull` takes the one for the host. Check what a
+tag holds, with `TAG` set to the tag:
+
+```bash
+# Run all of these, in order.
+TAG=edge
+docker buildx imagetools inspect "ghcr.io/normb/sipnab:$TAG"
+```
+
+The output lists a `Platform: linux/amd64` and a `Platform: linux/arm64`
+manifest. Releases up to 0.5.245 are `linux/amd64` only: on an arm64 host
+`docker pull` of one of them fails with `no matching manifest for
+linux/arm64/v8 in the manifest list entries`. Use a newer tag, or a
+[release tarball](#download-a-release-binary-yourself) or a package.
 
 Read a capture file by mounting it:
 
@@ -14393,43 +14415,6 @@ Read a capture file by mounting it:
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
   ghcr.io/normb/sipnab:0.5.244 -N -I /data/capture.pcap
 ```
-
-**Live capture needs `--user root`.** The image runs as the unprivileged user
-`sipnab`, and a non-root user in a container gets no capabilities, whatever
-`--cap-add` grants. Started as root, sipnab opens the capture and then drops
-to `nobody`:
-
-```bash
-docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.244 -N -d eth0
-```
-
-```text
-INFO sipnab::capture::live: Capturing on 'lo' (link_type=1, snaplen=65535)
-INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
-```
-
-Without `--user root`, with or without `--cap-add NET_RAW --cap-add
-NET_ADMIN`, the capture fails and the container exits with status 1. sipnab
-finds `/.dockerenv` and says what to change:
-
-```text
-Permission denied on 'lo'. This process runs in a container (/.dockerenv), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:
-  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>
-```
-
-A container started with `--cap-drop=NET_RAW` gets `CAP_NET_RAW is not in
-this process's capability bounding set (container: /.dockerenv)` instead,
-even as root. A non-root container started with
-`--security-opt no-new-privileges` gets `This process runs with NoNewPrivs
-set`. As root, that container captures.
-These permission lines come from a development build of sipnab run in a
-`debian:13` container on `lo`.
-
-The outputs above came from an arm64 image built from the
-[`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime
-stage with the 0.5.232 `.deb` binary, capturing `lo`, because the published
-image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.244`
-shows the same `"User": "sipnab"` for the published image.
 
 - `--net=host` lets the container see the host's interfaces.
 - A listener (`-L`, `--metrics`, `--api`) needs its port published, for
@@ -14445,8 +14430,96 @@ gh attestation verify oci://ghcr.io/normb/sipnab:0.5.244 --repo NormB/sipnab
 ```
 
 It names the workflow and the ref that built the image. For `0.5.244` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.244`. For `latest` it is
-`.github/workflows/docker.yml@refs/heads/main`.
+`.github/workflows/docker.yml@refs/tags/v0.5.244`, and for `latest` the tag of
+the newest release. For `edge` it is
+`.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
+attestation for the digest of the manifest list, which is what the tag names.
+
+#### Capture live traffic in the container
+
+The image runs as the unprivileged user `sipnab`, and that user captures:
+`docker run` with `--cap-add NET_RAW --cap-add NET_ADMIN` is enough, with no
+`--user root`.
+
+**Prerequisites:**
+
+- An image newer than 0.5.245. In 0.5.245 and earlier the user `sipnab` cannot
+  capture whatever `--cap-add` grants, and only `--user root` works (see
+  Troubleshooting below).
+- `--net=host`, to capture the host's interfaces rather than the container's
+  own.
+
+**Steps:**
+
+Set `TAG` to the image tag, and start the container under the name `sipnab`:
+
+```bash
+# Run all of these, in order.
+TAG=edge
+docker run --rm --name sipnab --net=host --cap-add NET_RAW --cap-add NET_ADMIN \
+  "ghcr.io/normb/sipnab:$TAG" -N -d eth0
+```
+
+How it works: `--cap-add` puts a capability in the container's bounding
+set, but a process that is not root loses its permitted and effective
+capabilities when it starts a program, unless the program file carries file
+capabilities. The image's binary carries `cap_net_raw` and `cap_net_admin` as
+permitted file capabilities (`setcap cap_net_raw,cap_net_admin+p`), so it
+starts permitted whichever of the two the bounding set holds, and sipnab moves
+them into its effective set before it does anything else. Without the
+effective bit in the file, the image also starts when the bounding set lacks
+one of them, so `docker run <image> --version` works under the default set
+of a Docker container and under `--cap-drop ALL`.
+
+**Verify:**
+
+The log names the device the capture opened, here for `-d lo`:
+
+```text
+INFO sipnab::capture::live: Capturing on 'lo' (link_type=1, snaplen=65535)
+```
+
+The process's capability sets show both capabilities effective. From a second shell, while the capture runs:
+
+```bash
+docker exec sipnab grep -E '^Cap(Prm|Eff)' /proc/1/status
+```
+
+```text
+CapPrm:	0000000000003000
+CapEff:	0000000000003000
+```
+
+`0x3000` is `CAP_NET_ADMIN` (bit 12) and `CAP_NET_RAW` (bit 13). Under the
+default set, with no `--cap-add`, both lines read `0000000000002000`: Docker
+grants `CAP_NET_RAW` by default, which is enough to open the capture.
+
+The output and the values above came from an arm64 image built from this
+[`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime stage with a locally built binary, capturing `lo`.
+
+**Troubleshooting:**
+
+- **The capture fails with `Permission denied on 'lo'` and exit status 1.**
+  The line after it names the cause sipnab found ([Live capture says
+  Permission denied](troubleshooting.md#live-capture-says-permission-denied)
+  lists each one):
+
+  - The container runs with `--cap-drop ALL`, or another policy that
+    leaves `CAP_NET_RAW` out of the bounding set. Add `--cap-add NET_RAW`.
+  - The image is 0.5.245 or earlier, whose binary has no file capabilities.
+    Use a newer tag, or `--user root`: started as root, sipnab opens the
+    capture and then drops to `nobody`.
+  - A shell starts sipnab (`--entrypoint sh`)
+    under `--security-opt no-new-privileges`. With no-new-privileges the
+    shell holds no capabilities to pass on and the file capabilities cannot
+    add any. Make sipnab the entrypoint. Started directly, it captures under
+    no-new-privileges as well.
+- **`--user root` still works.** sipnab then opens the capture and drops to
+  `nobody`:
+
+  ```text
+  INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+  ```
 
 ### Build the Docker image locally
 
@@ -14456,8 +14529,14 @@ docker build -t sipnab .
 
 The multi-stage Dockerfile uses `rust:1.99-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image.
 
-- The runtime image adds `libpcap0.8t64` and `libasound2t64`.
-- It runs as a non-root `sipnab` user.
+- The runtime image adds `libpcap0.8t64`, `libasound2t64` and
+  `ca-certificates`. The last puts Debian's CA bundle at
+  `/etc/ssl/certs/ca-certificates.crt`, where sipnab looks for one, so a TLS
+  client in the image trusts public certificate authorities without a CA
+  file.
+- It runs as a non-root `sipnab` user, and the binary carries
+  `cap_net_raw,cap_net_admin+p` file capabilities so that user can capture
+  (see [Capture live traffic in the container](#capture-live-traffic-in-the-container)).
 - It builds for the host's own architecture, so this is also how to get an
   arm64 image.
 
@@ -14776,7 +14855,7 @@ Pull the new release's tag, and use that tag in your `docker run` command:
 docker pull ghcr.io/normb/sipnab:0.5.244
 ```
 
-Pulling `latest` gives the newest `main` commit, not the newest release. See
+`latest` is the newest release, and `edge` is the newest `main` commit. See
 [Run from a pre-built image](#run-from-a-pre-built-image).
 
 ### What an upgrade keeps, and what to redo
@@ -17370,7 +17449,8 @@ under the message name the cause it found:
 |---|---|---|
 | From a shell, as your user | The binary has no file capabilities, or an upgrade replaced it and cleared them | `sudo sipnab --setup-caps` |
 | Under systemd with `NoNewPrivileges=true` | `NoNewPrivileges` stops file capabilities taking effect, so `setcap` cannot help | `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` in the unit ([Write a unit of your own](run-as-a-service.md#write-a-unit-of-your-own)) |
-| In the release container image | The image runs as the non-root user `sipnab`, which gets no capabilities, even with `--cap-add` | `docker run --user root`; sipnab drops to `nobody` after it opens the capture |
+| In the container image, newer than 0.5.245 | The container's bounding set lacks `CAP_NET_RAW` (`--cap-drop ALL`, or a policy that drops it), or a shell starts sipnab under `--security-opt no-new-privileges` | `docker run --cap-add NET_RAW --cap-add NET_ADMIN`, with sipnab as the entrypoint ([Capture live traffic in the container](install.md#capture-live-traffic-in-the-container)) |
+| In the container image, 0.5.245 or earlier, or in another container as a non-root user | The sipnab binary has no file capabilities, so its user gets no capabilities, even with `--cap-add` | A newer tag, or `docker run --user root`; sipnab drops to `nobody` after it opens the capture |
 | In a container or unit whose bounding set lacks `CAP_NET_RAW` | Nothing inside the process, root included, can gain a capability missing from its bounding set | `docker run --cap-add=NET_RAW`, or `CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN` in the unit |
 
 Each cause has its own first line after `Permission denied on '<dev>'.`:
@@ -17379,7 +17459,7 @@ Each cause has its own first line after `Permission denied on '<dev>'.`:
 |---|---|
 | `NoNewPrivs: 1` at startup | `This process runs with NoNewPrivs set (systemd NoNewPrivileges=yes, or a container started with no-new-privileges)`, then the `AmbientCapabilities=` lines |
 | `CAP_NET_RAW` missing from `CapBnd` | `CAP_NET_RAW is not in this process's capability bounding set`, then `docker run --cap-add=NET_RAW` and `CapabilityBoundingSet=` |
-| A container marker, and neither of the above | `This process runs in a container (/.dockerenv)`, then `docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>` |
+| A container marker, and neither of the above | `This process runs in a container (/.dockerenv) as a user that holds no capture capability`, then `docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>` |
 | None of these | `Grant capture capabilities once (Linux), then re-run without sudo:`, then `sipnab --setup-caps`, `sudo` and `setcap` |
 
 To check which cause applies, read the same two lines sipnab reads:
@@ -17472,9 +17552,10 @@ to read the `WWW-Authenticate` challenge MCP adds to a `401`.
   The sender does not trust the collector's issuer. Name it with
   `--hep-tls-ca`. The listener logs nothing for the failed handshake at the
   default level, so this line on the sender is the evidence.
-- **A HEP sender in the release container image stops with `no system CA
-  bundle found; name the collector's issuer with --hep-tls-ca`.** The image
-  has no CA bundle. Mount the issuer's certificate and name it.
+- **A HEP sender in the container image stops with `no system CA bundle
+  found; name the collector's issuer with --hep-tls-ca`.** Images up to
+  0.5.245 have no CA bundle. Pull a newer tag, which carries Debian's bundle,
+  or mount the issuer's certificate and name it with `--hep-tls-ca`.
 
 [API TLS](rest-api.md#api-tls), [MCP TLS](mcp-deploy.md#mcp-tls) and
 [Carry the feed over TCP and TLS](examples.md#carry-the-feed-over-tcp-and-tls)
@@ -29390,11 +29471,11 @@ Part of the permission refusal above: `/proc/self/status` said `NoNewPrivs: 1` w
 
 **Exit code:** 1.
 
-### `Permission denied on '{target}'. This process runs in a container ({marker}), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
+### `Permission denied on '{target}'. This process runs in a container ({marker}) as a user that holds no capture capability. In a container a non-root user gets a capability only through file capabilities on the binary (cap_net_raw,cap_net_admin+p), which the sipnab image's binary carries and this one does not. Run that image, or start this container as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
 
-sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user the container runs as has the capability in its bounding set but not in effect.
+sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user holds no capability: the binary it runs carries no file capabilities. The binary of the sipnab container image newer than 0.5.245 carries `cap_net_raw,cap_net_admin+p`, and its user `sipnab` captures with `--cap-add`.
 
-**What to do:** Start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens.
+**What to do:** Run a sipnab image newer than 0.5.245 with `docker run --cap-add NET_RAW --cap-add NET_ADMIN`. For any other image, start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens. See [Capture live traffic in the container](install.md#capture-live-traffic-in-the-container).
 
 **Exit code:** 1.
 
@@ -29405,6 +29486,17 @@ sipnab lacks the permission to open the capture device, and found neither NoNewP
 **What to do:** Run `sipnab --setup-caps` once and re-run without sudo, run the command under sudo, or run `sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)`.
 
 **Exit code:** 1.
+
+### `could not raise the permitted capture capabilities: {e}`
+
+At startup sipnab moves `CAP_NET_RAW` and `CAP_NET_ADMIN` from its permitted capability set into its effective set, when it holds them permitted only. The binary in the container image carries them that way (`cap_net_raw,cap_net_admin+p`). The kernel refused the read (`capget`) or the change (`capset`), and `{e}` is its error. A seccomp profile that denies `capset` is one cause.
+
+- The run continues with the capabilities it had.
+- A live capture then fails with `Permission denied`, unless the process is root.
+
+**What to do:** Allow `capget` and `capset` in the seccomp profile the process runs under, or start sipnab as root. See [Capture live traffic in the container](install.md#capture-live-traffic-in-the-container).
+
+**Exit code:** None. This is a warning, and the run continues.
 
 ### `Processing thread panicked: {}`
 
@@ -62912,9 +63004,11 @@ Failed to create HEP sender: Failed to establish a TLS session with '127.0.0.1:1
 ```
 
 The listener logs nothing for that failed handshake at the default level, so
-read the sender's side. The release container image holds no CA bundle: a
-sender in it needs `--hep-tls-ca` even for a collector with a public
-certificate, and stops with `no system CA bundle found; name the collector's
+read the sender's side. The container image carries Debian's CA bundle at
+`/etc/ssl/certs/ca-certificates.crt`, so a sender in it trusts a collector
+whose certificate a public CA signed with no `--hep-tls-ca`. Images up to
+0.5.245 hold no bundle: a sender in one of them needs `--hep-tls-ca` even for
+a public CA, and stops with `no system CA bundle found; name the collector's
 issuer with --hep-tls-ca` without it.
 
 ### Scrape the HTTPS metrics endpoint from Prometheus
@@ -79180,8 +79274,9 @@ The reviewer checks the rest:
   separate workspace with their own [`fuzz/Cargo.lock`](fuzz/Cargo.lock),
   also committed.
 - **Dependabot opens update pull requests weekly** for both lock files.
-  [`.github/dependabot.yml`](.github/dependabot.yml) sets this up. It groups
-  minor and patch updates into one pull request per lock file. The two lock
+  [`.github/dependabot.yml`](.github/dependabot.yml) sets this up. One entry
+  lists both directories, so it groups minor and patch updates into
+  one pull request for both lock files. The two lock
   files must agree on the crates they share; see
   [Keeping fuzz/Cargo.lock aligned with Cargo.lock](#keeping-fuzzcargolock-aligned-with-cargolock).
 - **CI scans every pull request to `main`.**
@@ -79239,12 +79334,15 @@ holds it. The pre-commit hook and the `Security audit` job in
 **Prerequisites.** Python 3.11 or later, for `tomllib`. To align the files you
 also need `cargo`.
 
-**Steps.** Dependabot updates the two lock files in separate pull requests,
-the `cargo-minor-patch` group for `/` and the `fuzz-minor-patch` group for
-`/fuzz`. Each pull request moves only its own file, so it fails this check
-whenever it moves a crate that both files share.
+**Steps.** Dependabot updates the two lock files in one pull request, the
+`cargo-minor-patch` group for `/` and `/fuzz`. It resolves each lock file on
+its own, so the pull request can still fail this check: a crate that one file
+holds back stays at a version the other file left. An update outside the
+group, such as a major version, can move one file only. Until 2026-11-10 each
+directory had an entry and a pull request of its own, and each failed this
+check whenever it moved a crate that both files share.
 
-1. Combine the root and fuzz updates in one branch.
+1. Put the root and fuzz updates in one branch, if they are not.
    - Take the root update first. That is the version that ships.
    - If you regenerate `THIRD-PARTY-NOTICES.md`, do it after the root
      update: `python3 scripts/build-third-party-notices.py`.
@@ -82650,7 +82748,7 @@ That is exactly why CI has a feature matrix.
 | `codeql.yml` | push to main, PR, weekly cron (Tuesdays 02:34 UTC) | GitHub's static analysis. |
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
 | `clusterfuzzlite.yml` | daily (batch 02:23 UTC, pruning 05:23 UTC), weekly (coverage Sundays 06:23 UTC) + manual | Continuous fuzzing with a corpus that survives between runs, which `fuzz.yml` cannot do: batch fuzzing grows it, pruning keeps it minimal, and the coverage job reports which code it reaches. Builds in the OSS-Fuzz Rust builder image from `.clusterfuzzlite/`, which compiles the targets the way ClusterFuzzLite runs them. No pull-request fuzzing: without continuous builds on every push it would report pre-existing crashes as though the change introduced them. |
-| `docker.yml` | push to main, `v*` tags | Builds and pushes the image to GHCR with sigstore provenance. |
+| `docker.yml` | push to main, `v*` tags, pull requests that change the Dockerfile, the workflow or the files its `paths:` list names | Builds the image natively on an amd64 and an arm64 runner, smoke-tests and scans each, pushes each by digest, and joins them into one manifest list on GHCR with sigstore provenance. `latest` moves only on a release tag, and `edge` follows main. Each tag has one writing trigger: the tag push writes the version tags and `latest`, the push to main writes `edge` and `sha-<commit>`, and the `manifest` job reads its list back by the run's own tag (`sha-<commit>` on main, the full version on a tag). On a pull request it logs in nowhere and pushes nothing to GHCR: each leg hands its image to the `manifest` job, which assembles and checks the list in a registry it starts on localhost. |
 | `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website, with the homepage test count taken from CI's run of the same commit. |
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |
@@ -82677,7 +82775,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 151 `unsafe` blocks are libc FFI.
+- Most of this crate's 153 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -82940,6 +83038,21 @@ So `quality.yml` has a second job, `coverage-branch`.
 - The comment above it claimed "every other job" at the time.
 - So `install-sh` and `deb-package` could both fail with the
   one required check on main still green.
+
+`code-scanning-clean` waits for CodeQL's analysis of the commit, and how long it waits follows the CodeQL workflow run of that commit.
+
+- While the run waits for a runner or runs, the job waits, up to 90 minutes.
+- When the run has completed, the job waits 2 more minutes for the upload.
+- When GitHub lists no CodeQL run of the commit, the job waits 10 minutes.
+- The three times are arguments of [`scripts/code-scanning-clean.py`](../../scripts/code-scanning-clean.py), which the job's step in `ci.yml` passes.
+- The job fails with exit 2 when it ends with no verdict, and its last line says which case it was:
+  - `still queued or running`: the CodeQL run had not finished. Run the job again when it has.
+  - `no CodeQL analysis`: the run completed and uploaded none, or GitHub lists no run. Read the CodeQL run.
+  - `could not be read`: the script could not read GitHub's answer.
+- An open alert fails the job with exit 1, whatever the state of the run.
+- The job once waited a fixed 25 minutes. On 2026-11-10 the CodeQL run of a pull request head waited 46 minutes for a hosted runner,
+  and the job failed 147 s before CodeQL uploaded the analysis, with no alert open.
+- [`test_code_scanning_wait.py`](../../scripts/tests/test_code_scanning_wait.py) holds the rule.
 
 `ci-success` leaves out the macOS leg of Check, the job `check-macos`, on purpose.
 
@@ -83713,6 +83826,14 @@ What the gate runs:
   [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950.html#section-11).
 
 A machine without either tool reports `NOT CHECKED` and names the fix.
+
+The pre-push hook runs the gate only for a tree that has a module: a `yang/` directory that holds a `.yang` file.
+For any other tree it prints `YANG: NOT CHECKED` with the reason, and goes on.
+
+- The script validates the tree it lives in. It builds and runs `yang_export_test` there, which took 9 s on the host that measured it.
+- The hook's own scenarios in [`scripts/test-pre-push.sh`](../../scripts/test-pre-push.sh) push from a throwaway crate with no module.
+  Each hook run of theirs paid those seconds to validate the repository's own module.
+- That was most of the 818 s the scenario file took on 2026-11-10. With the rule it took 187 s on the same host, with four more scenarios.
 
 - CI's `check` job installs both (`libyang2-tools`, and `pyang` from the hashed
   [`scripts/requirements-yang.txt`](../../scripts/requirements-yang.txt)).
@@ -84752,6 +84873,13 @@ So it has to be open for about one hook's length before a local step, and it mus
 
 - During the pull request's CI the train keeps the window closed.
 - It opens the window when at most 3 checks are pending, or when 15 minutes remain of CI's expected 37.
+- It keeps the window closed, and closes it again, while a check has waited for a runner for 2 minutes or more.
+  - Such a check has not started, so nothing says when it ends.
+  - A check queued for less than 2 minutes, or one with no start time, does not count.
+    A job waits in the queue for a few seconds on an ordinary day, and closing the window for it would let an ordinary job start just before the landing.
+  - On 0.5.244 the one pending check was a re-run macOS job, queued with no runner from 15:39:23Z until GitHub canceled it at 15:55:06Z.
+    The window was open for those minutes, the main slot was idle, and two ordinary jobs waited behind the window.
+  - [`test_release_train_queued.py`](../../scripts/tests/test_release_train_queued.py) holds the rule.
 - It keeps the window open through the landing and the tag push, closes it once the tag is on GitHub, and leaves it closed for the release workflow and the post checks, which use no main slot.
 - It closes its window on every exit, and leaves another owner's window alone.
 - On 0.5.239 there was no window, and the tag push waited 769 s behind an ordinary job that had started 7 s before it.
