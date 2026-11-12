@@ -32,6 +32,7 @@ from conftest import load
 
 pl = load("pages-live")
 REAL_RUNNER = pl.subprocess_runner
+REAL_SLEEP = pl.time.sleep
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +45,17 @@ def _no_real_world(monkeypatch):
     monkeypatch.setattr(pl, "subprocess_runner", refuse)
     monkeypatch.setattr(pl, "urllib_get", refuse)
     monkeypatch.setattr(pl.time, "sleep", refuse)
+
+
+@pytest.fixture
+def real_sleep(monkeypatch):
+    """`time.sleep` as the interpreter has it, for a test of the real runner.
+
+    `pl.time` is the `time` module itself, so the guard above replaces the
+    function for every caller in the process. `subprocess` is one: after a
+    child's pipes close it polls for the exit with `time.sleep`.
+    """
+    monkeypatch.setattr(pl.time, "sleep", REAL_SLEEP)
 
 SHA = "8" * 40
 OTHER = "1" * 40
@@ -703,7 +715,18 @@ def test_edge_the_url_can_be_set_for_another_host(monkeypatch):
     assert seen["cfg"].url == URL
 
 
-def test_edge_the_real_runner_passes_stdin_and_reports_a_timeout_as_124():
+def test_edge_the_real_runner_passes_stdin_and_reports_a_timeout_as_124(real_sleep):
     r = REAL_RUNNER(["sh", "-c", "cat"], 30, "to stdin")
     assert (r.rc, r.out) == (0, "to stdin")
     assert REAL_RUNNER(["sh", "-c", "exec sleep 5"], 0.2).rc == 124
+
+
+def test_edge_the_real_runner_waits_for_a_child_that_closed_its_output_first(real_sleep):
+    """A child that closes stdout and stderr and exits later. `subprocess`
+    reads both pipes to their end and then polls for the exit with
+    `time.sleep`, the interpreter's own function, which the guard above
+    replaces. Under load the two tests above reached that poll now and then
+    (seen 2026-11-12 in the pre-commit hook: `a test reached the real world:
+    (0.001,)`); this child reaches it every time."""
+    r = REAL_RUNNER(["sh", "-c", "exec >&- 2>&-; sleep 0.3; exit 7"], 30)
+    assert (r.rc, r.out) == (7, "")

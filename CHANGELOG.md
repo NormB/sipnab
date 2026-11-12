@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The documentation gate refuses a line citation whose phrase begins on more than one line of the cited file.** Such a phrase passed while its citation sat on any of those lines, and `scripts/check-line-drift.py --apply` could not follow it when the code moved. The gate now reports it where it stands, with the lines that hold it, and counts it as `ambiguous` in its summary. Eight phrases under `docs/design/` were lengthened; one citation became a two-line range that starts on the `fn` line above its condition. [Cite a line of code in a doc](docs/internals/walkthroughs.md#cite-a-line-of-code-in-a-doc) has the rule. No change to the `sipnab` binary.
+
 ## [0.5.248] - 2026-11-12
 
 ### Added
