@@ -17,6 +17,8 @@ pub mod fleet_center;
 #[cfg(feature = "api")]
 pub mod fleet_intake;
 #[cfg(feature = "api")]
+pub mod fleet_log;
+#[cfg(feature = "api")]
 pub mod fleet_member;
 #[cfg(feature = "api")]
 pub mod fleet_seal;

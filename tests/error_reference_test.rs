@@ -992,7 +992,11 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // `[hep] listen` address, `--multi-device` with a listener from the key, and
 // the key in a build without the hep feature (+5). `Invalid --hep-allow CIDR`
 // became `Invalid {name} CIDR` (count unchanged).
-const EXPECTED_TEMPLATES: usize = 636;
+// 636 -> 637 (failed fleet append, merged after the HEP keys):
+// src/app/fleet_log.rs +1, a store or an intake that holds fewer records than
+// the center wrote to it, found when the file is read after an append that
+// failed.
+const EXPECTED_TEMPLATES: usize = 637;
 
 // ---------------------------------------------------------------------------
 // The page gates

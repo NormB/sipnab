@@ -1813,7 +1813,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // its own "Have your SIP server send HEP" and "Require a shared secret",
     // run-as-a-service.md) and config-reference.md +2 (its [hep] section and
     // hep.md's new section).
-    const EXPECTED_WIKI_LINKS: usize = 2593;
+    // 2593 -> 2594 (failed fleet append, merged after the HEP keys):
+    // errors.md +1, the sealed layer's refusal list links to fleet.md's
+    // "Encrypt the center's store".
+    const EXPECTED_WIKI_LINKS: usize = 2594;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

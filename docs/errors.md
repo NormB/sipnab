@@ -5652,7 +5652,11 @@ The center could not open its encrypted store, and leaves it as it found it.
 - `has a header that did not authenticate (the file was modified, or the key
   is wrong)` or `has a record <n> that did not authenticate (the file was
   modified, or its records were moved)`: a byte of the file changed after the
-  center wrote it.
+  center wrote it. Releases 0.5.244 to 0.5.247 also left a file that gives
+  the second message, with no one changing it: an append failed, for example
+  on a full disk, and a later append worked before the center wrote the file
+  again. [Encrypt the center's store](fleet.md#encrypt-the-centers-store)
+  has what the center loses and how to start again.
 - `was truncated: it ends before its records do`: the file is shorter than
   the center wrote it.
 - `was cut at its end: it holds <n> of the <m> entries it was written with`:
@@ -5757,12 +5761,33 @@ free space.
 
 ### `fleet center: the store could not be written: {e}`
 
-The center could not append a heartbeat to its store, for the system's reason
-in the message, such as a full disk. It answers the member `503` and counts
-nothing, so the member sends the batch again.
+The center could not append a heartbeat to its store, or call records to its
+intake, for the system's reason in the message, such as a full disk. It
+answers the member `503`, so the member sends the batch again. The intake
+holds once each call record it took before the store failed: the center
+answers those records as duplicates when they arrive again.
+
+Before the next append to the file that failed, the center reads that file
+and writes it again without what the failed append left in it. While the
+center cannot do that, every append to the file fails with this message and
+the reason: the system's error, or `sealed layer:` and why the file did not
+open.
 
 **What to do:** Free space on the store's file system, or fix its
-permissions.
+permissions. The rewrite creates a file beside the one it rewrites, so the
+directory needs space and write permission too.
+
+### `sealed layer: the file holds {} record(s) where {} were written; it was changed while the center ran`
+
+Printed after `fleet center: the store could not be written:`. An append had
+failed, and when the center read the file to write it again, the file held
+fewer records than the center had written to it. Something replaced the
+store or the intake with an earlier copy while the center ran. The center
+appends nothing to that file while it is in this state.
+
+**What to do:** Stop the center. Put back the file the center was writing,
+or start the center on the file that is there: it then holds what that file
+holds.
 
 ### `fleet center: the store was not rewritten: {e}`
 
