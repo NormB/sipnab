@@ -34,6 +34,18 @@ This guide does the following:
 This guide does not use sipnab. When you have this working,
 [Run sipnab beside Asterisk](@/docs/asterisk-sipnab.md) adds sipnab.
 
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages and the source the
+  steps download.
+- **UDP ports 5060, 5070 and 5080 free on it.** Asterisk takes 5060, and the
+  test callee and caller take the other two.
+- **No other system changes.** Asterisk, the test caller and the test callee
+  run on this one machine. Phones and carriers reach it only when you point
+  them at its address, which this guide does not do.
+
 ## Tested on
 
 Every block on this page ran as written on 2026-10-12.
@@ -284,6 +296,15 @@ sudo sipp -sn uac_pcap 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s 100 -m 1 -timeou
 - The caller sends about 7 seconds of audio, then a short DTMF clip, and hangs
   up.
 - At the end SIPp's statistics screen shows `Successful call` at 1.
+
+### Check that Asterisk handled the call
+
+```bash
+sudo asterisk -rx 'core show calls'
+```
+
+Once the test call has ended, the command prints `0 active calls` and a
+`calls processed` count.
 
 Unlike a proxy, Asterisk carries the audio as well as the signaling.
 

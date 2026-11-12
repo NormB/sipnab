@@ -17,6 +17,18 @@ This guide adds sipnab to the OpenSIPS proxy from
 [Use OpenSIPS as your voice stack's SIP server](opensips.md), installed from
 the packages or built from source.
 
+## Before you start
+
+- **The OpenSIPS proxy from
+  [Use OpenSIPS as your voice stack's SIP server](opensips.md),** with its
+  test call working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, OpenSIPS, nothing changes** for every step up to
+  [Calls through topology hiding](#calls-through-topology-hiding). Two of that
+  section's three methods change the OpenSIPS script, and its table says what
+  each changes.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page above
@@ -663,6 +675,19 @@ OpenSIPS script contains the `append_hf` lines above as shown. The captures
 are in `tests/fixtures/th-callid/`, and the tests in
 [`tests/th_callid_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/th_callid_test.rs) run sipnab against
 them on the command line, REST and MCP, including the warning quoted above.
+
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists the call on one row, though sipnab saw it on both sides of
+  OpenSIPS.
+- The row shows `Completed`, code `200` and 13 messages.
+- An `RTP Streams:` table follows it.
 
 ## When something does not work
 

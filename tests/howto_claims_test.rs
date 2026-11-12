@@ -59,6 +59,14 @@ const RTPPROXY_RELAY: &str = include_str!("../docs/rtpproxy-relay.md");
 const RTPPROXY_SIPNAB: &str = include_str!("../docs/rtpproxy-sipnab.md");
 const RELAY_ENGINES: &str = include_str!("../docs/relay-engines.md");
 const RELAY_STATISTICS: &str = include_str!("../docs/relay-statistics.md");
+const OPENSIPS: &str = include_str!("../docs/opensips.md");
+const OPENSIPS_SIPNAB: &str = include_str!("../docs/opensips-sipnab.md");
+const KAMAILIO: &str = include_str!("../docs/kamailio.md");
+const KAMAILIO_SIPNAB: &str = include_str!("../docs/kamailio-sipnab.md");
+const ASTERISK: &str = include_str!("../docs/asterisk.md");
+const ASTERISK_SIPNAB: &str = include_str!("../docs/asterisk-sipnab.md");
+const FREESWITCH: &str = include_str!("../docs/freeswitch.md");
+const FREESWITCH_SIPNAB: &str = include_str!("../docs/freeswitch-sipnab.md");
 const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const HARNESS_COMPOSE: &str = include_str!("../harness/docker-compose.yml");
@@ -5168,6 +5176,369 @@ fn the_engine_check_exits_0_with_one_answer_and_1_with_none() -> Result<(), Test
         !none.stdout.contains("call held") && !none.stdout.contains("calls held"),
         "no engine answered, so no count of held calls prints: {}",
         none.dump()
+    );
+    Ok(())
+}
+
+// ── opensips, opensips-sipnab, kamailio, kamailio-sipnab, asterisk, ──────
+// ── asterisk-sipnab, freeswitch, freeswitch-sipnab ───────────────────────
+
+/// The four guides that set up a SIP server say what changes on other
+/// systems, and each has a check with a command the guide itself runs.
+#[test]
+fn the_sip_server_guides_have_prerequisites_and_a_check_with_its_command() -> Result<(), TestError>
+{
+    // (page, text, check heading, the heading after it, what the check runs)
+    for (page, doc, check, next, runs) in [
+        (
+            "opensips",
+            OPENSIPS,
+            "### Check that the call went through OpenSIPS",
+            "## Operate it",
+            "grep -m1 -i '^Record-Route:'",
+        ),
+        (
+            "kamailio",
+            KAMAILIO,
+            "### Check that the call went through Kamailio",
+            "## Operate it",
+            "grep -m1 -i '^Record-Route:'",
+        ),
+        (
+            "asterisk",
+            ASTERISK,
+            "### Check that Asterisk handled the call",
+            "## Operate it",
+            "sudo asterisk -rx 'core show calls'",
+        ),
+        (
+            "freeswitch",
+            FREESWITCH,
+            "### Check that a call has two legs",
+            "## Operate it",
+            "fs_cli -x 'show channels as json'",
+        ),
+    ] {
+        let needs = one_line(section(doc, "## Before you start")?);
+        for named in ["other system", "`sudo`", "Debian 13", "Ubuntu 24.04"] {
+            page_says(&needs, named, page);
+        }
+        let checked = between(doc, check, next)?;
+        page_says(checked, "```", page);
+        page_says(checked, runs, page);
+        assert_eq!(
+            doc.matches(runs).count(),
+            if page == "asterisk" { 2 } else { 1 },
+            "{page}: the check runs a command of the guide's own steps: {runs}"
+        );
+    }
+    Ok(())
+}
+
+/// The four pages that put sipnab beside a SIP server say what changes on
+/// the other system, the server, and name the guide that sets it up.
+#[test]
+fn the_pages_beside_a_sip_server_say_what_changes_on_the_other_system() -> Result<(), TestError> {
+    for (page, doc, guide, also) in [
+        (
+            "opensips-sipnab",
+            OPENSIPS_SIPNAB,
+            "(opensips.md)",
+            "script",
+        ),
+        (
+            "kamailio-sipnab",
+            KAMAILIO_SIPNAB,
+            "(kamailio.md)",
+            "no module",
+        ),
+        (
+            "asterisk-sipnab",
+            ASTERISK_SIPNAB,
+            "(asterisk.md)",
+            "`hep.conf`",
+        ),
+        (
+            "freeswitch-sipnab",
+            FREESWITCH_SIPNAB,
+            "(freeswitch.md)",
+            "HEP",
+        ),
+    ] {
+        let needs = one_line(section(doc, "## Before you start")?);
+        for named in ["other system", "root", guide, also] {
+            page_says(&needs, named, page);
+        }
+    }
+    Ok(())
+}
+
+/// The capture of one call through an OpenSIPS proxy: both legs, 13 messages.
+const PROXIED_CALL: &str = "tests/fixtures/opensips-proxy-signaling.pcap";
+
+/// The check of the two proxy pages: sipnab lists a call it saw on both
+/// sides of the proxy once, as `Completed`, with the messages of both legs.
+#[test]
+fn the_proxy_check_lists_the_call_once_as_completed_with_13_messages() -> Result<(), TestError> {
+    for (page, doc) in [
+        ("opensips-sipnab", OPENSIPS_SIPNAB),
+        ("kamailio-sipnab", KAMAILIO_SIPNAB),
+    ] {
+        let check = one_line(section(doc, CHECK)?);
+        for named in ["--report", "`Completed`", "13 messages", "one row"] {
+            page_says(&check, named, page);
+        }
+    }
+    let proxied = capture(PROXIED_CALL)?.display().to_string();
+    let run = sipnab(&["-N", "-I", &proxied, "--report", "--no-cli-print"])?;
+    exited(&run, 0);
+    let report = stdout(&run);
+    let rows: Vec<&str> = report
+        .lines()
+        .filter(|line| line.contains("Completed"))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the call is on one row; the report was:\n{report}"
+    );
+    let cells: Vec<&str> = rows[0].split_whitespace().collect();
+    assert!(
+        cells.contains(&"200") && cells.contains(&"13"),
+        "the row shows code 200 and 13 messages: {}",
+        rows[0]
+    );
+    Ok(())
+}
+
+/// A capture of one call whose SIP is on `sip_port` at both ends, with 20
+/// RTP packets each way on ports 6000 and 7000.
+fn call_on_port(dir: &Path, call_id: &str, sip_port: u16) -> Result<String, TestError> {
+    const CALLER: [u8; 4] = [192, 0, 2, 10];
+    const SERVER: [u8; 4] = [192, 0, 2, 20];
+    let mut frames: Vec<Vec<u8>> = pcap_build::sip_call(call_id, "howto1", "sipp", "echo")
+        .iter()
+        .map(|message| {
+            if message.starts_with("SIP/2.0") {
+                pcap_build::udp_frame(SERVER, CALLER, sip_port, sip_port, message.as_bytes())
+            } else {
+                pcap_build::udp_frame(CALLER, SERVER, sip_port, sip_port, message.as_bytes())
+            }
+        })
+        .collect();
+    for seq in 0u16..20 {
+        for (src, sport, dst, dport, ssrc) in [
+            (CALLER, 6000, SERVER, 7000, 0x1111_2222u32),
+            (SERVER, 7000, CALLER, 6000, 0x3333_4444u32),
+        ] {
+            let mut rtp = vec![0x80, 0x00];
+            rtp.extend_from_slice(&seq.to_be_bytes());
+            rtp.extend_from_slice(&(u32::from(seq) * 160).to_be_bytes());
+            rtp.extend_from_slice(&ssrc.to_be_bytes());
+            rtp.extend_from_slice(&[0xff; 160]);
+            frames.push(pcap_build::udp_frame(src, dst, sport, dport, &rtp));
+        }
+    }
+    let path = dir.join("call.pcap");
+    pcap_build::write_pcap(&path, &frames)?;
+    Ok(path.display().to_string())
+}
+
+/// The first item of three troubleshooting lists: a server on a port outside
+/// 5060-5061 leaves sipnab with the audio and none of the SIP, and sipnab
+/// says so in the line the pages quote with the counts of their own run.
+#[test]
+fn sip_on_another_port_gives_the_line_the_server_pages_quote() -> Result<(), TestError> {
+    let quoted = "No SIP signaling found, but 839 RTP packets across 2 stream(s) were parsed.";
+    for (page, doc) in [
+        ("opensips-sipnab", OPENSIPS_SIPNAB),
+        ("kamailio-sipnab", KAMAILIO_SIPNAB),
+        ("freeswitch-sipnab", FREESWITCH_SIPNAB),
+    ] {
+        let listed = one_line(section(doc, TROUBLESHOOT)?);
+        page_says(&listed, quoted, page);
+        page_says(&listed, "`--portrange", page);
+    }
+    for port in [5062, 5080] {
+        let dir = tempfile::tempdir()?;
+        let path = call_on_port(dir.path(), "howto-port-1@192.0.2.10", port)?;
+        let run = sipnab(&["-N", "-I", &path, "--report", "--no-cli-print"])?;
+        let said = format!("{}{}", stdout(&run), stderr(&run));
+        printed(&said, &quoted.replace("839 RTP packets", "40 RTP packets"));
+        assert!(
+            !said.contains("Completed"),
+            "no call is listed for SIP on port {port}; sipnab printed:\n{said}"
+        );
+    }
+    Ok(())
+}
+
+/// The fix those lists give: with the server's port in `--portrange`, the
+/// same capture lists the call.
+#[test]
+fn the_port_range_flag_lists_the_call_on_another_port() -> Result<(), TestError> {
+    for (port, range) in [(5062, "5060-5062"), (5080, "5060-5080")] {
+        let dir = tempfile::tempdir()?;
+        let path = call_on_port(dir.path(), "howto-port-1@192.0.2.10", port)?;
+        let run = sipnab(&[
+            "-N",
+            "-I",
+            &path,
+            "--portrange",
+            range,
+            "--report",
+            "--no-cli-print",
+        ])?;
+        exited(&run, 0);
+        let report = stdout(&run);
+        printed(&report, "howto-port-1@192.0.2.10");
+        printed(&report, "Completed");
+        assert!(
+            !report.contains("No SIP signaling found"),
+            "with --portrange {range} the SIP on {port} is read; the report was:\n{report}"
+        );
+    }
+    Ok(())
+}
+
+/// The second item of the FreeSWITCH list: reading a file whose SIP is on
+/// 5080 with the default range, sipnab warns that it skips SIP outside the
+/// range, names the port, and does not find the call.
+#[test]
+fn a_file_with_sip_on_5080_gives_the_warning_the_freeswitch_page_quotes() -> Result<(), TestError> {
+    let listed = one_line(section(FREESWITCH_SIPNAB, TROUBLESHOOT)?);
+    let skipped = "SIP outside --portrange 5060-5061 is being skipped";
+    let busiest = "Busiest port(s): 5080";
+    for quoted in [skipped, busiest, "not found in tracked dialogs"] {
+        page_says(&listed, quoted, "freeswitch-sipnab");
+    }
+    let dir = tempfile::tempdir()?;
+    let path = call_on_port(dir.path(), "howto-port-1@192.0.2.10", 5080)?;
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        &path,
+        "--call-report",
+        "howto-port-1@192.0.2.10",
+        "--no-cli-print",
+    ])?;
+    exited(&run, 1);
+    let err = stderr(&run);
+    printed(&err, skipped);
+    printed(&err, busiest);
+    printed(
+        &err,
+        "Call-ID 'howto-port-1@192.0.2.10' not found in tracked dialogs",
+    );
+    Ok(())
+}
+
+/// The check of the two B2BUA pages: the two legs of a call through the
+/// server have a Call-ID each, and the report lists them as two dialogs,
+/// both `Completed`.
+#[test]
+fn the_b2bua_check_lists_the_two_legs_as_two_completed_dialogs() -> Result<(), TestError> {
+    for (page, doc) in [
+        ("asterisk-sipnab", ASTERISK_SIPNAB),
+        ("freeswitch-sipnab", FREESWITCH_SIPNAB),
+    ] {
+        let check = one_line(section(doc, CHECK)?);
+        for named in ["--report", "two", "`Completed`"] {
+            page_says(&check, named, page);
+        }
+    }
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("legs.pcap");
+    let mut frames = pcap_build::sip_call_frames("leg-in@192.0.2.10", "legin", "sipp", "100");
+    frames.extend(pcap_build::sip_call_frames(
+        "leg-out@192.0.2.10",
+        "legout",
+        "sipp",
+        "callee",
+    ));
+    pcap_build::write_pcap(&path, &frames)?;
+    let path = path.display().to_string();
+    let run = sipnab(&["-N", "-I", &path, "--report", "--no-cli-print"])?;
+    exited(&run, 0);
+    let report = stdout(&run);
+    for leg in ["leg-in@192.0.2.10", "leg-out@192.0.2.10"] {
+        let row = report
+            .lines()
+            .find(|line| line.starts_with(leg))
+            .ok_or_else(|| format!("no row for {leg} in:\n{report}"))?;
+        assert!(
+            row.contains("Completed"),
+            "the leg {leg} is Completed: {row}"
+        );
+    }
+    Ok(())
+}
+
+/// The first item of the Asterisk list quotes what sipnab says when the
+/// terminal UI has no terminal. The test harness gives the child none.
+#[cfg(feature = "tui")]
+#[test]
+fn the_asterisk_page_quotes_the_message_of_a_terminal_ui_without_a_terminal()
+-> Result<(), TestError> {
+    let listed = one_line(section(ASTERISK_SIPNAB, TROUBLESHOOT)?);
+    let message = "sipnab: the terminal UI could not start: No such device or address (os error \
+                   6). It needs a terminal; add -N for a run without one.";
+    page_says(&listed, message, "asterisk-sipnab");
+    let run = sipnab(&["-I", SAMPLE_CALL])?;
+    exited(&run, 1);
+    let err = stderr(&run);
+    printed(&err, "sipnab: the terminal UI could not start: ");
+    printed(&err, "It needs a terminal; add -N for a run without one.");
+    if cfg!(target_os = "linux") {
+        printed(&err, message);
+    }
+    Ok(())
+}
+
+/// The second item of the Asterisk list quotes the line a HEP listener that
+/// received nothing ends with.
+#[cfg(all(unix, feature = "hep"))]
+#[test]
+fn a_hep_listener_that_received_nothing_ends_with_the_line_the_asterisk_page_quotes()
+-> Result<(), TestError> {
+    let listed = one_line(section(ASTERISK_SIPNAB, TROUBLESHOOT)?);
+    let quoted = "HEP listener on 127.0.0.1:9060 finished: 0 packets received";
+    page_says(&listed, quoted, "asterisk-sipnab");
+    let done = fake_relay::run_to_exit(&["-L", "127.0.0.1:0", "--duration", "1", "--report"])?;
+    assert_eq!(
+        done.code,
+        Some(0),
+        "the run ends by itself: {}",
+        done.dump()
+    );
+    let line = done
+        .stderr
+        .lines()
+        .find(|line| line.contains("HEP listener on 127.0.0.1:") && line.contains("finished"))
+        .ok_or_else(|| format!("no line for the end of the listener: {}", done.dump()))?;
+    assert!(
+        line.ends_with("finished: 0 packets received"),
+        "the listener received nothing and says so: {line}"
+    );
+    Ok(())
+}
+
+/// The third item of the Asterisk list quotes the body of the REST API's
+/// answer to a request without a key.
+#[cfg(all(unix, feature = "api"))]
+#[test]
+fn a_request_without_a_key_gets_the_401_body_the_asterisk_page_quotes() -> Result<(), TestError> {
+    let listed = one_line(section(ASTERISK_SIPNAB, TROUBLESHOOT)?);
+    let quoted = r#"{"status":401,"title":"Unauthorized","type":"https://sipnab.com/problems/unauthorized"}"#;
+    page_says(&listed, quoted, "asterisk-sipnab");
+    let api =
+        server::ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]).map_err(|e| e.to_string())?;
+    let got = api.get("/v1/dialogs").map_err(|e| e.to_string())?;
+    assert_eq!(got.status, 401, "a request without a key: {}", got.body);
+    assert_eq!(
+        got.body.trim(),
+        quoted,
+        "the body is the one the page quotes"
     );
     Ok(())
 }

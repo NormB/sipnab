@@ -74546,6 +74546,18 @@ This guide does not use sipnab. When you have this working, [Run sipnab beside
 OpenSIPS](opensips-sipnab.md) adds sipnab. If you use Kamailio instead, see
 [Use Kamailio as your voice stack's SIP server](kamailio.md).
 
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages and the source the
+  steps download.
+- **UDP ports 5060, 5070 and 5080 free on it.** OpenSIPS takes 5060, and the
+  test callee and caller take the other two.
+- **No other system changes.** OpenSIPS, the test caller and the test callee
+  run on this one machine. Phones and carriers reach it only when you point
+  them at its address, which this guide does not do.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01.
@@ -74808,14 +74820,24 @@ sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd=
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
 sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -trace_msg -message_file uas.msg -bg
 sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
-awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
 ```
 
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 
 - It sends about 7 seconds of audio, then a short DTMF clip, and hangs up.
 - At the end, SIPp's statistics screen shows `Successful call` at 1.
-- The last line prints the `Record-Route` OpenSIPS added.
+
+### Check that the call went through OpenSIPS
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
+```
+
+The command prints the `Record-Route` OpenSIPS added to the `INVITE` the
+callee received. An `INVITE` that did not pass through OpenSIPS has none, and
+the command prints nothing.
 
 OpenSIPS carries the signaling only. The audio goes straight between the two
 ends, at the addresses and ports their SDP names. So this proxy never touches
@@ -74942,6 +74964,18 @@ It puts them together into one call.
 This guide adds sipnab to the OpenSIPS proxy from
 [Use OpenSIPS as your voice stack's SIP server](opensips.md), installed from
 the packages or built from source.
+
+## Before you start
+
+- **The OpenSIPS proxy from
+  [Use OpenSIPS as your voice stack's SIP server](opensips.md),** with its
+  test call working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, OpenSIPS, nothing changes** for every step up to
+  [Calls through topology hiding](#calls-through-topology-hiding). Two of that
+  section's three methods change the OpenSIPS script, and its table says what
+  each changes.
+- **On the phones and carriers,** nothing changes.
 
 ## Tested on
 
@@ -75590,6 +75624,19 @@ are in `tests/fixtures/th-callid/`, and the tests in
 [`tests/th_callid_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/th_callid_test.rs) run sipnab against
 them on the command line, REST and MCP, including the warning quoted above.
 
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists the call on one row, though sipnab saw it on both sides of
+  OpenSIPS.
+- The row shows `Completed`, code `200` and 13 messages.
+- An `RTP Streams:` table follows it.
+
 ## When something does not work
 
 - **sipnab reports a line such as `No SIP signaling found, but 839 RTP packets
@@ -75618,6 +75665,17 @@ same role:
 
 This guide does not use sipnab. When you have this working, [Run sipnab beside
 Kamailio](kamailio-sipnab.md) adds sipnab.
+
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages the steps download.
+- **UDP ports 5060, 5070 and 5080 free on it.** Kamailio takes 5060, and the
+  test callee and caller take the other two.
+- **No other system changes.** Kamailio, the test caller and the test callee
+  run on this one machine. Phones and carriers reach it only when you point
+  them at its address, which this guide does not do.
 
 ## Tested on
 
@@ -75812,15 +75870,27 @@ sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd=
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
 sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -trace_msg -message_file uas.msg -bg
 sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
-awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
 ```
 
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 
 - It sends about 7 seconds of audio, then a short DTMF clip, and hangs up.
 - At the end, SIPp's statistics screen shows `Successful call` at 1.
-- The last line prints the `Record-Route` Kamailio added, such as
-  `<sip:192.0.2.10;lr;ftag=52680SIPpTag091>`. It holds:
+
+### Check that the call went through Kamailio
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
+```
+
+The command prints the `Record-Route` Kamailio added to the `INVITE` the
+callee received. An `INVITE` that did not pass through Kamailio has none, and
+the command prints nothing.
+
+- The header reads such as `<sip:192.0.2.10;lr;ftag=52680SIPpTag091>`. It
+  holds:
   - Kamailio's address,
   - `lr` for loose routing,
   - the caller's `From` tag.
@@ -75964,6 +76034,16 @@ It puts them together into one call.
 This guide adds sipnab to the Kamailio proxy from
 [Use Kamailio as your voice stack's SIP server](kamailio.md).
 
+## Before you start
+
+- **The Kamailio proxy from
+  [Use Kamailio as your voice stack's SIP server](kamailio.md),** with its
+  test call working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, Kamailio, nothing changes:** no module, no
+  configuration change.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01, with sipnab
@@ -76056,6 +76136,19 @@ A call through each proxy then appears in the report, one row per call.
   - 236 `PCMA` packets each way for each call,
   - not one stream of 472 across both.
 
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists the call on one row, though sipnab saw it on both sides of
+  Kamailio.
+- The row shows `Completed`, code `200` and 13 messages.
+- An `RTP Streams:` table follows it.
+
 ## When something does not work
 
 - **sipnab reports a line such as `No SIP signaling found, but 839 RTP packets
@@ -76096,6 +76189,18 @@ This guide does the following:
 
 This guide does not use sipnab. When you have this working,
 [Run sipnab beside Asterisk](asterisk-sipnab.md) adds sipnab.
+
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages and the source the
+  steps download.
+- **UDP ports 5060, 5070 and 5080 free on it.** Asterisk takes 5060, and the
+  test callee and caller take the other two.
+- **No other system changes.** Asterisk, the test caller and the test callee
+  run on this one machine. Phones and carriers reach it only when you point
+  them at its address, which this guide does not do.
 
 ## Tested on
 
@@ -76348,6 +76453,15 @@ sudo sipp -sn uac_pcap 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s 100 -m 1 -timeou
   up.
 - At the end SIPp's statistics screen shows `Successful call` at 1.
 
+### Check that Asterisk handled the call
+
+```bash
+sudo asterisk -rx 'core show calls'
+```
+
+Once the test call has ended, the command prints `0 active calls` and a
+`calls processed` count.
+
 Unlike a proxy, Asterisk carries the audio as well as the signaling.
 
 - The caller sends its audio to Asterisk, at the port Asterisk's answer names.
@@ -76498,6 +76612,17 @@ This guide adds sipnab to the Asterisk machine from
 - The section "Receive Asterisk's HEP" is the one that uses an
   Asterisk module.
   - You can leave it out.
+
+## Before you start
+
+- **The Asterisk machine from
+  [Use Asterisk as your voice stack's PBX](asterisk.md),** with its test call
+  working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, Asterisk, nothing changes** for every section up to
+  "Receive Asterisk's HEP". That section writes `hep.conf` and restarts
+  Asterisk. "Remove what this guide added" takes it out again.
+- **On the phones and carriers,** nothing changes.
 
 ## Tested on
 
@@ -76876,6 +77001,20 @@ sudo systemctl restart asterisk
 - The API key file and the drop-in are yours, so the block removes them.
 - The package leaves the `sipnab` user in place.
 
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists two dialogs, one for each leg, each with a Call-ID of its
+  own.
+- Both rows show `Completed` and code `200`.
+- The `RTP Streams:` table below them shows audio to and from Asterisk on
+  both legs.
+
 ## When something does not work
 
 - **sipnab says `sipnab: the terminal UI could not start: No such device or
@@ -76933,6 +77072,18 @@ This guide does the following:
 
 This guide does not use sipnab. When you have this working, [Run sipnab beside
 FreeSWITCH](freeswitch-sipnab.md) adds sipnab.
+
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages and the source the
+  steps download.
+- **UDP ports 5060, 5070, 5080 and 5090 free on it.** FreeSWITCH holds 5060
+  and 5080, and the test callee and caller take the other two.
+- **No other system changes.** FreeSWITCH, the test caller and the test
+  callee run on this one machine. Phones and carriers reach it only when you
+  point them at its address, which this guide does not do.
 
 ## Tested on
 
@@ -77235,9 +77386,9 @@ Each leg has its own audio.
 [Run sipnab beside
 FreeSWITCH](freeswitch-sipnab.md) shows all four streams.
 
-## Operate it
+### Check that a call has two legs
 
-**See a call's two legs while it is up.** FreeSWITCH calls each leg a
+FreeSWITCH calls each leg a
 channel. Start a call in the background and list the channels:
 
 ```bash
@@ -77258,6 +77409,8 @@ outbound sofia/external/echo@127.0.0.1:5070 PCMU
 - The `inbound` channel is the caller's leg, in PCMA.
 - The `outbound` one is the callee's, in PCMU.
 - The last line waits for the call to end.
+
+## Operate it
 
 **Check health and read the logs.**
 
@@ -77348,6 +77501,18 @@ protocol SIP servers use to send Homer their traffic.
 
 This guide adds sipnab to the FreeSWITCH machine from
 [Use FreeSWITCH in your voice stack](freeswitch.md).
+
+## Before you start
+
+- **The FreeSWITCH machine from
+  [Use FreeSWITCH in your voice stack](freeswitch.md),** with its test call
+  working.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, FreeSWITCH, nothing changes** for every section up
+  to "Receive FreeSWITCH's own copy of its SIP (HEP)". That section sets
+  `capture-server` and `sip-capture` in FreeSWITCH's configuration and
+  restarts it.
+- **On the phones and carriers,** nothing changes.
 
 ## Tested on
 
@@ -77682,6 +77847,20 @@ sipnab does not depend on FreeSWITCH.
 - A capture file you take on the FreeSWITCH machine, such as
   `/tmp/freeswitch-call.pcap`, works on any machine with sipnab installed.
   - It works with "Read one call: timing and audio quality" and "See both legs as one call".
+
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --portrange 5060-5080 --duration 30 --report
+```
+
+- The report lists two dialogs, one for each leg, each with a Call-ID of its
+  own.
+- Both rows show `Completed`.
+- The `RTP Streams:` table below them shows audio to and from FreeSWITCH on
+  both legs.
 
 ## When something does not work
 

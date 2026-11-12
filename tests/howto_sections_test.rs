@@ -177,18 +177,10 @@ const PAGES: &[(&str, Kind)] = &[
 /// page's entry in the change that gives the page its parts. Never add one
 /// for a new page.
 const KNOWN_GAPS: &[(&str, &[Part])] = &[
-    ("asterisk", &[Prerequisites, Verify]),
-    ("asterisk-sipnab", &[Prerequisites, Verify]),
     ("fail2ban", &[OtherSystems]),
     ("fail2ban-sipnab", &[Prerequisites, Verify]),
-    ("freeswitch", &[Prerequisites, Verify]),
-    ("freeswitch-sipnab", &[Prerequisites, Verify]),
     ("homer", &[OtherSystems, Verify]),
     ("homer-sipnab", &[Prerequisites, Verify]),
-    ("kamailio", &[Prerequisites, Verify]),
-    ("kamailio-sipnab", &[Prerequisites, Verify]),
-    ("opensips", &[Prerequisites, Verify]),
-    ("opensips-sipnab", &[Prerequisites, Verify]),
     ("prometheus", &[OtherSystems, Verify]),
     ("prometheus-sipnab", &[Prerequisites, Verify]),
     ("tfps", &[Prerequisites]),

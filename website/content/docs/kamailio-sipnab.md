@@ -21,6 +21,16 @@ It puts them together into one call.
 This guide adds sipnab to the Kamailio proxy from
 [Use Kamailio as your voice stack's SIP server](@/docs/kamailio.md).
 
+## Before you start
+
+- **The Kamailio proxy from
+  [Use Kamailio as your voice stack's SIP server](@/docs/kamailio.md),** with its
+  test call working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, Kamailio, nothing changes:** no module, no
+  configuration change.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01, with sipnab
@@ -112,6 +122,19 @@ A call through each proxy then appears in the report, one row per call.
 - So the `RTP Streams:` table lists each call's streams on rows of their own:
   - 236 `PCMA` packets each way for each call,
   - not one stream of 472 across both.
+
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists the call on one row, though sipnab saw it on both sides of
+  Kamailio.
+- The row shows `Completed`, code `200` and 13 messages.
+- An `RTP Streams:` table follows it.
 
 ## When something does not work
 
