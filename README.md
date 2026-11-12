@@ -472,9 +472,10 @@ Audio playback in the TUI also needs `libasound` (ALSA).
 | `opus` | Ogg Opus recordings in vCon containers. Compiles libopus from source, so building it needs `cmake` and a C compiler | no |
 | `archive` | Password-protected ZIP and 7z input | no |
 | `g729` | G.729 decoding in audio exports, once `sipnab g729 install` has installed the codebook tables on the host ([G.729 decoding](docs/g729.md)) | no |
+| `fleet-store` | Call history at a fleet center: sealed Parquet files and `GET /v1/fleet/calls` ([Keep call history at the center](docs/fleet.md#keep-call-history-at-the-center)). Not in the static musl builds | no |
 | `bpf` | eBPF TLS capture (`--uprobe-backend bpf`). Needs a nightly toolchain and `bpf-linker` to build, and a kernel with BTF to run. Outside `full` | no |
 | `wasm` | WebAssembly build for in-browser pcap analysis | no |
-| `full` | `native`, `tui`, `audio`, `metrics`, `tls`, `hep`, `api`, `mcp`, `mcp-http`, `plugins`, `vcon`, `opus`, `archive`, `g729` | no |
+| `full` | `native`, `tui`, `audio`, `metrics`, `tls`, `hep`, `api`, `mcp`, `mcp-http`, `plugins`, `vcon`, `opus`, `archive`, `g729`, `fleet-store` | no |
 
 Every feature:
 

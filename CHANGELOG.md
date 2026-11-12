@@ -13,6 +13,15 @@ entry that carries them.
 ### Fixed
 
 - **The documentation gate refuses a line citation whose phrase begins on more than one line of the cited file.** Such a phrase passed while its citation sat on any of those lines, and `scripts/check-line-drift.py --apply` could not follow it when the code moved. The gate now reports it where it stands, with the lines that hold it, and counts it as `ambiguous` in its summary. Eight phrases under `docs/design/` were lengthened; one citation became a two-line range that starts on the `fn` line above its condition. [Cite a line of code in a doc](docs/internals/walkthroughs.md#cite-a-line-of-code-in-a-doc) has the rule. No change to the `sipnab` binary.
+### Added
+
+- **A fleet center keeps call history and answers `GET /v1/fleet/calls`.** `sipnab fleet serve` files the call records its members push into Parquet files under `<store>.parquet`, one directory for each UTC day and member, and keeps them for `--calls-retention-days` (default 90, at most 548). Before this a record stayed in the intake for `--retention-hours` and no route read it. [Keep call history at the center](docs/fleet.md#keep-call-history-at-the-center) is the how-to.
+  - `GET /v1/fleet/calls` takes `member`, `from`, `to`, `call_id` and `limit` (default 100, at most 1000), and answers the newest records first. It needs a `full` token: an `inventory` token does not read call records. A record is in the answer from the moment the center acknowledges it.
+  - Each file is sealed with the store key before it reaches the disk, and a file moved to another path does not open. A file the center cannot read does not fail the route: the answer says `"complete": false` and names the file and the reason in `refused`.
+  - The center files the intake every `--calls-flush-secs` (default 60), at start and when it stops on a signal. After a stop between a filing and the emptying of the intake, the next start files no record a second time.
+  - `GET /v1/fleet/members` gained a `history` object: whether the build has the store, the retention, and the files written, records filed and filings that failed since the start.
+  - **Which builds have it.** It is the cargo feature `fleet-store`, which `sipnab --version` lists. The gnu tarballs, the `.deb` and `.rpm` packages that are not `-noaudio`, the macOS builds and the container image have it. The static musl tarballs and the `-noaudio` packages do not: the `parquet` crate added 1,245,248 bytes to a release build of their feature set, more than the 1,041,920 bytes the x86_64 musl binary of 0.5.246 had under its size limit. A center from one of those builds logs `this build has no history store` at start, the route answers `501` with the same text, and call records wait in the intake as before.
+  - Measured in the test suite (debug build, aarch64): 20,000 records of about 1.3 kB were filed into one file of 25,477,354 bytes in 1.04 s, read back in 277 ms, and one Call-ID was found in 170 ms by reading 1 of 2 row groups. The files are not compressed.
 
 ## [0.5.248] - 2026-11-12
 

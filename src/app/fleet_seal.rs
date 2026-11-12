@@ -233,6 +233,8 @@ pub enum Kind {
     Intake,
     /// A delivery waiting in a member's spool.
     Spool,
+    /// A Parquet file of call records in the center's history store.
+    Calls,
 }
 
 impl Kind {
@@ -242,6 +244,7 @@ impl Kind {
             Self::Registry => 1,
             Self::Intake => 2,
             Self::Spool => 3,
+            Self::Calls => 4,
         }
     }
 
@@ -251,6 +254,7 @@ impl Kind {
             Self::Registry => "registry",
             Self::Intake => "intake",
             Self::Spool => "spool",
+            Self::Calls => "calls",
         }
     }
 
@@ -260,6 +264,7 @@ impl Kind {
             1 => Some(Self::Registry),
             2 => Some(Self::Intake),
             3 => Some(Self::Spool),
+            4 => Some(Self::Calls),
             _ => None,
         }
     }
@@ -2678,7 +2683,7 @@ mod tests {
 
     #[test]
     fn success_a_file_of_every_kind_carries_its_counts_and_opens() -> TestResult {
-        for kind in [Kind::Registry, Kind::Intake, Kind::Spool] {
+        for kind in [Kind::Registry, Kind::Intake, Kind::Spool, Kind::Calls] {
             let source = counting();
             let (mut sealer, header) = LogSealer::new(&key(1), kind, &source)?;
             let mut out = header.to_vec();

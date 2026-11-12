@@ -3767,9 +3767,10 @@ fn feature_tables_cover_every_cargo_feature() -> Result<(), TestError> {
     // 14 -> 15: `archive`, password-protected ZIP input.
     // 15 -> 16: `opus`, Ogg Opus recordings in vCon containers.
     // 16 -> 17: `g729`, G.729 decoding with user-installed tables.
+    // 17 -> 18: `fleet-store`, the fleet center's history store.
     assert_eq!(
-        seen, 17,
-        "feature extraction found {seen} features, expected 17. Bump when a \
+        seen, 18,
+        "feature extraction found {seen} features, expected 18. Bump when a \
          feature is added; a drop means the parser stopped reading Cargo.toml's \
          table and the comparison below narrowed."
     );
@@ -6246,7 +6247,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1474 -> 1476 (HEP-LISTEN-CONFIG-KEYS): the table of messages in
     // docs/hep.md's "When it does not work" under "Keep the listener in the
     // config file", with its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1476;
+    // 1476 -> 1478 (fleet history store): the table of the parameters of
+    // `GET /v1/fleet/calls` in docs/fleet.md's "Keep call history at the
+    // center", with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1478;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

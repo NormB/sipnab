@@ -382,6 +382,9 @@ pub fn compiled_features() -> Vec<&'static str> {
     if cfg!(feature = "g729") {
         out.push("g729");
     }
+    if cfg!(feature = "fleet-store") {
+        out.push("fleet-store");
+    }
     out
 }
 

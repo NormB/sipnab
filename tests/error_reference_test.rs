@@ -996,7 +996,15 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // src/app/fleet_log.rs +1, a store or an intake that holds fewer records than
 // the center wrote to it, found when the file is read after an append that
 // failed.
-const EXPECTED_TEMPLATES: usize = 637;
+// 637 -> 654 (fleet history store): +17. src/app/fleet_history.rs +12: a
+// row received before 1970, the four refusals of a question's parameters
+// (member, call_id, a parameter given twice, an unknown parameter), three
+// Parquet column refusals, three sealed-layer refusals of a calls file (no
+// path, bytes after its end, written for another path) and a file that
+// would be replaced. src/app/fleet_center.rs +5: the build without the
+// store, a filing that failed, call records that could not be read, and the
+// two retention lines.
+const EXPECTED_TEMPLATES: usize = 654;
 
 // ---------------------------------------------------------------------------
 // The page gates

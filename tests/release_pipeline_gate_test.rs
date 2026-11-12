@@ -1051,9 +1051,15 @@ fn the_backend_record_refuses_a_musl_binary_with_no_libpcap_banner() -> Result<(
 /// binary carries, a decision nobody has taken. `opus` because it writes Ogg
 /// Opus recordings into vCon containers, and these artifacts have no `vcon`;
 /// it is also C (libopus, compiled with cmake), which the static builds were
-/// decided to leave out. Anything else `full` gains reaches these artifacts
-/// too, unless someone names it here with a reason.
-const NO_AUDIO_EXCLUSIONS: [&str; 4] = ["audio", "opus", "plugins", "vcon"];
+/// decided to leave out. `fleet-store` because of size (decided 2026-11-11):
+/// the `parquet` crate added 1,245,248 bytes to a release build of this
+/// feature set (aarch64 gnu), and the x86_64 musl binary of 0.5.246 had
+/// 1,041,920 bytes under its 26,214,400-byte ceiling. A fleet center built
+/// from these artifacts says at start that it has no history store, and
+/// `GET /v1/fleet/calls` answers `501` with the builds that have one.
+/// Anything else `full` gains reaches these artifacts too, unless someone
+/// names it here with a reason.
+const NO_AUDIO_EXCLUSIONS: [&str; 5] = ["audio", "fleet-store", "opus", "plugins", "vcon"];
 
 /// Every published binary reads password-protected ZIP and 7z archives.
 ///

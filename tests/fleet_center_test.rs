@@ -1301,12 +1301,17 @@ fn edge_a_new_store_is_sealed_before_the_first_heartbeat() -> Result<(), TestErr
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
+    // A build with the history store also makes its directory, empty until
+    // the first call record is filed.
+    let mut expected = vec![
+        "center.store".to_string(),
+        "center.store.intake".to_string(),
+    ];
+    if cfg!(feature = "fleet-store") {
+        expected.push("center.store.parquet".to_string());
+    }
     assert_eq!(
-        names,
-        vec![
-            "center.store".to_string(),
-            "center.store.intake".to_string()
-        ],
+        names, expected,
         "the store and its intake, and no staged file beside them"
     );
     assert!(

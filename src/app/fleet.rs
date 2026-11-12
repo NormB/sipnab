@@ -508,6 +508,8 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
                 silent_after_missed,
                 allowed_host,
                 rate_limit_per_peer,
+                calls_retention_days,
+                calls_flush_secs,
             } = *flags;
             crate::app::bootstrap::init_logging_at("info");
             return super::fleet_center::serve(super::fleet_center::ServeArgs {
@@ -528,6 +530,8 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
                 silent_after_missed,
                 allowed_hosts: allowed_host,
                 rate_limit_per_peer,
+                calls_retention_days,
+                calls_flush_secs,
             });
         }
     };
