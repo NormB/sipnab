@@ -16,6 +16,25 @@ sipnab it starts from. So you can stop at whichever answers your question.
 Every scenario assumes you have already done
 [Install sipnab](mcp-deploy.md#install-sipnab-every-server-once).
 
+## Before you start
+
+- **A sipnab binary with the `mcp-http` feature** on every capture host, and
+  the `hep` feature on a host that receives HEP. `sipnab --version` lists the
+  features, and the release binaries carry both.
+- **`curl` and `jq`** on the capture host, for the checks.
+- **An MCP client** on the laptop. The steps use Claude Code.
+- **Root on each capture host,** to install a systemd unit and a firewall
+  rule.
+
+Each scenario changes more than the capture host:
+
+| Scenario | Change on the other system |
+|---|---|
+| Captures from several SIP servers | Each proxy needs its HEP tracing pointed at the capture host. The firewall of the capture host needs a rule for the HEP port |
+| Reach sipnab from outside | DNS needs a name for the capture host. Its firewall needs tcp/443 open. The laptop needs the token |
+| Many capture hosts, one agent | The laptop needs one registration and one token for each host |
+| One call across an SBC and its PBXes | The laptop needs an SSH account on each node, or a token for each |
+
 ---
 
 ## Collect captures from several SIP servers in one place
@@ -834,3 +853,68 @@ Every field is the node's own claim. `signature.state` is always `unverified`:
 compare `binary.sha256` with the release's attested `SHA256SUMS.txt`, as
 [Check a binary against its release](fleet.md#check-a-binary-against-its-release)
 shows.
+
+---
+
+## Check that it worked
+
+This check runs on one machine, with no proxy and no root. It proves the two
+parts every scenario above builds on: the HEP listener admits a sender, and an
+MCP client over HTTP can ask who the senders are. It uses the sample capture
+[the MCP page](mcp.md#see-it-work) downloads.
+
+In one shell, start an MCP server with a HEP listener, both on loopback:
+
+```bash
+sipnab --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:8731 -L 127.0.0.1:9063
+```
+
+In a second shell, send the sample capture to the listener as HEP, with
+capture id 102. sipnab warns that the signaling of the capture leaves the
+machine. Here it goes to loopback:
+
+```bash
+sipnab -N --no-cli-print --quiet -I sip-problem-call.pcap --hep-send 127.0.0.1:9063 --hep-id 102
+```
+
+Then ask the server which senders it admitted:
+
+```bash
+# Run all of these, in order.
+U=http://127.0.0.1:8731/mcp
+H='Accept: application/json, text/event-stream'
+SID=$(curl -sS -D - -o /dev/null "$U" -H 'Content-Type: application/json' -H "$H" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' \
+  | tr -d '\r' | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}')
+curl -sS -o /dev/null "$U" -H 'Content-Type: application/json' -H "$H" -H "Mcp-Session-Id: $SID" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+curl -sS "$U" -H 'Content-Type: application/json' -H "$H" -H "Mcp-Session-Id: $SID" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hep_senders","arguments":{}}}' \
+  | sed -n 's/^data: //p' | jq -c '.result.structuredContent.senders[] | {source, packets, silent}'
+```
+
+Expect one line. The sample capture holds 23 SIP messages, and the sender
+sent each as one HEP packet:
+
+```text
+{"source":"hep:102@127.0.0.1","packets":23,"silent":false}
+```
+
+`silent` turns `true` 30 seconds after the last packet. Stop the server with
+Ctrl-C.
+
+The test suite runs this check on each build, on ports the kernel picks: it
+starts the server, sends the capture and asks `hep_senders` in a session. On
+Ubuntu 24.04 (Linux 6.8, aarch64) the answer named `hep:102@127.0.0.1` with
+23 packets. The suite sends its requests from Rust, not with `curl`.
+
+## When something does not work
+
+| Symptom | Likely cause |
+|---|---|
+| `HEP listener refuses to start: --hep-listen 0.0.0.0:9063 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured.`, exit 2 | A HEP listener on a routable address needs a guard. Add `--hep-allow` with the addresses of the proxies, or a shared secret |
+| `hep_senders` answers `"senders":[]` | No packet has passed the listener. If `refused_sources` in the same answer names the proxy, the listener turned it away, and the entry gives the reason. If it does not, the packets did not reach the port: check the address and the port in the proxy configuration, then the firewall rule |
+| A proxy is in the list with `"silent":true` | It sent nothing for 30 seconds. An idle proxy does that. For a busy one, check that it still runs and still traces |
+| The journal holds `no packets admitted for 30s` and a reason such as `auth_mismatch` | The sender reaches the port with the wrong secret. Correct the key on the sender, `--hep-auth-mode`, or the `--hep-allow` list. [Collect and forward HEP](hep.md#when-something-does-not-work) has a row for `auth_missing`, `auth_mismatch`, `hmac_bad_format` and `allowlist` |
+| `MCP HTTP refuses to start`, exit 2 | The unit binds an address other than loopback with no token. [The MCP page](mcp.md#when-something-does-not-work) quotes the message and the remedy |
+| `claude mcp list` shows the server as failed | Test each layer in turn: the check above on the capture host, then the tunnel or the nginx endpoint from the laptop, as [Reach sipnab from outside your network](#reach-sipnab-from-outside-your-network) describes |

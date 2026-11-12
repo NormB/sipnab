@@ -6250,7 +6250,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1470 -> 1474 (DOCS-HOWTO-GAP, fourth batch): the table of changes on
     // each other system in docs/mcp-deploy.md's "Before you start" and the
     // troubleshooting table of docs/auth.md, each with its site mirror (+4).
-    const EXPECTED_TABLES: usize = 1474;
+    // 1474 -> 1482 (DOCS-HOWTO-GAP, fifth batch): the troubleshooting tables
+    // of docs/mcp.md, docs/mcp-estate.md and docs/integrations.md, and the
+    // table of changes on each other system in docs/mcp-estate.md's "Before
+    // you start", each with its site mirror (+8).
+    const EXPECTED_TABLES: usize = 1482;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
