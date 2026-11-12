@@ -8,6 +8,16 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The release train no longer holds the release window open for one long last check (RELEASE-TRAIN-WINDOW-OPENS-ON-LONG-LAST-CHECK).** `scripts/release-train.py` opened the window when at most 3 checks of the release pull request were pending. On 0.5.249 the one pending check was a macOS job that ran from 16:57:06Z to 17:30:08Z; the window was open from 17:09:03Z to 17:32:15Z and an ordinary job waited behind it. The train now reads the time each check took on the head commit of `main` and opens the window when the pending check with the most time left has 15 minutes or less. See [the window rule](docs/internals/build-ci-release.md#the-release-train).
+  - The count of pending checks still decides when a time is missing: for a pending check that `main` has no successful run of, for a pending commit status, and when the read fails. A failed read does not stop the train.
+  - The landing still waits for every check.
+- **The release train prints the output of a landing that passed.** The train runs `required-checks` on the head before the merge, and printed what it said only when the landing failed. On 0.5.249 the train's output held no line from it. The lines of `required-checks`, a `warning:` line among them, and the line of the merge are now in the train's output.
+- **The release train writes each line when it prints it.** With its output in a file or a pipe, the train's `stage:` lines appeared only when it ended, and on 0.5.249 it was resumed with `python3 -u`. `main` now sets its standard output to hand over each line at once.
+
 ## [0.5.249] - 2026-11-12
 
 ### Added
