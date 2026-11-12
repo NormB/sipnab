@@ -54,7 +54,7 @@ the file.
 
 ### 2.1 The chain in `plan`
 
-`plan` ([`src/app/bootstrap.rs:587`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L587)<!-- "pub fn plan(cli:" -->) resolves the source once, into a single
+`plan` ([`src/app/bootstrap.rs:592`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L592)<!-- "pub fn plan(cli:" -->) resolves the source once, into a single
 `Option<CaptureSource>`, through an if/else chain that starts at
 [`src/app/bootstrap.rs:323`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/bootstrap.rs#L323) and ends at [`src/app/bootstrap.rs:419`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/bootstrap.rs#L419). In order:
 
@@ -69,7 +69,7 @@ the file.
 
 `-L` sits below `-d`, so `sipnab -d eth0 -L 0.0.0.0:9060` binds no HEP socket and
 says nothing about it. That silence is the same defect class the chain already
-warns about one arm up: [`src/app/bootstrap.rs:1060`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1060)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" --> warns when `-I` and `-d` arrive
+warns about one arm up: [`src/app/bootstrap.rs:1065`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1065)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" --> warns when `-I` and `-d` arrive
 together, with a comment naming the reason — an operator who adapted a documented
 pcap command gets "a confident wrong answer nobody has reason to doubt". The
 `-d` + `-L` pair produces exactly that shape and has no warning at all. Nothing
@@ -78,18 +78,18 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:3409`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3409)<!-- "pub fn launch(" -->) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:3414`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3414)<!-- "pub fn launch(" -->) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
-- **Auto-detection.** [`src/app/bootstrap.rs:3426`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3426)<!-- "let source = source.unwrap_or_else(auto_detect_source);" --> substitutes a default interface
+- **Auto-detection.** [`src/app/bootstrap.rs:3431`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3431)<!-- "let source = source.unwrap_or_else(auto_detect_source);" --> substitutes a default interface
   when the plan produced `None`.
-- **Channel shape.** [`src/app/bootstrap.rs:4415`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4415)<!-- "let (tx, rx) = match &source {" --> picks a batched channel for
+- **Channel shape.** [`src/app/bootstrap.rs:4420`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4420)<!-- "let (tx, rx) = match &source {" --> picks a batched channel for
   `File` and a per-packet channel for everything else, because a live source's
   packets have to become visible the moment they arrive.
 - **Transmit permission.** `TransmitPermit::for_source`
   ([`src/security/transmit_guard.rs:112`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L112)<!-- "pub fn for_source(source: &CaptureSource)" -->) grants or refuses the scanner-kill path
   from the source *variant*: `Live` and `Hep` yes, `File` and `Uprobe` no.
-- **Thread spawn.** [`src/app/bootstrap.rs:4485`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4485)<!-- "if !cli.capture_args.multi_device { return capture::start_capture(" --> branches to
+- **Thread spawn.** [`src/app/bootstrap.rs:4490`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4490)<!-- "if !cli.capture_args.multi_device { return capture::start_capture(" --> branches to
   `start_multi_capture` for `--multi-device`, otherwise `start_capture`
   ([`src/capture/native.rs:496`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L496)<!-- "pub fn start_capture(" -->), which matches the variant and spawns one named
   thread per arm.
@@ -433,7 +433,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:154`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L154)<!-- "if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device { return RunMode::CoresFile;" -->), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:8069`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8069)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:8074`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8074)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -488,7 +488,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
   ([`src/capture/parse.rs:85`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L85)<!-- "/// - [`Uprobe`](Self::Uprobe)" --> onward). Combining is coherent in principle and buys
   nothing over `-d` plus `--keylog`; leave it refused until someone asks.
 - **`--multi-device` with `-L`.** `--multi-device` reinterprets the `-d` string as
-  a comma-separated list ([`src/app/bootstrap.rs:4495`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4495)<!-- "let CaptureSource::Live { device } = &source else {" -->). Composing a list with a
+  a comma-separated list ([`src/app/bootstrap.rs:4500`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4500)<!-- "let CaptureSource::Live { device } = &source else {" -->). Composing a list with a
   HEP member is reasonable and should wait for stage three.
 - **`-O` with a composite.** See [section 5.2, "What breaks"](#52-what-breaks).
 - **`--cores > 1`.** Already warned, offline-only, no change.
@@ -496,9 +496,9 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 ### 6.3 What the operator gets told
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
-message ([`src/app/bootstrap.rs:1987-2000`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1987-L2000)<!-- "fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {" -->), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:8069`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8069)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
-([`src/app/bootstrap.rs:1060`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1060)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" -->). Three rules follow that precedent:
+message ([`src/app/bootstrap.rs:1992-2005`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1992-L2005)<!-- "fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {" -->), `--cores` on a live source warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:8074`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8074)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
+([`src/app/bootstrap.rs:1065`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1065)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" -->). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a
    composite. Exit 2, name the flag, name the reason, name the alternative.
@@ -518,7 +518,7 @@ it should land whether or not the rest is ever built.
 
 **Value alone:** yes, and immediately. An operator who typed both flags today
 believes they have a HEP listener and does not. This is the `-I`/`-d` warning at
-[`src/app/bootstrap.rs:1060`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1060)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" --> applied to the pair one arm down.
+[`src/app/bootstrap.rs:1065`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1065)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" --> applied to the pair one arm down.
 
 **Not in scope:** any change to the chain. `-d` keeps winning.
 

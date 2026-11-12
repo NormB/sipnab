@@ -498,6 +498,11 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
             ));
         }
     };
+    // Only the bind policy below reads the origin, and that call is compiled
+    // with the `hep` feature. Without the feature the binding has no reader,
+    // which `-D warnings` refuses in every build that leaves `hep` out.
+    #[cfg(not(feature = "hep"))]
+    let _ = listen_origin;
     #[cfg(feature = "hep")]
     let allowlist = {
         let mut v: Vec<crate::capture::hep::CidrRange> = Vec::new();

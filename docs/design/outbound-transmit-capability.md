@@ -60,7 +60,7 @@ it is not the same guarantee:
 3. **A refusal the operator can read.** `offline_refusal`
    ([`:154`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L154)<!-- "pub fn offline_refusal(feature:" -->) names the flag, says what
    happens instead and says how to get what was asked for. It fires from
-   `bootstrap::plan` ([`bootstrap.rs:1387-1392`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1387-L1392)<!-- "let kill_requested = kill_worker_wanted(cli, config);" -->),
+   `bootstrap::plan` ([`bootstrap.rs:1392-1397`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1392-L1397)<!-- "let kill_requested = kill_worker_wanted(cli, config);" -->),
    which runs for every mode. The doc comment at `:31-36` is explicit that the
    pair is deliberate: a type-only guard leaves someone believing their defense
    is armed, and a message-only guard is one forgetful call site away from being
