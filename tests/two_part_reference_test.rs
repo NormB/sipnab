@@ -264,6 +264,18 @@ fn label_and_anchor_agree_across_the_documentation_tree() -> Result<(), TestErro
          citation the rules above read. Write it as a citation of main with its \
          phrase, or name a commit by its full hash.\n{report}"
     );
+    // The fifth question: does each phrase name ONE line of its file? A
+    // phrase that begins on two lines passed while its citation sat on either
+    // of them, and `--apply` could not follow it when the code moved. Eight
+    // such phrases were in the tree when the rule was written (2026-11-12).
+    assert_eq!(
+        field(&report, "ambiguous")?,
+        0,
+        "a citation's phrase begins on more than one line of the file it \
+         cites, so nothing can tell which line is meant once the code moves. \
+         Lengthen the phrase until it begins on one line; `--apply` cannot \
+         fix this one.\n{report}"
+    );
 
     assert!(
         ok,
@@ -446,6 +458,70 @@ fn a_phrase_that_is_not_on_its_cited_line_is_reported() -> Result<(), TestError>
     assert_eq!(field(&report, "wrong_content")?, 1, "{report}");
     assert_eq!(field(&report, "past_eof")?, 0, "{report}");
     assert_eq!(field(&report, "disagreeing")?, 0, "{report}");
+    Ok(())
+}
+
+/// A citation's phrase must begin on one line of the file it cites.
+///
+/// `the Software` begins on lines 7, 9 and 13 of `LICENSE-MIT`. A citation of
+/// line 7 with that phrase is on a line that holds it, so the content rule
+/// passed it; the fixer could not have followed it to a new line, and a
+/// citation of line 9 would have passed as well. The longer phrase begins on
+/// line 7 only. `--apply` leaves the refused page as it is.
+#[test]
+fn a_phrase_that_begins_on_several_lines_is_reported() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
+    let blob = "https://github.com/NormB/sipnab/blob/main/LICENSE-MIT";
+
+    let body = format!("See [`LICENSE-MIT:7`]({blob}#L7)<!-- \"the Software\" -->.\n");
+    let bad = fixture(dir.path(), "several-lines.md", &body)?;
+    let (ok, report) = drift(&[&bad], false)?;
+    assert!(
+        !ok,
+        "`the Software` begins on three lines of LICENSE-MIT, so the phrase \
+         does not say which is cited:\n{report}"
+    );
+    assert_eq!(field(&report, "ambiguous")?, 1, "{report}");
+    assert_eq!(
+        field(&report, "wrong_content")?,
+        0,
+        "line 7 holds the phrase, so this is not the wrong-content failure:\n{report}"
+    );
+    assert!(
+        report.contains("lines 7, 9, 13") && report.contains("Lengthen the phrase"),
+        "the message must name the lines that hold the phrase and the remedy:\n{report}"
+    );
+
+    // Line 8 does not hold the phrase, so a fixer that took the first of the
+    // three lines would rewrite this page to line 7.
+    let moved_body = format!("See [`LICENSE-MIT:8`]({blob}#L8)<!-- \"the Software\" -->.\n");
+    let moved = fixture(dir.path(), "several-lines-moved.md", &moved_body)?;
+    let (ok, report) = drift(&[&moved], true)?;
+    assert!(
+        !ok,
+        "`--apply` cannot choose among three lines, so the page still fails:\n{report}"
+    );
+    assert!(
+        report.contains("line 8 is not one of them"),
+        "the message must say the cited line holds no occurrence:\n{report}"
+    );
+    let after = std::fs::read_to_string(&moved).map_err(|e| format!("read fixture: {e}"))?;
+    assert_eq!(
+        after, moved_body,
+        "`--apply` rewrote a citation whose phrase names three lines"
+    );
+
+    let good = fixture(
+        dir.path(),
+        "one-line.md",
+        &format!(
+            "See [`LICENSE-MIT:7`]({blob}#L7)<!-- \"in the Software without restriction\" -->.\n"
+        ),
+    )?;
+    let (ok, report) = drift(&[&good], false)?;
+    assert!(ok, "the longer phrase begins on line 7 only:\n{report}");
+    assert_eq!(field(&report, "phrased")?, 1, "{report}");
+    assert_eq!(field(&report, "ambiguous")?, 0, "{report}");
     Ok(())
 }
 
