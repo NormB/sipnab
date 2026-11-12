@@ -141,6 +141,9 @@ class Combo:
     # test targets above never include them, and nothing else runs them with
     # features off.
     lib: bool = False
+    # `.githooks/pre-push` lints this row before every push (`hook_rows`).
+    # CI runs the row the same with or without the mark.
+    hook: bool = False
 
     def requires(self) -> set[str]:
         """What a pool must have to run this combination."""
@@ -158,8 +161,9 @@ def parse_combos(text: str) -> list[Combo]:
 
     One per line: the comma-separated features, then optionally `suite` (run
     the whole test suite with them), `lib` (run the library's unit tests with
-    them), `test=NAME` (run that test target with them) or `needs=TOOL` (only
-    a pool with TOOL can run it), separated by spaces. `#` starts a comment.
+    them), `test=NAME` (run that test target with them), `needs=TOOL` (only
+    a pool with TOOL can run it) or `hook` (the pre-push hook lints the row,
+    see `hook_rows`), separated by spaces. `#` starts a comment.
     """
     out: list[Combo] = []
     for n, raw in enumerate(text.splitlines(), 1):
@@ -179,8 +183,16 @@ def parse_combos(text: str) -> list[Combo]:
                 combo.tests.append(word[len("test="):])
             elif word.startswith("needs=") and len(word) > len("needs="):
                 combo.needs.append(word[len("needs="):])
+            elif word == "hook":
+                if combo.hook:
+                    raise ValueError(f"line {n}: `hook` is listed twice")
+                combo.hook = True
             else:
                 raise ValueError(f"line {n}: unknown annotation {word!r}")
+        if combo.hook:
+            why = hook_refusal(combo)
+            if why:
+                raise ValueError(f"line {n}: {combo.features!r} cannot be marked `hook`: {why}")
         if any(c.features == combo.features for c in out):
             raise ValueError(f"line {n}: {combo.features!r} is listed twice")
         out.append(combo)
@@ -251,6 +263,85 @@ def lint_command(features: str) -> list[str]:
     # tail once a `#[cfg]` block compiled out) passes `cargo check`.
     return ["cargo", "clippy", "--no-default-features", "--features", features,
             "--tests", "--", "-D", "warnings"]
+
+
+# ── The rows the pre-push hook lints ──────────────────────────────────────
+#
+# The pre-commit hook builds only `--features full`, so a warning that exists
+# only with a feature off passes it. In pull request #763 a binding read only
+# under `#[cfg(feature = "hep")]` did, and would have failed this lint in CI
+# for every feature set without `hep`. A row marked `hook` in
+# .github/feature-combos.txt is linted by .githooks/pre-push with
+# `lint_command`, the command CI runs for it, under a pass stamp of its own
+# (scripts/gate-cache.py reads the rows through `hook_rows` as well). The
+# mark is the one rule for which rows; the rest of the matrix stays in CI.
+
+# A feature set whose step name is unambiguous: features of lower-case
+# letters, digits and single hyphens, separated by commas.
+_HOOK_FEATURES = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*(,[a-z0-9]+(-[a-z0-9]+)*)*$")
+HOOK_STEP_PREFIX = "lint-"
+
+
+def hook_refusal(combo: Combo) -> str:
+    """Why this row cannot be marked `hook`; empty when it can."""
+    if combo.needs:
+        return f"it needs {', '.join(combo.needs)}, which the pushing machine may lack"
+    if combo.features == "wasm":
+        return "it is a check for another target, which the hook runs as its own step"
+    if not _HOOK_FEATURES.match(combo.features):
+        return "a step name holds lower-case letters, digits and single hyphens"
+    return ""
+
+
+def hook_step(features: str) -> str:
+    """The pass-stamp step of one marked row.
+
+    `--` between features, because a feature name may hold one hyphen
+    (`mcp-http`): with one, `native,mcp-http` and `native,mcp,http` would
+    share a step, and one's stamp would skip the other's lint.
+    """
+    return HOOK_STEP_PREFIX + features.replace(",", "--")
+
+
+def hook_rows(items: list[Combo]) -> list[tuple[str, str, list[str]]]:
+    """The marked rows in file order: (step, features, command)."""
+    return [(hook_step(c.features), c.features, lint_command(c.features)) for c in items if c.hook]
+
+
+def read_hook_rows() -> list[tuple[str, str, list[str]]]:
+    """`hook_rows` of this tree's file; OSError or ValueError when unreadable."""
+    return hook_rows(parse_combos(COMBOS.read_text(encoding="utf-8")))
+
+
+def print_hook_rows() -> int:
+    """One marked row per line for the hook: step, features, command, tab-separated."""
+    try:
+        rows = read_hook_rows()
+    except (OSError, ValueError) as e:
+        print(f"check-feature-matrix: .github/feature-combos.txt: {e}")
+        return 2
+    for step, features, command in rows:
+        print(f"{step}\t{features}\t{' '.join(command)}")
+    return 0
+
+
+def lint_row(features: str) -> int:
+    """Run one marked row's lint, as the hook's step for it.
+
+    In the caller's environment, as the hook's other clippy steps run: the
+    command itself carries `-D warnings`. A row that is not marked is
+    refused, so the hook cannot be pointed at a set the file does not name.
+    """
+    try:
+        rows = read_hook_rows()
+    except (OSError, ValueError) as e:
+        print(f"check-feature-matrix: .github/feature-combos.txt: {e}")
+        return 2
+    for _step, row, command in rows:
+        if row == features:
+            return 1 if subprocess.run(command, cwd=ROOT, check=False).returncode != 0 else 0
+    print(f"check-feature-matrix: {features!r} is not a row marked `hook` in .github/feature-combos.txt")
+    return 2
 
 
 def group_commands(group: list[Combo]) -> list[list[str]]:
@@ -395,13 +486,23 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--group", type=int)
     p.add_argument("--pool", choices=sorted(POOLS))
+    p.add_argument("--hook-rows", action="store_true",
+                   help="print the rows marked `hook`: step, features, command")
+    p.add_argument("--lint-row", metavar="FEATURES",
+                   help="lint one row marked `hook`, as .githooks/pre-push does")
     a = p.parse_args()
     if (a.group is None) != (a.pool is None):
         p.error("--group and --pool go together")
+    if sum([a.group is not None, a.hook_rows, a.lint_row is not None]) > 1:
+        p.error("--group, --hook-rows and --lint-row are separate modes")
+    if a.hook_rows:
+        return print_hook_rows()
     if subprocess.run(["cargo", "--version"], cwd=ROOT,
                       capture_output=True).returncode != 0:
         print("cargo is not on PATH")
         return 2
+    if a.lint_row is not None:
+        return lint_row(a.lint_row)
     if a.group is not None:
         return run_group(a.group, a.pool)
     names = combos()

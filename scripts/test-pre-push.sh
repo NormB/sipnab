@@ -1749,10 +1749,11 @@ run_matrix_script() {
 write_matrix_workflow
 write_matrix_lib ''
 
-# The hook leaves the matrix to CI: it neither runs nor mentions it, so an
-# item dead only without its feature does not block here.
+# The hook leaves the rows that are not marked `hook` to CI (neither row is
+# marked here): it neither runs nor mentions them, so an item dead only
+# without its feature does not block here.
 run_hook "" || true
-if grep -q 'feature matrix' "$TMP/out.log"; then
+if grep -q 'feature matrix' "$TMP/out.log" || grep -qF -- '--features plain' "$TMP/out.log"; then
 	bad "the pre-push hook still runs the feature matrix CI runs on the local runners"
 	sed 's/^/    /' "$TMP/out.log"
 else
@@ -1818,6 +1819,80 @@ elif [ "$MX_RC" -ne 0 ] && grep -q 'needless_return\|unneeded `return`' "$TMP/ou
 	ok "check-feature-matrix.py blocks a lint that fires only in one combo"
 else
 	bad "check-feature-matrix.py did NOT block a lint that fires only in one combo (exit $MX_RC)"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# -- SCENARIO: a row marked `hook` is linted by this hook ---------------------
+#
+# The shape of pull request #763: `listen_origin` is bound always and read
+# only by code behind a feature. With the feature off it is an unused
+# variable: a warning, so `cargo check` passes; `--all-features` and the
+# pre-commit hook's `--features full` turn the reader on. Here the reader is
+# compiled out for exactly `--no-default-features --features plain`, as
+# `write_matrix_lib` explains, so no earlier gate of the hook sees it.
+# $1 = "" for an ungated binding, or the cfg attribute that gates it.
+write_listen_origin() {
+	cat >"$CRATE/src/main.rs" <<EOF
+fn main() {
+    $1
+    let listen_origin = std::env::args().count();
+    #[cfg(any(not(feature = "plain"), feature = "extra"))]
+    println!("{listen_origin}");
+    println!("ok");
+}
+EOF
+	fmt_fixture
+}
+ROW_LINT='cargo clippy --no-default-features --features plain --tests -- -D warnings'
+ROW_BLOCK='Push blocked: the feature set plain does not pass clippy.'
+
+# Marked, and the binding ungated: the hook blocks and names the binding.
+printf 'plain hook\nextra\n' >"$CRATE/.github/feature-combos.txt"
+write_listen_origin ''
+if run_hook ""; then
+	bad "a binding read only behind a feature was ALLOWED on a row marked hook"
+	sed 's/^/    /' "$TMP/out.log"
+elif blocked_for "$ROW_BLOCK" && blocked_for 'listen_origin' && blocked_for "    $ROW_LINT"; then
+	ok "a row marked hook blocks a binding read only behind a feature, and names it"
+else
+	bad "the hook blocked, but not at the marked row's lint"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# Marked, and the binding gated like its reader: the row's lint runs and passes.
+write_listen_origin '#[cfg(any(not(feature = "plain"), feature = "extra"))]'
+# The hook as a whole passes, and its output holds the row's step line: cargo
+# writes on that line, so the step's OK is on a later one.
+if ! run_hook ""; then
+	bad "a row marked hook blocked a binding gated like its reader"
+	sed 's/^/    /' "$TMP/out.log"
+elif grep -qF "  $ROW_LINT ... " "$TMP/out.log"; then
+	ok "a row marked hook passes once the binding is gated like its reader"
+else
+	bad "the marked row's lint did not run for a correctly gated binding"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# Unmarked, and the binding ungated: the row is CI's, and the hook does not lint it.
+printf 'plain\nextra\n' >"$CRATE/.github/feature-combos.txt"
+write_listen_origin ''
+run_hook "" || true
+if grep -qF -- '--features plain' "$TMP/out.log" || blocked_for "$ROW_BLOCK"; then
+	bad "the hook linted a row that is not marked hook"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "a row that is not marked hook is left to CI"
+fi
+
+# A file the script cannot parse blocks the push: no row would be linted.
+printf 'plain hook hook\nextra\n' >"$CRATE/.github/feature-combos.txt"
+if run_hook ""; then
+	bad "a feature list the script cannot parse was ALLOWED"
+	sed 's/^/    /' "$TMP/out.log"
+elif blocked_for 'Push blocked: .github/feature-combos.txt could not be read.'; then
+	ok "a feature list the script cannot parse blocks the push"
+else
+	bad "the hook blocked, but not for the unreadable feature list"
 	sed 's/^/    /' "$TMP/out.log"
 fi
 

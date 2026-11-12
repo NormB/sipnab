@@ -433,7 +433,7 @@ Their contents are worth spelling out.
     The pre-commit hook runs `scripts/tests` on every commit except a release-only one, whatever the commit stages: those tests read documentation pages and workflows too.
 - **`features`**: `cargo clippy --no-default-features --features X --tests
   -- -D warnings` across twenty-one feature sets.
-  - [`.github/feature-combos.txt`](../../.github/feature-combos.txt) lists the sets, the tests that run beside them, and what each needs from the machine.
+  - [`.github/feature-combos.txt`](../../.github/feature-combos.txt) lists the sets, the tests that run beside them, what each needs from the machine, and which sets the pre-push hook lints as well (`hook`).
   - The sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
     `metrics`, then `tls,api`, `native,tui,audio`, the default features
     `native,tui,audio,metrics`, `native,tui,tls,hep,api`,
@@ -905,6 +905,11 @@ The matrix has moved twice.
 - Since 2026-10-27 it runs on GitHub's `ubuntu-24.04-arm`, as described below.
 - The script still runs it by hand.
 - Pre-push keeps the reduced combinations.
+- Since 2026-11-12 pre-push also lints the rows of [`.github/feature-combos.txt`](../../.github/feature-combos.txt) marked `hook`: `native`, the default features and `native,hep,api,mcp,mcp-http`.
+  - The command is the one the `features` job runs for the row, `cargo clippy --no-default-features --features X --tests -- -D warnings`.
+  - The pre-commit hook builds only `--features full`. In pull request #763 a binding read only under `#[cfg(feature = "hep")]` passed it and would have failed that command in CI for every set without `hep`.
+  - [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py) `--hook-rows` prints each marked row's stamp step, features and command, and `--lint-row` runs one. The hook and [`scripts/gate-cache.py`](../../scripts/gate-cache.py) both read the rows through that script, so each row has a pass stamp of its own.
+  - Measured on the aarch64 development host on 2026-11-12, the three rows together took 49 seconds after a change to the library's root source file alone and 163 seconds the first time after edits to test files, at a load average of about 23.
 - Pre-push and CI also run clippy on the library with no features:
   `cargo clippy --no-default-features --lib -- -D warnings`.
   - The main clippy gate runs `--all-features`, so a lint that fires only with every feature off never reaches it.
@@ -1105,7 +1110,7 @@ Four places pulled from it, and each now does something else:
 - no Docker Hub image in what `cross` builds in
 - one codespell pin that CI and the hooks share
 
-[`pre-push`](../../.githooks/pre-push) adds sixteen hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds seventeen hard gates that `cargo test`
 does not cover:
 
 - a check that every pushed commit carries a good signature
@@ -1121,7 +1126,7 @@ does not cover:
   [`bpf/rust-toolchain.toml`](../../bpf/rust-toolchain.toml)
 - the release-delivery tests
 - a check of the reduced feature combinations `tls`, `api` and `wasm`
-- the full fifteen-combination matrix with CI's flags
+- CI's clippy command over the feature sets that [`.github/feature-combos.txt`](../../.github/feature-combos.txt) marks `hook`
 - a non-Linux compile of the whole tree
 - a YANG validation of the `sipnab-diagnosis` module
 - a `zola build` of the website
@@ -1393,7 +1398,7 @@ The hook greps the tree for that list instead of carrying its own copy.
 - The first draft did hand-keep the list.
   It went stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the sixteen hard gates.
+**When it runs.** Last, after the seventeen hard gates.
 
 - Each of those fails in seconds.
 - Spending a minute on the corpus only to hear that the tree does not
