@@ -10,6 +10,12 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The documentation gate refuses a line citation whose phrase begins on more than one line of the cited file.** Such a phrase passed while its citation sat on any of those lines, and `scripts/check-line-drift.py --apply` could not follow it when the code moved. The gate now reports it where it stands, with the lines that hold it, and counts it as `ambiguous` in its summary. Eight phrases under `docs/design/` were lengthened; one citation became a two-line range that starts on the `fn` line above its condition. [Cite a line of code in a doc](docs/internals/walkthroughs.md#cite-a-line-of-code-in-a-doc) has the rule. No change to the `sipnab` binary.
+
+## [0.5.248] - 2026-11-12
+
 ### Added
 
 - **The HEP listener's address and allowlist have config-file keys (HEP-LISTEN-CONFIG-KEYS).** `--hep-listen` and `--hep-allow` had no key, so a service that receives HEP, including one that receives OpenSIPS `E_SIPNAB_TH_MAP` events, carried both on its command line. `[hep] listen` is the address and `[hep] allow` is the list of admitted sources. [Keep the listener in the config file](docs/hep.md#keep-the-listener-in-the-config-file) has the steps.
@@ -24,7 +30,6 @@ entry that carries them.
 
 ### Fixed
 
-- **The documentation gate refuses a line citation whose phrase begins on more than one line of the cited file.** Such a phrase passed while its citation sat on any of those lines, and `scripts/check-line-drift.py --apply` could not follow it when the code moved. The gate now reports it where it stands, with the lines that hold it, and counts it as `ambiguous` in its summary. Eight phrases under `docs/design/` were lengthened; one citation became a two-line range that starts on the `fn` line above its condition. [Cite a line of code in a doc](docs/internals/walkthroughs.md#cite-a-line-of-code-in-a-doc) has the rule. No change to the `sipnab` binary.
 - **The repository's gates read a file in a merge conflict once (LS-FILES-UNMERGED-STAGES).** `git ls-files` lists a path in conflict once for each index stage, up to three times. The gates and scripts that take their file list from it read such a file once per stage: a count of tracked Markdown pages read 350 against a real 346 with two pages in conflict, each finding in such a file was reported three times, and `scripts/check-rustfmt.sh --fix` could give one file to several rustfmt processes at the same time. One reader per language now returns each path once: `tests/support/tracked.rs` for the test suite (47 call sites in 27 files) and `scripts/lib_tracked.py` for the scripts (`add-source-headers.py`, `no-itu-values.py`, `rfc-links.py`, `check-line-drift.py`, `fix-line-anchors.py`, `link-repo-paths.py`). `scripts/check-rustfmt.sh` sorts its list and drops repeats, and its new `--list` prints that list without running rustfmt. A test refuses a direct `git ls-files` listing anywhere else under `tests/` and `scripts/`. No change to the `sipnab` binary.
 - **A line citation in the documentation says what its line holds, and every other line link names a commit (DOC-LINE-LINKS).** A citation such as `server.rs:5901` links to one line on `main`, and that line moves when code above it changes. `scripts/check-line-drift.py` checked that the label and the link agree and that the line exists, and it followed a moved symbol only for a `.rs` citation with an identifier next to it, within 15 lines. Every other citation could land on other content with no gate reporting it. Two rules are added:
   - A citation of a file on `main` carries a phrase, an HTML comment directly after the link that quotes the start of the first cited line. The gate fails when the phrase does not begin on that line, and `--apply` moves the label and the link to the line where it now begins, when that is one line. A citation that describes code that has since changed is pinned to the commit that had it. Of the 649 line citations under `docs/` and `website/content/`, 458 carry a phrase and 191 are pinned.
