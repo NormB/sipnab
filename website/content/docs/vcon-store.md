@@ -17,6 +17,21 @@ describes.
 The forwarder sends each container byte for byte: it does not change what
 sipnab wrote.
 
+## Before you start
+
+- **A sipnab binary that carries the `vcon` feature.** The exporter, the
+  forwarder and the fetcher are part of it. `sipnab --version` lists the
+  features of a binary. The `-noaudio` release packages and the static musl
+  build do not carry it.
+- **A capture file that holds the calls to send.**
+- **A token from the other system, vcon.store.** The steps call it
+  `$VCON_STORE_TOKEN`. Nothing else changes on vcon.store until the forwarder
+  sends a container.
+- **HTTPS from this machine to `api.vcon.store`.**
+- **A decision on what may leave the machine.**
+  [Before you send anything](#before-you-send-anything) lists what a
+  container carries.
+
 ## What this page's check covered
 
 The hosted vcon.store service was not used to check this page. On 2026-11-03
@@ -168,7 +183,7 @@ With `--vcon-forward-once`, the exit status is:
 
 Without `--vcon-forward-once`, the forwarder polls the spool until you stop it.
 
-## Check what the store accepted and refused
+## Check that the store accepted each container
 
 A container the store refused is in `spool/failed`, with a `.error.json`
 record beside it that holds the store's answer. To read the counts and those
@@ -178,7 +193,16 @@ answers without sending anything:
 sipnab --vcon-spool-status spool
 ```
 
-It prints one JSON document. After one delivery and one refusal, it reads:
+It prints one JSON document. The delivery worked when:
+
+- `pending` is `0`: no container is still waiting in `spool`,
+- `failed` is `0`: the store refused none,
+- `delivered` is the number of containers the export wrote.
+
+Before the forwarder runs, the same command shows each written container
+under `pending`.
+
+After one delivery and one refusal, it reads:
 
 ```json
 {

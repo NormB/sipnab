@@ -13463,7 +13463,7 @@ there is no cache. When the library is missing it installs the static musl
 build instead and says so:
 
 ```text
-sipnab-install: libpcap.so.0.8 not found — using the static musl build (no TUI audio; otherwise identical). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead
+sipnab-install: libpcap.so.0.8 not found — using the static musl build (no TUI audio, WASM plugins, vCon export, eBPF uprobe backend or fleet history store). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead
 ```
 
 - To get the `-gnu` build with TUI audio on Debian or Ubuntu, install the
@@ -13493,8 +13493,8 @@ On Linux the installer chooses between two builds.
   `libpcap.so.0.8` installed get the dynamically linked **`-gnu`** build.
 - Older hosts, hosts with no glibc, and hosts without `libpcap.so.0.8`
   get the static **musl** build. It needs nothing else.
-  - It lacks TUI audio playback, WASM plugins, vCon export and the eBPF uprobe
-    backend.
+  - It lacks TUI audio playback, WASM plugins, vCon export, Ogg Opus
+    recordings, the eBPF uprobe backend and the fleet history store.
   - It reads password-protected ZIP and 7z archives like every other release
     build ([Read captures from tar, ZIP and 7z archives](archives.md)).
 
@@ -13516,14 +13516,14 @@ Substitute the release version for `<version>` throughout.
 |---|---|---|---|
 | `sipnab_<version>_amd64.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
 | `sipnab_<version>_arm64.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
-| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency — headless servers; no [fleet history store](fleet.md#keep-call-history-at-the-center) |
-| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency — headless servers; no [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](fleet.md#keep-call-history-at-the-center) |
 | `sipnab-<version>-1.x86_64.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
 | `sipnab-<version>-1.aarch64.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
-| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no [fleet history store](fleet.md#keep-call-history-at-the-center) |
-| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no [fleet history store](fleet.md#keep-call-history-at-the-center) |
-| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export, eBPF uprobe backend or [fleet history store](fleet.md#keep-call-history-at-the-center) |
-| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export, eBPF uprobe backend or [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings, eBPF uprobe backend or [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings, eBPF uprobe backend or [fleet history store](fleet.md#keep-call-history-at-the-center) |
 | `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
 | `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
@@ -13880,8 +13880,11 @@ came up, drop-ins, and what to do when it does not start.
 Each release publishes a standard package and a **`-noaudio`** package.
 
 - The `-noaudio` package has no audio plugin and no ALSA dependency.
-  - Everything else, WAV export included, works the same.
-  - Only live playback in the TUI is unavailable.
+  - It has no live audio playback in the TUI.
+  - It also lacks four features of the standard package: WASM plugins,
+    vCon export, Ogg Opus recordings and the fleet history store.
+    `sipnab --version` lists the features of a binary.
+  - WAV export (`--export-audio`) works as in the standard package.
 - From 0.5.233 the standard package ships the plugin and *recommends*
   `libasound2`. Releases from 0.5.118 to 0.5.232 did neither, so in those
   releases the two packages differ only in name. See
@@ -13928,6 +13931,9 @@ standard and a `-noaudio` variant.
 
 - The no-audio variant has no audio plugin and no `alsa-lib` weak
   dependency.
+  - It has no live audio playback in the TUI.
+  - It also lacks WASM plugins, vCon export, Ogg Opus recordings and the
+    fleet history store.
 - It is for headless servers, mirroring the `.deb` variants.
 
 Download the package for your architecture and variant from the
@@ -14324,7 +14330,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 |---------|-------------|--------------|
 | `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf`, `vcon`, `archive` and `g729`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
 | `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. A build without it has no terminal UI: every run is the run `-N` (`--no-tui`) asks for, so `sipnab -I capture.pcap` prints one line per SIP message, and the output flags need no `-N`. A run that gave neither `-N` nor an output flag says so in one line on standard error when standard error is a terminal. | `native`, `ratatui`, `crossterm`, `unicode-width`, `base64` |
-| `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
+| `audio` | RTP audio playback in the TUI. WAV export (`--export-audio`) does not need it. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
 | `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core`, `webpki`, `zeroize` |
@@ -30051,9 +30057,9 @@ Part of the capture-quality summary. `{intact_undecodable}` frames arrived compl
 
 **Exit code:** None. This is a warning, and the run continues.
 
-### `{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the capture never held, were skipped: reading resumed at the next SIP message behind each, and a message the hole cut is lost (packets the capture point missed)`
+### `{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the capture never held, were skipped: reading resumed at the next SIP message or TLS record behind each, and a message the hole cut is lost (packets the capture point missed)`
 
-Part of the capture-quality summary. TCP streams had `{holes}` gaps, totaling `{hole_bytes}` bytes, that the capture never contained. sipnab skipped each gap and resumed reading at the next SIP message after it. A SIP message that a gap cuts through goes missing from the analysis.
+Part of the capture-quality summary. TCP streams had `{holes}` gaps, totaling `{hole_bytes}` bytes, that the capture never contained. sipnab skipped each gap and resumed reading at the next SIP message after it, or, in a build with the `tls` feature, at the next TLS record. A SIP message that a gap cuts through goes missing from the analysis.
 
 **What to do:** Capture closer to the traffic, or with a larger buffer, so that the capture point does not miss packets.
 
@@ -42051,8 +42057,10 @@ development build after 0.5.247: a center on `127.0.0.1:18447` over HTTP on
 loopback, with `--calls-flush-secs 5`, and two call records sent by hand as
 member `edge-a`. The commands name files as a deployment would, and the log
 lines show file names without the run's directory. The `WARN` line of a
-build without the history store is the text that build logs. It does not
-come from this run.
+build without the history store comes from another run, on 2026-11-12: a
+center of a build with the features of the `-noaudio` packages, over HTTP on
+loopback. The test suite starts such a center in each build without the
+history store and compares its log line and its `501` answer with this page.
 
 **Before you start.**
 
@@ -56053,8 +56061,28 @@ sequenceDiagram
 
 From a clone to a running stack.
 
-- Docker and Docker Compose are the only prerequisites.
-- The repository builds everything else.
+### What you need
+
+- **A clone of the sipnab repository.** Its `harness` directory holds the
+  stack.
+- **Docker and Docker Compose.** The repository builds every image.
+- **`make`,** for the two credentials.
+- **`curl` and `jq`,** for the checks on this page.
+- **`python3`.** The test script runs two Python clients from the repository.
+- **For the two voices:** Piper voice models, the Python `piper` module, and
+  `sox` with `soxi`. `PIPER_VOICES` names the directory that holds the
+  models.
+- **Free ports on the host.** [Ports](#ports) lists them.
+- **One other system, for [Store a call](#store-a-call): a conserver.** The
+  harness does not start one.
+  - It needs an ingress list named `sipnab`, and a chain that stores what the
+    list receives.
+    [Add an ingress list and a chain for sipnab](vcon-sipnab.md#add-an-ingress-list-and-a-chain-for-sipnab)
+    adds both to a vCon server.
+  - You need its address and its API token.
+- **No change on any other system for the rest of the page.** OpenSIPS, the
+  media relay, the sipnab nodes and the SIPp endpoints run in containers on
+  this host.
 
 Every command below runs from the `harness` directory.
 
@@ -56113,7 +56141,7 @@ docker compose up -d
 docker compose ps
 ```
 
-### Confirm both nodes answer
+### Check that both nodes answer
 
 Different `capture_identity.node` values are the proof. They show two capture
 points, not one reached twice.
@@ -56592,6 +56620,26 @@ So sipnab emits **observer** vCons.
 - [The vCon design decision](design/vcon.md) records the reasoning for that position,
   including every refusal summarized further down this page.
 
+## Before you start
+
+- **A sipnab binary that carries the `vcon` feature.**
+  - The release packages without a `-noaudio` suffix carry it.
+  - The `-noaudio` packages and the static musl build do not carry it.
+  - A default source build does not carry it.
+  - [Check that the binary carries the export](#check-that-the-binary-carries-the-export)
+    shows how to tell.
+- **A capture that holds the call.** Reading a capture file needs no extra
+  rights. A live capture needs the rights that
+  [Least privilege](least-privilege.md) describes.
+- **The Call-ID of the call,** for `--export-vcon`. A run with `--report`
+  lists the Call-IDs of the capture: `sipnab -N -I call.pcap --report`.
+- **`--retain-audio` on the run,** when the container is to carry the audio.
+  Without it the `recording` Dialog Object has no `body`.
+- **No change on any other system** to write a container. sipnab reads a copy
+  of the traffic and writes a file.
+  - Delivery to a store needs a URL and a credential that the store issues:
+    see [Deliver the spool to a store](#deliver-the-spool-to-a-store).
+
 ## Produce one
 
 ### Check that the binary carries the export
@@ -56728,8 +56776,9 @@ Add `--json` for the answer `POST /v1/vcon/validate` gives:
 
 - For a signed, encrypted or gzip container, sipnab checks the unsigned vCon inside.
 - A binary without the `vcon` feature refuses the flag:
-  `--vcon-validate requires the 'vcon' feature (not compiled in)`. Every
-  release package carries the feature.
+  `--vcon-validate requires the 'vcon' feature (not compiled in)`.
+  [Before you start](#before-you-start) names the release packages that
+  carry the feature.
 - To check a whole spool before delivery, loop over it and stop at the first
   container that is not valid:
 
@@ -58382,7 +58431,8 @@ stop, such as what leaves the host over the network.
 **Before you start.**
 
 - The run writes call content with one of those writers, and serves the REST
-  API (`--api`). The `api` and `vcon` features are in every release package.
+  API (`--api`). The `api` feature is in every release package, and the
+  `vcon` feature is in the ones [Before you start](#before-you-start) names.
 - The control is `GET` and `POST /v1/persistence`. Any token the API accepts
   can use it.
 - It only narrows. A run started without any of those writers reports
@@ -59306,7 +59356,8 @@ itself. Two parts of the server help it do that in a checked order:
 
 Neither needs a flag beyond `--mcp`, and neither sends anything to a store.
 The agent, or you, hands the containers over afterwards. The run needs the
-`vcon` feature for the export, and `mcp`. Every release package carries both.
+`vcon` feature for the export, and `mcp`. Every release package carries `mcp`,
+and [Before you start](#before-you-start) names the ones that carry `vcon`.
 
 A client that shows MCP prompts offers `vcon-handoff` by name. Over the stdio
 wire, these lines ask for it and then read one container:
@@ -61033,6 +61084,22 @@ two versions of one call differ in those 12 bits alone.
 would used in the signing certificate". sipnab does not read it from
 `sign_cert`. Set `uuid_domain` to the DNS name in that certificate, or to a
 subdomain of it.
+
+## When an export does not work
+
+| Symptom | Likely cause |
+|---|---|
+| `--export-vcon needs the 'vcon' Cargo feature, which this build does not carry.`, exit 2 | The binary has no `vcon` feature. Install a release package without the `-noaudio` suffix, or build from source with the `vcon` feature |
+| `Call-ID 'nope@example.com' not found in tracked dialogs, so there is no dialog to export.`, exit 1 | The capture holds no call with that Call-ID. Run with `--report` to list the Call-IDs it holds |
+| `error: the following required arguments were not provided:` and `--export-vcon <CALL-ID>`, exit 2 | `--vcon-out` needs `--export-vcon` with the Call-ID |
+| `error: the following required arguments were not provided:` and `--export-vcon-dir <DIR>`, exit 2 | `--export-vcon-when` needs `--export-vcon-dir` with the directory to write to |
+| `--export-vcon-when is not a valid filter expression`, exit 2 | The expression does not parse. The message marks the position. [Filter language](filter-dsl.md) lists the fields and operators |
+| `Wrote 0 vCon container(s) to 'spool'.` | No call of the capture matched the expression. `state == 'Completed'` matches a call that ended with a `BYE` |
+| The `recording` Dialog Object has no `body` | The run had no `--retain-audio`, or the capture holds no RTP of the call |
+| `--vcon-validate` exits 3 | The container breaks the schema. [Check a container before a store gets it](#check-a-container-before-a-store-gets-it) reads the findings |
+
+For a container that a store refused, see
+[What it does with each container](#what-it-does-with-each-container).
 
 ## What this does not do
 
@@ -65427,6 +65494,27 @@ everywhere it appears.
 
 ## Before you start: your SIP server
 
+What you need:
+
+- a machine with Debian 13 or Ubuntu 24.04, the systems under
+  [Tested on](#tested-on),
+- `sudo` on it,
+- network access from it to the package repositories, the Docker repository
+  and GitHub.
+
+What this guide changes on each other system of your voice stack:
+
+- **The SIP server.** It gains the `siprec` module. The step "Configure
+  OpenSIPS to record every call" replaces its configuration file, or you add
+  the marked lines to your own script. From then on it opens a second SIP
+  session to the recorder for each call.
+- **rtpengine.** It sends a copy of each call's media to the recorder.
+- **Phones and carriers.** Nothing changes on them.
+- **A separate machine for the vCon server,** when you use one. It gets
+  Docker and the vCon server, and port 8000 on it accepts the recorder's
+  posts. [Put the parts on different machines](#put-the-parts-on-different-machines)
+  has the steps.
+
 Find your case, and follow the steps it names:
 
 - **No SIP server yet.** Follow every step.
@@ -66100,7 +66188,7 @@ sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -tim
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 At the end SIPp's statistics screen shows `Successful call` at 1.
 
-## Find the call's vCon
+## Check that the call's vCon is in the store
 
 When the call ends, the recorder builds the vCon and posts it. Its log names
 the vCon's UUID:
@@ -66284,9 +66372,9 @@ grep -n 'url:' config.yaml
 docker compose up -d --force-recreate
 ```
 
-"Place a test call" and "Find the call's vCon" then work as written.
+"Place a test call" and "Check that the call's vCon is in the store" then work as written.
 
-- Run the database query from "Find the call's vCon" on the vCon server's
+- Run the database query from "Check that the call's vCon is in the store" on the vCon server's
   machine.
 - Port 8000 on it is now reachable from the network. So allow it only from
   the machines that post vCons.
@@ -66353,6 +66441,29 @@ With Kamailio, this is how a vCon server gets vCons at all.
 - Kamailio has no SIPREC module to record with, as
   [the vCon server guide](vcon-server.md#with-kamailio-a-gap) explains.
 - [With Kamailio](#with-kamailio) says what changes.
+
+## Before you start
+
+- **A running vcon-server,** set up as
+  [Add a vCon server to an OpenSIPS voice stack](vcon-server.md) sets it up,
+  with its configuration in `/opt/vcon/config.yml`.
+- **`sudo` on the machine that runs sipnab,** with `curl` and `python3`. The
+  install steps use all three.
+- **A capture point that sees the calls:** the SIP port, and the media ports
+  when the vCons are to carry audio.
+- **A sipnab release package without the `-noaudio` suffix.** The install
+  step fetches `sipnab_<version>_amd64.deb`, which carries the `vcon` feature.
+  The `-noaudio` packages do not carry it. `sipnab --version` lists the
+  features of a binary.
+- **A change on one other system, the vCon server.** The first step adds to
+  its `config.yml`:
+  - an ingress list named `sipnab`, with its own key,
+  - a link that tags each vCon,
+  - a table, `vcons_observed`.
+
+  It then restarts the server's `conserver` and `api` containers. The
+  recorder's settings stay as they are.
+- **No change on the SIP server.** sipnab reads a copy of the traffic.
 
 ## Keep recorded and observed vCons apart
 
@@ -66579,7 +66690,7 @@ What the forwarder does with each file:
 | another `4xx` | moves the file to `rejected/` in the directory, for a person to read |
 | `5xx`, or no answer | keeps the file and tries again five seconds later |
 
-## Place a call and find its vCon
+## Check that a call's vCon reaches the server
 
 Place the test call from the vCon server guide. After about ten seconds:
 
@@ -66793,7 +66904,7 @@ captures.
   it up.
 - Place that guide's test call, as its section
   [Place a test call](rtpengine-relay.md#place-a-test-call) shows.
-- Then run the commands of this guide's step "Place a call and find its vCon".
+- Then run the commands of this guide's step "Check that a call's vCon reaches the server".
 
 The test call makes one vCon, not two. With no recorder, there is no SIPREC
 session for sipnab to see.
@@ -66916,6 +67027,21 @@ describes.
 
 The forwarder sends each container byte for byte: it does not change what
 sipnab wrote.
+
+## Before you start
+
+- **A sipnab binary that carries the `vcon` feature.** The exporter, the
+  forwarder and the fetcher are part of it. `sipnab --version` lists the
+  features of a binary. The `-noaudio` release packages and the static musl
+  build do not carry it.
+- **A capture file that holds the calls to send.**
+- **A token from the other system, vcon.store.** The steps call it
+  `$VCON_STORE_TOKEN`. Nothing else changes on vcon.store until the forwarder
+  sends a container.
+- **HTTPS from this machine to `api.vcon.store`.**
+- **A decision on what may leave the machine.**
+  [Before you send anything](#before-you-send-anything) lists what a
+  container carries.
 
 ## What this page's check covered
 
@@ -67068,7 +67194,7 @@ With `--vcon-forward-once`, the exit status is:
 
 Without `--vcon-forward-once`, the forwarder polls the spool until you stop it.
 
-## Check what the store accepted and refused
+## Check that the store accepted each container
 
 A container the store refused is in `spool/failed`, with a `.error.json`
 record beside it that holds the store's answer. To read the counts and those
@@ -67078,7 +67204,16 @@ answers without sending anything:
 sipnab --vcon-spool-status spool
 ```
 
-It prints one JSON document. After one delivery and one refusal, it reads:
+It prints one JSON document. The delivery worked when:
+
+- `pending` is `0`: no container is still waiting in `spool`,
+- `failed` is `0`: the store refused none,
+- `delivered` is the number of containers the export wrote.
+
+Before the forwarder runs, the same command shows each written container
+under `pending`.
+
+After one delivery and one refusal, it reads:
 
 ```json
 {
@@ -79666,6 +79801,7 @@ probe run labels each dialog `uprobe:<process>/<pid>`.
 | `sipnab could not decrypt 2 TLS application-data record(s): it holds no key material for any session in this capture` (the number varies) | The key log is empty or holds no key line. Check that the key source attached to the TLS library and the process the daemon uses, and that it started before the connection opened |
 | `sipnab loaded 1 keylog line(s) and built no session from any of them` (the numbers vary), then `No key in the key log belongs to a handshake in this capture` | The capture holds the handshake, and the key log comes from other connections: another process, another run, or a log rotated after these connections began. sipnab prints the remedy: `Use the key log that the endpoint of these connections wrote during this capture.` |
 | `sipnab loaded 1 keylog line(s) and built no session from any of them`, then `The handshake is missing: this capture holds no ClientHello and no ServerHello.` | The capture started after the connection opened. For TLS 1.2, restart the connection while the capture runs. For TLS 1.3, use a key log that holds both traffic secret lines of the connection |
+| `capture quality: 2 hole(s) in TCP streams` (the number varies), with `reading resumed at the next SIP message or TLS record behind each` | The capture point missed packets of a TCP connection. sipnab resumes at the next TLS record behind each hole and decrypts from there. A message that lay in a hole is not in the output. Capture closer to the traffic, or with a larger buffer ([Tuning capture](tuning-capture.md)) |
 | `Failed to load --keylog <path>:` with `No such file or directory`, exit 1 | The path is wrong, or the user that runs sipnab cannot reach the file |
 | `Permission denied attaching TLS probes (--uprobe-tls).`, exit 1 | sipnab was not `root` when it attached. Run it with `sudo`. `sipnab --setup-caps` grants the rights for a capture on an interface, and they do not cover a probe |
 | `--uprobe-list` finds no TLS library | It reads `/proc/<pid>/maps`, and an unprivileged run sees only its own processes. Re-run with `sudo` |

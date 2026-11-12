@@ -6271,9 +6271,9 @@ Part of the capture-quality summary. `{intact_undecodable}` frames arrived compl
 
 **Exit code:** None. This is a warning, and the run continues.
 
-### `{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the capture never held, were skipped: reading resumed at the next SIP message behind each, and a message the hole cut is lost (packets the capture point missed)`
+### `{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the capture never held, were skipped: reading resumed at the next SIP message or TLS record behind each, and a message the hole cut is lost (packets the capture point missed)`
 
-Part of the capture-quality summary. TCP streams had `{holes}` gaps, totaling `{hole_bytes}` bytes, that the capture never contained. sipnab skipped each gap and resumed reading at the next SIP message after it. A SIP message that a gap cuts through goes missing from the analysis.
+Part of the capture-quality summary. TCP streams had `{holes}` gaps, totaling `{hole_bytes}` bytes, that the capture never contained. sipnab skipped each gap and resumed reading at the next SIP message after it, or, in a build with the `tls` feature, at the next TLS record. A SIP message that a gap cuts through goes missing from the analysis.
 
 **What to do:** Capture closer to the traffic, or with a larger buffer, so that the capture point does not miss packets.
 

@@ -1270,7 +1270,41 @@ pub struct PacketProcessor {
     /// truncated to `n` bytes before upper-layer parsing — the snap-length
     /// "look at only the first N bytes" cap, independent of the capture snaplen.
     parse_limit: Option<usize>,
+    /// TCP stream directions that resumed behind a hole the capture never
+    /// held, since [`PacketProcessor::take_resynced_streams`] last asked.
+    /// A layer above that holds a partial unit for such a direction (the tail
+    /// of a TLS record) reads this to drop it. Bounded by
+    /// [`MAX_RESYNCED_STREAMS`].
+    resynced_streams: Vec<(std::net::SocketAddr, std::net::SocketAddr)>,
 }
+
+/// Whether a TCP payload opens a unit that a stream blocked by a hole may
+/// resume at (see [`TcpReassembler::with_resync`]): a SIP message, or, in a
+/// build with the `tls` feature, a TLS record.
+///
+/// A stream used to resume at a SIP message only. A TLS stream with a hole
+/// then held every record behind it to the end of the run: none reached the
+/// decryptor, none was counted, and the run ended with "No SIP traffic
+/// found." over a capture whose records its key log could open.
+fn opens_stream_unit(data: &[u8]) -> bool {
+    if crate::sip::parser::starts_sip_message(data) {
+        return true;
+    }
+    #[cfg(feature = "tls")]
+    {
+        tls::opens_record(data)
+    }
+    #[cfg(not(feature = "tls"))]
+    {
+        false
+    }
+}
+
+/// How many resumed directions [`PacketProcessor`] remembers between two
+/// calls of [`PacketProcessor::take_resynced_streams`]. A caller that never
+/// asks (a library user with no TLS layer) pays this much and no more; the
+/// oldest entry is dropped first.
+const MAX_RESYNCED_STREAMS: usize = 1024;
 
 /// Default reassembly session cap (matches the reassemblers' default).
 const DEFAULT_MAX_SESSIONS: usize = 10_000;
@@ -1336,14 +1370,24 @@ impl PacketProcessor {
     pub fn new() -> Self {
         Self {
             fragment_reassembler: FragmentReassembler::new(),
-            tcp_reassembler: TcpReassembler::new()
-                .with_resync(crate::sip::parser::starts_sip_message),
+            tcp_reassembler: TcpReassembler::new().with_resync(opens_stream_unit),
             tcp_sip_leftover: indexmap::IndexMap::default(),
             max_sessions: DEFAULT_MAX_SESSIONS,
             sctp_reassembler: parse::SctpReassembler::new(),
             reassembly: true,
             parse_limit: None,
+            resynced_streams: Vec::new(),
         }
+    }
+
+    /// The TCP stream directions, as `(source, destination)`, that resumed
+    /// behind a hole since the last call, oldest first. The list is emptied.
+    ///
+    /// Call it after [`Self::process`] and after [`Self::finish`], before
+    /// reading the packets either returned: a partial unit held above this
+    /// layer for such a direction lost its continuation in the hole.
+    pub fn take_resynced_streams(&mut self) -> Vec<(std::net::SocketAddr, std::net::SocketAddr)> {
+        std::mem::take(&mut self.resynced_streams)
     }
 
     /// Builder: enable or disable IP-fragment / TCP-segment reassembly
@@ -1373,12 +1417,13 @@ impl PacketProcessor {
                 max_sessions,
                 reassembly::reassembly_ttl(),
             )
-            .with_resync(crate::sip::parser::starts_sip_message),
+            .with_resync(opens_stream_unit),
             tcp_sip_leftover: indexmap::IndexMap::default(),
             max_sessions,
             sctp_reassembler: parse::SctpReassembler::with_max_streams(max_sessions),
             reassembly: true,
             parse_limit: None,
+            resynced_streams: Vec::new(),
         }
     }
 
@@ -1606,6 +1651,16 @@ impl PacketProcessor {
         smallvec![parsed]
     }
 
+    /// Record that the `(src, dst)` direction resumed behind a hole, for
+    /// [`Self::take_resynced_streams`]. At [`MAX_RESYNCED_STREAMS`] entries
+    /// the oldest is dropped.
+    fn remember_resynced(&mut self, src: std::net::SocketAddr, dst: std::net::SocketAddr) {
+        if self.resynced_streams.len() >= MAX_RESYNCED_STREAMS {
+            self.resynced_streams.remove(0);
+        }
+        self.resynced_streams.push((src, dst));
+    }
+
     /// TCP arm of `process_inner`: feed the segment (fresh from capture or an
     /// IP-reassembled datagram with recovered seq/flags) into the TCP
     /// reassembler, then frame the flushed byte stream into individual SIP
@@ -1639,6 +1694,7 @@ impl PacketProcessor {
         // it must not be glued onto the message the stream resumed at.
         if self.tcp_reassembler.take_resync(src, dst) {
             self.tcp_sip_leftover.shift_remove(&key);
+            self.remember_resynced(src, dst);
         }
 
         // Prepend any partial message held from a previous flush.
@@ -1722,6 +1778,7 @@ impl PacketProcessor {
             let dst = std::net::SocketAddr::new(template.dst_addr, template.dst_port);
             // The partial held for this direction lost its continuation.
             self.tcp_sip_leftover.shift_remove(&(src, dst));
+            self.remember_resynced(src, dst);
             if !crate::sip::is_sip_message(&data) {
                 let mut p = template;
                 p.payload = bytes::Bytes::from(data);
@@ -2393,6 +2450,179 @@ mod tests {
                 String::from_utf8_lossy(bye).into_owned()
             ],
             "both messages after the hole, and nothing of the lost INVITE"
+        );
+        Ok(())
+    }
+
+    /// One TLS record of the given content type and payload.
+    #[cfg(feature = "tls")]
+    fn tls_record(content_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut record = vec![content_type, 0x03, 0x03];
+        record.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        record.extend_from_slice(payload);
+        record
+    }
+
+    /// The direction every `tcp_frame` travels.
+    #[cfg(feature = "tls")]
+    fn frame_direction() -> Result<(std::net::SocketAddr, std::net::SocketAddr), TestError> {
+        Ok(("127.0.0.1:5230".parse()?, "127.0.0.2:5060".parse()?))
+    }
+
+    /// A segment the capture never held splits a TLS stream. The records
+    /// behind the hole come out, and the direction is reported as resumed so
+    /// the TLS layer drops the tail it holds. Before this, a stream resumed
+    /// only at a SIP message, so every TLS record behind a hole stayed held
+    /// and the run read none of them.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn tls_records_after_a_hole_in_the_capture_are_delivered() -> Result<(), TestError> {
+        let mut proc = PacketProcessor::new();
+        let before = tls_record(23, &[0x11; 40]);
+        let delivered = proc.process(&tcp_frame(&before, 1, true, false));
+        assert_eq!(
+            delivered.len(),
+            1,
+            "the record before the hole is delivered"
+        );
+        assert!(
+            proc.take_resynced_streams().is_empty(),
+            "no hole so far, so no direction resumed"
+        );
+        let first = tls_record(23, &[0x22; 40]);
+        let second = tls_record(23, &[0x33; 40]);
+        let at = 1 + before.len() as u32 + 500;
+        assert!(
+            proc.process(&tcp_frame(&first, at, true, false)).is_empty(),
+            "held: one packet behind a hole could still be a reordering"
+        );
+        let out = proc.process(&tcp_frame(&second, at + first.len() as u32, true, false));
+        let bytes: Vec<u8> = out.iter().flat_map(|p| p.payload.to_vec()).collect();
+        let mut expected = first.clone();
+        expected.extend_from_slice(&second);
+        assert_eq!(bytes, expected, "both records behind the hole, in order");
+        assert_eq!(
+            proc.take_resynced_streams(),
+            vec![frame_direction()?],
+            "the direction that resumed is reported once"
+        );
+        assert!(
+            proc.take_resynced_streams().is_empty(),
+            "and the report is emptied by reading it"
+        );
+        Ok(())
+    }
+
+    /// When the record behind a hole is the last thing its direction sends,
+    /// the end of the capture releases it, and reports the direction.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn the_end_of_the_capture_releases_a_tls_record_held_behind_a_hole() -> Result<(), TestError> {
+        let mut proc = PacketProcessor::new();
+        let before = tls_record(22, &[0x11; 40]);
+        assert_eq!(
+            proc.process(&tcp_frame(&before, 1, true, false)).len(),
+            1,
+            "the record before the hole is delivered"
+        );
+        let last = tls_record(23, &[0x44; 64]);
+        let at = 1 + before.len() as u32 + 700;
+        assert!(
+            proc.process(&tcp_frame(&last, at, true, false)).is_empty(),
+            "held until the end of the capture"
+        );
+        let released = proc.finish();
+        assert_eq!(released.len(), 1, "the record behind the hole");
+        assert_eq!(&released[0].payload[..], &last[..], "its bytes, whole");
+        assert_eq!(
+            proc.take_resynced_streams(),
+            vec![frame_direction()?],
+            "the end of the capture reports the direction too"
+        );
+        assert!(proc.finish().is_empty(), "released once");
+        Ok(())
+    }
+
+    /// Bytes behind a hole that open neither a SIP message nor a TLS record
+    /// are the middle of something: they stay held, during the capture and
+    /// at its end, and no direction is reported.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn bytes_behind_a_hole_that_open_nothing_stay_held() -> Result<(), TestError> {
+        let mut proc = PacketProcessor::new();
+        let before = tls_record(23, &[0x11; 40]);
+        assert_eq!(
+            proc.process(&tcp_frame(&before, 1, true, false)).len(),
+            1,
+            "the record before the hole is delivered"
+        );
+        let middle = [0xEEu8; 80];
+        let at = 1 + before.len() as u32 + 500;
+        assert!(
+            proc.process(&tcp_frame(&middle, at, true, false))
+                .is_empty(),
+            "the middle of a record is held"
+        );
+        assert!(
+            proc.process(&tcp_frame(&middle, at + 80, true, false))
+                .is_empty(),
+            "and stays held when more of it arrives"
+        );
+        assert!(proc.finish().is_empty(), "the end releases nothing");
+        assert!(
+            proc.take_resynced_streams().is_empty(),
+            "no direction resumed"
+        );
+        Ok(())
+    }
+
+    /// A SIP stream that resumes behind a hole is reported as well: the
+    /// report is about the TCP stream, whatever it carries.
+    #[test]
+    fn a_sip_stream_that_resumes_behind_a_hole_is_reported() -> Result<(), TestError> {
+        let mut proc = PacketProcessor::new();
+        let head = b"INVITE sip:b@x SIP/2.0\r\nCall-ID: lost\r\nContent-Length: 0\r\n";
+        assert!(
+            proc.process(&tcp_frame(head, 1, true, false)).is_empty(),
+            "held partial"
+        );
+        let ok = b"SIP/2.0 100 Trying\r\nCall-ID: kept\r\nContent-Length: 0\r\n\r\n";
+        let at = 1 + head.len() as u32 + 300;
+        let _ = proc.process(&tcp_frame(ok, at, true, false));
+        let bye = b"BYE sip:b@x SIP/2.0\r\nCall-ID: kept\r\nContent-Length: 0\r\n\r\n";
+        let _ = proc.process(&tcp_frame(bye, at + ok.len() as u32, true, false));
+        assert_eq!(
+            proc.take_resynced_streams().len(),
+            1,
+            "one direction resumed behind one hole"
+        );
+        Ok(())
+    }
+
+    /// A caller that never reads the report does not grow it without bound.
+    #[test]
+    fn the_report_of_resumed_directions_is_bounded() -> Result<(), TestError> {
+        let mut proc = PacketProcessor::new();
+        let ok = b"SIP/2.0 100 Trying\r\nCall-ID: kept\r\nContent-Length: 0\r\n\r\n";
+        let mut seq = 1u32;
+        for _ in 0..(MAX_RESYNCED_STREAMS + 8) {
+            // Each round: a message, a hole, a message, and one more packet
+            // to show the hole is not a reordering.
+            let _ = proc.process(&tcp_frame(ok, seq, true, false));
+            seq += ok.len() as u32 + 100;
+            let _ = proc.process(&tcp_frame(ok, seq, true, false));
+            seq += ok.len() as u32;
+            let _ = proc.process(&tcp_frame(ok, seq, true, false));
+            seq += ok.len() as u32;
+        }
+        let reported = proc.take_resynced_streams().len();
+        assert!(
+            reported > 0,
+            "holes were skipped, so directions were reported"
+        );
+        assert!(
+            reported <= MAX_RESYNCED_STREAMS,
+            "at most {MAX_RESYNCED_STREAMS} entries are kept, found {reported}"
         );
         Ok(())
     }

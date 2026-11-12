@@ -1828,7 +1828,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2609 -> 2620 (fleet history store): +11, each to or inside fleet.md's
     // "Keep call history at the center": install.md +6 (the build table's
     // musl and -noaudio rows), fleet.md +3, cli-reference.md +1, errors.md +1.
-    const EXPECTED_WIKI_LINKS: usize = 2620;
+    // 2620 -> 2637 (DOCS-HOWTO-GAP, sixth batch, +17): vcon.md +9 (three in
+    // "Before you start", three links to that section, three in its table of
+    // export failures), vcon-harness.md +3 and vcon-server.md +2 (their
+    // prerequisites), vcon-store.md +1 and vcon-sipnab.md +1 (their
+    // prerequisites), tls-capture.md +1 (the row for holes in TCP streams).
+    const EXPECTED_WIKI_LINKS: usize = 2637;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
