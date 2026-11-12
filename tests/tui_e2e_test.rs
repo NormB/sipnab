@@ -107,11 +107,18 @@ mod tui_e2e {
             }
         }
 
-        /// Wait up to `within` for the process to end.
+        /// Wait up to `within` for the process to end. One that has not is
+        /// described on standard error ([`describe_process`]) before this
+        /// returns `false`, while it is still in the state that kept it.
         fn ended_within(&self, within: Duration) -> bool {
             let deadline = Instant::now() + within;
             while self.running() {
                 if Instant::now() >= deadline {
+                    eprintln!(
+                        "still running after {} s: {}",
+                        within.as_secs(),
+                        describe_process(self.pid)
+                    );
                     return false;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -157,6 +164,98 @@ mod tui_e2e {
             let (state, start) = text.trim().split_once(char::is_whitespace)?;
             Some((state.chars().next()?, start.trim().to_string()))
         }
+    }
+
+    /// The first `max` lines of `text`, then a count of the lines left out.
+    fn first_lines(text: &str, max: usize) -> String {
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.len() <= max {
+            return lines.join("\n");
+        }
+        format!(
+            "{}\n({} more lines)",
+            lines[..max].join("\n"),
+            lines.len() - max
+        )
+    }
+
+    /// What `pid` is doing, for the output of a test that gave up waiting
+    /// for it to end: its state, CPU time, elapsed time and command from
+    /// `ps`, then each thread's name and state on Linux, and on macOS the
+    /// call graphs `sample` takes over one second. CPU time that grows with
+    /// the elapsed time is a busy loop; CPU time that stands still is a
+    /// blocked call, and the call graph names it.
+    fn describe_process(pid: libc::pid_t) -> String {
+        let ps = Command::new("ps")
+            .args(["-o", "stat=,time=,etime=,command=", "-p", &pid.to_string()])
+            .output();
+        let line = match ps {
+            Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            Err(e) => format!("ps did not run: {e}"),
+        };
+        if line.is_empty() {
+            return format!("pid {pid}: no such process");
+        }
+        format!(
+            "pid {pid}: state, CPU time, elapsed time, command: {line}{}",
+            platform_detail(pid)
+        )
+    }
+
+    /// Linux: each thread of `pid` with its state, from `/proc/<pid>/task`.
+    #[cfg(target_os = "linux")]
+    fn platform_detail(pid: libc::pid_t) -> String {
+        let mut threads: Vec<(u64, String)> = Vec::new();
+        if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
+            for task in tasks.flatten() {
+                let Ok(stat) = std::fs::read_to_string(task.path().join("stat")) else {
+                    continue;
+                };
+                // `tid (name) state ...`: the name may hold spaces.
+                let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else {
+                    continue;
+                };
+                let tid = stat[..open].trim().parse().unwrap_or(0);
+                let state = stat[close + 1..].split_whitespace().next().unwrap_or("?");
+                threads.push((tid, format!("\n  {} {state}", &stat[open + 1..close])));
+            }
+        }
+        threads.sort();
+        let lines: String = threads.into_iter().map(|(_tid, line)| line).collect();
+        format!("\nthreads (name, state):{lines}")
+    }
+
+    /// macOS: the call graphs `sample` takes of `pid` over one second, its
+    /// first 200 lines, or what `sample` said when it wrote no report.
+    #[cfg(target_os = "macos")]
+    fn platform_detail(pid: libc::pid_t) -> String {
+        let text = match tempfile::tempdir() {
+            Ok(dir) => {
+                let file = dir.path().join("sample.txt");
+                let ran = Command::new("sample")
+                    .args([&pid.to_string(), "1", "-mayDie", "-file"])
+                    .arg(&file)
+                    .output();
+                match ran {
+                    Ok(out) => std::fs::read_to_string(&file).unwrap_or_else(|e| {
+                        format!(
+                            "no report ({e}); sample said: {}{}",
+                            String::from_utf8_lossy(&out.stdout),
+                            String::from_utf8_lossy(&out.stderr)
+                        )
+                    }),
+                    Err(e) => format!("sample did not run: {e}"),
+                }
+            }
+            Err(e) => format!("no directory for the report: {e}"),
+        };
+        format!("\nsample:\n{}", first_lines(&text, 200))
+    }
+
+    /// Other systems: `ps` is all there is.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn platform_detail(_pid: libc::pid_t) -> String {
+        String::new()
     }
 
     /// How long sipnab has to end on its own once its tmux server is gone.
@@ -558,6 +657,61 @@ mod tui_e2e {
             SIPNAB_END_TIMEOUT.as_secs()
         );
         Ok(())
+    }
+
+    /// A process the harness gives up waiting for is described first: its
+    /// state, CPU time and command. On 2026-11-12 a sipnab outlived its
+    /// SIGKILLed tmux server by 30 s on a macOS runner, and the log said only
+    /// that it was still running (MACOS-TUI-NOT-ENDING-AFTER-TMUX-KILL).
+    #[test]
+    fn a_process_that_did_not_end_is_described() -> Result<(), TestError> {
+        let mut victim = Command::new("sleep").arg("600").tied_to_test().spawn()?;
+        let pid = libc::pid_t::try_from(victim.id())?;
+        let report = describe_process(pid);
+        victim.kill()?;
+        victim.wait()?;
+        assert!(
+            report.starts_with(&format!("pid {pid}: ")),
+            "the report does not open with the pid: {report}"
+        );
+        assert!(
+            report.contains("sleep 600"),
+            "the report does not hold the command: {report}"
+        );
+        assert!(
+            report.contains("state, CPU time, elapsed time, command:"),
+            "the report does not say what its fields are: {report}"
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            report.contains("\nsample:\n"),
+            "on macOS the report holds what `sample` gave: {report}"
+        );
+        #[cfg(target_os = "linux")]
+        assert!(
+            report.contains("\nthreads (name, state):\n  sleep S"),
+            "on Linux the report lists each thread with its state: {report}"
+        );
+        let after = describe_process(pid);
+        assert_eq!(
+            after,
+            format!("pid {pid}: no such process"),
+            "a reaped process is reported as gone"
+        );
+        Ok(())
+    }
+
+    /// The first `max` lines of a tool's output are kept, with a count of
+    /// the rest, so a long `sample` report cannot bury the test's message.
+    #[test]
+    fn a_long_report_is_cut_with_a_count() {
+        assert_eq!(first_lines("a\nb\nc", 3), "a\nb\nc", "three of three");
+        assert_eq!(
+            first_lines("a\nb\nc\nd\ne", 2),
+            "a\nb\n(3 more lines)",
+            "two of five"
+        );
+        assert_eq!(first_lines("", 2), "", "nothing to cut");
     }
 
     /// A tmux server SIGKILLed outright, as when the test dies: sipnab ends

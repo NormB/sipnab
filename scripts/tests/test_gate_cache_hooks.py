@@ -612,8 +612,11 @@ def pp(tmp_path):
     (tree / "docs/a.md").write_text("# A\n")
     shutil.copy(PRE_PUSH, tree / ".githooks/pre-push")
     for name in ("gate-cache.py", "check-hook-prerequisites.py", "fetch-g729-vectors.py",
-                 "parallel-tests.py", "check-rustfmt.sh", "tag-push-proof.py"):
+                 "parallel-tests.py", "check-rustfmt.sh", "tag-push-proof.py", "check-feature-matrix.py"):
         shutil.copy(REPO / "scripts" / name, tree / "scripts" / name)
+    # One row of the feature matrix is marked for the hook, one is not.
+    (tree / ".github").mkdir()
+    (tree / ".github/feature-combos.txt").write_text("tls,api hook\napi\n")
     shutil.copy(REPO / ".rustfmt-toolchain", tree / ".rustfmt-toolchain")
     log = harness / "cargo-invocations"
     stubs = {
@@ -679,7 +682,7 @@ def pp(tmp_path):
 
 
 BUILD_STEPS = ["bpf-clippy", "check-api", "check-tls", "clippy", "clippy-no-default", "cross-arch", "doc",
-               "fuzz-clippy", "non-linux", "wasm"]
+               "fuzz-clippy", "lint-tls--api", "non-linux", "wasm"]
 
 
 def push(sb, **extra):
@@ -702,6 +705,8 @@ def cargo_steps(sb):
             ran.append("bpf-clippy")
         elif args.startswith("check --no-default-features --features"):
             ran.append("check-" + args.split()[3])
+        elif args.startswith("clippy --no-default-features --features"):
+            ran.append("lint-" + args.split()[3].replace(",", "--"))
         elif args.startswith("clippy --no-default-features"):
             ran.append("clippy-no-default")
         elif args.startswith("check --target"):
@@ -777,6 +782,64 @@ def test_a_failing_build_step_is_never_skipped_on_the_same_tree(pp):
     assert rc != 0, out
     rc, out = push(pp)
     assert rc != 0 and "Push blocked: clippy" in out, out
+
+
+def test_a_marked_feature_row_is_linted_with_cis_command_and_an_unmarked_one_is_not(pp):
+    rc, out = push(pp)
+    assert rc == 0, out
+    lints = [c for c in pp.cargo() if " clippy --no-default-features --features " in c]
+    assert lints == ["crate clippy --no-default-features --features tls,api --tests -- -D warnings"], pp.cargo()
+    assert "cargo clippy --no-default-features --features tls,api --tests -- -D warnings ... OK" in out, out
+
+
+def test_a_marked_feature_row_that_fails_its_lint_blocks_the_push(pp):
+    pp.switch("fail-tls,api")
+    rc, out = push(pp)
+    assert rc != 0 and "Push blocked: the feature set tls,api does not pass clippy." in out, out
+    assert "    cargo clippy --no-default-features --features tls,api --tests -- -D warnings" in out, out
+    # The steps before it keep their stamps; the row has none, and runs again.
+    assert "cross-arch" in pp.stamps() and "lint-tls--api" not in pp.stamps(), pp.stamps()
+    rc, out = push(pp)
+    assert rc != 0 and "Push blocked: the feature set tls,api does not pass clippy." in out, out
+    pp.unswitch("fail-tls,api")
+    rc, out = push(pp)
+    assert rc == 0, out
+    assert "lint-tls--api" in cargo_steps(pp) and "cross-arch" not in cargo_steps(pp), pp.cargo()
+    assert "lint-tls--api" in pp.stamps(), pp.stamps()
+
+
+def test_marking_another_feature_row_lints_it_on_the_next_push(pp):
+    push(pp)
+    (pp.tree / ".github/feature-combos.txt").write_text("tls,api hook\napi hook\n")
+    git(pp.tree, "commit", "-qam", "mark api")
+    rc, out = push(pp)
+    assert rc == 0, out
+    assert {"lint-tls--api", "lint-api"} <= set(cargo_steps(pp)), pp.cargo()
+    assert {"lint-tls--api", "lint-api"} <= set(pp.stamps()), pp.stamps()
+
+
+def test_a_feature_matrix_with_no_marked_row_lints_none(pp):
+    (pp.tree / ".github/feature-combos.txt").write_text("tls,api\napi\n")
+    git(pp.tree, "commit", "-qam", "unmark")
+    rc, out = push(pp)
+    assert rc == 0, out
+    assert not [s for s in cargo_steps(pp) if s.startswith("lint-")], pp.cargo()
+
+
+def test_a_crate_without_a_feature_matrix_lints_no_row(pp):
+    git(pp.tree, "rm", "-q", ".github/feature-combos.txt")
+    git(pp.tree, "commit", "-qm", "no matrix")
+    rc, out = push(pp)
+    assert rc == 0, out
+    assert not [s for s in cargo_steps(pp) if s.startswith("lint-")], pp.cargo()
+
+
+def test_a_feature_matrix_the_script_cannot_read_blocks_the_push(pp):
+    (pp.tree / ".github/feature-combos.txt").write_text("tls,api hook hook\n")
+    git(pp.tree, "commit", "-qam", "malformed")
+    rc, out = push(pp)
+    assert rc != 0 and "Push blocked: .github/feature-combos.txt could not be read." in out, out
+    assert "line 1" in out, out
 
 
 def test_the_hook_notices_a_finished_suite_within_about_a_second(pc):

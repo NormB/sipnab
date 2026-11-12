@@ -601,6 +601,55 @@ fn sigterm_stops_a_tui_on_split_terminals_and_restores_the_output() -> Result<()
     Ok(())
 }
 
+/// A page of the repository with each run of white space as one space, so a
+/// sentence is found wherever the page wraps it.
+fn page_text(page: &str) -> Result<String, TestError> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(page);
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// The service page states what the tests above hold: a run on two terminals
+/// that loses either one exits 129.
+#[test]
+fn the_service_page_states_the_exit_for_either_lost_terminal() -> Result<(), TestError> {
+    let page = page_text("docs/run-as-a-service.md")?;
+    for sentence in [
+        "sipnab stops as it does for `SIGHUP` and exits 129, whether or not the signal arrives.",
+        "A run that reads one terminal and draws on another (standard output redirected to a \
+         second terminal) stops the same way and exits 129 when either of the two goes away.",
+    ] {
+        assert!(
+            page.contains(sentence),
+            "docs/run-as-a-service.md must state: {sentence}"
+        );
+    }
+    Ok(())
+}
+
+/// The two exit-code tables give 129 to a lost terminal, and do not name
+/// which terminal: the row covers the one the run reads and the one it draws
+/// on.
+#[test]
+fn the_exit_code_tables_give_129_to_a_lost_terminal() -> Result<(), TestError> {
+    for (page, row) in [
+        (
+            "docs/cli-reference.md",
+            "| `129` | Stopped by `SIGHUP`, or the terminal of a terminal interface run went away.",
+        ),
+        (
+            "docs/errors.md",
+            "| `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away.",
+        ),
+    ] {
+        assert!(
+            page_text(page)?.contains(row),
+            "{page} must hold the exit-code row that begins: {row}"
+        );
+    }
+    Ok(())
+}
+
 /// SIGTERM stops a TUI whose terminal is still there, through the UI's own
 /// exit path (the terminal is restored), and the run exits 0 as a SIGTERM
 /// stop of a batch run does.

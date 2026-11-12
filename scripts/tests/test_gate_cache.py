@@ -265,6 +265,69 @@ def test_every_step_command_is_spelled_in_its_hook():
             ), f"{hook} never asks for a {step} stamp"
 
 
+# ── The rows of the feature matrix marked `hook` ───────────────────────────
+
+ROWS = {
+    "lint-native": "cargo clippy --no-default-features --features native --tests -- -D warnings",
+    "lint-native--tui": "cargo clippy --no-default-features --features native,tui --tests -- -D warnings",
+}
+
+
+def test_a_marked_row_is_a_build_step_of_pre_push_with_its_command():
+    parts = gc.step_parts("pre-push", "lint-native", snap(rows=ROWS))
+    assert parts["reads"] == gc.BUILD and parts["command"] == ROWS["lint-native"]
+    assert "index_tree" not in parts and "head" not in parts
+
+
+def test_the_fixed_steps_keep_their_keys_when_a_row_is_marked():
+    for step in gc.STEPS["pre-push"]:
+        assert key(snap(), step, "pre-push") == key(snap(rows=ROWS), step, "pre-push"), step
+
+
+def test_two_rows_never_share_a_key():
+    assert key(snap(rows=ROWS), "lint-native", "pre-push") != key(snap(rows=ROWS), "lint-native--tui", "pre-push")
+
+
+def test_a_row_key_follows_the_source_and_not_the_documentation():
+    base = key(snap(rows=ROWS), "lint-native", "pre-push")
+    files = dict(snap().files)
+    docs = dict(files, **{"docs/fleet.md": "9" * 40})
+    source = dict(files, **{"src/lib.rs": "9" * 40})
+    assert key(snap(rows=ROWS, files=docs), "lint-native", "pre-push") == base
+    assert key(snap(rows=ROWS, files=source), "lint-native", "pre-push") != base
+
+
+def test_a_row_key_follows_the_rows_command():
+    other = dict(ROWS, **{"lint-native": ROWS["lint-native"].replace("--tests", "--lib")})
+    assert key(snap(rows=ROWS), "lint-native", "pre-push") != key(snap(rows=other), "lint-native", "pre-push")
+
+
+def test_a_row_that_is_not_marked_is_no_step():
+    with pytest.raises(KeyError):
+        gc.step_parts("pre-push", "lint-tls", snap(rows=ROWS))
+    with pytest.raises(KeyError):
+        gc.step_parts("pre-push", "lint-native", snap())
+
+
+def test_the_rows_are_steps_of_pre_push_only():
+    assert set(gc.steps_of("pre-push", snap(rows=ROWS))) == set(gc.STEPS["pre-push"]) | set(ROWS)
+    assert set(gc.steps_of("pre-commit", snap(rows=ROWS))) == set(gc.STEPS["pre-commit"])
+    with pytest.raises(KeyError):
+        gc.step_parts("pre-commit", "lint-native", snap(rows=ROWS))
+
+
+def test_a_snapshot_reads_the_rows_from_the_tree(tmp_path):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    subprocess.run(["git", "init", "-q", "."], cwd=tmp_path, env=env, check=True)
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github/feature-combos.txt").write_text("tls\nnative hook\n")
+    hook = tmp_path / ".githooks/pre-push"
+    hook.parent.mkdir()
+    hook.write_text("#!/bin/sh\n")
+    got = gc.snapshot(str(tmp_path), env, str(hook)).rows
+    assert got == {"lint-native": ROWS["lint-native"]}, got
+
+
 # ── The store ─────────────────────────────────────────────────────────────
 
 NOW = 1_800_000_000.0
