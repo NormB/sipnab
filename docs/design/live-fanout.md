@@ -1,7 +1,7 @@
 # Making `PACKET_FANOUT` reachable
 
 **Status:** WIRED. `--cores N` on a live device now asks for N capture sockets
-([`bootstrap.rs:2009`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2009)), so the "no caller" table
+([`bootstrap.rs:7435`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7435)<!-- "fanout_sockets: cli.limits_args.cores.max(1)" -->), so the "no caller" table
 row in [section 1, "What exists, and the one thing that does not"](#1-what-exists-and-the-one-thing-that-does-not)
 and the flag argument in [section 2, "The flag surface"](#2-the-flag-surface)
 are history rather than proposals. What remains open is
@@ -28,7 +28,7 @@ sentence while leaving the command is how it survives being caught once.
 
 **[Section 6](#6-ct11-measured-and-refused) is measured; nothing else on this page is.** The repo's standing caveat
 still applies to every throughput and sizing claim here —
-[`capture-tuning-tasks.md:22`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md#L22): *"Nothing on
+[`capture-tuning-tasks.md:22`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md#L22)<!-- "- Nothing on this" -->: *"Nothing on
 this page has been measured on a live NIC. Every throughput claim is reasoned
 from syscall counts and ring arithmetic. Do not upgrade a reasoned claim to a
 measured one without the measurement."* [Section 5](#5-the-experiment-and-the-result-that-means-do-not-ship) is about turning that sentence off
@@ -44,17 +44,17 @@ narrower and more interesting:
 
 | Piece | Where | State |
 |---|---|---|
-| `setsockopt(SOL_PACKET, PACKET_FANOUT, …)` | [`fanout.rs:84`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L84) | written, unit-tested, and **verified against the running kernel** by an `#[ignore]`d root test |
-| Platform split | [`fanout.rs:109`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L109) | non-Linux returns `ErrorKind::Unsupported`; the call site is unconditional so it cannot go unused (`82eb8ff`) |
-| Plan / group id | [`live.rs:194`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L194), [`:209`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L209) | pure, tested without a device |
-| Kernel probe | [`live.rs:293`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L293) | throwaway handle, so refusal is discovered once |
-| N-socket driver | `capture_live_fanout`, [`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291) | complete, joins all threads, first error wins |
-| **A caller** | [`bootstrap.rs:2009`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2009), [`native.rs:397`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L397) | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
+| `setsockopt(SOL_PACKET, PACKET_FANOUT, …)` | [`fanout.rs:86`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L86)<!-- "pub fn join_fanout_group(fd:" --> | written, unit-tested, and **verified against the running kernel** by an `#[ignore]`d root test |
+| Platform split | [`fanout.rs:111`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L111)<!-- "pub fn join_fanout_group(_fd:" --> | non-Linux returns `ErrorKind::Unsupported`; the call site is unconditional so it cannot go unused (`82eb8ff`) |
+| Plan / group id | [`live.rs:223`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L223)<!-- "pub(crate) fn plan_fanout(sockets:" -->, [`:282`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L282)<!-- "pub(crate) fn fanout_group_id()" --> | pure, tested without a device |
+| Kernel probe | [`live.rs:475`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L475)<!-- "fn probe_fanout(device:" --> | throwaway handle, so refusal is discovered once |
+| N-socket driver | `capture_live_fanout`, [`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" --> | complete, joins all threads, first error wins |
+| **A caller** | [`bootstrap.rs:7435`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7435)<!-- "fanout_sockets: cli.limits_args.cores.max(1)" -->, [`native.rs:511`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L511)<!-- "let sockets = config.fanout_sockets;" --> | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
 
 That last row is the one thing this section got to change. When the page was
 written the `Live` arm spawned exactly one thread running `capture_live`, a
 one-line wrapper passing `None` for the group
-([`live.rs:191`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L191)); CT4 replaced that call with
+([`live.rs:197`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L197)<!-- "pub fn capture_live(" -->); CT4 replaced that call with
 `capture_live_fanout` and gave it `config.fanout_sockets`. Confirmed by running
 it: `sipnab -d <veth> --cores 4` logs *"capturing on 4 sockets, fanout group
 …"*.
@@ -75,23 +75,23 @@ asked for.
 `--cores` is documented as offline-only in three places that would all become
 wrong at once, and one of them is a test that pins the *complement*:
 
-- The help text, [`cli.rs:1447-1453`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1447-L1453): *"CPU cores for OFFLINE
+- The help text, [`cli.rs:1447-1453`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/cli.rs#L1447-L1453): *"CPU cores for OFFLINE
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:8021`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8021)),
+- `cores_ignored_warning` ([`bootstrap.rs:8074`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8074)<!-- "fn cores_ignored_warning(cli:" -->),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:10010`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L10010)), which asserts the warning
+  ([`bootstrap.rs:10063`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L10063)<!-- "fn cores_warning_is_the_exact_complement_of_the_paths_that_honor_it()" -->), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
 **processing** threads with N private stores, sized per worker
 (`ParallelConfig.max_streams` / `max_dialogs`,
-[`parallel.rs:136-139`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L136-L139)). Live, as built, it would buy N
+[`parallel.rs:124-127`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L124-L127)<!-- "/// Per-worker stream-store" -->). Live, as built, it would buy N
 **capture sockets** feeding one processing thread and one pair of stores. Same
 number, different unit, different memory, different failure mode.
 
@@ -106,7 +106,7 @@ does nothing on this path — the rarest and cheapest kind of flag change.
 
 **The module already assumes it.** `capture_live_fanout`'s own fallback warning
 is written in terms of `--cores`
-([`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)): *"`--cores {sockets}` does not
+([`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" -->): *"`--cores {sockets}` does not
 widen a live capture here."* Shipping a second flag would make that message
 wrong on the day it first becomes reachable.
 
@@ -123,19 +123,19 @@ that is a log line and a help-text sentence, not a second noun.
    thread either way, live".
 2. **`cores_ignored_warning` loses its live branch and keeps its
    `--multi-device` branch.** The `--multi-device` reason
-   ([`bootstrap.rs:3044`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3044)) stays true; see [section 2.1, "The resource change nobody would expect"](#21-the-resource-change-nobody-would-expect).
+   ([`bootstrap.rs:8091`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8091)<!-- "--multi-device opens one capture per" -->) stays true; see [section 2.1, "The resource change nobody would expect"](#21-the-resource-change-nobody-would-expect).
    `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it` must be rewritten
    in the same commit, not after — it is currently the gate that would catch the
    two conditions drifting, and a half-updated complement is worse than none.
 3. **The run says what it bought.** `capture_live_fanout` already logs
    *"capturing on {sockets} sockets, fanout group {group}"*
-   ([`live.rs:256`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L256)). That line must also say that
+   ([`live.rs:373`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L373)<!-- ""'{device}': capturing on {sockets}" -->). That line must also say that
    processing stays on one thread, or the log reads as "sipnab is now using 8
    cores".
 
 `RunMode` gains nothing. Fanout is not a run mode — it is how the `Live` arm of
 `start_capture` constructs its thread. `RunMode::CoresFile`
-([`bootstrap.rs:110`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L110)) stays exactly as it is, still
+([`bootstrap.rs:121-123`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L121-L123)<!-- "/// Multi-core offline file reconstruction" -->) stays exactly as it is, still
 requiring `-I`, because it selects the *offline parallel engine*, which live
 capture is not getting.
 
@@ -143,14 +143,14 @@ capture is not getting.
 
 **`buffer_mb` is per handle.** `capture_live_group` applies
 `config.buffer_mb` to each socket it opens, and the default is 64 MiB since CT2
-(`DEFAULT_BUFFER_MB`, [`native.rs:369`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L369)). So
+(`DEFAULT_BUFFER_MB`, [`native.rs:360`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L360)<!-- "/// capture came" -->). So
 `--cores 8` on a live interface asks the kernel for **512 MiB of ring**, from a
 flag that yesterday allocated nothing.
 
 That is not an argument against the feature; N rings is the entire point. It is
 an argument that the number must appear in the log line and in the docs, because
 an operator who read `--cores` as "CPU" has no reason to expect memory. The
-buffer ladder ([`live.rs:341`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L341)) will step each
+buffer ladder ([`live.rs:673`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L673)<!-- "for (attempt, mb)" -->) will step each
 socket down rather than fail, which means the failure mode is *quiet*: eight
 sockets that each silently got less ring than asked.
 
@@ -161,20 +161,20 @@ experiment in [section 5](#5-the-experiment-and-the-result-that-means-do-not-shi
 
 ### 2.2 `--multi-device` composes badly and should stay refused
 
-`start_multi_capture` ([`native.rs:693`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L693)) already
+`start_multi_capture` ([`native.rs:687`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L687)<!-- "/// once running," -->) already
 spawns one capture thread per interface into one shared channel, with a
 coordinator thread and an aggregated readiness signal. That is the same topology
 `capture_live_fanout` builds — which is a good sign for the design and a problem
 for the combination: `--cores 4 -d eth0,eth1 --multi-device` would be eight
 capture threads and eight rings, and `fanout_group_id`
-([`live.rs:276`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L276)) derives **one group id per
+([`live.rs:282`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L282)<!-- "pub(crate) fn fanout_group_id() -> u16 {" -->) derives **one group id per
 process**, not per device.
 
 **Unverified:** whether the kernel permits sockets bound to two different
 interfaces in one fanout group, and what it does with the hash if it does. Until
 someone reads `fanout_add()` for the device check and confirms it against a
 running kernel — the same standard `fanout_applies_to_an_open_pcap_handle`
-([`fanout.rs:198`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L198)) already set for the single-device
+([`fanout.rs:198`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L198)<!-- "/// Reading kernel" -->) already set for the single-device
 claim — `--cores` with `--multi-device` must keep its existing refusal.
 
 ### 2.3 A grouped socket cannot number its own frames
@@ -202,8 +202,8 @@ speculated about.
 ## 3. What widening CAPTURE buys, exactly
 
 `capture_live_fanout` gives every socket the same `tx`
-([`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), and there is one receiver: the
-`rx.recv_timeout` at [`batch.rs:2159`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2159). So the shape is
+([`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" -->), and there is one receiver: the
+`rx.recv_timeout` at [`batch.rs:4547`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4547)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100))" -->. So the shape is
 N producers, one consumer, one pair of stores, one sweep.
 
 **It buys N rings and N drainers.** The overflow CT2 describes is per-socket:
@@ -213,7 +213,7 @@ That is the correct fix for a drainer-bound capture, and it is the only thing
 `PACKET_FANOUT` is for.
 
 **It buys nothing if the consumer is the limit.** `packet_channel`
-([`channel.rs:254`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L254)) is an unbounded data queue
+([`channel.rs:254`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L254)<!-- "/// The `(PacketTx," -->) is an unbounded data queue
 plus a bounded slot semaphore, so `send` blocks once `capacity` packets are in
 flight. When the processing loop cannot keep up, the channel saturates and the
 capture threads block in `send` — and a blocked capture thread is a thread not
@@ -228,19 +228,19 @@ distinguishable by instruments that already exist:
 |---|---|
 | `kernel_dropped` rising, queue depth low, backpressure blocks ~0 | drainer-bound — fanout is the right fix |
 | `kernel_dropped` rising, queue at capacity, backpressure blocks climbing | processor-bound — fanout buys nothing and section 4 is the only path |
-| `interface_dropped` rising | neither; the NIC discarded before libpcap, and no userspace change recovers it ([`server.rs:1717`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1717)) |
+| `interface_dropped` rising | neither; the NIC discarded before libpcap, and no userspace change recovers it ([`server.rs:3725-3726`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3725-L3726)<!-- "/// Packets the NIC or its driver discarded before libpcap saw them." -->) |
 
 `sipnab_capture_queue_depth_packets` and
 `sipnab_capture_backpressure_blocks_total`
-([`prometheus.rs:470`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L470),
-[`:482`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L482)) are the second and third rows'
+([`prometheus.rs:986`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L986)<!-- ""sipnab_capture_queue_depth_packets"," -->,
+[`:998`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L998)<!-- ""sipnab_capture_backpressure_blocks_total"," -->) are the second and third rows'
 instrument, fed from `CaptureMeter`
-([`channel.rs:68-86`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L68-L86)), and they are scrapeable
+([`channel.rs:157-175`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L157-L175)<!-- "pub fn in_flight(&self)" -->), and they are scrapeable
 from a headless run — `start_servers` is called with `metrics: true` and the
-real meter from [`batch.rs:1899-1917`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1899-L1917).
+real meter from [`batch.rs:4076-4092`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4076-L4092)<!-- "let servers = crate::app::servers::start_servers(" -->.
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
-`capture_health` MCP response ([`server.rs:9428`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9428)),
+`capture_health` MCP response ([`server.rs:9425`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9425)<!-- "pub async fn capture_health(" -->),
 carries `packets`, `kernel_dropped`, `interface_dropped`, `invalid_timestamps`
 and `undecodable_frames` — and **no queue depth and no backpressure count**. So
 the surface built for production field reports
@@ -251,7 +251,7 @@ prerequisite of any field measurement rather than a nice-to-have.
 
 ## 4. Fanning out PROCESSING is a different design, not a bigger CT4
 
-[`fanout.rs:35-43`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L35-L43) already says this, and
+[`fanout.rs:36-45`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L36-L45)<!-- "//! Fanning out PROCESSING is a different and larger change" --> already says this, and
 [`parallel.rs`](../../src/parallel.rs) says why in detail. Restating the
 constraint in the form that matters here: **the offline engine is correct because
 it has an EOF, and a live capture does not.**
@@ -260,20 +260,20 @@ Three things happen at that EOF, and none of them has a live equivalent:
 
 1. **`DialogStore::merge` reassembles proxied calls.** A call through a proxy is
    captured on two host pairs and shards to two workers
-   ([`parallel.rs:18-30`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L18-L30)) — *"in one 100 MB file of the
+   ([`parallel.rs:19-31`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L19-L31)<!-- "//! **A call's SIP" -->) — *"in one 100 MB file of the
    reference corpus 1173 of 2311 dialogs were proxied"*. Merge concatenates the
    fragments in capture-timestamp order and re-runs the state machine. Live,
    there is no moment at which a dialog is finished arriving.
 2. **`StreamStore::reassociate_all` links streams to dialogs globally**
-   ([`stream_store.rs:2799`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2799)), because SDP and RTP
+   ([`stream_store.rs:2799`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2799)<!-- "pub fn reassociate_all(&mut" -->), because SDP and RTP
    routinely land on different workers when the carrier advertises a separate
    media IP.
 3. **The merge replays the single-threaded path's idle-compaction sweeps.**
    Each reader records the packets at which its file's newest timestamp
    enters a new sweep interval (`SweepMark`,
-   [`parallel.rs:1354`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1354)), the run folds them in file order into the
+   [`parallel.rs:1354`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1354)<!-- "/// `--cores 1` sweeps" -->), the run folds them in file order into the
    sweeps `--cores 1` makes, and the dialog merge compacts each dialog at
-   them. [`parallel.rs:58-63`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L58-L63) records why compaction cannot run in a
+   them. [`parallel.rs:58-63`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L58-L63)<!-- "//! differently from" --> records why compaction cannot run in a
    worker: a worker *"only sees the packets of its own host pairs, so its
    clock can be minutes behind the capture's."* The schedule is only known
    once every file has been read, in order.
@@ -281,7 +281,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
 Point 3 transfers verbatim to a live worker pool, and it is the one that should
 stop anyone from treating this as CT4's sequel. The live loop already sweeps
 every five seconds of capture time
-([`batch.rs:2121-2131`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2121-L2131)) against one `SweepClock` fed by
+([`batch.rs:4388-4394`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4388-L4394)<!-- "/// Periodic sweep of reassembly state and idle-dialog compaction" -->) against one `SweepClock` fed by
 every packet the single receiver saw. Give each of N workers its own clock and
 the orphan/compaction verdict becomes a function of how the kernel hashed the
 flows. That is a wrong answer that renders as a normal report.
@@ -307,7 +307,7 @@ to answer is what replaces the merge's replay of a schedule known only at EOF.
 ### Instruments
 
 `KERNEL_DROPPED` / `IFACE_DROPPED`
-([`live.rs:1179`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1179)) are the loss counters;
+([`live.rs:1179`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1179)<!-- "/// Packets dropped" -->) are the loss counters;
 `sipnab_capture_queue_depth_packets` and
 `sipnab_capture_backpressure_blocks_total` are the regime discriminator
 ([section 3, "What widening CAPTURE buys, exactly"](#3-what-widening-capture-buys-exactly)).
@@ -326,7 +326,7 @@ any measurement, and either failing writes nothing:
 - **Drop-instrument calibration.** The top rung is run once with a 2 MiB ring and
   **both** `_quality_degraded == 1` and `kernel_dropped > 0` are required,
   because `pcap_stats` failure is swallowed at `debug!`
-  ([`live.rs:523`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L523)) while the default level is `info`
+  ([`live.rs:929`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L929)<!-- "Err(e) => tracing::debug!("pcap_stats" -->) while the default level is `info`
    — *"a broken stats path reports a flawless capture."* (The script cites
   `live.rs:344` for that swallow; the file has drifted and the current line is
   `:523`. The reasoning is unaffected.)
@@ -400,7 +400,7 @@ packet reaches rather than how fast it gets there.
 ### The gap CT11 names is real, and it is 70% of calls
 
 Four sockets, one `PACKET_FANOUT_HASH | ROLLOVER` group built from sipnab's own
-constant ([`fanout.rs:55`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L55)), counting per socket which
+constant ([`fanout.rs:57`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L57)<!-- "const FANOUT_HASH_WITH_ROLLOVER:" -->), counting per socket which
 call's SIP and which call's media arrived where: **140 of 200 calls had their
 SIP and their RTP on sockets with nothing in common** — 70.0%, against the 75%
 an independent uniform hash would give. The group really was demuxing rather
@@ -424,7 +424,7 @@ Two controls make that a measurement rather than a coincidence. Four sockets
 NOT in one group would each see every packet, so the `--cores 4` run would have
 reported 40 packets per stream rather than 10 and 28 messages per dialog rather
 than 7; it reported 10 and 7. And the log line naming the group and the socket
-count ([`live.rs:267`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L267)) was present, so the fanout path
+count ([`live.rs:372`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L372)<!-- "tracing::info!( "'{device}':" -->) was present, so the fanout path
 ran rather than falling back.
 
 **This is the condition CT11 sets, and it fails.** Cross-worker correlation
@@ -484,7 +484,7 @@ Two older objections still stand:
 CT11 flags as unverified that `bpf_prog_create_from_user()` contains no
 capability check beyond `SOCK_FILTER_LOCKED`. It does not, and this was checked
 the way the sibling `fanout_add()` claim was
-([`fanout.rs:198`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L198)) — by reading the source AND by
+([`fanout.rs:192-199`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L192-L199)<!-- "/// The claim this whole module rests on" -->) — by reading the source AND by
 running it, because those answer different questions.
 
 In v6.8 `net/core/filter.c`, `bpf_prog_create_from_user()` holds no `capable()`,
@@ -503,7 +503,7 @@ privilege drop" half of the entry is true, and it is the only half that is.
 
 ### If a live pool is ever built, this is not the program to write
 
-`shard_for` ([`parallel.rs:72`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L72)) hashes the ORDERED ADDRESS
+`shard_for` ([`parallel.rs:83`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L83)<!-- "pub fn shard_for(src: IpAddr, dst: IpAddr, jobs: usize) -> usize {" -->) hashes the ORDERED ADDRESS
 PAIR and nothing else — no ports. That is why the offline engine has never had
 CT11's problem: a call's SIP and its media flow between the same two addresses,
 so they shard to the same worker by construction. Reading the same corpus from
@@ -567,20 +567,20 @@ not mistake them for settled.
   cannot make `--cores 1` drop, the whole experiment relocates to a real NIC and
   the netns result is a control, not a measurement.
 - **Does `ROLLOVER` change the answer?** `FANOUT_HASH_WITH_ROLLOVER`
-  ([`fanout.rs:55`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L55)) lets a full ring spill to
+  ([`fanout.rs:55`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L55)<!-- "/// argument" -->) lets a full ring spill to
   another member. That should reduce drops and also breaks the symmetric-hash
   guarantee for the spilled packets. Harmless under capture-only fanout (one
   store), and a correctness question the moment processing is sharded. Nobody has
   measured how often rollover fires.
 - **What does `PACKET_FANOUT` do on the `any` pseudo-device?**
   `join_fanout_group`'s doc names `any` as a possible `ENOPROTOOPT` source
-  ([`fanout.rs:75-76`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L75-L76)) but marks it "on some
+  ([`fanout.rs:77-78`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L77-L78)<!-- "/// * `ENOPROTOOPT`" -->) but marks it "on some
   kernels". The zero-argument default sniffs all interfaces via `any`
-  ([`cli.rs:348-349`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L348-L349)), so this is the *default* invocation,
-  not an edge case. The probe at [`live.rs:293`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L293) will
+  ([`cli.rs:987-988`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L987-L988)<!-- "/// interface. Without" -->), so this is the *default* invocation,
+  not an edge case. The probe at [`live.rs:475`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L475)<!-- "fn probe_fanout(device:" --> will
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:7411`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7411)) returns true only for the
+  ([`bootstrap.rs:7464`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7464)<!-- "fn immediate_mode_for(mode:" -->) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

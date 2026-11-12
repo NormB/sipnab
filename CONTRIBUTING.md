@@ -909,8 +909,8 @@ request when a crate breaks one.
 - **It has no open security advisory.**
   - The advisories come from the [RustSec database](https://rustsec.org/).
   - The project accepts an advisory that does not apply to sipnab only with a
-    written reason. The one `rsa` exception in [`deny.toml`](deny.toml) shows
-    this.
+    written reason, next to the entry in [`deny.toml`](deny.toml) or
+    [`osv-scanner.toml`](osv-scanner.toml).
 
 The reviewer checks the rest:
 
@@ -961,8 +961,8 @@ push. Install the tools once with `cargo install cargo-audit cargo-deny`.
 
 ```bash
 # Run all of these, in order.
-cargo audit --ignore RUSTSEC-2023-0071
-cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
+cargo audit
+cargo audit --file fuzz/Cargo.lock
 cargo deny check
 python3 scripts/check-lockfile-drift.py
 ```

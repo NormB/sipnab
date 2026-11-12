@@ -197,11 +197,11 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError::arg(refusal)",
-      "count": 1,
+      "count": 2,
       "carries": [
         "sipnab opens all {files} input file(s) before it drops root privileges or chroots, beside {SET_FD_RESERVE} descriptors of its own, and this process may hold at most {hard} open files. Raise the limit (ulimit -n), read fewer files per run, or run as an ordinary user, which opens each file when it is read."
       ],
-      "why": "fit_set_under_open_file_limit returns set_fd_budget's one format! literal."
+      "why": "fit_set_under_open_file_limit returns set_fd_budget's one format! literal. The second occurrence is refuse_unusable_requests: Cli::hep_side_flags_problem in src/cli.rs (out of this file), whose two format! literals have their own entries on docs/errors.md."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -535,6 +535,13 @@
       "count": 2,
       "carries": [],
       "why": "One occurrence is src/capture/bpf_filter.rs::forgot_input_flag (out of scope); the other is capture_source_capacity_refusal in bootstrap.rs."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::arg(e)",
+      "count": 1,
+      "carries": [],
+      "why": "plan_hep_source in bootstrap.rs: the message of src/capture/hep.rs::enforce_hep_bind_policy (out of scope) when the listener's address came from --hep-listen. When it came from [hep] listen the format! literal beside it wraps the same message."
     },
     {
       "file": "src/app/bootstrap.rs",

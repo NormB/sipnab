@@ -200,8 +200,8 @@ fn local_commands_are_the_ci_commands() -> Result<(), TestError> {
     let s = section()?;
     let ci = read(".github/workflows/ci.yml")?;
     let cmds = [
-        "cargo audit --ignore RUSTSEC-2023-0071",
-        "cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071",
+        "cargo audit",
+        "cargo audit --file fuzz/Cargo.lock",
         "cargo deny check",
     ];
     for c in cmds {

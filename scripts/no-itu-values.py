@@ -41,10 +41,13 @@ import argparse
 import os
 import pathlib
 import struct
-import subprocess
 import sys
 import tarfile
 import zipfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from lib_tracked import ls_files  # noqa: E402
 
 RUN = 6
 MAGIC = b"G729TBL\0"
@@ -200,13 +203,9 @@ def git_files(repo):
     out = []
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     for extra in ([], ["--others", "--exclude-standard"]):
-        listed = subprocess.run(
-            ["git", "-C", str(repo), "ls-files", "-z", *extra],
-            capture_output=True,
-            check=True,
-            env=env,
-        ).stdout
-        out += [pathlib.Path(repo) / p.decode() for p in listed.split(b"\0") if p]
+        # Through the shared reader: an unmerged path is listed once per
+        # stage, and is one file to scan.
+        out += [pathlib.Path(repo) / p for p in ls_files(repo, *extra, env=env)]
     return out
 
 

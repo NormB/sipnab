@@ -14,6 +14,9 @@
 //! verifying `cargo package`, which builds the unpacked crate from its own
 //! files alone.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -151,13 +154,9 @@ fn resolve(file: &str, rel: &str) -> String {
 /// Only sources the crate ships are scanned: an excluded one, like
 /// `src/bin/gen_fixture.rs`, is never built from the crate.
 fn embedded_files_outside_src(shipped: &BTreeSet<String>) -> Result<BTreeSet<String>, TestError> {
-    let listed = Command::new("git")
-        .args(["ls-files", "-z", "--", ":(glob)src/**/*.rs", "build.rs"])
-        .current_dir(repo())
-        .output()?;
-    assert!(listed.status.success(), "git ls-files failed");
+    let listed = tracked::ls_files(repo(), &["--", ":(glob)src/**/*.rs", "build.rs"])?;
     let mut found = BTreeSet::new();
-    for file in String::from_utf8_lossy(&listed.stdout).split('\0') {
+    for file in listed.iter().map(String::as_str) {
         if file.is_empty() || !shipped.contains(file) {
             continue;
         }
@@ -327,19 +326,10 @@ fn spdx_mismatches(path: &str, body: &str, expected: &str) -> Vec<String> {
 #[test]
 fn every_spdx_header_in_rust_source_names_the_manifest_license() -> Result<(), TestError> {
     let expected = manifest_license()?;
-    let out = Command::new("git")
-        .args(["ls-files", "-z", "--", "*.rs"])
-        .current_dir(repo())
-        .output()?;
-    assert!(
-        out.status.success(),
-        "git ls-files failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let listing = String::from_utf8(out.stdout)?;
+    let listing = tracked::ls_files(repo(), &["--", "*.rs"])?;
     let mut checked = 0usize;
     let mut wrong = Vec::new();
-    for path in listing.split('\0').filter(|p| !p.is_empty()) {
+    for path in listing.iter().map(String::as_str) {
         let Ok(body) = std::fs::read_to_string(repo().join(path)) else {
             continue;
         };

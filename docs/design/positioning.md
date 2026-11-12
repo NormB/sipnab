@@ -14,7 +14,7 @@ verified against the source and cited to file and line. The market judgements
 in [section 1, "The gap"](#1-the-gap) and
 [section 7, "What would falsify this"](#7-what-would-falsify-this) are judgements. Do not upgrade one to the other by restating it
 somewhere with fewer qualifiers — the same rule
-[`capture-tuning-tasks.md:22`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md#L22) applies to throughput
+[`capture-tuning-tasks.md:22`](https://github.com/NormB/sipnab/blob/main/docs/design/capture-tuning-tasks.md#L22)<!-- "- Nothing on this" --> applies to throughput
 claims.
 
 ## 1. The gap
@@ -49,13 +49,13 @@ to leave the box and Homer never tried to avoid the database.
 |---|---|---|
 | Single binary, no database | — | ships |
 | Receives HEP from Kamailio/OpenSIPS/Asterisk | `-L`/`--hep-listen`, [`hep.rs`](../../src/capture/hep.rs) | ships — **nothing need be installed on production** |
-| Sender-side HEP | `--hep-send`, [`batch.rs:3319`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3319) (SIP) and [`batch.rs:3335`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3335) (RTCP) | ships — SIP as protocol type 1 and RTCP as type 5 since 0.5.92; RTP is never forwarded |
-| RTCP understood on the wire | `CHUNK_PROTO_TYPE` ([`hep.rs:61`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L61)) — `1=SIP, 5=RTCP, 32=RTP` | ships — the receiver decodes type 5 and `HepSender::send_rtcp` ([`hep.rs:4762`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4762)) emits it as heplify's JSON with the call's Call-ID as correlation ID, pinned by `send_rtcp_puts_json_type_5_with_the_call_id_on_the_wire` ([`hep.rs:7650`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L7650)) |
+| Sender-side HEP | `--hep-send`, [`batch.rs:3281`](https://github.com/NormB/sipnab/blob/5185c8321ebea79b79c920f06954b3dcd88b36e4/src/app/batch.rs#L3281) (SIP) and [`batch.rs:3297`](https://github.com/NormB/sipnab/blob/5185c8321ebea79b79c920f06954b3dcd88b36e4/src/app/batch.rs#L3297) (RTCP) | ships — SIP as protocol type 1 and RTCP as type 5 since 0.5.92; RTP is never forwarded |
+| RTCP understood on the wire | `CHUNK_PROTO_TYPE` ([`hep.rs:69-70`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L69-L70)<!-- "/// Chunk type: Protocol type (1 byte: 1=SIP, 5=RTCP, 32=RTP)." -->) — `1=SIP, 5=RTCP, 32=RTP` | ships — the receiver decodes type 5 and `HepSender::send_rtcp` ([`hep.rs:4762`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4762)<!-- "pub fn send_rtcp(" -->) emits it as heplify's JSON with the call's Call-ID as correlation ID, pinned by `send_rtcp_puts_json_type_5_with_the_call_id_on_the_wire` ([`hep.rs:7648`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L7648)<!-- "/// non-empty" -->) |
 | Bounded memory | `--limit` (100k dialogs, oldest-first), `--max-streams` (50k) | ships |
 | Conformance lint with RFC citations, triage, MOS diagnosis | — | ships |
 | Frame pointers with verifiable digests | `--show-frame` | ships |
 | Agent access | MCP | ships |
-| Bounded on-disk retention | `--split` rotates files and `--split-keep N` keeps the newest N ([`cli.rs:818`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L818)); **nothing indexes the set for search** | partial: a file ring buffer since 0.5.100 |
+| Bounded on-disk retention | `--split` rotates files and `--split-keep N` keeps the newest N ([`cli.rs:1064`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1064)<!-- "/// Keep only the newest N split files" -->); **nothing indexes the set for search** | partial: a file ring buffer since 0.5.100 |
 
 The single most useful fact here: for OpenSIPS and Kamailio, **sipnab does not
 go on the production host at all** — the proxy's own HEP module points at a
@@ -71,13 +71,13 @@ travels over `--hep-send` as protocol type 5 (see the "Sender-side HEP" row in
 [section 2, "What already fits, verified"](#2-what-already-fits-verified)). The receiver-side half is
 open, and it is what decides whether the remote viewer shows a MOS at all.
 `--hep-send` never forwards RTP, and `StreamStore::process_rtcp`
-([`stream_store.rs:1495`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1495)) files a report only
+([`stream_store.rs:1495`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1495)<!-- "pub fn process_rtcp(" -->) files a report only
 against a stream whose SSRC it has already seen from the media itself — a
 report for an unknown SSRC records nothing, which `rtcp_unknown_ssrc_is_noop`
-([`stream_store.rs:6284`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L6284)) pins. So a
+([`stream_store.rs:6284`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L6284)<!-- "fn rtcp_unknown_ssrc_is_noop()" -->) pins. So a
 viewer fed by HEP alone decodes every RTCP report and can show no quality figure
 for any of them. Received RTCP reaches the MOS delay term (`MosDelay::resolve`,
-[`quality.rs:631`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L631)) only when the same
+[`quality.rs:632`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L632)<!-- "pub fn resolve(&self," -->) only when the same
 process also sees the media, which is the `-L` plus `-d` arrangement of cookbook
 recipe "Take signaling from HEP and media off the wire, in one process". This was established 2026-09-02 by reading the path, not by running
 it end to end; the end-to-end run is still owed.

@@ -164,8 +164,8 @@ exactly: measured 221,056 KB with dialogs on, predicted
 `9,088 + 1.83×18,948 + 2.072×84,836 = 219,542 KB`. Within 0.7%.
 
 **What the coefficients mean.** `SipDialog` holds
-`pub messages: Vec<SipMessage>` ([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)), and `SipMessage`
-([`src/sip/message.rs:34`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L34)) holds both the raw bytes —
+`pub messages: Vec<SipMessage>` ([`src/sip/dialog.rs:154-200`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L154-L200)<!-- "pub struct SipDialog {" -->), and `SipMessage`
+([`src/sip/message.rs:51`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L51)<!-- "pub struct SipMessage {" -->) holds both the raw bytes —
 
 ```rust
     /// Full raw message bytes as captured (refcounted view of the
@@ -174,7 +174,7 @@ exactly: measured 221,056 KB with dialogs on, predicted
 ```
 
 — and an eagerly parsed `pub headers: Vec<SipHeader>` where each `SipHeader`
-carries `value: String` ([`src/sip/message.rs:20-26`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L20-L26)). Every header value is
+carries `value: String` ([`src/sip/message.rs:22-28`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L22-L28)<!-- "pub struct SipHeader" -->). Every header value is
 therefore resident twice: once inside `raw`, once as an owned `String` with its
 own allocation. 2.1 KB per message for traffic whose median message is a few
 hundred bytes is that duplication plus per-allocation overhead. This paragraph
@@ -240,7 +240,7 @@ the fix follows from the shape of the defect.
 was validated there (rejecting zero with a message naming the key), was
 documented as the way to tune RAM ([`docs/config-reference.md`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md): `dialog_limit =
 50000  # Max tracked dialogs (tune for RAM)`), shipped in
-[`contrib/sipnabrc.example:50`](https://github.com/NormB/sipnab/blob/main/contrib/sipnabrc.example#L50) as `dialog_limit = 10000` — and was never read.
+[`contrib/sipnabrc.example:66`](https://github.com/NormB/sipnab/blob/main/contrib/sipnabrc.example#L66)<!-- "dialog_limit = 10000" --> as `dialog_limit = 10000` — and was never read.
 [`src/app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs) applied exactly three `[limits]` keys, none of them this
 one:
 
@@ -620,7 +620,7 @@ idiom rather than reinvent it. The shipped code does not reuse the two method
 names, but it does reuse the shape and the discipline behind it — silent on a
 clean run, one sentence naming the numbers, split from the logging so the
 wording itself is under test. The idiom it was modeled on is
-[`src/output/group.rs:172-184`](https://github.com/NormB/sipnab/blob/main/src/output/group.rs#L172-L184):
+[`src/output/group.rs:172-184`](https://github.com/NormB/sipnab/blob/b090a10c001f1f7e59bbb14f725b1ecb289711a5/src/output/group.rs#L172-L184):
 
 ```rust
     /// `true` when a cap refused at least one message, so the caller can warn.
@@ -669,11 +669,11 @@ typed struct or a literal that a new field slots into:
   species of "we could not keep up" counter. Note this needs the field populated
   in **both** [`src/output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs) (`collect_metrics`) and
   [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) (`get_metrics`), which build the struct independently.
-- TUI: the counts string at [`src/tui/render/status.rs:34`](https://github.com/NormB/sipnab/blob/main/src/tui/render/status.rs#L34), with the width
+- TUI: the counts string at [`src/tui/render/status.rs:34`](https://github.com/NormB/sipnab/blob/e48054165fe3e8237aff2297c32888f4ca8a754c/src/tui/render/status.rs#L34), with the width
   accounting in `line1_used_cols` at `:34` updated to match — that helper sizes
   the status background from the rendered text, so added text that skips it
   under-fills the bar. The honest-truncation idiom already exists here too —
-  [`src/tui/loss_map.rs:138-146`](https://github.com/NormB/sipnab/blob/main/src/tui/loss_map.rs#L138-L146) renders `"Showing most recent {} of {} losses"`
+  [`src/tui/loss_map.rs:142-150`](https://github.com/NormB/sipnab/blob/main/src/tui/loss_map.rs#L142-L150)<!-- "// Honest note when" --> renders `"Showing most recent {} of {} losses"`
   in `theme.warning` when `LossMap::truncated` is set.
 - The `--report` table (`print_dialog_report` in [`src/output/dialog_report.rs`](https://github.com/NormB/sipnab/blob/main/src/output/dialog_report.rs))
   has no footer at all; one is needed, because a report is exactly the artifact

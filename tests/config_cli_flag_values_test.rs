@@ -2349,7 +2349,9 @@ static SPECS: &[Spec] = &[
     (
         "hep-auth-mode",
         Kind::Text {
-            accept: &["plain", "hmac", "HMAC"],
+            // `hmac` first: the context test takes the first value, and
+            // `plain` is the default, which asks for nothing on any run.
+            accept: &["hmac", "plain", "HMAC"],
             reject: &[
                 ("x", 2),
                 ("", 2),

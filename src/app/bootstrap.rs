@@ -487,8 +487,8 @@ fn uprobe_unavailable(tls: bool, libraries: bool) -> String {
 /// `--hep-listen` value that is not an address, or a routable or host-name
 /// bind with neither a secret nor an allowlist, all exit code 2.
 fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanError> {
-    let hep_addr = match cli.hep_args.hep_listen.as_ref() {
-        Some(a) => a,
+    let (hep_addr, listen_origin) = match cli.hep_listen_with_origin(config) {
+        Some(found) => found,
         // Every caller checks `hep_listen.is_some()` first; reaching here means
         // a caller stopped doing that, which must not resolve to a default
         // bind address nobody asked for.
@@ -498,17 +498,32 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
             ));
         }
     };
+    // Only the bind policy below reads the origin, and that call is compiled
+    // with the `hep` feature. Without the feature the binding has no reader,
+    // which `-D warnings` refuses in every build that leaves `hep` out.
+    #[cfg(not(feature = "hep"))]
+    let _ = listen_origin;
     #[cfg(feature = "hep")]
-    let allowlist =
-        {
-            let mut v: Vec<crate::capture::hep::CidrRange> = Vec::new();
-            for cidr in &cli.hep_args.hep_allow {
-                v.push(crate::capture::hep::CidrRange::parse(cidr).map_err(|e| {
-                    PlanError::arg(format!("Invalid --hep-allow CIDR '{cidr}': {e}"))
-                })?);
-            }
-            v
+    let allowlist = {
+        let mut v: Vec<crate::capture::hep::CidrRange> = Vec::new();
+        // The flag's list when it is given, else the file's: named, and
+        // given the exit code of, wherever the entry came from.
+        let from_flag = !cli.hep_args.hep_allow.is_empty();
+        let name = if from_flag {
+            "--hep-allow"
+        } else {
+            "[hep] allow"
         };
+        for cidr in cli.hep_allow(config) {
+            v.push(crate::capture::hep::CidrRange::parse(cidr).map_err(|e| {
+                PlanError::refused(
+                    crate::settings::Origin::of(from_flag),
+                    format!("Invalid {name} CIDR '{cidr}': {e}"),
+                )
+            })?);
+        }
+        v
+    };
     let hep_auth = cli
         .resolve_hep_auth()
         .map_err(|e| PlanError::arg(format!("HEP auth: {e}")))?;
@@ -520,15 +535,26 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
     // without planning.
     #[cfg(feature = "hep")]
     crate::capture::hep::enforce_hep_bind_policy(hep_addr, hep_auth.is_some(), allowlist.len())
-        .map_err(PlanError::arg)?;
+        .map_err(|e| match listen_origin {
+            crate::settings::Origin::CommandLine => PlanError::arg(e),
+            // The policy's message names the flags. The address came from the
+            // file, so say that, and name the key that holds the allowlist.
+            crate::settings::Origin::ConfigFile => PlanError::refused(
+                listen_origin,
+                format!(
+                    "[hep] listen = {hep_addr:?} in the config file is refused. {e} The \
+                     allowlist can also be given as [hep] allow."
+                ),
+            ),
+        })?;
     Ok(CaptureSource::Hep {
-        bind_addr: hep_addr.clone(),
+        bind_addr: hep_addr.to_string(),
         #[cfg(feature = "hep")]
         allowlist,
         rate_limit: cli.hep_rate_limit_resolved(config),
         per_peer_rate_limit: cli.hep_args.hep_rate_limit_per_peer.resolve(
             cli.hep_rate_limit_resolved(config),
-            cli.hep_args.hep_allow.len(),
+            cli.hep_allow(config).len(),
         ),
         max_tracked_peers: cli.tracked_peer_capacity(config),
         auth_key: hep_auth,
@@ -595,7 +621,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         names.name(ip, crate::names::NameMode::Names)
     }));
     declare_process_globals(cli, config);
-    refuse_conflicting_sources(cli)?;
+    refuse_conflicting_sources(cli, config)?;
 
     // Capture source precedence: -I file > -d device > config device >
     // --hep-listen > auto-detect (deferred to launch()).
@@ -683,7 +709,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     mcp_tool_selection(cli, config)?;
 
     let max_capture_sources = cli.max_capture_sources(config);
-    let hep_senders = if cli.hep_args.hep_listen.is_some() {
+    let hep_senders = if cli.hep_listen(config).is_some() {
         cli.tracked_peer_capacity(config)
     } else {
         0
@@ -885,6 +911,12 @@ fn refuse_unusable_requests(cli: &Cli, config: &Config) -> Result<(), PlanError>
     // checks it: an `[actions]` entry naming nothing sipnab knows is refused
     // here, before anything runs, rather than read as "nothing enabled".
     refuse_invalid_config(cli, config)?;
+
+    // A HEP flag whose side this run does not start. Asked here, with the
+    // config file known, because `[hep] listen` starts the listener too.
+    if let Some(refusal) = cli.hep_side_flags_problem(config) {
+        return Err(PlanError::arg(refusal));
+    }
     // A names file that cannot be read used to be warned about when names
     // were loaded, and the run went on without the names it asked for.
     for f in &cli.name_args.names {
@@ -1017,7 +1049,7 @@ fn declare_process_globals(cli: &Cli, config: &Config) {
 ///
 /// A `PlanError` (exit code 2) for `-I` with `-L`, and for `--multi-device`
 /// with `-L`.
-fn refuse_conflicting_sources(cli: &Cli) -> Result<(), PlanError> {
+fn refuse_conflicting_sources(cli: &Cli, config: &Config) -> Result<(), PlanError> {
     // `-I` beating `-d` is a silent wrong answer, so say so.
     //
     // Both flags parse happily together and `-I` simply wins: sipnab reads the
@@ -1054,6 +1086,8 @@ fn refuse_conflicting_sources(cli: &Cli) -> Result<(), PlanError> {
     // Refused rather than left to silently prefer the file, because the silent
     // preference is what SRC1 is about: the operator believes a listener is up
     // and it is not.
+    // The flag only: `[hep] listen` is not read in a run that reads files
+    // (`Cli::hep_listen_with_origin`), so it cannot reach this refusal.
     if cli.has_input() && cli.hep_args.hep_listen.is_some() {
         return Err(PlanError::arg(
             "--input/-I and --hep-listen/-L cannot run together. This is a \
@@ -1075,6 +1109,21 @@ fn refuse_conflicting_sources(cli: &Cli) -> Result<(), PlanError> {
     // with no node, so two mirrors advertising the same RFC 1918 socket
     // overwrite each other and a stream binds to whichever offer arrived last.
     // See `docs/design/simultaneous-capture-sources.md` §3.3 F2.
+    if cli.capture_args.multi_device
+        && matches!(
+            cli.hep_listen_with_origin(config),
+            Some((_, crate::settings::Origin::ConfigFile))
+        )
+    {
+        return Err(PlanError::refused(
+            crate::settings::Origin::ConfigFile,
+            "--multi-device and the HEP listener that [hep] listen in the config file \
+             starts cannot run together yet: one interface plus one HEP listener is \
+             supported, a device list plus a listener is not. Drop --multi-device, or \
+             run without the key (--no-config/-F reads no config file)."
+                .to_string(),
+        ));
+    }
     if cli.capture_args.multi_device && cli.hep_args.hep_listen.is_some() {
         return Err(PlanError::arg(
             "--multi-device and --hep-listen/-L cannot run together yet. One \
@@ -1134,7 +1183,7 @@ fn plan_primary_source(cli: &Cli, config: &Config) -> Result<Option<CaptureSourc
             },
         }));
     }
-    if cli.hep_args.hep_listen.is_some() {
+    if cli.hep_listen(config).is_some() {
         return plan_hep_source(cli, config).map(Some);
     }
     Ok(None)
@@ -1259,7 +1308,7 @@ fn compose_hep_with_live(
     source: Option<CaptureSource>,
 ) -> Result<Option<CaptureSource>, PlanError> {
     match source {
-        Some(live @ CaptureSource::Live { .. }) if cli.hep_args.hep_listen.is_some() => {
+        Some(live @ CaptureSource::Live { .. }) if cli.hep_listen(config).is_some() => {
             let hep = plan_hep_source(cli, config)?;
             // The NIC first: it is the member that needs the BPF filter, the
             // one whose drops are counted, and the one an operator reading the
@@ -1463,7 +1512,7 @@ fn apply_capture_filter(
             source,
             capture_config.bpf_filter.is_some(),
             media,
-            !cli.hep_args.hep_allow.is_empty(),
+            !cli.hep_allow(config).is_empty(),
         ),
     ];
     for msg in context.into_iter().flatten() {
@@ -4062,7 +4111,7 @@ fn uncompiled_flag(cli: &Cli, config: &Config, compiled: Compiled) -> Option<&'s
         (!compiled.mcp, !compiled.hep, !compiled.tls, !compiled.api);
     let tls = &cli.tls_args;
     let listener = &cli.listener_args;
-    let gates: [(bool, &str); 18] = [
+    let gates: [(bool, &str); 19] = [
         uncompiled_when(
             no_mcp && cli.mcp_args.mcp,
             "--mcp requires the 'mcp' feature (not compiled in)",
@@ -4077,6 +4126,10 @@ fn uncompiled_flag(cli: &Cli, config: &Config, compiled: Compiled) -> Option<&'s
         uncompiled_when(
             no_hep && cli.hep_args.hep_listen.is_some(),
             "--hep-listen requires the 'hep' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_hep && cli.hep_args.hep_listen.is_none() && cli.hep_listen(config).is_some(),
+            "[hep] listen in the config file requires the 'hep' feature (not compiled in)",
         ),
         uncompiled_when(
             no_tls && tls.keylog_fd.is_some(),

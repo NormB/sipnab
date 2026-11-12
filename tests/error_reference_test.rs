@@ -750,7 +750,7 @@ fn lists() -> Result<Lists, TestError> {
 // src/app/bootstrap.rs's `PlanError { exit_code: 1, message, }` passes on
 // the topology-hiding secret file's refusal, which names the file from
 // src/sip/th_callid.rs, out of scope.
-const EXPECTED_UNRESOLVED: usize = 84;
+const EXPECTED_UNRESOLVED: usize = 85;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -987,10 +987,19 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // counts, the match count, what a session needs, and the remedy). +7.
 // Reworded, count unchanged: the missing-handshake line and its remedy now
 // also say what a TLS 1.3 key log needs.
-// 631 -> 633 (TLS-CAPTURE-NO-KEYLOG-SILENT): src/app/batch.rs, the two lines
+// 631 -> 636 (HEP-LISTEN-CONFIG-KEYS): the two `[hep]` validation messages
+// for an empty `listen` and an empty `allow` entry, the refusal of a
+// `[hep] listen` address, `--multi-device` with a listener from the key, and
+// the key in a build without the hep feature (+5). `Invalid --hep-allow CIDR`
+// became `Invalid {name} CIDR` (count unchanged).
+// 636 -> 637 (failed fleet append, merged after the HEP keys):
+// src/app/fleet_log.rs +1, a store or an intake that holds fewer records than
+// the center wrote to it, found when the file is read after an append that
+// failed.
+// 637 -> 639 (TLS-CAPTURE-NO-KEYLOG-SILENT): src/app/batch.rs, the two lines
 // `no_sip_guidance` prints for a capture with TLS records read without a TLS
 // key (the count and the cause, and the command with --keylog). +2.
-const EXPECTED_TEMPLATES: usize = 633;
+const EXPECTED_TEMPLATES: usize = 639;
 
 // ---------------------------------------------------------------------------
 // The page gates

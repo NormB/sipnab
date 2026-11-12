@@ -336,7 +336,7 @@ fn es256_from_sec1(
 /// The certificate a container is encrypted to.
 pub enum Recipient {
     /// An RSA key: the content key is encrypted `RSA-OAEP`.
-    Rsa(rsa::RsaPublicKey),
+    Rsa(rsa::PublicKey),
     /// An EC P-256 key, as the uncompressed point: the content key is
     /// wrapped under a key agreed `ECDH-ES+A256KW`.
     P256(Vec<u8>),
@@ -357,7 +357,7 @@ impl Recipient {
                 .map_err(|e| format!("the recipient certificate's EC key does not parse: {e}"))?;
             return Ok(Self::P256(point.to_vec()));
         }
-        let key = rsa::RsaPublicKey::from_public_key_der(spki)
+        let key = rsa::PublicKey::from_public_key_der(spki)
             .map_err(|e| format!("the recipient certificate's RSA key does not parse: {e}"))?;
         let bits = key.size().saturating_mul(8);
         if bits < MIN_RSA_BITS {
@@ -560,7 +560,7 @@ fn encrypt_under(
             Recipient::Rsa(key) => {
                 let mut seed = Prefilled::new(&random)?;
                 let encrypted_key = key
-                    .encrypt(&mut seed, rsa::Oaep::new::<sha1_oaep::Sha1>(), &cek)
+                    .encrypt(&mut seed, rsa::Oaep::<sha1::Sha1>::new(), &cek)
                     .map_err(|e| format!("RSA-OAEP: {e}"))?;
                 seed.finish()?;
                 (headers.recipient.clone(), encrypted_key)
@@ -667,7 +667,7 @@ pub fn decrypt(jwe: &[u8], key_pem: &str) -> Result<Vec<u8>, String> {
         let encrypted_key = b64u_field(recipient, "encrypted_key")?;
         let opened = match (&key, alg.as_deref()) {
             (DecryptionKey::Rsa(rsa), Some(JWE_ALG)) => rsa
-                .decrypt(rsa::Oaep::new::<sha1_oaep::Sha1>(), &encrypted_key)
+                .decrypt(rsa::Oaep::<sha1::Sha1>::new(), &encrypted_key)
                 .ok(),
             (DecryptionKey::P256(secret), Some(agreement)) if agreement != JWE_ALG => {
                 content_key_by_ecdh(secret, &headers, agreement, &encrypted_key)?
@@ -918,7 +918,7 @@ fn b64u_field(value: &serde_json::Value, name: &str) -> Result<Vec<u8>, String> 
 /// The private key an encrypted container is opened with.
 enum DecryptionKey {
     /// An RSA key, for an `RSA-OAEP` recipient.
-    Rsa(Box<rsa::RsaPrivateKey>),
+    Rsa(Box<rsa::PrivateKey>),
     /// An EC P-256 key, for an `ECDH-ES+A256KW` or `ECDH-ES` recipient.
     P256(p256::SecretKey),
 }
@@ -926,13 +926,11 @@ enum DecryptionKey {
 /// A PEM private key: RSA (PKCS #8 or PKCS #1) or EC P-256 (PKCS #8 or
 /// SEC1 `EC PRIVATE KEY`).
 fn decryption_key(pem: &str) -> Result<DecryptionKey, String> {
-    // p256 and rsa implement this trait from two pkcs8 major versions, so
-    // each key type needs its own crate's copy in scope.
+    // p256 and rsa implement the one `pkcs8` 0.11 trait.
     use p256::pkcs8::DecodePrivateKey as _;
     use rsa::pkcs1::DecodeRsaPrivateKey as _;
-    use rsa::pkcs8::DecodePrivateKey as _;
     if let Ok(key) =
-        rsa::RsaPrivateKey::from_pkcs8_pem(pem).or_else(|_| rsa::RsaPrivateKey::from_pkcs1_pem(pem))
+        rsa::PrivateKey::from_pkcs8_pem(pem).or_else(|_| rsa::PrivateKey::from_pkcs1_pem(pem))
     {
         return Ok(DecryptionKey::Rsa(Box::new(key)));
     }
@@ -1327,20 +1325,10 @@ impl Prefilled {
     }
 }
 
-impl rsa::rand_core::RngCore for Prefilled {
-    fn next_u32(&mut self) -> u32 {
-        let mut b = [0u8; 4];
-        self.fill_bytes(&mut b);
-        u32::from_le_bytes(b)
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut b = [0u8; 8];
-        self.fill_bytes(&mut b);
-        u64::from_le_bytes(b)
-    }
-
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
+impl Prefilled {
+    /// Serve the next `dest.len()` prepared bytes. A draw past the end fills
+    /// `dest` with zeros and records the overrun for [`Self::finish`].
+    fn fill(&mut self, dest: &mut [u8]) {
         let end = self.used.saturating_add(dest.len());
         match self.bytes.get(self.used..end) {
             Some(src) => {
@@ -1353,14 +1341,30 @@ impl rsa::rand_core::RngCore for Prefilled {
             }
         }
     }
+}
 
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rsa::rand_core::Error> {
-        self.fill_bytes(dest);
+impl rsa::rand_core::TryRng for Prefilled {
+    type Error = std::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        let mut b = [0u8; 4];
+        self.fill(&mut b);
+        Ok(u32::from_le_bytes(b))
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        let mut b = [0u8; 8];
+        self.fill(&mut b);
+        Ok(u64::from_le_bytes(b))
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
+        self.fill(dest);
         Ok(())
     }
 }
 
-impl rsa::rand_core::CryptoRng for Prefilled {}
+impl rsa::rand_core::TryCryptoRng for Prefilled {}
 
 /// What a sealing `[[vcon.rule]]` seals its containers with: an encrypting
 /// rule signs and encrypts, a `sign_only` rule signs.

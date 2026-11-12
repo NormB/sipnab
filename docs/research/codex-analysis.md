@@ -78,7 +78,7 @@ Verification:
 **Severity:** High when HEP and scanner-kill are combined; Medium for HEP-only deployments  
 **CWE:** CWE-345 (Insufficient Verification of Data Authenticity), CWE-940 (Improper Verification of Source of a Communication Channel), CWE-406 (Insufficient Control of Network Message Volume / reflection)  
 **Impact framing:** the active-response primitive is a single, rate-limited, spoofed SIP/UDP packet reflected at an attacker-chosen address — packet reflection plus telemetry poisoning, *not* SSRF in the fetch-an-internal-resource sense (no response is read back and no internal service is reached).  
-**Affected code:** [`src/capture/hep.rs:788-889`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L788-L889), [`src/capture/hep.rs:202-340`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L202-L340), [`src/app/batch.rs:1302-1349`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1302-L1349), [`src/process_isolation.rs:479-578`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L479-L578)
+**Affected code:** [`src/capture/hep.rs:788-889`](https://github.com/NormB/sipnab/blob/9c6ae18b75c5d0205f84e7dec36a666488c7bd24/src/capture/hep.rs#L788-L889), [`src/capture/hep.rs:202-340`](https://github.com/NormB/sipnab/blob/9c6ae18b75c5d0205f84e7dec36a666488c7bd24/src/capture/hep.rs#L202-L340), [`src/app/batch.rs:1264-1311`](https://github.com/NormB/sipnab/blob/9c6ae18b75c5d0205f84e7dec36a666488c7bd24/src/app/batch.rs#L1264-L1311), [`src/process_isolation.rs:479-578`](https://github.com/NormB/sipnab/blob/9c6ae18b75c5d0205f84e7dec36a666488c7bd24/src/process_isolation.rs#L479-L578)
 
 The HEP listener receives UDP datagrams.
 
@@ -148,7 +148,7 @@ The effects:
 
 **Severity:** Medium  
 **CWE:** CWE-306 (Missing Authentication for Critical Function), CWE-770 (Allocation of Resources Without Limits or Throttling)  
-**Affected code:** [`src/output/prometheus_server.rs:28-151`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs#L28-L151), [`src/app/bootstrap.rs:214-223`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L214-L223), [`src/app/tui_mode.rs:87-103`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L87-L103), [`src/cli.rs:584-593`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L584-L593)
+**Affected code:** [`src/output/prometheus_server.rs:28-151`](https://github.com/NormB/sipnab/blob/9c6ae18b75c5d0205f84e7dec36a666488c7bd24/src/output/prometheus_server.rs#L28-L151), [`src/app/bootstrap.rs:214-223`](https://github.com/NormB/sipnab/blob/9c6ae18b75c5d0205f84e7dec36a666488c7bd24/src/app/bootstrap.rs#L214-L223), [`src/app/tui_mode.rs:87-103`](https://github.com/NormB/sipnab/blob/9c6ae18b75c5d0205f84e7dec36a666488c7bd24/src/app/tui_mode.rs#L87-L103), [`src/cli.rs:584-593`](https://github.com/NormB/sipnab/blob/9c6ae18b75c5d0205f84e7dec36a666488c7bd24/src/cli.rs#L584-L593)
 
 The standalone metrics server binds any operator-supplied `SocketAddr`.
 
@@ -200,7 +200,7 @@ So it is not a default remote exposure.
 
 **Severity:** Low (potentially High in a privileged/shared-directory deployment)  
 **CWE:** CWE-59 (Improper Link Resolution Before File Access), CWE-377 (Insecure Temporary File)  
-**Affected code:** [`src/crash.rs:89-107`](https://github.com/NormB/sipnab/blob/main/src/crash.rs#L89-L107)
+**Affected code:** [`src/crash.rs:89-107`](https://github.com/NormB/sipnab/blob/9c6ae18b75c5d0205f84e7dec36a666488c7bd24/src/crash.rs#L89-L107)
 
 `write_crash_report` constructs a partially predictable name.
 
@@ -259,7 +259,7 @@ Note:
     - Contents are trimmed.
     - An empty/unreadable file is a hard error via `resolve_file_or_inline_secret`.
 - The audio plugin loader.
-  - It eventually attempts a bare platform filename after explicit and fixed paths ([`src/rtp/playback.rs:178-224`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs#L178-L224)).
+  - It eventually attempts a bare platform filename after explicit and fixed paths ([`src/rtp/playback.rs:178-224`](https://github.com/NormB/sipnab/blob/9c6ae18b75c5d0205f84e7dec36a666488c7bd24/src/rtp/playback.rs#L178-L224)).
   - This broadens dynamic-library search behavior.
   - The plugin is normally loaded after privilege drop, substantially limiting impact.
   - But fixed absolute installation paths plus ownership/permission checks would make the trust claim enforceable.

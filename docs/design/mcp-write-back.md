@@ -50,8 +50,8 @@ at handshake.
 >   stores or sends SIP. systemd owns the capture lifecycle, or the
 >   CLI flags, not by the LLM.
 
-**As a module contract.** [`src/mcp/mod.rs:5`](https://github.com/NormB/sipnab/blob/main/src/mcp/mod.rs#L5) and
-[`src/mcp/server.rs:3-4`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3-L4) respectively:
+**As a module contract.** [`src/mcp/mod.rs:5`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/mcp/mod.rs#L5) and
+[`src/mcp/server.rs:3-4`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/mcp/server.rs#L3-L4) respectively:
 
 > //! This module exposes sipnab's read-only analysis surface (dialogs, streams,
 > //! diagnostics, security findings, call reports) as MCP tools […]
@@ -60,7 +60,7 @@ at handshake.
 > //! dialog/stream stores (plus the optional alert engine).
 
 **As a runtime assertion to the client.** `get_info`
-([`server.rs:2362-2366`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2362-L2366)) sets the handshake
+([`server.rs:2364-2368`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/mcp/server.rs#L2364-L2368)) sets the handshake
 `instructions` string every MCP client reads before it calls anything:
 
 > "sipnab MCP server — read-only access to captured SIP dialogs, RTP streams,
@@ -117,7 +117,7 @@ and they are worth separating because the middle options in section 6 protect
 different subsets of them.
 
 **The capture is frequently the only copy.** The `-O` guard says this outright
-in [`src/capture/output_guard.rs:5-14`](https://github.com/NormB/sipnab/blob/main/src/capture/output_guard.rs#L5-L14):
+in [`src/capture/output_guard.rs:6-15`](https://github.com/NormB/sipnab/blob/main/src/capture/output_guard.rs#L6-L15)<!-- "//! `sipnab -I capture.pcap" -->:
 
 > `sipnab -I capture.pcap -O capture.pcap` opened the capture, truncated the
 > same file as the output, wrote back whatever it had already read, and exited
@@ -133,22 +133,22 @@ because the incident is over.
 **The operator's screen is the tool's output.** sipnab has no other product. Every
 mutating verb proposed so far — tag a dialog, acknowledge a finding, name a host
 — edits the thing the operator is reading, and does so with no signal that it
-happened. `DialogStore::generation` ([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292))
+happened. `DialogStore::generation` ([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)<!-- "pub fn generation(&self) -> u64 {" -->)
 is bumped by every mutating method and exposed on no wire format: not in
-`DialogSummary` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56)), not in any REST
-response (`build_router`, [`api.rs:204-213`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L213) — eight
+`DialogSummary` ([`model.rs:55-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L55-L57)<!-- "pub from_user: Option<String>," -->), not in any REST
+response (`build_router`, [`api.rs:204-213`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/output/api.rs#L204-L213) — eight
 routes, all `get`), not in any MCP payload.
 
 **The caller is a language model reading text a stranger wrote.** This is the
 part that makes the MCP surface different from the REST surface, and it is
 concrete rather than theoretical:
 
-- `DialogSummary.from_user` / `to_user` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56),
+- `DialogSummary.from_user` / `to_user` ([`model.rs:55-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L55-L57)<!-- "pub from_user: Option<String>," -->,
   populated at `:91-92`) are copied off the From/To URIs.
-- `get_message` ([`server.rs:5901`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5901)) returns headers and
+- `get_message` ([`server.rs:5901`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5901)<!-- "pub async fn get_message(" -->) returns headers and
   body.
-- `search_messages` ([`server.rs:6359`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6359)) returns a
-  `snippet` built at [`:1389`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1389) from
+- `search_messages` ([`server.rs:6359`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6359)<!-- "pub async fn search_messages(" -->) returns a
+  `snippet` built at [`:1391`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/mcp/server.rs#L1391) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.
 
@@ -194,19 +194,19 @@ had asked it to do.
 warning and not a confirmation prompt. It was a *precondition*, decided before
 anything opens, on canonical paths so that `a.pcap`, `./a.pcap`, `dir/../a.pcap`
 and a symlink to any of them are one file
-([`output_guard.rs:16-24`](https://github.com/NormB/sipnab/blob/main/src/capture/output_guard.rs#L16-L24)), covering the
+([`output_guard.rs:17-25`](https://github.com/NormB/sipnab/blob/main/src/capture/output_guard.rs#L17-L25)<!-- "//! # Identity is" -->), covering the
 whole resolved `-I` set and every `--split` rotation name (`:26-39`).
 
 **A tool transmitted while reading a file.** `--kill-scanner` on `-I
 customer.pcap` sent SIP at addresses recorded in the capture.
-[`src/security/transmit_guard.rs:11-19`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L11-L19)
+[`src/security/transmit_guard.rs:12-20`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L12-L20)<!-- "//! Applied to a" -->
 states the reasoning, and `:21-29` states why the fix is a type:
 
 > The failure is silent and irreversible, so it must not depend on anyone
 > remembering.
 
 Both fixes reached MCP, and how they reached it is the point. `resolve_in_root`
-([`server.rs:1177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1177)) accepts a bare filename and rejects
+([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->) accepts a bare filename and rejects
 any separator, `..`, root prefix or drive letter *before* touching the
 filesystem — its doc comment (`:163-173`) argues that requiring one component
 has no middle ground, where "every clever normaliser eventually meets a symlink,
@@ -220,7 +220,7 @@ self.protected_inputs
     .check(&target, "the requested filename", false)
 ```
 
-([`server.rs:206-211`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L206-L211); the field is declared at `:68`
+([`server.rs:206-211`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/mcp/server.rs#L206-L211); the field is declared at `:68`
 with a comment noting that `--mcp-file-root` and `-I` routinely name the same
 directory, so "an export named after an input is one autocompletion away".)
 
@@ -324,7 +324,7 @@ touching the analysis at all.
   Call-IDs, a verdict per call, free text — to a bare filename under
   `--mcp-file-root`.
 - It reaches the filesystem through `resolve_in_root`
-  ([`server.rs:1177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1177)) exactly as `export_capture` and
+  ([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->) exactly as `export_capture` and
   `export_audio` do, and therefore inherits `ProtectedInputs::check` and cannot
   land on a capture.
 - **Nothing reads it back.** No tool, no report, no REST route, no diagnosis.
@@ -345,7 +345,7 @@ store, no schema migration and no wire-visible generation counter.
 **What would change this.** Both of the following, not either:
 
 1. A wire-visible store identity — `generation`
-   ([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)) surfaced on REST and
+   ([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)<!-- "pub fn generation(&self) -> u64 {" -->) surfaced on REST and
    MCP responses — so a consumer can detect that what it is reading changed
    underneath it.
 2. A demonstrated need that `save_findings` does not meet, from someone who has
@@ -368,8 +368,8 @@ lifecycle to precisely the LLM. [Section 2, "Write-back MCP tools"](deferred-and
 proposed the repair — that the guarantee is *no tool alters the analysis an
 operator is reading while leaving them reading it*. The repair has still not
 been made, and the same wording drift affects
-[`src/mcp/mod.rs:5`](https://github.com/NormB/sipnab/blob/main/src/mcp/mod.rs#L5) and the handshake string at
-[`server.rs:2363`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2363).
+[`src/mcp/mod.rs:5`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/mcp/mod.rs#L5) and the handshake string at
+[`server.rs:2365`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/mcp/server.rs#L2365).
 
 That bullet is no longer in [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md). `4399a3781` rewrote it on
 2026-08-02, and the security model now lives in
@@ -378,7 +378,7 @@ calls the rule narrower than "read-only".
 
 **[Section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of `deferred-and-declined.md` has itself gone stale on one claim.** It states
 that the prompt-injection rule for tool descriptions "is convention, not
-enforcement", because [`src/mcp/server.rs:10`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L10) cited
+enforcement", because [`src/mcp/server.rs:10`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L10) cited
 `scripts/check-tool-descriptions.sh` and no such file existed. That is no longer
 true. [`tests/mcp_tool_descriptions_test.rs`](../../tests/mcp_tool_descriptions_test.rs)
 exists and carries two tests —
@@ -386,7 +386,7 @@ exists and carries two tests —
 `the_cited_description_gate_actually_exists` (`:127`), the second of which
 asserts that any gate named in the module doc is real, closing the loop that
 produced the phantom in the first place. The module doc
-([`server.rs:6-13`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6-L13)) now names the test and records the
+([`server.rs:7-14`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7-L14)<!-- "//! # Tool descriptions" -->) now names the test and records the
 history. The rule is enforced. That page's [section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) should be corrected by whoever
 owns it; this page does not edit it.
 

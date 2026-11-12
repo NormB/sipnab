@@ -105,18 +105,18 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
         _ => update_generic_state(dialog, msg),
 ```
 
-[`dialog.rs:353-362`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L353-L362). `SipMethod::Bye` and
+[`dialog.rs:353-362`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L353-L362). `SipMethod::Bye` and
 `SipMethod::Cancel` fall into `_`.
 
 `dialog.method` is set once, by `SipDialog::new`
-([`dialog.rs:285-297`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L285-L297)), from the request's own method
+([`dialog.rs:491-503`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L491-L503)<!-- "pub fn new(msg: &SipMessage)" -->), from the request's own method
 when the first message is a request and from CSeq when it is a response — and the
-rustdoc at [`:269-284`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L269-L284) says plainly that it is *"set
+rustdoc at [`:475-490`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L475-L490)<!-- "/// The second case" --> says plainly that it is *"set
 once here and never corrected"*. A leading response is therefore safe: CSeq says
 INVITE, so the INVITE machine is selected. A leading **request** that is not an
 INVITE is not.
 
-`update_generic_state` ([`dialog.rs:572-586`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L572-L586)) opens
+`update_generic_state` ([`dialog.rs:572-586`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L572-L586)) opens
 with `if !msg.is_request`, so every later *request* is a no-op, and its last arm
 discards `ResponseClass::Canceled` — a 487 changes nothing. A capture that opens
 on a CANCEL therefore reports `Trying` forever.
@@ -127,10 +127,10 @@ already up is the normal way this tool is used.
 ### What it costs, which is more than a wrong label
 
 `Trying` is in the **active** set
-([`dialog_store.rs:916-926`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L916-L926)) and is not `InCall`,
+([`dialog_store.rs:1989-1999`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1989-L1999)<!-- "fn is_active_dialog_state(state: &DialogState)" -->) and is not `InCall`,
 so a mid-dialog-seeded call is wrong in both directions on the two numbers
 operators graph: counted in `active_dialog_count` forever, invisible to
-`active_call_count` ([`:950-955`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L950-L955)), whose doc calls
+`active_call_count` ([`:2045-2055`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2045-L2055)<!-- "/// Count calls that are up: dialogs in `InCall`" -->), whose doc calls
 it *"the concurrent-call figure — the one that maps to channels in use, to a
 carrier's simultaneous-call limit, and to the alert an operator actually
 wants."*
@@ -144,9 +144,9 @@ growing with uptime; the invisibility to `active_call_count` stands. See
 And two security detectors are **silently off** for every such call.
 `record_if_short_call` — wangiri detection — takes an early `return None` unless
 the dialog is `Completed | Canceled`
-([`fraud_detect.rs:267-275`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L267-L275)), and
+([`fraud_detect.rs:396-404`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L396-L404)<!-- "fn record_if_short_call(&mut" -->), and
 `record_if_refused_call` — the sequential-scan signal — unless it is `Failed`
-([`:324`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L324)). A wrong state does not merely
+([`:456`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L456)<!-- "if dialog.method != crate::sip::SipMethod::Invite" -->). A wrong state does not merely
 mislabel a row; it turns off two detectors with no error anywhere.
 
 **Both gates have a second clause that
@@ -161,13 +161,13 @@ if dialog.method != crate::sip::SipMethod::Invite
 They test `dialog.method` as well as the state.
 
 Also affected: `Result: Trying` in the text report
-([`call_report.rs:276-283`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L276-L283)); a dialog counted
+([`call_report.rs:400-407`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L400-L407)<!-- "let result_str =" -->); a dialog counted
 in none of the three outcome buckets in every machine-readable summary
-([`api.rs:940-942`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L940-L942)); an empty result set for
+([`api.rs:5780-5782`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5780-L5782)<!-- "DialogState::Failed => failed_count += 1," -->); an empty result set for
 `state == "Canceled"` in the filter DSL
-([`dsl.rs:1374-1378`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1374-L1378)); and an ended call rendering amber
+([`dsl.rs:1374-1378`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dsl.rs#L1374-L1378)); and an ended call rendering amber
 "in setup" indefinitely in the TUI, where `Trying` shares an arm with `Ringing`
-and `Pending` ([`timeline.rs:472`](https://github.com/NormB/sipnab/blob/main/src/tui/timeline.rs#L472)).
+and `Pending` ([`timeline.rs:473`](https://github.com/NormB/sipnab/blob/main/src/tui/timeline.rs#L473)<!-- "DialogState::Ringing" -->).
 
 ## 2. Why the obvious fix failed five times
 
@@ -177,7 +177,7 @@ backlog is right that this *"is almost certainly the right shape"*. Here is why
 routing to `update_invite_state` on its own makes things worse.
 
 `update_invite_state` has two kinds of arm. The **request** arms are unguarded
-and fire from any state ([`dialog.rs:390-395`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L390-L395)):
+and fire from any state ([`dialog.rs:390-395`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L390-L395)):
 
 ```rust
 Some(SipMethod::Cancel) => { dialog.state = DialogState::Canceled; }
@@ -185,8 +185,8 @@ Some(SipMethod::Bye)    => { dialog.state = DialogState::Completed; }
 ```
 
 The **response** arms are all guarded on `cseq_method == "INVITE"` — four of
-them, at [`:438`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L438), [`:459`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L459),
-[`:485`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L485) and [`:494`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L494). A
+them, at [`:438`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L438), [`:459`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L459),
+[`:485`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L485) and [`:494`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L494). A
 BYE-seeded dialog's responses carry `CSeq: n BYE`. So routing a BYE-seeded dialog
 into the INVITE machine gains the two request arms and **loses every response
 arm**. That is the backlog's *"leaves cells unmodeled rather than filled"*,
@@ -195,7 +195,7 @@ stated mechanically.
 The last narrowing's failing cell reproduces by construction rather than by
 inference: for `method = "BYE"`, `code = 300`, the prover's expectation table
 falls into its `_ =>` family arm and declares `Redirect → Redirected`
-([`dialog.rs:967-972`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L967-L972)); the implementation reaches the
+([`dialog.rs:967-972`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L967-L972)); the implementation reaches the
 3xx arm whose guard is `cseq_method == "INVITE"`, false for `CSeq: 1 BYE`, so the
 state stays `Trying`. Verbatim the backlog's *"a BYE dialog in `Trying` receiving
 `300` stayed `Trying` instead of reaching `Redirected`."*
@@ -204,7 +204,7 @@ state stays `Trying`. Verbatim the backlog's *"a BYE dialog in `Trying` receivin
 
 `every_method_and_class_has_a_declared_transition` is a **differential between two
 hand-written tables**. `expected()`
-([`dialog.rs:940-974`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L940-L974)) is keyed on the dialog's method
+([`dialog.rs:940-974`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L940-L974)) is keyed on the dialog's method
 string, grouped into exactly the four families the dispatch uses; the
 implementation is keyed the same way. Change the dispatch and family membership
 changes — so a *different* `(family, class)` pair falls out of agreement, and the
@@ -265,7 +265,7 @@ matches!(dialog.state, DialogState::Trying | DialogState::Ringing | DialogState:
 ```
 
 That is the [RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261.html#section-9)/[RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261.html#section-15) rule the domain primer already documents
-([`domain-primer.md:168-180`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L168-L180)): once a final 2xx
+([`domain-primer.md:213-233`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L213-L233)<!-- "### CANCEL versus 200 OK is a race" -->): once a final 2xx
 has established the call, a CANCEL has no effect, so a late 487 must not
 un-answer it.
 
@@ -278,20 +278,20 @@ instinct — *"dispatch-only rather than relabeling the user-visible
 the guards at the same time.
 
 **The seed method's only remaining job is the initial state**
-([`dialog.rs:293-296`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L293-L296)), and for the two methods that
+([`dialog.rs:500-502`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L500-L502)<!-- "let initial_state" -->), and for the two methods that
 matter it barely matters: since the creation branch now applies the creating
-message's own transition ([`dialog_store.rs:694`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L694)),
+message's own transition ([`dialog_store.rs:2717`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2717)<!-- "update_state(&mut dialog, msg);" -->),
 a BYE-seeded dialog goes `Trying → Completed` on its own first message, and a
 CANCEL-seeded one goes `Trying → Canceled`. Which is exactly the outcome the
 pinned defect test is waiting for.
 
 **Two tests must change in the same commit, not afterwards.**
 `a_capture_beginning_mid_dialog_reports_trying_a_known_defect`
-([`arrival_order_parity_test.rs:389`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L389))
+([`arrival_order_parity_test.rs:389`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/tests/arrival_order_parity_test.rs#L389))
 flips red **by design** — its own doc says *"When the dispatch fix lands
 properly, this test FAILS — and that is the signal to replace it with the
 convergence assertion it is standing in for."* And the `continue` at
-[`:336-342`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L336-L342) that excuses the
+[`:336-342`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/tests/arrival_order_parity_test.rs#L336-L342) that excuses the
 `late_terminal` ordering must be deleted, or the convergence property is still
 being skipped for exactly the case that was broken.
 
@@ -317,9 +317,9 @@ transition or declares a no-change with a reason.** Three cell kinds:
 network is unlikely to produce. There is exactly one such family today, and it is
 already load-bearing: a message with no CSeq and no method never reaches
 `update_state` at all, because `SipDialog::new` returns `None`
-([`dialog.rs:286-291`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L286-L291)). The existing prover already
+([`dialog.rs:492-497`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L492-L497)<!-- "let call_id = msg.call_id()?.to_string();" -->). The existing prover already
 guards this in miniature with its `pairs` count assertion
-([`dialog.rs:1000-1006`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L1000-L1006)): *"a method stopped
+([`dialog.rs:1000-1006`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L1000-L1006)): *"a method stopped
 constructing a dialog and its whole row went unchecked."*
 
 **Two kinds shipped, not three.** The `Unconstructible` row above turned out to
@@ -335,22 +335,22 @@ assertion survives as `the_sweep_covers_every_declared_cell`.
 ### The coordinate is wrong on two axes, not one
 
 **Axis 1 — CSeq method.** `make_response(code, "x", method)` emits
-`CSeq: 1 {method}` ([`dialog.rs:647`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L647)) and is called with
-the *dialog's* method ([`:988`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L988)). So the prover's
+`CSeq: 1 {method}` ([`dialog.rs:647`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L647)) and is called with
+the *dialog's* method ([`:988`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L988)). So the prover's
 responses always carry a CSeq matching the seed. **The cells the fix has to get
 right are cells the prover cannot currently generate.** The real mid-dialog shape
 — a CANCEL-seeded dialog receiving a 487 whose CSeq is INVITE, which is precisely
 what `a_capture_beginning_mid_dialog_reports_trying_a_known_defect` constructs
-([`arrival_order_parity_test.rs:192`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L192)) —
+([`arrival_order_parity_test.rs:192`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/tests/arrival_order_parity_test.rs#L192)) —
 does not exist anywhere in the 1050-cell sweep.
 
 **Axis 2 — starting state.** The prover builds a fresh dialog per cell and applies
 exactly one response, so `start` is only ever `Trying` or `Pending`
 (the two `SipDialog::new` initial states,
-[`dialog.rs:293-296`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L293-L296)). **The state axis is entirely
+[`dialog.rs:500-502`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L500-L502)<!-- "let initial_state" -->). **The state axis is entirely
 unexercised.** That is not a minor gap: three of the four INVITE response arms are
 *state*-guarded, and the CANCEL-versus-200 race the domain primer documents —
-`Canceled → InCall` on a 2xx ([`dialog.rs:433-447`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L433-L447)) —
+`Canceled → InCall` on a 2xx ([`dialog.rs:433-447`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L433-L447)) —
 can never fire in the sweep, because a fresh dialog is never `Canceled`. A rule
 this project deliberately implemented and documented has no pairwise coverage at
 all.
@@ -364,12 +364,12 @@ arrival = Request(method)
         | Response(cseq_method, code)
 ```
 
-with 14 methods ([`dialog.rs:913-928`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L913-L928)), 75 codes
-([`:930-936`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L930-L936)), 7 response classes
-([`response_codes.rs:26-42`](https://github.com/NormB/sipnab/blob/main/src/sip/response_codes.rs#L26-L42)) and 13 dialog
-states ([`dialog.rs:23-58`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L23-L58)).
+with 14 methods ([`dialog.rs:1658-1673`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L1658-L1673)<!-- "const METHODS: [&str;" -->), 75 codes
+([`:1680-1686`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L1680-L1686)<!-- "const CODES: [u16;" -->), 7 response classes
+([`response_codes.rs:27-43`](https://github.com/NormB/sipnab/blob/main/src/sip/response_codes.rs#L27-L43)<!-- "pub enum ResponseClass" -->) and 13 dialog
+states ([`dialog.rs:24-59`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L24-L59)<!-- "pub enum DialogState" -->).
 
-`SipMethod::Custom(Box<str>)` ([`method.rs:47`](https://github.com/NormB/sipnab/blob/main/src/sip/method.rs#L47)) is the
+`SipMethod::Custom(Box<str>)` ([`method.rs:48`](https://github.com/NormB/sipnab/blob/main/src/sip/method.rs#L48)<!-- "Custom(Box<str>)," -->) is the
 one arm that cannot be enumerated. It gets **one declared cell** with a stated
 reason, not a wildcard escape — the distinction being that a declared cell is
 something a reader can disagree with.
@@ -394,12 +394,12 @@ fn transition(family: Family, arrival: &Arrival, state: &DialogState) -> Cell;
 ```
 
 A wildcard is exactly how a cell goes unmodeled — it is what `_ =>` at
-[`dialog.rs:358`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L358) did, and what the `_ =>` family arm in
-`expected()` ([`:967`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L967)) does. Remove the wildcards and
+[`dialog.rs:358`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L358) did, and what the `_ =>` family arm in
+`expected()` ([`:967`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L967)) does. Remove the wildcards and
 adding a `DialogState` variant or a `ResponseClass` variant becomes a compile
 error at every cell it affects, which is a stronger and cheaper guarantee than
 any test. `#[non_exhaustive]` on `DialogState`
-([`dialog.rs:22`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L22)) does not obstruct this: it constrains
+([`dialog.rs:22`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L22)<!-- "#[derive(Debug, Clone, PartialEq," -->) does not obstruct this: it constrains
 downstream crates, not matches inside the defining crate.
 
 This obligation is what turns "budget for completing the INVITE machine's guard
@@ -460,7 +460,7 @@ it. Properties, each a quantified statement over every cell:
   `InCall` to `Trying` or `Ringing`.
 - **The 2xx/CANCEL race resolves one way.** A 2xx in the INVITE family from
   `Canceled` reaches `InCall`; no 487 may move `InCall`. [RFC 3261 section 9](https://www.rfc-editor.org/rfc/rfc3261.html#section-9) and [RFC 3261 section 15](https://www.rfc-editor.org/rfc/rfc3261.html#section-15),
-  and [`domain-primer.md:168-180`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L168-L180).
+  and [`domain-primer.md:213-233`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L213-L233)<!-- "### CANCEL versus 200 OK is a race" -->.
 - **Provisional and Challenge never decide an outcome.**
   `ResponseClass::Provisional` and `ResponseClass::Challenge` may only produce
   `To(Ringing)` or `Stay(_)` — never a terminal state.
@@ -540,8 +540,8 @@ machine sees the messages."*
   dashboard. It belongs in the release notes, not in a footnote.
 - **The two fraud detectors stay off, and that is a defect this change does not
   close.** Both gates open with `dialog.method != SipMethod::Invite`
-  ([`fraud_detect.rs:268`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L268),
-  [`:324`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L324)).
+  ([`fraud_detect.rs:397`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L397)<!-- "if dialog.method != crate::sip::SipMethod::Invite" -->,
+  [`:456`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L456)<!-- "if dialog.method != crate::sip::SipMethod::Invite" -->).
   [Section 3, "The central design decision: the dispatch key is wrong"](#3-the-central-design-decision-the-dispatch-key-is-wrong)
   deliberately leaves
   `dialog.method` reading `BYE` or `CANCEL` on a mid-dialog-seeded call, so those
@@ -560,7 +560,7 @@ machine sees the messages."*
   detectors quietly ignore the calls it fixed would recreate the shape
   `15b6337` warned about, one layer out.
 - **`DialogState` is public API.** It is re-exported at
-  [`lib.rs:110`](https://github.com/NormB/sipnab/blob/main/src/lib.rs#L110) and is `serde::Serialize`, so any new variant
+  [`lib.rs:486`](https://github.com/NormB/sipnab/blob/main/src/lib.rs#L486)<!-- "pub use sip::dialog::{DialogState," --> and is `serde::Serialize`, so any new variant
   is a semver event. `#[non_exhaustive]` leaves room to add one;
   [section 7, "Open questions"](#7-open-questions) has the question of whether
   one is needed.
@@ -617,8 +617,8 @@ question is left standing rather than deleted so the reasoning survives.
   does not answer is how many cells real traffic exercises.
 - **Does the merge path need the same treatment?** `update_state` has a third
   call site on the absorb/merge path
-  ([`dialog_store.rs:1309`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1309)), and
+  ([`dialog_store.rs:1269`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog_store.rs#L1269)), and
   `merge_recovers_timestamp_order_from_permuted_stores`
-  ([`arrival_order_parity_test.rs:433`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L433))
+  ([`arrival_order_parity_test.rs:433`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L433)<!-- "/// Two stores," -->)
   shows the offline merge is order-tolerant today. Whether it stays so under a
   dispatch keyed on the arriving message has not been checked.

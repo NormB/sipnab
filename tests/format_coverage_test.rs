@@ -23,6 +23,9 @@
 //! The rule these tests hold is that formatting coverage is derived from the
 //! files that exist, not from the packages somebody remembered.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
@@ -45,13 +48,9 @@ fn read(rel: &str) -> Result<String, TestError> {
 /// From `git ls-files` rather than a walk, so a manifest in an ignored build
 /// directory is never mistaken for a package this repository ships.
 fn package_dirs() -> Result<BTreeSet<String>, TestError> {
-    let out = Command::new("git")
-        .args(["ls-files", "*Cargo.toml", "Cargo.toml"])
-        .current_dir(repo())
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed");
+    let listed = tracked::ls_files(repo(), &["--", "*Cargo.toml", "Cargo.toml"])?;
     let mut dirs = BTreeSet::new();
-    for rel in String::from_utf8_lossy(&out.stdout).lines() {
+    for rel in listed.iter().map(String::as_str) {
         let body = read(rel)?;
         if !body.contains("[package]") {
             continue;
@@ -128,12 +127,7 @@ fn the_format_file_list_reaches_every_package() -> Result<(), TestError> {
         script.contains("git ls-files -z --cached --others --exclude-standard -- '*.rs'"),
         "{FMT_SCRIPT} must take its file list from git, tracked and new files alike"
     );
-    let out = Command::new("git")
-        .args(["ls-files", "--", "*.rs"])
-        .current_dir(repo())
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed: {out:?}");
-    let files = String::from_utf8(out.stdout)?;
+    let files = tracked::ls_files(repo(), &["--", "*.rs"])?.join("\n");
     let mut unreached = Vec::new();
     for dir in package_dirs()? {
         let prefix = if dir == "." {
@@ -396,16 +390,9 @@ fn jobs_missing_the_pin(workflow: &str, runners: &BTreeSet<String>) -> Vec<Strin
 
 /// Every tracked script and hook, by repo-relative path.
 fn scripts_and_hooks() -> Result<BTreeMap<String, String>, TestError> {
-    let out = Command::new("git")
-        .args(["ls-files", "scripts", ".githooks"])
-        .current_dir(repo())
-        .output()?;
-    assert!(
-        out.status.success(),
-        "git ls-files scripts .githooks failed"
-    );
+    let listed = tracked::ls_files(repo(), &["--", "scripts", ".githooks"])?;
     let mut files = BTreeMap::new();
-    for rel in String::from_utf8_lossy(&out.stdout).lines() {
+    for rel in listed.iter().map(String::as_str) {
         if let Ok(body) = std::fs::read_to_string(repo().join(rel)) {
             files.insert(rel.to_string(), body);
         }
@@ -466,16 +453,9 @@ fn every_job_that_runs_the_format_gate_installs_the_pinned_rustfmt() -> Result<(
         runners.contains(".githooks/pre-push") && runners.contains("scripts/test-pre-push.sh"),
         "the runner scan missed the pre-push hook or its harness, so it is broken: {runners:?}"
     );
-    let out = Command::new("git")
-        .args(["ls-files", ".github/workflows/*.yml"])
-        .current_dir(repo())
-        .output()?;
-    assert!(
-        out.status.success(),
-        "git ls-files .github/workflows failed"
-    );
+    let listed = tracked::ls_files(repo(), &["--", ".github/workflows/*.yml"])?;
     let mut missing = Vec::new();
-    for rel in String::from_utf8_lossy(&out.stdout).lines() {
+    for rel in listed.iter().map(String::as_str) {
         for job in jobs_missing_the_pin(&read(rel)?, &runners) {
             missing.push(format!("{rel}: job `{job}`"));
         }

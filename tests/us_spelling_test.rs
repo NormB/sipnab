@@ -30,7 +30,9 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::process::Command;
+
+#[path = "support/tracked.rs"]
+mod tracked;
 
 #[path = "support/mcp_reference.rs"]
 mod mcp_reference;
@@ -355,12 +357,9 @@ fn british_form(stem: &str, suffix: &str) -> String {
 
 /// Every git-tracked file the scan reads.
 fn scanned_files() -> Result<Vec<String>, TestError> {
-    let out = Command::new("git")
-        .args(["ls-files"])
-        .current_dir(repo())
-        .output()?;
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
+    Ok(tracked::ls_files(repo(), &[])?
+        .iter()
+        .map(String::as_str)
         .filter(|f| {
             !NOT_SCANNED.iter().any(|(p, _)| {
                 if p.ends_with('/') {
@@ -963,14 +962,9 @@ fn the_spelling_scan_reads_this_very_file() -> Result<(), TestError> {
 #[test]
 fn every_tracked_test_file_is_reachable_by_the_scan() -> Result<(), TestError> {
     let scanned = scanned_files()?;
-    let out = Command::new("git")
-        .args(["ls-files", "tests/"])
-        .current_dir(repo())
-        .output()?;
-    let listed: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
+    let listed: Vec<String> = tracked::ls_files(repo(), &["--", "tests/"])?
+        .into_iter()
         .filter(|f| f.ends_with(".rs"))
-        .map(str::to_string)
         .collect();
 
     assert!(

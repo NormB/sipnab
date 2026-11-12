@@ -1,39 +1,41 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // SPDX-FileCopyrightText: The sipnab contributors
 
-//! The `digest` 0.10 line, and with it `block-buffer` 0.10.4
-//! (GHSA-qwgh-2vcv-g2f7), stays confined to `rsa` 0.9's OAEP.
+//! sipnab builds nothing from the `digest` 0.10 line, and accepts no advisory
+//! for `rsa` or `block-buffer`.
 //!
-//! `rsa` 0.9, the newest stable `rsa`, is built on `digest` 0.10, and its
-//! `Oaep::new::<D>()` takes a `digest` 0.10 hash, which is the only reason
-//! sipnab still depends on `sha1` 0.10 (as `sha1_oaep`). Every other SHA-1 in
-//! sipnab is `sha1` 0.11. `osv-scanner.toml` records why the advisory does not
-//! apply to that one use; these tests hold the facts the record rests on:
+//! Until `rsa` 0.10.0, sipnab's RSA came from `rsa` 0.9, which is built on
+//! `digest` 0.10 and has RUSTSEC-2023-0071 (the "Marvin" timing side channel).
+//! Its OAEP took a `digest` 0.10 hash, so sipnab also depended on `sha1` 0.10
+//! (as `sha1_oaep`), and three scanner configurations carried exceptions:
+//! RUSTSEC-2023-0071 for `rsa`, and GHSA-qwgh-2vcv-g2f7 for the `block-buffer`
+//! under `digest` 0.10. `rsa` 0.10.0 fixes the first and is built on `digest`
+//! 0.11. These tests hold what the move left:
 //!
-//! - sipnab's code names `sha1` 0.10 only as the type argument of an OAEP
-//!   padding built inside the `encrypt`/`decrypt` call that consumes it, so no
-//!   `digest` 0.10 hasher of sipnab's outlives one call or crosses a
-//!   `catch_unwind` boundary;
-//! - in `Cargo.lock`, only `rsa`, the `signature` crate under it and `sha1`
-//!   0.10 depend on `digest` 0.10, apart from `sha2` 0.10 under ratatui's
-//!   termwiz backend, which `Cargo.lock` lists because it records every
-//!   optional dependency, and which sipnab never enables;
-//! - the exception exists exactly while `rsa` 0.9 is locked, and expires.
+//! - `rsa` is locked at 0.10 or later and `sha1` 0.10 is in no lock file,
+//!   manifest or source file;
+//! - `digest` 0.10 stays in `Cargo.lock` only under ratatui's termwiz backend,
+//!   which `Cargo.lock` lists because it records every optional dependency,
+//!   and which sipnab never enables;
+//! - no scanner is told to accept either advisory.
 #![cfg(feature = "native")]
+
+#[path = "support/tracked.rs"]
+mod tracked;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::process::Command;
 
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
 
-/// The advisory the `osv-scanner.toml` exception names.
-const ADVISORY: &str = "GHSA-qwgh-2vcv-g2f7";
-
-/// The one form in which sipnab's code may name `sha1` 0.10: the OAEP padding,
-/// a temporary moved into the call that uses it.
-const OAEP_PADDING: &str = "rsa::Oaep::new::<sha1_oaep::Sha1>()";
+/// The advisories sipnab accepted while it used `rsa` 0.9, with their aliases.
+const FORMER_EXCEPTIONS: [&str; 4] = [
+    "RUSTSEC-2023-0071",
+    "CVE-2023-49092",
+    "GHSA-c827-hfw6-qwvm",
+    "GHSA-qwgh-2vcv-g2f7",
+];
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -41,78 +43,26 @@ fn repo() -> PathBuf {
 
 /// Tracked Rust sources under `src/` and `crates/`.
 fn tracked_rust_sources() -> Result<Vec<String>, TestError> {
-    let out = Command::new("git")
-        .args([
-            "ls-files",
-            "-z",
-            "--",
-            "src/*.rs",
-            "src/**/*.rs",
-            "crates/**/*.rs",
-        ])
-        .current_dir(repo())
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed");
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect())
+    tracked::ls_files(repo(), &["--", "src/*.rs", "src/**/*.rs", "crates/**/*.rs"])
 }
 
-/// Every line naming `sha1_oaep` that is not the OAEP padding, as `file:line: text`.
-fn sha1_0_10_uses_outside_oaep(file: &str, text: &str) -> Vec<String> {
+/// Every line naming `sha1_oaep`, as `file:line: text`.
+fn lines_naming_sha1_oaep(file: &str, text: &str) -> Vec<String> {
     text.lines()
         .enumerate()
-        .filter(|(_, l)| l.contains("sha1_oaep") && !l.contains(OAEP_PADDING))
+        .filter(|(_, l)| l.contains("sha1_oaep"))
         .map(|(n, l)| format!("{file}:{}: {}", n + 1, l.trim()))
         .collect()
 }
 
-#[test]
-fn sha1_0_10_is_named_only_as_the_rsa_oaep_padding() -> Result<(), TestError> {
-    let mut found = Vec::new();
-    let mut paddings = 0;
-    for file in tracked_rust_sources()? {
-        let text = std::fs::read_to_string(repo().join(&file))?;
-        paddings += text.matches(OAEP_PADDING).count();
-        found.extend(sha1_0_10_uses_outside_oaep(&file, &text));
-    }
-    assert!(
-        found.is_empty(),
-        "sha1 0.10 (`sha1_oaep`) is for rsa 0.9's OAEP only; hash with sha1 0.11 \
-         (`sha1`) instead:\n{}",
-        found.join("\n")
-    );
-    assert_eq!(
-        paddings, 2,
-        "the JWE encrypt and decrypt paths each build one"
-    );
-    Ok(())
-}
-
-/// The scan above tells a stored or reused hasher from the padding.
-#[test]
-fn the_scan_refuses_a_sha1_0_10_hasher() {
-    let ok = "    .decrypt(rsa::Oaep::new::<sha1_oaep::Sha1>(), &encrypted_key)";
-    assert!(sha1_0_10_uses_outside_oaep("a.rs", ok).is_empty());
-    for bad in [
-        "let digest = <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(name);",
-        "let mut h = sha1_oaep::Sha1::new();",
-        "    hasher: sha1_oaep::Sha1,",
-        "use sha1_oaep::Digest;",
-    ] {
-        assert_eq!(sha1_0_10_uses_outside_oaep("a.rs", bad).len(), 1, "{bad}");
-    }
-}
-
-/// The packages in `Cargo.lock`, as (name, version, dependencies).
-fn locked() -> Result<Vec<(String, String, Vec<String>)>, TestError> {
-    let lock: toml::Table = std::fs::read_to_string(repo().join("Cargo.lock"))?.parse()?;
+/// The packages in the lock file at `path`, relative to the repository root,
+/// as (name, version, dependencies).
+fn locked_in(path: &str) -> Result<Vec<(String, String, Vec<String>)>, TestError> {
+    let lock: toml::Table = std::fs::read_to_string(repo().join(path))?.parse()?;
     let packages = lock
         .get("package")
         .and_then(toml::Value::as_array)
-        .ok_or("Cargo.lock has no [[package]]")?;
+        .ok_or("the lock file has no [[package]]")?;
     let mut out = Vec::new();
     for p in packages {
         let field = |k: &str| {
@@ -149,96 +99,166 @@ fn names(entry: &str, name: &str, prefix: &str, versions: &[String]) -> bool {
     }
 }
 
+/// The rule that reads a lock entry, on both of its forms.
 #[test]
-fn only_rsa_0_9_pulls_in_the_digest_0_10_line() -> Result<(), TestError> {
-    let lock = locked()?;
+fn a_lock_entry_names_a_version_only_when_the_lock_holds_several() {
+    let two = ["0.10.7".to_string(), "0.11.3".to_string()];
+    let one = ["0.11.3".to_string()];
+    assert!(
+        names("digest 0.10.7", "digest", "0.10.", &two),
+        "an entry with a version is read by that version"
+    );
+    assert!(
+        !names("digest 0.11.3", "digest", "0.10.", &two),
+        "another version of the same crate is not a match"
+    );
+    assert!(
+        !names("digest", "digest", "0.10.", &one),
+        "an entry without a version means the one locked version"
+    );
+    assert!(
+        names("digest", "digest", "0.11.", &one),
+        "an entry without a version matches the one locked version"
+    );
+    assert!(
+        !names("digest-extra 0.10.7", "digest", "0.10.", &two),
+        "a crate whose name only starts the same is not a match"
+    );
+}
+
+/// `rsa` is locked at 0.10 or later, which is built on `digest` 0.11, so the
+/// `sha1` 0.10 that only `rsa` 0.9's OAEP needed is in no lock file and no
+/// manifest.
+#[test]
+fn rsa_is_past_0_9_and_sha1_0_10_is_gone() -> Result<(), TestError> {
+    for lock_file in ["Cargo.lock", "fuzz/Cargo.lock"] {
+        let lock = locked_in(lock_file)?;
+        let rsa: Vec<&str> = lock
+            .iter()
+            .filter(|p| p.0 == "rsa")
+            .map(|p| p.1.as_str())
+            .collect();
+        assert!(
+            rsa.len() == 1 && !rsa.iter().any(|v| v.starts_with("0.9.")),
+            "{lock_file} locks rsa at {rsa:?}: it must be one version, 0.10 or later"
+        );
+        let old_sha1: Vec<&str> = lock
+            .iter()
+            .filter(|p| p.0 == "sha1" && p.1.starts_with("0.10."))
+            .map(|p| p.1.as_str())
+            .collect();
+        assert!(
+            old_sha1.is_empty(),
+            "{lock_file} still locks sha1 {old_sha1:?}: nothing needs it once rsa is 0.10"
+        );
+    }
+    let manifest = std::fs::read_to_string(repo().join("Cargo.toml"))?;
+    assert!(
+        !manifest.contains("sha1_oaep"),
+        "Cargo.toml still names the sha1 0.10 dependency `sha1_oaep`"
+    );
+    Ok(())
+}
+
+/// No source file names `sha1_oaep`: every SHA-1 is `sha1` 0.11.
+#[test]
+fn no_source_names_the_removed_sha1_0_10_dependency() -> Result<(), TestError> {
+    let sources = tracked_rust_sources()?;
+    assert!(
+        sources.len() > 100,
+        "the walk found only {} source files",
+        sources.len()
+    );
+    let mut found = Vec::new();
+    for file in sources {
+        let text = std::fs::read_to_string(repo().join(&file))?;
+        found.extend(lines_naming_sha1_oaep(&file, &text));
+    }
+    assert!(
+        found.is_empty(),
+        "`sha1_oaep` (sha1 0.10) is removed; hash with `sha1` (0.11):\n{}",
+        found.join("\n")
+    );
+    Ok(())
+}
+
+/// The scan above reports a line that names the removed dependency, with its
+/// place, and no other line.
+#[test]
+fn the_scan_reports_each_line_naming_sha1_oaep() {
+    let text = "use sha1::Digest;\nlet h = sha1_oaep::Sha1::new();\n// done\n";
+    assert_eq!(
+        lines_naming_sha1_oaep("a.rs", text),
+        vec!["a.rs:2: let h = sha1_oaep::Sha1::new();".to_string()],
+        "one line names it, the second"
+    );
+    assert!(
+        lines_naming_sha1_oaep("a.rs", "let h = sha1::Sha1::new();\n").is_empty(),
+        "sha1 0.11 is not reported"
+    );
+}
+
+/// `digest` 0.10, and with it `block-buffer` 0.10, is in `Cargo.lock` only
+/// under `sha2` 0.10, which only ratatui's termwiz backend pulls in; the fuzz
+/// lock file has none of it.
+#[test]
+fn digest_0_10_is_locked_only_under_the_termwiz_backend() -> Result<(), TestError> {
+    let lock = locked_in("Cargo.lock")?;
     let versions = |n: &str| -> Vec<String> {
         lock.iter()
             .filter(|p| p.0 == n)
             .map(|p| p.1.clone())
             .collect()
     };
-    let (digest, block_buffer, sha1) = (
-        versions("digest"),
-        versions("block-buffer"),
-        versions("sha1"),
-    );
-    assert!(
-        digest.iter().any(|v| v.starts_with("0.10.")),
-        "digest 0.10 is gone from Cargo.lock: remove the {ADVISORY} exception and this test"
-    );
-    let parents = |name: &str, prefix: &str, versions: &[String]| -> BTreeSet<String> {
+    let parents = |name: &str, prefix: &str| -> BTreeSet<String> {
+        let held = versions(name);
         lock.iter()
-            .filter(|p| p.2.iter().any(|d| names(d, name, prefix, versions)))
+            .filter(|p| p.2.iter().any(|d| names(d, name, prefix, &held)))
             .map(|p| format!("{} {}", p.0, p.1))
             .collect()
     };
-    let of_block_buffer = parents("block-buffer", "0.10.", &block_buffer);
+    let of_block_buffer = parents("block-buffer", "0.10.");
     assert!(
         of_block_buffer
             .iter()
             .all(|p| p.starts_with("digest 0.10.")),
         "block-buffer 0.10 is reached other than through digest 0.10: {of_block_buffer:?}"
     );
-    // A parent by name; `sha1` with its version, since sha1 0.11 must not appear.
-    let of_digest: BTreeSet<String> = lock
-        .iter()
-        .filter(|p| p.2.iter().any(|d| names(d, "digest", "0.10.", &digest)))
-        .map(|p| {
-            if p.0 == "sha1" {
-                format!("sha1@{}", p.1)
-            } else {
-                p.0.clone()
-            }
-        })
-        .collect();
-    let allowed: BTreeSet<String> = ["rsa", "signature", "sha2"]
-        .into_iter()
-        .map(String::from)
-        .chain(
-            sha1.iter()
-                .filter(|v| v.starts_with("0.10."))
-                .map(|v| format!("sha1@{v}")),
-        )
-        .collect();
+    let of_digest = parents("digest", "0.10.");
     assert!(
-        of_digest.is_subset(&allowed),
-        "something other than rsa 0.9 brings in digest 0.10: {of_digest:?}, allowed {allowed:?}"
+        of_digest.iter().all(|p| p.starts_with("sha2 0.10.")),
+        "something other than sha2 0.10 brings in digest 0.10: {of_digest:?}"
     );
-    // sha2 0.10 is in the lock only under ratatui's optional termwiz backend.
+    let name_of = |p: String| p.split(' ').next().unwrap_or("").to_string();
     let termwiz_chain: BTreeSet<&str> = ["pest_meta", "termwiz", "wezterm-blob-leases"].into();
-    let of_sha2_0_10: BTreeSet<String> = parents("sha2", "0.10.", &versions("sha2"))
-        .into_iter()
-        .map(|p| p.split(' ').next().unwrap_or("").to_string())
-        .collect();
+    let of_sha2_0_10: BTreeSet<String> =
+        parents("sha2", "0.10.").into_iter().map(name_of).collect();
     assert!(
         of_sha2_0_10
             .iter()
             .all(|p| termwiz_chain.contains(p.as_str())),
         "sha2 0.10 is pulled in outside ratatui's termwiz backend: {of_sha2_0_10:?}"
     );
-    let of_termwiz: BTreeSet<String> = parents("termwiz", "", &versions("termwiz"))
-        .into_iter()
-        .map(|p| p.split(' ').next().unwrap_or("").to_string())
-        .collect();
+    let of_termwiz: BTreeSet<String> = parents("termwiz", "").into_iter().map(name_of).collect();
     assert!(
         of_termwiz.iter().all(|p| p == "ratatui-termwiz"),
         "termwiz is reached other than as ratatui's backend: {of_termwiz:?}"
     );
-    let of_sha1_0_10: BTreeSet<String> = parents("sha1", "0.10.", &sha1)
+    let fuzz_old: Vec<String> = locked_in("fuzz/Cargo.lock")?
         .into_iter()
-        .map(|p| p.split(' ').next().unwrap_or("").to_string())
+        .filter(|p| (p.0 == "digest" || p.0 == "block-buffer") && p.1.starts_with("0.10."))
+        .map(|p| format!("{} {}", p.0, p.1))
         .collect();
     assert!(
-        of_sha1_0_10.iter().all(|p| p == "sipnab" || p == "rsa"),
-        "sha1 0.10 is pulled in by {of_sha1_0_10:?}"
+        fuzz_old.is_empty(),
+        "fuzz/Cargo.lock locks {fuzz_old:?}: the fuzz targets build no digest 0.10"
     );
     Ok(())
 }
 
 /// sipnab never turns on ratatui's termwiz backend, the one place `sha2` 0.10
-/// (and through it `digest` 0.10) sits in `Cargo.lock` outside `rsa`: so that
-/// copy is never compiled.
+/// (and through it `digest` 0.10) sits in `Cargo.lock`: so that copy is never
+/// compiled.
 #[test]
 fn ratatui_termwiz_backend_stays_off() -> Result<(), TestError> {
     let manifest: toml::Table = std::fs::read_to_string(repo().join("Cargo.toml"))?.parse()?;
@@ -263,50 +283,33 @@ fn ratatui_termwiz_backend_stays_off() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The exception stands exactly while `rsa` 0.9 is locked, and it expires.
-///
-/// When `rsa` moves to a stable 0.10 (built on `digest` 0.11 and `block-buffer`
-/// 0.12), this fails: remove the exception, the `sha1_oaep` dependency and this
-/// file. `scripts/check-dependency-canaries.py` is the check that notices the
-/// release; it runs in `.github/workflows/osv-scanner.yml`.
+/// The scanner configurations and the VEX document accept none of the
+/// advisories `rsa` 0.9 needed an exception for, and CI's `cargo audit` runs
+/// with no `--ignore`.
 #[test]
-fn the_advisory_exception_lasts_only_while_rsa_0_9_is_locked() -> Result<(), TestError> {
-    let rsa = locked()?
-        .into_iter()
-        .filter(|p| p.0 == "rsa")
-        .map(|p| p.1)
-        .collect::<Vec<_>>();
-    let config: toml::Table = std::fs::read_to_string(repo().join("osv-scanner.toml"))?.parse()?;
-    let entry = config
-        .get("IgnoredVulns")
-        .and_then(toml::Value::as_array)
-        .and_then(|a| {
-            a.iter()
-                .find(|v| v.get("id").and_then(toml::Value::as_str) == Some(ADVISORY))
-        });
-    let on_0_9 = rsa.iter().all(|v| v.starts_with("0.9."));
-    assert!(
-        !rsa.is_empty(),
-        "rsa is no longer locked: remove the {ADVISORY} exception"
-    );
-    assert_eq!(
-        entry.is_some(),
-        on_0_9,
-        "rsa {rsa:?}: the {ADVISORY} exception must exist exactly while rsa 0.9 is locked"
-    );
-    if let Some(e) = entry {
-        let until = e
-            .get("ignoreUntil")
-            .ok_or("the exception has no ignoreUntil: it must expire")?;
-        let until = until.to_string();
-        assert!(
-            until.starts_with("2026-12-") || until.starts_with("2027-01-"),
-            "ignoreUntil {until} is not within about 60 days of 2026-10-27"
-        );
-        let reason = e.get("reason").and_then(toml::Value::as_str).unwrap_or("");
-        for fact in ["vcon_jose.rs", "oaep.rs", "block-buffer", "catch_unwind"] {
-            assert!(reason.contains(fact), "the reason does not cite {fact}");
+fn no_scanner_is_told_to_accept_an_rsa_or_block_buffer_advisory() -> Result<(), TestError> {
+    for file in ["deny.toml", "osv-scanner.toml", "vex/sipnab.openvex.json"] {
+        let text = std::fs::read_to_string(repo().join(file))?;
+        for id in FORMER_EXCEPTIONS {
+            assert!(
+                !text.contains(id),
+                "{file} still names {id}: rsa 0.10.0 fixes it or does not bring it in"
+            );
         }
     }
+    let ci = std::fs::read_to_string(repo().join(".github/workflows/ci.yml"))?;
+    let audits: Vec<&str> = ci
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("run: cargo audit"))
+        .collect();
+    assert_eq!(
+        audits,
+        [
+            "run: cargo audit",
+            "run: cargo audit --file fuzz/Cargo.lock"
+        ],
+        "CI audits both lock files, with no advisory ignored"
+    );
     Ok(())
 }
