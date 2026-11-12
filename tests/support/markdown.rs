@@ -31,9 +31,13 @@
 
 #![allow(dead_code)]
 
+// Public: a test that includes this file reads the listing through
+// `markdown::tracked`, because clippy refuses one file loaded as two modules.
+#[path = "tracked.rs"]
+pub mod tracked;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 
 /// One fenced code block.
@@ -416,17 +420,9 @@ pub fn code_trees() -> &'static BTreeSet<String> {
 ///
 /// The truth [`code_trees`] is checked against, not a second source of it.
 pub fn tracked_top_level_dirs() -> std::io::Result<BTreeSet<String>> {
-    let out = Command::new("git")
-        .args(["ls-files", "-z"])
-        .current_dir(repo_root())
-        .output()?;
-    assert!(
-        out.status.success(),
-        "git ls-files failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .split('\0')
+    Ok(tracked::ls_files(repo_root(), &[])
+        .map_err(|e| std::io::Error::other(e.to_string()))?
+        .iter()
         .filter_map(|p| p.split_once('/'))
         .map(|(top, _)| top.to_string())
         .filter(|top| top != "docs")

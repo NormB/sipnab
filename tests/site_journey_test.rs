@@ -28,6 +28,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 #[path = "support/mcp_reference.rs"]
 mod mcp_reference;
 #[path = "support/release_tags.rs"]
@@ -1615,12 +1618,7 @@ fn published_glibc_floor_matches_release_gate() -> Result<(), TestError> {
         ("website/content/docs/build.md", "2.41"),
     ];
 
-    let out = std::process::Command::new("git")
-        .args(["ls-files", "*.md"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files: {e}"))?;
-    let tracked = String::from_utf8_lossy(&out.stdout);
+    let tracked = tracked::ls_files(repo(), &["--", "*.md"])?.join("\n");
 
     // A glibc-shaped version: `2.NN`, with the preceding character not part of
     // a longer identifier. Both halves earn their place — without the boundary
@@ -3784,17 +3782,7 @@ fn rust_toolchain_pins_agree() -> Result<(), TestError> {
 
 /// Every git-tracked path, repo-relative.
 fn git_tracked_files() -> Result<Vec<String>, TestError> {
-    let out = std::process::Command::new("git")
-        .args(["ls-files", "-z"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files: {e}"))?;
-    assert!(out.status.success(), "git ls-files failed");
-    let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .split('\0')
-        .filter(|f| !f.is_empty())
-        .map(str::to_string)
-        .collect();
+    let files = tracked::ls_files(repo(), &[])?;
     assert!(
         files.len() > 100,
         "git ls-files returned {} paths — the derivation is broken",
@@ -3922,12 +3910,7 @@ fn published_download_urls_name_versioned_assets() -> Result<(), TestError> {
     // permanent 404 — and neither download.html nor index.html was on the list,
     // which is the page whose entire purpose is downloading. Demonstrated: a
     // bare tarball link added to download.html passed.
-    let out = std::process::Command::new("git")
-        .args(["ls-files"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files: {e}"))?;
-    let tracked = String::from_utf8_lossy(&out.stdout);
+    let tracked = tracked::ls_files(repo(), &[])?.join("\n");
     let mut bare = Vec::new();
     let mut scanned = 0;
     for rel in tracked.lines() {
@@ -6207,13 +6190,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
             "harness/", // compose-generated volumes are runtime paths
         ];
         {
-            let out = std::process::Command::new("git")
-                .args(["ls-files"])
-                .current_dir(repo())
-                .output()
-                .map_err(|e| format!("git ls-files: {e}"))?;
-            let mut top: Vec<String> = String::from_utf8_lossy(&out.stdout)
-                .lines()
+            let listed = tracked::ls_files(repo(), &[])?;
+            let mut top: Vec<String> = listed
+                .iter()
+                .map(String::as_str)
                 .filter_map(|p| p.split_once('/').map(|(d, _)| format!("{d}/")))
                 .collect();
             top.sort();
@@ -6990,12 +6970,11 @@ fn ci_actions_and_base_images_are_pinned_by_digest() -> Result<(), TestError> {
 
     // Every Dockerfile in the tree, found rather than listed: a new one added
     // without a digest is exactly the case this exists to catch.
-    let out = std::process::Command::new("git")
-        .args(["ls-files", "Dockerfile", "*.Dockerfile", "**/Dockerfile*"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files: {e}"))?;
-    for rel in String::from_utf8_lossy(&out.stdout).lines() {
+    let listed = tracked::ls_files(
+        repo(),
+        &["--", "Dockerfile", "*.Dockerfile", "**/Dockerfile*"],
+    )?;
+    for rel in listed.iter().map(String::as_str) {
         for (i, line) in read(rel)?.lines().enumerate() {
             if !line.starts_with("FROM ") {
                 continue;
@@ -8718,10 +8697,8 @@ fn no_document_claims_git_holds_a_directory_git_ignores() -> Result<(), TestErro
              directory is now tracked and this list is wrong -- or the list is \
              stale. Both need a human, not a silent pass"
         );
-        let tracked = std::process::Command::new("git")
-            .args(["ls-files", dir])
-            .output()
-            .map(|o| !o.stdout.is_empty())
+        let tracked = tracked::ls_files(repo(), &["--", dir])
+            .map(|listed| !listed.is_empty())
             .unwrap_or(false);
         assert!(
             !tracked,

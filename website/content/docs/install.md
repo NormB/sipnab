@@ -82,7 +82,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.246 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.247 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -105,7 +105,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.246` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.247` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -294,7 +294,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.246) | Plugin | `Recommends` |
+| Artifact (0.5.247) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -334,11 +334,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.246 for the
+it first, in the same shell, to the release you want, e.g. 0.5.247 for the
 latest:
 
 ```bash
-VERSION=0.5.246
+VERSION=0.5.247
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -478,13 +478,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.246, as in
+you want, e.g. 0.5.247, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.246
+   VERSION=0.5.247
    ```
 
 - Download the package:
@@ -595,25 +595,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.246-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.247-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.246-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.247-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.246-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.247-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.246-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.247-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -990,7 +990,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `metrics` | Standalone Prometheus `/metrics` server on a plain TCP listener and threads. Needs neither the `api` feature nor an async runtime. Included by default. | `native`, `base64`, `rustls` |
 | `plugins` | WASM plugin host (`--plugin`): runs third-party dialog detections in a sandbox that has no access to the sipnab process. | `native`, `wasmi` |
 | `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds, and `--uprobe-backend bpf` refuses at run time. | `native`, `aya`, `sipnab-bpf-types/pod` |
-| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Not in the default build. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `sha1`, `webpki`, `p256` |
+| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Not in the default build. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1`, `webpki`, `p256` |
 | `opus` | Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a `[[vcon.rule]]`). Compiles libopus from the source `opusic-sys` vendors and links it statically, so building it needs `cmake` and a C compiler; the binary needs no system libopus. In `full`; not in the static musl builds, which have no vCon export. | `vcon`, `opus` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
 | `g729` | G.729 Annex A decoding, with Annex B comfort noise, for WAV export, vCon recordings, the live audio route and the dead-air measurement. Adds `--g729-tables`, `[g729]`, and the `sipnab g729 install` and `sipnab g729 status` commands. sipnab ships no ITU-T table values: each host installs them with `sipnab g729 install`, described on the G.729 decoding page. Pure Rust, so in `full` and in the static musl builds. | `native`, `g729` (crates/g729), `sha2`, `rustls`, `base64` |
@@ -1098,14 +1098,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.246
+docker pull ghcr.io/normb/sipnab:0.5.247
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.246` | That release |
+| `0.5.247` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -1143,7 +1143,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.246 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.247 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -1156,11 +1156,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.246 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.247 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.246` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.246`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.247` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.247`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -1358,7 +1358,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.247 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.248 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -1582,7 +1582,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.246
+docker pull ghcr.io/normb/sipnab:0.5.247
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See

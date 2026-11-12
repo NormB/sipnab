@@ -317,7 +317,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     ("g729-tables", Link::Key("g729", "tables", Merge::Override)),
     ("group-by", Link::PerRun),
-    ("hep-allow", Link::Pending),
+    ("hep-allow", Link::Key("hep", "allow", Merge::Override)),
     ("hep-allow-kill", Link::Pending),
     ("hep-auth", Link::Secret),
     ("hep-auth-file", Link::Pending),
@@ -327,7 +327,7 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("security", "hep_hmac_window_secs", Merge::Override),
     ),
     ("hep-id", Link::Pending),
-    ("hep-listen", Link::Pending),
+    ("hep-listen", Link::Key("hep", "listen", Merge::Override)),
     ("hep-listen-transport", Link::Pending),
     (
         "hep-parse",
@@ -1071,7 +1071,7 @@ pub fn feature_enabled(feature: &str) -> bool {
 
 /// How many [`FLAGS`] rows are [`Link::Pending`]. Lower it when a pending flag
 /// gets its key; it may never rise.
-pub const PENDING_FLAGS: usize = 98;
+pub const PENDING_FLAGS: usize = 96;
 
 #[cfg(test)]
 mod tests {

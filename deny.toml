@@ -3,31 +3,7 @@
 
 [advisories]
 # Advisories with no explicit ignore are denied by default.
-ignore = [
-    # rsa "Marvin Attack" timing side channel: an attacker who can submit many
-    # RSA ciphertexts and time each decryption may recover the plaintext. No
-    # fixed `rsa` release exists (0.9.10; 0.10.0-rc.20 is not marked fixed).
-    # sipnab uses an `rsa` private key in two files:
-    #   - src/capture/rsa_key.rs: `--tls-key` decrypts the pre-master secret of
-    #     a captured TLS 1.2 RSA key exchange (PKCS #1 v1.5). Capture is passive
-    #     and answers nobody: no timing reaches whoever chose the ciphertext.
-    #   - src/output/vcon_jose.rs: opening an encrypted vCon with an RSA key
-    #     (`--vcon-key`, `--vcon-fetch-decrypt-key`) unwraps its content key
-    #     (RSA-OAEP). From a file (-I) nobody can time it, and a store read by
-    #     --vcon-fetch or --vcon-audio-fetch sees only when the next request
-    #     comes. But POST /v1/vcon/validate, POST /v1/vcon/analyze and the MCP
-    #     vCon tools open a container the CALLER supplies and answer that
-    #     caller: with an RSA --vcon-key, a client holding the API key or MCP
-    #     access can submit chosen ciphertexts and time the answers, at the
-    #     rate limit (default 100 requests per second per peer).
-    # RS256 signing uses ring, and encrypting to a recipient uses only its public
-    # key. The risk is low, not zero, and the VEX statement says `affected`, with
-    # what to do: use an EC P-256 recipient key, which avoids the crate's
-    # private-key path (docs/vcon.md recommends one), or give API, MCP and
-    # store access only to parties you trust with that key. Decision 2026-11-05:
-    # keep this exemption and re-check the advisory every release.
-    "RUSTSEC-2023-0071",
-]
+ignore = []
 
 [licenses]
 allow = [
@@ -65,7 +41,7 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 # Read every feature (DENY-CHECKS-DEFAULT-FEATURES-ONLY). Without this,
-# `cargo deny check` reads the default features: 240 crates of the 380 that
+# `cargo deny check` reads the default features: 240 crates of the 364 that
 # all features resolve (cargo-deny 0.20.2, 2026-11-12), so no rule above saw
 # a crate that only an optional feature brings in. The setting is here and
 # not a flag on one command line, so every run reads it.

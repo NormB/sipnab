@@ -3406,7 +3406,7 @@ fn warn_about_fail2ban_gaps(cli: &Cli, config: &Config, emits_nothing: bool) {
     // --fail2ban would otherwise read the empty file as an all-clear.
     if cli.output_args.fail2ban
         && !cli.security_args.hep_allow_kill
-        && (cli.hep_args.hep_listen.is_some() || cli.hep_parse(config))
+        && (cli.hep_listen(config).is_some() || cli.hep_parse(config))
     {
         tracing::warn!(
             "--fail2ban writes nothing for detections carried by HEP: the inner \
@@ -3521,6 +3521,7 @@ fn server_selection(
         mcp_output_schemas: cli.mcp_output_schemas(config),
         api_allowed_hosts: cli.api_allowed_hosts(config),
         api_console: cli.api_console(config),
+        hep_listening: cli.hep_listen(config).is_some(),
         api_tls: cli.api_tls_files(config),
         mcp_tls: cli.mcp_tls_files(config),
         metrics_tls: cli.metrics_tls_files(config),
@@ -18381,6 +18382,56 @@ mod tests {
             kill_response_code: 0,
             kill_targets: Vec::new(),
         }
+    }
+
+    /// Whether the servers are told this run listens for HEP, for a command
+    /// line and a config file.
+    fn selection_listens(cli: &Cli, config: &crate::config::Config) -> bool {
+        server_selection(
+            cli,
+            config,
+            None,
+            &crate::security::actions::Actions::default(),
+            &unarmed_engines(),
+        )
+        .hep_listening
+    }
+
+    /// The servers report what a relay's HEP assertion is worth only on a run
+    /// that listens for HEP. A listener that `[hep] listen` starts is one, as
+    /// a listener that `--hep-listen` starts is.
+    #[test]
+    fn the_servers_are_told_of_a_listener_from_the_flag_or_the_key() {
+        let mut keyed = crate::config::Config::default();
+        keyed.hep.listen = Some("127.0.0.1:9060".to_string());
+        let mut flagged = base_cli();
+        flagged.hep_args.hep_listen = Some("127.0.0.1:9061".to_string());
+        assert!(
+            selection_listens(&flagged, &crate::config::Config::default()),
+            "--hep-listen starts a listener"
+        );
+        assert!(
+            selection_listens(&base_cli(), &keyed),
+            "[hep] listen starts a listener"
+        );
+        assert!(
+            !selection_listens(&base_cli(), &crate::config::Config::default()),
+            "neither the flag nor the key: no listener"
+        );
+    }
+
+    /// A run that reads capture files does not use `[hep] listen`, so the
+    /// servers must not report a HEP path that is not there.
+    #[test]
+    fn the_servers_are_told_of_no_listener_when_a_file_read_ignores_the_key() {
+        let mut keyed = crate::config::Config::default();
+        keyed.hep.listen = Some("127.0.0.1:9060".to_string());
+        let mut reading = base_cli();
+        reading.capture_args.input = vec!["capture.pcap".to_string()];
+        assert!(
+            !selection_listens(&reading, &keyed),
+            "-I with the key set starts no listener"
+        );
     }
 
     /// A `-N --fail2ban` command line.

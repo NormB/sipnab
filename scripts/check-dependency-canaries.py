@@ -27,16 +27,11 @@ import sys
 import urllib.request
 
 # (crate, first stable version that ends the wait, what to do).
-CANARIES = [
-    (
-        "rsa",
-        (0, 10, 0),
-        "rsa {found} is stable: move rsa to it (it is built on digest 0.11 and "
-        "block-buffer 0.12), drop the sha1 0.10 dependency `sha1_oaep`, and "
-        "remove the GHSA-qwgh-2vcv-g2f7 exception from osv-scanner.toml and "
-        "tests/digest_010_confinement_test.rs",
-    ),
-]
+# `{found}` in the last field becomes the version crates.io reports.
+#
+# Empty since sipnab moved to rsa 0.10.0, the release the one entry waited
+# for. Remove an entry in the change that makes the move it asks for.
+CANARIES: list[tuple[str, tuple[int, int, int], str]] = []
 
 USER_AGENT = "sipnab-dependency-canaries (https://github.com/NormB/sipnab)"
 
@@ -67,6 +62,8 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     saved = dict(item.split("=", 1) for item in args.from_json)
     found_any = False
+    if not CANARIES:
+        print("ok: no dependency release is awaited")
     for name, awaited, todo in CANARIES:
         try:
             if name in saved:

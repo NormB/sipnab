@@ -18,6 +18,9 @@
 //! These tests express that agreement. They are cheap, they read three files,
 //! and they replace a claim somebody has to remember to re-check by hand.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::path::{Path, PathBuf};
 
 type TestError = Box<dyn std::error::Error>;
@@ -206,12 +209,8 @@ fn every_demo_tape_drives_a_capture_that_exists() -> Result<(), TestError> {
 /// committed, so a demo built on it can never be reproduced by anyone.
 #[test]
 fn no_demo_tape_drives_an_uncommitted_capture() -> Result<(), TestError> {
-    let tracked = std::process::Command::new("git")
-        .args(["ls-files"])
-        .current_dir(repo())
-        .output()?;
-    let tracked = String::from_utf8_lossy(&tracked.stdout);
-    let tracked: std::collections::BTreeSet<&str> = tracked.lines().collect();
+    let tracked = tracked::ls_files(repo(), &[])?;
+    let tracked: std::collections::BTreeSet<&str> = tracked.iter().map(String::as_str).collect();
 
     let mut untracked = Vec::new();
     for (name, body) in tapes()? {

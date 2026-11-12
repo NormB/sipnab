@@ -30,9 +30,11 @@
 //! with fewer fails until its entry is lowered, so a fixed site cannot be
 //! silently re-spent.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::Command;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -667,14 +669,10 @@ fn top_level_arguments(args: &str) -> usize {
 /// Every violation in the tree, grouped by (rule, file).
 fn tree() -> Result<BTreeMap<(Rule, String), Vec<usize>>, TestError> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = Command::new("git")
-        .args(["ls-files", "-z", "--", "*.rs"])
-        .current_dir(root)
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed: {out:?}");
+    let listed = tracked::ls_files(root, &["--", "*.rs"])?;
     let mut found: BTreeMap<(Rule, String), Vec<usize>> = BTreeMap::new();
     let mut files = 0;
-    for rel in String::from_utf8(out.stdout)?.split('\0') {
+    for rel in listed.iter().map(String::as_str) {
         let path = root.join(rel);
         // A symlink (bpf/sipnab-bpf-types) is read through its target's name.
         if rel.is_empty() || path.is_symlink() || !path.is_file() {

@@ -200,8 +200,8 @@ fn local_commands_are_the_ci_commands() -> Result<(), TestError> {
     let s = section()?;
     let ci = read(".github/workflows/ci.yml")?;
     let cmds = [
-        "cargo audit --ignore RUSTSEC-2023-0071",
-        "cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071",
+        "cargo audit",
+        "cargo audit --file fuzz/Cargo.lock",
         "cargo deny check",
     ];
     for c in cmds {
@@ -246,7 +246,7 @@ fn osv_scanner_is_wired_as_described() -> Result<(), TestError> {
 
 // ── cargo deny reads every feature (DENY-CHECKS-DEFAULT-FEATURES-ONLY) ────
 //
-// `cargo deny check` read the default features: 240 crates of the 380 that
+// `cargo deny check` read the default features: 240 crates of the 364 that
 // `--all-features` resolves (cargo-deny 0.20.2, 2026-11-12). The license,
 // ban, source and advisory rules never saw a crate that only an optional
 // feature brings in. The rule is in `deny.toml`, `[graph] all-features`, so

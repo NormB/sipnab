@@ -1331,12 +1331,14 @@ beside the container as its own JWE:
   sipnab refuses an `alg` that is not that algorithm.
 - `--vcon-key` and `--vcon-fetch-decrypt-key` take an RSA or an EC P-256
   private key, and open the entry for that key.
-- **Use an EC P-256 key for `encrypt_to`.** An RSA recipient key works, but
-  sipnab opens a container with its private key (`--vcon-key`,
-  `--vcon-fetch-decrypt-key`) through the `rsa` crate, in
+- **On sipnab 0.5.247 or earlier, use an EC P-256 key for `encrypt_to`.** An
+  RSA recipient key works, but sipnab opens a container with its private key
+  (`--vcon-key`, `--vcon-fetch-decrypt-key`) through the `rsa` crate, in
   [`src/output/vcon_jose.rs`](https://github.com/NormB/sipnab/blob/main/src/output/vcon_jose.rs).
-  - That crate has the advisory RUSTSEC-2023-0071, a timing side channel in
-    RSA decryption, and no release that fixes it.
+  - Releases through 0.5.247 use `rsa` 0.9, which has the advisory
+    RUSTSEC-2023-0071, a timing side channel in RSA decryption. Later
+    releases use `rsa` 0.10.0, the release that fixes it, and the rest of
+    this list does not apply to them.
   - The attack needs the attacker to choose the ciphertext of many
     decryption calls and time each one. A file read with `-I` gives nobody that, and a store read by
     `--vcon-fetch` sees only when the next request comes.
@@ -1344,7 +1346,7 @@ beside the container as its own JWE:
     open a container the caller sends. With an RSA `--vcon-key`, a client
     holding the API key or MCP access can send ciphertext of its choosing and
     time the answers, at the rate limit.
-  - The risk is low, not zero. With an RSA key, give the API key and MCP
+  - The risk is low, not zero. With an RSA key on those releases, give the API key and MCP
     access only to clients you would trust with what the key decrypts, and
     fetch only from a store you trust.
   - An EC P-256 recipient key uses `ECDH-ES+A256KW` and no `rsa` private-key

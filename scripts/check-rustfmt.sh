@@ -5,7 +5,10 @@
 # Check (or, with --fix, apply) rustfmt on every tracked Rust file, with the
 # dated nightly rustfmt named in .rustfmt-toolchain.
 #
-# usage: scripts/check-rustfmt.sh [--fix]
+# usage: scripts/check-rustfmt.sh [--fix|--list]
+#
+# --list prints the files rustfmt would be given, NUL-separated, and runs no
+# rustfmt.
 #
 # Why a nightly rustfmt. sipnab follows the Google Rust Style Guide, which sets
 # rustfmt options that are still unstable (imports_granularity,
@@ -38,17 +41,22 @@ nightly-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
 	exit 2
 	;;
 esac
-if ! rustfmt "+$pin" --version > /dev/null 2>&1; then
-	echo "rustfmt for $pin is not installed. Install it with:" >&2
-	echo "    rustup toolchain install $pin --profile minimal --component rustfmt" >&2
+
+check=--check
+list_only=
+if [ "${1:-}" = --fix ] && [ $# -eq 1 ]; then
+	check=
+elif [ "${1:-}" = --list ] && [ $# -eq 1 ]; then
+	list_only=1
+elif [ $# -gt 0 ]; then
+	echo "usage: scripts/check-rustfmt.sh [--fix|--list]" >&2
 	exit 2
 fi
 
-check=--check
-if [ "${1:-}" = --fix ]; then
-	check=
-elif [ $# -gt 0 ]; then
-	echo "usage: scripts/check-rustfmt.sh [--fix]" >&2
+# --list runs no rustfmt, so it does not need one.
+if [ -z "$list_only" ] && ! rustfmt "+$pin" --version > /dev/null 2>&1; then
+	echo "rustfmt for $pin is not installed. Install it with:" >&2
+	echo "    rustup toolchain install $pin --profile minimal --component rustfmt" >&2
 	exit 2
 fi
 
@@ -59,16 +67,23 @@ fi
 cd "$top"
 
 # Tracked files and new ones git does not ignore, as `cargo fmt` would see a
-# new module; a tracked file deleted from the work tree is skipped.
+# new module; a tracked file deleted from the work tree is skipped. Each file
+# once: git lists an unmerged path once per index stage, and the list goes to
+# parallel rustfmt processes, which must not be given one file twice.
 list=$(mktemp)
 trap 'rm -f "$list"' EXIT
 git ls-files -z --cached --others --exclude-standard -- '*.rs' \
+	| LC_ALL=C sort -z -u \
 	| while IFS= read -r -d '' f; do
 		[ -f "$f" ] && [ ! -L "$f" ] && printf '%s\0' "$f"
 	done > "$list"
 if [ ! -s "$list" ]; then
 	echo "check-rustfmt.sh: no Rust files in $top" >&2
 	exit 2
+fi
+if [ -n "$list_only" ]; then
+	cat "$list"
+	exit 0
 fi
 
 jobs=$(getconf _NPROCESSORS_ONLN 2> /dev/null || echo 4)

@@ -943,19 +943,67 @@ pub fn open_log(bytes: &[u8], keys: &Keys, kind: Kind) -> Result<OpenedLog, Seal
 /// The file cannot be opened, written or synced, or the end or the count
 /// cannot be sealed. The file is not created when it is absent.
 pub fn append_counted(path: &Path, sealer: &mut LogSealer, frames: &[u8]) -> std::io::Result<()> {
-    use std::io::{Seek as _, SeekFrom, Write as _};
     if frames.is_empty() {
         return Ok(());
     }
-    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+    append_counted_to(&mut *open_for_append(path)?, sealer, frames)
+}
+
+/// A sealed file open for an append: written, moved in, and synced.
+///
+/// The appends go through this and not through [`std::fs::File`] itself so
+/// that a test can stand a file that fails part way in its place: a write
+/// that stops short, a full disk, a sync that fails.
+pub trait LogFile: std::io::Write + std::io::Seek {
+    /// Wait until what was written is on disk.
+    ///
+    /// # Errors
+    ///
+    /// The sync failed.
+    fn sync(&mut self) -> std::io::Result<()>;
+}
+
+impl LogFile for std::fs::File {
+    fn sync(&mut self) -> std::io::Result<()> {
+        self.sync_data()
+    }
+}
+
+/// Open the sealed file at `path` for an append.
+///
+/// # Errors
+///
+/// The file cannot be opened for writing. It is not created when absent.
+pub fn open_for_append(path: &Path) -> std::io::Result<Box<dyn LogFile>> {
+    let file = std::fs::OpenOptions::new().write(true).open(path)?;
+    Ok(Box::new(file))
+}
+
+/// [`append_counted`] on a file that is already open. `frames` is not
+/// empty.
+///
+/// When this fails, `sealer` is past what `file` holds and must seal
+/// nothing more for it: the file is read and written again under a new
+/// data key first ([`crate::app::fleet_log::AppendLog`] does that).
+///
+/// # Errors
+///
+/// The file cannot be written or synced, or the end or the count cannot be
+/// sealed.
+pub fn append_counted_to(
+    file: &mut dyn LogFile,
+    sealer: &mut LogSealer,
+    frames: &[u8],
+) -> std::io::Result<()> {
+    use std::io::SeekFrom;
     let end = sealer.append_end().map_err(std::io::Error::other)?;
     file.seek(SeekFrom::End(0))?;
     file.write_all(&[frames, &end].concat())?;
-    file.sync_data()?;
+    file.sync()?;
     let (at, slot) = sealer.count_slot().map_err(std::io::Error::other)?;
     file.seek(SeekFrom::Start(at as u64))?;
     file.write_all(&slot)?;
-    file.sync_data()
+    file.sync()
 }
 
 /// Read the master key in the file `path`, which the flag `flag` named.
@@ -1016,11 +1064,11 @@ pub fn write_new_key_file(path: &Path, source: Draw<'_>) -> Result<KeyId, String
 
 /// A format 1 file of `kind` under `master`, for tests: `records`, the end
 /// of the base, then `appended`, written the way the releases before the
-/// count slots wrote it. This build writes no such file, so the tests of
-/// reading one build it here; it was compared byte for byte with the
-/// writer of release 0.5.244 when the format changed, and
+/// count slots wrote it, up to 0.5.245. This build writes no such file, so
+/// the tests of reading one build it here; it was compared byte for byte
+/// with the writer of release 0.5.244 when the format changed, and
 /// `tests/fixtures/fleet/center-store-format-1.sealed` is a file that
-/// writer made.
+/// writer made. Release 0.5.245 writes the same format.
 ///
 /// # Errors
 ///

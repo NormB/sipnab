@@ -39,6 +39,7 @@ import pathlib, re, sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from lib_markdown import fence_mask  # noqa: E402
+from lib_tracked import ls_files  # noqa: E402
 
 BASE = "https://www.rfc-editor.org/rfc"
 
@@ -247,13 +248,8 @@ def _generated(text: str) -> bool:
 
 
 def _tracked(root: pathlib.Path, pattern: str) -> list:
-    import subprocess
-
-    out = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "-z", "--", pattern],
-        capture_output=True, check=True,
-    ).stdout.decode()
-    return [root / f for f in out.split("\0") if f]
+    # Through the shared reader: an unmerged path is listed once per stage.
+    return [root / f for f in ls_files(root, "--", pattern)]
 
 
 if __name__ == "__main__":

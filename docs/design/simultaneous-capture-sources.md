@@ -54,22 +54,22 @@ the file.
 
 ### 2.1 The chain in `plan`
 
-`plan` ([`src/app/bootstrap.rs:566`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L566)) resolves the source once, into a single
+`plan` ([`src/app/bootstrap.rs:592`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L592)<!-- "pub fn plan(cli:" -->) resolves the source once, into a single
 `Option<CaptureSource>`, through an if/else chain that starts at
-[`src/app/bootstrap.rs:323`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L323) and ends at [`src/app/bootstrap.rs:419`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L419). In order:
+[`src/app/bootstrap.rs:323`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/bootstrap.rs#L323) and ends at [`src/app/bootstrap.rs:419`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/bootstrap.rs#L419). In order:
 
 | Arm | Line | Condition |
 | --- | --- | --- |
-| `File` | [`src/app/bootstrap.rs:323`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L323) | `cli.has_input()` — any `-I` |
-| `Live` | [`src/app/bootstrap.rs:369`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L369) | `-d <device>` |
-| `Live` | [`src/app/bootstrap.rs:373`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L373) | `[capture] device` from the config file |
-| `Uprobe` | [`src/app/bootstrap.rs:377`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L377) | `--uprobe-tls` or `--uprobe-library` |
-| `Hep` | [`src/app/bootstrap.rs:387`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L387) | `-L <addr>` |
-| `None` | [`src/app/bootstrap.rs:417`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L417) | auto-detection, deferred to launch time |
+| `File` | [`src/app/bootstrap.rs:323`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/bootstrap.rs#L323) | `cli.has_input()` — any `-I` |
+| `Live` | [`src/app/bootstrap.rs:369`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/bootstrap.rs#L369) | `-d <device>` |
+| `Live` | [`src/app/bootstrap.rs:373`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/bootstrap.rs#L373) | `[capture] device` from the config file |
+| `Uprobe` | [`src/app/bootstrap.rs:377`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/bootstrap.rs#L377) | `--uprobe-tls` or `--uprobe-library` |
+| `Hep` | [`src/app/bootstrap.rs:387`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/bootstrap.rs#L387) | `-L <addr>` |
+| `None` | [`src/app/bootstrap.rs:417`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/bootstrap.rs#L417) | auto-detection, deferred to launch time |
 
 `-L` sits below `-d`, so `sipnab -d eth0 -L 0.0.0.0:9060` binds no HEP socket and
 says nothing about it. That silence is the same defect class the chain already
-warns about one arm up: [`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315) warns when `-I` and `-d` arrive
+warns about one arm up: [`src/app/bootstrap.rs:1065`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1065)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" --> warns when `-I` and `-d` arrive
 together, with a comment naming the reason — an operator who adapted a documented
 pcap command gets "a confident wrong answer nobody has reason to doubt". The
 `-d` + `-L` pair produces exactly that shape and has no warning at all. Nothing
@@ -78,64 +78,64 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:3342`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3342)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:3414`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3414)<!-- "pub fn launch(" -->) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
-- **Auto-detection.** [`src/app/bootstrap.rs:878`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L878) substitutes a default interface
+- **Auto-detection.** [`src/app/bootstrap.rs:3431`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3431)<!-- "let source = source.unwrap_or_else(auto_detect_source);" --> substitutes a default interface
   when the plan produced `None`.
-- **Channel shape.** [`src/app/bootstrap.rs:924`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L924) picks a batched channel for
+- **Channel shape.** [`src/app/bootstrap.rs:4420`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4420)<!-- "let (tx, rx) = match &source {" --> picks a batched channel for
   `File` and a per-packet channel for everything else, because a live source's
   packets have to become visible the moment they arrive.
 - **Transmit permission.** `TransmitPermit::for_source`
-  ([`src/security/transmit_guard.rs:88`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L88)) grants or refuses the scanner-kill path
+  ([`src/security/transmit_guard.rs:112`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L112)<!-- "pub fn for_source(source: &CaptureSource)" -->) grants or refuses the scanner-kill path
   from the source *variant*: `Live` and `Hep` yes, `File` and `Uprobe` no.
-- **Thread spawn.** [`src/app/bootstrap.rs:934`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L934) branches to
+- **Thread spawn.** [`src/app/bootstrap.rs:4490`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4490)<!-- "if !cli.capture_args.multi_device { return capture::start_capture(" --> branches to
   `start_multi_capture` for `--multi-device`, otherwise `start_capture`
-  ([`src/capture/native.rs:496`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L496)), which matches the variant and spawns one named
+  ([`src/capture/native.rs:496`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L496)<!-- "pub fn start_capture(" -->), which matches the variant and spawns one named
   thread per arm.
 
 ### 2.3 How a packet reaches the pipeline
 
-Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
-([`src/capture/file.rs:587`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L587)), `capture_hep` ([`src/capture/hep.rs:3538`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3538)), the
-uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)) and calls
-`tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
+Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" -->), `capture_files`
+([`src/capture/file.rs:586`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L586)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->), `capture_hep` ([`src/capture/hep.rs:3536`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3536)<!-- "/// backpressure);" -->), the
+uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)<!-- "pub struct Packet" -->) and calls
+`tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L216)<!-- "pub struct PacketTx" -->), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
-([`src/capture/channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)). The consumer is the batch receive loop at
-[`src/app/batch.rs:2869`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2869), which stops when the channel disconnects — that
+([`src/capture/channel.rs:278`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L278)<!-- "fn channel_with_slots(slots:" -->). The consumer is the batch receive loop at
+[`src/app/batch.rs:4520`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4520)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100)) {" -->, which stops when the channel disconnects — that
 is, when the last sender clone drops.
 
 **A second source joins here and nowhere else.** The channel is already
 many-producer, the receive loop already ends on the last producer, and the
 parser already tells the two kinds of packet apart:
 
-- `Packet::interface` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)) is a `SourceName` (an `Arc<str>` when this was written) naming the
-  source. Live capture sets the device name ([`src/capture/live.rs:533`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L533)); the
+- `Packet::interface` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)<!-- "pub struct Packet" -->) is a `SourceName` (an `Arc<str>` when this was written) naming the
+  source. Live capture sets the device name ([`src/capture/live.rs:582`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L582)<!-- "interface_name: Some(crate::capture::packet::SourceName::interned( &fanout_source_name(device, socket_index)," -->); the
   HEP listener sets `hep:<capture-id>@<peer>` via `hep_source_label`
-  ([`src/capture/hep_roster.rs:229`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L229)) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)).
-- `ParsedPacket` ([`src/capture/parse.rs:172`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L172)) carries an `input_origin`
-  field holding the `InputOrigin` enum ([`src/capture/parse.rs:90`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L90)) — `Wire`, `Hep` or
-  `Uprobe`. Line [`src/capture/parse.rs:2307`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L2307) derives it per packet from the presence of
+  ([`src/capture/hep_roster.rs:229`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L229)<!-- "pub fn hep_source_label(capture_id:" -->) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)<!-- "/// * `hep` —" -->).
+- `ParsedPacket` ([`src/capture/parse.rs:172`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L172)<!-- "#[derive(Debug, Clone)]" -->) carries an `input_origin`
+  field holding the `InputOrigin` enum ([`src/capture/parse.rs:90`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L90)<!-- "/// - [`Vcon`](Self::Vcon)" -->) — `Wire`, `Hep` or
+  `Uprobe`. Line [`src/capture/parse.rs:2727`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L2727)<!-- "input_origin: match" --> derives it per packet from the presence of
   pre-parsed addressing and the source name. Nothing in that derivation consults
   the run's configured source, so it already answers correctly in a mixed run.
 
 ### 2.4 The fan-in that already exists
 
 `--multi-device` is the precedent, and it is close to the shape this feature
-needs. `start_multi_capture` ([`src/capture/native.rs:693`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L693)) validates the device
-list, then `run_multi_capture` ([`src/capture/native.rs:753`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L753)) spawns one thread
+needs. `start_multi_capture` ([`src/capture/native.rs:687`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L687)<!-- "/// once running," -->) validates the device
+list, then `run_multi_capture` ([`src/capture/native.rs:792`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L792)<!-- "fn run_multi_capture<S, K>(" -->) spawns one thread
 per device, hands each a `tx.clone()`, drops its own clone so the channel closes
 when the last reader exits, aggregates a per-device readiness signal, tears every
 sibling down when any one fails to open, and joins them all from a coordinator
 thread whose `JoinHandle` becomes the single `CaptureHandle`
-([`src/capture/native.rs:427`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L427)).
+([`src/capture/native.rs:751`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L751)<!-- "Ok(CaptureHandle { thread, source })" -->).
 
 Every structural question a composite source raises — readiness aggregation,
 one-fails-all teardown, a single join handle, channel close on last producer —
 `run_multi_capture` has already answered. What it does not do is mix *kinds*: it
 is a list of `Live` devices, and the source it reports is one
 `CaptureSource::Live` whose `device` field is the comma-joined string
-([`src/capture/native.rs:537`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L537)).
+([`src/capture/native.rs:728`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L728)<!-- "let source = CaptureSource::Live" -->).
 
 ## 3. Correlation
 
@@ -148,17 +148,17 @@ already solved, and the ways it goes wrong are real but nameable.
 sipnab does not correlate a dialog to a stream by capture source. It correlates
 by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 
-`extract_sdp_links` ([`src/pipeline.rs:1783`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1783)) resolves each `m=` section's address
-through `effective_address` ([`src/sip/sdp.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L340)) — media-level `c=` when
+`extract_sdp_links` ([`src/pipeline.rs:1783`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1783)<!-- "/// by returning" -->) resolves each `m=` section's address
+through `effective_address` ([`src/sip/sdp.rs:355`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L355)<!-- "pub fn effective_address(media: &SdpMedia" -->) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
-tuples. `process_packet` ([`src/pipeline.rs:3186`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3186)) feeds each one to `link_to_dialog_with_sdp`
-([`src/rtp/stream_store.rs:1821`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1821)), which lands in `link_endpoint_with_ptime`
-([`src/rtp/stream_store.rs:2004`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2004)). That function does two things:
+tuples. `process_packet` ([`src/pipeline.rs:3186`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3186)<!-- "/// Route one" -->) feeds each one to `link_to_dialog_with_sdp`
+([`src/rtp/stream_store.rs:1821`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1821)<!-- "pub fn link_to_dialog_with_sdp(" -->), which lands in `link_endpoint_with_ptime`
+([`src/rtp/stream_store.rs:2004`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2004)<!-- "pub fn link_endpoint_with_ptime(" -->). That function does two things:
 
-1. `remember_sdp_endpoint` ([`src/rtp/stream_store.rs:2112`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2112)) records
+1. `remember_sdp_endpoint` ([`src/rtp/stream_store.rs:2112`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2112)<!-- "fn remember_sdp_endpoint(" -->) records
    `(addr, port) -> SdpEndpoint { call_id, rtpmap, ptime }`, so a stream created
    *later* resolves at creation through `resolve_from_sdp`
-   ([`src/rtp/stream_store.rs:2189`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2189)), called from [`src/rtp/stream_store.rs:507`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L507).
+   ([`src/rtp/stream_store.rs:2189`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2189)<!-- "fn resolve_from_sdp(&self," -->), called from [`src/rtp/stream_store.rs:1416`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1416)<!-- "self.resolve_from_sdp(&mut" -->.
 2. It sweeps the endpoint index for streams that already exist and fills an
    unset `associated_dialog`.
 
@@ -188,14 +188,14 @@ Call-ID deserves the explicit zero. It is the obvious answer and it is not an
 answer: an RTP packet has no Call-ID field, so the identifier that makes the
 signaling side tractable does not exist on the media side. This is the same
 observation `attribute_media_quote` opens with
-([`src/rtp/stream_store.rs:2404`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2404)): *"An ICMP error about media carries no
+([`src/rtp/stream_store.rs:2404`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2404)<!-- "pub fn attribute_media_quote(" -->): *"An ICMP error about media carries no
 Call-ID — a media datagram has none to carry."*
 
 Timing deserves a firmer no. "The stream started 40 ms after the 200 OK, so it
 belongs to that call" is a coincidence detector on a busy proxy, where dozens of
 calls answer per second and every one of them starts media. sipnab already
 carries a timing-based leg correlator at score 50 out of 100
-([`src/sip/dialog_store.rs:1459`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1459)), the lowest of seven strategies, and that is for
+([`src/sip/dialog_store.rs:2372`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2372)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
 correlating *signaling to signaling* where a Call-ID is present as a
 cross-check. Using timing to attach media to a dialog has no such cross-check.
 It should stay out.
@@ -212,7 +212,7 @@ OpenSIPS engages rtpengine or any media relay, the SDP that OpenSIPS *received*
 describes the endpoints as the far side offered them, while media on the NIC
 flows to the relay's rewritten address. If HEP carried only the received message,
 the map entry and the observed socket would never meet and every stream would
-come out orphaned (`RtpStream::orphaned`, [`src/rtp/stream.rs:478`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L478)).
+come out orphaned (`RtpStream::orphaned`, [`src/rtp/stream.rs:791`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L791)<!-- "pub fn orphaned(&self) -> bool {" -->).
 
 [Section 8, "What would make this not worth doing"](#8-what-would-make-this-not-worth-doing)
 said to answer that before writing code. It was answered — see
@@ -236,15 +236,15 @@ feature's documentation has to name the scope, not merely the topology.
 several nodes — the multi-node fan-in `hep_source_label` exists to make
 distinguishable — can be told by two nodes that `192.0.2.1:20000` belongs to two
 different calls. `remember_sdp_endpoint` overwrites `existing.call_id`
-([`src/rtp/stream_store.rs:995`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L995) onward), so the last offer wins, and
+([`src/rtp/stream_store.rs:2123`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2123)<!-- "match self.sdp_endpoints.get_full_mut(&(addr," --> onward), so the last offer wins, and
 `resolve_from_sdp` hands that winner to a stream. [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html) space repeats across
 sites, so this is ordinary rather than exotic. **This is the wrong-attribution
 mode**, and it is the reason stage one should accept HEP from exactly one node.
 
 **F3 — Endpoint reuse over time.** `associated_dialog` is set only when unset
-([`src/rtp/stream_store.rs:940`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L940)), and `sdp_endpoints` is bounded by insertion
+([`src/rtp/stream_store.rs:2058`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2058)<!-- "if stream.associated_dialog.is_none() { stream.associated_dialog = Some(call_id.to_string());" -->), and `sdp_endpoints` is bounded by insertion
 order with oldest-out eviction rather than by age
-([`src/rtp/stream_store.rs:1014`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1014)). A media gateway cycles a finite RTP port range,
+([`src/rtp/stream_store.rs:2159`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2159)<!-- "if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams {" -->). A media gateway cycles a finite RTP port range,
 so on a process running for days — which is precisely the deployment shape this
 feature is for, unlike the minutes-long pcap read the eviction policy was sized
 for — a stale entry can outlive its call and claim the next stream on that
@@ -256,19 +256,19 @@ compliant proxy keeps an unanswered INVITE transaction alive.
 
 **F4 — Clock disagreement.** A HEP v3 packet's timestamp comes from the
 *sender's* clock, read from the `TS_SEC`/`TS_USEC` chunks by `parse_hep_v3`
-([`src/capture/hep.rs:1170`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1170) onward) and carried verbatim into `Packet::timestamp`
-by `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)). A live packet's timestamp comes
-from the local kernel (`pcap_ts_to_chrono`, [`src/capture/live.rs:1276`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1276)). Two
+([`src/capture/hep.rs:1167`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1167)<!-- "/// declared length" --> onward) and carried verbatim into `Packet::timestamp`
+by `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)<!-- "/// * `hep` —" -->). A live packet's timestamp comes
+from the local kernel (`pcap_ts_to_chrono`, [`src/capture/live.rs:1276`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1276)<!-- "/// [`capture_time`]." -->). Two
 clocks, no discipline between them. Every figure that subtracts a signaling time
 from a media time — post-dial delay against first RTP, ringback analysis,
 one-way-audio onset — inherits the offset.
 
 Two details soften this and one sharpens it. The HEP v1 header that `parse_hep_v12`
-([`src/capture/hep.rs:1512`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1512)) reads has no time field, so the listener stamps local
+([`src/capture/hep.rs:1509`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1509)<!-- "/// Returns an error when the packet is" -->) reads has no time field, so the listener stamps local
 receive time, and a v3 packet without a `TS_SEC` chunk is stamped the same way — a
 v1 mirror therefore has *one* clock, not two. A v2 packet carries the sender's time
 in its time header, as v3 does. And when the skew runs the wrong way,
-`elapsed_ms` ([`src/sip/timing.rs:58`](https://github.com/NormB/sipnab/blob/main/src/sip/timing.rs#L58)) refuses a backwards pair rather than
+`elapsed_ms` ([`src/sip/timing.rs:58`](https://github.com/NormB/sipnab/blob/main/src/sip/timing.rs#L58)<!-- "/// `Setup: -27.98s`. Unknown" -->) refuses a backwards pair rather than
 publishing it, so the visible symptom is a *missing* duration, not a negative
 one. Its own rustdoc names the cause: *"a merge of files whose clocks
 disagree"*. The sharpening detail is that a skew in the *forward* direction has
@@ -287,9 +287,9 @@ handles SDP-then-RTP and the endpoint sweep in `link_endpoint_with_ptime` handle
 RTP-then-SDP, which is exactly the SNB-0007 ordering fix — so the association is
 order-independent. What is *not* order-independent is the clock rate: a stream
 created before its `a=rtpmap` accumulates jitter against a placeholder, and
-`link_endpoint_with_ptime` ([`src/rtp/stream_store.rs:2004`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2004))
+`link_endpoint_with_ptime` ([`src/rtp/stream_store.rs:2004`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2004)<!-- "pub fn link_endpoint_with_ptime(" -->)
 restarts the estimator and records where, so `measured_jitter_ms`
-([`src/rtp/stream_store.rs:1734`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1734)) withholds the figure until it
+([`src/rtp/stream_store.rs:1734`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1734)<!-- "pub fn measured_jitter_ms(&self," -->) withholds the figure until it
 reconverges. That machinery exists and covers this. Worth a test, not a design change.
 
 **F6 — Duplicate observation.** If the NIC also sees the signaling that HEP is
@@ -303,7 +303,7 @@ detector later. It is not a reason to refuse the combination.
 ### 3.4 Say how strong the tie is
 
 sipnab already has the right pattern for this and should reuse it rather than
-invent one. `MediaMatch` ([`src/rtp/stream_store.rs:30`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L30)) grades ICMP media
+invent one. `MediaMatch` ([`src/rtp/stream_store.rs:30`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L30)<!-- "#[derive(Debug, Clone, Copy, PartialEq, Eq," -->) grades ICMP media
 attribution across five tiers and its rustdoc states the principle directly: the
 variant travels to every surface *"rather than collapsed to a boolean because
 the tiers are not equally strong. A reader deciding whether to act on a finding
@@ -319,20 +319,20 @@ operator discount a suspicious attribution instead of trusting it.
 
 **Provenance: build on it, and it needs one small extension.**
 [`docs/design/packet-provenance.md`](https://github.com/NormB/sipnab/blob/main/docs/design/packet-provenance.md) shipped in five stages. `FrameRef`
-([`src/capture/packet.rs:765`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L765)) resolves a fact to the bytes behind it, and
-`SipMessage::frame` ([`src/sip/message.rs:84`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L84)), `SipDialog`
-([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:452`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L452)) carries the same field at line 323
+([`src/capture/packet.rs:765`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L765)<!-- "pub struct FrameRef" -->) resolves a fact to the bytes behind it, and
+`SipMessage::frame` ([`src/sip/message.rs:100`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L100)<!-- "pub frame: Option<crate::capture::packet::FrameRef>," -->), `SipDialog`
+([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)<!-- "#[derive(Debug)]" -->), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:452`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L452)<!-- "#[derive(Debug, Clone)]" -->) carries the same field at line 323
 carry it downstream.
 
-The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:926`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L926))
+The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:926`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L926)<!-- "pub fn frame_ref(&self)" -->)
 requires **both** a source name and a frame ordinal, and the live and HEP readers
-stamp only the name. Ordinals come from [`src/capture/file.rs:778`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L778),
-[`src/parallel.rs:675`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L675) and the uprobe readers; neither `capture_live_fanout` nor
+stamp only the name. Ordinals come from [`src/capture/file.rs:778`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/capture/file.rs#L778),
+[`src/parallel.rs:675`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/parallel.rs#L675) and the uprobe readers; neither `capture_live_fanout` nor
 `capture_hep` writes one. So in a mixed live-plus-HEP run every
 `first_frame` is `None`, and nothing on a dialog or a stream records which source
 produced it. `input_origin` survives to the parser and then stops: `grep -rn
 input_origin src/sip/ src/rtp/ src/output/` finds only test fixtures, and the one
-real consumer is the scanner-kill gate at [`src/app/batch.rs:3718`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3718).
+real consumer is the scanner-kill gate at [`src/app/batch.rs:3680`](https://github.com/NormB/sipnab/blob/e070b811b953e03018f5970287d6fcdca025064a/src/app/batch.rs#L3680).
 
 That is the extension this feature needs, and it is small: stamp a per-source
 ordinal in the live and HEP readers so `frame_ref` starts returning `Some`, and
@@ -346,7 +346,7 @@ device, one per HEP *sender* — and `input_origin` reaches `SipMessage`,
 
 **Leg correlation: adjacent, and deliberately separate.**
 [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md) and the seven strategies at
-[`src/sip/dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43) correlate *signaling to signaling* across a B2BUA,
+[`src/sip/dialog_store.rs:44`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L44)<!-- "pub enum CorrelationReason" --> correlate *signaling to signaling* across a B2BUA,
 keyed on `Session-ID`, `P-Charging-Vector`, the SDP `o=` tuple, or `Via` branch.
 Every one of those keys is a SIP header. None exists on an RTP packet. The
 problem here is signaling-to-media across two transports, which shares the word
@@ -367,7 +367,7 @@ while watching its own NIC is that wedge in its smallest form.
 ### 5.1 Shape
 
 One coordinator thread, one reader thread per member, one `tx.clone()` each —
-`run_multi_capture` ([`src/capture/native.rs:753`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L753)) generalized from a device list
+`run_multi_capture` ([`src/capture/native.rs:792`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L792)<!-- "fn run_multi_capture<S, K>(" -->) generalized from a device list
 to a source list. No new concurrency primitive, no new channel, no ordering
 guarantee that does not already hold.
 
@@ -385,9 +385,9 @@ nothing.
 
 **`--count N` is enforced twice, and the run-level copy is the one that holds.**
 Each reader keeps a thread-local counter and stops at `config.count`
-([`src/capture/hep.rs:1544`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1544) and its check; [`src/capture/live.rs:573`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L573)), and the
+([`src/capture/hep.rs:3830`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3830)<!-- "let mut count: u64" --> and its check; [`src/capture/live.rs:950`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L950)<!-- "count_limit_reached(self.config.count, self.count)" -->), and the
 consumer independently breaks at `total_count >= max_count`
-([`src/app/batch.rs:3089`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3089)). Because each reader gets a clone of the same
+([`src/app/batch.rs:4886`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4886)<!-- "if let Some(max_count) = capture_config.count && lp.total_count >= max_count" -->). Because each reader gets a clone of the same
 `CaptureConfig`, the per-reader copies are per source, so a member can stop
 itself while the other keeps going. The consumer's total still bounds the run,
 so the flag does not silently double — but the per-reader stop is a source-level
@@ -399,55 +399,55 @@ own start, and the starts are within milliseconds. No shared state needed.
 
 **Shutdown.** Already correct. Every reader polls `signals::shutdown_requested`,
 the coordinator drops its `tx` clone so the channel closes when the last reader
-exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:2869`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2869)).
+exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:4534`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4534)<!-- "Err(crossbeam_channel::RecvTimeoutError::Disconnected) => ControlFlow::Break(())," -->).
 When one member ends and the other continues — a HEP sender restarting while the
 NIC keeps capturing — the loop keeps running, which is correct: `source_exhausted`
-([`src/app/batch.rs:3213`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3213)) means every source is done, and with two sources it
+([`src/app/batch.rs:4197`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4197)<!-- "&& let Some(ref flag) = servers.source_exhausted" -->) means every source is done, and with two sources it
 should keep meaning exactly that.
 
 One consequence to accept rather than fix: **the channel carries no
-end-of-source marker.** `Item` is `One` or `Many` ([`src/capture/channel.rs:130`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L130))
+end-of-source marker.** `Item` is `One` or `Many` ([`src/capture/channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)<!-- "enum Item {" -->)
 and nothing else, so a consumer cannot tell "the HEP sender stopped" from "the
 HEP sender is quiet". A `--hep-listen` run already has the same blind spot, which
-`IdleWatch` ([`src/capture/hep_roster.rs:796`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L796)) papers over with a log line after a
+`IdleWatch` ([`src/capture/hep_roster.rs:796`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L796)<!-- "pub struct IdleWatch" -->) papers over with a log line after a
 silence threshold. A composite run inherits both the blind spot and the paper.
 
 **Backpressure is shared and the accounting is asymmetric.** `PacketTx::send`
-blocks at the cap ([`src/capture/channel.rs:289`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L289) onward) and both producers draw
+blocks at the cap ([`src/capture/channel.rs:313`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L313)<!-- "pub fn send(&self, packet: Packet)" --> onward) and both producers draw
 on one slot pool with one `CaptureMeter`. A burst on either source blocks the
 other, and the two then fail *differently*: a blocked live reader stops calling
 `pcap_next`, the kernel ring overflows, and libpcap counts it — surfaced by
-`fold_stats` ([`src/capture/live.rs:1225`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1225)) and reported at
-[`src/capture/live.rs:653`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L653). A blocked HEP listener stops calling `recv_from`, the
+`fold_stats` ([`src/capture/live.rs:1225`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1225)<!-- "/// `buffer_mb`" -->) and reported at
+[`src/capture/live.rs:1057`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1057)<!-- "log_capture_summary(self.device, self.count, kernel_drop_counts());" -->. A blocked HEP listener stops calling `recv_from`, the
 kernel UDP receive buffer overflows, and **nothing counts it**, because UDP
 reports nothing to a receiver that was not listening. So the same backpressure
 event produces a loud number on one source and silence on the other. The one
 counter that would show the shared stall itself — `capacity_hits` on the
-`CaptureMeter` ([`src/capture/channel.rs:59`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L59)) — reaches no output surface; only
+`CaptureMeter` ([`src/capture/channel.rs:92`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L92)<!-- "capacity_hits: Arc<AtomicU64>," -->) — reaches no output surface; only
 `backpressure_blocks` and queue depth are exported
-([`src/output/prometheus.rs:205`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L205) onward). Splitting the slot pool per source would
+([`src/output/prometheus.rs:381`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L381)<!-- "pub capture_queue_depth_packets:" --> onward). Splitting the slot pool per source would
 trade a shared stall for two smaller ones and does not fix the asymmetry. The
 honest answer is a HEP receive-side drop estimate, which is a separate piece of
 work; until it exists, this feature should not claim that a quiet HEP source
 means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
-([`src/app/bootstrap.rs:685`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L685)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:8021`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8021)) already names both reasons a
+([`src/app/bootstrap.rs:154`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L154)<!-- "if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device { return RunMode::CoresFile;" -->), so it never sees a live or HEP source. The existing
+`cores_ignored_warning` ([`src/app/bootstrap.rs:8074`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8074)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
 **Metrics and the writer read the source as a scalar.** The `-O` writer is the
 concrete casualty. It initializes on the first packet's `link_type`
-([`src/app/batch.rs:2884`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2884)), and the two members disagree: live capture yields
-`DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:1120`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L1120)) sets
+([`src/app/batch.rs:4565`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4565)<!-- "// Lazily initialize the writer on first packet (we need link_type)" -->), and the two members disagree: live capture yields
+`DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:1120`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L1120)<!-- "pub fn with_pre_parsed(" -->) sets
 `link_type = 0` and a `data` buffer holding the bare transport payload — no
 Ethernet, no IP, no UDP. That absence is deliberate and documented at
-[`src/capture/hep.rs:84`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L84) onward: fabricating a `DLT_RAW` header made `etherparse`
+[`src/capture/hep.rs:109`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L109)<!-- "// ── HEP→Packet" --> onward: fabricating a `DLT_RAW` header made `etherparse`
 read `INVITE`'s leading `0x49` as an IPv4 header with IHL 9 and drop every HEP
 message silently. So the bytes are honest and unwritable, not an oversight to
 patch. Classic pcap refuses the second member outright
-([`src/capture/writer.rs:550`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L550)), and *which* member gets refused depends on which
+([`src/capture/writer.rs:619`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L619)<!-- "if packet.link_type" -->), and *which* member gets refused depends on which
 packet arrives first, so the run fails non-deterministically. pcapng is worse:
 it appends a second interface and writes the bare SIP text as if it were a frame
 of the declared link type, producing an export that decodes into something nobody
@@ -473,10 +473,10 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 ### 6.2 What stays refused
 
 - **`-I` with anything.** Not a scheduling restriction — a security one. File
-  packets parse as `InputOrigin::Wire` ([`src/capture/parse.rs:90`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L90) and its
-  siblings), and `kill_response_eligible` ([`src/security/scanner_kill.rs:142`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_kill.rs#L142))
+  packets parse as `InputOrigin::Wire` ([`src/capture/parse.rs:90`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L90)<!-- "/// - [`Vcon`](Self::Vcon)" --> and its
+  siblings), and `kill_response_eligible` ([`src/security/scanner_kill.rs:142`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_kill.rs#L142)<!-- "/// observed" -->)
   admits `Wire` unconditionally. Today that conflation is safe only because
-  `TransmitPermit::for_source` ([`src/security/transmit_guard.rs:88`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L88)) refuses a
+  `TransmitPermit::for_source` ([`src/security/transmit_guard.rs:112`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L112)<!-- "pub fn for_source(source: &CaptureSource)" -->) refuses a
   `File` run outright, so no file-origin packet ever reaches the kill path. Pair
   `File` with `Hep` and the source-level refusal disappears while the per-packet
   gate waves file-origin packets through — sipnab transmitting at historical
@@ -485,10 +485,10 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
   first. Out of scope, and the refusal message should say why rather than say
   "unsupported".
 - **`--uprobe-tls` with anything.** Uprobe reads carry no addressing at all
-  ([`src/capture/parse.rs:84`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L84) onward). Combining is coherent in principle and buys
+  ([`src/capture/parse.rs:85`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L85)<!-- "/// - [`Uprobe`](Self::Uprobe)" --> onward). Combining is coherent in principle and buys
   nothing over `-d` plus `--keylog`; leave it refused until someone asks.
 - **`--multi-device` with `-L`.** `--multi-device` reinterprets the `-d` string as
-  a comma-separated list ([`src/app/bootstrap.rs:934`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L934)). Composing a list with a
+  a comma-separated list ([`src/app/bootstrap.rs:4500`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4500)<!-- "let CaptureSource::Live { device } = &source else {" -->). Composing a list with a
   HEP member is reasonable and should wait for stage three.
 - **`-O` with a composite.** See [section 5.2, "What breaks"](#52-what-breaks).
 - **`--cores > 1`.** Already warned, offline-only, no change.
@@ -496,9 +496,9 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 ### 6.3 What the operator gets told
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
-message ([`src/app/bootstrap.rs:627-653`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L627-L653)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:8021`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8021)), `-I` beating `-d` warns
-([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
+message ([`src/app/bootstrap.rs:1992-2005`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1992-L2005)<!-- "fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {" -->), `--cores` on a live source warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:8074`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8074)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
+([`src/app/bootstrap.rs:1065`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1065)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" -->). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a
    composite. Exit 2, name the flag, name the reason, name the alternative.
@@ -518,7 +518,7 @@ it should land whether or not the rest is ever built.
 
 **Value alone:** yes, and immediately. An operator who typed both flags today
 believes they have a HEP listener and does not. This is the `-I`/`-d` warning at
-[`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315) applied to the pair one arm down.
+[`src/app/bootstrap.rs:1065`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1065)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" --> applied to the pair one arm down.
 
 **Not in scope:** any change to the chain. `-d` keeps winning.
 
@@ -558,9 +558,9 @@ disjunctive and cannot be widened by adding a member.
 - No cross-source correlation heuristic. Nothing keyed on timing, nothing keyed
   on Call-ID reaching media. The SDP endpoint map is the whole mechanism.
 - No TUI changes. Two reasons, and the second is the stronger one:
-  `capture_mode` ([`src/tui/mod.rs:157`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L157)) is one display string with no room for a
+  `capture_mode` ([`src/tui/mod.rs:248`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L248)<!-- "capture_mode: String," -->) is one display string with no room for a
   second source, and the TUI never joins the capture handle at all — it drops it
-  ([`src/app/tui_mode.rs:528`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L528)), so a capture thread that failed reports nothing.
+  ([`src/app/tui_mode.rs:853`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L853)<!-- "drop(self.handle);" -->), so a capture thread that failed reports nothing.
   With one source that loses one error; with a composite it loses the answer to
   "which member died". Batch first, and the TUI needs that join before it takes
   a composite.
@@ -782,7 +782,7 @@ the one the design expected to have to write. Run 3 is F1 reproduced on demand.
    capture-local one. Under scope `"t"` either rule works; under `"m"` the single
    advertised endpoint is the stream's *remote* peer, so a local-only rule binds
    zero streams where a both-ends rule binds one. sipnab already does the right
-   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:2189`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2189)) tries `key.src`
+   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:2189`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2189)<!-- "fn resolve_from_sdp(&self," -->) tries `key.src`
    and `key.dst` — so this is a property to keep rather than one to add.
 3. The ACK is never mirrored: it is end-to-end and outside the INVITE server
    transaction. No SDP rode on it here, but a delayed-offer call puts the ANSWER
@@ -847,7 +847,7 @@ Things this design could not settle from the code alone.
   advertises the RTCP socket only there, and `extract_sdp_links` reads `m=`/`c=`.
   Whether that produces real orphans is unconfirmed — no RTCP flowed in the runs.
 - **Does OpenSIPS mirror RTCP over HEP in practice?** `HepProtocol`
-  ([`src/capture/hep.rs:1018`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1018)) parses protocol type 5 as RTCP, and SRC1 says such a
+  ([`src/capture/hep.rs:1015`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1015)<!-- "/// Protocol" -->) parses protocol type 5 as RTCP, and SRC1 says such a
   report has nothing to attach to. Whether it becomes attachable once the NIC
   supplies the stream depends on whether the HEP path reaches RTCP ingestion at
   all, which this design did not trace.
@@ -855,8 +855,8 @@ Things this design could not settle from the code alone.
   [section 5.2, "What breaks"](#52-what-breaks) establishes that nothing counts it. Unmeasured, and this page follows the
   repo's standing rule against upgrading a reasoned claim to a measured one.
 - **What should the TUI show for two sources?** `capture_mode`
-  ([`src/tui/mod.rs:157`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L157)) is one string rendered by
-  [`src/tui/render/status.rs:117`](https://github.com/NormB/sipnab/blob/main/src/tui/render/status.rs#L117), which branches on an `Online`/`Offline` prefix.
+  ([`src/tui/mod.rs:248`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L248)<!-- "capture_mode: String," -->) is one string rendered by
+  [`src/tui/render/status.rs:168`](https://github.com/NormB/sipnab/blob/main/src/tui/render/status.rs#L168)<!-- "let is_online = app.capture_mode.starts_with("Online");" -->, which branches on an `Online`/`Offline` prefix.
   Deferred to stage three rather than guessed at here.
 
 ## 10. SRC2 — comparing the two witnesses

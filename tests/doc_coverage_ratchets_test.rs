@@ -28,6 +28,9 @@
 
 #![cfg(feature = "full")]
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -66,13 +69,8 @@ fn source() -> String {
 /// to be named somewhere they can read.
 fn documentation() -> Result<String, TestError> {
     let mut out = String::new();
-    let listed = std::process::Command::new("git")
-        .args(["ls-files", "-z", "--", ":(glob)docs/**/*.md"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files docs/: {e}"))?;
-    assert!(listed.status.success(), "git ls-files failed");
-    for rel in String::from_utf8_lossy(&listed.stdout).split('\0') {
+    let listed = tracked::ls_files(repo(), &["--", ":(glob)docs/**/*.md"])?;
+    for rel in listed.iter().map(String::as_str) {
         if rel.is_empty() {
             continue;
         }

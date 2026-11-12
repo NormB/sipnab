@@ -380,7 +380,6 @@ AssertWithoutMessage	tests/decrypted_export_test.rs	4
 AssertWithoutMessage	tests/decryption_wrapper_matrix_test.rs	2
 AssertWithoutMessage	tests/dependency_policy_doc_test.rs	4
 AssertWithoutMessage	tests/dependency_security_test.rs	5
-AssertWithoutMessage	tests/digest_010_confinement_test.rs	1
 AssertWithoutMessage	tests/discriminator_test.rs	3
 AssertWithoutMessage	tests/doc_commands_run_test.rs	11
 AssertWithoutMessage	tests/doc_coverage_ratchets_test.rs	2

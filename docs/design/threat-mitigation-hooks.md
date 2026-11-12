@@ -77,7 +77,7 @@ copying. `--fail2ban` on its own now arms no detector, so it emits nothing — a
 an operator who asked for a jail log and receives an empty file will read it as
 "nothing attacked me". That is the most dangerous way for a security tool to be
 silent, so it says so, once, at startup
-([`batch.rs:2506-2513`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2506-L2513)):
+([`batch.rs:3392-3397`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3392-L3397)<!-- "--fail2ban writes scanner and registration-flood detections" -->):
 
 > "--fail2ban writes scanner and registration-flood detections, but no detector
 > is running, so this run will emit nothing. An empty jail log means 'nothing was
@@ -91,7 +91,7 @@ safety.**
 
 The obvious repair for the above — arm the existing behavioral scanner detector
 from `--fail2ban` — was measured before it was made, and the measurement is
-recorded in the tree at [`batch.rs:2474-2482`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2474-L2482):
+recorded in the tree at [`batch.rs:3345-3353`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3345-L3353)<!-- "/// Deliberately NOT armed by `--fail2ban` alone." -->:
 
 > on a real carrier trunk […] produces 7008 detections naming 180 peers, because
 > the behavioral signature counts OPTIONS and the busiest "scanners" are the
@@ -123,7 +123,7 @@ suite.
 This is already how the tree behaves, and it should be written down as policy
 rather than left as a judgement call that happened to go well once. The
 `scanner_detector` is `Some` only when the kill path is active
-([`batch.rs:2483-2499`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2483-L2499)), and the comment above it declines
+([`batch.rs:3343-3361`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3343-L3361)<!-- "/// The scanner detector, when `--kill-scanner`" -->), and the comment above it declines
 to arm it from `--fail2ban` "until the signature can tell a keepalive from an
 enumeration". That is the rule being applied. Section 4 is what it takes to
 satisfy it.
@@ -184,9 +184,9 @@ Two tiers, and the boundary is not about detector confidence. It is about
 ### Tier 1 — alert a human. The default for everything.
 
 Every detection reaches `tracing::warn!` under the `sipnab::alert` target
-([`alerting.rs:704`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L704)), optionally a JSON line on
+([`alerting.rs:758-762`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L758-L762)<!-- "tracing::warn!( target: "sipnab::alert", alert_type, %src_ip, %sanitized_detail," -->), optionally a JSON line on
 stderr, optionally syslog, and the in-memory findings ring buffer
-(`DEFAULT_FINDINGS_HISTORY = 1000`, [`alerting.rs:273`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L273)).
+(`DEFAULT_FINDINGS_HISTORY = 1000`, [`alerting.rs:274`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L274)<!-- "pub const DEFAULT_FINDINGS_HISTORY: usize = 1000;" -->).
 Being wrong here costs a log line.
 
 **Everything belongs in tier 1 unless it meets every condition in tier 2.**
@@ -207,9 +207,9 @@ behavioral detector is not.
 **(c) The action is proportionate and self-limiting.** The kill path already
 does this and the numbers are the model: a global limiter at
 `DEFAULT_RATE_LIMIT = 10` per second
-([`process_isolation.rs:1492`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1492)) and a
+([`process_isolation.rs:1493`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1493)<!-- "const DEFAULT_RATE_LIMIT: u32 = 10;" -->) and a
 per-destination limiter at `MAX_PER_DST_PER_MINUTE = 3`
-([`:731`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L731)), both applied before any send. The
+([`:1156`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1156)<!-- "const MAX_PER_DST_PER_MINUTE:" -->), both applied before any send. The
 per-destination cap is the one that matters: it bounds the damage to *one* peer
 when the signature is wrong about that peer, which is the failure that actually
 happens. A global-only limiter would happily spend its whole budget on a single
@@ -225,7 +225,7 @@ the process that asked for it.
 And the standing rule that already holds across all of it: **every arming flag
 is off by default** — `--kill-scanner`, `-K`, `--hep-allow-kill`, `--fail2ban`,
 `--alert-exec`, `--on-dialog-exec`, `--on-quality-exec`
-([`cli.rs:1334-2008`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1334-L2008)). Nothing in this document proposes
+([`cli.rs:1981-3163`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1981-L3163)<!-- "pub fail2ban: bool," -->). Nothing in this document proposes
 changing that, and nothing should.
 
 ## 6. Three blind spots that make the tiers unverifiable
@@ -237,19 +237,19 @@ their current state, because a threshold nobody can audit is not a threshold.
 
 **Per-event outcomes are unobserved in production.** The kill worker produces a
 `KillResponse` — `Sent`, `RateLimited`, `Rejected { reason }`, `Error { message }`
-([`process_isolation.rs:330-345`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L330-L345)) — and offers
+([`process_isolation.rs:433-452`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L433-L452)<!-- "pub enum KillResponse" -->) — and offers
 it on a 256-slot channel. Commit `56c6645` fixed the serious half of this: the
 offer is now `try_send`, and a full channel calls `note_unobserved_outcome()`
-([`:461`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L461), fired at [`:868`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L868))
+([`:581`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L581)<!-- "fn note_unobserved_outcome(&self)" -->, fired at [`:1033`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1033)<!-- "shared.tally.note_unobserved_outcome();" -->)
 instead of blocking. Before that fix, outcome 257 stalled the worker, which
 stopped draining requests, which blocked `send_kill` on the capture thread while
 it held the dialog and stream write locks every MCP tool reads — a wedge of the
 entire surface. Outcomes are now also booked in an atomic `KillTally`
-([`:408`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L408)) before being offered, so totals
-survive and are logged at shutdown (`log_totals`, [`:621`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L621)).
+([`:524`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L524)<!-- "struct KillTally" -->) before being offered, so totals
+survive and are logged at shutdown (`log_totals`, [`:947`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L947)<!-- "fn log_totals(&self)" -->).
 What remains: nothing in `src/` calls `try_recv_response()`
-([`:593`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L593)) or `counts()`
-([`:582`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L582)) — the only callers are two integration
+([`:908`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L908)<!-- "pub fn try_recv_response(&self)" -->) or `counts()`
+([`:883`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L883)<!-- "pub fn counts(&self)" -->) — the only callers are two integration
 tests. Per-event attribution is still unavailable while a run is in progress.
 
 **Suppressed event-exec actions were completely silent — now fixed.**
@@ -306,10 +306,10 @@ traffic. Only a real capture showed that. A synthetic flood from one address
 would have made the global limiter look sufficient.
 
 **And the record itself cannot answer the question.** `Finding`
-([`alerting.rs:387-397`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L387-L397)) carries `rule_name`,
+([`alerting.rs:393-403`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L393-L403)<!-- "#[derive(Debug, Clone, serde::Serialize)]" -->) carries `rule_name`,
 `src_ip`, `detail` and `timestamp`, and **no field recording whether an action
 was taken.** Findings are written after the cooldown check
-([`:694-704`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L694-L704)), so suppressed firings are absent
+([`:696-741`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L696-L741)<!-- "// Check cooldown" -->), so suppressed firings are absent
 from history. Asked "did we ban this peer, and why", sipnab today cannot answer
 from its own state.
 

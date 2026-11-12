@@ -126,10 +126,10 @@ expanding beyond their evidence.
 
 **Priority / type / effort:** P1 / verified documentation defect / S
 
-**Evidence:** [`website/content/docs/_index.md:18`](https://github.com/NormB/sipnab/blob/main/website/content/docs/_index.md#L18) advertises `sipnab --mcp`.
+**Evidence:** [`website/content/docs/_index.md:33`](https://github.com/NormB/sipnab/blob/main/website/content/docs/_index.md#L33)<!-- "{ title = "Drive" --> advertises `sipnab --mcp`.
 The canonical reference requires headless mode and demonstrates `--mcp -N`
-([`docs/mcp.md:34-41`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L34-L41)); the walkthrough explicitly says `--mcp` requires `-N`
-([`docs/mcp-deploy.md:93-96`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L93-L96)).
+([`docs/mcp.md:34-41`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/mcp.md#L34-L41)); the walkthrough explicitly says `--mcp` requires `-N`
+([`docs/mcp-deploy.md:93-96`](https://github.com/NormB/sipnab/blob/fcbfb46924a3164e80c66fd1fe483b4e64f87c4b/docs/mcp-deploy.md#L93-L96)).
 
 **Impact:** the prominent entry-point command fails instead of starting the
 workflow it advertises.
@@ -152,10 +152,10 @@ task cards, which the generated-page mirror gate does not cover.
 
 **Priority / type / effort:** P1 / verified journey gap / M
 
-**Evidence:** [`docs/README.md:20-29`](https://github.com/NormB/sipnab/blob/main/docs/README.md#L20-L29) promises tutorials that assume nothing and
-state what to expect. [`docs/tui-walkthrough.md:11-24`](https://github.com/NormB/sipnab/blob/main/docs/tui-walkthrough.md#L11-L24) instead begins with an
+**Evidence:** [`docs/README.md:20-29`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/README.md#L20-L29) promises tutorials that assume nothing and
+state what to expect. [`docs/tui-walkthrough.md:11-24`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/tui-walkthrough.md#L11-L24) instead begins with an
 unspecified `capture.pcap` or privileged live capture. The cookbook repeats the
-placeholder and approximate output ([`docs/examples.md:48-92`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L48-L92)). A redistributable
+placeholder and approximate output ([`docs/examples.md:47-89`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/examples.md#L47-L89)). A redistributable
 fixture already exists at [`website/static/demos/sample-call.pcap`](https://github.com/NormB/sipnab/raw/main/website/static/demos/sample-call.pcap).
 
 **Impact:** a first-time user cannot reproduce the tutorial without bringing
@@ -175,11 +175,11 @@ and keys. Use the same fixture in journey tests.
 
 **Priority / type / effort:** P1 / verified clarity defect / S
 
-**Evidence:** [`README.md:12`](https://github.com/NormB/sipnab/blob/main/README.md#L12) says “One static binary,” while [`README.md:51-57`](https://github.com/NormB/sipnab/blob/main/README.md#L51-L57)
-documents dynamic libpcap and [`README.md:62-70`](https://github.com/NormB/sipnab/blob/main/README.md#L62-L70) a separate audio shared object.
-[`docs/install.md:3`](https://github.com/NormB/sipnab/blob/main/docs/install.md#L3) says “one static binary with one runtime dependency,” while
-[`docs/install.md:67-76`](https://github.com/NormB/sipnab/blob/main/docs/install.md#L67-L76) correctly distinguishes GNU and musl artifacts.
-[`website/content/docs/_index.md:29-31`](https://github.com/NormB/sipnab/blob/main/website/content/docs/_index.md#L29-L31) similarly implies one binary and no runtime.
+**Evidence:** [`README.md:12`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/README.md#L12) says “One static binary,” while [`README.md:51-57`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/README.md#L51-L57)
+documents dynamic libpcap and [`README.md:62-70`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/README.md#L62-L70) a separate audio shared object.
+[`docs/install.md:3`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L3) says “one static binary with one runtime dependency,” while
+[`docs/install.md:67-76`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L67-L76) correctly distinguishes GNU and musl artifacts.
+[`website/content/docs/_index.md:29-31`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/website/content/docs/_index.md#L29-L31) similarly implies one binary and no runtime.
 
 **Impact:** users can choose an incompatible artifact or deploy without required
 libraries/plugins.
@@ -199,8 +199,8 @@ binary” outside a musl-specific context.
 
 **Evidence:** [`docs/mcp-deploy.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md) is 1,868 lines and [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md) is 3,301
 lines. The walkthrough warns that most transcripts were last run at 0.5.20 and
-are illustrative ([`docs/mcp-deploy.md:10-18`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L10-L18)), yet the docs index presents
-it as a first-day tutorial ([`docs/README.md:30-31`](https://github.com/NormB/sipnab/blob/main/docs/README.md#L30-L31)).
+are illustrative ([`docs/mcp-deploy.md:10-18`](https://github.com/NormB/sipnab/blob/fcbfb46924a3164e80c66fd1fe483b4e64f87c4b/docs/mcp-deploy.md#L10-L18)), yet the docs index presents
+it as a first-day tutorial ([`docs/README.md:30-31`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/README.md#L30-L31)).
 
 **Impact:** beginners encounter a large, partly stale reference instead of a
 short successful path; experienced operators cannot quickly find topology and
@@ -220,10 +220,10 @@ Every shell/config snippet is tested or labeled with its tested version/status.
 **Priority / type / effort:** P2 / claim-clarity improvement / M
 
 **Evidence:** `README.md:18-20,160` claims every the terminal viewer keybinding and acceptance
-of the CLI matcher flags. [`docs/keybindings.md:1-24`](https://github.com/NormB/sipnab/blob/main/docs/keybindings.md#L1-L24) documents Sipnab's mappings rather
+of the CLI matcher flags. [`docs/keybindings.md:1-24`](https://github.com/NormB/sipnab/blob/main/docs/keybindings.md#L1-L24)<!-- "# Keybindings" --> documents Sipnab's mappings rather
 than an upstream comparison, and CLI reference sections only label individual
 compatible flags (`docs/cli-reference.md:224-231,476`). The `-N` collision is
-notable ([`docs/cli-reference.md:577`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md#L577)).
+notable ([`docs/cli-reference.md:576`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/cli-reference.md#L576)).
 
 **Impact:** migration expectations are ambiguous and semantic differences can
 cause incorrect automation or operator muscle memory.
@@ -239,10 +239,10 @@ claimed compatibility and pins collisions/differences in tests.
 
 **Priority / type / effort:** P2 / test-coverage improvement / M–L
 
-**Evidence:** [`docs/examples.md:48-183`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L48-L183) relies on arbitrary capture content and
-[`docs/examples.md:86-92`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L86-L92) gives hypothetical output. Existing drift tests validate
+**Evidence:** [`docs/examples.md:47-180`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/examples.md#L47-L180) relies on arbitrary capture content and
+[`docs/examples.md:83-89`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/examples.md#L83-L89) gives hypothetical output. Existing drift tests validate
 flags and generated mirrors, but not most command outcomes
-([`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs); [`tests/dev_docs_drift_test.rs:1636-1680`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs#L1636-L1680)).
+([`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs); [`tests/dev_docs_drift_test.rs:1627-1671`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/tests/dev_docs_drift_test.rs#L1627-L1671)).
 
 **Impact:** syntactically valid examples can still regress semantically.
 
@@ -257,9 +257,9 @@ key output facts/schema, and keeps generated site copies byte-identical.
 
 **Priority / type / effort:** P3 / information-architecture improvement / M
 
-**Evidence:** [`README.md:228`](https://github.com/NormB/sipnab/blob/main/README.md#L228) calls `implementation-plan-v6` a roadmap, while
-[`docs/design/implementation-plan-v6.md:9-34`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L9-L34) says it is superseded and historical.
-[`docs/design/implementation-plan-phases-8-10.md:12-28`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-phases-8-10.md#L12-L28) carries similar warnings.
+**Evidence:** [`README.md:233`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/README.md#L233) calls `implementation-plan-v6` a roadmap, while
+[`docs/design/implementation-plan-v6.md:9-34`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L9-L34)<!-- "> **⚠ Living document" --> says it is superseded and historical.
+[`docs/design/implementation-plan-phases-8-10.md:12-28`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-phases-8-10.md#L12-L28)<!-- "> **Status as it" --> carries similar warnings.
 
 **Impact:** unchecked historical plan items can be mistaken for current work.
 
@@ -296,7 +296,7 @@ failure and invalid UTF-8 for both save paths.
 
 **Priority / type / effort:** P1 / verified API contract violation / M
 
-**Evidence:** [`src/capture/keylog_source.rs:181-185`](https://github.com/NormB/sipnab/blob/main/src/capture/keylog_source.rs#L181-L185) promises duplication before
+**Evidence:** [`src/capture/keylog_source.rs:181-185`](https://github.com/NormB/sipnab/blob/8440fd31fd2205d8a843961b3e66b12ffce24f1d/src/capture/keylog_source.rs#L181-L185) promises duplication before
 setting `O_NONBLOCK` leaves the caller descriptor unchanged. The implementation
 duplicates then calls `F_SETFL` on the duplicate (`:188-200`). POSIX duplicated
 descriptors share open-file-description status flags, so the original changes too.
@@ -318,8 +318,8 @@ API contract changes, validation and documentation make the mutation explicit.
 **Priority / type / effort:** P1 / verified gate gap / XS
 
 **Evidence:** `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-fails at [`crates/sipnab-plugin-example/src/lib.rs:146`](https://github.com/NormB/sipnab/blob/main/crates/sipnab-plugin-example/src/lib.rs#L146) with
-`manual_range_contains`. The CI command in [`.github/workflows/ci.yml:173-176`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml#L173-L176)
+fails at [`crates/sipnab-plugin-example/src/lib.rs:146`](https://github.com/NormB/sipnab/blob/8440fd31fd2205d8a843961b3e66b12ffce24f1d/crates/sipnab-plugin-example/src/lib.rs#L146) with
+`manual_range_contains`. The CI command in [`.github/workflows/ci.yml:168-171`](https://github.com/NormB/sipnab/blob/8440fd31fd2205d8a843961b3e66b12ffce24f1d/.github/workflows/ci.yml#L168-L171)
 omits `--workspace`, so the example crate escapes the lint gate.
 
 **Recommendation:** use `(0..SHORT_CALL_MS).contains(&elapsed)` and change local
@@ -332,7 +332,7 @@ both workspace members were linted.
 
 **Priority / type / effort:** P2 / verified resource-lifecycle weakness / M–L
 
-**Evidence:** [`src/security/alerting.rs:307-328`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L307-L328) permits up to 100 children with no
+**Evidence:** [`src/security/alerting.rs:307-328`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/security/alerting.rs#L307-L328) permits up to 100 children with no
 deadline. Reaping only removes exited children (`:737-755`); once the set is full,
 new work is refused. Drop (`:912+`) reports suppression but does not terminate and
 wait for live children.
@@ -354,8 +354,8 @@ the configured deadline. Shutdown performs bounded cleanup.
 **Priority / type / effort:** P2 / verified resource-bound gap / S–M
 
 **Evidence:** runtime linear memory and output are capped
-([`src/plugin/mod.rs:72-118`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L72-L118)), but loading performs unbounded `std::fs::read`
-before validation/compilation ([`src/plugin/mod.rs:221-230`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L221-L230)).
+([`src/plugin/mod.rs:75-121`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L75-L121)<!-- "/// Linear-memory" -->), but loading performs unbounded `std::fs::read`
+before validation/compilation ([`src/plugin/mod.rs:221-230`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/plugin/mod.rs#L221-L230)).
 
 **Impact:** an oversized or sparse Wasm file can force host allocation and compile
 work before sandbox limits apply.
@@ -392,7 +392,7 @@ to satisfy a line-count target.
 
 **Priority / type / effort:** P3 / preventive suggestion / XS
 
-**Evidence:** the feature matrix at [`.github/workflows/ci.yml:293-319`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml#L293-L319) starts with
+**Evidence:** the feature matrix at [`.github/workflows/ci.yml:360-386`](https://github.com/NormB/sipnab/blob/8440fd31fd2205d8a843961b3e66b12ffce24f1d/.github/workflows/ci.yml#L360-L386) starts with
 named features and does not run an empty `--no-default-features` build. During this
 review, `cargo check --no-default-features --lib` succeeded.
 
@@ -409,13 +409,13 @@ catches future accidental dependencies on `native` or another default feature.
 **Priority / type / effort:** P0 / verified packaging defect / M
 
 **Evidence:** DEB/RPM scripts install `/usr/bin/sipnab`
-([`packaging/deb/build-deb.sh:63-70`](https://github.com/NormB/sipnab/blob/main/packaging/deb/build-deb.sh#L63-L70); [`packaging/rpm/build-rpm.sh:93-96`](https://github.com/NormB/sipnab/blob/main/packaging/rpm/build-rpm.sh#L93-L96)), while
-[`packaging/sipnab.service:9`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service#L9) executes `/usr/local/bin/sipnab`. The plain
+([`packaging/deb/build-deb.sh:66-73`](https://github.com/NormB/sipnab/blob/main/packaging/deb/build-deb.sh#L66-L73)<!-- "mkdir -p "$PKG_DIR/usr/bin"" -->; [`packaging/rpm/build-rpm.sh:197-200`](https://github.com/NormB/sipnab/blob/main/packaging/rpm/build-rpm.sh#L197-L200)<!-- "%install" -->), while
+[`packaging/sipnab.service:9`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/packaging/sipnab.service#L9) executes `/usr/local/bin/sipnab`. The plain
 `sipnab.service` passes `-d %i` despite not being an instance unit
 (`packaging/sipnab.service:1,9`). It binds REST and standalone metrics
 non-loopback without credentials (`:9`), which REST refuses
-([`src/output/api.rs:447-469`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L447-L469); [`docs/rest-api.md:210-217`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L210-L217)) and metrics documents as
-fail-closed ([`docs/rest-api.md:229-239`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L229-L239)). Yet [`docs/install.md:222-224`](https://github.com/NormB/sipnab/blob/main/docs/install.md#L222-L224) promises a
+([`src/output/api.rs:443-465`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/output/api.rs#L443-L465); [`docs/rest-api.md:210-217`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/rest-api.md#L210-L217)) and metrics documents as
+fail-closed ([`docs/rest-api.md:419-429`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L419-L429)<!-- "### Metrics endpoints" -->). Yet [`docs/install.md:222-224`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L222-L224) promises a
 packaged unit and service user.
 
 **Impact:** `systemctl start sipnab` from either native package enters failure or
@@ -435,10 +435,10 @@ post-open identity, and show no startup refusal in the journal.
 **Priority / type / effort:** P0 / verified published-workflow defect / S–M
 
 **Evidence:** the runtime image switches to `USER sipnab`
-([`Dockerfile:37-40`](https://github.com/NormB/sipnab/blob/main/Dockerfile#L37-L40)). The live-capture recipe supplies only host networking
-([`docs/install.md:521-527`](https://github.com/NormB/sipnab/blob/main/docs/install.md#L521-L527)), while capture requires raw capability or root
+([`Dockerfile:77-80`](https://github.com/NormB/sipnab/blob/main/Dockerfile#L77-L80)<!-- "RUN useradd -r -s" -->). The live-capture recipe supplies only host networking
+([`docs/install.md:521-527`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L521-L527)), while capture requires raw capability or root
 (`docs/install.md:397-406,544-546`). Docker CI tests only an offline pcap
-([`.github/workflows/docker.yml:121-139`](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml#L121-L139)).
+([`.github/workflows/docker.yml:267-285`](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml#L267-L285)<!-- "- name: Smoke test" -->).
 
 **Impact:** the documented live-container command fails with permission denied.
 
@@ -456,11 +456,11 @@ CI covers success and failure.
 
 **Priority / type / effort:** P2 / verified operational-doc mismatch / docs S, tracing L
 
-**Evidence:** [`contrib/observability/README.md:124-138`](https://github.com/NormB/sipnab/blob/main/contrib/observability/README.md#L124-L138) says the full/audio binary
+**Evidence:** [`contrib/observability/README.md:145-159`](https://github.com/NormB/sipnab/blob/main/contrib/observability/README.md#L145-L159)<!-- "### Runtime dependencies" --> says the full/audio binary
 links libasound and refuses startup without it. The current install guide says
 audio is lazily loaded and the executable starts without ALSA
-([`docs/install.md:465-471`](https://github.com/NormB/sipnab/blob/main/docs/install.md#L465-L471)). The guide advertises Sipnab “metrics and traces”
-([`contrib/observability/README.md:1-15`](https://github.com/NormB/sipnab/blob/main/contrib/observability/README.md#L1-L15)), but calls OpenTelemetry a future phase
+([`docs/install.md:465-471`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L465-L471)). The guide advertises Sipnab “metrics and traces”
+([`contrib/observability/README.md:1-15`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/contrib/observability/README.md#L1-L15)), but calls OpenTelemetry a future phase
 and only proves the collector listens (`:13,86-91`), not that Sipnab emits spans.
 
 **Recommendation:** document libpcap versus plugin dependencies correctly. Mark
@@ -476,8 +476,8 @@ either finds a Sipnab span in Tempo or explicitly says traces are unavailable.
 **Priority / type / effort:** P2 / capability improvement / M
 
 **Evidence:** REST health always returns literal `ok`
-([`src/output/api.rs:599-601`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L599-L601); [`docs/rest-api.md:263-265`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L263-L265)), and MCP health is also
-unconditional ([`src/mcp/transport.rs:269-272`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L269-L272)). Existing capture state is not
+([`src/output/api.rs:595-597`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/output/api.rs#L595-L597); [`docs/rest-api.md:797-799`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L797-L799)<!-- "### GET /health" -->), and MCP health is also
+unconditional ([`src/mcp/transport.rs:734-737`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L734-L737)<!-- "let mcp_router = Router::new()" -->). Existing capture state is not
 consulted by these probes.
 
 **Impact:** an orchestrator can route to or retain a process whose worker/source
@@ -496,8 +496,8 @@ machine-readable reason. Deployment health checks use the appropriate endpoint.
 **Priority / type / effort:** P1 / security hardening / M
 
 **Evidence:** signing keys are read with `read_to_string`
-([`src/app/servers.rs:469-485`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L469-L485)) and MCP token files likewise (`:547-567`). Docs
-recommend `chmod 600` ([`docs/mcp.md:227-235`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L227-L235)), but code accepts broad modes and
+([`src/app/servers.rs:469-485`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/app/servers.rs#L469-L485)) and MCP token files likewise (`:547-567`). Docs
+recommend `chmod 600` ([`docs/mcp.md:227-235`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/mcp.md#L227-L235)), but code accepts broad modes and
 symlinked inputs.
 
 **Impact:** accidental `0644` credentials can silently expose captured-call access.
@@ -519,11 +519,11 @@ credential-file type.
 
 **Priority / type / effort:** P1 / verified privilege-model mismatch / M
 
-**Evidence:** [`packaging/sipnab.service:9-13`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service#L9-L13) runs as root and comments about
+**Evidence:** [`packaging/sipnab.service:9-13`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/packaging/sipnab.service#L9-L13) runs as root and comments about
 `--user sipnab`, but does not pass it. The documented default internal drop target
-is `nobody` ([`docs/install.md:417-420`](https://github.com/NormB/sipnab/blob/main/docs/install.md#L417-L420); [`docs/config-reference.md:354`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md#L354)). Package
+is `nobody` ([`docs/install.md:417-420`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L417-L420); [`docs/config-reference.md:1207`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md#L1207)<!-- "User to drop privileges" -->). Package
 scripts create a dedicated `sipnab` user
-([`packaging/deb/build-deb.sh:116-123`](https://github.com/NormB/sipnab/blob/main/packaging/deb/build-deb.sh#L116-L123); [`packaging/rpm/build-rpm.sh:101-105`](https://github.com/NormB/sipnab/blob/main/packaging/rpm/build-rpm.sh#L101-L105)).
+([`packaging/deb/build-deb.sh:137-140`](https://github.com/NormB/sipnab/blob/main/packaging/deb/build-deb.sh#L137-L140)<!-- "# Create sipnab user for privilege drop" -->; [`packaging/rpm/build-rpm.sh:215-218`](https://github.com/NormB/sipnab/blob/main/packaging/rpm/build-rpm.sh#L215-L218)<!-- "# Create sipnab user" -->).
 
 **Recommendation:** prefer systemd `User=sipnab` with tightly bounded capture
 capabilities if libpcap/device access permits; otherwise use root only for device
@@ -537,10 +537,10 @@ no root is retained, and HEP-only mode has an empty capability set.
 **Priority / type / effort:** P2 / lifecycle improvement / docs S, code L
 
 **Evidence:** key rotation requires startup flags and restart to drop the old key
-([`docs/auth.md:199-202`](https://github.com/NormB/sipnab/blob/main/docs/auth.md#L199-L202)); static credentials require restart ([`docs/auth.md:11`](https://github.com/NormB/sipnab/blob/main/docs/auth.md#L11)),
-while only revocation files reload by mtime ([`docs/auth.md:204-220`](https://github.com/NormB/sipnab/blob/main/docs/auth.md#L204-L220)). Packaged and
+([`docs/auth.md:199-202`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/auth.md#L199-L202)); static credentials require restart ([`docs/auth.md:14`](https://github.com/NormB/sipnab/blob/main/docs/auth.md#L14)<!-- "- Simple, but nothing" -->),
+while only revocation files reload by mtime ([`docs/auth.md:204-220`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/auth.md#L204-L220)). Packaged and
 observability units define no `ExecReload`
-([`packaging/sipnab.service:7-28`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service#L7-L28); [`contrib/observability/sipnab-hep.service:43-69`](https://github.com/NormB/sipnab/blob/main/contrib/observability/sipnab-hep.service#L43-L69)).
+([`packaging/sipnab.service:7-28`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/packaging/sipnab.service#L7-L28); [`contrib/observability/sipnab-hep.service:43-69`](https://github.com/NormB/sipnab/blob/main/contrib/observability/sipnab-hep.service#L43-L69)<!-- "ExecStart=/usr/local/bin/sipnab \ -N" -->).
 
 **Recommendation:** immediately publish a live-versus-restart matrix. Then add
 SIGHUP atomic reload for safe config and credential files, retaining old state on
@@ -554,7 +554,7 @@ downtime; invalid reload leaves the previous configuration active.
 
 **Priority / type / effort:** P2 / security hardening / S
 
-**Evidence:** [`contrib/observability/README.md:52-53`](https://github.com/NormB/sipnab/blob/main/contrib/observability/README.md#L52-L53) advertises Grafana
+**Evidence:** [`contrib/observability/README.md:52-53`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/contrib/observability/README.md#L52-L53) advertises Grafana
 `admin/admin`. Compose defaults the password to `admin`, publishes Grafana,
 Prometheus, and OTLP on all interfaces, and enables the Prometheus lifecycle API
 (`contrib/observability/docker-compose.yml:16-22,35-37,57-63`).
@@ -572,7 +572,7 @@ part of the walkthrough.
 **Priority / type / effort:** P2 / verified semantic inconsistency / L
 
 **Evidence:** the docs acknowledge API versus standalone label-case differences
-([`docs/rest-api.md:1078`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L1078)), different meanings for
+([`docs/rest-api.md:1078`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/rest-api.md#L1078)), different meanings for
 `sipnab_rtp_streams_active` (`:1083`), and omission of
 `sipnab_rtp_streams_total` from standalone metrics (`:1084`).
 
@@ -593,7 +593,7 @@ against both endpoints.
 
 **Priority / type / effort:** P1 / verified developer-doc drift / XS
 
-**Evidence:** [`docs/internals/testing.md:3-6`](https://github.com/NormB/sipnab/blob/main/docs/internals/testing.md#L3-L6) says “Fifty integration-test
+**Evidence:** [`docs/internals/testing.md:3-6`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/internals/testing.md#L3-L6) says “Fifty integration-test
 binaries,” while the reviewed repository has 132 top-level `tests/*.rs` files.
 The paragraph explicitly avoids repeating the exact total elsewhere because it
 changes frequently, making this remaining number internally inconsistent.
@@ -613,11 +613,11 @@ drift test; the guide accurately explains Cargo's top-level integration targets.
 
 **Priority / type / effort:** P2 / onboarding gap / M
 
-**Evidence:** [`CONTRIBUTING.md:54-62`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#L54-L62) lists Rust, libpcap, and fuzzing tools, but
+**Evidence:** [`CONTRIBUTING.md:68-76`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#L68-L76)<!-- "## Prerequisites" --> lists Rust, libpcap, and fuzzing tools, but
 later required/important workflows depend on Vale, codespell, Python, cargo-insta,
-tmux, wasm-pack, and other CI/release tools ([`CONTRIBUTING.md:132-179`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#L132-L179);
+tmux, wasm-pack, and other CI/release tools ([`CONTRIBUTING.md:132-179`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/CONTRIBUTING.md#L132-L179);
 `docs/internals/testing.md:19,60,113-128`;
-[`docs/internals/build-ci-release.md:131-169`](https://github.com/NormB/sipnab/blob/main/docs/internals/build-ci-release.md#L131-L169)). Instructions are dispersed and
+[`docs/internals/build-ci-release.md:131-169`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/internals/build-ci-release.md#L131-L169)). Instructions are dispersed and
 some failures occur only at pre-push or CI.
 
 **Impact:** a contributor can satisfy “Prerequisites” but still be unable to run
@@ -637,7 +637,7 @@ workflows/hooks.
 
 **Priority / type / effort:** P2 / developer-process improvement / M
 
-**Evidence:** [`docs/internals/walkthroughs.md:3-20`](https://github.com/NormB/sipnab/blob/main/docs/internals/walkthroughs.md#L3-L20) deliberately labels steps that
+**Evidence:** [`docs/internals/walkthroughs.md:3-20`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/internals/walkthroughs.md#L3-L20) deliberately labels steps that
 are not enforced. Examples include exhaustive CLI default coverage (`:43-45`),
 output behavior registration (`:210-219`), fuzz target registration and seed
 replay (`:224-250`). The guide is admirably candid, but these are durable blind

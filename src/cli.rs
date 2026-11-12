@@ -4492,8 +4492,7 @@ pub struct HepArgs {
     #[arg(
         help_heading = "HEP",
         long = "hep-listen-transport",
-        value_name = "udp|tcp|tls",
-        requires = "hep_listen"
+        value_name = "udp|tcp|tls"
     )]
     pub hep_listen_transport: Option<HepTransport>,
 
@@ -4572,12 +4571,7 @@ pub struct HepArgs {
     /// incoming HEP packets must carry a matching 0x000e auth-key chunk or
     /// they are dropped. Refused without `--hep-listen` or `--hep-send`, the
     /// two sides it governs.
-    #[arg(
-        help_heading = "HEP",
-        long = "hep-auth-file",
-        value_name = "FILE",
-        requires = "hep_surface"
-    )]
+    #[arg(help_heading = "HEP", long = "hep-auth-file", value_name = "FILE")]
     pub hep_auth_file: Option<std::path::PathBuf>,
 
     /// HEP authentication mode: `plain` (default) sends/expects the shared
@@ -4591,8 +4585,7 @@ pub struct HepArgs {
         help_heading = "HEP",
         long = "hep-auth-mode",
         value_name = "plain|hmac",
-        default_value = "plain",
-        requires = "hep_surface"
+        default_value = "plain"
     )]
     pub hep_auth_mode: HepAuthMode,
 
@@ -4615,8 +4608,7 @@ pub struct HepArgs {
         help_heading = "HEP",
         long = "hep-hmac-window",
         value_name = "SECS",
-        value_parser = clap::value_parser!(u64).range(1..=crate::config::MAX_HEP_HMAC_WINDOW_SECS),
-        requires = "hep_listen"
+        value_parser = clap::value_parser!(u64).range(1..=crate::config::MAX_HEP_HMAC_WINDOW_SECS)
     )]
     pub hep_hmac_window_secs: Option<u64>,
 
@@ -4629,12 +4621,7 @@ pub struct HepArgs {
     /// the port with the wrong key, mode or source address, which is a
     /// different fix from a sender that stopped. Refused without
     /// `--hep-listen`, which is the side it governs.
-    #[arg(
-        help_heading = "HEP",
-        long = "hep-silence-warn",
-        value_name = "SECS",
-        requires = "hep_listen"
-    )]
+    #[arg(help_heading = "HEP", long = "hep-silence-warn", value_name = "SECS")]
     pub hep_silence_warn_secs: Option<u64>,
 
     /// At the end of a headless run, print who fed the `--hep-listen`
@@ -4644,7 +4631,7 @@ pub struct HepArgs {
     /// `--json`, the same as one JSON object on the last line of stdout — the
     /// shape `GET /v1/hep/senders` and the MCP `hep_senders` tool return.
     /// Refused without `--hep-listen`, which is the side it describes.
-    #[arg(help_heading = "HEP", long = "hep-senders", requires = "hep_listen")]
+    #[arg(help_heading = "HEP", long = "hep-senders")]
     pub hep_senders: bool,
 
     /// At the end of a headless run, print the OpenSIPS topology-hiding
@@ -4655,7 +4642,7 @@ pub struct HepArgs {
     /// status. With `--json`, the same as one JSON object on the last line of
     /// stdout — the shape `GET /v1/th-mappings` and the MCP `th_mappings`
     /// tool return. Refused without `--hep-listen`, where the events arrive.
-    #[arg(help_heading = "HEP", long = "th-mappings", requires = "hep_listen")]
+    #[arg(help_heading = "HEP", long = "th-mappings")]
     pub th_mappings: bool,
 
     /// Parse incoming HEP packets (enable HEP decoding). Config:
@@ -4681,19 +4668,14 @@ pub struct HepArgs {
     /// Allowed source addresses for HEP input (repeatable), and the only
     /// senders whose OpenSIPS `E_SIPNAB_TH_MAP` events the listener accepts.
     /// Refused without `--hep-listen`, which is the side it governs.
-    #[arg(
-        help_heading = "HEP",
-        long,
-        value_name = "ADDR",
-        requires = "hep_listen"
-    )]
+    #[arg(help_heading = "HEP", long, value_name = "ADDR")]
     pub hep_allow: Vec<String>,
 
     /// Maximum HEP packets per second (global ceiling across all senders).
     /// `0` disables the global ceiling (consistent with `off` on the
     /// per-peer knob); the per-peer cap, if set, still applies. Refused
     /// without `--hep-listen`, which is the side it governs.
-    #[arg(help_heading = "HEP", long, value_name = "N", requires = "hep_listen")]
+    #[arg(help_heading = "HEP", long, value_name = "N")]
     pub hep_rate_limit: Option<u64>,
 
     /// Maximum HEP packets per second from any single source IP: a number,
@@ -4708,8 +4690,7 @@ pub struct HepArgs {
         help_heading = "HEP",
         long,
         value_name = "N|auto|off",
-        default_value = "off",
-        requires = "hep_listen"
+        default_value = "off"
     )]
     pub hep_rate_limit_per_peer: PerPeerLimit,
 }
@@ -7015,6 +6996,108 @@ impl Cli {
         )
     }
 
+    /// The HEP listener's address and where it came from: `--hep-listen`,
+    /// else `[hep] listen`.
+    ///
+    /// The key is not read in a run that reads capture files (`-I`). Such a
+    /// run with `-L` typed is refused for a security reason
+    /// (`refuse_conflicting_sources`); a key that stands in the file must
+    /// not turn every `sipnab -I capture.pcap` into that refusal.
+    /// [`Self::inert_key_warnings`] says so when it happens.
+    #[must_use]
+    pub fn hep_listen_with_origin<'a>(
+        &'a self,
+        config: &'a crate::config::Config,
+    ) -> Option<(&'a str, crate::settings::Origin)> {
+        use crate::settings::Origin;
+        if let Some(addr) = self.hep_args.hep_listen.as_deref() {
+            return Some((addr, Origin::CommandLine));
+        }
+        if self.has_input() {
+            return None;
+        }
+        config
+            .hep
+            .listen
+            .as_deref()
+            .map(|addr| (addr, Origin::ConfigFile))
+    }
+
+    /// The HEP listener's address: `--hep-listen`, else `[hep] listen`; `None`
+    /// when this run starts no listener. See [`Self::hep_listen_with_origin`].
+    #[must_use]
+    pub fn hep_listen<'a>(&'a self, config: &'a crate::config::Config) -> Option<&'a str> {
+        self.hep_listen_with_origin(config).map(|(addr, _)| addr)
+    }
+
+    /// The HEP listener's source allowlist: every `--hep-allow` when the flag
+    /// is given at least once, else `[hep] allow`.
+    #[must_use]
+    pub fn hep_allow<'a>(&'a self, config: &'a crate::config::Config) -> &'a [String] {
+        if self.hep_args.hep_allow.is_empty() {
+            &config.hep.allow
+        } else {
+            &self.hep_args.hep_allow
+        }
+    }
+
+    /// A HEP flag given on a run that starts neither side that reads it.
+    ///
+    /// The parser used to refuse these with `requires`, which reads the
+    /// command line alone: with the listener started by `[hep] listen` it
+    /// refused `--hep-senders` on a run that has a listener. The rule is the
+    /// same, asked once the config file is known.
+    ///
+    /// # Returns
+    ///
+    /// The refusal, naming every such flag; `None` when each flag given has
+    /// its side.
+    #[must_use]
+    pub fn hep_side_flags_problem(&self, config: &crate::config::Config) -> Option<String> {
+        let h = &self.hep_args;
+        let listener = self.hep_listen(config).is_some();
+        let sender = h.hep_send.is_some();
+        let given = |rows: &[(&'static str, bool)]| -> Vec<&'static str> {
+            rows.iter()
+                .filter(|(_, given)| *given)
+                .map(|(flag, _)| *flag)
+                .collect()
+        };
+        let listener_only = given(&[
+            ("--hep-allow", !h.hep_allow.is_empty()),
+            ("--hep-listen-transport", h.hep_listen_transport.is_some()),
+            ("--hep-hmac-window", h.hep_hmac_window_secs.is_some()),
+            ("--hep-silence-warn", h.hep_silence_warn_secs.is_some()),
+            ("--hep-senders", h.hep_senders),
+            ("--th-mappings", h.th_mappings),
+            ("--hep-rate-limit", h.hep_rate_limit.is_some()),
+            (
+                "--hep-rate-limit-per-peer",
+                h.hep_rate_limit_per_peer != PerPeerLimit::Off,
+            ),
+        ]);
+        if !listener && !listener_only.is_empty() {
+            return Some(format!(
+                "{} applies to the HEP listener, which this run does not start. Start it \
+                 with --hep-listen/-L, or with [hep] listen in the config file.",
+                listener_only.join(", ")
+            ));
+        }
+        let either_side = given(&[
+            ("--hep-auth-file", h.hep_auth_file.is_some()),
+            ("--hep-auth-mode", h.hep_auth_mode != HepAuthMode::default()),
+        ]);
+        if !listener && !sender && !either_side.is_empty() {
+            return Some(format!(
+                "{} applies to the HEP listener and the HEP sender, and this run starts \
+                 neither. Start one with --hep-listen/-L, with [hep] listen in the config \
+                 file, or with --hep-send/-H.",
+                either_side.join(", ")
+            ));
+        }
+        None
+    }
+
     /// SIP-over-WebSocket port set: `--ws-portrange`, else
     /// `[capture] ws_ports`, else the shipped set.
     ///
@@ -7770,9 +7853,15 @@ impl Cli {
     pub fn inert_key_warnings(&self, config: &crate::config::Config) -> Vec<String> {
         const LISTENER: &str = "the HEP listener (--hep-listen/-L)";
         const SENDER: &str = "the HEP sender (--hep-send/-H)";
-        let listener = self.hep_args.hep_listen.is_some();
+        let listener = self.hep_listen(config).is_some();
         let sender = self.hep_args.hep_send.is_some();
         let rows = [
+            (
+                "[hep] allow",
+                !config.hep.allow.is_empty(),
+                listener,
+                LISTENER,
+            ),
             (
                 "[limits] hep_rate_limit",
                 config.limits.hep_rate_limit.is_some(),
@@ -7817,7 +7906,8 @@ impl Cli {
                 SENDER,
             ),
         ];
-        rows.into_iter()
+        let mut warnings: Vec<String> = rows
+            .into_iter()
             .filter(|&(_, set, started, _)| set && !started)
             .map(|(key, _, _, side)| {
                 format!(
@@ -7825,7 +7915,16 @@ impl Cli {
                      applies to {side}, which this run does not start"
                 )
             })
-            .collect()
+            .collect();
+        // The one key that would START that side, and is not read here.
+        if config.hep.listen.is_some() && !listener && self.has_input() {
+            warnings.push(
+                "[hep] listen is set in the config file and is not used in this run: a run \
+                 that reads capture files (-I) starts no HEP listener"
+                    .to_string(),
+            );
+        }
+        warnings
     }
 
     /// The alert settings: `--alert`, else `[security] alert`;
@@ -12031,8 +12130,18 @@ mod tests {
     /// status agrees with them, and the packets are in the clear.
     #[test]
     fn the_hep_transport_flags_refuse_to_be_inert() -> Result<(), TestError> {
+        // The listener's side can start from `[hep] listen`, so its flag is
+        // refused once the config file is known, not by the parser.
+        let lonely_listener =
+            Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--hep-listen-transport", "tcp"])?;
+        let refusal = lonely_listener
+            .hep_side_flags_problem(&crate::config::Config::default())
+            .ok_or("--hep-listen-transport without a listener must be refused")?;
+        assert!(
+            refusal.contains("--hep-listen-transport"),
+            "the refusal names the flag: {refusal}"
+        );
         for lonely in [
-            vec!["--hep-listen-transport", "tcp"],
             vec!["--hep-send-transport", "tcp"],
             vec!["--hep-tls-ca", "ca.pem"],
             vec!["--hep-tls-cert", "c.pem"],

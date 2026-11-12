@@ -14,9 +14,11 @@
 //! - every `minimatch` any tracked npm lockfile resolves is 11.0.1 or later;
 //! - `osv-scanner.toml` carries no exception for the advisory.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::process::Command;
 
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
@@ -40,24 +42,7 @@ fn repo() -> PathBuf {
 
 /// Every tracked `package-lock.json`.
 fn tracked_npm_lockfiles() -> Result<Vec<String>, TestError> {
-    let out = Command::new("git")
-        .args([
-            "ls-files",
-            "-z",
-            "--",
-            "package-lock.json",
-            "**/package-lock.json",
-        ])
-        .current_dir(repo())
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git ls-files: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect())
+    tracked::ls_files(repo(), &["--", "package-lock.json", "**/package-lock.json"])
 }
 
 /// Every `(lockfile, version)` for a `minimatch` package in `lock`.
