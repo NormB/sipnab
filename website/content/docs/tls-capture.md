@@ -571,7 +571,7 @@ probe run labels each dialog `uprobe:<process>/<pid>`.
 
 | Symptom | Likely cause |
 |---|---|
-| `No SIP traffic found.` and a totals line with `0 SIP messages`, from a capture of port 5061 | The run had no `--keylog`, so sipnab read no TLS record. Pass the key log |
+| `This capture holds at least 2 TLS application-data record(s) and this run was given no TLS key` (the number varies) after a totals line with `0 SIP messages` | The run had no `--keylog`, `--keylog-fd` or `--tls-key`, so sipnab decrypted no TLS record. Pass the key log: `sipnab -N -I tls-capture.pcap --keylog /tmp/sip-keys.log` |
 | `sipnab could not decrypt 2 TLS application-data record(s): it holds no key material for any session in this capture` (the number varies) | The key log is empty or holds no key line. Check that the key source attached to the TLS library and the process the daemon uses, and that it started before the connection opened |
 | `sipnab loaded 1 keylog line(s) and built no session from any of them` (the numbers vary), then `No key in the key log belongs to a handshake in this capture` | The capture holds the handshake, and the key log comes from other connections: another process, another run, or a log rotated after these connections began. sipnab prints the remedy: `Use the key log that the endpoint of these connections wrote during this capture.` |
 | `sipnab loaded 1 keylog line(s) and built no session from any of them`, then `The handshake is missing: this capture holds no ClientHello and no ServerHello.` | The capture started after the connection opened. For TLS 1.2, restart the connection while the capture runs. For TLS 1.3, use a key log that holds both traffic secret lines of the connection |

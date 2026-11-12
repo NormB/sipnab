@@ -27,6 +27,9 @@
 //! cannot answer, these tests say so rather than passing: a gate that reports
 //! safety it did not check is worse than one that is absent.
 
+#[path = "support/release_tags.rs"]
+mod tag_rule;
+
 use std::process::Command;
 
 /// The error a fallible test returns: any error, boxed, so `?` works on
@@ -61,17 +64,12 @@ fn published_version() -> Result<String, TestError> {
         .to_string())
 }
 
-/// Every release tag in the checkout, newest last.
+/// Every release tag that counts for this checkout
+/// (`tests/support/release_tags.rs`), newest last.
 fn release_tags() -> Result<Vec<(u32, u32, u32)>, TestError> {
-    let out = Command::new("git")
-        .args(["tag", "--list"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git tag --list: {e}"))?;
-    let mut v: Vec<(u32, u32, u32)> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(release_tag)
-        .collect();
+    let names = tag_rule::reachable_release_tags(&repo())
+        .ok_or("git could not list the release tags reachable from HEAD")?;
+    let mut v: Vec<(u32, u32, u32)> = names.iter().filter_map(|t| release_tag(t)).collect();
     v.sort_unstable();
     v.dedup();
     Ok(v)

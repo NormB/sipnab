@@ -33,6 +33,8 @@ mod tracked;
 
 #[path = "support/mcp_reference.rs"]
 mod mcp_reference;
+#[path = "support/release_tags.rs"]
+mod release_tags;
 #[path = "../src/test_scratch.rs"]
 mod test_scratch;
 
@@ -1268,15 +1270,8 @@ fn site_advertises_only_a_released_version() -> Result<(), TestError> {
         .ok_or("website/config.toml has no published_version")?[1]
         .to_string();
 
-    let out = Command::new("git")
-        .args(["tag", "--list"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git tag --list: {e}"))?;
-    let tags: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::to_string)
-        .collect();
+    let tags: Vec<String> = release_tags::reachable_release_tags(repo())
+        .ok_or("git could not list the release tags reachable from HEAD")?;
 
     // A clone with no tags cannot answer the question. Say so rather than pass.
     assert!(

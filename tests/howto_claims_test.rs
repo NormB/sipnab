@@ -41,6 +41,9 @@ const SERVICE: &str = include_str!("../docs/run-as-a-service.md");
 const REST: &str = include_str!("../docs/rest-api.md");
 const MCP_DEPLOY: &str = include_str!("../docs/mcp-deploy.md");
 const AUTH: &str = include_str!("../docs/auth.md");
+const MCP: &str = include_str!("../docs/mcp.md");
+const MCP_ESTATE: &str = include_str!("../docs/mcp-estate.md");
+const INTEGRATIONS: &str = include_str!("../docs/integrations.md");
 
 /// The troubleshooting heading of run-as-a-service.
 const SERVICE_TROUBLESHOOT: &str = "## When the service does not start";
@@ -70,6 +73,15 @@ mod pcap_build;
 #[cfg(all(unix, feature = "api"))]
 #[path = "support/server.rs"]
 mod server;
+
+// The HTTP client and session helpers of the MCP tests, for the estate page
+// whose check asks an MCP server over HTTP which HEP senders it admitted.
+#[cfg(all(unix, feature = "mcp-http", feature = "hep"))]
+#[path = "support/mcp.rs"]
+mod mcp;
+
+// `tied_to_test`, so that a server a test starts ends with the test.
+include!("support/child_lifetime.rs");
 
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -986,20 +998,75 @@ fn the_tls_check_shows_the_decrypted_messages_and_the_log_line() -> Result<(), T
     Ok(())
 }
 
-/// Without `--keylog` sipnab looks at no TLS record: the run prints no
-/// message and the sentence the page quotes.
+/// What a run with no TLS key prints about the two application-data records
+/// of the test call. The page quotes it and the binary prints it.
+#[cfg(feature = "tls")]
+const NO_TLS_KEY: &str = "This capture holds at least 2 TLS application-data record(s) and this \
+                          run was given no TLS key";
+
+/// Without a TLS key sipnab decrypts no record: the run prints no message
+/// line, counts the records it saw and names the flag that reads them. It
+/// does not print the sentence of a capture that holds no SIP.
 #[cfg(feature = "tls")]
 #[test]
-fn a_tls_capture_read_without_keys_prints_what_the_page_quotes() -> Result<(), TestError> {
-    let message = "No SIP traffic found.";
-    page_says(section(TLS, TLS_TROUBLESHOOT)?, message, "tls-capture");
+fn a_tls_capture_read_without_keys_names_the_records_and_the_flag() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
     let (capture, _) = tls_call(dir.path())?;
     let run = sipnab(&["-N", "-I", &capture])?;
     exited(&run, 0);
     assert_eq!(stdout(&run), "", "nothing decrypted, so no message line");
-    printed(&stderr(&run), message);
-    printed(&stderr(&run), "0 SIP messages");
+    let printed_text = stderr(&run);
+    printed(&printed_text, "0 SIP messages");
+    printed(&printed_text, NO_TLS_KEY);
+    printed(
+        &printed_text,
+        "this is not a finding that the capture contains no SIP",
+    );
+    printed(&printed_text, "--keylog keys.log");
+    assert!(
+        !printed_text.contains("No SIP traffic found."),
+        "a capture with unread TLS records is not reported as holding no SIP:\n{printed_text}"
+    );
+    assert!(
+        !printed_text.contains("--hexdump"),
+        "the hexdump tip belongs to a capture with no TLS record:\n{printed_text}"
+    );
+    Ok(())
+}
+
+/// The troubleshooting table of the page quotes the message of a run with no
+/// TLS key, in the words `a_tls_capture_read_without_keys_names_the_records_and_the_flag`
+/// reads from the binary.
+#[cfg(feature = "tls")]
+#[test]
+fn the_tls_page_quotes_the_message_of_a_run_without_keys() -> Result<(), TestError> {
+    let table = section(TLS, TLS_TROUBLESHOOT)?;
+    page_says(table, NO_TLS_KEY, "tls-capture");
+    page_says(table, "0 SIP messages", "tls-capture");
+    assert!(
+        !table.contains("No SIP traffic found."),
+        "the page still quotes the sentence a run without a TLS key no longer prints"
+    );
+    Ok(())
+}
+
+/// A capture with no TLS record and no SIP still gets the plain sentence:
+/// the count of records is what selects the other message. Gated on `tls`
+/// because the capture builder is compiled with that feature.
+#[cfg(feature = "tls")]
+#[test]
+fn a_capture_with_no_tls_record_and_no_sip_keeps_the_plain_sentence() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let capture = dir.path().join("empty.pcap");
+    pcap_build::write_pcap(&capture, &[])?;
+    let run = sipnab(&["-N", "-I", &capture.display().to_string()])?;
+    exited(&run, 0);
+    let printed_text = stderr(&run);
+    printed(&printed_text, "No SIP traffic found.");
+    assert!(
+        !printed_text.contains("TLS application-data"),
+        "no TLS record is in the capture:\n{printed_text}"
+    );
     Ok(())
 }
 
@@ -1779,5 +1846,695 @@ fn the_auth_prerequisites_name_the_features_the_tools_and_the_other_system() -> 
     ] {
         printed(AUTH, used);
     }
+    Ok(())
+}
+
+// ── mcp ──────────────────────────────────────────────────────────────────
+
+/// The text of `doc` from the heading line `heading` to the end of the page.
+/// For a section whose fences hold shell comments, which end `section`.
+fn from_heading<'a>(doc: &'a str, heading: &str) -> Result<&'a str, TestError> {
+    let at = doc
+        .find(&format!("\n{heading}\n"))
+        .ok_or_else(|| format!("no heading {heading:?}"))?;
+    doc.get(at..).ok_or_else(|| "heading range".into())
+}
+
+/// Runs `sipnab --mcp -N -I <capture> --quiet`, writes `lines` to its
+/// standard input, closes it and returns each JSON message the server wrote.
+/// The server exits when its input ends, as the MCP page says.
+#[cfg(feature = "mcp")]
+fn mcp_stdio(capture: &Path, lines: &[String]) -> Result<Vec<serde_json::Value>, TestError> {
+    use std::io::Write as _;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["--mcp", "-N", "-I"])
+        .arg(capture)
+        .arg("--quiet")
+        .current_dir(repo())
+        .env("NO_COLOR", "1")
+        .env("XDG_CONFIG_HOME", repo().join("no-such-config-dir"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .tied_to_test()
+        .spawn()?;
+    {
+        let mut input = child.stdin.take().ok_or("the server has no stdin pipe")?;
+        for line in lines {
+            writeln!(input, "{line}")?;
+        }
+    }
+    let output = child.wait_with_output()?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect())
+}
+
+/// The JSON-RPC messages a fence of `text` passes to `printf`: each line that
+/// holds one message between single quotes.
+#[cfg(feature = "mcp")]
+fn quoted_messages(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|line| line.contains("'{\"jsonrpc\""))
+        .filter_map(|line| {
+            let start = line.find('\'')?;
+            let end = line.rfind('\'')?;
+            line.get(start + 1..end).map(str::to_owned)
+        })
+        .collect()
+}
+
+/// The answer among `answers` whose `id` is `id`.
+#[cfg(feature = "mcp")]
+fn answer_to(answers: &[serde_json::Value], id: i64) -> Result<&serde_json::Value, TestError> {
+    answers
+        .iter()
+        .find(|message| message["id"] == serde_json::json!(id))
+        .ok_or_else(|| format!("the server gave no answer to id {id}: {answers:?}").into())
+}
+
+/// The MCP prerequisites name the two features as `--version` lists them,
+/// the tools the page's commands run, and what changes on another system.
+#[test]
+fn the_mcp_prerequisites_name_the_features_the_tools_and_the_other_system() -> Result<(), TestError>
+{
+    let needs = section(MCP, "## Before you start")?;
+    for named in [
+        "`mcp`",
+        "`mcp-http`",
+        "sipnab --version",
+        "`jq`",
+        "`curl`",
+        "other system",
+        "MCP client",
+    ] {
+        page_says(needs, named, "mcp");
+    }
+    for (feature, built) in [
+        ("mcp", cfg!(feature = "mcp")),
+        ("mcp-http", cfg!(feature = "mcp-http")),
+    ] {
+        let (listed, features) = version_lists(feature)?;
+        assert_eq!(
+            listed, built,
+            "--version lists `{feature}` exactly when the build carries it: {features}"
+        );
+    }
+    Ok(())
+}
+
+/// The check of the MCP page sends three messages and expects the server's
+/// name and `true` for the tool `triage_call`. The test sends the messages
+/// the page holds and compares what the page's `jq` filter reads.
+#[cfg(feature = "mcp")]
+#[test]
+fn the_mcp_check_names_the_server_and_finds_the_tool() -> Result<(), TestError> {
+    let check = section(MCP, CHECK)?;
+    page_says(
+        check,
+        "| sipnab --mcp -N -I sip-problem-call.pcap --quiet",
+        "mcp",
+    );
+    page_says(
+        check,
+        ".result.serverInfo.name else (.result.tools | map(.name) | index(\"triage_call\") != null)",
+        "mcp",
+    );
+    page_says(check, "\"sipnab\"\ntrue\n", "mcp");
+    let messages = quoted_messages(check);
+    assert_eq!(
+        messages.len(),
+        3,
+        "the check sends initialize, the initialized notification and tools/list: {messages:?}"
+    );
+    let answers = mcp_stdio(&capture(PROBLEM_CALL)?, &messages)?;
+    assert_eq!(
+        answer_to(&answers, 1)?["result"]["serverInfo"]["name"],
+        "sipnab",
+        "the first line the page expects"
+    );
+    let tools = answer_to(&answers, 2)?["result"]["tools"]
+        .as_array()
+        .ok_or("tools/list answered no tool array")?;
+    assert!(
+        tools.iter().any(|tool| tool["name"] == "triage_call"),
+        "the second line the page expects is `true`: the list holds triage_call"
+    );
+    Ok(())
+}
+
+/// A flag that writes to standard output beside `--mcp` on stdio is refused
+/// with the message and the exit status the page quotes.
+#[cfg(feature = "mcp")]
+#[test]
+fn a_stdout_flag_beside_mcp_gives_the_message_the_mcp_page_quotes() -> Result<(), TestError> {
+    let message = "--mcp uses stdout for the JSON-RPC wire and cannot be combined with \
+                   stdout-writing flags (--json)";
+    let table = section(MCP, TROUBLESHOOT)?;
+    page_says(table, message, "mcp");
+    page_says(table, "exit 2", "mcp");
+    let run = sipnab(&[
+        "--mcp",
+        "-N",
+        "-I",
+        &capture(PROBLEM_CALL)?.display().to_string(),
+        "--json",
+    ])?;
+    exited(&run, 2);
+    printed(&stderr(&run), message);
+    Ok(())
+}
+
+/// A capture path that does not exist stops the server with the message and
+/// the exit status the page quotes, with the path of the page's own row.
+#[cfg(feature = "mcp")]
+#[test]
+fn a_capture_that_is_not_there_gives_the_message_the_mcp_page_quotes() -> Result<(), TestError> {
+    let message = "-I/--input: '/path/to/capture.pcap' does not exist";
+    let table = section(MCP, TROUBLESHOOT)?;
+    page_says(table, message, "mcp");
+    page_says(table, "exit 1", "mcp");
+    let run = sipnab(&["--mcp", "-N", "-I", "/path/to/capture.pcap"])?;
+    exited(&run, 1);
+    printed(&stderr(&run), message);
+    Ok(())
+}
+
+/// A tool name the server does not register gets the error the page quotes:
+/// the message, the reason, and a list of the names it does register.
+#[cfg(feature = "mcp")]
+#[test]
+fn a_tool_the_server_lacks_gets_the_error_the_mcp_page_quotes() -> Result<(), TestError> {
+    let table = section(MCP, TROUBLESHOOT)?;
+    for quoted in ["`tool not found`", "`unknown_tool`", "`valid_values`"] {
+        page_says(table, quoted, "mcp");
+    }
+    let mut messages = quoted_messages(section(MCP, CHECK)?);
+    messages.truncate(2);
+    messages.push(
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": {"name": "no_such_tool", "arguments": {}}
+        })
+        .to_string(),
+    );
+    let answers = mcp_stdio(&capture(PROBLEM_CALL)?, &messages)?;
+    let error = &answer_to(&answers, 7)?["error"];
+    assert_eq!(error["message"], "tool not found", "the message: {error}");
+    assert_eq!(
+        error["data"]["reason"], "unknown_tool",
+        "the reason: {error}"
+    );
+    let registered = error["data"]["valid_values"]
+        .as_array()
+        .ok_or("the error carries no valid_values list")?;
+    assert!(
+        registered.iter().any(|name| name == "triage_call"),
+        "valid_values lists the tools the server registers: {error}"
+    );
+    Ok(())
+}
+
+/// A Call-ID the capture does not hold gets the error the page quotes.
+#[cfg(feature = "mcp")]
+#[test]
+fn a_call_the_capture_lacks_gets_the_error_the_mcp_page_quotes() -> Result<(), TestError> {
+    let table = section(MCP, TROUBLESHOOT)?;
+    page_says(table, "`call_id '<id>' not found`", "mcp");
+    page_says(table, "`not_found`", "mcp");
+    let mut messages = quoted_messages(section(MCP, CHECK)?);
+    messages.truncate(2);
+    messages.push(
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": {"name": "triage_call", "arguments": {"call_id": "absent@example.invalid"}}
+        })
+        .to_string(),
+    );
+    let answers = mcp_stdio(&capture(PROBLEM_CALL)?, &messages)?;
+    let error = &answer_to(&answers, 7)?["error"];
+    assert_eq!(
+        error["message"], "call_id 'absent@example.invalid' not found",
+        "the message: {error}"
+    );
+    assert_eq!(error["data"]["reason"], "not_found", "the reason: {error}");
+    Ok(())
+}
+
+/// An HTTP bind on a routable address with no token is refused before the
+/// server binds, with the message and the exit status the page quotes.
+#[cfg(feature = "mcp-http")]
+#[test]
+fn a_routable_mcp_bind_without_a_token_gives_the_message_the_mcp_page_quotes()
+-> Result<(), TestError> {
+    let table = section(MCP, TROUBLESHOOT)?;
+    page_says(
+        table,
+        "MCP HTTP refuses to start: --mcp-bind 192.0.2.1:8731 is non-loopback",
+        "mcp",
+    );
+    let run = sipnab(&[
+        "--mcp",
+        "-N",
+        "--mcp-transport",
+        "http",
+        "--mcp-bind",
+        "192.0.2.1:8731",
+        "-I",
+        &capture(PROBLEM_CALL)?.display().to_string(),
+    ])?;
+    exited(&run, 2);
+    printed(
+        &stderr(&run),
+        "MCP HTTP refuses to start: --mcp-bind 192.0.2.1:8731 is non-loopback but no \
+         --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN",
+    );
+    Ok(())
+}
+
+/// The page quotes the refusal of `--mcp` by a build without the feature. A
+/// build without it prints that message and exits 2; a build with it holds
+/// the same text in its source, where the refusal is defined.
+#[test]
+fn a_build_without_mcp_refuses_the_flag_with_the_message_the_mcp_page_quotes()
+-> Result<(), TestError> {
+    let message = "--mcp requires the 'mcp' feature (not compiled in)";
+    page_says(section(MCP, TROUBLESHOOT)?, message, "mcp");
+    printed(BOOTSTRAP, message);
+    if cfg!(not(feature = "mcp")) {
+        let run = sipnab(&[
+            "--mcp",
+            "-N",
+            "-I",
+            &capture(PROBLEM_CALL)?.display().to_string(),
+        ])?;
+        exited(&run, 2);
+        printed(&stderr(&run), message);
+    }
+    Ok(())
+}
+
+// ── mcp-estate ───────────────────────────────────────────────────────────
+
+/// The estate prerequisites name the features, the tools and the systems the
+/// scenarios change: each proxy, the firewall and the laptop.
+#[test]
+fn the_estate_prerequisites_name_the_features_and_the_other_systems() -> Result<(), TestError> {
+    let needs = section(MCP_ESTATE, "## Before you start")?;
+    for named in [
+        "`mcp-http`",
+        "`hep`",
+        "sipnab --version",
+        "`curl`",
+        "`jq`",
+        "other system",
+        "HEP",
+        "firewall",
+        "SSH",
+    ] {
+        page_says(needs, named, "mcp-estate");
+    }
+    for (feature, built) in [
+        ("mcp-http", cfg!(feature = "mcp-http")),
+        ("hep", cfg!(feature = "hep")),
+    ] {
+        let (listed, features) = version_lists(feature)?;
+        assert_eq!(
+            listed, built,
+            "--version lists `{feature}` exactly when the build carries it: {features}"
+        );
+    }
+    Ok(())
+}
+
+/// An MCP server over HTTP with a HEP listener, both on loopback ports the
+/// kernel picks, as the check of the estate page starts one on fixed ports.
+#[cfg(all(unix, feature = "mcp-http", feature = "hep"))]
+struct CaptureHost {
+    /// Stops the server when the test ends, on a panic too.
+    _server: mcp::HttpServer,
+    /// The address the MCP server bound.
+    mcp: String,
+    /// The address the HEP listener bound.
+    hep: String,
+}
+
+#[cfg(all(unix, feature = "mcp-http", feature = "hep"))]
+impl CaptureHost {
+    /// Starts the server and reads both bound addresses from its log.
+    fn start() -> Result<Self, TestError> {
+        use std::io::BufRead as _;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args([
+                "--mcp",
+                "-N",
+                "--mcp-transport",
+                "http",
+                "--mcp-bind",
+                "127.0.0.1:0",
+                "-L",
+                "127.0.0.1:0",
+            ])
+            .current_dir(repo())
+            .env("NO_COLOR", "1")
+            .env("SIPNAB_LOG", "info")
+            .env("XDG_CONFIG_HOME", repo().join("no-such-config-dir"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .tied_to_test()
+            .spawn()?;
+        let log = child.stderr.take().ok_or("the server has no stderr pipe");
+        let server = mcp::HttpServer::new(child);
+        let (send, lines) = std::sync::mpsc::channel::<String>();
+        let log = log?;
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(log).lines().map_while(Result::ok) {
+                if send.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let (mut mcp_addr, mut hep_addr) = (None, None);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while mcp_addr.is_none() || hep_addr.is_none() {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let line = lines
+                .recv_timeout(left)
+                .map_err(|e| format!("the server did not log both addresses: {e}"))?;
+            if let Some(addr) = line.split("HEP listener started on ").nth(1) {
+                hep_addr = Some(addr.trim().to_owned());
+            } else if let Some(addr) = line.split("MCP HTTP server listening on ").nth(1) {
+                mcp_addr = Some(addr.trim().to_owned());
+            }
+        }
+        Ok(Self {
+            _server: server,
+            mcp: mcp_addr.ok_or("no MCP address")?,
+            hep: hep_addr.ok_or("no HEP address")?,
+        })
+    }
+
+    /// What `hep_senders` answers inside `session`.
+    fn senders(&self, session: &str, id: i64) -> Result<serde_json::Value, TestError> {
+        let answer = mcp::session_request(
+            &self.mcp,
+            session,
+            id,
+            "tools/call",
+            serde_json::json!({"name": "hep_senders", "arguments": {}}),
+        )?;
+        Ok(answer["result"]["structuredContent"].clone())
+    }
+}
+
+/// The check of the estate page: a second sipnab sends the sample capture to
+/// the HEP listener, and `hep_senders` names it by the capture id it claims,
+/// with the packet count the page quotes. Before the sender runs, the list is
+/// empty, as the troubleshooting table says of a listener nothing reached.
+#[cfg(all(unix, feature = "mcp-http", feature = "hep"))]
+#[test]
+fn the_estate_check_lists_the_sender_the_page_quotes() -> Result<(), TestError> {
+    let check = from_heading(MCP_ESTATE, CHECK)?;
+    for quoted in [
+        "sipnab --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:8731 -L 127.0.0.1:9063",
+        "sipnab -N --no-cli-print --quiet -I sip-problem-call.pcap --hep-send 127.0.0.1:9063 --hep-id 102",
+        "{\"name\":\"hep_senders\",\"arguments\":{}}",
+        "{\"source\":\"hep:102@127.0.0.1\",\"packets\":23,\"silent\":false}",
+    ] {
+        page_says(check, quoted, "mcp-estate");
+    }
+    page_says(
+        from_heading(MCP_ESTATE, TROUBLESHOOT)?,
+        "`\"senders\":[]`",
+        "mcp-estate",
+    );
+    let host = CaptureHost::start()?;
+    let session = mcp::establish_session(&host.mcp)?;
+    let before = host.senders(&session, 2)?;
+    assert_eq!(
+        before["senders"],
+        serde_json::json!([]),
+        "no sender has reached the listener yet: {before}"
+    );
+    let sender = sipnab(&[
+        "-N",
+        "--no-cli-print",
+        "--quiet",
+        "-I",
+        &capture(PROBLEM_CALL)?.display().to_string(),
+        "--hep-send",
+        &host.hep,
+        "--hep-id",
+        "102",
+    ])?;
+    exited(&sender, 0);
+    // The listener reads the datagrams after the sender exits: ask until it
+    // has counted all 23, within a bound.
+    let mut seen = serde_json::Value::Null;
+    for id in 3..400 {
+        seen = host.senders(&session, id)?;
+        if seen["senders"][0]["packets"] == 23 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let first = &seen["senders"][0];
+    assert_eq!(first["source"], "hep:102@127.0.0.1", "the source: {seen}");
+    assert_eq!(first["packets"], 23, "the packets of the sample: {seen}");
+    assert_eq!(first["silent"], false, "a sender heard just now: {seen}");
+    Ok(())
+}
+
+/// A HEP listener on a routable address with no allowlist and no secret is
+/// refused with the message and the exit status the estate page quotes.
+#[cfg(feature = "hep")]
+#[test]
+fn a_routable_hep_listener_without_a_guard_gives_the_message_the_estate_page_quotes()
+-> Result<(), TestError> {
+    let table = from_heading(MCP_ESTATE, TROUBLESHOOT)?;
+    let start = "HEP listener refuses to start: --hep-listen";
+    let cause = "is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) \
+                 nor a source allowlist (--hep-allow) was configured";
+    page_says(table, start, "mcp-estate");
+    page_says(table, cause, "mcp-estate");
+    page_says(table, "exit 2", "mcp-estate");
+    let run = sipnab(&["-N", "-L", "0.0.0.0:0"])?;
+    exited(&run, 2);
+    printed(&stderr(&run), start);
+    printed(&stderr(&run), cause);
+    Ok(())
+}
+
+/// The estate page sends a reader with the token refusal to the row of the
+/// MCP page that quotes it.
+#[test]
+fn the_estate_page_points_at_the_token_refusal_of_the_mcp_page() -> Result<(), TestError> {
+    page_says(
+        from_heading(MCP_ESTATE, TROUBLESHOOT)?,
+        "`MCP HTTP refuses to start`",
+        "mcp-estate",
+    );
+    page_says(
+        from_heading(MCP_ESTATE, TROUBLESHOOT)?,
+        "(mcp.md#when-something-does-not-work)",
+        "mcp-estate",
+    );
+    Ok(())
+}
+
+// ── integrations ─────────────────────────────────────────────────────────
+
+/// Runs sipnab in `dir` with warnings logged, whatever the environment of
+/// the test run holds.
+fn sipnab_warning(dir: &Path, args: &[&str]) -> Result<Output, TestError> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(args)
+        .current_dir(dir)
+        .env("NO_COLOR", "1")
+        .env("SIPNAB_LOG", "warn")
+        .env("XDG_CONFIG_HOME", dir.join("no-such-config-dir"))
+        .stdin(Stdio::null())
+        .output()?)
+}
+
+/// The prerequisites name the shell that runs a hook, the daemons two of the
+/// channels need, and that no other system changes.
+#[test]
+fn the_integrations_prerequisites_name_the_shell_the_daemons_and_the_other_system()
+-> Result<(), TestError> {
+    let needs = section(INTEGRATIONS, "## Before you start")?;
+    for named in ["`sh`", "syslog", "fail2ban", "other system", "`nobody`"] {
+        page_says(needs, named, "integrations");
+    }
+    Ok(())
+}
+
+/// The check of the page runs one hook per dialog event of the sample and
+/// expects five distinct lines. The test runs the command of the page.
+#[cfg(unix)]
+#[test]
+fn the_integrations_check_writes_one_line_per_dialog_state() -> Result<(), TestError> {
+    let check = section(INTEGRATIONS, CHECK)?;
+    let hook = "echo \"$SIPNAB_CALL_ID $SIPNAB_STATE\" >> sipnab-hook-check.log";
+    page_says(
+        check,
+        &format!(
+            "sipnab -N --no-cli-print --quiet -I tests/pcap-samples/sip-rtp-g711.pcap \
+             --on-dialog-exec '{hook}' && sort -u sipnab-hook-check.log"
+        ),
+        "integrations",
+    );
+    let expected = "1-1966@10.0.2.20 Completed\n\
+                    1-1966@10.0.2.20 InCall\n\
+                    1-1966@10.0.2.20 Trying\n\
+                    1-1968@10.0.2.20 InCall\n\
+                    1-1968@10.0.2.20 Trying\n";
+    page_says(check, expected, "integrations");
+    let dir = tempfile::tempdir()?;
+    let run = sipnab_in(
+        dir.path(),
+        &[
+            "-N",
+            "--no-cli-print",
+            "--quiet",
+            "-I",
+            &capture("tests/pcap-samples/sip-rtp-g711.pcap")?
+                .display()
+                .to_string(),
+            "--on-dialog-exec",
+            hook,
+        ],
+    )?;
+    exited(&run, 0);
+    let written = std::fs::read_to_string(dir.path().join("sipnab-hook-check.log"))?;
+    let mut lines: Vec<&str> = written.lines().collect();
+    lines.sort_unstable();
+    lines.dedup();
+    assert_eq!(
+        lines.join("\n") + "\n",
+        expected,
+        "the distinct lines the hook wrote"
+    );
+    Ok(())
+}
+
+/// A hook command that does not exist is reported with the status the page
+/// quotes, and the run still exits 0.
+#[cfg(unix)]
+#[test]
+fn a_hook_that_is_not_found_gives_the_message_the_integrations_page_quotes() -> Result<(), TestError>
+{
+    let message = "Event exec command failed (exit status: 127)";
+    page_says(
+        section(INTEGRATIONS, TROUBLESHOOT)?,
+        message,
+        "integrations",
+    );
+    let dir = tempfile::tempdir()?;
+    let run = sipnab_warning(
+        dir.path(),
+        &[
+            "-N",
+            "--no-cli-print",
+            "-I",
+            &capture("tests/pcap-samples/sip-rtp-g711.pcap")?
+                .display()
+                .to_string(),
+            "--on-dialog-exec",
+            "/nonexistent/sipnab-hook.sh",
+        ],
+    )?;
+    exited(&run, 0);
+    printed(&stderr(&run), message);
+    Ok(())
+}
+
+/// An alert channel and an alert rule that do not exist are each refused
+/// with the message and the exit status the page quotes.
+#[test]
+fn an_unknown_alert_channel_or_rule_gives_the_messages_the_integrations_page_quotes()
+-> Result<(), TestError> {
+    let table = section(INTEGRATIONS, TROUBLESHOOT)?;
+    page_says(table, "exit 2", "integrations");
+    for (value, message) in [
+        (
+            "pager",
+            "--alert: Unknown alert channel 'pager': expected one of syslog, json, exec, or a \
+             rule written name:threshold/window",
+        ),
+        (
+            "bogus:1/60s",
+            "--alert: Unknown alert rule 'bogus': expected one of digest, fraud, reg_flood, \
+             scanner (reg-flood is accepted for reg_flood)",
+        ),
+    ] {
+        page_says(table, message, "integrations");
+        let run = sipnab(&[
+            "-N",
+            "--no-cli-print",
+            "-I",
+            &capture(PROBLEM_CALL)?.display().to_string(),
+            "--alert",
+            value,
+        ])?;
+        exited(&run, 2);
+        printed(&stderr(&run), message);
+    }
+    Ok(())
+}
+
+/// The JSON alert line and the fail2ban line format the page quotes are the
+/// ones the scanner capture produces.
+#[test]
+fn the_integrations_page_quotes_the_alert_and_fail2ban_lines_of_the_capture()
+-> Result<(), TestError> {
+    let scanner = capture("tests/fixtures/sip-scanner-and-register-flood.pcap")?
+        .display()
+        .to_string();
+    let alert = "{\"alert\":\"scanner\",\"detail\":\"method=\\\"OPTIONS\\\" \
+                 ua=\\\"friendly-scanner\\\" detection=ua_pattern\",\"src\":\"203.0.113.42\",\
+                 \"ts\":\"2023-11-14T22:13:21+00:00\"}";
+    printed(INTEGRATIONS, alert);
+    let run = sipnab(&[
+        "-N",
+        "--no-cli-print",
+        "-I",
+        &scanner,
+        "--kill-scanner",
+        "--alert-json",
+    ])?;
+    exited(&run, 0);
+    printed(&stderr(&run), alert);
+
+    for quoted in [
+        "reg_flood src=198.51.100.77 count=6",
+        "reg_flood src=198.51.100.77 count=7",
+    ] {
+        printed(INTEGRATIONS, quoted);
+    }
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        &scanner,
+        "--reg-flood",
+        "--reg-flood-threshold",
+        "5",
+        "--reg-flood-window",
+        "60",
+        "--fail2ban",
+    ])?;
+    exited(&run, 0);
+    let lines: Vec<String> = stdout(&run).lines().take(2).map(str::to_owned).collect();
+    assert_eq!(lines.len(), 2, "two fail2ban lines at least: {lines:?}");
+    assert!(
+        lines[0].ends_with(": reg_flood src=198.51.100.77 count=6"),
+        "the first line the page quotes: {lines:?}"
+    );
+    assert!(
+        lines[1].ends_with(": reg_flood src=198.51.100.77 count=7"),
+        "the second line the page quotes: {lines:?}"
+    );
     Ok(())
 }

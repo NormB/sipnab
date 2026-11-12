@@ -51,6 +51,8 @@ use clap::CommandFactory;
 
 #[path = "support/markdown.rs"]
 mod markdown;
+#[path = "support/release_tags.rs"]
+mod release_tags;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -229,9 +231,10 @@ fn git(args: &[&str]) -> Result<String, TestError> {
 
 /// Every release tag reachable from `HEAD`, oldest first.
 fn release_tags() -> Result<Vec<(Version, String)>, TestError> {
-    let mut tags: Vec<(Version, String)> = git(&["tag", "--merged", "HEAD", "--list", "v*"])?
-        .lines()
-        .filter_map(|t| tag_version(t).map(|v| (v, t.to_owned())))
+    let mut tags: Vec<(Version, String)> = release_tags::reachable_release_tags(repo())
+        .ok_or("git could not list the release tags reachable from HEAD")?
+        .iter()
+        .filter_map(|t| tag_version(t).map(|v| (v, t.clone())))
         .collect();
     tags.sort();
     assert!(
