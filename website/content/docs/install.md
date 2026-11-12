@@ -541,6 +541,7 @@ Each release publishes a standard package and a **`-noaudio`** package.
   - It also lacks four features of the standard package: WASM plugins,
     vCon export, Ogg Opus recordings and the fleet history store.
     `sipnab --version` lists the features of a binary.
+  - WAV export (`--export-audio`) works as in the standard package.
 - From 0.5.233 the standard package ships the plugin and *recommends*
   `libasound2`. Releases from 0.5.118 to 0.5.232 did neither, so in those
   releases the two packages differ only in name. See
@@ -986,7 +987,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 |---------|-------------|--------------|
 | `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf`, `vcon`, `archive` and `g729`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
 | `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. A build without it has no terminal UI: every run is the run `-N` (`--no-tui`) asks for, so `sipnab -I capture.pcap` prints one line per SIP message, and the output flags need no `-N`. A run that gave neither `-N` nor an output flag says so in one line on standard error when standard error is a terminal. | `native`, `ratatui`, `crossterm`, `unicode-width`, `base64` |
-| `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
+| `audio` | RTP audio playback in the TUI. WAV export (`--export-audio`) does not need it. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
 | `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core`, `webpki`, `zeroize` |

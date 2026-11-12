@@ -1176,8 +1176,10 @@ development build after 0.5.247: a center on `127.0.0.1:18447` over HTTP on
 loopback, with `--calls-flush-secs 5`, and two call records sent by hand as
 member `edge-a`. The commands name files as a deployment would, and the log
 lines show file names without the run's directory. The `WARN` line of a
-build without the history store is the text that build logs. It does not
-come from this run.
+build without the history store comes from another run, on 2026-11-12: a
+center of a build with the features of the `-noaudio` packages, over HTTP on
+loopback. The test suite starts such a center in each build without the
+history store and compares its log line and its `501` answer with this page.
 
 **Before you start.**
 

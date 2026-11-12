@@ -44,6 +44,7 @@ const AUTH: &str = include_str!("../docs/auth.md");
 const MCP: &str = include_str!("../docs/mcp.md");
 const MCP_ESTATE: &str = include_str!("../docs/mcp-estate.md");
 const INTEGRATIONS: &str = include_str!("../docs/integrations.md");
+const FLEET: &str = include_str!("../docs/fleet.md");
 const VCON: &str = include_str!("../docs/vcon.md");
 const VCON_STORE: &str = include_str!("../docs/vcon-store.md");
 const VCON_SIPNAB: &str = include_str!("../docs/vcon-sipnab.md");
@@ -100,6 +101,12 @@ mod mcp;
 #[cfg(all(unix, feature = "vcon"))]
 #[path = "support/ports.rs"]
 mod ports;
+
+// A `sipnab fleet serve` that ends with the test, for the fleet page's
+// statements about a build without the history store.
+#[cfg(all(unix, feature = "api", not(feature = "fleet-store")))]
+#[path = "support/fleet_center.rs"]
+mod fleet_center;
 
 // `tied_to_test`, so that a server a test starts ends with the test.
 include!("support/child_lifetime.rs");
@@ -4291,5 +4298,188 @@ fn the_harness_check_reads_a_member_the_rest_api_answers_with() -> Result<(), Te
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("no capture_identity.node in {answer}"))?;
     assert!(!node.is_empty(), "the node has a name");
+    Ok(())
+}
+
+// ── fleet: a center of a build without the history store ─────────────────
+
+/// The line the fleet page shows for a center of a build without the history
+/// store, with the level and the target in front as the page has it.
+fn fleet_page_no_store_line() -> Result<&'static str, TestError> {
+    FLEET
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            line.starts_with("WARN sipnab::app::fleet_center: fleet center: this build has no")
+        })
+        .ok_or_else(|| "docs/fleet.md no longer shows the line of a build without the store".into())
+}
+
+/// The text of that line after `fleet center: `, which is also the `detail`
+/// of the `501` answer.
+fn fleet_page_no_store_text() -> Result<&'static str, TestError> {
+    fleet_page_no_store_line()?
+        .split_once("fleet center: ")
+        .map(|(_, text)| text)
+        .ok_or_else(|| "the line has no text after `fleet center: `".into())
+}
+
+/// In every build with the REST API, the line of the page is the text the
+/// code logs and answers with, whole.
+#[cfg(feature = "api")]
+#[test]
+fn the_fleet_page_quotes_the_no_store_text_of_the_code() -> Result<(), TestError> {
+    assert_eq!(
+        fleet_page_no_store_text()?,
+        sipnab::app::fleet_center::NO_HISTORY_STORE,
+        "docs/fleet.md and NO_HISTORY_STORE in src/app/fleet_center.rs differ"
+    );
+    let rows = from_heading(FLEET, "### Keep call history at the center")?;
+    for stated in [
+        "**`501` and `this build has no history store`.**",
+        "the route\n  answers `501`",
+    ] {
+        page_says(rows, stated, "fleet");
+    }
+    Ok(())
+}
+
+/// A center of a build without the history store, started as the page starts
+/// one (over HTTP on loopback, as the run of the page was), logs the `WARN`
+/// line the page shows, and `GET /v1/fleet/calls` answers `501` with the
+/// same text as its `detail`.
+#[cfg(all(unix, feature = "api", not(feature = "fleet-store")))]
+#[test]
+fn a_center_without_the_history_store_logs_and_answers_what_the_fleet_page_shows()
+-> Result<(), TestError> {
+    let page_line = fleet_page_no_store_line()?;
+    let dir = tempfile::tempdir()?;
+    let signing = "howto-claims-fleet-center-signing-key-0123456789";
+    private_text(dir.path(), "center.signing", signing)?;
+    let keygen = sipnab_in(dir.path(), &["fleet", "keygen", "--out", "center.storekey"])?;
+    exited(&keygen, 0);
+    let (store, store_key, signing_file) = (
+        dir.path().join("center.store"),
+        dir.path().join("center.storekey"),
+        dir.path().join("center.signing"),
+    );
+    let center = fleet_center::Center::start(&[
+        "--listen",
+        "127.0.0.1:0",
+        "--store",
+        store.to_str().ok_or("utf-8")?,
+        "--store-key-file",
+        store_key.to_str().ok_or("utf-8")?,
+        "--signing-key-file",
+        signing_file.to_str().ok_or("utf-8")?,
+    ])
+    .map_err(|e| e.to_string())?;
+    let logged = center
+        .early
+        .iter()
+        .find(|line| line.contains("this build has no history store"))
+        .ok_or_else(|| format!("the center logged no such line: {:?}", center.early))?;
+    assert!(
+        logged.ends_with(page_line),
+        "the center logged\n{logged}\nand the page shows\n{page_line}"
+    );
+    let token = sipnab::auth::mint(
+        signing.as_bytes(),
+        "ops",
+        chrono::Utc::now().timestamp() + 3600,
+        sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FULL,
+    );
+    let (status, body) = fleet_center::http(&center.addr, "GET", "/v1/fleet/calls", &token, b"")
+        .map_err(|e| e.to_string())?;
+    assert_eq!(status, 501, "the page says the route answers 501: {body}");
+    let answer: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(
+        answer.get("detail").and_then(|v| v.as_str()),
+        Some(fleet_page_no_store_text()?),
+        "the answer carries the text of the line: {answer}"
+    );
+    assert_eq!(
+        answer.get("status").and_then(serde_json::Value::as_u64),
+        Some(501),
+        "the problem document names the status: {answer}"
+    );
+    Ok(())
+}
+
+/// Writes `text` to `name` under `dir` with mode 0600.
+#[cfg(all(unix, feature = "api", not(feature = "fleet-store")))]
+fn private_text(dir: &Path, name: &str, text: &str) -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = dir.join(name);
+    std::fs::write(&path, text)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+// ── install: WAV export in a build with and without the audio feature ────
+
+/// `--export-audio` writes the WAV file of the sample call and prints the
+/// summary the CLI reference quotes. The test runs in every feature set: in
+/// a build without the `audio` feature, as the `-noaudio` packages and the
+/// static musl build are, it is the check of what the install page says
+/// about WAV export there.
+#[test]
+fn wav_export_writes_the_file_in_this_build() -> Result<(), TestError> {
+    let summary = "Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to call.wav";
+    page_says(
+        include_str!("../docs/cli-reference.md"),
+        summary,
+        "cli-reference",
+    );
+    // What the install page and the README say of WAV export and the
+    // `audio` feature. A run of this test in a build without `audio` is what
+    // shows each of them.
+    for stated in [
+        "WAV export included, is in the binary and works without the plugin",
+        "WAV export (`--export-audio`) works as in the standard package",
+        "WAV export (`--export-audio`) does not need it",
+    ] {
+        page_says(INSTALL, stated, "install");
+    }
+    let readme = include_str!("../README.md");
+    page_says(readme, "WAV export does not need it", "README");
+    for (name, text) in [("docs/install.md", INSTALL), ("README.md", readme)] {
+        for wrong in ["playback in the TUI + WAV export", "plugin, and WAV export"] {
+            assert!(
+                !text.contains(wrong),
+                "{name} still lists WAV export as part of the audio feature: {wrong:?}"
+            );
+        }
+    }
+    let dir = tempfile::tempdir()?;
+    let sample = capture(G711_CALLS)?.display().to_string();
+    let run = sipnab_in(
+        dir.path(),
+        &[
+            "-N",
+            "-I",
+            &sample,
+            "--export-audio",
+            G711_CALL_ID,
+            "--export-audio-out",
+            "call.wav",
+            "--no-cli-print",
+            "--quiet",
+        ],
+    )?;
+    exited(&run, 0);
+    let said = format!("{}{}", stdout(&run), stderr(&run));
+    printed(&said, summary);
+    let wav = std::fs::read(dir.path().join("call.wav"))?;
+    assert!(
+        wav.starts_with(b"RIFF") && wav.get(8..12) == Some(&b"WAVE"[..]),
+        "call.wav is a WAV file"
+    );
+    assert!(
+        wav.len() > 60_000,
+        "8.5 s of 8 kHz audio is more than 60 kB, the file holds {} bytes",
+        wav.len()
+    );
     Ok(())
 }
