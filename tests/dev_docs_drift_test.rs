@@ -1023,7 +1023,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/tests/test_runner_listeners.py (+2).
     // 844 -> 845 (DOC-LINE-LINKS): the cite-a-line walkthrough links
     // scripts/prepare-commit.sh (+1).
-    const EXPECTED_CODE_LINKS: usize = 845;
+    // 845 -> 849 (HOOK-FEATURE-SETS): build-ci-release.md's rows marked
+    // `hook` link .github/feature-combos.txt twice,
+    // scripts/check-feature-matrix.py and scripts/gate-cache.py (+4).
+    const EXPECTED_CODE_LINKS: usize = 849;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

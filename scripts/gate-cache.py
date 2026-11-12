@@ -79,6 +79,7 @@ import argparse
 import dataclasses
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import os
 import pathlib
@@ -268,6 +269,8 @@ class Snapshot:
     env: dict[str, str]
     hook_scripts: str
     compiled: frozenset[str] | None
+    # The feature-matrix rows marked `hook`: step -> command (`matrix_rows`).
+    rows: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 # Variables that can change a verdict: the toolchain's, cargo's, nextest's,
@@ -540,7 +543,71 @@ def snapshot(root, env, hook_file: str) -> Snapshot:
         env=cache_env(env),
         hook_scripts=hook_scripts_hash(hook_file),
         compiled=compiled_references(sources, manifests),
+        rows=matrix_rows(root),
     )
+
+
+# ── The feature-matrix rows the pre-push hook lints ───────────────────────
+#
+# .github/feature-combos.txt marks them `hook`, and scripts/check-feature-matrix.py
+# holds the one parser, the step name and the command. Each row is a BUILD
+# step of pre-push beside the fixed ones in STEPS.
+
+_MATRIX = None
+
+
+def _matrix():
+    """scripts/check-feature-matrix.py, the file beside this one, as a module."""
+    global _MATRIX
+    if _MATRIX is None:
+        path = pathlib.Path(__file__).resolve().with_name("check-feature-matrix.py")
+        spec = importlib.util.spec_from_file_location("check_feature_matrix_for_gate_cache", path)
+        mod = importlib.util.module_from_spec(spec)
+        # dataclasses looks the module up by name while the class is built.
+        sys.modules[spec.name] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except OSError:
+            del sys.modules[spec.name]
+            raise
+        _MATRIX = mod
+    return _MATRIX
+
+
+def matrix_rows(root) -> dict[str, str]:
+    """step -> command for each row the tree at `root` marks `hook`.
+
+    Empty when the file or the script is missing or the file does not parse:
+    the hook then runs no row, or blocks on the file, and neither needs a key.
+    """
+    try:
+        text = pathlib.Path(root, ".github/feature-combos.txt").read_text(encoding="utf-8")
+        matrix = _matrix()
+        return {step: " ".join(command) for step, _features, command in matrix.hook_rows(matrix.parse_combos(text))}
+    except (OSError, ValueError):
+        return {}
+
+
+def steps_of(hook: str, snap: Snapshot) -> dict[str, tuple[str, str]]:
+    """Every step `hook` caches for this tree: the fixed ones, then the rows."""
+    steps = dict(STEPS[hook])
+    if hook == "pre-push":
+        steps.update({step: (BUILD, command) for step, command in snap.rows.items()})
+    return steps
+
+
+def is_step_name(hook: str, step: str) -> bool:
+    """Whether `step` can be a step of `hook`, without reading the tree."""
+    if hook not in STEPS:
+        return False
+    if step in STEPS[hook]:
+        return True
+    if hook != "pre-push":
+        return False
+    try:
+        return step.startswith(_matrix().HOOK_STEP_PREFIX)
+    except OSError:
+        return False
 
 
 def _digest(entries: dict[str, str]) -> str:
@@ -552,7 +619,7 @@ def _digest(entries: dict[str, str]) -> str:
 
 def step_parts(hook: str, step: str, snap: Snapshot) -> dict:
     """The inputs of `step` in `hook`, as the key is computed from them."""
-    reads, command = STEPS[hook][step]
+    reads, command = steps_of(hook, snap)[step]
     parts = {
         "schema": SCHEMA,
         "hook": hook,
@@ -717,7 +784,7 @@ def cmd_keys(args) -> int:
     env = _env()
     root = _root(env)
     snap = snapshot(root, env, args.hook_file or _default_hook_file(args.hook))
-    for step in STEPS[args.hook]:
+    for step in steps_of(args.hook, snap):
         print(step, key_of(step_parts(args.hook, step, snap)))
     # "info" lines are for the hook to print when it does not skip outright.
     if _no_cache(env):
@@ -736,7 +803,9 @@ def cmd_keys(args) -> int:
 
 def cmd_hit(args) -> int:
     env = _env()
-    if _no_cache(env) or args.hook not in STEPS or args.step not in STEPS[args.hook]:
+    # A row step is taken by its name here: the key it comes with was computed
+    # from the tree's rows, and only `pass`, which reads them, writes a stamp.
+    if _no_cache(env) or not is_step_name(args.hook, args.step):
         return 1
     record = valid_stamp(_stamp_dir(env), args.hook, args.step, args.key, time.time())
     if record is None:
@@ -762,12 +831,16 @@ def cmd_pass(args) -> int:
         print("gate-cache: pass takes STEP KEY pairs", file=sys.stderr)
         return 2
     pairs = list(zip(args.pairs[0::2], args.pairs[1::2]))
-    unknown = [step for step, _key in pairs if args.hook not in STEPS or step not in STEPS[args.hook]]
-    if unknown:
-        print(f"gate-cache: no step {unknown[0]!r} in {args.hook}", file=sys.stderr)
+    if args.hook not in STEPS:
+        print(f"gate-cache: no hook {args.hook!r}", file=sys.stderr)
         return 2
     root = _root(env)
     snap = snapshot(root, env, args.hook_file or _default_hook_file(args.hook))
+    steps = steps_of(args.hook, snap)
+    unknown = [step for step, _key in pairs if step not in steps]
+    if unknown:
+        print(f"gate-cache: no step {unknown[0]!r} in {args.hook}", file=sys.stderr)
+        return 2
     directory = _stamp_dir(env)
     now = time.time()
     for step, key in pairs:

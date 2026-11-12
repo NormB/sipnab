@@ -259,7 +259,7 @@ The workflow runs on `pull_request_target`.
 - A change you make to any of those three files takes effect only after it
   reaches `main`.
 
-**`pre-push`** adds sixteen hard gates. All of them mirror CI exactly. Any of
+**`pre-push`** adds seventeen hard gates. All of them mirror CI exactly. Any of
 them blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
@@ -271,6 +271,7 @@ them blocks the push:
 | `cd fuzz && cargo clippy --all-targets -- -D warnings` | `fuzz/` is a separate workspace that nothing else compiles or lints. |
 | `cd bpf && cargo clippy -- -D warnings` | `bpf/` is a separate workspace on the dated nightly in `bpf/rust-toolchain.toml`, which nothing else lints. |
 | `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
+| `cargo clippy --no-default-features --features <set> --tests -- -D warnings` for each row marked `hook` in `.github/feature-combos.txt` | The pre-commit hook builds only `--features full`, and `cargo check` reports a warning and passes. A binding, import or item that only code behind a feature reads is a clippy failure in CI for every set without that feature. The marked rows are `native`, the default features and the headless recipe; `python3 scripts/check-feature-matrix.py --hook-rows` prints them with their commands. |
 | `sh scripts/check-non-linux.sh` | Re-checks a copy of the tree with the `target_os` values swapped, so the macOS arm of every platform split compiles here. CI is the only non-Linux build in this project, and two macOS breaks reached it on 2026-08-07 with every other gate green. Runs on Linux hosts only — on macOS or a BSD your ordinary `cargo clippy` already is that build, and the gate says `NOT CHECKED` rather than pretending. |
 | `python3 scripts/check-yang.py` | A generator writes the `sipnab-diagnosis` YANG module from the analysis's tables, and a Rust test proves the committed file matches them; only a YANG implementation can say it is valid YANG. `pyang --lint` and `yanglint` compile it, `pyang --check-update-from` holds a new revision to the last, and `yanglint -t data` validates the [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) export every door writes. `NOT CHECKED` on a host with neither tool; CI installs both and fails without them. |
 | `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md` | Prose style is invisible to every cargo command. Turned main red on 2026-08-03. |
@@ -290,6 +291,10 @@ CI's full feature matrix is not in the hook. That matrix is every combination
   them.
 - The reduced combinations above still catch the commonest `#[cfg]` rot at
   the push.
+- The hook lints the rows that file marks `hook` with CI's command, one pass
+  stamp per row. Measured on the aarch64 development host on 2026-11-12, the
+  three marked rows added between 49 and 163 seconds to a push after a
+  source change.
 
 `SKIP_FMT_HOOK=1 git push` bypasses **all nine**.
 

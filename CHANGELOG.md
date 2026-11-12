@@ -13,6 +13,7 @@ entry that carries them.
 ### Fixed
 
 - **The documentation gate refuses a line citation whose phrase begins on more than one line of the cited file.** Such a phrase passed while its citation sat on any of those lines, and `scripts/check-line-drift.py --apply` could not follow it when the code moved. The gate now reports it where it stands, with the lines that hold it, and counts it as `ambiguous` in its summary. Eight phrases under `docs/design/` were lengthened; one citation became a two-line range that starts on the `fn` line above its condition. [Cite a line of code in a doc](docs/internals/walkthroughs.md#cite-a-line-of-code-in-a-doc) has the rule. No change to the `sipnab` binary.
+- **The pre-push hook lints three reduced feature sets with CI's clippy command (HOOK-FEATURE-SETS).** The pre-commit hook builds only `--features full`, so a warning that exists only with a feature off passed both hooks and failed CI's Features job after the push. A row of `.github/feature-combos.txt` marked `hook` now runs `cargo clippy --no-default-features --features <set> --tests -- -D warnings` in `.githooks/pre-push`, with a pass stamp per row: `native`, the default features, and `native,hep,api,mcp,mcp-http`. `python3 scripts/check-feature-matrix.py --hook-rows` prints the rows and their commands. Measured on the aarch64 development host, the three rows added between 49 and 163 seconds to a push after a source change. [CONTRIBUTING.md](CONTRIBUTING.md) lists the gate. No change to the `sipnab` binary.
 
 ## [0.5.248] - 2026-11-12
 
