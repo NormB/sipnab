@@ -44,6 +44,8 @@ const AUTH: &str = include_str!("../docs/auth.md");
 const MCP: &str = include_str!("../docs/mcp.md");
 const MCP_ESTATE: &str = include_str!("../docs/mcp-estate.md");
 const INTEGRATIONS: &str = include_str!("../docs/integrations.md");
+// Read by the tests of a center, which need the REST API.
+#[cfg(feature = "api")]
 const FLEET: &str = include_str!("../docs/fleet.md");
 const VCON: &str = include_str!("../docs/vcon.md");
 const VCON_STORE: &str = include_str!("../docs/vcon-store.md");
@@ -4305,6 +4307,7 @@ fn the_harness_check_reads_a_member_the_rest_api_answers_with() -> Result<(), Te
 
 /// The line the fleet page shows for a center of a build without the history
 /// store, with the level and the target in front as the page has it.
+#[cfg(feature = "api")]
 fn fleet_page_no_store_line() -> Result<&'static str, TestError> {
     FLEET
         .lines()
@@ -4317,6 +4320,7 @@ fn fleet_page_no_store_line() -> Result<&'static str, TestError> {
 
 /// The text of that line after `fleet center: `, which is also the `detail`
 /// of the `501` answer.
+#[cfg(feature = "api")]
 fn fleet_page_no_store_text() -> Result<&'static str, TestError> {
     fleet_page_no_store_line()?
         .split_once("fleet center: ")

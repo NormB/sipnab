@@ -1026,7 +1026,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 845 -> 847 (PRIVILEGE-TEST-LEAVES-SUDO-CHILD-WHEN-CUT-SHORT, merged
     // after DOC-LINE-LINKS): testing.md's helper table and its "How to
     // verify" list link tests/support/root_run.rs (+2).
-    const EXPECTED_CODE_LINKS: usize = 847;
+    // 847 -> 851 (HOOK-FEATURE-SETS, merged after it): build-ci-release.md's
+    // rows marked `hook` link .github/feature-combos.txt twice,
+    // scripts/check-feature-matrix.py and scripts/gate-cache.py (+4).
+    const EXPECTED_CODE_LINKS: usize = 851;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

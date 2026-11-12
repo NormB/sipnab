@@ -18,14 +18,27 @@
 # `--features full` compile it out, and the lint builds it without running
 # it, so this is the one place it runs.
 #
+# `hook` marks a row that .githooks/pre-push also lints before every push,
+# with the same clippy command, under a pass stamp of its own. The
+# pre-commit hook builds only `--features full`: in pull request #763 a
+# binding read only under `#[cfg(feature = "hep")]` passed it, and would have
+# failed this lint in CI for every set without `hep`. Three rows carry the
+# mark: `native` (no `hep`, no `tls`, no `tui`), the default features, and
+# the headless recipe. Measured on the aarch64 development host on
+# 2026-11-12, at a load average of 23 to 30: the three together took 49 s
+# after a change to src/lib.rs alone, 91 s in an earlier run of the same
+# kind, and 163 s the first time after edits to test files; a stamped row is
+# skipped. A marked row cannot carry `needs=`. The mark changes nothing in
+# CI. scripts/tests/test_feature_matrix_hook_rows.py holds the rule.
+#
 # scripts/tests/test_feature_matrix_groups.py holds the list to every
 # combination and test CI checked on 2026-11-03.
 
 # The documented headless server build (README "Headless capture host"), with
 # its full test suite, so the exact set users are told to ship stays green.
-native,hep,api,mcp,mcp-http suite
+native,hep,api,mcp,mcp-http suite hook
 # Feature-gate refusals: no mcp and no hep.
-native test=feature_gate_test
+native test=feature_gate_test hook
 tls
 api
 # mcp without mcp-http.
@@ -40,7 +53,7 @@ native,tui,audio
 # Cargo.toml's `default = [...]`. `lib`, because a bare `cargo test` runs the
 # library's unit tests with these features and CI ran them only with every
 # feature on: a popup gate that failed without `archive` sat on main unseen.
-native,tui,audio,metrics lib
+native,tui,audio,metrics lib hook
 # TUI snapshots without audio.
 native,tui,tls,hep,api test=tui_snapshot_test
 # The eBPF uprobe backend, which every published *-linux-gnu binary carries.

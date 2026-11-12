@@ -278,6 +278,25 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // The rows the pre-push hook lints: `scripts/check-feature-matrix.py
+    // --hook-rows` prints them and `--lint-row FEATURES` runs one. The
+    // script's flags, not sipnab's.
+    (
+        "hook-rows",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+        ],
+    ),
+    (
+        "lint-row",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // The section on the suite in shards: `scripts/parallel-tests.py
     // --shard-index I --shard-count N` runs one shard, which hands cargo
     // `--test NAME` per target, and shard 0 `--lib --bins` and a `--doc` run.
@@ -7887,6 +7906,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         15 => "fifteen",
         16 => "sixteen",
         17 => "seventeen",
+        18 => "eighteen",
         n => {
             return Err(format!(
                 "no spelling for {n} gates; add one rather than dropping the check"
@@ -7909,8 +7929,21 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         // Each of these names a count of pre-push gates somewhere. Any OTHER
         // spelled number next to "hard gate" is the drift this catches.
         for wrong in [
-            "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
-            "fourteen", "fifteen", "sixteen",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
         ] {
             if wrong == spelled {
                 continue;
@@ -8859,6 +8892,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() -> Result<(), Test
         (15, "fifteen"),
         (16, "sixteen"),
         (17, "seventeen"),
+        (18, "eighteen"),
     ];
     let want = spellings
         .iter()
