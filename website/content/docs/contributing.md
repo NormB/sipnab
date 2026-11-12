@@ -901,7 +901,9 @@ not a convenience.
 
 Before you add a crate, check it against these rules. `cargo deny check`
 enforces the first three. It reads [`deny.toml`](https://github.com/NormB/sipnab/blob/main/deny.toml) and fails the pull
-request when a crate breaks one.
+request when a crate breaks one. The `[graph]` table of that file tells it to
+read every feature, so a crate that only an optional feature brings in gets the
+same check.
 
 - **Its license is on the allow list.**
   - sipnab's own license is `MIT OR Apache-2.0`.

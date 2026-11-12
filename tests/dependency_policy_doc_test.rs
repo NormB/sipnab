@@ -243,3 +243,137 @@ fn osv_scanner_is_wired_as_described() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+// ── cargo deny reads every feature (DENY-CHECKS-DEFAULT-FEATURES-ONLY) ────
+//
+// `cargo deny check` read the default features: 240 crates of the 380 that
+// `--all-features` resolves (cargo-deny 0.20.2, 2026-11-12). The license,
+// ban, source and advisory rules never saw a crate that only an optional
+// feature brings in. The rule is in `deny.toml`, `[graph] all-features`, so
+// every run reads it: CI, a contributor's shell, a script.
+
+/// Whether a line that runs `cargo deny` narrows the features it reads, or
+/// reads a configuration other than `deny.toml`.
+fn narrows_cargo_deny(line: &str) -> bool {
+    let code = line.trim();
+    code.contains("cargo deny")
+        && [
+            "--no-default-features",
+            "--features",
+            "--config",
+            "--exclude",
+        ]
+        .iter()
+        .any(|flag| code.contains(flag))
+}
+
+/// `deny.toml` tells cargo-deny to read every feature.
+#[test]
+fn deny_toml_reads_every_feature() -> Result<(), TestError> {
+    let config: toml::Table = read("deny.toml")?.parse()?;
+    let graph = config
+        .get("graph")
+        .and_then(toml::Value::as_table)
+        .ok_or("deny.toml has no [graph] table: cargo deny reads the default features only")?;
+    assert_eq!(
+        graph.get("all-features").and_then(toml::Value::as_bool),
+        Some(true),
+        "deny.toml [graph] all-features must be true"
+    );
+    assert_eq!(
+        graph
+            .get("no-default-features")
+            .and_then(toml::Value::as_bool),
+        None,
+        "deny.toml [graph] must not drop the default features"
+    );
+    assert!(
+        !graph.contains_key("features") && !graph.contains_key("exclude"),
+        "deny.toml [graph] must not name a feature list or exclude a crate"
+    );
+    Ok(())
+}
+
+/// No workflow, hook, script or contributor command narrows what
+/// `cargo deny` reads, and at least one workflow runs it.
+#[test]
+fn no_cargo_deny_run_narrows_the_features() -> Result<(), TestError> {
+    let mut files = vec![repo().join("CONTRIBUTING.md")];
+    for dir in [".github/workflows", ".githooks", "scripts"] {
+        for entry in std::fs::read_dir(repo().join(dir))? {
+            let path = entry?.path();
+            if path.is_file() {
+                files.push(path);
+            }
+        }
+    }
+    let mut runs = 0usize;
+    let mut narrowed = Vec::new();
+    for path in &files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let workflow = path.extension().is_some_and(|e| e == "yml");
+        for (i, line) in text.lines().enumerate() {
+            if workflow && line.trim_start().starts_with("run: cargo deny") {
+                runs += 1;
+            }
+            if narrows_cargo_deny(line) {
+                let name = path.strip_prefix(repo()).unwrap_or(path).display();
+                narrowed.push(format!("{name}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        runs >= 1,
+        "no workflow step runs cargo deny: the scan stopped matching"
+    );
+    assert!(
+        narrowed.is_empty(),
+        "these cargo deny runs do not read every feature through deny.toml:\n{}",
+        narrowed.join("\n")
+    );
+    Ok(())
+}
+
+/// The predicate: a plain run and one that adds `--all-features` are whole;
+/// a feature list, no default features, another configuration or an
+/// excluded crate is not; a line that does not run cargo deny is not judged.
+#[test]
+fn the_narrowing_predicate_knows_each_narrowing_flag() {
+    for whole in [
+        "run: cargo deny check",
+        "cargo deny --all-features check",
+        "        run: cargo deny check licenses",
+        "cargo test --no-default-features --features native",
+        "",
+    ] {
+        assert!(!narrows_cargo_deny(whole), "{whole:?} reads every feature");
+    }
+    for narrowed in [
+        "run: cargo deny --no-default-features check",
+        "cargo deny --features full check",
+        "cargo deny check --config other.toml",
+        "cargo deny --exclude rsa check",
+    ] {
+        assert!(
+            narrows_cargo_deny(narrowed),
+            "{narrowed:?} narrows the check"
+        );
+    }
+}
+
+/// The contributor section says that the check reads every feature.
+#[test]
+fn the_section_says_cargo_deny_reads_every_feature() -> Result<(), TestError> {
+    let s = section()?;
+    assert!(
+        s.contains("every feature"),
+        "the section must say that `cargo deny check` reads every feature"
+    );
+    assert!(
+        s.contains("`[graph]`"),
+        "the section must name the `[graph]` table of deny.toml"
+    );
+    Ok(())
+}
