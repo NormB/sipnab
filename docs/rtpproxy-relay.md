@@ -114,6 +114,18 @@ Find your case, and follow the steps it names:
 - **rtpengine already runs on this machine.** Follow every step. Then see
   [rtpengine and rtpproxy on one machine](#rtpengine-and-rtpproxy-on-one-machine).
 
+What changes on other systems:
+
+- **With everything on one machine, no other system changes.** The phones and
+  carriers keep sending their SIP to your proxy. The SDP the proxy hands them
+  names the relay's ports, so a firewall in front of the machine must let
+  them reach UDP 50000-59999.
+- **With rtpproxy on a machine of its own,** that machine's firewall lets
+  your SIP proxies, and nothing else, reach UDP 7722, and lets the phones and
+  carriers reach UDP 50000-59999.
+  [Put rtpproxy on its own machine](#put-rtpproxy-on-its-own-machine) has the
+  steps.
+
 ## Install rtpproxy
 
 Neither Debian 13 nor Ubuntu 24.04 carries rtpproxy. The rtpproxy project
@@ -459,7 +471,9 @@ sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -tim
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 At the end SIPp's statistics screen shows `Successful call` at 1.
 
-Now compare the SDP the caller sent with the SDP the callee received:
+### Check that the relay carried the call
+
+Compare the SDP the caller sent with the SDP the callee received:
 
 ```bash
 # Run all of these, in order.

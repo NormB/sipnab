@@ -72,6 +72,10 @@ it. To read another engine's names, name that engine with
     engines apart by port alone.
   - nothing else. sipnab sends only `list`, `query` and, for the
     relay-statistics requests, `statistics`. None of them changes a call.
+- **On every other system, a firewall rule at most.** Where a firewall stands
+  between the sipnab host and an engine, it must let the sipnab host reach
+  that engine's `listen-ng` address. rtpengine's own configuration stays as it
+  is.
 - **On the SIP proxy: nothing to change.** OpenSIPS with several engines in
   its `rtpengine_sock` set, or Kamailio with several `rtpengine` nodes, picks
   the engine as before.
@@ -969,6 +973,18 @@ Measured on the two engines above, before any `delete`:
   30 s by default, so `previous.holds` can stay true for that long.
 
 ## Check that it worked
+
+Ask every engine of your map what it holds:
+
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.5:2223 \
+  --rtpengine-engine '203.0.113.5 30000-39999 192.0.2.5:2223' \
+  --rtpengine-engine '203.0.113.5 40000-49999 192.0.2.6:2223' \
+  --relay-holdings 2>/dev/null; echo "exit $?"
+```
+
+The run prints one `Holdings of` block per engine and `exit 0`. It prints
+`exit 1` when no engine answered.
 
 - A question about a captured call names the engine and the row that chose
   it, for example `chosen by engine row 203.0.113.5 40000-49999 192.0.2.6:2223
