@@ -115,19 +115,28 @@ pub(crate) fn settle<E>(
 ///
 /// The TUI can read one terminal and draw on another (standard input a
 /// terminal, standard output redirected to a second one), and
-/// [`TerminalInput::gone`] asks only the one it reads. Linux reports a
-/// hung-up terminal and a pipe with no reader this way; a platform that
-/// reports neither answers `false`, and [`release`] still keeps the run from
-/// panicking.
+/// [`TerminalInput::gone`] asks only the one it reads. A platform that
+/// reports neither a hung-up terminal nor a pipe with no reader answers
+/// `false`, and [`release`] still keeps the run from panicking.
+///
+/// The question asked is "can this be written": macOS reports a hang-up only
+/// for an event that was asked for, and reported none for a pipe with no
+/// reader when no event was asked (CI's macOS run of 2026-11-12). Linux
+/// reports a hang-up whatever is asked.
 ///
 /// # Errors
 ///
 /// `poll(2)` failed for a reason other than a signal.
 pub(crate) fn output_gone(fd: RawFd) -> io::Result<bool> {
-    // No event is asked for, so only POLLHUP, POLLERR and POLLNVAL can be
-    // reported, and no queue is read.
-    let revents = crate::input_wait::poll_one(fd, 0, Duration::ZERO)?;
-    Ok(classify(revents, None) == Wait::Gone)
+    let revents = crate::input_wait::poll_one(fd, libc::POLLOUT, Duration::ZERO)?;
+    Ok(output_has_gone(revents))
+}
+
+/// Whether what `poll(2)` reported for a descriptor asked "can this be
+/// written" says it has gone. Pure. Writable is not gone, and nor is a full
+/// pipe, which reports nothing.
+pub(crate) fn output_has_gone(revents: libc::c_short) -> bool {
+    revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
 }
 
 /// Give up a ratatui `Terminal` at the end of a run: `true` when its cursor
@@ -186,7 +195,10 @@ impl TerminalInput {
     pub(crate) fn wait(&self, timeout: Duration, interest: Interest) -> io::Result<Wait> {
         let events = match interest {
             Interest::Input => libc::POLLIN,
-            // POLLHUP, POLLERR and POLLNVAL are reported whatever `events` asks.
+            // Linux reports POLLHUP, POLLERR and POLLNVAL whatever `events`
+            // asks. macOS may not (see `output_gone`): there this wait can
+            // run to its timeout, and the `Input` wait after it sees the
+            // hang-up.
             Interest::HangupOnly => 0,
         };
         // A signal reads as nothing happened (0, so `Idle`): the caller
@@ -513,6 +525,57 @@ mod tests {
         );
         let file = File::options().write(true).open("/dev/null")?;
         assert!(!output_gone(file.as_raw_fd())?, "/dev/null has not gone");
+        Ok(())
+    }
+
+    /// What `poll(2)` reported for an output: a hang-up, an error or a
+    /// closed descriptor is gone, alone or with "writable"; writable,
+    /// nothing (a full pipe) and readable are not.
+    #[test]
+    fn what_poll_reported_for_an_output_is_read() {
+        for (revents, gone, what) in [
+            (libc::POLLHUP, true, "hung up"),
+            (libc::POLLERR, true, "failed"),
+            (libc::POLLNVAL, true, "not open"),
+            (libc::POLLOUT | libc::POLLHUP, true, "writable and hung up"),
+            (libc::POLLOUT | libc::POLLERR, true, "writable and failed"),
+            (libc::POLLOUT, false, "writable"),
+            (0, false, "nothing reported"),
+            (libc::POLLIN, false, "readable"),
+        ] {
+            assert_eq!(output_has_gone(revents), gone, "{what}");
+        }
+    }
+
+    /// A pipe that is full and has a reader has not gone: it cannot be
+    /// written now, which is not a hang-up. It has gone once its reader has.
+    #[test]
+    fn a_full_pipe_with_a_reader_has_not_gone() -> io::Result<()> {
+        use std::io::Write as _;
+        let (reader, mut writer) = io::pipe()?;
+        // Fill it without a write that waits: while the pipe reports
+        // "writable", a write of no more than PIPE_BUF (at least 512 bytes
+        // by POSIX) is taken whole at once.
+        let block = [0u8; 512];
+        let mut written = 0usize;
+        while crate::input_wait::poll_one(writer.as_raw_fd(), libc::POLLOUT, Duration::ZERO)?
+            & libc::POLLOUT
+            != 0
+        {
+            writer.write_all(&block)?;
+            written += block.len();
+            assert!(written <= 64 << 20, "the pipe took 64 MiB and is not full");
+        }
+        assert!(written > 0, "an empty pipe must report writable");
+        assert!(
+            !output_gone(writer.as_raw_fd())?,
+            "a full pipe with a reader has not gone"
+        );
+        drop(reader);
+        assert!(
+            output_gone(writer.as_raw_fd())?,
+            "a full pipe with no reader has gone"
+        );
         Ok(())
     }
 
