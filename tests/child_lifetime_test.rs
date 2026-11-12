@@ -877,6 +877,160 @@ fn sighup_to_a_pipe_tied_run_ends_its_command() -> Result<(), TestError> {
     assert_a_signal_to_the_program_ends_the_command(libc::SIGHUP)
 }
 
+/// Microseconds between the signal and the stop in the tests below, one run
+/// for each third value: from no delay to past the time the `sh` program
+/// takes to act on the signal and look at its command again.
+const STOP_AFTER_MICROS: std::ops::Range<u64> = 0..360;
+
+/// How long a stopped `sh` program is held for its command to end. A stop
+/// that landed before the program acted on the signal leaves the command
+/// running; the program is then continued after this long, and the run is
+/// one more in which the stop missed the moment.
+const HELD_STOPPED: Duration = Duration::from_millis(100);
+
+/// The `sh -c` text of a command that ends with status 7 when SIGTERM
+/// reaches it, run with the pid file as its `$0`: it writes its own pid to
+/// the file in one rename, then runs one short `sleep` after another. `sh`
+/// acts on a signal after each of them, so none is missed (one that arrives
+/// just before a blocking `read` is). The text names [`HELD_SECS`], so a
+/// failing run stops the process.
+fn ends_7_on_sigterm() -> String {
+    format!(
+        r#"trap 'exit 7' TERM; : {HELD_SECS}; echo $$ > "$0.tmp" && mv "$0.tmp" "$0" && while :; do sleep 0.02; done"#
+    )
+}
+
+/// Whether process `pid` is in an interruptible sleep (state `S` in its
+/// `/proc` entry), as a `sh` that waits for a child is.
+fn sleeps(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next().map(|state| state == "S"))
+        })
+        .unwrap_or(false)
+}
+
+/// Send `signal` to the `sh` program of a run of `command`, stop the program
+/// a few microseconds later, hold it stopped until the command has ended,
+/// continue it, and require the run to report `expected`: the command's own
+/// status. Repeated over [`STOP_AFTER_MICROS`].
+///
+/// The stop places the command's end between two steps of the program. A
+/// signal interrupts the program's `wait`, which then answers 128 plus that
+/// signal and has not reported the command. The program once waited again
+/// only while `kill -0` still found the command; `sh` collects an ended
+/// child after any step, so a command that ended just after the interrupted
+/// `wait` was not found, and the run reported the signal's number in place
+/// of the command's status (on 2026-11-12, 129 for 143 after SIGHUP). The
+/// moment is a few microseconds wide, so the delay is swept; with the rule
+/// in place every delay gives the command's status.
+fn assert_the_run_reports_its_command_when_stopped_after(
+    signal: libc::c_int,
+    command: &str,
+    expected: i32,
+) -> Result<(), TestError> {
+    for micros in STOP_AFTER_MICROS.step_by(3) {
+        let dir = tempfile::tempdir()?;
+        let pidfile = dir.path().join("run.pid");
+        let mut cmd = root_run::tied()?;
+        let mut run = scopeguard_child(
+            cmd.args(["sh", "-c", command])
+                .arg(&pidfile)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?,
+        );
+        let pid = pid_written(&pidfile, Duration::from_secs(60))
+            .ok_or("the command did not start within 60 s")?;
+        let program = libc::pid_t::try_from(run.0.id())?;
+        // The command writes its pid as soon as it runs, and the program can
+        // still be on its way to its `wait` then. A SIGUSR1 that reaches the
+        // program before it knows the command's pid ends nothing, so the
+        // signal is sent once the program sleeps, which it first does in
+        // that `wait`.
+        let asleep_by = Instant::now() + GONE_WITHIN;
+        while !sleeps(run.0.id()) {
+            assert!(
+                Instant::now() < asleep_by,
+                "the sh program did not reach its wait within {GONE_WITHIN:?}"
+            );
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        // SAFETY: kill(2) on a child of this test that it has not reaped.
+        let sent = unsafe { libc::kill(program, signal) };
+        let stop_at = Instant::now() + Duration::from_micros(micros);
+        while Instant::now() < stop_at {
+            std::hint::spin_loop();
+        }
+        // SAFETY: as above.
+        let stopped = unsafe { libc::kill(program, libc::SIGSTOP) };
+        let held_until = Instant::now() + HELD_STOPPED;
+        while !ended(pid) && Instant::now() < held_until {
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        // SAFETY: as above.
+        let continued = unsafe { libc::kill(program, libc::SIGCONT) };
+        let status = wait_for_status(&mut run.0, GONE_WITHIN)?;
+        if !ends_within(pid, GONE_WITHIN) {
+            stop_leftover_run(pid, false);
+        }
+        assert_eq!(
+            (sent, stopped, continued),
+            (0, 0, 0),
+            "signal {signal}, SIGSTOP and SIGCONT to the sh program"
+        );
+        assert_eq!(
+            status.and_then(|s| s.code()),
+            Some(expected),
+            "the run reports its command's status when the program is stopped \
+             {micros} microseconds after signal {signal}"
+        );
+    }
+    Ok(())
+}
+
+/// A SIGHUP that interrupts the program's wait is not reported in place of
+/// the command's end by SIGTERM.
+#[test]
+fn a_run_stopped_after_sighup_reports_its_commands_status() -> Result<(), TestError> {
+    assert_the_run_reports_its_command_when_stopped_after(
+        libc::SIGHUP,
+        &held(""),
+        128 + libc::SIGTERM,
+    )
+}
+
+/// A SIGINT that interrupts the program's wait is not reported in place of
+/// the command's end by SIGTERM.
+#[test]
+fn a_run_stopped_after_sigint_reports_its_commands_status() -> Result<(), TestError> {
+    assert_the_run_reports_its_command_when_stopped_after(
+        libc::SIGINT,
+        &held(""),
+        128 + libc::SIGTERM,
+    )
+}
+
+/// A SIGTERM that interrupts the program's wait is not reported in place of
+/// the status a command ends with when the SIGTERM is passed on to it.
+#[test]
+fn a_run_stopped_after_sigterm_reports_its_commands_status() -> Result<(), TestError> {
+    assert_the_run_reports_its_command_when_stopped_after(libc::SIGTERM, &ends_7_on_sigterm(), 7)
+}
+
+/// A SIGUSR1 that interrupts the program's wait is not reported in place of
+/// the command's end by SIGKILL.
+#[test]
+fn a_run_stopped_after_sigusr1_reports_its_commands_status() -> Result<(), TestError> {
+    assert_the_run_reports_its_command_when_stopped_after(
+        libc::SIGUSR1,
+        &held(""),
+        128 + libc::SIGKILL,
+    )
+}
+
 /// `sudo` is named in one place under `tests/`: the helper that ties what it
 /// starts. A test that names it directly starts a command nothing ends when
 /// the test process is cut short.

@@ -53,10 +53,25 @@ pub const TIED_NAME: &str = "sipnab-test-tied-run";
 /// later one on as SIGTERM; on SIGUSR1 send the command SIGKILL; start the
 /// command without descriptor 3; start the part that waits on the pipe, with
 /// no output descriptor of the caller's, so a caller that collects output
-/// does not wait for it; wait for the command, again after each signal that
-/// interrupted the wait (a wait that answers 127 has no child left to
-/// report); forget the command's pid, stop the waiting part and answer with
-/// the command's status.
+/// does not wait for it; wait for the command, again while the answer is
+/// above 128 and the command is still there, and once more when the last
+/// answer is above 128; forget the command's pid, stop the waiting part and
+/// answer with the command's status.
+///
+/// An answer above 128 is either the command's own status or 128 plus a
+/// signal that interrupted the wait, and nothing in the answer tells the two
+/// apart. While the command is still there (`kill -0`), the answer was an
+/// interruption and the wait is repeated. When it is not there, the answer
+/// can still be an interruption: `sh` collects an ended child after any
+/// step, so a command that ended just after an interrupted wait is no
+/// longer found, and its status has not been read. A program that stopped
+/// there reported 129 for a command SIGTERM had ended, after a SIGHUP
+/// (2026-11-12). One more wait reads it: `sh` has the status of a child it
+/// collected and answers at once, so no signal interrupts that wait. `dash`
+/// and `bash` answer with the status however often they are asked; `bash`
+/// in POSIX mode answers 127 for a status it already gave, and the answer
+/// before then stands. Waiting until an answer of 127 is not the rule: with
+/// `dash` that answer never comes.
 ///
 /// Two rules keep a signal from reaching a process this program did not
 /// start:
@@ -93,6 +108,11 @@ while [ "$rc" -gt 128 ] && kill -0 "$c" 2>/dev/null; do
 	[ "$again" -eq 127 ] && break
 	rc=$again
 done
+if [ "$rc" -gt 128 ]; then
+	wait "$c"
+	again=$?
+	[ "$again" -eq 127 ] || rc=$again
+fi
 c=
 kill -KILL "$w" 2>/dev/null
 exit "$rc"
