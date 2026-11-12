@@ -82,6 +82,26 @@ So sipnab emits **observer** vCons.
 - [The vCon design decision](https://github.com/NormB/sipnab/blob/main/docs/design/vcon.md) records the reasoning for that position,
   including every refusal summarized further down this page.
 
+## Before you start
+
+- **A sipnab binary that carries the `vcon` feature.**
+  - The release packages without a `-noaudio` suffix carry it.
+  - The `-noaudio` packages and the static musl build do not carry it.
+  - A default source build does not carry it.
+  - [Check that the binary carries the export](#check-that-the-binary-carries-the-export)
+    shows how to tell.
+- **A capture that holds the call.** Reading a capture file needs no extra
+  rights. A live capture needs the rights that
+  [Least privilege](@/docs/least-privilege.md) describes.
+- **The Call-ID of the call,** for `--export-vcon`. A run with `--report`
+  lists the Call-IDs of the capture: `sipnab -N -I call.pcap --report`.
+- **`--retain-audio` on the run,** when the container is to carry the audio.
+  Without it the `recording` Dialog Object has no `body`.
+- **No change on any other system** to write a container. sipnab reads a copy
+  of the traffic and writes a file.
+  - Delivery to a store needs a URL and a credential that the store issues:
+    see [Deliver the spool to a store](#deliver-the-spool-to-a-store).
+
 ## Produce one
 
 ### Check that the binary carries the export
@@ -218,8 +238,9 @@ Add `--json` for the answer `POST /v1/vcon/validate` gives:
 
 - For a signed, encrypted or gzip container, sipnab checks the unsigned vCon inside.
 - A binary without the `vcon` feature refuses the flag:
-  `--vcon-validate requires the 'vcon' feature (not compiled in)`. Every
-  release package carries the feature.
+  `--vcon-validate requires the 'vcon' feature (not compiled in)`.
+  [Before you start](#before-you-start) names the release packages that
+  carry the feature.
 - To check a whole spool before delivery, loop over it and stop at the first
   container that is not valid:
 
@@ -1872,7 +1893,8 @@ stop, such as what leaves the host over the network.
 **Before you start.**
 
 - The run writes call content with one of those writers, and serves the REST
-  API (`--api`). The `api` and `vcon` features are in every release package.
+  API (`--api`). The `api` feature is in every release package, and the
+  `vcon` feature is in the ones [Before you start](#before-you-start) names.
 - The control is `GET` and `POST /v1/persistence`. Any token the API accepts
   can use it.
 - It only narrows. A run started without any of those writers reports
@@ -2796,7 +2818,8 @@ itself. Two parts of the server help it do that in a checked order:
 
 Neither needs a flag beyond `--mcp`, and neither sends anything to a store.
 The agent, or you, hands the containers over afterwards. The run needs the
-`vcon` feature for the export, and `mcp`. Every release package carries both.
+`vcon` feature for the export, and `mcp`. Every release package carries `mcp`,
+and [Before you start](#before-you-start) names the ones that carry `vcon`.
 
 A client that shows MCP prompts offers `vcon-handoff` by name. Over the stdio
 wire, these lines ask for it and then read one container:
@@ -4523,6 +4546,22 @@ two versions of one call differ in those 12 bits alone.
 would used in the signing certificate". sipnab does not read it from
 `sign_cert`. Set `uuid_domain` to the DNS name in that certificate, or to a
 subdomain of it.
+
+## When an export does not work
+
+| Symptom | Likely cause |
+|---|---|
+| `--export-vcon needs the 'vcon' Cargo feature, which this build does not carry.`, exit 2 | The binary has no `vcon` feature. Install a release package without the `-noaudio` suffix, or build from source with the `vcon` feature |
+| `Call-ID 'nope@example.com' not found in tracked dialogs, so there is no dialog to export.`, exit 1 | The capture holds no call with that Call-ID. Run with `--report` to list the Call-IDs it holds |
+| `error: the following required arguments were not provided:` and `--export-vcon <CALL-ID>`, exit 2 | `--vcon-out` needs `--export-vcon` with the Call-ID |
+| `error: the following required arguments were not provided:` and `--export-vcon-dir <DIR>`, exit 2 | `--export-vcon-when` needs `--export-vcon-dir` with the directory to write to |
+| `--export-vcon-when is not a valid filter expression`, exit 2 | The expression does not parse. The message marks the position. [Filter language](@/docs/filter-dsl.md) lists the fields and operators |
+| `Wrote 0 vCon container(s) to 'spool'.` | No call of the capture matched the expression. `state == 'Completed'` matches a call that ended with a `BYE` |
+| The `recording` Dialog Object has no `body` | The run had no `--retain-audio`, or the capture holds no RTP of the call |
+| `--vcon-validate` exits 3 | The container breaks the schema. [Check a container before a store gets it](#check-a-container-before-a-store-gets-it) reads the findings |
+
+For a container that a store refused, see
+[What it does with each container](#what-it-does-with-each-container).
 
 ## What this does not do
 

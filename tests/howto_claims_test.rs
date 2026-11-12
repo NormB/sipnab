@@ -44,6 +44,21 @@ const AUTH: &str = include_str!("../docs/auth.md");
 const MCP: &str = include_str!("../docs/mcp.md");
 const MCP_ESTATE: &str = include_str!("../docs/mcp-estate.md");
 const INTEGRATIONS: &str = include_str!("../docs/integrations.md");
+const VCON: &str = include_str!("../docs/vcon.md");
+const VCON_STORE: &str = include_str!("../docs/vcon-store.md");
+const VCON_SIPNAB: &str = include_str!("../docs/vcon-sipnab.md");
+const VCON_SERVER: &str = include_str!("../docs/vcon-server.md");
+const VCON_HARNESS: &str = include_str!("../docs/vcon-harness.md");
+const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
+const MANIFEST: &str = include_str!("../Cargo.toml");
+const HARNESS_COMPOSE: &str = include_str!("../harness/docker-compose.yml");
+const HARNESS_MAKEFILE: &str = include_str!("../harness/Makefile");
+/// The two harness scripts the capture stack page names, by their paths from
+/// the repository root. They are read when the test runs:
+/// `every_cited_script_exists` resolves each script path a Rust file names
+/// from the root, and a path relative to `tests/` would not resolve.
+const HARNESS_SPEECH: &str = "harness/scripts/make-speech-pcaps.sh";
+const HARNESS_E2E: &str = "harness/scripts/run-e2e.sh";
 
 /// The troubleshooting heading of run-as-a-service.
 const SERVICE_TROUBLESHOOT: &str = "## When the service does not start";
@@ -79,6 +94,12 @@ mod server;
 #[cfg(all(unix, feature = "mcp-http", feature = "hep"))]
 #[path = "support/mcp.rs"]
 mod mcp;
+
+// A TCP port that refuses connections, for the pages that quote what the
+// forwarder logs when nothing listens at the URL.
+#[cfg(all(unix, feature = "vcon"))]
+#[path = "support/ports.rs"]
+mod ports;
 
 // `tied_to_test`, so that a server a test starts ends with the test.
 include!("support/child_lifetime.rs");
@@ -1190,6 +1211,158 @@ fn a_capture_without_the_handshake_gives_the_message_the_page_quotes() -> Result
     assert!(
         !stderr(&run).contains("No key in the key log belongs"),
         "with no ClientHello in the capture sipnab cannot say whose key it is; it printed:\n{}",
+        stderr(&run)
+    );
+    Ok(())
+}
+
+/// The call with the given frames left out, and its real key log.
+#[cfg(feature = "tls")]
+fn tls_call_without(dir: &Path, left_out: &[usize]) -> Result<(String, String), TestError> {
+    let frames = encrypted_captures::tls_session_frames()?;
+    assert_eq!(
+        frames.len(),
+        6,
+        "the call is SYN, SYN-ACK, two hellos and two records"
+    );
+    let kept: Vec<Vec<u8>> = frames
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| !left_out.contains(index))
+        .map(|(_, frame)| frame)
+        .collect();
+    let capture = dir.join("gap-capture.pcap");
+    let keys = dir.join("sip-keys.log");
+    pcap_build::write_pcap(&capture, &kept)?;
+    std::fs::write(&keys, encrypted_captures::tls_keylog())?;
+    Ok((capture.display().to_string(), keys.display().to_string()))
+}
+
+/// A capture that holds the SYN and the SYN-ACK and lacks the two hello
+/// segments has a gap at the start of each TCP stream. Read with the key log,
+/// the run must not report the capture as one with no SIP in it.
+#[cfg(feature = "tls")]
+#[test]
+fn a_gap_before_the_tls_records_read_with_keys_is_not_called_a_capture_without_sip()
+-> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (capture, keys) = tls_call_without(dir.path(), &[2, 3])?;
+    let run = sipnab(&["-N", "-I", &capture, "--keylog", &keys])?;
+    exited(&run, 0);
+    assert!(
+        !stderr(&run).contains("No SIP traffic found."),
+        "two TLS records are in the capture, so the plain sentence has no basis; it printed:\n{}\nstdout:\n{}",
+        stderr(&run),
+        stdout(&run)
+    );
+    Ok(())
+}
+
+/// Fails unless the run printed the two decrypted messages of the call and
+/// counted them.
+#[cfg(feature = "tls")]
+fn decrypted_both_messages(run: &Output) {
+    exited(run, 0);
+    for line in ["INVITE TLS", "180 Ringing TLS"] {
+        printed(&stdout(run), line);
+    }
+    printed(&stderr(run), "2 SIP messages");
+}
+
+/// The same capture decrypts: the two records are behind the gap, whole, and
+/// the key log holds their keys. The page states it under its troubleshooting
+/// heading.
+#[cfg(feature = "tls")]
+#[test]
+fn records_behind_a_gap_at_the_start_of_each_stream_are_decrypted() -> Result<(), TestError> {
+    let rows = section(TLS, TLS_TROUBLESHOOT)?;
+    let quality = "2 hole(s) in TCP streams";
+    let resumed = "reading resumed at the next SIP message or TLS record behind each";
+    for quoted in ["sipnab resumes at the next TLS record", quality, resumed] {
+        page_says(rows, quoted, "tls-capture");
+    }
+    let dir = tempfile::tempdir()?;
+    let (capture, keys) = tls_call_without(dir.path(), &[2, 3])?;
+    let run = sipnab(&["-N", "-I", &capture, "--keylog", &keys])?;
+    decrypted_both_messages(&run);
+    for quoted in [quality, resumed] {
+        printed(&stderr(&run), quoted);
+    }
+    Ok(())
+}
+
+/// A gap in one direction only: the ClientHello segment is missing and the
+/// ServerHello is there. Both messages decrypt.
+#[cfg(feature = "tls")]
+#[test]
+fn records_behind_a_gap_in_one_direction_are_decrypted() -> Result<(), TestError> {
+    for missing in [2usize, 3] {
+        let dir = tempfile::tempdir()?;
+        let (capture, keys) = tls_call_without(dir.path(), &[missing])?;
+        decrypted_both_messages(&sipnab(&["-N", "-I", &capture, "--keylog", &keys])?);
+    }
+    Ok(())
+}
+
+/// A capture that joined the connection after its handshake, with no SYN,
+/// decrypts as before.
+#[cfg(feature = "tls")]
+#[test]
+fn records_of_a_capture_that_joined_after_the_handshake_are_decrypted() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (capture, keys) = tls_call_without(dir.path(), &[0, 1, 2, 3])?;
+    decrypted_both_messages(&sipnab(&["-N", "-I", &capture, "--keylog", &keys])?);
+    Ok(())
+}
+
+/// The capture with the gap, read with no key: the run counts the two records
+/// behind the gap and names the flag, as it does for a capture without a gap.
+#[cfg(feature = "tls")]
+#[test]
+fn records_behind_a_gap_read_without_keys_are_counted() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (capture, _) = tls_call_without(dir.path(), &[2, 3])?;
+    let run = sipnab(&["-N", "-I", &capture])?;
+    exited(&run, 0);
+    assert_eq!(stdout(&run), "", "nothing decrypted, so no message line");
+    printed(&stderr(&run), NO_TLS_KEY);
+    assert!(
+        !stderr(&run).contains("No SIP traffic found."),
+        "the records are in the capture; it printed:\n{}",
+        stderr(&run)
+    );
+    Ok(())
+}
+
+/// The capture with the gap, read with a key log of another connection: the
+/// run gives the lines it gives for a capture that lacks the handshake, and
+/// not the plain sentence.
+#[cfg(feature = "tls")]
+#[test]
+fn records_behind_a_gap_read_with_another_key_log_name_the_missing_handshake()
+-> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (capture, keys) = tls_call_without(dir.path(), &[2, 3])?;
+    std::fs::write(
+        &keys,
+        format!(
+            "CLIENT_TRAFFIC_SECRET_0 {} {}\n",
+            "11".repeat(32),
+            "22".repeat(32)
+        ),
+    )?;
+    let run = sipnab(&["-N", "-I", &capture, "--keylog", &keys])?;
+    exited(&run, 0);
+    assert_eq!(stdout(&run), "", "nothing decrypted, so no message line");
+    for quoted in [
+        "sipnab loaded 1 keylog line(s) and built no session from any of them",
+        "The handshake is missing: this capture holds no ClientHello and no ServerHello.",
+    ] {
+        printed(&stderr(&run), quoted);
+    }
+    assert!(
+        !stderr(&run).contains("No SIP traffic found."),
+        "the records are in the capture; it printed:\n{}",
         stderr(&run)
     );
     Ok(())
@@ -2536,5 +2709,1490 @@ fn the_integrations_page_quotes_the_alert_and_fail2ban_lines_of_the_capture()
         lines[1].ends_with(": reg_flood src=198.51.100.77 count=7"),
         "the second line the page quotes: {lines:?}"
     );
+    Ok(())
+}
+
+// ── vcon, vcon-store, vcon-sipnab, vcon-server, vcon-harness ─────────────
+
+/// The capture of two calls with audio that the vCon pages export from.
+const G711_CALLS: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
+/// The call of that capture that ended with a `BYE`.
+const G711_CALL_ID: &str = "1-1966@10.0.2.20";
+/// The heading of the troubleshooting table of the vCon page.
+const VCON_TROUBLESHOOT: &str = "## When an export does not work";
+
+/// The feature list of the `-noaudio` packages and the static musl build, as
+/// the release workflow sets it.
+fn noaudio_features() -> Result<Vec<&'static str>, TestError> {
+    let line = RELEASE_WORKFLOW
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("noaudio_set=\""))
+        .ok_or("the release workflow no longer sets noaudio_set")?;
+    Ok(line.trim_end_matches('"').split(',').collect())
+}
+
+/// The prerequisites of the vCon page name the feature, the packages that
+/// carry it, the flag for audio and the other system. The package statement
+/// follows the release workflow and the manifest: the `full` set holds
+/// `vcon`, and the set of the `-noaudio` packages and the musl build does not.
+#[test]
+fn the_vcon_prerequisites_name_the_feature_the_packages_and_the_other_system()
+-> Result<(), TestError> {
+    let needs = section(VCON, "## Before you start")?;
+    for named in [
+        "`vcon` feature",
+        "without a `-noaudio` suffix carry it",
+        "The `-noaudio` packages and the static musl build do not carry it",
+        "`--retain-audio`",
+        "`--report`",
+        "other system",
+    ] {
+        page_says(needs, named, "vcon");
+    }
+    let reduced = noaudio_features()?;
+    assert!(
+        !reduced.contains(&"vcon"),
+        "the page says the -noaudio packages lack vcon; the workflow builds them with {reduced:?}"
+    );
+    for carried in ["api", "mcp"] {
+        assert!(
+            reduced.contains(&carried),
+            "the page says every release package carries {carried}; the reduced set is {reduced:?}"
+        );
+    }
+    let full = MANIFEST
+        .lines()
+        .find(|line| line.starts_with("full = ["))
+        .ok_or("Cargo.toml no longer defines the full feature on one line")?;
+    assert!(
+        full.contains("\"vcon\""),
+        "the page says the other packages carry vcon; full is {full}"
+    );
+    Ok(())
+}
+
+/// No statement that every release package carries `vcon` is left on the
+/// vCon pages.
+#[test]
+fn no_vcon_page_says_every_release_package_carries_the_feature() {
+    for (page, text) in [
+        ("vcon", VCON),
+        ("vcon-store", VCON_STORE),
+        ("vcon-sipnab", VCON_SIPNAB),
+    ] {
+        for wrong in [
+            "Every\n  release package carries the feature",
+            "`vcon` features are in every release package",
+            "Every release package carries both",
+        ] {
+            assert!(
+                !text.contains(wrong),
+                "{page} still says {wrong:?}, which the -noaudio packages contradict"
+            );
+        }
+    }
+}
+
+/// The features of the `full` set that the `-noaudio` packages and the
+/// static musl build lack, each with the words the pages use for it. A
+/// feature that joins or leaves the difference fails here until the pages
+/// and this table follow.
+fn left_out_of_the_reduced_builds() -> Result<Vec<&'static str>, TestError> {
+    let words = [
+        ("audio", "live audio playback"),
+        ("plugins", "WASM plugins"),
+        ("vcon", "vCon export"),
+        ("opus", "Ogg Opus"),
+    ];
+    let reduced = noaudio_features()?;
+    let full = MANIFEST
+        .lines()
+        .find(|line| line.starts_with("full = ["))
+        .ok_or("Cargo.toml no longer defines the full feature on one line")?;
+    let lacking: Vec<&str> = full
+        .trim_start_matches("full = [")
+        .trim_end_matches(']')
+        .split(',')
+        .map(|name| name.trim().trim_matches('"'))
+        .filter(|name| !name.is_empty() && !reduced.contains(name))
+        .collect();
+    let mut named = Vec::new();
+    for feature in &lacking {
+        let (_, phrase) = words
+            .iter()
+            .find(|(name, _)| name == feature)
+            .ok_or_else(|| {
+                format!("the reduced builds now lack {feature}: name it on the pages")
+            })?;
+        named.push(*phrase);
+    }
+    assert_eq!(
+        named.len(),
+        words.len(),
+        "the reduced builds lack {lacking:?}; the pages name {words:?}"
+    );
+    Ok(named)
+}
+
+/// The rows of a Markdown table in `page` whose first cell holds `marker`.
+fn table_rows<'a>(page: &'a str, marker: &str) -> Vec<&'a str> {
+    page.lines()
+        .filter(|line| line.starts_with('|'))
+        .filter(|line| {
+            line.split('|')
+                .nth(1)
+                .is_some_and(|cell| cell.contains(marker))
+        })
+        .collect()
+}
+
+/// The release-artifact table of the install page says, on each `-noaudio`
+/// row and each musl row, every feature the release workflow builds that
+/// file without. The musl rows also name the eBPF backend, which the
+/// workflow adds to the gnu targets alone.
+#[test]
+fn the_install_table_names_what_each_reduced_build_leaves_out() -> Result<(), TestError> {
+    let phrases = left_out_of_the_reduced_builds()?;
+    let noaudio = table_rows(INSTALL, "-noaudio.");
+    assert_eq!(noaudio.len(), 4, "two .deb and two .rpm rows: {noaudio:?}");
+    let musl = table_rows(INSTALL, "-unknown-linux-musl.tar.gz");
+    assert_eq!(musl.len(), 2, "two musl rows: {musl:?}");
+    for row in noaudio.iter().chain(musl.iter()) {
+        for phrase in &phrases {
+            assert!(
+                row.contains(phrase),
+                "the row does not say the build lacks {phrase}: {row}"
+            );
+        }
+    }
+    for row in &musl {
+        assert!(
+            row.contains("eBPF uprobe backend"),
+            "the musl row does not name the eBPF backend: {row}"
+        );
+    }
+    assert!(
+        RELEASE_WORKFLOW.contains("*-linux-gnu)\n              features=\"${features},bpf\""),
+        "the workflow no longer adds bpf to the gnu targets alone"
+    );
+    Ok(())
+}
+
+/// The package sections of the install page, the installer's two messages,
+/// the README and the standards page of the site say the same: no sentence
+/// states that a reduced build differs by audio alone, or that every gnu
+/// build carries the vCon export.
+#[test]
+fn no_page_says_a_reduced_build_differs_by_audio_alone() -> Result<(), TestError> {
+    let phrases = left_out_of_the_reduced_builds()?;
+    let readme = include_str!("../README.md");
+    let standards = include_str!("../website/templates/standards.html");
+    for (name, text, wrong) in [
+        (
+            "website/static/install.sh",
+            INSTALLER,
+            "otherwise identical",
+        ),
+        ("docs/install.md", INSTALL, "otherwise identical"),
+        (
+            "docs/install.md",
+            INSTALL,
+            "Everything else, WAV export included, works the same",
+        ),
+        (
+            "docs/install.md",
+            INSTALL,
+            "Only live playback in the TUI is unavailable",
+        ),
+        ("README.md", readme, "It is in the gnu and macOS builds"),
+        (
+            "website/templates/standards.html",
+            standards,
+            "carry and the static musl builds do not",
+        ),
+        (
+            "website/templates/index.html",
+            include_str!("../website/templates/index.html"),
+            "which carry the <code>vcon</code> feature).",
+        ),
+        (
+            "website/content/features.md",
+            include_str!("../website/content/features.md"),
+            "feature (the gnu and macOS builds).",
+        ),
+        (
+            "website/content/features.md",
+            include_str!("../website/content/features.md"),
+            "not the static musl builds).",
+        ),
+    ] {
+        assert!(
+            !text.contains(wrong),
+            "{name} still says {wrong:?}; the reduced builds lack {phrases:?}"
+        );
+    }
+    for section_heading in ["### Debian/Ubuntu (.deb)", "### RHEL/Fedora (.rpm)"] {
+        // The sections hold shell comments, which end `section`: cut at the
+        // next heading of the page instead.
+        let text = from_heading(INSTALL, section_heading)?;
+        let body = text
+            .get(section_heading.len() + 2..)
+            .ok_or("section range")?;
+        let text = body.split("\n## ").next().unwrap_or(body);
+        let text = text.split("\n### ").next().unwrap_or(text);
+        for phrase in &phrases {
+            assert!(
+                text.contains(phrase),
+                "{section_heading} does not say the -noaudio package lacks {phrase}"
+            );
+        }
+    }
+    let said = "no TUI audio, WASM plugins, vCon export or eBPF uprobe backend";
+    assert_eq!(
+        INSTALLER.matches(said).count(),
+        2,
+        "both messages of the installer about the musl build say what it lacks"
+    );
+    page_says(INSTALL, said, "install");
+    page_says(readme, "`-noaudio` packages", "README");
+    Ok(())
+}
+
+/// The prerequisites send the reader to `--report` for the Call-IDs of a
+/// capture. The report of the sample names the call the page exports.
+#[test]
+fn the_report_lists_the_call_ids_as_the_vcon_prerequisites_say() -> Result<(), TestError> {
+    let run = sipnab(&[
+        "-N",
+        "--no-cli-print",
+        "--quiet",
+        "-I",
+        G711_CALLS,
+        "--report",
+    ])?;
+    exited(&run, 0);
+    printed(&stdout(&run), G711_CALL_ID);
+    Ok(())
+}
+
+/// A binary without the feature refuses the export with exit status 2 and
+/// the message the page quotes.
+#[cfg(not(feature = "vcon"))]
+#[test]
+fn a_build_without_vcon_refuses_the_export_as_the_page_quotes() -> Result<(), TestError> {
+    let message = "--export-vcon needs the 'vcon' Cargo feature, which this build does not carry.";
+    page_says(section(VCON, VCON_TROUBLESHOOT)?, message, "vcon");
+    let run = sipnab(&["-N", "-I", G711_CALLS, "--export-vcon", G711_CALL_ID])?;
+    exited(&run, 2);
+    printed(&stderr(&run), message);
+    Ok(())
+}
+
+/// A Call-ID the capture lacks ends the run with exit status 1 and names
+/// `--report`.
+#[cfg(feature = "vcon")]
+#[test]
+fn an_export_of_a_call_id_the_capture_lacks_gives_the_message_the_page_quotes()
+-> Result<(), TestError> {
+    let message = "Call-ID 'nope@example.com' not found in tracked dialogs, so there is no \
+                   dialog to export.";
+    page_says(section(VCON, VCON_TROUBLESHOOT)?, message, "vcon");
+    let run = sipnab(&[
+        "-N",
+        "--no-cli-print",
+        "-I",
+        G711_CALLS,
+        "--export-vcon",
+        "nope@example.com",
+    ])?;
+    exited(&run, 1);
+    printed(&stderr(&run), message);
+    printed(&stderr(&run), "--report lists the Call-IDs this run holds");
+    assert_eq!(stdout(&run), "", "no container is printed");
+    Ok(())
+}
+
+/// `--vcon-out` alone and `--export-vcon-when` alone are refused with exit
+/// status 2, each naming the flag it lacks.
+#[cfg(feature = "vcon")]
+#[test]
+fn an_export_flag_without_its_pair_gives_the_messages_the_page_quotes() -> Result<(), TestError> {
+    let rows = section(VCON, VCON_TROUBLESHOOT)?;
+    let refusal = "error: the following required arguments were not provided:";
+    page_says(rows, refusal, "vcon");
+    let dir = tempfile::tempdir()?;
+    let sample = capture(G711_CALLS)?.display().to_string();
+    let cases: [(&[&str], &str); 2] = [
+        (&["--vcon-out", "out.json"], "--export-vcon <CALL-ID>"),
+        (
+            &["--export-vcon-when", "state == 'Completed'"],
+            "--export-vcon-dir <DIR>",
+        ),
+    ];
+    for (flags, lacking) in cases {
+        page_says(rows, lacking, "vcon");
+        let mut args = vec!["-N", "-I", sample.as_str()];
+        args.extend_from_slice(flags);
+        let run = sipnab_in(dir.path(), &args)?;
+        exited(&run, 2);
+        printed(&stderr(&run), refusal);
+        printed(&stderr(&run), lacking);
+    }
+    assert!(
+        !dir.path().join("out.json").exists(),
+        "a refused run writes no container"
+    );
+    Ok(())
+}
+
+/// An expression that does not parse is refused with exit status 2, and the
+/// message marks the position.
+#[cfg(feature = "vcon")]
+#[test]
+fn an_export_expression_that_does_not_parse_gives_the_message_the_page_quotes()
+-> Result<(), TestError> {
+    let message = "--export-vcon-when is not a valid filter expression";
+    page_says(section(VCON, VCON_TROUBLESHOOT)?, message, "vcon");
+    let dir = tempfile::tempdir()?;
+    let sample = capture(G711_CALLS)?.display().to_string();
+    let run = sipnab_in(
+        dir.path(),
+        &[
+            "-N",
+            "-I",
+            &sample,
+            "--export-vcon-when",
+            "state = = 'x'",
+            "--export-vcon-dir",
+            "spool",
+        ],
+    )?;
+    exited(&run, 2);
+    printed(&stderr(&run), message);
+    printed(&stderr(&run), "unexpected input at position 6");
+    assert!(
+        !dir.path().join("spool").exists(),
+        "a refused run creates no directory"
+    );
+    Ok(())
+}
+
+/// Writes the containers of the calls of `capture_path` that match `when`
+/// into `spool` under `dir`, with `extra` flags, and returns the run.
+#[cfg(feature = "vcon")]
+fn export_by_rule(
+    dir: &Path,
+    capture_path: &str,
+    when: &str,
+    extra: &[&str],
+) -> Result<Output, TestError> {
+    let sample = capture(capture_path)?.display().to_string();
+    let mut args = vec!["-N", "--no-cli-print", "-I", sample.as_str()];
+    args.extend_from_slice(extra);
+    args.extend_from_slice(&["--export-vcon-when", when, "--export-vcon-dir", "spool"]);
+    sipnab_in(dir, &args)
+}
+
+/// The one container in `spool` under `dir`, parsed.
+#[cfg(feature = "vcon")]
+fn the_container(dir: &Path) -> Result<serde_json::Value, TestError> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir.join("spool"))? {
+        let path = entry?.path();
+        if path.is_file() {
+            found.push(path);
+        }
+    }
+    assert_eq!(found.len(), 1, "one container in the spool: {found:?}");
+    Ok(serde_json::from_slice(&std::fs::read(&found[0])?)?)
+}
+
+/// An expression no call matches writes no container, prints the line the
+/// page quotes and exits 0.
+#[cfg(feature = "vcon")]
+#[test]
+fn an_expression_no_call_matches_writes_the_line_the_page_quotes() -> Result<(), TestError> {
+    let line = "Wrote 0 vCon container(s) to 'spool'.";
+    page_says(section(VCON, VCON_TROUBLESHOOT)?, line, "vcon");
+    let dir = tempfile::tempdir()?;
+    let run = export_by_rule(dir.path(), G711_CALLS, "state == 'Failed'", &[])?;
+    exited(&run, 0);
+    printed(&stderr(&run), line);
+    Ok(())
+}
+
+/// Without `--retain-audio` the `recording` Dialog Object has no `body`, and
+/// with it the object carries the audio.
+#[cfg(feature = "vcon")]
+#[test]
+fn the_recording_has_a_body_only_with_retain_audio() -> Result<(), TestError> {
+    page_says(
+        section(VCON, VCON_TROUBLESHOOT)?,
+        "The run had no `--retain-audio`",
+        "vcon",
+    );
+    page_says(
+        section(VCON, "## Before you start")?,
+        "Without it the `recording` Dialog Object has no `body`",
+        "vcon",
+    );
+    for (flags, expected) in [(&[][..], false), (&["--retain-audio"][..], true)] {
+        let dir = tempfile::tempdir()?;
+        let run = export_by_rule(dir.path(), G711_CALLS, "state == 'Completed'", flags)?;
+        exited(&run, 0);
+        printed(&stderr(&run), "Wrote 1 vCon container(s) to 'spool'.");
+        let container = the_container(dir.path())?;
+        let recording = container
+            .pointer("/dialog/0")
+            .ok_or("the container has no Dialog Object")?;
+        assert_eq!(
+            recording.get("type").and_then(|v| v.as_str()),
+            Some("recording"),
+            "the Dialog Object is a recording"
+        );
+        assert_eq!(
+            recording.get("body").is_some(),
+            expected,
+            "with flags {flags:?} the body is present: {expected}"
+        );
+    }
+    Ok(())
+}
+
+/// A capture with no RTP of the call gives a recording without a body, with
+/// `--retain-audio` too.
+#[cfg(feature = "vcon")]
+#[test]
+fn a_capture_without_rtp_gives_a_recording_without_a_body() -> Result<(), TestError> {
+    page_says(
+        section(VCON, VCON_TROUBLESHOOT)?,
+        "or the capture holds no RTP of the call",
+        "vcon",
+    );
+    let dir = tempfile::tempdir()?;
+    let run = export_by_rule(
+        dir.path(),
+        "tests/fixtures/sip_call.pcap",
+        "state == 'Completed'",
+        &["--retain-audio"],
+    )?;
+    exited(&run, 0);
+    let container = the_container(dir.path())?;
+    assert!(
+        container.pointer("/dialog/0/body").is_none(),
+        "no RTP in the capture, so no audio in the container"
+    );
+    Ok(())
+}
+
+/// The container the page's validation example writes is refused with exit
+/// status 3, as the troubleshooting row says.
+#[cfg(feature = "vcon")]
+#[test]
+fn a_container_that_breaks_the_schema_exits_3_as_the_page_says() -> Result<(), TestError> {
+    page_says(
+        section(VCON, VCON_TROUBLESHOOT)?,
+        "`--vcon-validate` exits 3",
+        "vcon",
+    );
+    let example = r#"{"vcon":"0.0.2","uuid":"018f3a2b-4c5d-8e6f-9012-3456789abcde","created_at":"2026-09-01T12:00:00Z","parties":[{"tel":"+12025550100"},{"tel":"+12025550101"}],"dialog":[{"type":"transfer","parties":[0,1]}]}"#;
+    assert!(
+        VCON.contains(example),
+        "the page no longer holds the container this test checks"
+    );
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("rejected.vcon.json"), example)?;
+    let run = sipnab_in(dir.path(), &["--vcon-validate", "rejected.vcon.json"])?;
+    exited(&run, 3);
+    printed(
+        &stdout(&run),
+        "rejected.vcon.json: invalid: 2 findings against",
+    );
+    Ok(())
+}
+
+/// What a stand-in store answers to one request, given the head of it.
+#[cfg(all(unix, feature = "vcon"))]
+type Answer = dyn Fn(&str) -> (u16, String) + Send + Sync;
+
+/// A store on `127.0.0.1` that answers each request by a rule and keeps the
+/// head of each request. The hosted services of the pages are not reachable
+/// from a test, so the tests check what sipnab sends and what it does with
+/// each answer.
+#[cfg(all(unix, feature = "vcon"))]
+struct StandInStore {
+    addr: std::net::SocketAddr,
+    heads: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(all(unix, feature = "vcon"))]
+impl StandInStore {
+    /// Starts the store with `answer` as its rule.
+    fn start(
+        answer: impl Fn(&str) -> (u16, String) + Send + Sync + 'static,
+    ) -> Result<Self, TestError> {
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (log, halt) = (heads.clone(), stop.clone());
+        let answer: Box<Answer> = Box::new(answer);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if halt.load(Ordering::SeqCst) {
+                    break;
+                }
+                if let Ok(stream) = stream {
+                    let _ = Self::serve(stream, &log, answer.as_ref());
+                }
+            }
+        });
+        Ok(Self { addr, heads, stop })
+    }
+
+    /// Reads one request, keeps its head and answers it.
+    fn serve(
+        mut stream: std::net::TcpStream,
+        log: &std::sync::Mutex<Vec<String>>,
+        answer: &Answer,
+    ) -> Result<(), TestError> {
+        use std::io::{Read as _, Write as _};
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if stream.read(&mut byte)? == 0 {
+                return Ok(());
+            }
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8_lossy(&head).into_owned();
+        let length = head
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body = vec![0u8; length];
+        stream.read_exact(&mut body)?;
+        let (status, text) = answer(&head);
+        log.lock()
+            .map_err(|_| "the request log is poisoned")?
+            .push(head);
+        let reply = format!(
+            "HTTP/1.1 {status} Stand-in\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{text}",
+            text.len()
+        );
+        stream.write_all(reply.as_bytes())?;
+        stream.flush()?;
+        Ok(())
+    }
+
+    /// `http://127.0.0.1:<port>`.
+    fn url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    /// The head of each request so far.
+    fn heads(&self) -> Result<Vec<String>, TestError> {
+        Ok(self
+            .heads
+            .lock()
+            .map_err(|_| "the request log is poisoned")?
+            .clone())
+    }
+}
+
+#[cfg(all(unix, feature = "vcon"))]
+impl Drop for StandInStore {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Wake the accept loop so that it reads the flag and ends.
+        let _ = std::net::TcpStream::connect(self.addr);
+    }
+}
+
+/// A token for the tests, built at run time so that no scanner reads a
+/// literal credential here.
+#[cfg(all(unix, feature = "vcon"))]
+fn store_token() -> String {
+    format!("howto_{}", "5c1e7a90d2b4")
+}
+
+/// Writes `text` and a newline to `name` under `dir` with mode 0600.
+#[cfg(all(unix, feature = "vcon"))]
+fn private_file(dir: &Path, name: &str, text: &str) -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = dir.join(name);
+    std::fs::write(&path, format!("{text}\n"))?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+/// A directory with the page's export in `spool` and the token in
+/// `vcon-store.key`, mode 0600.
+#[cfg(all(unix, feature = "vcon"))]
+fn spool_with_one_call() -> Result<tempfile::TempDir, TestError> {
+    let dir = tempfile::tempdir()?;
+    let run = export_by_rule(
+        dir.path(),
+        G711_CALLS,
+        "state == 'Completed'",
+        &["--retain-audio"],
+    )?;
+    exited(&run, 0);
+    printed(&stderr(&run), "Wrote 1 vCon container(s) to 'spool'.");
+    private_file(dir.path(), "vcon-store.key", &store_token())?;
+    Ok(dir)
+}
+
+/// Runs the forwarder of the vcon.store page once against `url`, with
+/// `extra` flags.
+#[cfg(all(unix, feature = "vcon"))]
+fn forward_to_store(dir: &Path, url: &str, extra: &[&str]) -> Result<Output, TestError> {
+    let mut args = vec![
+        "--vcon-forward",
+        "spool",
+        "--vcon-forward-kind",
+        "vcon-store",
+        "--vcon-forward-url",
+        url,
+        "--vcon-forward-auth-file",
+        "vcon-store.key",
+        "--vcon-forward-once",
+    ];
+    args.extend_from_slice(extra);
+    sipnab_in(dir, &args)
+}
+
+/// The `pending`, `delivered` and `failed` counts `--vcon-spool-status`
+/// prints for `spool` under `dir`, and the whole answer.
+#[cfg(all(unix, feature = "vcon"))]
+fn spool_counts(dir: &Path) -> Result<((u64, u64, u64), serde_json::Value), TestError> {
+    let run = sipnab_in(dir, &["--vcon-spool-status", "spool"])?;
+    exited(&run, 0);
+    let answer: serde_json::Value = serde_json::from_str(&stdout(&run))?;
+    let count = |name: &str| {
+        answer
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| format!("the answer has no {name} count"))
+    };
+    let counts = (count("pending")?, count("delivered")?, count("failed")?);
+    Ok((counts, answer))
+}
+
+/// The prerequisites of the vcon.store page name the feature, the builds
+/// without it, the token, the host and the other system.
+#[test]
+fn the_store_prerequisites_name_the_feature_the_token_and_the_other_system() -> Result<(), TestError>
+{
+    let needs = section(VCON_STORE, "## Before you start")?;
+    for named in [
+        "`vcon` feature",
+        "`-noaudio` release packages and the static musl",
+        "other system",
+        "`$VCON_STORE_TOKEN`",
+        "`api.vcon.store`",
+    ] {
+        page_says(needs, named, "vcon-store");
+    }
+    Ok(())
+}
+
+/// The heading of the check of the vcon.store page.
+#[cfg(all(unix, feature = "vcon"))]
+const STORE_CHECK: &str = "## Check that the store accepted each container";
+
+/// Before the forwarder runs, the check shows the written container under
+/// `pending`.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn the_store_check_shows_a_written_container_as_pending() -> Result<(), TestError> {
+    page_says(
+        section(VCON_STORE, STORE_CHECK)?,
+        "shows each written container\nunder `pending`",
+        "vcon-store",
+    );
+    let dir = spool_with_one_call()?;
+    let (counts, _) = spool_counts(dir.path())?;
+    assert_eq!(counts, (1, 0, 0), "pending, delivered, failed");
+    Ok(())
+}
+
+/// After a `201`, the check shows what the page says a delivery that worked
+/// shows, the forwarder exits 0, and the request is the one the page
+/// describes: a `POST` to `/v1/vcons` with the token as a bearer.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn the_store_check_shows_a_delivery_that_worked() -> Result<(), TestError> {
+    let check = section(VCON_STORE, STORE_CHECK)?;
+    for stated in [
+        "`pending` is `0`",
+        "`failed` is `0`",
+        "`delivered` is the number",
+    ] {
+        page_says(check, stated, "vcon-store");
+    }
+    let store = StandInStore::start(|_| (201, "{}".to_string()))?;
+    let dir = spool_with_one_call()?;
+    let run = forward_to_store(dir.path(), &store.url(), &[])?;
+    exited(&run, 0);
+    printed(&stderr(&run), "answered 201; moved to 'spool/delivered'");
+    assert!(
+        !stderr(&run).contains(&store_token()),
+        "the forwarder never prints the token"
+    );
+    let heads = store.heads()?;
+    assert_eq!(heads.len(), 1, "one request for one container");
+    assert!(
+        heads[0].starts_with("POST /v1/vcons HTTP/1.1"),
+        "the kind adds /v1/vcons to the base URL: {}",
+        heads[0]
+    );
+    assert!(
+        heads[0]
+            .to_lowercase()
+            .contains(&format!("authorization: bearer {}", store_token())),
+        "the token goes as a bearer"
+    );
+    let (counts, _) = spool_counts(dir.path())?;
+    assert_eq!(counts, (0, 1, 0), "pending, delivered, failed");
+    Ok(())
+}
+
+/// A `409` is a refusal: exit status 1, the container in `spool/failed`, and
+/// the check lists the answer.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn a_409_from_the_store_is_the_refusal_the_page_describes() -> Result<(), TestError> {
+    page_says(
+        section(VCON_STORE, TROUBLESHOOT)?,
+        "lands in `spool/failed` with status `409`",
+        "vcon-store",
+    );
+    let store = StandInStore::start(|_| (409, r#"{"error": "vCon already exists"}"#.to_string()))?;
+    let dir = spool_with_one_call()?;
+    let run = forward_to_store(dir.path(), &store.url(), &[])?;
+    exited(&run, 1);
+    printed(
+        &stderr(&run),
+        "answered 409; moved to 'spool/failed' beside",
+    );
+    let ((pending, delivered, failed), answer) = spool_counts(dir.path())?;
+    assert_eq!((pending, delivered, failed), (0, 0, 1), "one refusal");
+    assert_eq!(
+        answer
+            .pointer("/failures/0/record/status")
+            .and_then(serde_json::Value::as_u64),
+        Some(409),
+        "the check lists the answer of the store: {answer}"
+    );
+    Ok(())
+}
+
+/// With `--vcon-forward-replace-url`, a `409` is followed by a `PUT` to the
+/// uuid of the container, and the delivery counts as done.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn a_409_with_a_replace_url_is_followed_by_the_put_the_page_describes() -> Result<(), TestError> {
+    page_says(VCON_STORE, "--vcon-forward-replace-url", "vcon-store");
+    let store = StandInStore::start(|head| {
+        if head.starts_with("PUT ") {
+            (200, "{}".to_string())
+        } else {
+            (409, r#"{"error": "vCon already exists"}"#.to_string())
+        }
+    })?;
+    let dir = spool_with_one_call()?;
+    let uuid = the_container(dir.path())?
+        .get("uuid")
+        .and_then(|v| v.as_str())
+        .ok_or("the container has no uuid")?
+        .to_string();
+    let replace = format!("{}/v1/vcons/{{uuid}}", store.url());
+    let run = forward_to_store(
+        dir.path(),
+        &store.url(),
+        &["--vcon-forward-replace-url", &replace],
+    )?;
+    exited(&run, 0);
+    let heads = store.heads()?;
+    assert_eq!(heads.len(), 2, "a POST and then a PUT: {heads:?}");
+    assert!(
+        heads[1].starts_with(&format!("PUT /v1/vcons/{uuid} HTTP/1.1")),
+        "the PUT names the uuid: {}",
+        heads[1]
+    );
+    let (counts, _) = spool_counts(dir.path())?;
+    assert_eq!(counts, (0, 1, 0), "pending, delivered, failed");
+    Ok(())
+}
+
+/// A `401` stops the forwarder with exit status 3 and moves no file.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn a_401_from_the_store_stops_the_forwarder_as_the_page_says() -> Result<(), TestError> {
+    let rows = section(VCON_STORE, TROUBLESHOOT)?;
+    page_says(
+        rows,
+        "The forwarder exits `3` and logs `answered 401`",
+        "vcon-store",
+    );
+    let stopped = "A 401 refuses the credentials or the client for every container alike";
+    page_says(rows, stopped, "vcon-store");
+    let store = StandInStore::start(|_| (401, r#"{"error":"unauthorized"}"#.to_string()))?;
+    let dir = spool_with_one_call()?;
+    let run = forward_to_store(dir.path(), &store.url(), &[])?;
+    exited(&run, 3);
+    printed(&stderr(&run), "answered 401");
+    printed(&stderr(&run), stopped);
+    let (counts, _) = spool_counts(dir.path())?;
+    assert_eq!(counts, (1, 0, 0), "every container is still in the spool");
+    Ok(())
+}
+
+/// A `500` keeps the container in the spool, and with `--vcon-forward-once`
+/// the run exits 1.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn a_500_from_the_store_keeps_the_container_as_the_page_says() -> Result<(), TestError> {
+    page_says(
+        section(VCON_STORE, TROUBLESHOOT)?,
+        "answered 500; will\n  retry",
+        "vcon-store",
+    );
+    let store = StandInStore::start(|_| (500, "{}".to_string()))?;
+    let dir = spool_with_one_call()?;
+    let run = forward_to_store(dir.path(), &store.url(), &[])?;
+    exited(&run, 1);
+    printed(&stderr(&run), "answered 500; will retry");
+    let (counts, _) = spool_counts(dir.path())?;
+    assert_eq!(counts, (1, 0, 0), "the container waits in the spool");
+    Ok(())
+}
+
+/// A token file that other users can read is refused with exit status 2 and
+/// the message the page quotes, before any request.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn a_token_file_others_can_read_gives_the_message_the_page_quotes() -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let message = "--vcon-forward-auth-file 'vcon-store.key' can be read or written by other \
+                   users (mode 0644); chmod 600 it";
+    page_says(VCON_STORE, message, "vcon-store");
+    let store = StandInStore::start(|_| (201, "{}".to_string()))?;
+    let dir = spool_with_one_call()?;
+    std::fs::set_permissions(
+        dir.path().join("vcon-store.key"),
+        std::fs::Permissions::from_mode(0o644),
+    )?;
+    let run = forward_to_store(dir.path(), &store.url(), &[])?;
+    exited(&run, 2);
+    printed(&stderr(&run), message);
+    assert!(store.heads()?.is_empty(), "nothing was sent");
+    Ok(())
+}
+
+/// The fetcher reads `/v1/vcons/{uuid}` with the token as a bearer, removes
+/// the `_meta` member and writes the container with mode 0600.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn the_fetcher_writes_the_container_alone_as_the_page_says() -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let read_back = section(VCON_STORE, "## Read a stored vCon back")?;
+    for stated in [
+        "removes the `_meta` member",
+        "mode 0600",
+        "`/v1/vcons/{uuid}`",
+    ] {
+        page_says(read_back, stated, "vcon-store");
+    }
+    let dir = spool_with_one_call()?;
+    let mut held = the_container(dir.path())?;
+    let uuid = held
+        .get("uuid")
+        .and_then(|v| v.as_str())
+        .ok_or("the container has no uuid")?
+        .to_string();
+    held.as_object_mut()
+        .ok_or("the container is not an object")?
+        .insert("_meta".to_string(), serde_json::json!({"stored": true}));
+    let body = held.to_string();
+    let store = StandInStore::start(move |_| (200, body.clone()))?;
+    let run = sipnab_in(
+        dir.path(),
+        &[
+            "--vcon-fetch",
+            &uuid,
+            "--vcon-fetch-kind",
+            "vcon-store",
+            "--vcon-fetch-url",
+            &store.url(),
+            "--vcon-fetch-auth-file",
+            "vcon-store.key",
+            "--vcon-fetch-out",
+            "fetched",
+        ],
+    )?;
+    exited(&run, 0);
+    let heads = store.heads()?;
+    assert_eq!(heads.len(), 1, "one request: {heads:?}");
+    assert!(
+        heads[0].starts_with(&format!("GET /v1/vcons/{uuid} HTTP/1.1")),
+        "the kind reads /v1/vcons/<uuid>: {}",
+        heads[0]
+    );
+    let written = dir.path().join("fetched").join(format!("{uuid}.vcon.json"));
+    let fetched: serde_json::Value = serde_json::from_slice(&std::fs::read(&written)?)?;
+    assert!(
+        fetched.get("_meta").is_none(),
+        "the store's member is removed"
+    );
+    assert_eq!(
+        fetched.get("uuid").and_then(|v| v.as_str()),
+        Some(uuid.as_str()),
+        "the container of that uuid"
+    );
+    assert_eq!(
+        std::fs::metadata(&written)?.permissions().mode() & 0o777,
+        0o600,
+        "the file is private"
+    );
+    Ok(())
+}
+
+/// The prerequisites of the vcon-sipnab page name the package, the change on
+/// the vCon server and the system that does not change.
+#[test]
+fn the_vcon_sipnab_prerequisites_say_what_changes_on_the_other_system() -> Result<(), TestError> {
+    let needs = section(VCON_SIPNAB, "## Before you start")?;
+    for named in [
+        "other system",
+        "an ingress list named `sipnab`",
+        "`vcons_observed`",
+        "`conserver` and `api`",
+        "without the `-noaudio` suffix",
+        "`sipnab_<version>_amd64.deb`",
+        "No change on the SIP server",
+    ] {
+        page_says(needs, named, "vcon-sipnab");
+    }
+    // The first step is where the page makes the change it announces.
+    let step = from_heading(VCON_SIPNAB, "## Add an ingress list and a chain for sipnab")?;
+    for made in [
+        "table_name: vcons_observed",
+        "docker compose restart conserver api",
+    ] {
+        page_says(step, made, "vcon-sipnab");
+    }
+    page_says(
+        from_heading(VCON_SIPNAB, "## Install sipnab")?,
+        "sipnab_${V}_amd64.deb",
+        "vcon-sipnab",
+    );
+    Ok(())
+}
+
+/// The expression the check of the page gives, which leaves the recording
+/// session out, is one sipnab accepts, and it writes the finished call of
+/// the sample.
+#[cfg(feature = "vcon")]
+#[test]
+fn the_vcon_sipnab_check_gives_an_expression_sipnab_accepts() -> Result<(), TestError> {
+    let expression = "state == 'Completed' and dst.port != 5090";
+    page_says(
+        from_heading(
+            VCON_SIPNAB,
+            "## Check that a call's vCon reaches the server",
+        )?,
+        expression,
+        "vcon-sipnab",
+    );
+    let dir = tempfile::tempdir()?;
+    let run = export_by_rule(dir.path(), G711_CALLS, expression, &[])?;
+    exited(&run, 0);
+    printed(&stderr(&run), "Wrote 1 vCon container(s) to 'spool'.");
+    let left_out = tempfile::tempdir()?;
+    let run = export_by_rule(
+        left_out.path(),
+        G711_CALLS,
+        "state == 'Completed' and dst.port != 5060",
+        &[],
+    )?;
+    exited(&run, 0);
+    printed(&stderr(&run), "Wrote 0 vCon container(s) to 'spool'.");
+    Ok(())
+}
+
+/// A directory with one exported call in `spool` and the bare key in
+/// `conserver.key`, mode 0600, as the conserver section of the page sets up.
+#[cfg(all(unix, feature = "vcon"))]
+fn conserver_demo() -> Result<tempfile::TempDir, TestError> {
+    let dir = tempfile::tempdir()?;
+    let run = export_by_rule(
+        dir.path(),
+        "tests/fixtures/sip_call.pcap",
+        "state == 'Completed'",
+        &[],
+    )?;
+    exited(&run, 0);
+    printed(&stderr(&run), "Wrote 1 vCon container(s) to 'spool'.");
+    private_file(dir.path(), "conserver.key", &store_token())?;
+    Ok(dir)
+}
+
+/// Fails unless the one request the store received is the ingest request the
+/// page describes, with the key in the conserver header.
+#[cfg(all(unix, feature = "vcon"))]
+fn posted_to_the_sipnab_list(store: &StandInStore) -> Result<(), TestError> {
+    let heads = store.heads()?;
+    assert_eq!(heads.len(), 1, "one request for one container: {heads:?}");
+    assert!(
+        heads[0].starts_with("POST /vcon/external-ingress?ingress_list=sipnab HTTP/1.1"),
+        "the ingest path of the sipnab list: {}",
+        heads[0]
+    );
+    assert!(
+        heads[0]
+            .to_lowercase()
+            .contains(&format!("x-conserver-api-token: {}", store_token())),
+        "the key goes in the conserver header"
+    );
+    Ok(())
+}
+
+/// The conserver kind adds the ingest path of the `sipnab` list and sends a
+/// bare key in the conserver header; a `204` is logged as delivered, the run
+/// exits 0 and the file is in `spool/delivered`.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn the_conserver_kind_sends_what_the_vcon_sipnab_page_describes() -> Result<(), TestError> {
+    // The section holds shell comments, which end `section`.
+    let stated = from_heading(VCON_SIPNAB, "### The same delivery with the conserver kind")?;
+    for text in [
+        "`/vcon/external-ingress?ingress_list=sipnab`",
+        "`x-conserver-api-token: <key>`",
+        "the server's `204`",
+    ] {
+        page_says(stated, text, "vcon-sipnab");
+    }
+    let store = StandInStore::start(|_| (204, String::new()))?;
+    let dir = conserver_demo()?;
+    let run = sipnab_in(
+        dir.path(),
+        &[
+            "--vcon-forward",
+            "spool",
+            "--vcon-forward-kind",
+            "conserver",
+            "--vcon-forward-url",
+            &store.url(),
+            "--vcon-forward-auth-file",
+            "conserver.key",
+            "--vcon-forward-once",
+        ],
+    )?;
+    exited(&run, 0);
+    printed(&stderr(&run), "answered 204; moved to 'spool/delivered'");
+    posted_to_the_sipnab_list(&store)?;
+    let delivered = std::fs::read_dir(dir.path().join("spool/delivered"))?.count();
+    assert_eq!(delivered, 1, "the file is in spool/delivered");
+    Ok(())
+}
+
+/// The first form of the page gives the whole URL and an auth file that
+/// holds the header line. It sends the same request.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn the_whole_url_and_a_header_line_send_the_same_request() -> Result<(), TestError> {
+    page_says(
+        VCON_SIPNAB,
+        "The auth file holds one line, `x-conserver-api-token: <key>`",
+        "vcon-sipnab",
+    );
+    let store = StandInStore::start(|_| (204, String::new()))?;
+    let dir = conserver_demo()?;
+    private_file(
+        dir.path(),
+        "vcon-forward.auth",
+        &format!("x-conserver-api-token: {}", store_token()),
+    )?;
+    let url = format!("{}/vcon/external-ingress?ingress_list=sipnab", store.url());
+    let run = sipnab_in(
+        dir.path(),
+        &[
+            "--vcon-forward",
+            "spool",
+            "--vcon-forward-url",
+            &url,
+            "--vcon-forward-auth-file",
+            "vcon-forward.auth",
+            "--vcon-forward-once",
+        ],
+    )?;
+    exited(&run, 0);
+    posted_to_the_sipnab_list(&store)?;
+    Ok(())
+}
+
+/// Runs sipnab in `dir` with the key in `SIPNAB_VCON_FORWARD_AUTH`.
+#[cfg(all(unix, feature = "vcon"))]
+fn sipnab_with_key_in_environment(dir: &Path, args: &[&str]) -> Result<Output, TestError> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(args)
+        .current_dir(dir)
+        .env("NO_COLOR", "1")
+        .env("XDG_CONFIG_HOME", dir.join("no-such-config-dir"))
+        .env("SIPNAB_VCON_FORWARD_AUTH", store_token())
+        .stdin(Stdio::null())
+        .output()?)
+}
+
+/// The key in the environment variable sends the same request, and the
+/// variable beside an auth file is refused with exit status 2.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn the_key_in_the_environment_works_and_is_refused_beside_a_file() -> Result<(), TestError> {
+    page_says(
+        VCON_SIPNAB,
+        "sipnab refuses the variable beside an auth file",
+        "vcon-sipnab",
+    );
+    let store = StandInStore::start(|_| (204, String::new()))?;
+    let dir = conserver_demo()?;
+    let url = store.url();
+    let base = [
+        "--vcon-forward",
+        "spool",
+        "--vcon-forward-kind",
+        "conserver",
+        "--vcon-forward-url",
+        url.as_str(),
+        "--vcon-forward-once",
+    ];
+    let mut both = base.to_vec();
+    both.extend_from_slice(&["--vcon-forward-auth-file", "conserver.key"]);
+    let refused = sipnab_with_key_in_environment(dir.path(), &both)?;
+    exited(&refused, 2);
+    assert!(store.heads()?.is_empty(), "a refused run sends nothing");
+    let run = sipnab_with_key_in_environment(dir.path(), &base)?;
+    exited(&run, 0);
+    posted_to_the_sipnab_list(&store)?;
+    Ok(())
+}
+
+/// The settings in a `[vcon_forward]` section, with the spool and
+/// `--vcon-forward-once` on the command line, send the same request.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn the_settings_in_a_config_file_send_the_same_request() -> Result<(), TestError> {
+    page_says(
+        VCON_SIPNAB,
+        "[vcon_forward]\nkind = \"conserver\"",
+        "vcon-sipnab",
+    );
+    let store = StandInStore::start(|_| (204, String::new()))?;
+    let dir = conserver_demo()?;
+    std::fs::write(
+        dir.path().join("forward.toml"),
+        format!(
+            "[vcon_forward]\nkind = \"conserver\"\nurl = \"{}\"\nauth_file = \"{}\"\n",
+            store.url(),
+            dir.path().join("conserver.key").display()
+        ),
+    )?;
+    let run = sipnab_in(
+        dir.path(),
+        &[
+            "--vcon-forward",
+            "spool",
+            "--config",
+            "forward.toml",
+            "--vcon-forward-once",
+        ],
+    )?;
+    exited(&run, 0);
+    posted_to_the_sipnab_list(&store)?;
+    Ok(())
+}
+
+/// A `403` stops the forwarder with exit status 3, the log quotes the reason
+/// of the server, and every container stays in the spool.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn a_403_from_the_vcon_server_stops_the_forwarder_as_the_page_says() -> Result<(), TestError> {
+    let reason = r#"{"detail":"Invalid API Key for ingress list 'sipnab'"}"#;
+    let rows = from_heading(VCON_SIPNAB, TROUBLESHOOT)?;
+    page_says(
+        rows,
+        "`sipnab --vcon-forward` stops and exits `3`",
+        "vcon-sipnab",
+    );
+    page_says(rows, reason, "vcon-sipnab");
+    let store = StandInStore::start(move |_| (403, reason.to_string()))?;
+    let dir = conserver_demo()?;
+    let run = sipnab_in(
+        dir.path(),
+        &[
+            "--vcon-forward",
+            "spool",
+            "--vcon-forward-kind",
+            "conserver",
+            "--vcon-forward-url",
+            &store.url(),
+            "--vcon-forward-auth-file",
+            "conserver.key",
+            "--vcon-forward-once",
+        ],
+    )?;
+    exited(&run, 3);
+    printed(&stderr(&run), "answered 403");
+    printed(&stderr(&run), "Invalid API Key for ingress list 'sipnab'");
+    let (counts, _) = spool_counts(dir.path())?;
+    assert_eq!(counts, (1, 0, 0), "every container is still in the spool");
+    Ok(())
+}
+
+/// With nothing listening at the URL the forwarder logs `not reached` and
+/// the refusal of the connection, keeps the container, and with
+/// `--vcon-forward-once` exits 1.
+#[cfg(all(target_os = "linux", feature = "vcon"))]
+#[test]
+fn a_url_nothing_listens_at_gives_the_lines_the_vcon_sipnab_page_quotes() -> Result<(), TestError> {
+    let rows = from_heading(VCON_SIPNAB, TROUBLESHOOT)?;
+    let ending = "Connection refused (os error 111); will retry";
+    page_says(rows, "logs `not reached`", "vcon-sipnab");
+    page_says(rows, ending, "vcon-sipnab");
+    let closed = ports::refused_tcp_port().map_err(|e| e.to_string())?;
+    let dir = conserver_demo()?;
+    let run = sipnab_in(
+        dir.path(),
+        &[
+            "--vcon-forward",
+            "spool",
+            "--vcon-forward-kind",
+            "conserver",
+            "--vcon-forward-url",
+            &format!("http://{}", closed.addr()),
+            "--vcon-forward-auth-file",
+            "conserver.key",
+            "--vcon-forward-once",
+        ],
+    )?;
+    exited(&run, 1);
+    printed(&stderr(&run), "not reached");
+    printed(&stderr(&run), ending);
+    let (counts, _) = spool_counts(dir.path())?;
+    assert_eq!(counts, (1, 0, 0), "the container stays in the spool");
+    Ok(())
+}
+
+/// A `422` moves the container to `spool/failed` with a record of the reason
+/// beside it, and `--vcon-spool-status` lists the refusal.
+#[cfg(all(unix, feature = "vcon"))]
+#[test]
+fn a_422_from_the_vcon_server_lands_in_failed_as_the_page_says() -> Result<(), TestError> {
+    let rows = from_heading(VCON_SIPNAB, TROUBLESHOOT)?;
+    page_says(
+        rows,
+        "lands in `spool/failed` with `answered 422`",
+        "vcon-sipnab",
+    );
+    let reason = r#"{"detail":[{"loc":["body","uuid"],"msg":"Field required"}]}"#;
+    let store = StandInStore::start(move |_| (422, reason.to_string()))?;
+    let dir = conserver_demo()?;
+    let run = sipnab_in(
+        dir.path(),
+        &[
+            "--vcon-forward",
+            "spool",
+            "--vcon-forward-kind",
+            "conserver",
+            "--vcon-forward-url",
+            &store.url(),
+            "--vcon-forward-auth-file",
+            "conserver.key",
+            "--vcon-forward-once",
+        ],
+    )?;
+    exited(&run, 1);
+    printed(&stderr(&run), "answered 422; moved to 'spool/failed'");
+    let ((pending, delivered, failed), answer) = spool_counts(dir.path())?;
+    assert_eq!((pending, delivered, failed), (0, 0, 1), "one refusal");
+    let body = answer
+        .pointer("/failures/0/record/body")
+        .and_then(|v| v.as_str())
+        .ok_or("the refusal has no recorded body")?;
+    assert!(
+        body.contains(r#""loc":["body","uuid"],"msg":"Field required""#),
+        "the record holds the reason of the server: {body}"
+    );
+    Ok(())
+}
+
+/// The vCon server page runs no sipnab command, and its stack is not
+/// reachable from a test. The test holds the prerequisites to the steps of
+/// the page: each change they announce is made by a step that exists.
+#[test]
+fn the_vcon_server_prerequisites_say_what_changes_on_each_other_system() -> Result<(), TestError> {
+    let needs = section(VCON_SERVER, "## Before you start: your SIP server")?;
+    for named in [
+        "other system",
+        "Debian 13 or Ubuntu 24.04",
+        "`sudo`",
+        "It gains the `siprec` module",
+        "replaces its configuration file",
+        "sends a copy of each call's media to the recorder",
+        "port 8000",
+    ] {
+        page_says(needs, named, "vcon-server");
+    }
+    for step in [
+        "## Install OpenSIPS's recording module",
+        "## Configure OpenSIPS to record every call",
+        "## Build rtpengine",
+        "## Put the parts on different machines",
+        "## Tested on",
+    ] {
+        assert!(
+            VCON_SERVER.contains(&format!("\n{step}\n")),
+            "the prerequisites name the step {step:?}, which the page no longer has"
+        );
+    }
+    for made in [
+        "loadmodule \"siprec.so\"",
+        "siprec_start_recording(\"sip:127.0.0.1:5090\")",
+        "ports: [\"8000:8000\"]",
+    ] {
+        page_says(VCON_SERVER, made, "vcon-server");
+    }
+    Ok(())
+}
+
+/// The check of the vCon server page reads the recorder's log and the
+/// table the recorder's chain writes, and states what the test call gives.
+#[test]
+fn the_vcon_server_check_reads_the_log_and_the_table() -> Result<(), TestError> {
+    let check = from_heading(VCON_SERVER, "## Check that the call's vCon is in the store")?;
+    let check = check
+        .split("\n## Operate it\n")
+        .next()
+        .ok_or("the check has no text")?;
+    for stated in [
+        "docker compose logs --since 5m srs",
+        "from vcons_recorded order by created_at desc limit 1",
+        "2 parties",
+        "2 recordings",
+    ] {
+        page_says(check, stated, "vcon-server");
+    }
+    page_says(VCON_SERVER, "table_name: vcons_recorded", "vcon-server");
+    assert_eq!(
+        VCON_SERVER
+            .matches("\"Check that the call's vCon is in the store\"")
+            .count(),
+        2,
+        "the section on different machines names the check twice"
+    );
+    assert!(
+        !VCON_SERVER.contains("\"Find the call's vCon\""),
+        "a step still refers to the check by its old name"
+    );
+    Ok(())
+}
+
+/// What the harness page says a host needs is what the files of the harness
+/// use: the two `make` targets, the tools of the voice script, Python for
+/// the test script, and a conserver that the stack does not start.
+#[test]
+fn the_harness_prerequisites_name_what_the_harness_files_use() -> Result<(), TestError> {
+    let needs = section(VCON_HARNESS, "### What you need")?;
+    for named in [
+        "Docker and Docker Compose",
+        "`make`",
+        "`curl` and `jq`",
+        "`python3`",
+        "the Python `piper` module",
+        "`sox` with `soxi`",
+        "`PIPER_VOICES`",
+        "other system",
+        "The\n  harness does not start one",
+        "an ingress list named `sipnab`",
+    ] {
+        page_says(needs, named, "vcon-harness");
+    }
+    for target in ["\nsigning-key:", "\napi-key:"] {
+        assert!(
+            HARNESS_MAKEFILE.contains(target),
+            "the page runs `make {}`, which the Makefile lacks",
+            target.trim().trim_end_matches(':')
+        );
+    }
+    let speech = std::fs::read_to_string(repo().join(HARNESS_SPEECH))?;
+    for used in ["from piper import", "soxi ", "sox ", "PIPER_VOICES"] {
+        assert!(
+            speech.contains(used),
+            "the page says the voice script needs {used:?}, which the script does not use"
+        );
+    }
+    assert!(
+        std::fs::read_to_string(repo().join(HARNESS_E2E))?.contains("python3 "),
+        "the page says the test script runs Python clients"
+    );
+    assert!(
+        !HARNESS_COMPOSE.contains("conserver"),
+        "the page says the harness starts no conserver, and the compose file names one"
+    );
+    for service in [
+        "opensips-1:",
+        "rtpengine:",
+        "sipnab-proxy:",
+        "sipnab-relay:",
+        "sipp-uac:",
+    ] {
+        assert!(
+            HARNESS_COMPOSE.contains(&format!("\n  {service}\n")),
+            "the page says {service} runs in a container of the harness"
+        );
+    }
+    // The page runs the two scripts from the `harness` directory.
+    let speech_name = HARNESS_SPEECH.trim_start_matches("harness/");
+    let e2e_name = HARNESS_E2E.trim_start_matches("harness/");
+    for command in ["make signing-key", "make api-key", speech_name, e2e_name] {
+        page_says(VCON_HARNESS, command, "vcon-harness");
+    }
+    Ok(())
+}
+
+/// The check of the harness page asks each node for `capture_identity` in
+/// `/v1/stats`. A sipnab started with the REST API answers with that member
+/// and a `node` in it.
+#[cfg(all(unix, feature = "api"))]
+#[test]
+fn the_harness_check_reads_a_member_the_rest_api_answers_with() -> Result<(), TestError> {
+    let check = section(VCON_HARNESS, "### Check that both nodes answer")?;
+    for stated in [
+        "/v1/stats | jq .capture_identity",
+        "`capture_identity.node`",
+    ] {
+        page_says(check, stated, "vcon-harness");
+    }
+    let token = minted(SIGNING_KEY, &[])?;
+    let api =
+        server::ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]).map_err(|e| e.to_string())?;
+    let stats = api
+        .get_bearer("/v1/stats", &token)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(stats.status, 200, "the stats route: {}", stats.body);
+    let answer = stats.json().map_err(|e| e.to_string())?;
+    let node = answer
+        .pointer("/capture_identity/node")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("no capture_identity.node in {answer}"))?;
+    assert!(!node.is_empty(), "the node has a name");
     Ok(())
 }

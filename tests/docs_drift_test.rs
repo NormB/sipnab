@@ -6250,7 +6250,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // of docs/mcp.md, docs/mcp-estate.md and docs/integrations.md, and the
     // table of changes on each other system in docs/mcp-estate.md's "Before
     // you start", each with its site mirror (+8).
-    const EXPECTED_TABLES: usize = 1484;
+    // 1484 -> 1486 (DOCS-HOWTO-GAP, sixth batch): the table of export
+    // failures in docs/vcon.md's "When an export does not work", with its
+    // site mirror (+2).
+    const EXPECTED_TABLES: usize = 1486;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

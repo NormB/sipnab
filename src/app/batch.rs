@@ -2150,8 +2150,8 @@ fn capture_quality_summary() -> Option<String> {
         parts.push(format!(
             "{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the \
              capture never held, were skipped: reading resumed at the next SIP message \
-             behind each, and a message the hole cut is lost (packets the capture point \
-             missed)"
+             or TLS record behind each, and a message the hole cut is lost (packets the \
+             capture point missed)"
         ));
     }
 
@@ -4570,7 +4570,9 @@ impl BatchRunner {
         for e in self.tls_reassembler.finish_websocket() {
             crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
         }
-        self.processor.finish()
+        let released = self.processor.finish();
+        self.forget_tls_tails_behind_holes();
+        released
     }
 
     /// Record one captured packet: advance the clock, write it to `-O`, keep
@@ -4603,7 +4605,28 @@ impl BatchRunner {
         self.retain_evidence(packet);
 
         // Parse and reassemble the packet
-        std::ops::ControlFlow::Continue(self.processor.process(packet))
+        let parsed = self.processor.process(packet);
+        self.forget_tls_tails_behind_holes();
+        std::ops::ControlFlow::Continue(parsed)
+    }
+
+    /// Drop what the TLS layer holds for each TCP direction that just resumed
+    /// behind a hole the capture never held: the bytes that would have
+    /// completed it were in the hole. Called before the packets the processor
+    /// returned are read, so the record a stream resumed at is read from its
+    /// own first byte.
+    fn forget_tls_tails_behind_holes(&mut self) {
+        let resumed = self.processor.take_resynced_streams();
+        #[cfg(feature = "tls")]
+        for (src, dst) in resumed {
+            // A WebSocket frame the hole cut is counted, never dropped in
+            // silence, as at the end of the input.
+            if let Some(e) = self.tls_reassembler.forget(src, dst) {
+                crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
+            }
+        }
+        #[cfg(not(feature = "tls"))]
+        drop(resumed);
     }
 
     /// Open the `-O` output file for a capture whose first packet is

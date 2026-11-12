@@ -112,7 +112,7 @@ there is no cache. When the library is missing it installs the static musl
 build instead and says so:
 
 ```text
-sipnab-install: libpcap.so.0.8 not found — using the static musl build (no TUI audio; otherwise identical). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead
+sipnab-install: libpcap.so.0.8 not found — using the static musl build (no TUI audio, WASM plugins, vCon export or eBPF uprobe backend). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead
 ```
 
 - To get the `-gnu` build with TUI audio on Debian or Ubuntu, install the
@@ -165,14 +165,14 @@ Substitute the release version for `<version>` throughout.
 |---|---|---|---|
 | `sipnab_<version>_amd64.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
 | `sipnab_<version>_arm64.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
-| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency — headless servers |
-| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency — headless servers |
+| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, vCon export or Ogg Opus recordings |
+| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, vCon export or Ogg Opus recordings |
 | `sipnab-<version>-1.x86_64.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
 | `sipnab-<version>-1.aarch64.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
-| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency |
-| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency |
-| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export or eBPF uprobe backend |
-| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export or eBPF uprobe backend |
+| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, vCon export or Ogg Opus recordings |
+| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, vCon export or Ogg Opus recordings |
+| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or eBPF uprobe backend |
+| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or eBPF uprobe backend |
 | `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
 | `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
@@ -529,8 +529,10 @@ came up, drop-ins, and what to do when it does not start.
 Each release publishes a standard package and a **`-noaudio`** package.
 
 - The `-noaudio` package has no audio plugin and no ALSA dependency.
-  - Everything else, WAV export included, works the same.
-  - Only live playback in the TUI is unavailable.
+  - It has no live audio playback in the TUI.
+  - It also lacks three features of the standard package: WASM plugins,
+    vCon export and Ogg Opus recordings. `sipnab --version` lists the
+    features of a binary.
 - From 0.5.233 the standard package ships the plugin and *recommends*
   `libasound2`. Releases from 0.5.118 to 0.5.232 did neither, so in those
   releases the two packages differ only in name. See
@@ -577,6 +579,8 @@ standard and a `-noaudio` variant.
 
 - The no-audio variant has no audio plugin and no `alsa-lib` weak
   dependency.
+  - It has no live audio playback in the TUI.
+  - It also lacks WASM plugins, vCon export and Ogg Opus recordings.
 - It is for headless servers, mirroring the `.deb` variants.
 
 Download the package for your architecture and variant from the

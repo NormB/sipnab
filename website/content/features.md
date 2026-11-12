@@ -254,7 +254,7 @@ Terms used on this page:
 - **vCon export.**
   - `--export-vcon <call-id>` writes one dialog as a vCon. A vCon is a JSON container for one conversation, defined by IETF drafts.
   - `--export-vcon-when "<filter>"` writes one for every matching dialog into `--export-vcon-dir`.
-  - Available in builds with the `vcon` feature (the gnu and macOS builds).
+  - Available in builds with the `vcon` feature: the gnu and macOS builds carry it, the static musl builds and the gnu `-noaudio` packages do not.
   - [Export a call as a vCon](/docs/vcon/)
 - **Frame pointers back to the bytes.**
   - Dialog JSON, reports, the REST API and MCP carry a pointer to the frame each fact came from.
@@ -297,7 +297,7 @@ Terms used on this page:
 - **WASM plugins.**
   - `--plugin <path>` loads your own dialog detections as sandboxed WebAssembly modules.
   - The modules have no filesystem, network or clock access.
-  - In builds with the `plugins` feature (the gnu and macOS builds, not the static musl builds).
+  - In builds with the `plugins` feature (the gnu and macOS builds, not the static musl builds or the gnu `-noaudio` packages).
   - [Add a detection with a WASM plugin](/docs/plugins/)
 - **Rust library.** crates.io publishes the parser and analysis types as a library. Its API is not stable. [Use sipnab as a Rust library](/docs/library/)
 

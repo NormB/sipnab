@@ -90,6 +90,27 @@ everywhere it appears.
 
 ## Before you start: your SIP server
 
+What you need:
+
+- a machine with Debian 13 or Ubuntu 24.04, the systems under
+  [Tested on](#tested-on),
+- `sudo` on it,
+- network access from it to the package repositories, the Docker repository
+  and GitHub.
+
+What this guide changes on each other system of your voice stack:
+
+- **The SIP server.** It gains the `siprec` module. The step "Configure
+  OpenSIPS to record every call" replaces its configuration file, or you add
+  the marked lines to your own script. From then on it opens a second SIP
+  session to the recorder for each call.
+- **rtpengine.** It sends a copy of each call's media to the recorder.
+- **Phones and carriers.** Nothing changes on them.
+- **A separate machine for the vCon server,** when you use one. It gets
+  Docker and the vCon server, and port 8000 on it accepts the recorder's
+  posts. [Put the parts on different machines](#put-the-parts-on-different-machines)
+  has the steps.
+
 Find your case, and follow the steps it names:
 
 - **No SIP server yet.** Follow every step.
@@ -763,7 +784,7 @@ sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -tim
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 At the end SIPp's statistics screen shows `Successful call` at 1.
 
-## Find the call's vCon
+## Check that the call's vCon is in the store
 
 When the call ends, the recorder builds the vCon and posts it. Its log names
 the vCon's UUID:
@@ -947,9 +968,9 @@ grep -n 'url:' config.yaml
 docker compose up -d --force-recreate
 ```
 
-"Place a test call" and "Find the call's vCon" then work as written.
+"Place a test call" and "Check that the call's vCon is in the store" then work as written.
 
-- Run the database query from "Find the call's vCon" on the vCon server's
+- Run the database query from "Check that the call's vCon is in the store" on the vCon server's
   machine.
 - Port 8000 on it is now reachable from the network. So allow it only from
   the machines that post vCons.
