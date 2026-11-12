@@ -111,7 +111,7 @@ pub(crate) fn settle<E>(
 }
 
 /// Whether the terminal or pipe behind `fd`, a descriptor the TUI writes to,
-/// has gone: hung up, failed, or closed. Does not wait.
+/// has gone: hung up or failed. Does not wait.
 ///
 /// The TUI can read one terminal and draw on another (standard input a
 /// terminal, standard output redirected to a second one), and
@@ -135,8 +135,15 @@ pub(crate) fn output_gone(fd: RawFd) -> io::Result<bool> {
 /// Whether what `poll(2)` reported for a descriptor asked "can this be
 /// written" says it has gone. Pure. Writable is not gone, and nor is a full
 /// pipe, which reports nothing.
+///
+/// POLLNVAL is not gone either: it says that `poll` cannot judge the
+/// descriptor (it is closed, or it is a device `poll` does not serve on that
+/// platform), not that a terminal hung up. On macOS the question asked of
+/// `/dev/null` was answered "gone" while POLLNVAL counted (CI's macOS run of
+/// 2026-11-12). The caller asks only after a read or a write failed, and a
+/// failure with no hang-up reported stays an error of the run.
 pub(crate) fn output_has_gone(revents: libc::c_short) -> bool {
-    revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+    revents & (libc::POLLHUP | libc::POLLERR) != 0
 }
 
 /// Give up a ratatui `Terminal` at the end of a run: `true` when its cursor
@@ -511,32 +518,46 @@ mod tests {
 
     /// A pipe nobody reads has gone for a writer, and one with a reader has
     /// not; nor has a device that takes every write.
+    ///
+    /// Each message carries what `poll(2)` reported, as `output_gone` asks
+    /// it, so a platform that answers another way names its answer in the
+    /// failure.
     #[test]
     fn an_output_with_no_reader_has_gone() -> io::Result<()> {
+        let asked = |fd: RawFd| crate::input_wait::poll_one(fd, libc::POLLOUT, Duration::ZERO);
         let (reader, writer) = io::pipe()?;
         assert!(
             !output_gone(writer.as_raw_fd())?,
-            "a pipe with a reader has not gone"
+            "a pipe with a reader has not gone: poll reported {:#x}",
+            asked(writer.as_raw_fd())?
         );
         drop(reader);
         assert!(
             output_gone(writer.as_raw_fd())?,
-            "a pipe with no reader has gone"
+            "a pipe with no reader has gone: poll reported {:#x}",
+            asked(writer.as_raw_fd())?
         );
         let file = File::options().write(true).open("/dev/null")?;
-        assert!(!output_gone(file.as_raw_fd())?, "/dev/null has not gone");
+        assert!(
+            !output_gone(file.as_raw_fd())?,
+            "/dev/null has not gone: poll reported {:#x}",
+            asked(file.as_raw_fd())?
+        );
         Ok(())
     }
 
-    /// What `poll(2)` reported for an output: a hang-up, an error or a
-    /// closed descriptor is gone, alone or with "writable"; writable,
-    /// nothing (a full pipe) and readable are not.
+    /// What `poll(2)` reported for an output: a hang-up or an error is gone,
+    /// alone or with "writable"; writable, nothing (a full pipe) and
+    /// readable are not, and nor is POLLNVAL, which says only that `poll`
+    /// cannot judge the descriptor.
     #[test]
     fn what_poll_reported_for_an_output_is_read() {
         for (revents, gone, what) in [
             (libc::POLLHUP, true, "hung up"),
             (libc::POLLERR, true, "failed"),
-            (libc::POLLNVAL, true, "not open"),
+            (libc::POLLNVAL, false, "poll cannot judge it"),
+            (libc::POLLOUT | libc::POLLNVAL, false, "writable, unjudged"),
+            (libc::POLLHUP | libc::POLLNVAL, true, "hung up, not judged"),
             (libc::POLLOUT | libc::POLLHUP, true, "writable and hung up"),
             (libc::POLLOUT | libc::POLLERR, true, "writable and failed"),
             (libc::POLLOUT, false, "writable"),
