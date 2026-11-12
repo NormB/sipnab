@@ -12817,6 +12817,22 @@ parts drive all four:
 
 So an agent sees exactly what the other modes see.
 
+## Before you start
+
+- **A sipnab binary with the `mcp` feature** for the stdio transport, and
+  `mcp-http` as well for the HTTP transport. `sipnab --version` lists the
+  features, and the release binaries carry both.
+- **An MCP client,** such as Claude Code or Claude Desktop. The checks on this
+  page need no client: they use the shell.
+- **`jq`,** to read the answers in the examples, and **`curl`,** for the
+  examples that use the HTTP transport.
+- **A capture file, or capture rights on an interface.**
+  [Install sipnab](install.md) grants the rights for a live capture.
+- **No change on any other system** for the stdio transport: the client
+  starts sipnab as a child process on its own machine. For a client on another
+  machine, [MCP deployment](mcp-deploy.md#before-you-start) lists what
+  changes on each side.
+
 ## See it work
 
 Point sipnab at a pcap. Stdio is the default transport, so nothing else
@@ -13278,6 +13294,47 @@ When it does not work:
   one of its tools is in. `prompts/get` for it names the bundles to add.
 - `resources/read` answers `call_id '<id>' not found`, with `reason`
   `not_found`: the capture holds no such call. Complete the Call-ID first.
+
+## Check that it worked
+
+Send the server the two messages that open a session and a request for its
+tool list. This uses the sample capture from [See it work](#see-it-work), and
+it answers the same way for any capture, because neither answer reads the
+capture:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | sipnab --mcp -N -I sip-problem-call.pcap --quiet \
+  | jq -c 'if .id == 1 then .result.serverInfo.name else (.result.tools | map(.name) | index("triage_call") != null) end'
+```
+
+Expect two lines, the name the server gives itself and `true` for a tool list
+that holds `triage_call`:
+
+```text
+"sipnab"
+true
+```
+
+The test suite runs this check on each build: it sends the three messages of
+the fence above to the binary and reads the same two fields. On Ubuntu 24.04
+(Linux 6.8, aarch64) the full build answered `sipnab` and listed 79 tools,
+`triage_call` among them. The suite reads the answers in Rust, not with `jq`.
+
+## When something does not work
+
+| Symptom | Likely cause |
+|---|---|
+| `--mcp requires the 'mcp' feature (not compiled in)`, exit 2 | The binary has no MCP server. Install a release binary, or build with the `mcp` feature |
+| `--mcp uses stdout for the JSON-RPC wire and cannot be combined with stdout-writing flags (--json)`, exit 2 | A flag on the command line writes to standard output, which the stdio transport owns. Remove the flag the message names, or run the report without `--mcp` |
+| `-I/--input: '/path/to/capture.pcap' does not exist`, exit 1 | The path in the client configuration is wrong. A client can start sipnab in a directory of its own choice, so give the capture as an absolute path |
+| A tool call answers `tool not found`, with `reason` `unknown_tool` | The server does not register that tool: the name has a spelling error, or the build or the loaded bundles leave the tool out. `valid_values` in the same answer lists the tools the server registers |
+| A tool call answers `call_id '<id>' not found`, with `reason` `not_found` | The capture holds no call with that Call-ID. Ask `list_dialogs` for the Call-IDs it holds |
+| `MCP HTTP refuses to start: --mcp-bind 192.0.2.1:8731 is non-loopback` and a list of token flags, exit 2 | An HTTP bind on an address other than loopback needs a token or a signing key. Bind `127.0.0.1`, or give one of the flags the message lists, as [MCP deployment](mcp-deploy.md) describes |
+| The client lists no sipnab tools, and sipnab works in a shell | Run the client's command by hand, with the arguments of its configuration. A live capture without capture rights stops at startup with a permission message: see [Install sipnab](install.md) |
 
 ## Where to go next
 
@@ -30086,6 +30143,22 @@ sipnab decoded no SIP, and it could not decrypt TLS traffic in the capture, so S
 
 **Exit code:** None. This is a warning, and the run continues.
 
+### `No SIP traffic was decoded. This capture holds at least {} TLS application-data record(s) and this run was given no TLS key (--keylog, --keylog-fd or --tls-key), so sipnab decrypted none of them: this is not a finding that the capture contains no SIP.`
+
+sipnab decoded no SIP, the capture holds TLS records, and the run had no key to decrypt them with, so SIP may be inside those records. The number is a lower bound: sipnab counts a record header that begins a TCP segment or follows a record that ends in the same segment.
+
+**What to do:** Pass the key log of the connections with `--keylog`, as [Capture SIP over TLS](tls-capture.md) describes. If the capture carries no SIP over TLS, the records belong to other traffic and the run has nothing more to read.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `To read SIP carried over TLS, pass the key log that the endpoint wrote during this capture: sipnab -N -I file.pcap --keylog keys.log`
+
+The remedy for a capture with TLS records read without a TLS key. sipnab prints it after the line that counts the records.
+
+**What to do:** Run the command with your capture and the key log that the TLS endpoint wrote while the capture ran.
+
+**Exit code:** None. This is a warning, and the run continues.
+
 ### `NOT ANALYZED: {} further SIP message(s) were seen on ports outside --portrange and are in none of the totals above. Busiest: {}. Re-run with --portrange 1-65535 to include them.`
 
 When sipnab reads a capture file, `--portrange` selects which ports carry SIP signaling.
@@ -39901,6 +39974,25 @@ sipnab it starts from. So you can stop at whichever answers your question.
 Every scenario assumes you have already done
 [Install sipnab](mcp-deploy.md#install-sipnab-every-server-once).
 
+## Before you start
+
+- **A sipnab binary with the `mcp-http` feature** on every capture host, and
+  the `hep` feature on a host that receives HEP. `sipnab --version` lists the
+  features, and the release binaries carry both.
+- **`curl` and `jq`** on the capture host, for the checks.
+- **An MCP client** on the laptop. The steps use Claude Code.
+- **Root on each capture host,** to install a systemd unit and a firewall
+  rule.
+
+Each scenario changes more than the capture host:
+
+| Scenario | Change on the other system |
+|---|---|
+| Captures from several SIP servers | Each proxy needs its HEP tracing pointed at the capture host. The firewall of the capture host needs a rule for the HEP port |
+| Reach sipnab from outside | DNS needs a name for the capture host. Its firewall needs tcp/443 open. The laptop needs the token |
+| Many capture hosts, one agent | The laptop needs one registration and one token for each host |
+| One call across an SBC and its PBXes | The laptop needs an SSH account on each node, or a token for each |
+
 ---
 
 ## Collect captures from several SIP servers in one place
@@ -40719,6 +40811,71 @@ Every field is the node's own claim. `signature.state` is always `unverified`:
 compare `binary.sha256` with the release's attested `SHA256SUMS.txt`, as
 [Check a binary against its release](fleet.md#check-a-binary-against-its-release)
 shows.
+
+---
+
+## Check that it worked
+
+This check runs on one machine, with no proxy and no root. It proves the two
+parts every scenario above builds on: the HEP listener admits a sender, and an
+MCP client over HTTP can ask who the senders are. It uses the sample capture
+[the MCP page](mcp.md#see-it-work) downloads.
+
+In one shell, start an MCP server with a HEP listener, both on loopback:
+
+```bash
+sipnab --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:8731 -L 127.0.0.1:9063
+```
+
+In a second shell, send the sample capture to the listener as HEP, with
+capture id 102. sipnab warns that the signaling of the capture leaves the
+machine. Here it goes to loopback:
+
+```bash
+sipnab -N --no-cli-print --quiet -I sip-problem-call.pcap --hep-send 127.0.0.1:9063 --hep-id 102
+```
+
+Then ask the server which senders it admitted:
+
+```bash
+# Run all of these, in order.
+U=http://127.0.0.1:8731/mcp
+H='Accept: application/json, text/event-stream'
+SID=$(curl -sS -D - -o /dev/null "$U" -H 'Content-Type: application/json' -H "$H" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' \
+  | tr -d '\r' | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}')
+curl -sS -o /dev/null "$U" -H 'Content-Type: application/json' -H "$H" -H "Mcp-Session-Id: $SID" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+curl -sS "$U" -H 'Content-Type: application/json' -H "$H" -H "Mcp-Session-Id: $SID" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hep_senders","arguments":{}}}' \
+  | sed -n 's/^data: //p' | jq -c '.result.structuredContent.senders[] | {source, packets, silent}'
+```
+
+Expect one line. The sample capture holds 23 SIP messages, and the sender
+sent each as one HEP packet:
+
+```text
+{"source":"hep:102@127.0.0.1","packets":23,"silent":false}
+```
+
+`silent` turns `true` 30 seconds after the last packet. Stop the server with
+Ctrl-C.
+
+The test suite runs this check on each build, on ports the kernel picks: it
+starts the server, sends the capture and asks `hep_senders` in a session. On
+Ubuntu 24.04 (Linux 6.8, aarch64) the answer named `hep:102@127.0.0.1` with
+23 packets. The suite sends its requests from Rust, not with `curl`.
+
+## When something does not work
+
+| Symptom | Likely cause |
+|---|---|
+| `HEP listener refuses to start: --hep-listen 0.0.0.0:9063 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured.`, exit 2 | A HEP listener on a routable address needs a guard. Add `--hep-allow` with the addresses of the proxies, or a shared secret |
+| `hep_senders` answers `"senders":[]` | No packet has passed the listener. If `refused_sources` in the same answer names the proxy, the listener turned it away, and the entry gives the reason. If it does not, the packets did not reach the port: check the address and the port in the proxy configuration, then the firewall rule |
+| A proxy is in the list with `"silent":true` | It sent nothing for 30 seconds. An idle proxy does that. For a busy one, check that it still runs and still traces |
+| The journal holds `no packets admitted for 30s` and a reason such as `auth_mismatch` | The sender reaches the port with the wrong secret. Correct the key on the sender, `--hep-auth-mode`, or the `--hep-allow` list. [Collect and forward HEP](hep.md#when-something-does-not-work) has a row for `auth_missing`, `auth_mismatch`, `hmac_bad_format` and `allowlist` |
+| `MCP HTTP refuses to start`, exit 2 | The unit binds an address other than loopback with no token. [The MCP page](mcp.md#when-something-does-not-work) quotes the message and the remedy |
+| `claude mcp list` shows the server as failed | Test each layer in turn: the check above on the capture host, then the tunnel or the nginx endpoint from the laptop, as [Reach sipnab from outside your network](#reach-sipnab-from-outside-your-network) describes |
 
 ---
 
@@ -78646,21 +78803,34 @@ of yours when a call changes state, when audio quality drops, or when a
 security detector fires, and it sends its security alerts to syslog, to a JSON
 line on standard error, and to fail2ban. This page sets up each one.
 
-What else needs to change: nothing on the SIP server, the relay or Homer.
-
-- A hook command is a program of yours.
-- syslog is the host's own.
-- fail2ban reads a file sipnab writes.
-
+- [Before you start](#before-you-start)
 - [Forward to Homer over HEP](#forward-to-homer-over-hep)
 - [Run a command on an event](#run-a-command-on-an-event)
 - [Send alerts to syslog, JSON or a command](#send-alerts-to-syslog-json-or-a-command)
 - [Block scanners with fail2ban](#block-scanners-with-fail2ban)
+- [Check that it worked](#check-that-it-worked)
+- [When something does not work](#when-something-does-not-work)
 
 Every command and output on this page ran on 2026-11-03 with sipnab 0.5.232
 built from source, on Ubuntu 24.04.5 (aarch64, kernel 6.8.12), against the
 capture files named in each step. The live runs captured the loopback
 interface while `tcpreplay` replayed those files onto it.
+
+## Before you start
+
+- **A sipnab binary.** Hooks, alerts and the fail2ban format are in every
+  build.
+- **`sh` on the host.** sipnab runs each hook command with `sh -c`.
+- **A place for a hook script that the user of the run can reach.** On a live
+  capture started as root that user is `nobody`, or the `--user` you name.
+- **A syslog daemon or the systemd journal,** for the syslog channel.
+- **fail2ban on the same host,** for the jail.
+  [Feed fail2ban from sipnab](fail2ban-sipnab.md) installs it.
+- **No change on any other system:** nothing on the SIP server, the relay or
+  Homer.
+  - A hook command is a program of yours.
+  - syslog is the host's own.
+  - fail2ban reads a file sipnab writes.
 
 ## Forward to Homer over HEP
 
@@ -78882,6 +79052,47 @@ apply yourself, use `--recommend-block fail2ban`:
 [Block a scanner with a rule sipnab wrote, after reading the evidence](examples.md#block-a-scanner-with-a-rule-sipnab-wrote-after-reading-the-evidence).
 The MCP tool [`generate_fail2ban_rule`](mcp-tools-security.md#generate_fail2ban_rule)
 gives an agent the same.
+
+## Check that it worked
+
+This check needs no root and no script file. From a source checkout, run a
+hook that appends one line for each dialog event of a sample capture, then
+print the distinct lines:
+
+```sh
+sipnab -N --no-cli-print --quiet -I tests/pcap-samples/sip-rtp-g711.pcap --on-dialog-exec 'echo "$SIPNAB_CALL_ID $SIPNAB_STATE" >> sipnab-hook-check.log' && sort -u sipnab-hook-check.log
+```
+
+Expect five lines, one for each state the two calls of the capture reached:
+
+```text
+1-1966@10.0.2.20 Completed
+1-1966@10.0.2.20 InCall
+1-1966@10.0.2.20 Trying
+1-1968@10.0.2.20 InCall
+1-1968@10.0.2.20 Trying
+```
+
+Each event carried its Call-ID and its state in the environment of the
+command, so the hook mechanism works. `sort -u` puts the lines in order,
+because hooks run at the same time. Delete `sipnab-hook-check.log` after.
+
+The test suite runs this check on each build, in a directory of its own, and
+compares the five lines. On Ubuntu 24.04 (Linux 6.8, aarch64) the hook wrote
+them.
+
+## When something does not work
+
+| Symptom | Likely cause |
+|---|---|
+| `Event exec command failed (exit status: 127)` in the log | The shell did not find the command. Give its full path |
+| `Event exec command failed (exit status: 126)` in the log | The user of the run cannot run the command. On a live capture that user is `nobody`: install the script under `/usr/local/bin`, not in a home directory |
+| The end of the run says some events `ran no command at all` | The rate limit or the queue depth turned them away. Raise `--exec-rate-limit`, or make the hook return sooner |
+| `--alert: Unknown alert channel 'pager': expected one of syslog, json, exec, or a rule written name:threshold/window`, exit 2 | The channel name is wrong |
+| `--alert: Unknown alert rule 'bogus': expected one of digest, fraud, reg_flood, scanner (reg-flood is accepted for reg_flood)`, exit 2 | The rule names no detector |
+| No alert on any channel | You armed no detector, or none fired. `--alert` selects where alerts go, and a detector flag such as `--kill-scanner` or `--reg-flood` raises them |
+| Nothing in the journal | `--alert syslog` needs `--syslog` as well |
+| The fail2ban log stays empty | `--fail2ban` selects a format and detects nothing. Add a detector flag |
 
 ---
 
@@ -79451,7 +79662,7 @@ probe run labels each dialog `uprobe:<process>/<pid>`.
 
 | Symptom | Likely cause |
 |---|---|
-| `No SIP traffic found.` and a totals line with `0 SIP messages`, from a capture of port 5061 | The run had no `--keylog`, so sipnab read no TLS record. Pass the key log |
+| `This capture holds at least 2 TLS application-data record(s) and this run was given no TLS key` (the number varies) after a totals line with `0 SIP messages` | The run had no `--keylog`, `--keylog-fd` or `--tls-key`, so sipnab decrypted no TLS record. Pass the key log: `sipnab -N -I tls-capture.pcap --keylog /tmp/sip-keys.log` |
 | `sipnab could not decrypt 2 TLS application-data record(s): it holds no key material for any session in this capture` (the number varies) | The key log is empty or holds no key line. Check that the key source attached to the TLS library and the process the daemon uses, and that it started before the connection opened |
 | `sipnab loaded 1 keylog line(s) and built no session from any of them` (the numbers vary), then `No key in the key log belongs to a handshake in this capture` | The capture holds the handshake, and the key log comes from other connections: another process, another run, or a log rotated after these connections began. sipnab prints the remedy: `Use the key log that the endpoint of these connections wrote during this capture.` |
 | `sipnab loaded 1 keylog line(s) and built no session from any of them`, then `The handshake is missing: this capture holds no ClientHello and no ServerHello.` | The capture started after the connection opened. For TLS 1.2, restart the connection while the capture runs. For TLS 1.3, use a key log that holds both traffic secret lines of the connection |
@@ -80372,7 +80583,9 @@ not a convenience.
 
 Before you add a crate, check it against these rules. `cargo deny check`
 enforces the first three. It reads [`deny.toml`](deny.toml) and fails the pull
-request when a crate breaks one.
+request when a crate breaks one. The `[graph]` table of that file tells it to
+read every feature, so a crate that only an optional feature brings in gets the
+same check.
 
 - **Its license is on the allow list.**
   - sipnab's own license is `MIT OR Apache-2.0`.
@@ -82676,6 +82889,7 @@ with no `mod.rs` chain. Each test binary compiles its own copy.
 | [`tui_fixtures.rs`](../../tests/support/tui_fixtures.rs) | SIP fixture builders shared by the TUI snapshot and state tests. |
 | [`executable.rs`](../../tests/support/executable.rs) | `write_executable()`, the one way a test writes a file it then runs: a child process writes it, so this process never holds it open for writing and an `exec` cannot fail with `ETXTBSY` ("Text file busy") while another test thread forks. `executable_stub_test` refuses a file written in-process and then made executable. |
 | [`child_lifetime.rs`](../../tests/support/child_lifetime.rs) | `tied_to_test()`, the one way a test starts a process: call it on the `Command` before `.spawn()`. On Linux it sets `PR_SET_PDEATHSIG` to SIGKILL, so the child ends when the spawning thread ends, even when a signal ends the test process and no `Drop` runs. See [Children end with their test](#children-end-with-their-test). Pulled in with `include!`. |
+| [`root_run.rs`](../../tests/support/root_run.rs) | `root_run::sudo()`, the one way a test starts a command under `sudo`. The kernel clears `PR_SET_PDEATHSIG` when `sudo` executes, so a pipe ties the command to the test process: it ends when the test process ends. See [Children end with their test](#children-end-with-their-test). |
 | [`fuzz.rs`](../../tests/support/fuzz.rs) | A deterministic xorshift PRNG shared by the stable-toolchain fuzzers, so a failure reproduces from its seed. |
 | [`ports.rs`](../../tests/support/ports.rs) | `refused_tcp_port()`, the one way a test gets a loopback TCP port where a connect fails with `ConnectionRefused`: a socket bound and not listening, held until the guard drops, so no test running alongside can bind the number. Binding `:0`, reading the port, and closing the socket leaves the number free for another test to listen on; `released_port_scan_test` refuses that pattern under `tests/`. |
 
@@ -82712,9 +82926,33 @@ let child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
   different parent, and its spawn fails with `ESRCH` instead of running
   untied.
 - The kernel clears the setting when the child executes a set-user-ID
-  program (`sudo`) or changes its user or group id (`--user`). Such runs are
-  not tied; `privilege_drop_test.rs` stops its `sudo` runs itself.
+  program (`sudo`) or changes its user or group id (`--user`). A pipe ties a
+  run under `sudo` instead: see the next list.
 - The child's own children are not tied: a fork clears the setting.
+
+**How to start a command under `sudo`.**
+
+```rust
+#[path = "support/root_run.rs"]
+mod root_run; // once per file
+
+let out = root_run::sudo()? // `sudo -n`, tied to this test process
+    .arg(env!("CARGO_BIN_EXE_sipnab"))
+    .args(["-N", "-I", "capture.pcap", "--user", "nobody"])
+    .output()?;
+```
+
+- `root_run::sudo()` is the one place under `tests/` that names `sudo`. The
+  test process holds the write end of one pipe until it ends. The command
+  runs under a small `sh` program, as root, that holds the read end. When the
+  test process ends, by any cause, that program reads end-of-file and sends
+  the command SIGTERM, and SIGKILL 2 s later.
+- The command keeps its arguments, output and exit code. A command that a
+  signal ended exits with code 128 plus the signal number.
+- SIGTERM, SIGINT or SIGHUP sent to the `sudo` process reaches the command as
+  SIGTERM.
+- The command's standard input is `/dev/null`.
+- `root_run::tied()` runs a command the same way without `sudo`.
 
 **How to verify.** `cargo test --features full --test child_lifetime_test`.
 
@@ -82725,7 +82963,16 @@ let child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
 - `every_child_a_sipnab_test_spawns_is_tied_to_it` reads `tests/`: every
   `.spawn()` in a file that starts the sipnab binary, and every `.spawn()` in
   `tests/support/`, must have `.tied_to_test()` before it. The exceptions are
-  a `Command::new("sudo")` and the race test that ties its child by hand.
+  a command from `root_run::sudo()` or `root_run::tied()` and the race test
+  that ties its child by hand.
+- `a_sudo_command_ends_when_its_test_process_is_killed` and
+  `a_pipe_tied_command_ends_when_its_test_process_is_killed` run a child role
+  that holds a command, SIGKILL the role's process, and require that the
+  command has ended within 10 s. The first needs a `sudo` that asks
+  for no password (`sudo -n true`) and prints a `NOTICE` line where there is
+  none.
+- `only_the_tying_helper_names_sudo` reads `tests/`: only
+  [`root_run.rs`](../../tests/support/root_run.rs) names `sudo`.
 
 **Troubleshooting.**
 
@@ -82733,6 +82980,9 @@ let child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
   the `.spawn()` it names, and `include!("support/child_lifetime.rs")` to
   the file (`include!("child_lifetime.rs")` in a file under `support/`). In
   a nested module, add `use super::TiedToTest as _;`.
+- `sites that name sudo`: a test names `sudo` directly. Start the command
+  with `root_run::sudo()?` and drop the `-n` argument, which the helper
+  passes.
 - A child that ends early with signal 9 while its test still runs was
   started on a thread that has since ended. Start it on the test's thread.
 

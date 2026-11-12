@@ -14,21 +14,34 @@ of yours when a call changes state, when audio quality drops, or when a
 security detector fires, and it sends its security alerts to syslog, to a JSON
 line on standard error, and to fail2ban. This page sets up each one.
 
-What else needs to change: nothing on the SIP server, the relay or Homer.
-
-- A hook command is a program of yours.
-- syslog is the host's own.
-- fail2ban reads a file sipnab writes.
-
+- [Before you start](#before-you-start)
 - [Forward to Homer over HEP](#forward-to-homer-over-hep)
 - [Run a command on an event](#run-a-command-on-an-event)
 - [Send alerts to syslog, JSON or a command](#send-alerts-to-syslog-json-or-a-command)
 - [Block scanners with fail2ban](#block-scanners-with-fail2ban)
+- [Check that it worked](#check-that-it-worked)
+- [When something does not work](#when-something-does-not-work)
 
 Every command and output on this page ran on 2026-11-03 with sipnab 0.5.232
 built from source, on Ubuntu 24.04.5 (aarch64, kernel 6.8.12), against the
 capture files named in each step. The live runs captured the loopback
 interface while `tcpreplay` replayed those files onto it.
+
+## Before you start
+
+- **A sipnab binary.** Hooks, alerts and the fail2ban format are in every
+  build.
+- **`sh` on the host.** sipnab runs each hook command with `sh -c`.
+- **A place for a hook script that the user of the run can reach.** On a live
+  capture started as root that user is `nobody`, or the `--user` you name.
+- **A syslog daemon or the systemd journal,** for the syslog channel.
+- **fail2ban on the same host,** for the jail.
+  [Feed fail2ban from sipnab](@/docs/fail2ban-sipnab.md) installs it.
+- **No change on any other system:** nothing on the SIP server, the relay or
+  Homer.
+  - A hook command is a program of yours.
+  - syslog is the host's own.
+  - fail2ban reads a file sipnab writes.
 
 ## Forward to Homer over HEP
 
@@ -250,3 +263,44 @@ apply yourself, use `--recommend-block fail2ban`:
 [Block a scanner with a rule sipnab wrote, after reading the evidence](@/docs/cookbook.md#block-a-scanner-with-a-rule-sipnab-wrote-after-reading-the-evidence).
 The MCP tool [`generate_fail2ban_rule`](@/docs/mcp-tools-security.md#generate-fail2ban-rule)
 gives an agent the same.
+
+## Check that it worked
+
+This check needs no root and no script file. From a source checkout, run a
+hook that appends one line for each dialog event of a sample capture, then
+print the distinct lines:
+
+```sh
+sipnab -N --no-cli-print --quiet -I tests/pcap-samples/sip-rtp-g711.pcap --on-dialog-exec 'echo "$SIPNAB_CALL_ID $SIPNAB_STATE" >> sipnab-hook-check.log' && sort -u sipnab-hook-check.log
+```
+
+Expect five lines, one for each state the two calls of the capture reached:
+
+```text
+1-1966@10.0.2.20 Completed
+1-1966@10.0.2.20 InCall
+1-1966@10.0.2.20 Trying
+1-1968@10.0.2.20 InCall
+1-1968@10.0.2.20 Trying
+```
+
+Each event carried its Call-ID and its state in the environment of the
+command, so the hook mechanism works. `sort -u` puts the lines in order,
+because hooks run at the same time. Delete `sipnab-hook-check.log` after.
+
+The test suite runs this check on each build, in a directory of its own, and
+compares the five lines. On Ubuntu 24.04 (Linux 6.8, aarch64) the hook wrote
+them.
+
+## When something does not work
+
+| Symptom | Likely cause |
+|---|---|
+| `Event exec command failed (exit status: 127)` in the log | The shell did not find the command. Give its full path |
+| `Event exec command failed (exit status: 126)` in the log | The user of the run cannot run the command. On a live capture that user is `nobody`: install the script under `/usr/local/bin`, not in a home directory |
+| The end of the run says some events `ran no command at all` | The rate limit or the queue depth turned them away. Raise `--exec-rate-limit`, or make the hook return sooner |
+| `--alert: Unknown alert channel 'pager': expected one of syslog, json, exec, or a rule written name:threshold/window`, exit 2 | The channel name is wrong |
+| `--alert: Unknown alert rule 'bogus': expected one of digest, fraud, reg_flood, scanner (reg-flood is accepted for reg_flood)`, exit 2 | The rule names no detector |
+| No alert on any channel | You armed no detector, or none fired. `--alert` selects where alerts go, and a detector flag such as `--kill-scanner` or `--reg-flood` raises them |
+| Nothing in the journal | `--alert syslog` needs `--syslog` as well |
+| The fail2ban log stays empty | `--fail2ban` selects a format and detects nothing. Add a detector flag |

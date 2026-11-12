@@ -72,6 +72,7 @@ with no `mod.rs` chain. Each test binary compiles its own copy.
 | [`tui_fixtures.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/tui_fixtures.rs) | SIP fixture builders shared by the TUI snapshot and state tests. |
 | [`executable.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/executable.rs) | `write_executable()`, the one way a test writes a file it then runs: a child process writes it, so this process never holds it open for writing and an `exec` cannot fail with `ETXTBSY` ("Text file busy") while another test thread forks. `executable_stub_test` refuses a file written in-process and then made executable. |
 | [`child_lifetime.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/child_lifetime.rs) | `tied_to_test()`, the one way a test starts a process: call it on the `Command` before `.spawn()`. On Linux it sets `PR_SET_PDEATHSIG` to SIGKILL, so the child ends when the spawning thread ends, even when a signal ends the test process and no `Drop` runs. See [Children end with their test](#children-end-with-their-test). Pulled in with `include!`. |
+| [`root_run.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/root_run.rs) | `root_run::sudo()`, the one way a test starts a command under `sudo`. The kernel clears `PR_SET_PDEATHSIG` when `sudo` executes, so a pipe ties the command to the test process: it ends when the test process ends. See [Children end with their test](#children-end-with-their-test). |
 | [`fuzz.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/fuzz.rs) | A deterministic xorshift PRNG shared by the stable-toolchain fuzzers, so a failure reproduces from its seed. |
 | [`ports.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/ports.rs) | `refused_tcp_port()`, the one way a test gets a loopback TCP port where a connect fails with `ConnectionRefused`: a socket bound and not listening, held until the guard drops, so no test running alongside can bind the number. Binding `:0`, reading the port, and closing the socket leaves the number free for another test to listen on; `released_port_scan_test` refuses that pattern under `tests/`. |
 
@@ -108,9 +109,33 @@ let child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
   different parent, and its spawn fails with `ESRCH` instead of running
   untied.
 - The kernel clears the setting when the child executes a set-user-ID
-  program (`sudo`) or changes its user or group id (`--user`). Such runs are
-  not tied; `privilege_drop_test.rs` stops its `sudo` runs itself.
+  program (`sudo`) or changes its user or group id (`--user`). A pipe ties a
+  run under `sudo` instead: see the next list.
 - The child's own children are not tied: a fork clears the setting.
+
+**How to start a command under `sudo`.**
+
+```rust
+#[path = "support/root_run.rs"]
+mod root_run; // once per file
+
+let out = root_run::sudo()? // `sudo -n`, tied to this test process
+    .arg(env!("CARGO_BIN_EXE_sipnab"))
+    .args(["-N", "-I", "capture.pcap", "--user", "nobody"])
+    .output()?;
+```
+
+- `root_run::sudo()` is the one place under `tests/` that names `sudo`. The
+  test process holds the write end of one pipe until it ends. The command
+  runs under a small `sh` program, as root, that holds the read end. When the
+  test process ends, by any cause, that program reads end-of-file and sends
+  the command SIGTERM, and SIGKILL 2 s later.
+- The command keeps its arguments, output and exit code. A command that a
+  signal ended exits with code 128 plus the signal number.
+- SIGTERM, SIGINT or SIGHUP sent to the `sudo` process reaches the command as
+  SIGTERM.
+- The command's standard input is `/dev/null`.
+- `root_run::tied()` runs a command the same way without `sudo`.
 
 **How to verify.** `cargo test --features full --test child_lifetime_test`.
 
@@ -121,7 +146,16 @@ let child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
 - `every_child_a_sipnab_test_spawns_is_tied_to_it` reads `tests/`: every
   `.spawn()` in a file that starts the sipnab binary, and every `.spawn()` in
   `tests/support/`, must have `.tied_to_test()` before it. The exceptions are
-  a `Command::new("sudo")` and the race test that ties its child by hand.
+  a command from `root_run::sudo()` or `root_run::tied()` and the race test
+  that ties its child by hand.
+- `a_sudo_command_ends_when_its_test_process_is_killed` and
+  `a_pipe_tied_command_ends_when_its_test_process_is_killed` run a child role
+  that holds a command, SIGKILL the role's process, and require that the
+  command has ended within 10 s. The first needs a `sudo` that asks
+  for no password (`sudo -n true`) and prints a `NOTICE` line where there is
+  none.
+- `only_the_tying_helper_names_sudo` reads `tests/`: only
+  [`root_run.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/root_run.rs) names `sudo`.
 
 **Troubleshooting.**
 
@@ -129,6 +163,9 @@ let child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
   the `.spawn()` it names, and `include!("support/child_lifetime.rs")` to
   the file (`include!("child_lifetime.rs")` in a file under `support/`). In
   a nested module, add `use super::TiedToTest as _;`.
+- `sites that name sudo`: a test names `sudo` directly. Start the command
+  with `root_run::sudo()?` and drop the `-n` argument, which the helper
+  passes.
 - A child that ends early with signal 9 while its test still runs was
   started on a thread that has since ended. Start it on the test's thread.
 

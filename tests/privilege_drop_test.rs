@@ -38,6 +38,8 @@
 
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
+#[path = "support/root_run.rs"]
+mod root_run;
 #[path = "support/tar_build.rs"]
 mod tar_build;
 #[path = "../src/test_scratch.rs"]
@@ -87,9 +89,8 @@ fn announce_skip(test: &str, reason: &str) {
 /// # Side effects
 /// Spawns `sudo -n true` as a probe.
 fn sudo_available() -> bool {
-    Command::new("sudo")
-        .args(["-n", "true"])
-        .status()
+    root_run::sudo()
+        .and_then(|mut sudo| sudo.arg("true").status())
         .map(|s| s.success())
         .unwrap_or(false)
 }
@@ -204,8 +205,9 @@ fn root_child_command(role: &str, env: &[(&str, &std::ffi::OsStr)]) -> Result<Co
                 .to_string(),
         );
     }
-    let mut cmd = Command::new("sudo");
-    cmd.args(["-n", "env"]);
+    let mut cmd =
+        root_run::sudo().map_err(|e| format!("cannot tie a sudo run to this test: {e}"))?;
+    cmd.arg("env");
     cmd.arg(format!("{CHILD_ENV}=1"));
     for (k, v) in env {
         let mut assignment = std::ffi::OsString::from(format!("{k}="));
@@ -292,9 +294,8 @@ fn failed_privilege_drop_aborts_instead_of_running_as_root() -> Result<(), TestE
         return Ok(());
     }
     let (_fixture_dir, fixture) = world_readable_fixture("drop-fail")?;
-    let out = Command::new("sudo")
+    let out = root_run::sudo()?
         .args([
-            "-n",
             env!("CARGO_BIN_EXE_sipnab"),
             "-N",
             "-I",
@@ -326,9 +327,8 @@ fn successful_privilege_drop_still_processes_capture() -> Result<(), TestError> 
         return Ok(());
     }
     let (_fixture_dir, fixture) = world_readable_fixture("drop-success")?;
-    let out = Command::new("sudo")
+    let out = root_run::sudo()?
         .args([
-            "-n",
             env!("CARGO_BIN_EXE_sipnab"),
             "-N",
             "-I",
@@ -909,9 +909,8 @@ fn a_keylog_only_root_can_read_is_loaded_before_the_drop() -> Result<(), TestErr
     let keylog = private.path().join("proxy.keys");
     std::fs::write(&keylog, KEYLOG)?;
     std::fs::set_permissions(&keylog, std::fs::Permissions::from_mode(0o600))?;
-    let out = Command::new("sudo")
+    let out = root_run::sudo()?
         .args([
-            "-n",
             env!("CARGO_BIN_EXE_sipnab"),
             "-N",
             "-I",
@@ -988,8 +987,8 @@ fn root_only_files(
         let staged = dir.join(format!("{name}.staged"));
         let path = dir.join(name);
         std::fs::write(&staged, bytes)?;
-        let status = Command::new("sudo")
-            .args(["-n", "install", "-m", "0600", "-o", "0", "-g", "0"])
+        let status = root_run::sudo()?
+            .args(["install", "-m", "0600", "-o", "0", "-g", "0"])
             .arg(&staged)
             .arg(&path)
             .status()?;
@@ -1072,9 +1071,8 @@ fn a_root_run_reads_its_root_only_hep_and_key_files_before_the_drop() -> Result<
     )?;
     let (_fixture_dir, fixture) = world_readable_fixture("secret-before-drop")?;
     let run_dir = dir_nobody_can_write()?;
-    let out = Command::new("sudo")
+    let out = root_run::sudo()?
         .current_dir(run_dir.path())
-        .arg("-n")
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
         .args([
@@ -1165,9 +1163,8 @@ fn a_root_run_reads_its_root_only_server_credentials_before_the_drop() -> Result
     };
     let (_fixture_dir, fixture) = world_readable_fixture("server-secrets-before-drop")?;
     let run_dir = dir_nobody_can_write()?;
-    let child = Command::new("sudo")
+    let child = root_run::sudo()?
         .current_dir(run_dir.path())
-        .arg("-n")
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
         .args([
@@ -1260,9 +1257,8 @@ fn serve_vcon_fetch_door(
 ) -> Result<(Option<std::process::ExitStatus>, Output), TestError> {
     let (_fixture_dir, fixture) = world_readable_fixture(test)?;
     let run_dir = dir_nobody_can_write()?;
-    let child = Command::new("sudo")
+    let child = root_run::sudo()?
         .current_dir(run_dir.path())
-        .arg("-n")
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
         .args(["-f", arg(config)?])
@@ -1368,8 +1364,8 @@ fn a_root_run_still_refuses_a_vcon_fetch_credential_its_drop_user_lets_others_re
     let staged = dir.path().join("nobody.auth.staged");
     let auth = dir.path().join("nobody.auth");
     std::fs::write(&staged, b"Authorization: Bearer fetch-token-0123\n")?;
-    let installed = Command::new("sudo")
-        .args(["-n", "install", "-m", "0640", "-o", "nobody"])
+    let installed = root_run::sudo()?
+        .args(["install", "-m", "0640", "-o", "nobody"])
         .arg(&staged)
         .arg(&auth)
         .status()?;
@@ -1475,8 +1471,8 @@ fn a_root_run_refuses_a_world_readable_decryption_key() -> Result<(), TestError>
         ),
         &staged,
     )?;
-    let ok = Command::new("sudo")
-        .args(["-n", "install", "-m", "0644", "-o", "0", "-g", "0"])
+    let ok = root_run::sudo()?
+        .args(["install", "-m", "0644", "-o", "0", "-g", "0"])
         .arg(&staged)
         .arg(&key)
         .status()?;
@@ -1559,8 +1555,7 @@ fn a_root_run_with_a_missing_drop_user_stops_naming_it() -> Result<(), TestError
         return Ok(());
     }
     let (_fixture_dir, fixture) = world_readable_fixture("missing-drop-user")?;
-    let out = Command::new("sudo")
-        .arg("-n")
+    let out = root_run::sudo()?
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I"])
         .arg(&fixture)
@@ -1588,8 +1583,7 @@ fn a_chroot_run_with_a_missing_drop_user_stops_naming_it() -> Result<(), TestErr
     }
     let jail = tempfile::tempdir()?;
     let (_fixture_dir, fixture) = world_readable_fixture("missing-drop-user-chroot")?;
-    let out = Command::new("sudo")
-        .arg("-n")
+    let out = root_run::sudo()?
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I"])
         .arg(&fixture)
@@ -1626,9 +1620,8 @@ fn a_root_only_revocation_list_stops_a_root_run_after_the_drop() -> Result<(), T
     let files = root_only_files(dir.path(), &[("revoked", b"tok-1\n")])?;
     let (_fixture_dir, fixture) = world_readable_fixture("revoked-after-drop")?;
     let run_dir = dir_nobody_can_write()?;
-    let child = Command::new("sudo")
+    let child = root_run::sudo()?
         .current_dir(run_dir.path())
-        .arg("-n")
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
         .args([
@@ -1675,8 +1668,7 @@ fn a_root_run_with_chroot_resolves_the_drop_user_first() -> Result<(), TestError
     }
     let jail = tempfile::tempdir()?;
     let (_fixture_dir, fixture) = world_readable_fixture("chroot-drop")?;
-    let out = Command::new("sudo")
-        .arg("-n")
+    let out = root_run::sudo()?
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args([
             "-N",
@@ -1723,8 +1715,7 @@ fn chroot_tls_sender(test: &str, extra: &[&str]) -> Result<Option<Output>, TestE
     }
     let jail = tempfile::tempdir()?;
     let (_fixture_dir, fixture) = world_readable_fixture(test)?;
-    let out = Command::new("sudo")
-        .arg("-n")
+    let out = root_run::sudo()?
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .env_remove("SSL_CERT_FILE")
         .args([
@@ -1905,10 +1896,9 @@ struct RootRemoves(std::path::PathBuf);
 
 impl Drop for RootRemoves {
     fn drop(&mut self) {
-        let _ = Command::new("sudo")
-            .args(["-n", "rm", "-rf", "--"])
-            .arg(&self.0)
-            .status();
+        if let Ok(mut rm) = root_run::sudo() {
+            let _ = rm.args(["rm", "-rf", "--"]).arg(&self.0).status();
+        }
     }
 }
 
@@ -1929,9 +1919,9 @@ fn root_sipnab(tmpdir: &std::path::Path, args: &[&std::ffi::OsStr]) -> Result<Ou
     let run_dir = dir_nobody_can_write()?;
     let mut tmp = std::ffi::OsString::from("TMPDIR=");
     tmp.push(tmpdir);
-    Ok(Command::new("sudo")
+    Ok(root_run::sudo()?
         .current_dir(run_dir.path())
-        .args(["-n", "env", "SIPNAB_LOG=info"])
+        .args(["env", "SIPNAB_LOG=info"])
         .arg(tmp)
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
@@ -2143,9 +2133,9 @@ fn root_sipnab_under_limit(
     let run_dir = dir_nobody_can_write()?;
     let mut tmp = std::ffi::OsString::from("TMPDIR=");
     tmp.push(tmpdir);
-    Ok(Command::new("sudo")
+    Ok(root_run::sudo()?
         .current_dir(run_dir.path())
-        .args(["-n", "env", "SIPNAB_LOG=info"])
+        .args(["env", "SIPNAB_LOG=info"])
         .arg(tmp)
         .args(["sh", "-c"])
         .arg(format!("ulimit {limits} && exec \"$0\" \"$@\""))

@@ -49,3 +49,12 @@ wildcards = "allow"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Read every feature (DENY-CHECKS-DEFAULT-FEATURES-ONLY). Without this,
+# `cargo deny check` reads the default features: 240 crates of the 364 that
+# all features resolve (cargo-deny 0.20.2, 2026-11-12), so no rule above saw
+# a crate that only an optional feature brings in. The setting is here and
+# not a flag on one command line, so every run reads it.
+# tests/dependency_policy_doc_test.rs holds it.
+[graph]
+all-features = true

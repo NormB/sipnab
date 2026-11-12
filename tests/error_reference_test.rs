@@ -996,7 +996,10 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // src/app/fleet_log.rs +1, a store or an intake that holds fewer records than
 // the center wrote to it, found when the file is read after an append that
 // failed.
-// 637 -> 654 (fleet history store): +17. src/app/fleet_history.rs +12: a
+// 637 -> 639 (TLS-CAPTURE-NO-KEYLOG-SILENT): src/app/batch.rs, the two lines
+// `no_sip_guidance` prints for a capture with TLS records read without a TLS
+// key (the count and the cause, and the command with --keylog). +2.
+// 639 -> 656 (fleet history store): +17. src/app/fleet_history.rs +12: a
 // row received before 1970, the four refusals of a question's parameters
 // (member, call_id, a parameter given twice, an unknown parameter), three
 // Parquet column refusals, three sealed-layer refusals of a calls file (no
@@ -1004,7 +1007,7 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // would be replaced. src/app/fleet_center.rs +5: the build without the
 // store, a filing that failed, call records that could not be read, and the
 // two retention lines.
-const EXPECTED_TEMPLATES: usize = 654;
+const EXPECTED_TEMPLATES: usize = 656;
 
 // ---------------------------------------------------------------------------
 // The page gates
