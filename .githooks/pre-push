@@ -606,23 +606,77 @@ else
 fi
 fi
 
-# -- CI's feature matrix: on the local runners, not in this hook ------------
+# -- Hard gate: the rows of CI's feature matrix marked `hook` ----------------
 #
 # Every combination ci.yml's Features job lists used to be rebuilt here, on
 # every push, as a hard gate. Since 2026-09-29 that job runs on the aarch64
 # self-hosted runners (moved there by Norm), which build all of it on the same
-# machine within minutes of the push, so the hook no longer repeats it. The
-# break it catches only appears with a feature OFF -- an item used solely under
-# `#[cfg(feature = ...)]` without that gate itself -- and the reduced-combo gate
-# above still catches the commonest cases before the push.
+# machine within minutes of the push, so the hook no longer repeats ALL of it.
+#
+# It lints the rows .github/feature-combos.txt marks `hook`. The pre-commit
+# hook builds only `--features full`, the clippy gate above `--all-features`,
+# and the reduced-combination gate above runs `cargo check`, which reports a
+# warning and passes. In pull request #763 a binding read only under
+# `#[cfg(feature = "hep")]` passed all of them and would have failed CI's
+# clippy for every feature set without `hep`.
+#
+# One rule, in scripts/check-feature-matrix.py: `--hook-rows` gives each
+# marked row's stamp step, features and command (the command CI's Features
+# job runs for that row), and `--lint-row` runs it. scripts/gate-cache.py
+# reads the rows through the same parser, so each row has a stamp of its own
+# and a push that fails at one row keeps the stamps of the rows before it.
+# The command runs in this hook's environment, as its other clippy steps do.
+# Skipped for a crate with no feature matrix, as the throwaway fixtures in
+# scripts/test-pre-push.sh mostly are.
 #
 # To see the whole matrix before pushing, run it by hand; it reads the combos
 # and CI's RUSTFLAGS from ci.yml, never a restated copy:
 #
 #     python3 scripts/check-feature-matrix.py
 #
-# scripts/test-pre-push.sh holds both halves: this hook does not run it, and
-# the script still blocks an item dead without its feature.
+# scripts/test-pre-push.sh holds both halves: a marked row with a binding
+# unused without a feature blocks the push, and an unmarked row is left to CI.
+FEATURE_MATRIX="$(dirname "$0")/../scripts/check-feature-matrix.py"
+if [ -f .github/feature-combos.txt ] && [ -f "$FEATURE_MATRIX" ]; then
+	if ! HOOK_ROWS=$(python3 "$FEATURE_MATRIX" --hook-rows); then
+		printf '  feature sets marked `hook` ... %bFAIL%b\n' "$RED" "$NC"
+		printf '%s\n' "$HOOK_ROWS" | sed 's/^/    /'
+		printf '\n'
+		printf '%bPush blocked: .github/feature-combos.txt could not be read.%b\n' "$RED" "$NC"
+		printf 'Reproduce with:\n'
+		printf '    python3 scripts/check-feature-matrix.py --hook-rows\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+	fi
+	ROW_TAB=$(printf '\t')
+	# Read from a here-document, not a pipe: a pipe would run the loop in a
+	# subshell, where `exit 1` and the collected stamps would be lost.
+	while IFS="$ROW_TAB" read -r row_step row_features row_command; do
+		[ -n "$row_step" ] || continue
+		printf '  %s ... ' "$row_command"
+		if gate_hit "$row_step"; then
+			:
+		elif python3 "$FEATURE_MATRIX" --lint-row "$row_features" </dev/null; then
+			printf '%bOK%b\n' "$GREEN" "$NC"
+			gate_pass "$row_step"
+		else
+			printf '%bFAIL%b\n' "$RED" "$NC"
+			printf '\n'
+			printf '%bPush blocked: the feature set %s does not pass clippy.%b\n' "$RED" "$row_features" "$NC"
+			printf 'Reproduce with:\n'
+			printf '    %s\n' "$row_command"
+			printf 'Usually a binding, import or item that only code behind a feature\n'
+			printf 'reads -- gate it on the same feature as its reader. CI lints this\n'
+			printf 'set with the same command (.github/feature-combos.txt).\n'
+			printf '\n'
+			printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+			exit 1
+		fi
+	done <<HOOK_ROWS_END
+$HOOK_ROWS
+HOOK_ROWS_END
+fi
 
 # -- Hard gate: the non-Linux arm of every platform cfg -----------------------
 # Sibling of the feature-combination gates above, for the same reason and one
