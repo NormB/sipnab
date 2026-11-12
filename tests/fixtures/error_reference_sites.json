@@ -56,6 +56,8 @@
         "No SIP traffic was decoded — but {} of {frames_read} frame(s){share} could not be decoded at all, so this is not a finding that the capture contains no SIP. Undecodable: {}.",
         "Fix the decode before reading anything into the zero above: convert the capture (editcap -T ether) or open an issue naming the number(s) reported.",
         "No SIP traffic was decoded, but TLS application data in this capture could not be decrypted (see above), so this is not a finding that the capture contains no SIP.",
+        "No SIP traffic was decoded. This capture holds at least {} TLS application-data record(s) and this run was given no TLS key (--keylog, --keylog-fd or --tls-key), so sipnab decrypted none of them: this is not a finding that the capture contains no SIP.",
+        "To read SIP carried over TLS, pass the key log that the endpoint wrote during this capture: sipnab -N -I file.pcap --keylog keys.log",
         "No SIP traffic found, but this capture is not empty: {} of {} STUN/TURN transaction(s) went unanswered — {} sent {} to {} {} time(s) and got nothing back.",
         "That is a NAT-discovery failure, not a missing capture. An endpoint that cannot learn its reflexive address advertises its PRIVATE address in SDP, and the far end then sends media to somewhere it cannot reach — a call that signals cleanly and carries audio one way.",
         "The requests drew no reply at all rather than a refusal, which points at something in the path discarding them rather than at the server. On school, campus and corporate networks that is most often a security appliance — web filter, secure web gateway, firewall or IPS — dropping UDP it does not recognize. Confirm whether one sits in this path and whether it permits UDP to the STUN/TURN port.",

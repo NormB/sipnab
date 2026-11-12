@@ -102,7 +102,7 @@ uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://githu
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L216)<!-- "pub struct PacketTx" -->), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
 ([`src/capture/channel.rs:278`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L278)<!-- "fn channel_with_slots(slots:" -->). The consumer is the batch receive loop at
-[`src/app/batch.rs:4520`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4520)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100)) {" -->, which stops when the channel disconnects — that
+[`src/app/batch.rs:4547`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4547)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100)) {" -->, which stops when the channel disconnects — that
 is, when the last sender clone drops.
 
 **A second source joins here and nowhere else.** The channel is already
@@ -113,7 +113,7 @@ parser already tells the two kinds of packet apart:
   source. Live capture sets the device name ([`src/capture/live.rs:582`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L582)<!-- "interface_name: Some(crate::capture::packet::SourceName::interned( &fanout_source_name(device, socket_index)," -->); the
   HEP listener sets `hep:<capture-id>@<peer>` via `hep_source_label`
   ([`src/capture/hep_roster.rs:229`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L229)<!-- "pub fn hep_source_label(capture_id:" -->) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)<!-- "/// * `hep` —" -->).
-- `ParsedPacket` ([`src/capture/parse.rs:172`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L172)<!-- "#[derive(Debug, Clone)]" -->) carries an `input_origin`
+- `ParsedPacket` ([`src/capture/parse.rs:172`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L172)<!-- "#[derive(Debug, Clone)] pub struct ParsedPacket {" -->) carries an `input_origin`
   field holding the `InputOrigin` enum ([`src/capture/parse.rs:90`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L90)<!-- "/// - [`Vcon`](Self::Vcon)" -->) — `Wire`, `Hep` or
   `Uprobe`. Line [`src/capture/parse.rs:2727`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L2727)<!-- "input_origin: match" --> derives it per packet from the presence of
   pre-parsed addressing and the source name. Nothing in that derivation consults
@@ -244,7 +244,7 @@ mode**, and it is the reason stage one should accept HEP from exactly one node.
 **F3 — Endpoint reuse over time.** `associated_dialog` is set only when unset
 ([`src/rtp/stream_store.rs:2058`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2058)<!-- "if stream.associated_dialog.is_none() { stream.associated_dialog = Some(call_id.to_string());" -->), and `sdp_endpoints` is bounded by insertion
 order with oldest-out eviction rather than by age
-([`src/rtp/stream_store.rs:2159`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2159)<!-- "if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams {" -->). A media gateway cycles a finite RTP port range,
+([`src/rtp/stream_store.rs:2159`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2159)<!-- "if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams { let batch = (self.max_streams / 10).max(1).min(self.sdp_endpoints.len()); self.sdp_endpoints.drain(0..batch); self.endpoints_learned.drop_front(batch); } self.sdp_endpoints.insert(" -->). A media gateway cycles a finite RTP port range,
 so on a process running for days — which is precisely the deployment shape this
 feature is for, unlike the minutes-long pcap read the eviction policy was sized
 for — a stale entry can outlive its call and claim the next stream on that
@@ -321,7 +321,7 @@ operator discount a suspicious attribution instead of trusting it.
 [`docs/design/packet-provenance.md`](https://github.com/NormB/sipnab/blob/main/docs/design/packet-provenance.md) shipped in five stages. `FrameRef`
 ([`src/capture/packet.rs:765`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L765)<!-- "pub struct FrameRef" -->) resolves a fact to the bytes behind it, and
 `SipMessage::frame` ([`src/sip/message.rs:100`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L100)<!-- "pub frame: Option<crate::capture::packet::FrameRef>," -->), `SipDialog`
-([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)<!-- "#[derive(Debug)]" -->), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:452`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L452)<!-- "#[derive(Debug, Clone)]" -->) carries the same field at line 323
+([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)<!-- "#[derive(Debug)]" -->), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:452`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L452)<!-- "#[derive(Debug, Clone)] pub struct RtpStream {" -->) carries the same field at line 323
 carry it downstream.
 
 The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:926`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L926)<!-- "pub fn frame_ref(&self)" -->)
@@ -387,7 +387,7 @@ nothing.
 Each reader keeps a thread-local counter and stops at `config.count`
 ([`src/capture/hep.rs:3830`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3830)<!-- "let mut count: u64" --> and its check; [`src/capture/live.rs:950`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L950)<!-- "count_limit_reached(self.config.count, self.count)" -->), and the
 consumer independently breaks at `total_count >= max_count`
-([`src/app/batch.rs:4886`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4886)<!-- "if let Some(max_count) = capture_config.count && lp.total_count >= max_count" -->). Because each reader gets a clone of the same
+([`src/app/batch.rs:4916`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4916)<!-- "if let Some(max_count) = capture_config.count && lp.total_count >= max_count" -->). Because each reader gets a clone of the same
 `CaptureConfig`, the per-reader copies are per source, so a member can stop
 itself while the other keeps going. The consumer's total still bounds the run,
 so the flag does not silently double — but the per-reader stop is a source-level
@@ -399,10 +399,10 @@ own start, and the starts are within milliseconds. No shared state needed.
 
 **Shutdown.** Already correct. Every reader polls `signals::shutdown_requested`,
 the coordinator drops its `tx` clone so the channel closes when the last reader
-exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:4534`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4534)<!-- "Err(crossbeam_channel::RecvTimeoutError::Disconnected) => ControlFlow::Break(())," -->).
+exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:4561`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4561)<!-- "Err(crossbeam_channel::RecvTimeoutError::Disconnected) => ControlFlow::Break(())," -->).
 When one member ends and the other continues — a HEP sender restarting while the
 NIC keeps capturing — the loop keeps running, which is correct: `source_exhausted`
-([`src/app/batch.rs:4197`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4197)<!-- "&& let Some(ref flag) = servers.source_exhausted" -->) means every source is done, and with two sources it
+([`src/app/batch.rs:4224`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4224)<!-- "&& let Some(ref flag) = servers.source_exhausted" -->) means every source is done, and with two sources it
 should keep meaning exactly that.
 
 One consequence to accept rather than fix: **the channel carries no
@@ -439,7 +439,7 @@ nothing.
 
 **Metrics and the writer read the source as a scalar.** The `-O` writer is the
 concrete casualty. It initializes on the first packet's `link_type`
-([`src/app/batch.rs:4565`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4565)<!-- "// Lazily initialize the writer on first packet (we need link_type)" -->), and the two members disagree: live capture yields
+([`src/app/batch.rs:4592`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4592)<!-- "// Lazily initialize the writer on first packet (we need link_type)" -->), and the two members disagree: live capture yields
 `DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:1120`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L1120)<!-- "pub fn with_pre_parsed(" -->) sets
 `link_type = 0` and a `data` buffer holding the bare transport payload — no
 Ethernet, no IP, no UDP. That absence is deliberate and documented at

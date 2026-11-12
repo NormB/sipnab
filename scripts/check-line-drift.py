@@ -483,6 +483,30 @@ def phrase_starts(lines: list[str], phrase: str) -> list[int]:
     return found
 
 
+AMBIGUOUS_LINES_SHOWN = 8
+
+
+def ambiguous_problem(where: str, shown: str, first: int, phrase: str,
+                      at: list[int]) -> str:
+    """The report for a phrase that begins on more than one line of its file.
+
+    `where` is the page and line of the citation, `shown` the cited file,
+    `first` the first cited line and `at` the lines the phrase begins on. The
+    message gives at most `AMBIGUOUS_LINES_SHOWN` of them, because a phrase
+    such as `}` begins on hundreds.
+    """
+    head = ", ".join(str(n) for n in at[:AMBIGUOUS_LINES_SHOWN])
+    rest = len(at) - AMBIGUOUS_LINES_SHOWN
+    listed = head + (f" and {rest} more" if rest > 0 else "")
+    cited = "" if first in at else f"; line {first} is not one of them"
+    return (
+        f'{where}: the phrase "{phrase}" after {shown}:{first} begins on '
+        f"{len(at)} lines of {shown} (lines {listed}){cited}. Lengthen the "
+        "phrase until it begins on one line, so the gate and `--apply` can "
+        "tell which line the citation means"
+    )
+
+
 def check(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
     """Check `pages`, or every page under `docs/` when none are named.
 
@@ -614,7 +638,7 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
     problems: list[str] = []
     unanchored: list[str] = []
     fixed = examined = both = fenced = resolved = past_eof = disagreeing = 0
-    phrased = wrong_content = pinned = unpinned = 0
+    phrased = wrong_content = pinned = unpinned = ambiguous = 0
     files: dict[pathlib.Path, list[str]] = {}
 
     def lines_of(path: pathlib.Path) -> list[str]:
@@ -692,8 +716,17 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
                             )
                             continue
                         at = phrase_starts(body, phrase)
-                        if first not in at:
-                            if apply and len(at) == 1:
+                        # A phrase has to name ONE line of its file. Refused
+                        # where it stands, on the right line or not: with two
+                        # candidates the fixer cannot follow the code when it
+                        # moves, and a citation that lands on the other
+                        # candidate would pass as correct.
+                        if len(at) > 1:
+                            ambiguous += 1
+                            problems.append(ambiguous_problem(
+                                f"{rel}:{i + 1}", shown, first, phrase, at))
+                        elif first not in at:
+                            if apply and at:
                                 moved = at[0] - first
                                 edits.append((m.start(), m.end(), _repoint_range(
                                     m.group(0), at[0],
@@ -779,13 +812,16 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
     # for `wrong_content`, and `unanchored` is how many citations no rule can
     # check for content at all. `unpinned` is the line links no rule reads
     # because they are not citations of `main` and name no commit.
+    # `ambiguous` is the phrases that begin on more than one line of the file
+    # they cite; each is a problem whether or not its citation is on one of
+    # those lines.
     print(
         f"two-part references: pages={len(page_list)} examined={examined} "
         f"both_halves={both} fenced={fenced} "
         f"disagreeing={disagreeing} resolved={resolved} "
         f"past_eof={past_eof} pinned={pinned} phrased={phrased} "
         f"wrong_content={wrong_content} unanchored={len(unanchored)} "
-        f"unpinned={unpinned}"
+        f"unpinned={unpinned} ambiguous={ambiguous}"
     )
     for p in problems:
         print(f"  {p}")

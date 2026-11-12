@@ -22,6 +22,22 @@ parts drive all four:
 
 So an agent sees exactly what the other modes see.
 
+## Before you start
+
+- **A sipnab binary with the `mcp` feature** for the stdio transport, and
+  `mcp-http` as well for the HTTP transport. `sipnab --version` lists the
+  features, and the release binaries carry both.
+- **An MCP client,** such as Claude Code or Claude Desktop. The checks on this
+  page need no client: they use the shell.
+- **`jq`,** to read the answers in the examples, and **`curl`,** for the
+  examples that use the HTTP transport.
+- **A capture file, or capture rights on an interface.**
+  [Install sipnab](@/docs/install.md) grants the rights for a live capture.
+- **No change on any other system** for the stdio transport: the client
+  starts sipnab as a child process on its own machine. For a client on another
+  machine, [MCP deployment](@/docs/mcp-deploy.md#before-you-start) lists what
+  changes on each side.
+
 ## See it work
 
 Point sipnab at a pcap. Stdio is the default transport, so nothing else
@@ -483,6 +499,47 @@ When it does not work:
   one of its tools is in. `prompts/get` for it names the bundles to add.
 - `resources/read` answers `call_id '<id>' not found`, with `reason`
   `not_found`: the capture holds no such call. Complete the Call-ID first.
+
+## Check that it worked
+
+Send the server the two messages that open a session and a request for its
+tool list. This uses the sample capture from [See it work](#see-it-work), and
+it answers the same way for any capture, because neither answer reads the
+capture:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | sipnab --mcp -N -I sip-problem-call.pcap --quiet \
+  | jq -c 'if .id == 1 then .result.serverInfo.name else (.result.tools | map(.name) | index("triage_call") != null) end'
+```
+
+Expect two lines, the name the server gives itself and `true` for a tool list
+that holds `triage_call`:
+
+```text
+"sipnab"
+true
+```
+
+The test suite runs this check on each build: it sends the three messages of
+the fence above to the binary and reads the same two fields. On Ubuntu 24.04
+(Linux 6.8, aarch64) the full build answered `sipnab` and listed 79 tools,
+`triage_call` among them. The suite reads the answers in Rust, not with `jq`.
+
+## When something does not work
+
+| Symptom | Likely cause |
+|---|---|
+| `--mcp requires the 'mcp' feature (not compiled in)`, exit 2 | The binary has no MCP server. Install a release binary, or build with the `mcp` feature |
+| `--mcp uses stdout for the JSON-RPC wire and cannot be combined with stdout-writing flags (--json)`, exit 2 | A flag on the command line writes to standard output, which the stdio transport owns. Remove the flag the message names, or run the report without `--mcp` |
+| `-I/--input: '/path/to/capture.pcap' does not exist`, exit 1 | The path in the client configuration is wrong. A client can start sipnab in a directory of its own choice, so give the capture as an absolute path |
+| A tool call answers `tool not found`, with `reason` `unknown_tool` | The server does not register that tool: the name has a spelling error, or the build or the loaded bundles leave the tool out. `valid_values` in the same answer lists the tools the server registers |
+| A tool call answers `call_id '<id>' not found`, with `reason` `not_found` | The capture holds no call with that Call-ID. Ask `list_dialogs` for the Call-IDs it holds |
+| `MCP HTTP refuses to start: --mcp-bind 192.0.2.1:8731 is non-loopback` and a list of token flags, exit 2 | An HTTP bind on an address other than loopback needs a token or a signing key. Bind `127.0.0.1`, or give one of the flags the message lists, as [MCP deployment](@/docs/mcp-deploy.md) describes |
+| The client lists no sipnab tools, and sipnab works in a shell | Run the client's command by hand, with the arguments of its configuration. A live capture without capture rights stops at startup with a permission message: see [Install sipnab](@/docs/install.md) |
 
 ## Where to go next
 

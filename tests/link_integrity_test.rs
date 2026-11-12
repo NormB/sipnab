@@ -1816,10 +1816,16 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2593 -> 2594 (failed fleet append, merged after the HEP keys):
     // errors.md +1, the sealed layer's refusal list links to fleet.md's
     // "Encrypt the center's store".
-    // 2594 -> 2595 (PRIVILEGE-TEST-LEAVES-SUDO-CHILD-WHEN-CUT-SHORT, merged
-    // after the two above): testing.md's helper table row for root_run.rs
-    // links its own section "Children end with their test" (+1).
-    const EXPECTED_WIKI_LINKS: usize = 2595;
+    // 2594 -> 2595 (TLS-CAPTURE-NO-KEYLOG-SILENT): errors.md +1, the entry of
+    // the no-TLS-key message links tls-capture.md.
+    // 2595 -> 2608 (DOCS-HOWTO-GAP, fifth batch): mcp.md +5 (its "Before you
+    // start" two, its check one, its troubleshooting table two), mcp-estate.md
+    // +4 (its check one, its troubleshooting table three), integrations.md +4
+    // (three entries in its contents list and one in "Before you start").
+    // 2608 -> 2609 (PRIVILEGE-TEST-LEAVES-SUDO-CHILD-WHEN-CUT-SHORT, merged
+    // after the entries above): testing.md's helper table row for
+    // root_run.rs links its own section "Children end with their test" (+1).
+    const EXPECTED_WIKI_LINKS: usize = 2609;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -35,7 +35,7 @@ capture was verifiable here, and none of it is asserted.
 sipnab correlates legs **seven** ways. It was five when this was written, and
 the two added since are the ones proposed below.
 [`CorrelationReason`](../../src/sip/dialog_store.rs) at
-[`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43)<!-- "#[non_exhaustive]" --> enumerates them, and
+[`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43)<!-- "#[non_exhaustive] pub enum CorrelationReason {" --> enumerates them, and
 [`find_correlated_scored`](../../src/sip/dialog_store.rs) at
 [`:2111`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2111)<!-- "pub fn find_correlated_scored(&self, call_id: &str)" --> evaluates them in a fixed order,
 first match wins:
@@ -423,7 +423,7 @@ The shape, by file:
 | [`dialog_store.rs:44`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L44)<!-- "pub enum CorrelationReason" --> | Two new `CorrelationReason` variants, each with the doc comment explaining its survival properties that the existing five carry |
 | [`dialog_store.rs:1034-1058`](https://github.com/NormB/sipnab/blob/04869cf6b999741dec5d7eff8d1d0b10a6f84eee/src/sip/dialog_store.rs#L1034-L1058) | Two new candidate blocks between `sdp_origin` and `via_branch`, following the established pattern: hoist the source dialog's values into a `HashSet` once before the candidate loop (as `src_origins` does at [`:964`](https://github.com/NormB/sipnab/blob/04869cf6b999741dec5d7eff8d1d0b10a6f84eee/src/sip/dialog_store.rs#L964)), parse the candidate side lazily inside the loop |
 | [`server.rs:4501`](https://github.com/NormB/sipnab/blob/04869cf6b999741dec5d7eff8d1d0b10a6f84eee/src/mcp/server.rs#L4501) | Two new arms. **This is a compile error until written**, by design |
-| [`mcp-tools-signaling.md:729-739`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools-signaling.md#L729-L739)<!-- "Survives a B2BUA?" -->, [`mcp-estate.md:539-549`](https://github.com/NormB/sipnab/blob/main/docs/mcp-estate.md#L539-L549)<!-- "What a match is worth" -->, [`domain-primer.md:271-282`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L271-L282)<!-- "[`dialog_store.rs`](../../src/sip/dialog_store.rs)" --> | Strategy tables and the "correlates legs five ways" sentence |
+| [`mcp-tools-signaling.md:729-739`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools-signaling.md#L729-L739)<!-- "Survives a B2BUA?" -->, [`mcp-estate.md:558-568`](https://github.com/NormB/sipnab/blob/main/docs/mcp-estate.md#L558-L568)<!-- "What a match is worth" -->, [`domain-primer.md:271-282`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L271-L282)<!-- "[`dialog_store.rs`](../../src/sip/dialog_store.rs)" --> | Strategy tables and the "correlates legs five ways" sentence |
 
 Three code-level facts that a naive implementation would get wrong:
 

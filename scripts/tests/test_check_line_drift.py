@@ -541,7 +541,8 @@ def test_applying_leaves_an_ambiguous_phrase_for_a_human(tmp_path, monkeypatch):
     p = _eof_page(root, body)
     rc, out = run_anchors([p], apply=True)
     assert p.read_text() == body
-    assert rc == 1 and "line [1, 3]" in out, out
+    assert rc == 1 and "lines 1, 3" in out, out
+    assert "line 2 is not one of them" in out, out
 
 
 def test_applying_re_points_a_citation_past_the_end_when_its_phrase_is_found(tmp_path, monkeypatch):
@@ -967,3 +968,225 @@ def test_applying_does_not_rewrite_an_unpinned_link(tmp_path, monkeypatch):
     rc, out = run_anchors([p], apply=True)
     assert rc == 1, out
     assert p.read_text() == body
+
+
+# ── a phrase names one line of its file ────────────────────────────────
+#
+# The defect: a phrase that begins on more than one line of the cited file
+# passed while the citation sat on one of them. When the code moved, the fixer
+# found several candidates and could not follow, and a citation that landed on
+# another of those lines passed as correct. Found with `fn export_vcon(` in
+# docs/design/conditional-content-persistence.md. The gate now refuses such a
+# phrase where it stands, before any code moves.
+
+TWICE = (
+    "fn export(a: A) {\n"            # 1
+    "    body one\n"                 # 2
+    "}\n"                            # 3
+    "\n"                             # 4
+    "fn export(b: B) {\n"            # 5
+    "    body two\n"                 # 6
+    "}\n"                            # 7
+    "let both = export(x) + export(y);\n"  # 8
+)
+
+
+def test_a_phrase_on_two_lines_is_refused_on_the_right_line(tmp_path, monkeypatch):
+    """FAILURE: the defect as found. The citation is on a line that holds the
+    phrase, and another line holds it too."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    p = _eof_page(root, f"See {_cite('1', 'fn export(')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    s = _summary(out)
+    assert (s["ambiguous"], s["wrong_content"]) == ("1", "0"), out
+    assert "lines 1, 5" in out and "docs/page.md:1" in out, out
+
+
+def test_a_phrase_on_two_lines_is_refused_on_the_other_line_too(tmp_path, monkeypatch):
+    """FAILURE: the second line that holds the phrase is no better a place
+    for the citation; either could be the one that was meant."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    p = _eof_page(root, f"See {_cite('5', 'fn export(')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    assert _summary(out)["ambiguous"] == "1", out
+
+
+def test_a_phrase_on_two_lines_and_cited_on_neither_is_one_problem(tmp_path, monkeypatch):
+    """FAILURE: the code moved and the phrase cannot say where to. Reported
+    once, as ambiguous, with the lines that hold it and the line cited."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    p = _eof_page(root, f"See {_cite('3', 'fn export(')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    s = _summary(out)
+    assert (s["ambiguous"], s["wrong_content"]) == ("1", "0"), out
+    assert "lines 1, 5" in out and "line 3 is not one of them" in out, out
+    assert len([l for l in out.splitlines() if l.startswith("  ")]) == 1, out
+
+
+def test_the_message_says_how_to_repair_an_ambiguous_phrase(tmp_path, monkeypatch):
+    """FAILURE: the reader is told the file, the phrase and the remedy."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    p = _eof_page(root, f"See {_cite('1', 'fn export(')}\n")
+    out = run_anchors([p])[1]
+    assert '"fn export("' in out and "docs/target.md" in out, out
+    assert "Lengthen the phrase" in out, out
+
+
+def test_a_lengthened_phrase_names_one_line_and_passes(tmp_path, monkeypatch):
+    """SUCCESS: the repair. Each longer phrase begins on one line."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    p = _eof_page(root, f"See {_cite('1', 'fn export(a: A)')} and "
+                        f"{_cite('5', 'fn export(b: B)')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 0, out
+    s = _summary(out)
+    assert (s["phrased"], s["ambiguous"]) == ("2", "0"), out
+
+
+def test_a_clean_page_reports_zero_ambiguous(tmp_path, monkeypatch):
+    """SUCCESS: the summary always carries the field, so a reader of it can
+    tell zero found from not counted."""
+    root = _phrase_repo(tmp_path, monkeypatch, TARGET)
+    p = _eof_page(root, f"See {_cite('3', 'The API runs in the same process.')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 0, out
+    assert _summary(out)["ambiguous"] == "0", out
+
+
+def test_a_page_with_no_citation_reports_zero_ambiguous(tmp_path, monkeypatch):
+    """SUCCESS: nothing examined still prints the field."""
+    root = _phrase_repo(tmp_path, monkeypatch, TARGET)
+    p = _eof_page(root, "No citation here.\n")
+    rc, out = run_anchors([p])
+    assert rc == 0, out
+    assert _summary(out)["ambiguous"] == "0", out
+
+
+def test_a_phrase_twice_on_one_line_names_one_line(tmp_path, monkeypatch):
+    """EDGE: the rule is about lines. `f(1)` begins twice on line 1 and on no
+    other line, so the fixer has one line to follow."""
+    body = "let both = f(1) + f(1);\nother\n"
+    root = _phrase_repo(tmp_path, monkeypatch, body)
+    p = _eof_page(root, f"See {_cite('1', 'f(1)')}\n")
+    assert body.count("f(1)") == 2 and drift.phrase_starts(body.splitlines(), "f(1)") == [1]
+    rc, out = run_anchors([p])
+    assert rc == 0, out
+    assert _summary(out)["ambiguous"] == "0", out
+
+
+def test_occurrences_that_differ_only_in_whitespace_are_the_same_phrase(tmp_path, monkeypatch):
+    """EDGE: indentation and runs of spaces are normalized before the search,
+    so a second occurrence at another indent still makes the phrase ambiguous."""
+    root = _phrase_repo(tmp_path, monkeypatch,
+                        "let total = a + b;\nother\n        let   total = a + b;\n")
+    p = _eof_page(root, f"See {_cite('1', 'let total = a + b;')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    assert _summary(out)["ambiguous"] == "1" and "lines 1, 3" in out, out
+
+
+def test_a_second_occurrence_that_wraps_makes_the_phrase_ambiguous(tmp_path, monkeypatch):
+    """EDGE: the second occurrence begins on line 3 and ends on line 4."""
+    root = _phrase_repo(tmp_path, monkeypatch,
+                        "bind address and the key\nother\nTreat the bind address\n  and the key too\n")
+    p = _eof_page(root, f"See {_cite('1', 'bind address and the key')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    assert "lines 1, 3" in out, out
+
+
+def test_a_range_with_an_ambiguous_phrase_is_refused(tmp_path, monkeypatch):
+    """EDGE: a range is anchored by the phrase on its first line, as a single
+    line is."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    p = _eof_page(root, f"See {_cite('1-3', 'fn export(')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    assert _summary(out)["ambiguous"] == "1", out
+
+
+def test_the_same_phrase_in_another_file_does_not_count(tmp_path, monkeypatch):
+    """EDGE: a phrase has to name one line of the file it cites, not of the
+    tree. The page that holds the citation repeats the phrase in its comment."""
+    root = _phrase_repo(tmp_path, monkeypatch, TARGET)
+    (root / "docs" / "other.md").write_text("The API runs in the same process.\n")
+    p = _eof_page(root, f"See {_cite('3', 'The API runs in the same process.')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 0, out
+    assert _summary(out)["ambiguous"] == "0", out
+
+
+def test_two_citations_of_one_ambiguous_phrase_are_two_problems(tmp_path, monkeypatch):
+    """EDGE: each citation is counted, so the count is the number of phrases
+    to lengthen."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    p = _eof_page(root, f"See {_cite('1', 'fn export(')} and {_cite('5', 'fn export(')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    assert _summary(out)["ambiguous"] == "2", out
+
+
+def test_a_fenced_citation_with_an_ambiguous_phrase_is_not_checked(tmp_path, monkeypatch):
+    """EDGE: a page may show a refused citation inside a code fence."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    p = _eof_page(root, f"```\nSee {_cite('1', 'fn export(')}\n```\n")
+    rc, out = run_anchors([p])
+    assert rc == 0, out
+    s = _summary(out)
+    assert (s["fenced"], s["ambiguous"]) == ("1", "0"), out
+
+
+def test_a_pinned_citation_is_not_read_for_ambiguity(tmp_path, monkeypatch):
+    """EDGE: a citation pinned to a commit describes that commit's file, which
+    the working tree does not hold; its phrase is not searched for."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    p = _eof_page(root,
+                  f"[`docs/target.md:1`](https://github.com/NormB/sipnab/blob/{SHA}/docs/target.md#L1)"
+                  '<!-- "fn export(" -->\n')
+    rc, out = run_anchors([p])
+    assert rc == 0, out
+    s = _summary(out)
+    assert (s["pinned"], s["ambiguous"]) == ("1", "0"), out
+
+
+def test_applying_leaves_an_ambiguous_phrase_on_its_line_unchanged(tmp_path, monkeypatch):
+    """FAILURE for the fixer: nothing to move, and the phrase is still
+    refused, so `--apply` cannot make the gate pass."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    body = f"See {_cite('1', 'fn export(')}\n"
+    p = _eof_page(root, body)
+    rc, out = run_anchors([p], apply=True)
+    assert rc == 1, out
+    assert p.read_text() == body
+    assert _summary(out)["ambiguous"] == "1", out
+
+
+def test_applying_still_moves_a_unique_phrase_beside_an_ambiguous_one(tmp_path, monkeypatch):
+    """SUCCESS for the fixer: the refusal of one citation does not stop the
+    repair of another on the same line of the page."""
+    root = _phrase_repo(tmp_path, monkeypatch, TWICE)
+    p = _eof_page(root, f"See {_cite('1', 'fn export(')} and {_cite('2', 'body two')}\n")
+    rc, out = run_anchors([p], apply=True)
+    assert rc == 1, out
+    assert p.read_text() == f"See {_cite('1', 'fn export(')} and {_cite('6', 'body two')}\n", out
+    assert _summary(out)["ambiguous"] == "1", out
+
+
+def test_a_long_list_of_lines_is_cut_short_in_the_message(tmp_path, monkeypatch):
+    """EDGE: a phrase such as `}` begins on a great many lines. The message
+    gives the count and the first few, not hundreds of numbers."""
+    root = _phrase_repo(tmp_path, monkeypatch, "}\n" * 40)
+    p = _eof_page(root, f"See {_cite('1', '}')}\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    assert "40 lines" in out and "lines 1, 2, 3, 4, 5, 6, 7, 8 and 32 more" in out, out
+
+
+def test_the_tree_has_no_ambiguous_phrase():
+    """The gate itself, over every page the documentation is published from."""
+    rc, out = run_anchors(drift.anchor_pages())
+    assert _summary(out)["ambiguous"] == "0", "\n".join(
+        l for l in out.splitlines() if "begins on" in l)

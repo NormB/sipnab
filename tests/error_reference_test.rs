@@ -996,7 +996,10 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // src/app/fleet_log.rs +1, a store or an intake that holds fewer records than
 // the center wrote to it, found when the file is read after an append that
 // failed.
-const EXPECTED_TEMPLATES: usize = 637;
+// 637 -> 639 (TLS-CAPTURE-NO-KEYLOG-SILENT): src/app/batch.rs, the two lines
+// `no_sip_guidance` prints for a capture with TLS records read without a TLS
+// key (the count and the cause, and the command with --keylog). +2.
+const EXPECTED_TEMPLATES: usize = 639;
 
 // ---------------------------------------------------------------------------
 // The page gates
