@@ -1167,11 +1167,15 @@ The outputs below come from a run on 2026-11-11 on one host, with a
 development build after 0.5.247: a center on `127.0.0.1:18447` over HTTP on
 loopback, with `--calls-flush-secs 5`, and two call records sent by hand as
 member `edge-a`. The commands name files as a deployment would, and the log
-lines show file names without the run's directory. The `WARN` line of a
-build without the history store comes from another run, on 2026-11-12: a
-center of a build with the features of the `-noaudio` packages, over HTTP on
-loopback. The test suite starts such a center in each build without the
-history store and compares its log line and its `501` answer with this page.
+lines show file names without the run's directory. A second run, on
+2026-11-12 with a development build after 0.5.249, gave the lines that
+changed in that build: the history store's start line, the `history` object
+of the members report (one call record and two heartbeats filed), and the
+answer for a changed file. The answer of step 3 shows `files_not_read` as
+that build answers it. The `WARN` line of a build without the history store
+is the text such a build logs. The test suite starts such a center in each
+build without the history store and compares its log line and its `501`
+answer with this page.
 
 **Before you start.**
 
@@ -1184,7 +1188,7 @@ history store and compares its log line and its `501` answer with this page.
   answers `501`:
 
   ```text
-  WARN sipnab::app::fleet_center: fleet center: this build has no history store (cargo feature fleet-store): call records wait in the intake, which holds at most 64 MiB and --retention-hours of them, and GET /v1/fleet/calls answers 501. The gnu tarballs, the .deb and .rpm packages that are not -noaudio, the macOS builds and the container image have the history store; the static musl tarballs and the -noaudio packages do not
+  WARN sipnab::app::fleet_center: fleet center: this build has no history store (cargo feature fleet-store): call records wait in the intake, which holds at most 64 MiB and --retention-hours of them, no heartbeat history is kept, and GET /v1/fleet/calls and GET /v1/fleet/members/{id}/history answer 501. The gnu tarballs, the .deb and .rpm packages that are not -noaudio, the macOS builds and the container image have the history store; the static musl tarballs and the -noaudio packages do not
   ```
 
 - **A center that takes call records, and members that push them**, as
@@ -1218,7 +1222,7 @@ history store and compares its log line and its `501` answer with this page.
    ```
 
    ```text
-   INFO sipnab::app::fleet_center: fleet center history store 'center.store.parquet': call records are kept 90 day(s)
+   INFO sipnab::app::fleet_center: fleet center history store 'center.store.parquet': call records are kept 90 day(s), heartbeats 72 hour(s)
    ```
 
    - `--calls-retention-days` takes 1 to 548. The center removes the days
@@ -1264,6 +1268,7 @@ history store and compares its log line and its `501` answer with this page.
      ],
      "complete": true,
      "count": 1,
+     "files_not_read": 0,
      "files_read": 1,
      "more": false,
      "refused": []
@@ -1284,10 +1289,17 @@ history store and compares its log line and its `501` answer with this page.
    `limit` to read the rest. A record is in the answer from the moment the
    center acknowledges it, before the center files it.
 
+   One question opens at most 4,096 files (`MAX_FILES_PER_QUESTION`), those
+   with the latest records first. When a question rules in more, the answer
+   holds what those files gave, `complete` is `false`, and `files_not_read`
+   counts the files left. Give `member`, `from` and `to` to rule files out by
+   their paths: the center writes one file for each member and filing.
+
 **Verify.**
 
 - **[controller]** `GET /v1/fleet/members` reports what the history store
-  did since the center started. After one filing of two records:
+  did since the center started. After one filing of one call record and one
+  of two heartbeats:
 
   ```bash
   curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $READER_TOKEN" \
@@ -1295,9 +1307,13 @@ history store and compares its log line and its `501` answer with this page.
   ```
 
   ```json
-  {"available":true,"failed_filings":0,"files_written":1,"retention_days":90,"rows_filed":2}
+  {"available":true,"failed_filings":0,"files_written":1,"heartbeat_files_written":1,"heartbeats_filed":2,"heartbeats_removed":0,"heartbeats_waiting":0,"members_restored":0,"retention_days":90,"rows_filed":1}
   {"bytes":0,"call_records":0,"removed":0}
   ```
+
+  `files_written` and `rows_filed` count call records. The `heartbeat`
+  fields and `members_restored` are those of
+  [Keep heartbeat history at the center](#keep-heartbeat-history-at-the-center).
 
 - **[center]** The center logs each filing:
 
@@ -1356,16 +1372,19 @@ history store and compares its log line and its `501` answer with this page.
     "calls": [],
     "complete": false,
     "count": 0,
+    "files_not_read": 0,
     "files_read": 0,
     "more": false,
     "refused": [
       {
-        "file": "calls/date=2026-11-11/member=edge-a/1794441277489-1794441277489-edge-a-manual-1.sealed",
-        "reason": "calls/date=2026-11-11/member=edge-a/1794441277489-1794441277489-edge-a-manual-1.sealed: sealed layer: the file has a record 2 that did not authenticate (the file was modified, or its records were moved)"
+        "file": "calls/date=2026-11-12/member=edge-a/1794517150849-1794517150849-edge-a-manual-3.sealed",
+        "reason": "sealed layer: the file has a record 2 that did not authenticate (the file was modified, or its records were moved)"
       }
     ]
   }
   ```
+
+  In 0.5.249 the reason started with a second copy of the path.
 
   - `did not authenticate`, `was truncated` or `was cut at its end`: the file
     changed after the center wrote it. Restore the file from a backup, or
@@ -1375,6 +1394,9 @@ history store and compares its log line and its `501` answer with this page.
     `--store-old-key-file`.
   - `was written as '<path>' and is not at that path`: someone moved or
     renamed the file. Move it back to the path the message gives.
+- **`"complete": false` and `files_not_read` above 0.** The question ruled
+  in more files than one question opens. Ask again with `member`, `from` and
+  `to`, for a part of the time at a time.
 - **The center logs `the call records were not filed and stay in the
   intake`.** The line ends with the cause: a directory the center cannot
   write, a full disk, or a file of the same day and member that it cannot
@@ -1389,6 +1411,231 @@ history store and compares its log line and its `501` answer with this page.
 - **What the history store cannot show.** A whole file that someone deleted
   leaves no trace in the store, as for the store file itself. An answer does
   not include records the intake dropped at its size limit before a filing.
+
+### Keep heartbeat history at the center
+
+**Purpose.** A center with the history store keeps every heartbeat it
+accepts, not only the newest of each member. `GET
+/v1/fleet/members/{id}/history` answers one member's heartbeats: when the
+center heard the member, from which address, and what the member's inventory
+said at that time. The same rows rebuild the member list for a center that
+starts without its store file: the center lists a member that was silent
+before the stop as silent after the start, and still counts a record the
+member sends again as a duplicate.
+
+The center files the heartbeats into Parquet files under
+`<store>.parquet/members`, sealed with the store key as the call records
+are. It keeps them for `--retention-hours`, the time a member stays listed
+after its last heartbeat.
+
+The outputs below come from a run on 2026-11-12 on one host, with a
+development build after 0.5.249: a center on `127.0.0.1:18449` over HTTP on
+loopback, with `--calls-flush-secs 5`, and two heartbeats and one call record
+sent by hand as member `edge-a`. The commands name files as a deployment
+would.
+
+**Before you start.**
+
+- **A build with the history store**, as
+  [Keep call history at the center](#keep-call-history-at-the-center) lists:
+  `sipnab --version` shows `fleet-store`. The static musl tarballs and the
+  `-noaudio` packages do not have it. A center from one of those keeps each
+  member's newest heartbeat in its store file, as before, and answers `501`
+  on the history route.
+- **A center and members that send heartbeats**, as
+  [Run a fleet center](#run-a-fleet-center) sets up. The member needs no
+  change.
+- **The store key and its backup.** The center seals the heartbeat files
+  under the store key. Without the key no one reads them.
+- **A token that reads members.** The route needs scope `inventory`, the
+  scope of `GET /v1/fleet/members`. `full`, `actions` and `admin` reach it
+  too. A `fleet-report` token does not.
+- **Room on the center's disk, and files.** The center writes one file for
+  each member with new heartbeats at each filing. In a run of the tests on
+  2026-11-12 (a debug build on a loaded host), 2,000 members with one
+  heartbeat each made 2,000 files of 2,501 bytes each in 19.5 s. The center
+  answers members during that time. With 2,000 members and the default
+  `--calls-flush-secs 60` that is 2,880,000 files a day (2,000 times 1,440
+  filings). `--calls-flush-secs 600` makes it 288,000. Heartbeats that wait
+  for a filing are in the store file, and at most 64 MiB of them wait
+  (`MAX_WAITING_BYTES`).
+- **Other systems.** Nothing changes on a member, on OpenSIPS, Kamailio,
+  Homer or any HEP collector. A backup of the center includes the directory
+  `<store>.parquet`.
+
+**Steps.**
+
+1. **[center]** Start the center as before. No flag turns the heartbeat
+   history on: a build with the history store keeps it. Two flags you may
+   already set govern it:
+
+   ```bash
+   sipnab fleet serve --listen 127.0.0.1:8444 --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey \
+     --signing-key-file /etc/sipnab/center.signing \
+     --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key \
+     --retention-hours 72 --calls-flush-secs 60
+   ```
+
+   ```text
+   INFO sipnab::app::fleet_center: fleet center history store 'center.store.parquet': call records are kept 90 day(s), heartbeats 72 hour(s)
+   ```
+
+   - `--retention-hours` is how long a member stays listed after its last
+     heartbeat, and how long the center keeps heartbeats. The center removes
+     a UTC day of heartbeats once every hour of that day is past the
+     retention, at start and every minute.
+   - `--calls-flush-secs` is the time between two filings, of call records
+     and of heartbeats. The center also files when it starts and when it
+     stops on a signal.
+
+2. **[controller]** Ask for a member's heartbeats with the token that reads
+   the member list. With no parameter the answer is the newest 100:
+
+   ```bash
+   curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $READER_TOKEN" \
+     'https://127.0.0.1:8444/v1/fleet/members/edge-a/history?limit=1' | jq .
+   ```
+
+   ```json
+   {
+     "complete": true,
+     "count": 1,
+     "files_not_read": 0,
+     "files_read": 1,
+     "heartbeats": [
+       {
+         "member": "edge-a",
+         "self_reported": {
+           "calls": null,
+           "heartbeat_secs": 5,
+           "inventory": {
+             "node_name": "edge-a",
+             "version": "0.5.249"
+           },
+           "sent_at": "2026-11-12T20:59:10Z",
+           "seq": 2,
+           "stream": "edge-a-manual"
+         },
+         "verified": {
+           "call_records": 0,
+           "heartbeats": 2,
+           "peer": "127.0.0.1",
+           "received_at": "2026-11-12T20:59:10Z"
+         }
+       }
+     ],
+     "member": "edge-a",
+     "more": true,
+     "refused": []
+   }
+   ```
+
+   A row has the fields of the member's row in `GET /v1/fleet/members`:
+   `verified` is what the center saw, `self_reported` is what the member
+   said. `verified.heartbeats` counts the member's heartbeats up to this
+   one. The parameters, each optional:
+
+   | Parameter | Meaning |
+   |---|---|
+   | `from` | Heartbeats the center received at this RFC 3339 time or later. |
+   | `to` | Heartbeats the center received before this RFC 3339 time. |
+   | `limit` | The most heartbeats to return, 1 to 1000. Default 100. The newest come first. |
+
+   A heartbeat is in the answer from the moment the center acknowledges it.
+   A member the center has no heartbeat of has an empty answer with status
+   `200`. One question opens at most 4,096 files, as for call records.
+
+**Verify.**
+
+- **[controller]** `GET /v1/fleet/members` reports the filings since the
+  center started:
+
+  ```bash
+  curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $READER_TOKEN" \
+    https://127.0.0.1:8444/v1/fleet/members | jq -c .history
+  ```
+
+  ```json
+  {"available":true,"failed_filings":0,"files_written":1,"heartbeat_files_written":1,"heartbeats_filed":2,"heartbeats_removed":0,"heartbeats_waiting":0,"members_restored":0,"retention_days":90,"rows_filed":1}
+  ```
+
+  `heartbeats_waiting` counts the heartbeats not yet in a file,
+  `heartbeats_removed` those that left before a filing, and `members_restored` the
+  members the last start took from the history store.
+
+- **[center]** The files are under class `members`, day and member. Each
+  name holds the first and the last receive time in the file, in
+  milliseconds, the stream, and the count of its first heartbeat:
+
+  ```bash
+  cd /var/lib/sipnab && find center.store.parquet/members -type f
+  ```
+
+  ```text
+  center.store.parquet/members/date=2026-11-12/member=edge-a/1794517149266-1794517150551-edge-a-manual-1.sealed
+  ```
+
+- **[center]** To see the rebuild on a test center, stop the center, move
+  its store file away and start it. In the run, the member had also sent
+  one call record after its last heartbeat:
+
+  ```text
+  INFO sipnab::app::fleet_center: fleet center: 1 member(s) the store file held nothing of, or an older heartbeat of, were taken from the history store
+  WARN sipnab::app::fleet_center: fleet member 'edge-a' is silent: no heartbeat for 8 s, more than 1 of its 5 s intervals
+  ```
+
+  `GET /v1/fleet/members` then lists the member with 2 heartbeats, at
+  position 3 of its stream (past the call record) and silent, and
+  `history.members_restored` is `1`.
+
+**Troubleshoot.**
+
+- **`401`.** The token's scope does not read members. Mint an `inventory`
+  token, as step 2 of [Run a fleet center](#run-a-fleet-center) does.
+- **`400` with a `detail`.** The detail names the parameter, or says the id
+  in the path is no member id. This route takes no `member` and no
+  `call_id`:
+
+  ```text
+  {"detail":"\"call_id\" is not a parameter of this route; it takes from, to and limit","status":400,"title":"Bad Request","type":"https://sipnab.com/problems/bad-request"}
+  ```
+
+- **`501` and `this build has no history store`.** Install a build that has
+  it and start the center on the same store. The history starts at that
+  start: a build without the store keeps no earlier heartbeat.
+- **`"complete": false`.** The center could not read a file (`refused` names
+  it and the reason), or the question ruled in more files than one question opens
+  (`files_not_read`). The reasons and their fixes are those of
+  [Keep call history at the center](#keep-call-history-at-the-center):
+
+  ```json
+  {"complete":false,"refused":[{"file":"members/date=2026-11-12/member=edge-a/1794517149266-1794517150551-edge-a-manual-1.sealed","reason":"sealed layer: the file has a record 2 that did not authenticate (the file was modified, or its records were moved)"}],"files_read":0,"files_not_read":0,"count":0}
+  ```
+
+- **The center logs `the heartbeats were not filed and wait in the store
+  file`.** The line ends with the cause: a directory the center cannot
+  write, a full disk, or a file of the same day and member that it cannot
+  read. The center tries again after `--calls-flush-secs`, and
+  `failed_filings` counts the tries. Past 64 MiB of waiting heartbeats, and
+  past `--retention-hours`, the oldest leave before a filing and
+  `heartbeats_removed` counts them.
+- **The center logs `was not read for the member registry`.** At start, the
+  newest heartbeat file of a member did not open. The line names the file
+  and the reason. The center starts and lists that member from its store
+  file alone. When the store file is also lost, the member returns to the
+  list with its next heartbeat.
+- **A member is missing after a start without the store file.** The center
+  restores a member from heartbeats it filed. A member whose last heartbeat
+  is older than `--retention-hours` is not listed, with or without the store
+  file. The center no longer has the heartbeats that still waited in the
+  lost store file.
+- **The center logs `past --retention-hours <n> and not removed`.** The line
+  names a file in an expired day that the center did not write, or one the
+  system refused to remove. Remove it by hand.
+- **What the heartbeat history is not.** The store file stays the member
+  list's own record in every build: keep it in the backup. The history
+  rebuilds what the file lacks; it does not replace it.
 
 ### Troubleshoot the center
 

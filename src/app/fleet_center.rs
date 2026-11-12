@@ -437,6 +437,149 @@ pub struct Plan {
     pub record: Option<MemberRecord>,
     /// The call records that are new, in order: what the intake appends.
     pub calls: Vec<CallRecord>,
+    /// The member's record as it stood at each heartbeat the request
+    /// added, in order: the rows the history store keeps.
+    pub heartbeats: Vec<MemberRecord>,
+}
+
+/// The records the store appends for `plan`, in order: the row of each new
+/// heartbeat, and then the member's newest record when a call record moved
+/// it past the last heartbeat. The last one is what the registry holds.
+#[must_use]
+pub fn store_lines(plan: &Plan) -> Vec<&MemberRecord> {
+    let mut lines: Vec<&MemberRecord> = plan.heartbeats.iter().collect();
+    if let Some(record) = &plan.record
+        && plan.heartbeats.last() != Some(record)
+    {
+        lines.push(record);
+    }
+    lines
+}
+
+/// One member as the members report and the heartbeat history show it:
+/// what the center verified apart from what the member says about itself.
+#[must_use]
+pub fn member_json(r: &MemberRecord) -> serde_json::Value {
+    let secs = |t: DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    serde_json::json!({
+        "member": r.member,
+        "verified": {
+            "received_at": secs(r.received_at),
+            "peer": r.peer,
+            "heartbeats": r.heartbeats,
+            "call_records": r.call_records,
+        },
+        "self_reported": {
+            "stream": r.cursor.stream,
+            "seq": r.cursor.seq,
+            "sent_at": secs(r.cursor.sent_at),
+            "heartbeat_secs": r.heartbeat_secs,
+            "inventory": r.inventory,
+            "calls": r.calls,
+        },
+    })
+}
+
+/// The heartbeat rows the center acknowledged and has not yet filed into
+/// its history store, oldest first.
+///
+/// The rows are also in the store file, so they outlast a stop. They are
+/// bounded in bytes: when a filing fails for long, the oldest rows leave
+/// and are counted.
+#[derive(Debug, Default)]
+pub struct Waiting {
+    /// The rows, each with the bytes of its line in the store file.
+    rows: std::collections::VecDeque<(MemberRecord, usize)>,
+    /// The bytes of the rows held.
+    bytes: usize,
+    /// How many rows left the front since the center started: the number
+    /// of the first row held.
+    first: u64,
+    /// The rows the bound removed.
+    removed: u64,
+}
+
+impl Waiting {
+    /// Hold `record`, whose line is `bytes` long, and remove the oldest
+    /// rows while more than `max_bytes` are held.
+    pub fn push(&mut self, record: MemberRecord, bytes: usize, max_bytes: usize) {
+        self.rows.push_back((record, bytes));
+        self.bytes = self.bytes.saturating_add(bytes);
+        while self.bytes > max_bytes {
+            if self.leave() {
+                self.removed += 1;
+            }
+        }
+    }
+
+    /// The oldest row leaves. Returns whether there was one.
+    fn leave(&mut self) -> bool {
+        let Some((_, bytes)) = self.rows.pop_front() else {
+            self.bytes = 0;
+            return false;
+        };
+        self.bytes = self.bytes.saturating_sub(bytes);
+        self.first += 1;
+        true
+    }
+
+    /// The rows received before `cutoff` leave: their members are past the
+    /// retention, and so is the day their rows would be filed in. They are
+    /// counted as removed.
+    pub fn expire(&mut self, cutoff: DateTime<Utc>) {
+        while self
+            .rows
+            .front()
+            .is_some_and(|(row, _)| row.received_at < cutoff)
+            && self.leave()
+        {
+            self.removed += 1;
+        }
+    }
+
+    /// The rows held, oldest first.
+    #[must_use]
+    pub fn rows(&self) -> Vec<MemberRecord> {
+        self.rows.iter().map(|(row, _)| row.clone()).collect()
+    }
+
+    /// The rows held and the number of the first of them, for a filing
+    /// that runs while more rows arrive.
+    #[must_use]
+    pub fn snapshot(&self) -> (u64, Vec<MemberRecord>) {
+        (self.first, self.rows())
+    }
+
+    /// Forget the `count` rows a filing took at the number `first`
+    /// ([`Self::snapshot`]): those of them still held leave.
+    pub fn filed(&mut self, first: u64, count: usize) {
+        let end = first.saturating_add(count as u64);
+        while self.first < end && self.leave() {}
+    }
+
+    /// How many rows are held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether no row is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The bytes of the rows held.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// The rows the bound removed since the center started.
+    #[must_use]
+    pub fn removed(&self) -> u64 {
+        self.removed
+    }
 }
 
 impl Registry {
@@ -477,6 +620,7 @@ impl Registry {
         let mut accepted = 0;
         let mut duplicate = 0;
         let mut calls = Vec::new();
+        let mut heartbeats = Vec::new();
         for record in batch {
             let prev = current.as_ref().map(|r| &r.cursor);
             let hb = match record {
@@ -512,13 +656,28 @@ impl Registry {
                 call_records: current.as_ref().map_or(0, |r| r.call_records),
                 calls: hb.calls,
             });
+            heartbeats.extend(current.clone());
         }
         Plan {
             accepted,
             duplicate,
             record: if accepted > 0 { current } else { None },
             calls,
+            heartbeats,
         }
+    }
+
+    /// Take `record`, a member's newest heartbeat read from the history
+    /// store, when the registry holds nothing of that member or something
+    /// older. Returns whether it was taken.
+    pub fn restore(&mut self, record: MemberRecord) -> bool {
+        let later = self.members.get(&record.member).is_none_or(|held| {
+            (record.received_at, record.heartbeats) > (held.received_at, held.heartbeats)
+        });
+        if later {
+            self.members.insert(record.member.clone(), record);
+        }
+        later
     }
 
     /// Note a call record the intake holds for `member`, received at
@@ -598,26 +757,15 @@ impl Registry {
             .members
             .values()
             .map(|r| {
-                serde_json::json!({
-                    "member": r.member,
-                    "silent": is_silent(now, r.received_at, r.heartbeat_secs, missed),
-                    "seconds_since_heartbeat":
-                        now.signed_duration_since(r.received_at).num_seconds().max(0),
-                    "verified": {
-                        "received_at": secs(r.received_at),
-                        "peer": r.peer,
-                        "heartbeats": r.heartbeats,
-                        "call_records": r.call_records,
-                    },
-                    "self_reported": {
-                        "stream": r.cursor.stream,
-                        "seq": r.cursor.seq,
-                        "sent_at": secs(r.cursor.sent_at),
-                        "heartbeat_secs": r.heartbeat_secs,
-                        "inventory": r.inventory,
-                        "calls": r.calls,
-                    },
-                })
+                let mut row = member_json(r);
+                row["silent"] =
+                    serde_json::json!(is_silent(now, r.received_at, r.heartbeat_secs, missed));
+                row["seconds_since_heartbeat"] = serde_json::json!(
+                    now.signed_duration_since(r.received_at)
+                        .num_seconds()
+                        .max(0)
+                );
+                row
             })
             .collect();
         serde_json::json!({
@@ -730,9 +878,24 @@ impl Store {
     /// The record cannot be sealed, or the file cannot be opened, written
     /// or synced.
     pub fn append(&mut self, record: &MemberRecord) -> std::io::Result<()> {
-        self.log.append(&[record_line(record)?])?;
-        self.appended += 1;
-        Ok(())
+        self.append_all(&[record]).map(|_| ())
+    }
+
+    /// Append `records` in order as one write, and wait until they are on
+    /// disk: all of them or, after an error, none. Returns the bytes of
+    /// each record's line.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::append`].
+    pub fn append_all(&mut self, records: &[&MemberRecord]) -> std::io::Result<Vec<usize>> {
+        let lines = records
+            .iter()
+            .map(|record| record_line(record))
+            .collect::<std::io::Result<Vec<Vec<u8>>>>()?;
+        self.log.append(&lines)?;
+        self.appended += records.len();
+        Ok(lines.iter().map(Vec::len).collect())
     }
 
     /// Rewrite the store to hold exactly `registry`'s records, sealed under
@@ -743,8 +906,24 @@ impl Store {
     ///
     /// The staged file cannot be sealed, written, synced or renamed.
     pub fn compact(&mut self, registry: &Registry) -> std::io::Result<()> {
+        self.compact_with(registry, &[])
+    }
+
+    /// [`Self::compact`] for a center whose history store has not yet
+    /// filed the heartbeat rows `waiting`: the file holds them first and
+    /// then `registry`'s records, so a start reads the rows again and still
+    /// finds each member's newest record last.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::compact`].
+    pub fn compact_with(
+        &mut self,
+        registry: &Registry,
+        waiting: &[MemberRecord],
+    ) -> std::io::Result<()> {
         self.log
-            .rewrite(registry.records().into_iter().map(record_line))?;
+            .rewrite(waiting.iter().chain(registry.records()).map(record_line))?;
         self.appended = 0;
         Ok(())
     }
@@ -983,7 +1162,8 @@ pub struct ServeArgs {
 /// it keeps call history: at start, and on `GET /v1/fleet/calls`.
 pub const NO_HISTORY_STORE: &str = "this build has no history store (cargo feature \
     fleet-store): call records wait in the intake, which holds at most 64 MiB and \
-    --retention-hours of them, and GET /v1/fleet/calls answers 501. The gnu tarballs, the \
+    --retention-hours of them, no heartbeat history is kept, and GET /v1/fleet/calls and \
+    GET /v1/fleet/members/{id}/history answer 501. The gnu tarballs, the \
     .deb and .rpm packages that are not -noaudio, the macOS builds and the container image \
     have the history store; the static musl tarballs and the -noaudio packages do not";
 
@@ -997,9 +1177,21 @@ pub struct FilingCounts {
     pub files_written: u64,
     /// The call records in them.
     pub rows_filed: u64,
-    /// The filings that failed; the records stayed in the intake.
+    /// The filings that failed; the records stayed in the intake, the
+    /// heartbeat rows stayed waiting.
     pub failed: u64,
+    /// The files of heartbeats written.
+    pub heartbeat_files: u64,
+    /// The heartbeats in them.
+    pub heartbeats_filed: u64,
+    /// The members the start took from the history store because the
+    /// store file held nothing of them, or something older.
+    pub members_restored: u64,
 }
+
+/// The bytes of heartbeat rows that wait for a filing at most: the bound
+/// the intake has for call records.
+pub const MAX_WAITING_BYTES: usize = 64 * 1024 * 1024;
 
 /// The center a running `sipnab fleet serve` holds.
 struct Center {
@@ -1014,6 +1206,9 @@ struct Center {
     history: super::fleet_history::History,
     /// What was filed since the center started.
     filing: FilingCounts,
+    /// The heartbeat rows the history store has not yet filed. A build
+    /// without the history store holds none.
+    waiting: Waiting,
 }
 
 impl Center {
@@ -1035,14 +1230,38 @@ impl Center {
     ) -> Result<(Self, Vec<String>), String> {
         use super::fleet_intake::{Intake, MAX_INTAKE_BYTES, path_for, replay};
         let (mut file, records) = Store::open(store, Arc::clone(&keys))?;
-        let mut registry = Registry::from_records(records);
-        let gone = registry.expire(now, retention);
+        let mut registry = Registry::from_records(records.clone());
+        #[cfg(not(feature = "fleet-store"))]
+        let filing = FilingCounts::default();
         #[cfg(feature = "fleet-store")]
         let history = super::fleet_history::History::open(store, Arc::clone(&keys))?;
+        #[cfg(feature = "fleet-store")]
+        let filing = FilingCounts {
+            members_restored: restore_from_history(&history, &mut registry, now, retention),
+            ..FilingCounts::default()
+        };
+        let gone = registry.expire(now, retention);
         let (intake, stored) =
             Intake::open(&path_for(store), keys, now, retention, MAX_INTAKE_BYTES)?;
         replay(&mut registry, &stored);
-        file.compact(&registry)
+        // Every heartbeat the store file held may be one no history file
+        // holds: the center may have stopped before it filed them. They
+        // wait again; a filing leaves out the rows a file already holds.
+        // A record a call record moved is the heartbeat before it, once.
+        let mut waiting = Waiting::default();
+        let mut seen = BTreeSet::new();
+        if HAS_HISTORY_STORE {
+            for record in records {
+                let is_row = record.heartbeats > 0
+                    && record.received_at >= now - retention
+                    && seen.insert((record.member.clone(), record.heartbeats, record.received_at));
+                if is_row {
+                    let bytes = record_line(&record).map_or(0, |line| line.len());
+                    waiting.push(record, bytes, MAX_WAITING_BYTES);
+                }
+            }
+        }
+        file.compact_with(&registry, &waiting.rows())
             .map_err(|e| format!("--store '{}': {e}", store.display()))?;
         Ok((
             Self {
@@ -1051,10 +1270,49 @@ impl Center {
                 intake,
                 #[cfg(feature = "fleet-store")]
                 history,
-                filing: FilingCounts::default(),
+                filing,
+                waiting,
             },
             gone,
         ))
+    }
+
+    /// File the heartbeat rows that wait into the history store of the
+    /// center behind `center`. The lock is held to take the rows and to
+    /// forget them, not while the files are written, so requests are
+    /// answered during a filing; rows that arrive meanwhile stay waiting.
+    /// `gate` is held throughout: one filing of heartbeats runs at a time.
+    ///
+    /// # Errors
+    ///
+    /// The history store cannot be written. The rows then stay waiting,
+    /// and the failure is counted.
+    #[cfg(feature = "fleet-store")]
+    fn file_heartbeats(
+        center: &parking_lot::Mutex<Self>,
+        gate: &parking_lot::Mutex<()>,
+    ) -> Result<super::fleet_history::Filed, String> {
+        let _one_at_a_time = gate.lock();
+        let (history, first, rows) = {
+            let center = center.lock();
+            let (first, rows) = center.waiting.snapshot();
+            (center.history.clone(), first, rows)
+        };
+        if rows.is_empty() {
+            return Ok(super::fleet_history::Filed::default());
+        }
+        let filed = history.file(&rows);
+        let mut center = center.lock();
+        match &filed {
+            Ok(filed) => {
+                center.waiting.filed(first, rows.len());
+                let counts = &mut center.filing;
+                counts.heartbeat_files = counts.heartbeat_files.saturating_add(filed.files as u64);
+                counts.heartbeats_filed = counts.heartbeats_filed.saturating_add(filed.rows as u64);
+            }
+            Err(_) => center.filing.failed = center.filing.failed.saturating_add(1),
+        }
+        filed
     }
 
     /// File every call record the intake holds into the history store,
@@ -1120,16 +1378,24 @@ impl Center {
             .map(|call| super::fleet_intake::IntakeRecord::new(member, now, call))
             .collect();
         self.intake.append(&calls)?;
-        if let Some(record) = &plan.record
-            && let Err(e) = self.store.append(record)
-        {
-            // The intake holds the call records. As after a stop at this
-            // point, the member's position moves past them, so its next
-            // try does not put them in the intake a second time.
-            super::fleet_intake::replay(&mut self.registry, &calls);
-            return Err(e);
-        }
+        let sizes = match self.store.append_all(&store_lines(&plan)) {
+            Ok(sizes) => sizes,
+            Err(e) => {
+                // The intake holds the call records. As after a stop at
+                // this point, the member's position moves past them, so
+                // its next try does not put them in the intake a second
+                // time.
+                super::fleet_intake::replay(&mut self.registry, &calls);
+                return Err(e);
+            }
+        };
         let counts = (plan.accepted, plan.duplicate, calls.len());
+        if HAS_HISTORY_STORE {
+            // The store file holds each heartbeat's row first, in order.
+            for (row, bytes) in std::mem::take(&mut plan.heartbeats).into_iter().zip(sizes) {
+                self.waiting.push(row, bytes, MAX_WAITING_BYTES);
+            }
+        }
         self.registry.commit(plan);
         Ok(counts)
     }
@@ -1155,6 +1421,10 @@ struct CenterState {
     /// nothing and does not read it.
     #[cfg(feature = "fleet-store")]
     calls_flush: std::time::Duration,
+    /// Held while heartbeat rows are filed: the upkeep task and the stop
+    /// do not file the same rows at once.
+    #[cfg(feature = "fleet-store")]
+    filing: Arc<parking_lot::Mutex<()>>,
 }
 
 /// The most peers the rate limiter tracks.
@@ -1236,24 +1506,28 @@ fn prepare(
         audience: crate::auth::AUDIENCE_API.to_string(),
     });
     let keys = store_keys(args)?;
-    let (mut center, gone) = Center::open(
+    let (center, gone) = Center::open(
         &args.store,
         keys,
         Utc::now(),
         retention(args.retention_hours),
     )?;
-    start_history(&mut center, args.calls_retention_days);
-    tracing::info!(
-        "fleet center store '{}': {} member(s), {} past --retention-hours {} removed; {} \
-         call record(s) in its intake",
-        args.store.display(),
-        center.registry.records().len(),
-        gone.len(),
-        args.retention_hours,
-        center.intake.records()
-    );
+    let center = Arc::new(parking_lot::Mutex::new(center));
+    start_history(&center, args.calls_retention_days, args.retention_hours);
+    {
+        let center = center.lock();
+        tracing::info!(
+            "fleet center store '{}': {} member(s), {} past --retention-hours {} removed; {} \
+             call record(s) in its intake",
+            args.store.display(),
+            center.registry.records().len(),
+            gone.len(),
+            args.retention_hours,
+            center.intake.records()
+        );
+    }
     let state = CenterState {
-        center: Arc::new(parking_lot::Mutex::new(center)),
+        center,
         verifier: Arc::new(verifier),
         limiter: Arc::new(parking_lot::Mutex::new(
             crate::output::api::RateLimiter::new(args.rate_limit_per_peer, MAX_TRACKED_PEERS),
@@ -1263,6 +1537,8 @@ fn prepare(
         calls_retention_days: args.calls_retention_days,
         #[cfg(feature = "fleet-store")]
         calls_flush: std::time::Duration::from_secs(args.calls_flush_secs),
+        #[cfg(feature = "fleet-store")]
+        filing: Arc::new(parking_lot::Mutex::new(())),
     };
     let server_config = crate::output::api::ApiServerConfig {
         max_conn: 0,
@@ -1276,24 +1552,106 @@ fn prepare(
     Ok((addr, state, server_config))
 }
 
-/// As the center starts: file what the intake held when it last stopped
-/// and remove the days past `retention_days`, logging both. A build
+/// As the center starts: file what the intake and the store file held
+/// when it last stopped and remove the days past `retention_days` of call
+/// records and `retention_hours` of heartbeats, logging each. A build
 /// without the history store says so instead, once.
-fn start_history(center: &mut Center, retention_days: u32) {
+fn start_history(center: &parking_lot::Mutex<Center>, retention_days: u32, retention_hours: u64) {
     #[cfg(feature = "fleet-store")]
     {
-        tracing::info!(
-            "fleet center history store '{}': call records are kept {retention_days} day(s)",
-            center.history.dir().display()
-        );
-        file_and_log(center);
-        expire_history(center, Utc::now(), retention_days);
+        {
+            let mut center = center.lock();
+            tracing::info!(
+                "fleet center history store '{}': call records are kept {retention_days} \
+                 day(s), heartbeats {retention_hours} hour(s)",
+                center.history.dir().display()
+            );
+            file_and_log(&mut center);
+            expire_history(&center, Utc::now(), retention_days, retention_hours);
+        }
+        file_heartbeats_and_log(center, &parking_lot::Mutex::new(()));
     }
     #[cfg(not(feature = "fleet-store"))]
     {
-        let _ = (center, retention_days);
+        let _ = (center, retention_days, retention_hours);
         tracing::warn!("fleet center: {NO_HISTORY_STORE}");
     }
+}
+
+/// File the heartbeat rows that wait and log what was filed, or why it
+/// was not.
+#[cfg(feature = "fleet-store")]
+fn file_heartbeats_and_log(center: &parking_lot::Mutex<Center>, gate: &parking_lot::Mutex<()>) {
+    match Center::file_heartbeats(center, gate) {
+        Ok(filed) if filed.rows > 0 => tracing::debug!(
+            "fleet center: filed {} heartbeat(s) in {} file(s) of the history store",
+            filed.rows,
+            filed.files
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            "fleet center: the heartbeats were not filed and wait in the store file: {e}"
+        ),
+    }
+}
+
+/// The newest heartbeat the history store holds of each member the
+/// registry holds nothing of, or something older, goes into `registry`,
+/// with the member's position moved past the call records the store filed
+/// after that heartbeat. Returns how many members were taken. A file that
+/// cannot be read is logged and restores nothing.
+#[cfg(feature = "fleet-store")]
+fn restore_from_history(
+    history: &super::fleet_history::History,
+    registry: &mut Registry,
+    now: DateTime<Utc>,
+    retention: chrono::Duration,
+) -> u64 {
+    let unread = |file: &str, why: &str| {
+        tracing::warn!(
+            "fleet center: the history store: {file} was not read for the member registry: {why}"
+        );
+    };
+    let known: BTreeMap<String, DateTime<Utc>> = registry
+        .records()
+        .iter()
+        .map(|r| (r.member.clone(), r.received_at))
+        .collect();
+    let oldest = super::fleet_history::oldest_kept_at(now, retention);
+    let found = match history.newest_heartbeats(oldest, &known) {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::warn!("fleet center: the member registry was not checked against {e}");
+            return 0;
+        }
+    };
+    for (file, why) in &found.refused {
+        unread(file, why);
+    }
+    let mut restored = 0;
+    for record in found.members {
+        let (member, since) = (record.member.clone(), record.received_at);
+        if !registry.restore(record) {
+            continue;
+        }
+        restored += 1;
+        match history.calls_since(&member, since) {
+            Ok((calls, refused)) => {
+                super::fleet_intake::replay(registry, &calls);
+                for (file, why) in &refused {
+                    unread(file, why);
+                }
+            }
+            Err(e) => unread(&format!("the call records of member '{member}'"), &e),
+        }
+    }
+    if restored > 0 {
+        tracing::info!(
+            "fleet center: {restored} member(s) the store file held nothing of, or an older \
+             heartbeat of, were taken from the history store"
+        );
+    }
+    restored
 }
 
 /// File the intake into the history store and log what was filed, or why
@@ -1315,25 +1673,38 @@ fn file_and_log(center: &mut Center) {
     }
 }
 
-/// Remove the days of the history store past `retention_days` at `now`,
-/// and log what went and what was left.
+/// Remove the days of call records past `retention_days` and the days of
+/// heartbeats past `retention_hours` at `now` from the history store, and
+/// log what went and what was left.
 #[cfg(feature = "fleet-store")]
-fn expire_history(center: &Center, now: DateTime<Utc>, retention_days: u32) {
-    match center.history.expire(now.date_naive(), retention_days) {
+fn expire_history(center: &Center, now: DateTime<Utc>, retention_days: u32, retention_hours: u64) {
+    use super::fleet_history::{CLASS_CALLS, CLASS_MEMBERS, oldest_kept_at};
+    let calls = center
+        .history
+        .expire(CLASS_CALLS, now.date_naive(), retention_days);
+    let past = format!("--calls-retention-days {retention_days}");
+    log_expired(calls, "call records", &past);
+    let oldest = oldest_kept_at(now, retention(retention_hours));
+    let heartbeats = center.history.expire_before(CLASS_MEMBERS, oldest);
+    let past = format!("--retention-hours {retention_hours}");
+    log_expired(heartbeats, "heartbeats", &past);
+}
+
+/// Log what a retention pass removed of `what` past the setting `past`,
+/// and what it left.
+#[cfg(feature = "fleet-store")]
+fn log_expired(done: Result<super::fleet_history::Expired, String>, what: &str, past: &str) {
+    match done {
         Ok(expired) => {
             if expired.days > 0 || expired.files > 0 {
                 tracing::info!(
-                    "fleet center: {} day(s) and {} file(s) of call records past \
-                     --calls-retention-days {retention_days} were removed",
+                    "fleet center: {} day(s) and {} file(s) of {what} past {past} were removed",
                     expired.days,
                     expired.files
                 );
             }
             for left in &expired.left {
-                tracing::warn!(
-                    "fleet center: past --calls-retention-days {retention_days} and not \
-                     removed: {left}"
-                );
+                tracing::warn!("fleet center: past {past} and not removed: {left}");
             }
         }
         Err(e) => tracing::warn!("fleet center: retention of the history store: {e}"),
@@ -1456,13 +1827,19 @@ async fn stop_requested() {
 
 /// Rewrite the store once more as the center stops.
 fn rewrite_on_exit(state: &CenterState) {
-    let mut center = state.center.lock();
     #[cfg(feature = "fleet-store")]
-    file_and_log(&mut center);
+    {
+        file_and_log(&mut state.center.lock());
+        file_heartbeats_and_log(&state.center, &state.filing);
+    }
+    let mut center = state.center.lock();
     let Center {
-        registry, store, ..
+        registry,
+        store,
+        waiting,
+        ..
     } = &mut *center;
-    if let Err(e) = store.compact(registry) {
+    if let Err(e) = store.compact_with(registry, &waiting.rows()) {
         tracing::warn!("fleet center: the store was not rewritten on the way out: {e}");
     }
 }
@@ -1473,6 +1850,7 @@ fn router(state: CenterState) -> axum::Router {
     axum::Router::new()
         .route("/v1/fleet/ingest", post(ingest))
         .route("/v1/fleet/members", get(members))
+        .route("/v1/fleet/members/{id}/history", get(member_history))
         .route("/v1/fleet/calls", get(calls))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_INGEST_BYTES))
         .with_state(state)
@@ -1567,8 +1945,81 @@ async fn members(
         "files_written": center.filing.files_written,
         "rows_filed": center.filing.rows_filed,
         "failed_filings": center.filing.failed,
+        "heartbeat_files_written": center.filing.heartbeat_files,
+        "heartbeats_filed": center.filing.heartbeats_filed,
+        "heartbeats_waiting": center.waiting.len(),
+        "heartbeats_removed": center.waiting.removed(),
+        "members_restored": center.filing.members_restored,
     });
     Ok(axum::Json(report))
+}
+
+/// `GET /v1/fleet/members/{id}/history`: the heartbeats the center holds
+/// of one member, newest first. Needs scope `inventory` (or `full`,
+/// `actions`, `admin`), as `GET /v1/fleet/members` does: a row holds what
+/// that answer holds of the member.
+///
+/// Parameters: `from` (included) and `to` (not included) as RFC 3339 times
+/// of receipt, and `limit` (100 when absent, at most 1000). `400` names a
+/// parameter or an id that is refused. The answer holds the rows in
+/// `heartbeats`, their `count`, `more` when rows were cut by the limit, and
+/// `complete`: `false` when a file could not be read (each in `refused`)
+/// or the question ruled in more files than one question opens
+/// (`files_not_read`).
+///
+/// A build without the history store answers `501` with
+/// [`NO_HISTORY_STORE`].
+async fn member_history(
+    axum::extract::State(state): axum::extract::State<CenterState>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    uri: axum::http::Uri,
+) -> Result<axum::Json<serde_json::Value>, crate::output::api::Problem> {
+    use crate::output::api::Problem;
+    use axum::http::StatusCode;
+    limit(&state, peer.ip())?;
+    crate::output::api::verify_bearer(&state.verifier, &headers, crate::auth::SCOPE_INVENTORY)?;
+    #[cfg(not(feature = "fleet-store"))]
+    {
+        let _ = (id, uri);
+        Err(Problem::detailed(
+            StatusCode::NOT_IMPLEMENTED,
+            NO_HISTORY_STORE,
+        ))
+    }
+    #[cfg(feature = "fleet-store")]
+    {
+        use super::fleet_history::{CLASS_MEMBERS, Query};
+        let pairs: Vec<(String, String)> = axum::extract::Query::try_from_uri(&uri)
+            .map(|axum::extract::Query(pairs)| pairs)
+            .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e.to_string()))?;
+        let query = Query::parse_heartbeats(&id, &pairs)
+            .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
+        // As for call records: the rows that wait and the list of files
+        // are taken as one step, and the files are read without the lock.
+        let (history, files, waiting) = {
+            let center = state.center.lock();
+            let files = center.history.list(CLASS_MEMBERS, &query);
+            (center.history.clone(), files, center.waiting.rows())
+        };
+        let files = files.map_err(|e| {
+            tracing::error!("fleet center: the heartbeats could not be read: {e}");
+            Problem::detailed(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the center could not read its heartbeats; its log names the file",
+            )
+        })?;
+        let mut answer = tokio::task::spawn_blocking(move || {
+            history
+                .answer(&query, &files, waiting)
+                .json_as("heartbeats", member_json)
+        })
+        .await
+        .map_err(|_| Problem::new(StatusCode::INTERNAL_SERVER_ERROR))?;
+        answer["member"] = serde_json::Value::String(id);
+        Ok(axum::Json(answer))
+    }
 }
 
 /// `GET /v1/fleet/calls`: the call records the center holds, newest first.
@@ -1617,7 +2068,9 @@ async fn calls(
         let (history, files, waiting) = {
             let center = state.center.lock();
             let waiting = center.intake.rows();
-            let files = center.history.list(&query);
+            let files = center
+                .history
+                .list(super::fleet_history::CLASS_CALLS, &query);
             (center.history.clone(), files, waiting)
         };
         let unreadable = |e: String| {
@@ -1648,20 +2101,35 @@ async fn upkeep(state: CenterState) {
     loop {
         tick.tick().await;
         let now = Utc::now();
-        let mut center = state.center.lock();
-        silent = log_silence_changes(&center.registry, now, state.missed, &silent);
         #[cfg(feature = "fleet-store")]
-        if last_filing.elapsed() >= state.calls_flush {
-            last_filing = tokio::time::Instant::now();
-            file_and_log(&mut center);
-        }
-        if last_upkeep.elapsed() >= UPKEEP_EVERY {
-            last_upkeep = tokio::time::Instant::now();
+        let filing_is_due = last_filing.elapsed() >= state.calls_flush;
+        {
+            let mut center = state.center.lock();
+            silent = log_silence_changes(&center.registry, now, state.missed, &silent);
             #[cfg(feature = "fleet-store")]
-            expire_history(&center, now, state.calls_retention_days);
-            for member in apply_retention(&mut center, now, state.retention_hours) {
-                silent.remove(&member);
+            if filing_is_due {
+                last_filing = tokio::time::Instant::now();
+                file_and_log(&mut center);
             }
+            if last_upkeep.elapsed() >= UPKEEP_EVERY {
+                last_upkeep = tokio::time::Instant::now();
+                #[cfg(feature = "fleet-store")]
+                expire_history(
+                    &center,
+                    now,
+                    state.calls_retention_days,
+                    state.retention_hours,
+                );
+                for member in apply_retention(&mut center, now, state.retention_hours) {
+                    silent.remove(&member);
+                }
+            }
+        }
+        // The heartbeat rows are filed with the lock released, so requests
+        // are answered while their files are written.
+        #[cfg(feature = "fleet-store")]
+        if filing_is_due {
+            file_heartbeats_and_log(&state.center, &state.filing);
         }
     }
 }
@@ -1716,17 +2184,19 @@ fn apply_retention(center: &mut Center, now: DateTime<Utc>, retention_hours: u64
         registry,
         store,
         intake,
+        waiting,
         ..
     } = center;
     trim_intake(intake, now, retention_hours);
     let gone = registry.expire(now, retention(retention_hours));
+    waiting.expire(now - retention(retention_hours));
     for member in &gone {
         tracing::info!(
             "fleet member '{member}' removed: not heard for --retention-hours {retention_hours}"
         );
     }
     if (store.appended() > 0 || !gone.is_empty())
-        && let Err(e) = store.compact(registry)
+        && let Err(e) = store.compact_with(registry, &waiting.rows())
     {
         tracing::warn!("fleet center: the store was not rewritten: {e}");
     }
@@ -2576,15 +3046,18 @@ mod tests {
         assert_eq!(gone, vec!["old".to_string()], "only the old member");
         assert_eq!(center.registry.records().len(), 1, "one member left");
         drop(center);
-        let members: Vec<String> = Store::open(&path, test_keys(1))?
+        let mut members: Vec<String> = Store::open(&path, test_keys(1))?
             .1
             .into_iter()
             .map(|r| r.member)
             .collect();
+        // A build with the history store keeps the heartbeat row that
+        // waits for a filing before the member's record.
+        members.dedup();
         assert_eq!(
             members,
             vec!["new".to_string()],
-            "removed from the file, and the other stays in it"
+            "removed from the file, its waiting heartbeat row too, and the other stays in it"
         );
         Ok(())
     }
@@ -2736,6 +3209,8 @@ mod behavior_tests {
             calls_retention_days: 90,
             #[cfg(feature = "fleet-store")]
             calls_flush: std::time::Duration::from_secs(60),
+            #[cfg(feature = "fleet-store")]
+            filing: Arc::new(parking_lot::Mutex::new(())),
         })
     }
 
@@ -4817,7 +5292,11 @@ mod behavior_tests {
         };
         let answer = center
             .history
-            .answer(&query, &center.history.list(&query)?, Vec::new());
+            .answer::<crate::app::fleet_intake::IntakeRecord>(
+                &query,
+                &center.history.list("calls", &query)?,
+                Vec::new(),
+            );
         if let Some((file, why)) = answer.refused.first() {
             return Err(format!("{file}: {why}").into());
         }
@@ -4828,7 +5307,8 @@ mod behavior_tests {
     fn success_the_text_of_a_build_without_the_store_names_the_builds_that_have_it() {
         for needle in [
             "fleet-store",
-            "GET /v1/fleet/calls answers 501",
+            "GET /v1/fleet/calls and GET /v1/fleet/members/{id}/history answer 501",
+            "no heartbeat history is kept",
             "musl",
             "-noaudio",
             "container image",
@@ -4868,7 +5348,7 @@ mod behavior_tests {
             FilingCounts {
                 files_written: 1,
                 rows_filed: 3,
-                failed: 0
+                ..FilingCounts::default()
             },
             "success and the center counted them"
         );
@@ -4880,13 +5360,15 @@ mod behavior_tests {
     fn success_a_start_files_what_the_intake_held_at_the_stop() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         drop(center_with_three_calls(dir.path())?);
-        let mut center = center_at(dir.path(), "2026-11-07T12:01:00Z")?;
+        let center = center_at(dir.path(), "2026-11-07T12:01:00Z")?;
         assert_eq!(
             center.intake.records(),
             3,
             "success the records waited in the intake over the stop"
         );
-        start_history(&mut center, 90);
+        let shared = parking_lot::Mutex::new(center);
+        start_history(&shared, 90, 72);
+        let center = shared.into_inner();
         assert_eq!(center.intake.records(), 0, "success the start filed them");
         assert_eq!(
             filed_positions(&center)?,
@@ -5113,7 +5595,7 @@ mod behavior_tests {
             let center = st.center.lock();
             center
                 .history
-                .list(&crate::app::fleet_history::Query::all())?
+                .list("calls", &crate::app::fleet_history::Query::all())?
         };
         let path = st.center.lock().history.dir().join(&listed[0].rel);
         let mut bytes = std::fs::read(&path)?;
@@ -5243,5 +5725,870 @@ mod behavior_tests {
         assert_eq!(answer["complete"], true, "edge and the answer is whole");
         assert_eq!(answer["files_read"], 0, "edge no file was opened for it");
         Ok(())
+    }
+}
+
+/// The heartbeat rows a center keeps for its history store, and the
+/// registry it rebuilds from them.
+#[cfg(test)]
+mod heartbeat_rows_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    fn t(s: &str) -> Result<DateTime<Utc>, TestError> {
+        Ok(DateTime::parse_from_rfc3339(s)?.with_timezone(&Utc))
+    }
+
+    /// The heartbeat at `seq` of stream `s`, sent at 12:00 plus `seq`
+    /// seconds on 2026-11-11.
+    fn beat(seq: u64) -> Result<Record, TestError> {
+        Ok(Record::Heartbeat(Heartbeat {
+            stream: "s".to_string(),
+            seq,
+            sent_at: t("2026-11-11T12:00:00Z")? + chrono::Duration::seconds(seq.cast_signed()),
+            heartbeat_secs: 30,
+            inventory: serde_json::json!({"host": "edge.example.com", "seq": seq}),
+            calls: None,
+        }))
+    }
+
+    /// The call record at `seq` of stream `s`, sent as [`beat`] sends.
+    fn call(seq: u64) -> Result<Record, TestError> {
+        Ok(Record::Call(CallRecord {
+            stream: "s".to_string(),
+            seq,
+            sent_at: t("2026-11-11T12:00:00Z")? + chrono::Duration::seconds(seq.cast_signed()),
+            selected_by: "failed".to_string(),
+            call: serde_json::json!({"call_id": format!("call-{seq}@example.com")}),
+        }))
+    }
+
+    /// A member's record with `count` heartbeats, received `secs` seconds
+    /// after 12:00 on 2026-11-11.
+    fn row(member: &str, secs: i64, count: u64) -> Result<MemberRecord, TestError> {
+        let at = t("2026-11-11T12:00:00Z")? + chrono::Duration::seconds(secs);
+        Ok(MemberRecord {
+            member: member.to_string(),
+            received_at: at,
+            peer: "192.0.2.10".to_string(),
+            heartbeats: count,
+            cursor: Cursor {
+                stream: "s".to_string(),
+                seq: count,
+                sent_at: at,
+            },
+            heartbeat_secs: 30,
+            inventory: serde_json::json!({"host": "edge.example.com"}),
+            call_records: 0,
+            calls: None,
+        })
+    }
+
+    /// The counts of the heartbeats `rows` hold.
+    fn counts(rows: &[MemberRecord]) -> Vec<u64> {
+        rows.iter().map(|r| r.heartbeats).collect()
+    }
+
+    #[test]
+    fn success_a_plan_lists_each_new_heartbeat_as_a_row() -> Result<(), TestError> {
+        let now = t("2026-11-11T12:01:00Z")?;
+        let plan = Registry::default().plan_records(
+            "edge-a",
+            "192.0.2.10",
+            now,
+            &[beat(1)?, beat(2)?, beat(3)?],
+        );
+        assert_eq!(
+            counts(&plan.heartbeats),
+            [1, 2, 3],
+            "success one row for each heartbeat, in order, each with its own count"
+        );
+        assert_eq!(
+            plan.heartbeats
+                .iter()
+                .map(|r| (r.cursor.seq, r.inventory["seq"].as_u64(), r.received_at))
+                .collect::<Vec<_>>(),
+            vec![(1, Some(1), now), (2, Some(2), now), (3, Some(3), now)],
+            "success a row holds the position and inventory of its own heartbeat and the \
+             receive time of the request"
+        );
+        assert_eq!(
+            plan.heartbeats.last(),
+            plan.record.as_ref(),
+            "success and the last row is the record the registry then holds"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_store_takes_the_rows_and_then_the_newest_record() -> Result<(), TestError> {
+        let now = t("2026-11-11T12:01:00Z")?;
+        let plan =
+            Registry::default().plan_records("edge-a", "192.0.2.10", now, &[beat(1)?, beat(2)?]);
+        assert_eq!(
+            counts(&store_lines(&plan).into_iter().cloned().collect::<Vec<_>>()),
+            [1, 2],
+            "success a request of heartbeats alone appends its rows: the last is the newest \
+             record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_waiting_rows_are_handed_out_in_order_and_leave_when_filed() -> Result<(), TestError>
+    {
+        let mut waiting = Waiting::default();
+        for n in 1..=3 {
+            waiting.push(row("edge-a", i64::try_from(n)?, n)?, 100, 1000);
+        }
+        let (first, rows) = waiting.snapshot();
+        assert_eq!(
+            (first, counts(&rows), waiting.len(), waiting.bytes()),
+            (0, vec![1, 2, 3], 3, 300),
+            "success the rows wait in the order they came, with their bytes counted"
+        );
+        waiting.filed(first, rows.len());
+        assert_eq!(
+            (waiting.len(), waiting.bytes(), waiting.removed()),
+            (0, 0, 0),
+            "success filed rows leave, and are not counted as removed by the bound"
+        );
+        assert!(waiting.is_empty(), "success nothing waits");
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_member_row_holds_what_the_members_report_holds() -> Result<(), TestError> {
+        let record = row("edge-a", 0, 7)?;
+        let reg = Registry::from_records(vec![record.clone()]);
+        let mut reported = reg.report(t("2026-11-11T12:00:10Z")?, 3, 72)["members"][0].clone();
+        let row = member_json(&record);
+        assert_eq!(
+            (&row["member"], &row["verified"]["heartbeats"]),
+            (&serde_json::json!("edge-a"), &serde_json::json!(7)),
+            "success the row names the member and the count the center verified"
+        );
+        let fields = reported.as_object_mut().ok_or("an object")?;
+        fields.remove("silent");
+        fields.remove("seconds_since_heartbeat");
+        assert_eq!(
+            row, reported,
+            "success a history row is the report's row without what is measured now"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_restored_heartbeat_enters_a_registry_that_lacks_the_member()
+    -> Result<(), TestError> {
+        let mut reg = Registry::from_records(vec![row("edge-a", 0, 1)?]);
+        assert!(
+            reg.restore(row("edge-b", 5, 4)?),
+            "success a member the registry lacks is taken"
+        );
+        assert_eq!(
+            reg.records()
+                .iter()
+                .map(|r| (r.member.as_str(), r.heartbeats))
+                .collect::<Vec<_>>(),
+            vec![("edge-a", 1), ("edge-b", 4)],
+            "success and is listed with the heartbeat it was restored from"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_restored_heartbeat_replaces_an_older_record() -> Result<(), TestError> {
+        let mut reg = Registry::from_records(vec![row("edge-a", 0, 1)?]);
+        assert!(
+            reg.restore(row("edge-a", 30, 2)?),
+            "success a later heartbeat is taken"
+        );
+        assert_eq!(
+            counts(&reg.records().into_iter().cloned().collect::<Vec<_>>()),
+            [2],
+            "success and replaces the older record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_replayed_heartbeat_is_no_row() -> Result<(), TestError> {
+        let now = t("2026-11-11T12:01:00Z")?;
+        let mut reg = Registry::default();
+        reg.commit(reg.plan_records("edge-a", "192.0.2.10", now, &[beat(1)?, beat(2)?]));
+        let plan = reg.plan_records("edge-a", "192.0.2.10", now, &[beat(1)?, beat(2)?]);
+        assert_eq!(
+            (
+                plan.duplicate,
+                plan.heartbeats.len(),
+                store_lines(&plan).len()
+            ),
+            (2, 0, 0),
+            "failure a replay adds no row and appends nothing"
+        );
+        let plan = reg.plan_records("edge-a", "192.0.2.10", now, &[beat(2)?, beat(3)?]);
+        assert_eq!(
+            counts(&plan.heartbeats),
+            [3],
+            "failure and a request that mixes a replay with a new heartbeat adds the new one"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_rows_past_the_bound_leave_oldest_first_and_are_counted() -> Result<(), TestError> {
+        let mut waiting = Waiting::default();
+        for n in 1..=5 {
+            waiting.push(row("edge-a", i64::try_from(n)?, n)?, 100, 300);
+        }
+        assert_eq!(
+            (counts(&waiting.rows()), waiting.bytes(), waiting.removed()),
+            (vec![3, 4, 5], 300, 2),
+            "failure the two oldest rows left when the bound was passed, and are counted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_row_larger_than_the_bound_does_not_wait() -> Result<(), TestError> {
+        let mut waiting = Waiting::default();
+        waiting.push(row("edge-a", 1, 1)?, 100, 300);
+        waiting.push(row("edge-a", 2, 2)?, 301, 300);
+        assert_eq!(
+            (waiting.len(), waiting.bytes(), waiting.removed()),
+            (0, 0, 2),
+            "failure a row over the bound removes what waits and then itself"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_restored_heartbeat_older_than_the_registrys_is_not_taken() -> Result<(), TestError>
+    {
+        let mut reg = Registry::from_records(vec![row("edge-a", 30, 5)?]);
+        assert!(
+            !reg.restore(row("edge-a", 0, 4)?),
+            "failure an older heartbeat is refused"
+        );
+        assert!(
+            !reg.restore(row("edge-a", 30, 5)?),
+            "failure and so is the heartbeat the registry already holds"
+        );
+        assert_eq!(
+            reg.records()[0].heartbeats,
+            5,
+            "failure the registry keeps its record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_store_append_that_fails_leaves_no_row_waiting() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let now = t("2026-11-11T12:01:00Z")?;
+        let (mut center, _) = Center::open(&path, test_keys(1), now, chrono::Duration::hours(72))?;
+        center
+            .store
+            .log_mut()
+            .open_with(crate::app::fleet_log::faults::refuse(libc::ENOSPC));
+        let got = center.take("edge-a", "192.0.2.10", now, &[beat(1)?]);
+        assert!(got.is_err(), "failure the request fails");
+        assert_eq!(
+            (center.waiting.len(), center.registry.records().len()),
+            (0, 0),
+            "failure a heartbeat the store did not take is no row and no member"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_call_record_is_no_row_and_follows_as_the_newest_record() -> Result<(), TestError> {
+        let now = t("2026-11-11T12:01:00Z")?;
+        let plan = Registry::default().plan_records(
+            "edge-a",
+            "192.0.2.10",
+            now,
+            &[beat(1)?, call(2)?, call(3)?],
+        );
+        assert_eq!(counts(&plan.heartbeats), [1], "edge the heartbeat is a row");
+        let lines = store_lines(&plan);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|r| (r.heartbeats, r.cursor.seq, r.call_records))
+                .collect::<Vec<_>>(),
+            vec![(1, 1, 0), (1, 3, 2)],
+            "edge the store takes the heartbeat's row and then the record the call records \
+             moved"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_request_of_call_records_alone_has_no_row() -> Result<(), TestError> {
+        let now = t("2026-11-11T12:01:00Z")?;
+        let plan =
+            Registry::default().plan_records("edge-a", "192.0.2.10", now, &[call(1)?, call(2)?]);
+        assert!(
+            plan.heartbeats.is_empty(),
+            "edge call records are no heartbeat rows"
+        );
+        assert_eq!(
+            store_lines(&plan)
+                .iter()
+                .map(|r| (r.heartbeats, r.cursor.seq))
+                .collect::<Vec<_>>(),
+            vec![(0, 2)],
+            "edge the store takes the member's one newest record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_heartbeat_after_a_call_record_ends_the_lines() -> Result<(), TestError> {
+        let now = t("2026-11-11T12:01:00Z")?;
+        let plan = Registry::default().plan_records(
+            "edge-a",
+            "192.0.2.10",
+            now,
+            &[beat(1)?, call(2)?, beat(3)?],
+        );
+        assert_eq!(
+            store_lines(&plan)
+                .iter()
+                .map(|r| (r.heartbeats, r.cursor.seq, r.call_records))
+                .collect::<Vec<_>>(),
+            vec![(1, 1, 0), (2, 3, 1)],
+            "edge the last heartbeat's row is the newest record: it is appended once"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_rewrite_keeps_the_waiting_rows_before_the_registry() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
+        let reg = Registry::from_records(vec![row("edge-a", 60, 3)?, row("edge-b", 0, 1)?]);
+        let waiting = vec![row("edge-a", 0, 1)?, row("edge-a", 30, 2)?];
+        store.compact_with(&reg, &waiting)?;
+        drop(store);
+        let (_, records) = Store::open(&path, test_keys(1))?;
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| (r.member.as_str(), r.heartbeats))
+                .collect::<Vec<_>>(),
+            vec![("edge-a", 1), ("edge-a", 2), ("edge-a", 3), ("edge-b", 1)],
+            "edge the file holds the waiting rows and then every member's newest record"
+        );
+        assert_eq!(
+            Registry::from_records(records),
+            reg,
+            "edge and a start reads the same registry from it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_rows_that_arrive_during_a_filing_stay_waiting() -> Result<(), TestError> {
+        let mut waiting = Waiting::default();
+        waiting.push(row("edge-a", 1, 1)?, 100, 1000);
+        waiting.push(row("edge-a", 2, 2)?, 100, 1000);
+        let (first, taken) = waiting.snapshot();
+        waiting.push(row("edge-a", 3, 3)?, 100, 1000);
+        waiting.filed(first, taken.len());
+        assert_eq!(
+            (counts(&waiting.rows()), waiting.bytes()),
+            (vec![3], 100),
+            "edge the row that came after the filing took its rows still waits"
+        );
+        let (first, taken) = waiting.snapshot();
+        assert_eq!(
+            (first, counts(&taken)),
+            (2, vec![3]),
+            "edge and the next filing takes it, at the number after the two that left"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_rows_the_bound_removed_during_a_filing_are_not_removed_twice() -> Result<(), TestError>
+    {
+        let mut waiting = Waiting::default();
+        for n in 1..=3 {
+            waiting.push(row("edge-a", i64::try_from(n)?, n)?, 100, 300);
+        }
+        let (first, taken) = waiting.snapshot();
+        // Two more rows pass the bound: rows 1 and 2 leave.
+        waiting.push(row("edge-a", 4, 4)?, 100, 300);
+        waiting.push(row("edge-a", 5, 5)?, 100, 300);
+        waiting.filed(first, taken.len());
+        assert_eq!(
+            (counts(&waiting.rows()), waiting.removed()),
+            (vec![4, 5], 2),
+            "edge only row 3, the one filed row still held, leaves: rows 4 and 5 wait"
+        );
+        waiting.filed(first, taken.len());
+        assert_eq!(
+            counts(&waiting.rows()),
+            [4, 5],
+            "edge and saying the same filing twice removes nothing more"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_restored_heartbeat_of_the_same_instant_wins_by_its_count() -> Result<(), TestError> {
+        let mut reg = Registry::from_records(vec![row("edge-a", 30, 5)?]);
+        assert!(
+            reg.restore(row("edge-a", 30, 6)?),
+            "edge at one receive time the higher count is the later heartbeat"
+        );
+        assert_eq!(reg.records()[0].heartbeats, 6, "edge and it is held");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_nothing_to_append_writes_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
+        let before = std::fs::read(&path)?;
+        assert_eq!(
+            store.append_all(&[])?,
+            Vec::<usize>::new(),
+            "edge no record has no size"
+        );
+        assert_eq!(
+            (store.appended(), std::fs::read(&path)? == before),
+            (0, true),
+            "edge and the file is as it was"
+        );
+        let first = row("edge-a", 0, 1)?;
+        let second = row("edge-a", 30, 2)?;
+        let sizes = store.append_all(&[&first, &second])?;
+        assert_eq!(
+            (sizes.len(), store.appended()),
+            (2, 2),
+            "edge two records are two lines, each with its size"
+        );
+        Ok(())
+    }
+
+    /// What needs the history store itself.
+    #[cfg(feature = "fleet-store")]
+    mod with_the_store {
+        use super::*;
+        use crate::app::fleet_history::{CLASS_MEMBERS, Query};
+
+        /// The center whose store is in `dir`, opened at 12:00 plus `secs`
+        /// seconds on 2026-11-11 with a retention of 72 hours.
+        fn open(dir: &Path, secs: i64) -> Result<Center, TestError> {
+            let now = t("2026-11-11T12:00:00Z")? + chrono::Duration::seconds(secs);
+            let keep = chrono::Duration::hours(72);
+            Ok(Center::open(&dir.join("center.store"), test_keys(1), now, keep)?.0)
+        }
+
+        /// Take `batch` as edge-a, `secs` seconds after 12:00.
+        fn take(center: &mut Center, secs: i64, batch: &[Record]) -> Result<(), TestError> {
+            let now = t("2026-11-11T12:00:00Z")? + chrono::Duration::seconds(secs);
+            center.take("edge-a", "192.0.2.10", now, batch)?;
+            Ok(())
+        }
+
+        /// File the heartbeats that wait in `center` and give it back.
+        fn file(center: Center) -> (Center, Result<crate::app::fleet_history::Filed, String>) {
+            let shared = parking_lot::Mutex::new(center);
+            let filed = Center::file_heartbeats(&shared, &parking_lot::Mutex::new(()));
+            (shared.into_inner(), filed)
+        }
+
+        /// The counts of edge-a's heartbeats the history store of `center`
+        /// holds in files, newest first.
+        fn filed_counts(center: &Center) -> Result<Vec<u64>, TestError> {
+            let query = Query {
+                member: Some("edge-a".to_string()),
+                ..Query::all()
+            };
+            let files = center.history.list(CLASS_MEMBERS, &query)?;
+            let answer = center
+                .history
+                .answer(&query, &files, Vec::<MemberRecord>::new());
+            if let Some((file, why)) = answer.refused.first() {
+                return Err(format!("{file}: {why}").into());
+            }
+            Ok(counts(&answer.rows))
+        }
+
+        #[test]
+        fn success_the_center_files_the_heartbeats_that_wait() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?, beat(2)?])?;
+            take(&mut center, 2, &[beat(3)?])?;
+            assert_eq!(
+                counts(&center.waiting.rows()),
+                [1, 2, 3],
+                "success every acknowledged heartbeat waits as a row"
+            );
+            let (center, filed) = file(center);
+            let filed = filed?;
+            assert_eq!(
+                (filed.rows, filed.files),
+                (3, 1),
+                "success the rows of one day and member go into one file"
+            );
+            assert_eq!(
+                (
+                    center.waiting.len(),
+                    center.filing.heartbeats_filed,
+                    center.filing.heartbeat_files,
+                    center.filing.failed
+                ),
+                (0, 3, 1, 0),
+                "success nothing waits after, and the center counted the filing"
+            );
+            assert_eq!(
+                filed_counts(&center)?,
+                [3, 2, 1],
+                "success the files hold the three heartbeats"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn success_a_lost_store_file_is_rebuilt_from_the_newest_heartbeats() -> Result<(), TestError>
+        {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?])?;
+            take(&mut center, 31, &[beat(2)?])?;
+            let held = center.registry.clone();
+            let (center, filed) = file(center);
+            filed?;
+            drop(center);
+            std::fs::remove_file(dir.path().join("center.store"))?;
+            let center = open(dir.path(), 600)?;
+            assert_eq!(
+                center.registry, held,
+                "success the registry is what it was before the store file was lost"
+            );
+            assert_eq!(
+                center.filing.members_restored, 1,
+                "success and the start counts the member it took from the history store"
+            );
+            assert_eq!(
+                center.registry.silent(t("2026-11-11T12:10:00Z")?, 3),
+                ["edge-a"],
+                "success a member silent before the stop is silent after it"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn failure_a_filing_that_fails_keeps_the_rows_waiting_and_is_counted()
+        -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?])?;
+            // A file where the class directory goes: no file can be written.
+            std::fs::write(center.history.dir().join(CLASS_MEMBERS), b"")?;
+            let (mut center, filed) = file(center);
+            assert!(
+                filed
+                    .as_ref()
+                    .is_err_and(|e| e.contains("the history store")),
+                "failure the filing fails and names the history store: {filed:?}"
+            );
+            assert_eq!(
+                (
+                    counts(&center.waiting.rows()),
+                    center.filing.failed,
+                    center.filing.heartbeats_filed
+                ),
+                (vec![1], 1, 0),
+                "failure the row still waits and the failure is counted"
+            );
+            std::fs::remove_file(center.history.dir().join(CLASS_MEMBERS))?;
+            take(&mut center, 2, &[beat(2)?])?;
+            let (center, filed) = file(center);
+            assert_eq!(
+                (filed?.rows, center.waiting.len()),
+                (2, 0),
+                "failure once the store can be written, the next filing files both rows"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn failure_a_member_past_the_retention_is_not_restored() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?])?;
+            let (center, filed) = file(center);
+            filed?;
+            drop(center);
+            std::fs::remove_file(dir.path().join("center.store"))?;
+            // Four days later, with a retention of 72 hours.
+            let center = open(dir.path(), 4 * 86_400)?;
+            assert_eq!(
+                (
+                    center.registry.records().len(),
+                    center.filing.members_restored
+                ),
+                (0, 0),
+                "failure a member last heard before the retention is not listed again"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn failure_a_heartbeat_file_that_does_not_open_restores_nothing_and_the_center_starts()
+        -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?])?;
+            let (center, filed) = file(center);
+            filed?;
+            let rel = center.history.list(CLASS_MEMBERS, &Query::all())?[0]
+                .rel
+                .clone();
+            let path = center.history.dir().join(rel);
+            drop(center);
+            let mut bytes = std::fs::read(&path)?;
+            let mid = bytes.len() / 2;
+            bytes[mid] ^= 0x01;
+            std::fs::write(&path, bytes)?;
+            std::fs::remove_file(dir.path().join("center.store"))?;
+            let center = open(dir.path(), 60)?;
+            assert_eq!(
+                (
+                    center.registry.records().len(),
+                    center.filing.members_restored
+                ),
+                (0, 0),
+                "failure the center starts, with no member made up from a file it cannot read"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn edge_a_store_file_behind_the_history_takes_the_newer_heartbeat() -> Result<(), TestError>
+        {
+            let dir = tempfile::tempdir()?;
+            let store = dir.path().join("center.store");
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?])?;
+            let old = std::fs::read(&store)?;
+            take(&mut center, 31, &[beat(2)?, beat(3)?])?;
+            let (center, filed) = file(center);
+            filed?;
+            drop(center);
+            // An earlier copy of the store file is put back.
+            std::fs::write(&store, old)?;
+            let center = open(dir.path(), 60)?;
+            let record = center.registry.records()[0].clone();
+            assert_eq!(
+                (record.heartbeats, record.cursor.seq),
+                (3, 3),
+                "edge the newest heartbeat is the history's, not the older store file's"
+            );
+            assert_eq!(center.filing.members_restored, 1, "edge and it is counted");
+            let replay = center.registry.plan_records(
+                "edge-a",
+                "192.0.2.10",
+                record.received_at,
+                &[beat(3)?],
+            );
+            assert_eq!(
+                (replay.accepted, replay.duplicate),
+                (0, 1),
+                "edge a replay of the heartbeat the old file lacked is a duplicate"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn edge_a_store_file_ahead_of_the_history_keeps_its_record() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?])?;
+            let (mut center, filed) = file(center);
+            filed?;
+            take(&mut center, 31, &[beat(2)?])?;
+            drop(center);
+            let center = open(dir.path(), 60)?;
+            assert_eq!(
+                (
+                    center.registry.records()[0].heartbeats,
+                    center.filing.members_restored
+                ),
+                (2, 0),
+                "edge the store file's later heartbeat stands and nothing is restored"
+            );
+            assert_eq!(
+                counts(&center.waiting.rows()),
+                [1, 2],
+                "edge every heartbeat the store file held waits again for the filing"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn edge_call_records_filed_after_the_newest_heartbeat_move_the_position()
+        -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?])?;
+            take(&mut center, 2, &[call(2)?, call(3)?])?;
+            center.file_calls()?;
+            let (center, filed) = file(center);
+            filed?;
+            drop(center);
+            std::fs::remove_file(dir.path().join("center.store"))?;
+            let center = open(dir.path(), 60)?;
+            let record = center.registry.records()[0].clone();
+            assert_eq!(
+                (record.heartbeats, record.cursor.seq, record.call_records),
+                (1, 3, 2),
+                "edge the position is past the two call records filed after the heartbeat"
+            );
+            let replay = center.registry.plan_records(
+                "edge-a",
+                "192.0.2.10",
+                record.received_at,
+                &[call(2)?, call(3)?],
+            );
+            assert_eq!(
+                (replay.accepted, replay.calls.len()),
+                (0, 0),
+                "edge so a replay of them stores no call record twice"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn edge_a_start_files_the_rows_the_store_file_held_once() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?, beat(2)?])?;
+            take(&mut center, 2, &[call(3)?])?;
+            // Stopped before any filing: the rows are in the store file.
+            drop(center);
+            let center = open(dir.path(), 60)?;
+            assert_eq!(
+                counts(&center.waiting.rows()),
+                [1, 2],
+                "edge every heartbeat of the store file waits once: the record a call moved \
+                 is the heartbeat before it"
+            );
+            let (center, filed) = file(center);
+            let filed = filed?;
+            assert_eq!(
+                (filed.rows, filed.already),
+                (2, 0),
+                "edge the two heartbeats are filed, each once"
+            );
+            drop(center);
+            let center = open(dir.path(), 120)?;
+            let (center, filed) = file(center);
+            let filed = filed?;
+            assert_eq!(
+                (filed.rows, filed.files, filed.already > 0),
+                (0, 0, true),
+                "edge a second start files no row twice"
+            );
+            assert_eq!(filed_counts(&center)?, [2, 1], "edge two rows are held");
+            Ok(())
+        }
+
+        #[test]
+        fn success_heartbeat_days_past_the_retention_hours_are_removed() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?, call(2)?])?;
+            center.file_calls()?;
+            let (center, filed) = file(center);
+            filed?;
+            let now = t("2026-11-11T12:00:00Z")?;
+            expire_history(&center, now + chrono::Duration::hours(83), 90, 72);
+            assert_eq!(
+                filed_counts(&center)?,
+                [1],
+                "success 83 hours later the 11th still holds an hour within 72: the day stays"
+            );
+            expire_history(&center, now + chrono::Duration::hours(84), 90, 72);
+            assert_eq!(
+                filed_counts(&center)?,
+                Vec::<u64>::new(),
+                "success once every hour of the day is past 72 hours, its heartbeats are removed"
+            );
+            let calls = center
+                .history
+                .list(crate::app::fleet_history::CLASS_CALLS, &Query::all())?;
+            assert_eq!(
+                calls.len(),
+                1,
+                "success the call record of that day stays: its retention is 90 days"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn edge_a_start_lets_no_row_past_the_retention_wait() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?])?;
+            drop(center);
+            // Four days later, with a retention of 72 hours.
+            let center = open(dir.path(), 4 * 86_400)?;
+            assert!(
+                center.waiting.is_empty(),
+                "edge a heartbeat of a member past the retention does not wait for a filing"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn edge_a_record_without_a_heartbeat_does_not_wait() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[call(1)?])?;
+            assert!(
+                center.waiting.is_empty(),
+                "edge a call record adds no heartbeat row"
+            );
+            drop(center);
+            let center = open(dir.path(), 60)?;
+            assert!(
+                center.waiting.is_empty(),
+                "edge and a start does not take the member's record for one"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn edge_a_stop_between_a_rewrite_and_a_filing_loses_no_row() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let mut center = open(dir.path(), 0)?;
+            take(&mut center, 1, &[beat(1)?])?;
+            take(&mut center, 31, &[beat(2)?])?;
+            // The upkeep rewrites the store file while the rows wait.
+            let now = t("2026-11-11T12:01:00Z")?;
+            apply_retention(&mut center, now, 72);
+            drop(center);
+            let center = open(dir.path(), 120)?;
+            let (center, filed) = file(center);
+            assert_eq!(
+                filed?.rows, 2,
+                "edge both rows are in the rewritten store file and are filed by the next start"
+            );
+            assert_eq!(filed_counts(&center)?, [2, 1], "edge each once");
+            Ok(())
+        }
     }
 }

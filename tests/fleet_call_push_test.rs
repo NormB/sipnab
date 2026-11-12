@@ -197,7 +197,8 @@ fn intake(dir: &Path) -> Result<Vec<serde_json::Value>, TestError> {
             .collect::<Result<Vec<sipnab::app::fleet_intake::IntakeRecord>, TestError>>()?;
         let history = History::reader(&dir.join("center.store"), std::sync::Arc::new(keys));
         let all = Query::all();
-        let answer = history.answer(&all, &history.list(&all)?, waiting);
+        let files = history.list(sipnab::app::fleet_history::CLASS_CALLS, &all)?;
+        let answer = history.answer(&all, &files, waiting);
         if let Some((file, why)) = answer.refused.first() {
             return Err(format!("{file}: {why}").into());
         }
