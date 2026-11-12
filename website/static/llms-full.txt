@@ -7304,12 +7304,12 @@ only.
 
 | Scope | Reaches | Mint it for |
 |---|---|---|
-| `full` (default) | Every read route and `/metrics`. Not the action routes (`/v1/tfps/ban`, `/v1/tfps/unban`, `/v1/actions/revert`) and not the live-audio routes (`/v1/calls/live`). | A dashboard or script that reads calls and streams. |
+| `full` (default) | Every read route and `/metrics`. Not the action routes (`/v1/tfps/ban`, `/v1/tfps/unban`, `/v1/actions/revert`) and not the live-audio routes (`/v1/calls/live`). On a fleet center it reads the call records, `GET /v1/fleet/calls`. | A dashboard or script that reads calls and streams. |
 | `metrics` | `GET /metrics` only. Every other route returns `401`. | A Prometheus scrape job. |
 | `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. It lifts only the bans it placed. | The system that decides to block a source. |
 | `admin` | Everything `actions` reaches, and it also lifts a ban another caller placed. | An operator who must be able to lift any ban. |
 | `audio` | The live-audio routes a `live_audio` vCon rule serves, and nothing else. | A speech-to-text consumer. |
-| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. On a fleet center it also reads `GET /v1/fleet/members`. | A fleet controller running [`sipnab fleet inventory`](fleet.md). |
+| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. On a fleet center it also reads `GET /v1/fleet/members`, and not the call records: `GET /v1/fleet/calls` answers it `401`. | A fleet controller running [`sipnab fleet inventory`](fleet.md). |
 | `fleet-report` | Nothing on this API: every route returns `401`. A fleet center's `POST /v1/fleet/ingest`, which no other scope reaches. | A fleet member reporting to [a fleet center](fleet.md#run-a-fleet-center), minted with the center's key and the member's name as `--token-id`. |
 
 The `read` scope is for MCP tokens. Minting it with `--api-signing-key`
@@ -63669,13 +63669,13 @@ Distribute the printed token to clients.
 
 | Scope | Surface | What it reaches |
 |---|---|---|
-| `full` | either | Every read route or tool on the token's audience. Not the actions, and not the live-audio routes. |
+| `full` | either | Every read route or tool on the token's audience. Not the actions, and not the live-audio routes. On a fleet center it reads the call records, `GET /v1/fleet/calls`. |
 | `metrics` | REST API | `GET /metrics`, and nothing else. Every `/v1/` route answers `401`. |
 | `read` | MCP | Only the tools `tools/list` marks read-only. Calling any other tool gets a JSON-RPC error refusal, not a `401`. |
 | `actions` | either | Everything `full` reaches, plus the actions that change another system, such as a TFPS ban, where the server enables them with `--allow-action`. It lifts only the bans it placed. |
 | `admin` | either | Everything `actions` reaches, and it also lifts a ban another caller placed, for example one placed by a token since lost. |
 | `audio` | REST API | The live-audio routes under `/v1/calls/`, and nothing else. No other scope reaches them. |
-| `inventory` | REST API | `GET /v1/inventory`, and a fleet center's `GET /v1/fleet/members`, and nothing else. `full`, `actions` and `admin` reach it too. For [`sipnab fleet inventory`](fleet.md). |
+| `inventory` | REST API | `GET /v1/inventory`, and a fleet center's `GET /v1/fleet/members`, and nothing else. It does not read a center's call records: `GET /v1/fleet/calls` answers it `401`. `full`, `actions` and `admin` reach what it reaches. For [`sipnab fleet inventory`](fleet.md). |
 | `fleet-report` | REST API | A fleet center's `POST /v1/fleet/ingest`, and nothing else; no other scope reaches it. Its `--token-id` is the member's name. For [a fleet center](fleet.md#run-a-fleet-center). |
 
 Give each client the narrowest scope that does its job:

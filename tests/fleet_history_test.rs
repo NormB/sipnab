@@ -181,6 +181,50 @@ fn the_version_says_whether_the_build_has_the_history_store() -> Result<(), Test
     Ok(())
 }
 
+/// The two pages that list what each token scope reaches name every route
+/// a fleet center serves, and say that call records need `full`.
+#[test]
+fn the_scope_tables_name_every_route_of_a_fleet_center() -> Result<(), TestError> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source = std::fs::read_to_string(root.join("src/app/fleet_center.rs"))?;
+    let routes: Vec<&str> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(".route(\""))
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert!(
+        routes.len() >= 3 && routes.contains(&"/v1/fleet/calls"),
+        "the center's router lists its routes, the calls route among them: {routes:?}"
+    );
+    for page in ["docs/auth.md", "docs/rest-api.md"] {
+        let text = std::fs::read_to_string(root.join(page))?;
+        let rows: Vec<&str> = text.lines().filter(|l| l.starts_with("| `")).collect();
+        for route in &routes {
+            assert!(
+                rows.iter().any(|row| row.contains(route)),
+                "{page}: no row of a scope table names {route}"
+            );
+        }
+        let full = rows
+            .iter()
+            .find(|row| row.starts_with("| `full`"))
+            .ok_or("a `full` row")?;
+        assert!(
+            full.contains("GET /v1/fleet/calls"),
+            "{page}: the `full` row says it reads a fleet center's call records: {full}"
+        );
+        let inventory = rows
+            .iter()
+            .find(|row| row.starts_with("| `inventory`"))
+            .ok_or("an `inventory` row")?;
+        assert!(
+            inventory.contains("not") && inventory.contains("/v1/fleet/calls"),
+            "{page}: the `inventory` row says it does not read call records: {inventory}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn retention_and_flush_values_outside_their_range_are_refused() -> Result<(), TestError> {
     for (flag, value) in [
@@ -534,6 +578,34 @@ mod with_the_store {
             later["count"], 1,
             "failure and the center still takes and answers new records: {later}"
         );
+        Ok(())
+    }
+
+    /// What the scope tables say of the calls route: `full` reads it, and
+    /// so do `actions` and `admin`, which read whatever `full` reads.
+    #[test]
+    fn the_scopes_the_tables_name_read_call_records() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let c = center(dir.path(), &[])?;
+        push(&c.addr, "edge-a", 1, 1)?;
+        for scope in [
+            sipnab::auth::SCOPE_FULL,
+            sipnab::auth::SCOPE_ACTIONS,
+            sipnab::auth::SCOPE_ADMIN,
+        ] {
+            let (status, body) = http(&c.addr, "GET", "/v1/fleet/calls", &token("x", scope), b"")?;
+            assert_eq!(
+                status, 200,
+                "success a {scope} token reads call records: {body}"
+            );
+        }
+        for scope in [sipnab::auth::SCOPE_METRICS, sipnab::auth::SCOPE_AUDIO] {
+            let (status, body) = http(&c.addr, "GET", "/v1/fleet/calls", &token("x", scope), b"")?;
+            assert_eq!(
+                status, 401,
+                "failure a {scope} token does not read call records: {body}"
+            );
+        }
         Ok(())
     }
 
