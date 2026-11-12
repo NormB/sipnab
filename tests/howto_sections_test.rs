@@ -200,11 +200,6 @@ const KNOWN_GAPS: &[(&str, &[Part])] = &[
     ("rtpproxy-sipnab", &[Prerequisites, Verify]),
     ("tfps", &[Prerequisites]),
     ("tfps-sipnab", &[Prerequisites]),
-    ("vcon", &[Prerequisites, Troubleshoot]),
-    ("vcon-harness", &[Prerequisites, Verify]),
-    ("vcon-server", &[OtherSystems, Verify]),
-    ("vcon-sipnab", &[Prerequisites, Verify]),
-    ("vcon-store", &[Prerequisites, Verify]),
 ];
 
 /// The last release cut before this gate. "Added" entries of later releases,

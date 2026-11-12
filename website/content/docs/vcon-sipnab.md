@@ -31,6 +31,29 @@ With Kamailio, this is how a vCon server gets vCons at all.
   [the vCon server guide](@/docs/vcon-server.md#with-kamailio-a-gap) explains.
 - [With Kamailio](#with-kamailio) says what changes.
 
+## Before you start
+
+- **A running vcon-server,** set up as
+  [Add a vCon server to an OpenSIPS voice stack](@/docs/vcon-server.md) sets it up,
+  with its configuration in `/opt/vcon/config.yml`.
+- **`sudo` on the machine that runs sipnab,** with `curl` and `python3`. The
+  install steps use all three.
+- **A capture point that sees the calls:** the SIP port, and the media ports
+  when the vCons are to carry audio.
+- **A sipnab release package without the `-noaudio` suffix.** The install
+  step fetches `sipnab_<version>_amd64.deb`, which carries the `vcon` feature.
+  The `-noaudio` packages do not carry it. `sipnab --version` lists the
+  features of a binary.
+- **A change on one other system, the vCon server.** The first step adds to
+  its `config.yml`:
+  - an ingress list named `sipnab`, with its own key,
+  - a link that tags each vCon,
+  - a table, `vcons_observed`.
+
+  It then restarts the server's `conserver` and `api` containers. The
+  recorder's settings stay as they are.
+- **No change on the SIP server.** sipnab reads a copy of the traffic.
+
 ## Keep recorded and observed vCons apart
 
 The two kinds of vCon hold different things:
@@ -256,7 +279,7 @@ What the forwarder does with each file:
 | another `4xx` | moves the file to `rejected/` in the directory, for a person to read |
 | `5xx`, or no answer | keeps the file and tries again five seconds later |
 
-## Place a call and find its vCon
+## Check that a call's vCon reaches the server
 
 Place the test call from the vCon server guide. After about ten seconds:
 
@@ -470,7 +493,7 @@ captures.
   it up.
 - Place that guide's test call, as its section
   [Place a test call](@/docs/rtpengine-relay.md#place-a-test-call) shows.
-- Then run the commands of this guide's step "Place a call and find its vCon".
+- Then run the commands of this guide's step "Check that a call's vCon reaches the server".
 
 The test call makes one vCon, not two. With no recorder, there is no SIPREC
 session for sipnab to see.

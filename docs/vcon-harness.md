@@ -558,8 +558,28 @@ sequenceDiagram
 
 From a clone to a running stack.
 
-- Docker and Docker Compose are the only prerequisites.
-- The repository builds everything else.
+### What you need
+
+- **A clone of the sipnab repository.** Its `harness` directory holds the
+  stack.
+- **Docker and Docker Compose.** The repository builds every image.
+- **`make`,** for the two credentials.
+- **`curl` and `jq`,** for the checks on this page.
+- **`python3`.** The test script runs two Python clients from the repository.
+- **For the two voices:** Piper voice models, the Python `piper` module, and
+  `sox` with `soxi`. `PIPER_VOICES` names the directory that holds the
+  models.
+- **Free ports on the host.** [Ports](#ports) lists them.
+- **One other system, for [Store a call](#store-a-call): a conserver.** The
+  harness does not start one.
+  - It needs an ingress list named `sipnab`, and a chain that stores what the
+    list receives.
+    [Add an ingress list and a chain for sipnab](vcon-sipnab.md#add-an-ingress-list-and-a-chain-for-sipnab)
+    adds both to a vCon server.
+  - You need its address and its API token.
+- **No change on any other system for the rest of the page.** OpenSIPS, the
+  media relay, the sipnab nodes and the SIPp endpoints run in containers on
+  this host.
 
 Every command below runs from the `harness` directory.
 
@@ -618,7 +638,7 @@ docker compose up -d
 docker compose ps
 ```
 
-### Confirm both nodes answer
+### Check that both nodes answer
 
 Different `capture_identity.node` values are the proof. They show two capture
 points, not one reached twice.

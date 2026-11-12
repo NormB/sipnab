@@ -439,6 +439,36 @@ impl TlsRecordReassembler {
     pub fn has_held(&self, src: std::net::SocketAddr, dst: std::net::SocketAddr) -> bool {
         self.leftover.contains_key(&(src, dst))
     }
+
+    /// Drop what is held for the `(src, dst)` direction: the tail of an
+    /// incomplete record, the decrypted bytes of an incomplete SIP message
+    /// and, for a WebSocket session, the frame not complete yet.
+    ///
+    /// For a direction whose TCP stream resumed behind a hole the capture
+    /// never held (see `TcpReassembler::with_resync`). The bytes that would
+    /// have completed each of the three were in the hole, so none can
+    /// complete, and gluing the record the stream resumed at onto a held
+    /// tail would misread that record as the body of the lost one.
+    ///
+    /// # Returns
+    ///
+    /// The error for a WebSocket frame that had begun and can never finish,
+    /// for the caller to count, as [`Self::finish_websocket`] reports one at
+    /// the end of the input; `None` when no such frame was held.
+    #[must_use]
+    pub fn forget(
+        &mut self,
+        src: std::net::SocketAddr,
+        dst: std::net::SocketAddr,
+    ) -> Option<crate::error::CaptureError> {
+        let key = (src, dst);
+        self.leftover.shift_remove(&key);
+        self.plaintext.shift_remove(&key);
+        self.websocket
+            .shift_remove(&key)
+            .and_then(|stream| stream.held())
+            .map(|(need, got)| abandoned(need, got))
+    }
 }
 
 /// Check if data looks like a TLS record.
@@ -462,6 +492,27 @@ pub fn is_tls(data: &[u8]) -> bool {
 
     let length = u16::from_be_bytes([data[3], data[4]]);
     length <= MAX_TLS_RECORD_LENGTH
+}
+
+/// Whether a TCP segment opens a TLS record: where a stream blocked by a hole
+/// the capture never held may resume (see `TcpReassembler::with_resync`).
+///
+/// Stricter than [`is_tls`], because resuming at the wrong byte misreads
+/// everything after it. The segment must begin with a record header
+/// (`record_header_at`), and when the record that header declares ends
+/// inside the segment, the bytes after it must be a record header too. A
+/// record whose body runs past the end of the segment is accepted on its
+/// header alone.
+#[must_use]
+pub fn opens_record(segment: &[u8]) -> bool {
+    let Some((_, _, length)) = record_header_at(segment, 0) else {
+        return false;
+    };
+    let next = TLS_RECORD_HEADER_LEN + usize::from(length);
+    if segment.len() >= next + TLS_RECORD_HEADER_LEN {
+        return record_header_at(segment, next).is_some();
+    }
+    true
 }
 
 /// Count the ApplicationData record headers in one TCP segment.
@@ -1130,6 +1181,214 @@ mod tests {
 
     fn addrs() -> Result<(std::net::SocketAddr, std::net::SocketAddr), TestError> {
         Ok(("10.0.0.1:5061".parse()?, "10.0.0.2:54321".parse()?))
+    }
+
+    /// A segment that begins with one whole record opens a record, for each
+    /// content type a stream can resume at.
+    #[test]
+    fn a_segment_that_is_one_whole_record_opens_a_record() {
+        for content_type in [20u8, 21, 22, 23] {
+            let record = make_tls_record(content_type, 0x0303, &[0xAA; 12]);
+            assert!(
+                opens_record(&record),
+                "content type {content_type} at the first byte is a record start"
+            );
+        }
+    }
+
+    /// A header whose body runs past the end of the segment is accepted: a
+    /// record routinely spans segments.
+    #[test]
+    fn a_record_that_runs_past_the_segment_opens_a_record() {
+        let record = make_tls_record(23, 0x0303, &[0xAA; 300]);
+        assert!(
+            opens_record(&record[..40]),
+            "the header is in the segment and the body continues in the next"
+        );
+        assert!(
+            opens_record(&record[..TLS_RECORD_HEADER_LEN]),
+            "a header alone is a record start"
+        );
+    }
+
+    /// Two records in one segment: the second header confirms the first.
+    #[test]
+    fn two_records_in_one_segment_open_a_record() {
+        let mut data = make_tls_record(22, 0x0303, &[1, 0]);
+        data.extend_from_slice(&make_tls_record(23, 0x0303, &[0xCA, 0xFE]));
+        assert!(opens_record(&data), "a record followed by a record");
+    }
+
+    /// A record followed by fewer bytes than a header cannot be refuted, so
+    /// it is accepted: the next header may continue in the next segment.
+    #[test]
+    fn a_record_followed_by_part_of_a_header_opens_a_record() {
+        let mut data = make_tls_record(23, 0x0303, &[0xCA, 0xFE]);
+        data.extend_from_slice(&[23, 3, 3]);
+        assert!(opens_record(&data), "three bytes of the next header");
+    }
+
+    /// Bytes that look like a header and are followed, where the declared
+    /// record ends, by something that is no header are the middle of a
+    /// record, not the start of one.
+    #[test]
+    fn a_header_followed_by_bytes_that_are_no_header_does_not_open_a_record() {
+        let mut data = make_tls_record(23, 0x0303, &[0xCA, 0xFE]);
+        data.extend_from_slice(b"garbage that is not a record header");
+        assert!(
+            !opens_record(&data),
+            "the bytes after the declared record are not a header"
+        );
+    }
+
+    /// SIP text, an empty segment, a segment shorter than a header, an
+    /// unknown content type and an implausible version are not record starts.
+    #[test]
+    fn what_is_not_a_record_header_does_not_open_a_record() {
+        let cases: [(&str, &[u8]); 6] = [
+            ("SIP text", b"INVITE sip:a@example.com SIP/2.0\r\n"),
+            ("an empty segment", b""),
+            ("four bytes", &[23, 3, 3, 0]),
+            ("content type 24", &[24, 3, 3, 0, 2, 1, 2]),
+            ("version 0x0400", &[23, 4, 0, 0, 2, 1, 2]),
+            ("a zero-length handshake record", &[22, 3, 3, 0, 0]),
+        ];
+        for (name, bytes) in cases {
+            assert!(!opens_record(bytes), "{name} is not a record start");
+        }
+    }
+
+    /// `forget` drops the held tail, so the record a stream resumed at is
+    /// read from its own first byte.
+    #[test]
+    fn forget_drops_the_held_tail_of_a_direction() -> Result<(), TestError> {
+        let lost = make_tls_record(23, 0x0303, &[0xAB; 300]);
+        let kept = make_tls_record(23, 0x0303, &[0xCD; 20]);
+        let (src, dst) = addrs()?;
+        let mut r = TlsRecordReassembler::new(10);
+        assert!(
+            r.insert(src, dst, &lost[..100]).is_empty(),
+            "the head of the lost record is held"
+        );
+        assert!(r.has_held(src, dst), "a tail is held before forget");
+        assert!(
+            r.forget(src, dst).is_none(),
+            "a held record tail is no WebSocket frame"
+        );
+        assert!(!r.has_held(src, dst), "nothing is held after forget");
+        let records = r.insert(src, dst, &kept);
+        assert_eq!(records.len(), 1, "the record after the hole comes out");
+        assert_eq!(
+            records[0].payload,
+            vec![0xCD; 20],
+            "and it is that record, not bytes of the lost one"
+        );
+        Ok(())
+    }
+
+    /// Without `forget`, the record after a hole is consumed as the body of
+    /// the lost record: the case `forget` exists for.
+    #[test]
+    fn without_forget_the_next_record_is_read_as_the_body_of_the_lost_one() -> Result<(), TestError>
+    {
+        let lost = make_tls_record(23, 0x0303, &[0xAB; 300]);
+        let kept = make_tls_record(23, 0x0303, &[0xCD; 20]);
+        let (src, dst) = addrs()?;
+        let mut r = TlsRecordReassembler::new(10);
+        assert!(
+            r.insert(src, dst, &lost[..100]).is_empty(),
+            "the head of the lost record is held"
+        );
+        assert!(
+            r.insert(src, dst, &kept).is_empty(),
+            "the kept record only extends the held tail"
+        );
+        Ok(())
+    }
+
+    /// `forget` drops the decrypted head of a message whose rest was in the
+    /// hole: the next whole message comes out alone, not glued onto it.
+    #[test]
+    fn forget_drops_the_decrypted_head_of_a_message() -> Result<(), TestError> {
+        let (src, dst) = addrs()?;
+        let mut r = TlsRecordReassembler::new(10);
+        let head =
+            b"INVITE sip:x@example.net SIP/2.0\r\nCall-ID: lost\r\nContent-Length: 50\r\n\r\n";
+        assert!(
+            r.frame_plaintext(src, dst, head).is_empty(),
+            "a message without its body is held"
+        );
+        assert!(
+            r.forget(src, dst).is_none(),
+            "a held SIP head is no WebSocket frame, so nothing is reported"
+        );
+        let whole = b"BYE sip:x@example.net SIP/2.0\r\nCall-ID: kept\r\nContent-Length: 0\r\n\r\n";
+        let out = r.frame_plaintext(src, dst, whole);
+        assert_eq!(out.len(), 1, "the message after the hole comes out");
+        assert_eq!(
+            out[0],
+            whole.to_vec(),
+            "and it is that message alone, with nothing of the lost one before it"
+        );
+        Ok(())
+    }
+
+    /// `forget` reports a WebSocket frame that began before the hole and can
+    /// never finish, and the end of the run does not report it again.
+    #[test]
+    fn forget_reports_a_websocket_frame_cut_by_the_hole() -> Result<(), TestError> {
+        let (src, dst) = addrs()?;
+        let mut r = TlsRecordReassembler::new(10);
+        assert!(
+            r.websocket_plaintext(src, dst, b"HTTP/1.1 101 Switching Protocols\r\n\r\n")
+                .is_some(),
+            "the upgrade answer marks the connection as WebSocket"
+        );
+        // A text frame that declares 256 bytes and holds two of them.
+        let partial = [0x81u8, 0x7e, 0x01, 0x00, b'I', b'N'];
+        assert!(
+            r.websocket_plaintext(src, dst, &partial).is_some(),
+            "the connection is a WebSocket session"
+        );
+        assert!(
+            r.forget(src, dst).is_some(),
+            "the frame that cannot finish is reported, not dropped in silence"
+        );
+        assert!(
+            r.finish_websocket().is_empty(),
+            "and the end of the run does not report it a second time"
+        );
+        assert!(
+            r.forget(src, dst).is_none(),
+            "a direction that holds nothing reports nothing"
+        );
+        Ok(())
+    }
+
+    /// `forget` leaves the opposite direction alone, and forgetting a
+    /// direction that holds nothing changes nothing.
+    #[test]
+    fn forget_touches_one_direction_only() -> Result<(), TestError> {
+        let record = make_tls_record(23, 0x0303, &[0xAB; 300]);
+        let (src, dst) = addrs()?;
+        let mut r = TlsRecordReassembler::new(10);
+        assert!(
+            r.insert(dst, src, &record[..100]).is_empty(),
+            "the reverse direction holds a tail"
+        );
+        assert!(
+            r.forget(src, dst).is_none(),
+            "the direction holds nothing to report"
+        );
+        assert!(r.has_held(dst, src), "the reverse direction keeps its tail");
+        let rest = r.insert(dst, src, &record[100..]);
+        assert_eq!(rest.len(), 1, "and its record completes");
+        assert!(
+            r.forget(src, dst).is_none(),
+            "forgetting nothing reports nothing"
+        );
+        assert!(!r.has_held(src, dst), "forgetting nothing holds nothing");
+        Ok(())
     }
 
     /// A record split across two chunks (e.g. a large INVITE's SDP body
