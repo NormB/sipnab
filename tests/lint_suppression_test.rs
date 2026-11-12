@@ -12,7 +12,8 @@
 //!
 //! The list grows as each lint's existing suppressions are reworked away.
 
-use std::process::Command;
+#[path = "support/tracked.rs"]
+mod tracked;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -58,14 +59,10 @@ const REFUSED: &[(&str, &str)] = &[
 /// Every `allow` attribute naming a refused lint, as `path:line: lint`.
 fn suppressions() -> Result<Vec<String>, TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = Command::new("git")
-        .args(["ls-files", "-z", "--", "*.rs"])
-        .current_dir(root)
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed");
+    let listed = tracked::ls_files(root, &["--", "*.rs"])?;
     let mut found = Vec::new();
     let mut files = 0;
-    for rel in String::from_utf8_lossy(&out.stdout).split('\0') {
+    for rel in listed.iter().map(String::as_str) {
         if rel.is_empty() {
             continue;
         }

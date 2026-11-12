@@ -21,7 +21,6 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// The error a test returns: any error, boxed, so `?` works on I/O,
 /// parse and JSON errors alike.
@@ -30,20 +29,14 @@ type TestError = Box<dyn std::error::Error>;
 #[path = "support/markdown.rs"]
 mod markdown;
 
+use markdown::tracked;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn tracked() -> Result<BTreeSet<String>, TestError> {
-    let out = Command::new("git")
-        .args(["ls-files"])
-        .current_dir(repo())
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed");
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::to_string)
-        .collect())
+    Ok(tracked::ls_files(repo(), &[])?.into_iter().collect())
 }
 
 fn markdown_files() -> Result<Vec<PathBuf>, TestError> {
@@ -231,15 +224,7 @@ fn repo_paths_in_docs_are_clickable() -> Result<(), TestError> {
 /// (2026-09-18). A gate narrower than its fixer is how that happens.
 fn rfc_link_scope() -> Result<Vec<(String, String)>, TestError> {
     let listed = |pattern: &str| -> Result<Vec<String>, TestError> {
-        let out = Command::new("git")
-            .args(["ls-files", "-z", "--", pattern])
-            .current_dir(repo())
-            .output()?;
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .split('\0')
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect())
+        tracked::ls_files(repo(), &["--", pattern])
     };
     let mut out = Vec::new();
     for path in listed("*.md")? {

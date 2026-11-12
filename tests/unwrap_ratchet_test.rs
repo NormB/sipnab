@@ -16,6 +16,9 @@
 //! syntax on lines that are not comments. Clippy is the final check, once the
 //! lints are denied and this file is deleted.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::collections::BTreeMap;
 
 /// Remaining calls per area: (area, unwrap, expect, panic).
@@ -57,24 +60,11 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
 
 /// Every tracked `.rs` file, relative to the crate root.
 fn tracked_rust_files() -> Vec<String> {
-    let out = std::process::Command::new("git")
-        .args(["ls-files", "*.rs"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .map_err(|e| format!("git ls-files: {e}"));
-    let out = match out {
-        Ok(o) if o.status.success() => o,
-        other => {
-            // The assertion below reports this; an empty list would pass
-            // the ratchet vacuously.
-            assert!(other.is_ok(), "git ls-files failed: {other:?}");
-            return Vec::new();
-        }
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::to_string)
-        .collect()
+    let listed = tracked::ls_files(env!("CARGO_MANIFEST_DIR"), &["--", "*.rs"]);
+    // A failure is reported here; an empty list would pass the ratchet
+    // vacuously.
+    assert!(listed.is_ok(), "git ls-files failed: {listed:?}");
+    listed.unwrap_or_default()
 }
 
 /// The area a path counts toward: its first component.

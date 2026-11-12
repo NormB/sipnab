@@ -640,17 +640,15 @@ impl Registry {
 ///
 /// A sealed file is written by one process only. [`Store::open`] reads the
 /// file and writes it again under a new data key before it returns, so a
-/// data key never seals records for two processes.
+/// data key never seals records for two processes. After an append that
+/// failed, the next append does the same first
+/// ([`super::fleet_log::AppendLog`]).
 #[derive(Debug)]
 pub struct Store {
-    /// The file.
-    path: PathBuf,
     /// Records appended since the last rewrite.
     appended: usize,
-    /// The keys: the current one to write under, the old ones to read under.
-    keys: Arc<crate::app::fleet_seal::Keys>,
-    /// Seals the appends to the file as it now is.
-    sealer: crate::app::fleet_seal::LogSealer,
+    /// The file, open for appends.
+    log: super::fleet_log::AppendLog,
 }
 
 impl Store {
@@ -715,17 +713,14 @@ impl Store {
                 Err(e) => return Err(format!("--store '{shown}': sealed layer: the file {e}")),
             }
         };
-        let sealer = write_sealed(path, &keys, records.iter())
-            .map_err(|e| format!("--store '{shown}': {e}"))?;
-        Ok((
-            Self {
-                path: path.to_path_buf(),
-                appended: 0,
-                keys,
-                sealer,
-            },
-            records,
-        ))
+        let log = super::fleet_log::AppendLog::create(
+            path,
+            keys,
+            Kind::Registry,
+            records.iter().map(record_line),
+        )
+        .map_err(|e| format!("--store '{shown}': {e}"))?;
+        Ok((Self { appended: 0, log }, records))
     }
 
     /// Append `record` and wait until it is on disk.
@@ -735,9 +730,7 @@ impl Store {
     /// The record cannot be sealed, or the file cannot be opened, written
     /// or synced.
     pub fn append(&mut self, record: &MemberRecord) -> std::io::Result<()> {
-        let line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-        let sealed = self.sealer.record(&line).map_err(std::io::Error::other)?;
-        crate::app::fleet_seal::append_counted(&self.path, &mut self.sealer, &sealed)?;
+        self.log.append(&[record_line(record)?])?;
         self.appended += 1;
         Ok(())
     }
@@ -750,7 +743,8 @@ impl Store {
     ///
     /// The staged file cannot be sealed, written, synced or renamed.
     pub fn compact(&mut self, registry: &Registry) -> std::io::Result<()> {
-        self.sealer = write_sealed(&self.path, &self.keys, registry.records().into_iter())?;
+        self.log
+            .rewrite(registry.records().into_iter().map(record_line))?;
         self.appended = 0;
         Ok(())
     }
@@ -760,24 +754,17 @@ impl Store {
     pub fn appended(&self) -> usize {
         self.appended
     }
+
+    /// The file, for a test that makes its appends fail.
+    #[cfg(test)]
+    fn log_mut(&mut self) -> &mut super::fleet_log::AppendLog {
+        &mut self.log
+    }
 }
 
-/// Write the sealed file at `path` holding exactly `records`, under a new
-/// data key of the current key in `keys`: staged beside it, synced, and
-/// renamed over it. Returns the sealer for appends to the new file.
-fn write_sealed<'a>(
-    path: &Path,
-    keys: &crate::app::fleet_seal::Keys,
-    records: impl Iterator<Item = &'a MemberRecord>,
-) -> std::io::Result<crate::app::fleet_seal::LogSealer> {
-    let lines = records.map(|record| serde_json::to_vec(record).map_err(std::io::Error::other));
-    write_sealed_reading(
-        path,
-        keys,
-        crate::app::fleet_seal::Kind::Registry,
-        lines,
-        &|staged| std::fs::read(staged),
-    )
+/// The line that stores `record` in the store file.
+fn record_line(record: &MemberRecord) -> std::io::Result<Vec<u8>> {
+    serde_json::to_vec(record).map_err(std::io::Error::other)
 }
 
 /// Write the sealed file of `kind` at `path` holding exactly `records`,
@@ -1040,8 +1027,13 @@ impl Center {
     ///
     /// # Errors
     ///
-    /// The intake or the store could not be written. The registry is then
-    /// unchanged, so the member's next try is taken as new.
+    /// The intake or the store could not be written. When the intake could
+    /// not, the registry is unchanged, so the member's next try is taken as
+    /// new. When the intake took the call records and the store then
+    /// failed, the registry moves the member's position past those records
+    /// and no further, as a start after a stop at that point does
+    /// ([`super::fleet_intake::replay`]): the next try stores none of them
+    /// twice.
     fn take(
         &mut self,
         member: &str,
@@ -1057,8 +1049,14 @@ impl Center {
             .map(|call| super::fleet_intake::IntakeRecord::new(member, now, call))
             .collect();
         self.intake.append(&calls)?;
-        if let Some(record) = &plan.record {
-            self.store.append(record)?;
+        if let Some(record) = &plan.record
+            && let Err(e) = self.store.append(record)
+        {
+            // The intake holds the call records. As after a stop at this
+            // point, the member's position moves past them, so its next
+            // try does not put them in the intake a second time.
+            super::fleet_intake::replay(&mut self.registry, &calls);
+            return Err(e);
         }
         let counts = (plan.accepted, plan.duplicate, calls.len());
         self.registry.commit(plan);
@@ -1941,11 +1939,12 @@ mod tests {
         Ok(())
     }
 
-    /// The store a center of release 0.5.244 left, a format 1 file that
-    /// release's own writer made (the fixture): this build reads its base
-    /// and its append, and writes it again as format 2.
+    /// The store a center of a release up to 0.5.245 left, a format 1 file
+    /// (the fixture, which the writer of release 0.5.244 made; 0.5.245
+    /// writes the same format): this build reads its base and its append,
+    /// and writes it again as format 2.
     #[test]
-    fn success_a_store_release_0_5_244_wrote_is_read_and_written_again_as_format_2()
+    fn success_a_store_a_release_up_to_0_5_245_wrote_is_read_and_written_again_as_format_2()
     -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store");
@@ -1973,7 +1972,7 @@ mod tests {
                 .map(|r| r.member.as_str())
                 .collect::<Vec<_>>(),
             vec!["edge-a", "edge-b"],
-            "success a store release 0.5.244 wrote is read and written again as format 2"
+            "success a store a release up to 0.5.245 wrote is read and written again as format 2"
         );
         assert_eq!(std::fs::read(&path)?[4], 2, "and is format 2 afterwards");
         Ok(())
@@ -2018,6 +2017,248 @@ mod tests {
             Store::open(&path, test_keys(1)).is_err_and(|e| e
                 .ends_with("was cut at its end: it holds 3 of the 5 entries it was written with")),
             "and the append after the rewrite is counted"
+        );
+        Ok(())
+    }
+
+    /// FLEET-STORE-APPEND-AFTER-FAILED-WRITE: an append that fails must not
+    /// leave the store unreadable. Here the second append fails because
+    /// the file is away for a moment; the third succeeds; the store must
+    /// then reopen with the first and the third heartbeat.
+    #[test]
+    fn edge_an_append_after_a_failed_append_leaves_a_store_that_reopens() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let away = dir.path().join("away");
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
+        let mut reg = Registry::default();
+        for member in ["a", "b", "c"] {
+            let at = "2026-11-07T12:00:00Z";
+            let plan = reg.plan(member, "192.0.2.11", t(at)?, &[hb("s-1", 1, at)?]);
+            let record = plan.record.as_ref().ok_or("a record")?;
+            if member == "b" {
+                std::fs::rename(&path, &away)?;
+                assert!(store.append(record).is_err(), "the append fails");
+                std::fs::rename(&away, &path)?;
+            } else {
+                store.append(record)?;
+                reg.commit(plan);
+            }
+        }
+        drop(store);
+        assert_eq!(
+            Store::open(&path, test_keys(1))
+                .map(|(_, records)| records.into_iter().map(|r| r.member).collect::<Vec<_>>()),
+            Ok(vec!["a".to_string(), "c".to_string()]),
+            "edge an append after a failed append leaves a store that reopens"
+        );
+        Ok(())
+    }
+
+    /// The record a first heartbeat from `member` stores.
+    fn first_record(member: &str) -> Result<MemberRecord, TestError> {
+        let at = "2026-11-07T12:00:00Z";
+        let plan = Registry::default().plan(member, "192.0.2.11", t(at)?, &[hb("s-1", 1, at)?]);
+        Ok(plan.record.ok_or("a record")?)
+    }
+
+    /// The members the store at `path` holds at the next start, in order.
+    fn members_at(path: &Path) -> Result<Vec<String>, String> {
+        Store::open(path, test_keys(1))
+            .map(|(_, records)| records.into_iter().map(|r| r.member).collect())
+    }
+
+    /// A store in a new directory that took member `a`, then failed to
+    /// take member `b` through a file `open` made, with the real file back
+    /// in place after.
+    fn store_after_a_failure(
+        open: crate::app::fleet_log::OpenFile,
+    ) -> Result<(tempfile::TempDir, PathBuf, Store), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
+        store.append(&first_record("a")?)?;
+        store.log_mut().open_with(open);
+        if store.append(&first_record("b")?).is_ok() {
+            return Err("the append did not fail".into());
+        }
+        store
+            .log_mut()
+            .open_with(crate::app::fleet_log::faults::real());
+        Ok((dir, path, store))
+    }
+
+    #[test]
+    fn success_a_store_append_after_a_full_disk_reopens() -> Result<(), TestError> {
+        use crate::app::fleet_log::faults::stop_at;
+        let (_dir, path, mut store) = store_after_a_failure(stop_at(20, libc::ENOSPC))?;
+        store.append(&first_record("c")?)?;
+        drop(store);
+        assert_eq!(
+            members_at(&path),
+            Ok(vec!["a".to_string(), "c".to_string()]),
+            "success a store append after a full disk reopens"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_store_append_after_a_failed_sync_holds_no_unacknowledged_member()
+    -> Result<(), TestError> {
+        use crate::app::fleet_log::faults::sync_fails;
+        // The second sync failed: member b is whole in the file, and the
+        // center never acknowledged it.
+        let (_dir, path, mut store) = store_after_a_failure(sync_fails(1))?;
+        store.append(&first_record("c")?)?;
+        drop(store);
+        assert_eq!(
+            members_at(&path),
+            Ok(vec!["a".to_string(), "c".to_string()]),
+            "success a store append after a failed sync holds no unacknowledged member"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_compact_after_a_failed_store_append_reopens() -> Result<(), TestError> {
+        use crate::app::fleet_log::faults::stop_at;
+        let (_dir, path, mut store) = store_after_a_failure(stop_at(7, libc::EIO))?;
+        let at = "2026-11-07T12:00:00Z";
+        let mut reg = Registry::default();
+        let plan = reg.plan("a", "192.0.2.11", t(at)?, &[hb("s-1", 1, at)?]);
+        reg.commit(plan);
+        store.compact(&reg)?;
+        store.append(&first_record("c")?)?;
+        drop(store);
+        assert_eq!(
+            members_at(&path),
+            Ok(vec!["a".to_string(), "c".to_string()]),
+            "success a compact after a failed store append reopens"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_failed_store_append_is_not_counted() -> Result<(), TestError> {
+        use crate::app::fleet_log::faults::stop_at;
+        let (_dir, _path, store) = store_after_a_failure(stop_at(0, libc::ENOSPC))?;
+        assert_eq!(
+            store.appended(),
+            1,
+            "failure a failed store append is not counted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_store_appends_fail_while_the_disk_is_full_and_work_after() -> Result<(), TestError> {
+        use crate::app::fleet_log::faults::{real, stop_at};
+        let (_dir, path, mut store) = store_after_a_failure(stop_at(3, libc::ENOSPC))?;
+        store.log_mut().open_with(stop_at(40, libc::ENOSPC));
+        assert_eq!(
+            store
+                .append(&first_record("c")?)
+                .map_err(|e| e.raw_os_error()),
+            Err(Some(libc::ENOSPC)),
+            "the append fails while the disk is full"
+        );
+        store.log_mut().open_with(real());
+        store.append(&first_record("d")?)?;
+        drop(store);
+        assert_eq!(
+            members_at(&path),
+            Ok(vec!["a".to_string(), "d".to_string()]),
+            "failure store appends fail while the disk is full and work after"
+        );
+        Ok(())
+    }
+
+    /// The file releases 0.5.244 to 0.5.247 left when an append failed and
+    /// a later one worked: the record after the failure is sealed for a
+    /// position the file does not reach. It is refused, by file and layer,
+    /// and left as found.
+    #[test]
+    fn failure_a_store_an_earlier_release_wrote_past_a_failed_append_is_refused()
+    -> Result<(), TestError> {
+        use crate::app::fleet_seal::{Kind, append_counted};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let mut sealer = write_sealed_reading(
+            &path,
+            &test_keys(1),
+            Kind::Registry,
+            std::iter::empty(),
+            &|staged| std::fs::read(staged),
+        )?;
+        let a = sealer.record(&record_line(&first_record("a")?)?)?;
+        append_counted(&path, &mut sealer, &a)?;
+        // The append of b failed after b was sealed; nothing was written.
+        let _ = sealer.record(&record_line(&first_record("b")?)?)?;
+        let c = sealer.record(&record_line(&first_record("c")?)?)?;
+        append_counted(&path, &mut sealer, &c)?;
+        let before = std::fs::read(&path)?;
+        assert_eq!(
+            Store::open(&path, test_keys(1)).map(|_| ()),
+            Err(format!(
+                "--store '{}': sealed layer: the file has a record 4 that did not authenticate \
+                 (the file was modified, or its records were moved)",
+                path.display()
+            )),
+            "failure a store an earlier release wrote past a failed append is refused"
+        );
+        assert_eq!(
+            std::fs::read(&path)?,
+            before,
+            "the refused store is left as found"
+        );
+        Ok(())
+    }
+
+    /// As the test above, when the failed append of those releases wrote a
+    /// part of its record before it failed.
+    #[test]
+    fn failure_a_store_an_earlier_release_wrote_past_a_partly_written_append_is_refused()
+    -> Result<(), TestError> {
+        use crate::app::fleet_seal::{Kind, append_counted};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let mut sealer = write_sealed_reading(
+            &path,
+            &test_keys(1),
+            Kind::Registry,
+            std::iter::empty(),
+            &|staged| std::fs::read(staged),
+        )?;
+        let a = sealer.record(&record_line(&first_record("a")?)?)?;
+        append_counted(&path, &mut sealer, &a)?;
+        let b = sealer.record(&record_line(&first_record("b")?)?)?;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path)?;
+        file.write_all(&b[..b.len() / 2])?;
+        drop(file);
+        let c = sealer.record(&record_line(&first_record("c")?)?)?;
+        append_counted(&path, &mut sealer, &c)?;
+        assert_eq!(
+            Store::open(&path, test_keys(1)).map(|_| ()),
+            Err(format!(
+                "--store '{}': sealed layer: the file has a record 4 that did not authenticate \
+                 (the file was modified, or its records were moved)",
+                path.display()
+            )),
+            "failure a store an earlier release wrote past a partly written append is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_store_stopped_after_a_failed_append_starts_with_the_members_before_it()
+    -> Result<(), TestError> {
+        use crate::app::fleet_log::faults::stop_at;
+        let (_dir, path, store) = store_after_a_failure(stop_at(20, libc::ENOSPC))?;
+        drop(store);
+        assert_eq!(
+            members_at(&path),
+            Ok(vec!["a".to_string()]),
+            "edge a store stopped after a failed append starts with the members before it"
         );
         Ok(())
     }
@@ -4113,6 +4354,149 @@ mod behavior_tests {
             (1, 0, 1),
             "the same record is new: neither file held it"
         );
+        Ok(())
+    }
+
+    /// When the intake took a call record and the store then could not
+    /// take the member's position, the member sends the record again. It
+    /// is in the intake once.
+    #[test]
+    fn failure_a_record_the_intake_took_before_the_store_failed_is_not_stored_twice()
+    -> Result<(), TestError> {
+        use crate::app::fleet_log::faults::{real, refuse};
+        let dir = tempfile::tempdir()?;
+        let batch = [call_at(1, "2026-11-07T12:00:05Z")?];
+        let now = t("2026-11-07T12:00:07Z")?;
+        let mut center = center_at(dir.path(), "2026-11-07T12:00:00Z")?;
+        center.store.log_mut().open_with(refuse(libc::EIO));
+        assert!(
+            center.take("edge-a", "192.0.2.7", now, &batch).is_err(),
+            "the store cannot be appended to"
+        );
+        center.store.log_mut().open_with(real());
+        center.take("edge-a", "192.0.2.7", now, &batch)?;
+        assert_eq!(
+            intake_ids(dir.path())?.len(),
+            1,
+            "failure a record the intake took before the store failed is not stored twice"
+        );
+        Ok(())
+    }
+
+    /// A center whose store failed after its intake took `calls` call
+    /// records from `edge-a`, with the store's real file back in place.
+    fn center_after_a_store_failure(
+        dir: &Path,
+        calls: u64,
+    ) -> Result<(Center, Vec<Record>), TestError> {
+        use crate::app::fleet_log::faults::{real, stop_at};
+        let batch = (1..=calls)
+            .map(|seq| call_at(seq, "2026-11-07T12:00:05Z"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut center = center_at(dir, "2026-11-07T12:00:00Z")?;
+        center.store.log_mut().open_with(stop_at(11, libc::ENOSPC));
+        if center
+            .take("edge-a", "192.0.2.7", t("2026-11-07T12:00:07Z")?, &batch)
+            .is_ok()
+        {
+            return Err("the store did not fail".into());
+        }
+        center.store.log_mut().open_with(real());
+        Ok((center, batch))
+    }
+
+    #[test]
+    fn success_the_next_try_after_a_store_failure_is_acknowledged_as_duplicates()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (mut center, batch) = center_after_a_store_failure(dir.path(), 3)?;
+        assert_eq!(
+            center.take("edge-a", "192.0.2.7", t("2026-11-07T12:00:09Z")?, &batch)?,
+            (0, 3, 0),
+            "success the next try after a store failure is acknowledged as duplicates"
+        );
+        assert_eq!(intake_ids(dir.path())?.len(), 3, "each record is held once");
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_record_after_the_ones_the_intake_took_is_new_and_the_store_reopens()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (mut center, mut batch) = center_after_a_store_failure(dir.path(), 2)?;
+        batch.push(call_at(3, "2026-11-07T12:00:06Z")?);
+        assert_eq!(
+            center.take("edge-a", "192.0.2.7", t("2026-11-07T12:00:09Z")?, &batch)?,
+            (1, 2, 1),
+            "the third record is new"
+        );
+        drop(center);
+        let mut again = center_at(dir.path(), "2026-11-07T12:01:00Z")?;
+        assert_eq!(
+            again.take("edge-a", "192.0.2.7", t("2026-11-07T12:01:01Z")?, &batch)?,
+            (0, 3, 0),
+            "success a record after the ones the intake took is new and the store reopens"
+        );
+        assert_eq!(intake_ids(dir.path())?.len(), 3, "each record is held once");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_center_stopped_after_a_store_failure_starts_with_each_record_once()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (center, batch) = center_after_a_store_failure(dir.path(), 2)?;
+        drop(center);
+        let mut again = center_at(dir.path(), "2026-11-07T12:01:00Z")?;
+        assert_eq!(
+            again.take("edge-a", "192.0.2.7", t("2026-11-07T12:01:01Z")?, &batch)?,
+            (0, 2, 0),
+            "the records the intake holds are duplicates after the start"
+        );
+        assert_eq!(
+            intake_ids(dir.path())?.len(),
+            2,
+            "edge a center stopped after a store failure starts with each record once"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_store_failure_counts_the_call_records_the_intake_took() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (center, _) = center_after_a_store_failure(dir.path(), 2)?;
+        let records = center.registry.records();
+        assert_eq!(
+            records.iter().map(|r| r.call_records).collect::<Vec<_>>(),
+            [2],
+            "edge a store failure counts the call records the intake took"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_intake_failure_still_leaves_the_position_where_it_was() -> Result<(), TestError> {
+        use crate::app::fleet_log::faults::{real, stop_at};
+        let dir = tempfile::tempdir()?;
+        let batch = [call_at(1, "2026-11-07T12:00:05Z")?];
+        let now = t("2026-11-07T12:00:07Z")?;
+        let mut center = center_at(dir.path(), "2026-11-07T12:00:00Z")?;
+        center.intake.log_mut().open_with(stop_at(30, libc::ENOSPC));
+        assert!(
+            center.take("edge-a", "192.0.2.7", now, &batch).is_err(),
+            "the intake cannot be appended to"
+        );
+        assert!(
+            center.registry.records().is_empty(),
+            "no position was noted"
+        );
+        center.intake.log_mut().open_with(real());
+        assert_eq!(
+            center.take("edge-a", "192.0.2.7", now, &batch)?,
+            (1, 0, 1),
+            "failure an intake failure still leaves the position where it was"
+        );
+        assert_eq!(intake_ids(dir.path())?.len(), 1, "the record is held once");
         Ok(())
     }
 }

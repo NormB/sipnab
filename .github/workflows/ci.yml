@@ -1277,15 +1277,10 @@ jobs:
           tool: cargo-deny
 
       - name: Cargo audit
-        # RUSTSEC-2023-0071 (rsa "Marvin" timing side channel; no fixed `rsa`
-        # release). sipnab uses an `rsa` private key in src/capture/rsa_key.rs
-        # (`--tls-key`, passive, answers nobody) and src/output/vcon_jose.rs
-        # (opening an encrypted vCon with an RSA key). The REST vCon validate
-        # and analyze routes and the MCP vCon tools open a caller's container,
-        # so an authenticated client could time RSA decryptions there. Low
-        # risk, not zero; the VEX statement says `affected` and what to do, and
-        # deny.toml has the full reason.
-        run: cargo audit --ignore RUSTSEC-2023-0071
+        # No advisory is excepted. RUSTSEC-2023-0071 (rsa "Marvin" timing side
+        # channel) was, until sipnab moved to rsa 0.10.0, the release that
+        # fixes it.
+        run: cargo audit
 
       # The fuzz workspace has its own Cargo.lock, outside the root workspace,
       # so the scan above never saw it — `cargo audit` reads ./Cargo.lock in the
@@ -1293,11 +1288,8 @@ jobs:
       # the root on 39 shared crates. These are the targets that validate the
       # parsers against hostile input; leaving their own tree unaudited is the
       # security tooling going unmaintained.
-      #
-      # Same rsa exception as above, and for the same reason: the fuzz tree
-      # includes sipnab itself, so it inherits that dependency.
       - name: Cargo audit (fuzz workspace)
-        run: cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
+        run: cargo audit --file fuzz/Cargo.lock
 
       - name: Cargo deny
         run: cargo deny check

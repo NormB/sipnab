@@ -17,8 +17,10 @@
 //! command, a program's output -- and changing the quote without changing what
 //! it quotes would make the documentation lie in a different way.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::path::Path;
-use std::process::Command;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -27,17 +29,7 @@ fn repo() -> &'static Path {
 }
 
 fn tracked(pattern: &str) -> Result<Vec<String>, TestError> {
-    let out = Command::new("git")
-        .args(["ls-files", "-z", "--", pattern])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files: {e}"))?;
-    assert!(out.status.success(), "git ls-files {pattern}");
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect())
+    tracked::ls_files(repo(), &["--", pattern])
 }
 
 /// `line` with its inline code spans removed.

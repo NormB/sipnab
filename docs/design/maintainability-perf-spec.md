@@ -92,8 +92,8 @@ Each item below is self-contained and can land as its own PR.
 
 ### WS0.1 Delete the batch-path `SipMessage` clone  *(perf, HIGH impact/trivial)*
 
-- [`src/app/batch.rs:2844`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2844) — `dialog_store.process_message(sip_msg.clone());`
-- [`src/parallel.rs:134`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L134) — `ds.process_message(msg.clone());`
+- [`src/app/batch.rs:2806`](https://github.com/NormB/sipnab/blob/e48054165fe3e8237aff2297c32888f4ca8a754c/src/app/batch.rs#L2806) — `dialog_store.process_message(sip_msg.clone());`
+- [`src/parallel.rs:134`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/parallel.rs#L134) — `ds.process_message(msg.clone());`
 
 `pipeline.rs:150-169` already shows the fix: extract `call_id.to_string()`,
 SDP links, and the `--tag`/event-exec fields *before* moving the message into
@@ -122,15 +122,15 @@ No workflow runs `cargo doc`. `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 (`persist_to_config`, `decode_lost`, `link_to_dialog`, `compact_idle`), public
 docs linking private items (`capture_hep` → `hep_to_packet`,
 `verify_srtp_auth_tag` → `derive_session_key`), unclosed HTML tag at
-[`src/error.rs:31`](https://github.com/NormB/sipnab/blob/main/src/error.rs#L31). The crate is published — docs.rs renders these broken.
+[`src/error.rs:31`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/error.rs#L31). The crate is published — docs.rs renders these broken.
 
 **Accept:** the command above exits 0 locally and runs as a CI step in
 `ci.yml`.
 
 ### WS0.3 `[workspace.lints]` table — lock in the discipline already achieved  *(idioms)*
 
-Lint policy is currently scattered across [`src/lib.rs:23`](https://github.com/NormB/sipnab/blob/main/src/lib.rs#L23)
-(`warn(missing_docs)`), [`src/mcp/mod.rs:24`](https://github.com/NormB/sipnab/blob/main/src/mcp/mod.rs#L24) (`deny(clippy::await_holding_lock)`),
+Lint policy is currently scattered across [`src/lib.rs:23`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/lib.rs#L23)
+(`warn(missing_docs)`), [`src/mcp/mod.rs:24`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/mcp/mod.rs#L24) (`deny(clippy::await_holding_lock)`),
 and two CI flag sites; [`crates/sipnab-audio`](https://github.com/NormB/sipnab/tree/main/crates/sipnab-audio) has no `missing_docs` gate at all.
 The codebase *already complies* with `unwrap_used`/`expect_used` in lib code —
 nothing prevents regression.
@@ -153,7 +153,7 @@ await_holding_lock = "deny"
 with `lints.workspace = true` in both member crates. Backfill what the new
 lints flag: the ~46 missing `# Errors` sections (63 fallible pub fns, 17
 documented) and the 7 missing `// SAFETY:` comments (`src/privilege.rs:247,253`;
-`src/capture/live.rs:66,347,353,380`; [`src/rtp/playback.rs:419`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs#L419)). Convert the
+`src/capture/live.rs:66,347,353,380`; [`src/rtp/playback.rs:419`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/rtp/playback.rs#L419)). Convert the
 15 `#[allow]`s to `#[expect]` so stale suppressions self-report.
 
 **Accept:** `cargo clippy --workspace --all-features --all-targets -- -D warnings`
@@ -184,9 +184,9 @@ empty; all feature combos build.
 
 - `src/main.rs:1993,2013` — `dialog.state().to_string()` twice per message for
   change detection: compare the enum.
-- [`src/sip/dialog.rs:136-144`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L136-L144) — `format!` per message for the retransmission
+- [`src/sip/dialog.rs:136-144`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/sip/dialog.rs#L136-L144) — `format!` per message for the retransmission
   probe key: packed tuple key or `SmallString`.
-- [`src/capture/live.rs:224`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L224) — `interface_name.clone()` (an `Option<String>`)
+- [`src/capture/live.rs:224`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/capture/live.rs#L224) — `interface_name.clone()` (an `Option<String>`)
   per packet: make `Packet.interface` an `Option<Arc<str>>` (`packet.rs:48`).
 
 **Accept:** covered by the WS4.0 benches; suite green.
@@ -217,8 +217,8 @@ bodies:
 
 | Copy | Location | Size | Consumer |
 |---|---|---|---|
-| Canonical | [`src/pipeline.rs:3186`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3186) `process_packet` | 142 ln | TUI live |
-| Batch | [`src/app/batch.rs:2908`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2908) `process_parsed_packet` | 402 ln | batch mode |
+| Canonical | [`src/pipeline.rs:3186`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3186)<!-- "/// Route one" --> `process_packet` | 142 ln | TUI live |
+| Batch | [`src/app/batch.rs:2717`](https://github.com/NormB/sipnab/blob/e48054165fe3e8237aff2297c32888f4ca8a754c/src/app/batch.rs#L2717) `process_parsed_packet` | 402 ln | batch mode |
 | TUI file-open | `src/tui/events.rs:1536` `load_pcap_file` | 194 ln | F3 open |
 | Sharded | [`src/parallel.rs`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) + worker loops | ~200 ln | `--jobs N` |
 
@@ -350,10 +350,10 @@ Five implementations of "dialog summary", already divergent on the wire:
 
 | Surface | Site | Drift |
 |---|---|---|
-| CLI/NDJSON | [`src/output/json.rs:516`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L516) `DialogJson` | `msg_count`, `schema_version: 1` |
-| REST API | [`src/output/api.rs:719`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L719) ad-hoc `json!` | `msg_count`, `method.as_str()` |
-| MCP | [`src/mcp/server.rs:10194`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L10194) `DialogSummary` | **`message_count`**, **`format!("{:?}", method)`** |
-| TUI save | [`src/tui/save.rs:212`](https://github.com/NormB/sipnab/blob/main/src/tui/save.rs#L212) hand-built `json!` | third field set, no `schema_version` |
+| CLI/NDJSON | [`src/output/json.rs:148`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/output/json.rs#L148) `DialogJson` | `msg_count`, `schema_version: 1` |
+| REST API | [`src/output/api.rs:715`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/output/api.rs#L715) ad-hoc `json!` | `msg_count`, `method.as_str()` |
+| MCP | [`src/mcp/server.rs:247`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/mcp/server.rs#L247) `DialogSummary` | **`message_count`**, **`format!("{:?}", method)`** |
+| TUI save | [`src/tui/save.rs:212`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/tui/save.rs#L212) hand-built `json!` | third field set, no `schema_version` |
 | Report | `src/output/call_report.rs:50/183` | independent text/markdown re-derivations |
 
 Same pattern for streams (`api.rs:741` vs `json.rs:115` vs `save.rs:660`).
@@ -505,7 +505,7 @@ existing 261 headless TUI state tests + 49 snapshots green.
 
 ### Problem
 
-- `App` ([`src/tui/mod.rs:95`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L95)): 67 fields — 6 independent scroll offsets,
+- `App` ([`src/tui/mod.rs:811`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/tui/mod.rs#L811)): 67 fields — 6 independent scroll offsets,
   full save-dialog state (6 fields), file-open state (7 fields), name-popup
   state, render caches. No compiler help against stale cross-popup state.
 - `src/tui/events.rs`: 3,709 lines, 372 `KeyCode::` arms in 21 `handle_*`
@@ -592,7 +592,7 @@ message text.
   (`dialog_store.rs:61`) — keep the existing hand-written key-redacting
   `Debug` pattern (`srtp.rs:38`, `rsa_key.rs:21`) for anything holding
   secrets.
-- Naming: `get_`-prefixed getters in [`src/wasm.rs:109-324`](https://github.com/NormB/sipnab/blob/main/src/wasm.rs#L109-L324); `SipMessage::
+- Naming: `get_`-prefixed getters in [`src/wasm.rs:109-324`](https://github.com/NormB/sipnab/blob/e979ff72db6bf0cafb123ad7b15095bfb9c30d18/src/wasm.rs#L109-L324); `SipMessage::
   to_user/to_host/to_tag/to_display` read as expensive `to_` conversions but
   are cheap "To:"-header accessors — rename toward `to_header_user()` or
   document loudly; `SipMethod::as_str(&self)` vs `TransportProto::as_str(self)`

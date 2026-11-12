@@ -1478,14 +1478,15 @@ fn success_a_killed_center_leaves_a_format_2_store_that_restarts_whole() -> Resu
     Ok(())
 }
 
-/// A center of this build starts on the store a center of release 0.5.244
-/// left (the fixture, written by that release's own code under the test
-/// key), lists its members, and writes the store again as format 2.
+/// A center of this build starts on the store a center of a release up to
+/// 0.5.245 left (the fixture, written by the code of release 0.5.244 under
+/// the test key; 0.5.245 writes the same format), lists its members, and
+/// writes the store again as format 2.
 ///
 /// The fixture's heartbeats were received on 2026-11-07, so the test runs
 /// with the longest retention the flag takes, ten years.
 #[test]
-fn success_a_center_starts_on_a_store_release_0_5_244_wrote() -> Result<(), TestError> {
+fn success_a_center_starts_on_a_store_a_release_up_to_0_5_245_wrote() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
     // Written into a file that is already private: a copy would take the
     // fixture's own permissions, and the center refuses a store others
@@ -1508,7 +1509,7 @@ fn success_a_center_starts_on_a_store_release_0_5_244_wrote() -> Result<(), Test
     assert_eq!(
         member_names(&c.addr)?,
         vec!["edge-a".to_string(), "edge-b".to_string()],
-        "success a center starts on a store release 0.5.244 wrote"
+        "success a center starts on a store a release up to 0.5.245 wrote"
     );
     assert_eq!(std::fs::read(&store)?[4], 2, "written again as format 2");
     Ok(())

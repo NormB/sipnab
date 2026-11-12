@@ -53,6 +53,9 @@ pub struct Selection {
     /// `[api] console`, default off). Resolved by the caller with
     /// `cli.api_console(config)`.
     pub api_console: bool,
+    /// Whether this run starts a HEP listener, resolved by the caller with
+    /// `cli.hep_listen(config).is_some()` (`--hep-listen` / `[hep] listen`).
+    pub hep_listening: bool,
     /// The REST API's certificate and key, resolved by the caller with
     /// `cli.api_tls_files(config)` (`--api-tls-cert` / `[api] tls_cert` and
     /// the key's pair).
@@ -943,7 +946,7 @@ pub fn start_servers(
             // every run reported `port-gated-only`, `--hep-auth-mode hmac`
             // included.
             let s = match hep_delivery_posture(
-                cli.hep_args.hep_listen.is_some(),
+                selection.hep_listening,
                 cli.resolve_hep_auth().ok().flatten().is_some(),
                 cli.hep_args.hep_auth_mode,
             ) {
@@ -1283,6 +1286,7 @@ mod tests {
             mcp_output_schemas: false,
             api_allowed_hosts: Vec::new(),
             api_console: false,
+            hep_listening: false,
             api_tls: (None, None),
             mcp_tls: (None, None),
             metrics_tls: (None, None),

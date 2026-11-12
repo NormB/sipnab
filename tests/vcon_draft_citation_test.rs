@@ -22,8 +22,10 @@
 //! Every `-04` anchor is also checked against the sections `-04` has, so a
 //! mistyped section number fails here rather than in a reader's browser.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::path::Path;
-use std::process::Command;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -196,17 +198,9 @@ fn repo() -> &'static Path {
 
 /// Every tracked file, as text; files that are not UTF-8 are skipped.
 fn tracked_texts() -> Result<Vec<(String, String)>, TestError> {
-    let out = Command::new("git")
-        .args(["ls-files", "-z"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files: {e}"))?;
-    assert!(out.status.success(), "git ls-files failed");
+    let listed = tracked::ls_files(repo(), &[])?;
     let mut texts = Vec::new();
-    for path in String::from_utf8_lossy(&out.stdout)
-        .split('\0')
-        .filter(|s| !s.is_empty())
-    {
+    for path in listed.iter().map(String::as_str) {
         let Ok(bytes) = std::fs::read(repo().join(path)) else {
             // Tracked but deleted in the working tree.
             continue;

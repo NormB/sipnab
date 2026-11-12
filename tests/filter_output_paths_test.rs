@@ -27,6 +27,9 @@ mod test_scratch;
 /// parse and JSON errors alike.
 type TestError = Box<dyn std::error::Error>;
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 #[path = "support/run.rs"]
 mod run_support;
 
@@ -517,10 +520,7 @@ fn a_dialog_filter_does_not_narrow_the_output_capture() -> Result<(), TestError>
 #[test]
 fn no_page_claims_the_output_capture_is_filtered() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = std::process::Command::new("git")
-        .args(["ls-files", "docs/", "website/content/"])
-        .current_dir(root)
-        .output()?;
+    let listed = tracked::ls_files(root, &["--", "docs/", "website/content/"])?;
 
     // Phrases that promise a dialog-filtered `-O`. Each is a sentence a reader
     // would act on, not a passing mention.
@@ -532,7 +532,7 @@ fn no_page_claims_the_output_capture_is_filtered() -> Result<(), TestError> {
 
     let mut offenders = Vec::new();
     let mut scanned = 0;
-    for f in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+    for f in listed.iter().map(String::as_str) {
         if !f.ends_with(".md") {
             continue;
         }

@@ -28,9 +28,11 @@
 //! `package-ecosystem` and a `directory` or `directories`), and no YAML crate
 //! is a dependency of this repository.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::process::Command;
 
 /// Any error a test can return.
 type TestError = Box<dyn std::error::Error>;
@@ -268,18 +270,7 @@ fn covered(updates: &[Update], ecosystem: &str, dir: &str) -> bool {
 
 /// The files `git ls-files` lists in the repository.
 fn tracked_files() -> Result<Vec<String>, TestError> {
-    let out = Command::new("git")
-        .args(["ls-files", "-z"])
-        .current_dir(repo())
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git ls-files: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(str::to_string)
-        .collect())
+    tracked::ls_files(repo(), &[])
 }
 
 /// **Every dependency file the repository tracks has a Dependabot entry.**

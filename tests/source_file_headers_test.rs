@@ -13,6 +13,9 @@
 //! gate and its fixer, `scripts/add-source-headers.py --apply`, both read that
 //! file, so they cannot disagree about the scope.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -177,16 +180,7 @@ fn header_problems(config: &Config, rule: &Rule, text: &str) -> Option<String> {
 }
 
 fn tracked_files() -> Result<Vec<String>, TestError> {
-    let out = Command::new("git")
-        .args(["ls-files", "-z"])
-        .current_dir(repo())
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed");
-    Ok(String::from_utf8(out.stdout)?
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(str::to_string)
-        .collect())
+    tracked::ls_files(repo(), &[])
 }
 
 fn first_line(path: &Path) -> String {

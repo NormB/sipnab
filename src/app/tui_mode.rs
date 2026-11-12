@@ -326,7 +326,7 @@ fn tui_capture_mode(cli: &Cli, config: &Config) -> String {
         .device
         .as_ref()
         .or(config.capture.device.as_ref());
-    match (device, cli.hep_args.hep_listen.as_ref()) {
+    match (device, cli.hep_listen(config)) {
         (Some(device), Some(hep)) => format!("Online ({device} + HEP listener {hep})"),
         (Some(device), None) => format!("Online ({device})"),
         (None, Some(hep)) => format!("Online (HEP listener {hep})"),
@@ -1087,6 +1087,7 @@ fn start_tui_servers(
             mcp_output_schemas: cli.mcp_output_schemas(config),
             api_allowed_hosts: cli.api_allowed_hosts(config),
             api_console: cli.api_console(config),
+            hep_listening: cli.hep_listen(config).is_some(),
             api_tls: cli.api_tls_files(config),
             mcp_tls: cli.mcp_tls_files(config),
             metrics_tls: cli.metrics_tls_files(config),

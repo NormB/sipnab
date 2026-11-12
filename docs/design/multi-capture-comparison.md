@@ -59,9 +59,9 @@ Call-ID in both files. That sounds like the answer. It is the problem, because
 sipnab's store is Call-ID-keyed and will *merge* the two observations rather than
 distinguish them.
 
-`DialogStore::merge` ([`dialog_store.rs:1633`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1633))
+`DialogStore::merge` ([`dialog_store.rs:760`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/sip/dialog_store.rs#L760))
 carries a doc section headed *"Same-Call-ID collisions are the normal case, not
-the rare one"* ([`:759`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L759)), and its stated
+the rare one"* ([`:719`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/sip/dialog_store.rs#L719)), and its stated
 resolution is a sum, not a choice:
 
 > So a collision is not a contest to be won. The fragments are disjoint
@@ -80,7 +80,7 @@ agreed, and destroys the disagreement it was built to find.
 
 A back-to-back user agent terminates one dialog and originates another. New
 Call-ID, new tags, new branch, frequently a rewritten From and To. Nothing in
-`SipDialog` ([`dialog.rs:87-140`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L87-L140)) survives the crossing
+`SipDialog` ([`dialog.rs:154-270`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L154-L270)<!-- "pub struct SipDialog {" -->) survives the crossing
 as a stable identifier. `call_id`, `from_tag`, `to_tag`, `src_addr`, `dst_addr`,
 `src_port` and `dst_port` all change by definition; `from_user` and `to_user`
 change whenever the B2BUA does number translation, which is most of why it is
@@ -143,11 +143,11 @@ Nothing in section 2 is reachable today, for the reason
 [`deferred-and-declined.md` section 1, *TUI multi-session / multi-capture comparison*](deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison)
 established: there is no
 capture provenance anywhere in the data model. `Packet.interface`
-([`packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)) is the only source-identifying
+([`packet.rs:50`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/capture/packet.rs#L50)) is the only source-identifying
 field and the file reader hard-codes it to `None`; `ParsedPacket` does not carry
 it forward; `SipMessage` and `SipDialog` have no source field at all. `-I`
 resolves a whole set into **one** store, and `warn_on_overlap`
-([`input_set.rs:1097`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1097)) exists specifically to warn
+([`input_set.rs:1103`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1103)<!-- "fn warn_on_overlap(resolved: &[ResolvedInput]) {" -->) exists specifically to warn
 operators away from feeding it two captures of the same traffic.
 
 This document assumes an interned `u16` capture index reaching `SipDialog` —
@@ -170,7 +170,7 @@ the only spelling that does not collide. Two captures, not N: the correlation
 output is pairwise, and an N-way version has no defined meaning for "differs".
 
 **The TUI needs a session concept it does not have.** `TuiOptions`
-([`state.rs:218-232`](https://github.com/NormB/sipnab/blob/main/src/tui/state.rs#L218-L232), whose only capture-related field
+([`state.rs:218-232`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/tui/state.rs#L218-L232), whose only capture-related field
 is the `protected_inputs` save guard at `:231`) carries no path — the `-I` set is
 consumed by `bootstrap::launch` and never reaches the TUI. Opening a capture from
 inside the TUI *clears* both stores rather than adding a session: `reset_for_load`
@@ -182,7 +182,7 @@ pair of stores, which puts it under
 treatment the in-TUI `pcap-load` path already got.
 
 **`View` cannot address a second session.** Every data-bearing variant of the
-`View` enum ([`state.rs:1045-1093`](https://github.com/NormB/sipnab/blob/main/src/tui/state.rs#L1045-L1093)) is keyed on a
+`View` enum ([`state.rs:1039-1087`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/tui/state.rs#L1039-L1087)) is keyed on a
 Call-ID or a `StreamKey` and nothing else: `CallFlow(String)`,
 `CallTimeline(String)`, `RawMessage { call_id, message_index }`, `MessageDiff {
 call_id, msg1_idx, msg2_idx }`, `StreamDetail(StreamKey)`. Two dialogs from two
@@ -210,7 +210,7 @@ side only are the point of the view and get the strongest emphasis available.
 
 **Message diff.** Reached from a matched message pair. This one already exists in
 useful form — `View::MessageDiff` — and its controller currently refuses to cross
-even a dialog boundary ([`call_flow.rs:639`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/call_flow.rs#L639)):
+even a dialog boundary ([`call_flow.rs:639`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/tui/controllers/call_flow.rs#L639)):
 
 ```rust
 app.status_error = Some("Diff across dialogs is not supported".to_string());
@@ -221,7 +221,7 @@ calls. Under comparison it becomes the exact operation wanted, and the refusal
 must be relaxed *only* for a confirmed cross-session pair — not removed.
 
 The MCP surface has the single-capture ancestor of all three: `compare_dialogs`
-([`server.rs:7247`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7247)) takes two Call-IDs, projects state,
+([`server.rs:7235`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7235)<!-- "name = "compare_dialogs"," -->) takes two Call-IDs, projects state,
 final status code, message count, methods and hints for each, and names the keys
 that differ. Its shape is right and its scope is one store — both Call-IDs are
 looked up in the same `dialog_store`. Extending it to cross sessions is the same

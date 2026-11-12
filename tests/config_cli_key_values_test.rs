@@ -614,6 +614,31 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    // The listener's allowlist. `ctx` starts the listener the list applies
+    // to; without one the key loads and does nothing.
+    (
+        "hep",
+        "allow",
+        KeyKind::Literal {
+            accept: &[
+                "[\"198.51.100.0/24\"]",
+                "[\"203.0.113.7\", \"2001:db8::/32\"]",
+            ],
+            reject: &["[\"\"]", "[\"198.51.100.0/99\"]", "[\"x\"]"],
+            ctx: "listen = \"127.0.0.1:9060\"",
+        },
+    ),
+    // The listener's address. A routable one with neither an allowlist nor
+    // a secret is refused, as `--hep-listen` is.
+    (
+        "hep",
+        "listen",
+        KeyKind::Literal {
+            accept: &["\"127.0.0.1:9060\"", "\"[::1]:9060\"", "\"127.0.0.1:0\""],
+            reject: &["\"\"", "\" \"", "\"x\"", "\"192.0.2.10:9060\""],
+            ctx: "",
+        },
+    ),
     ("hep", "send_queue_mib", KeyKind::Int { lo: 1, hi: 4096 }),
     ("hep", "send_timeout_secs", KeyKind::Int { lo: 1, hi: 300 }),
     (

@@ -1015,6 +1015,7 @@ tls_key = "/etc/sipnab/api.key"
 
 - The listener itself still starts on the command line (`--api`,
   `--mcp --mcp-transport http`, `--metrics`, `--hep-send`, `--hep-listen`).
+  The HEP listener also starts from [`[hep] listen`](#hep).
 - The keys say what it serves with when it starts.
 
 How the flags and keys combine:
@@ -1050,8 +1051,12 @@ tls_key = "/etc/sipnab/metrics.key"
 
 ### [hep]
 
-TLS for HEP, and the HEP sender's queue:
+The HEP listener's address and allowlist, TLS for HEP, and the HEP sender's
+queue:
 
+- the address the listener binds and the sources it admits, so a service
+  that receives HEP needs neither on its command line
+  ([Keep the listener in the config file](@/docs/hep.md#keep-the-listener-in-the-config-file));
 - the CA the sender (`--hep-send-transport tls`) checks the collector's
   certificate against;
 - the certificate a TLS listener (`--hep-listen-transport tls`) presents;
@@ -1060,6 +1065,8 @@ TLS for HEP, and the HEP sender's queue:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `listen` | string | -- | Address the HEP listener binds, as `IP:PORT`, for example `127.0.0.1:9060` or `[::1]:9060`. Setting it starts the listener, as `--hep-listen` does, in every run that does not read capture files. With `-I` the key is not used, and sipnab says so in a startup warning naming the key. With `-d` it adds the listener to the interface. A routable address needs `allow`, `--hep-allow` or a shared secret, as the flag does; sipnab refuses one without, with exit status 1, naming the key. An empty string fails validation and names the key. `--hep-listen` overrides it |
+| `allow` | list of strings | `[]` | Source addresses the HEP listener admits, each an address (`198.51.100.10`) or a CIDR range (`198.51.100.0/24`, `2001:db8::/32`). They are also the only senders whose OpenSIPS `E_SIPNAB_TH_MAP` events the listener accepts. An entry that is empty or is not an address or a range stops sipnab at startup, naming the key. On a run that starts no HEP listener it does nothing, and sipnab says so in a startup warning naming the key. `--hep-allow`, given at least once, replaces the whole list: its values are not added to the key's. `--hep-allow` overrides it |
 | `tls_ca` | path | -- | CA (PEM) the sender checks the collector's certificate against. It **replaces** the host's CA bundle: the sender accepts only certificates this file issued. Set this or `tls_extra_ca`, not both. An empty string fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-ca` overrides it |
 | `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. An empty string fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-extra-ca` overrides it |
 | `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. An empty string fails validation and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-cert` overrides it |
@@ -1079,6 +1086,14 @@ The sender's trust is one setting.
 tls_extra_ca = "/etc/sipnab/collector-ca.pem"
 send_queue_mib = 256
 send_timeout_secs = 5
+```
+
+A listener that two SIP servers feed:
+
+```toml
+[hep]
+listen = "198.51.100.1:9060"
+allow = ["198.51.100.10", "198.51.100.11"]
 ```
 
 ### `[vcon_forward]`

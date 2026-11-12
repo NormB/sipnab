@@ -251,7 +251,7 @@ Two cleanups land before any MCP work because every subsequent sub-phase builds 
 
 **8.0a — Parse-path consolidation** (~1.5 days)
 
-- [ ] **Audit the double-parse in batch+API mode.** Verified call chain today: `processor.process()` ([`src/app/batch.rs:2234`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2234)) does Ethernet/IP/TCP/UDP reassembly only — no SIP parsing. `process_parsed_packet()` ([`src/app/batch.rs:5911`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5911)) does the first SIP parse + `dialog_store.process_message` against the local store. `mirror_to_shared_stores()` (`:1326` invocation, `:2142` definition) does a second full SIP parse + a second `dialog_store.process_message` against the `Arc<RwLock<...>>` shared store. Result: every matching packet is parsed twice when `--api` is on in batch mode.
+- [ ] **Audit the double-parse in batch+API mode.** Verified call chain today: `processor.process()` ([`src/app/batch.rs:2357`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2357)<!-- "tls.late_still_held ));" -->) does Ethernet/IP/TCP/UDP reassembly only — no SIP parsing. `process_parsed_packet()` ([`src/app/batch.rs:5912`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5912)<!-- "fn process_parsed_packet(" -->) does the first SIP parse + `dialog_store.process_message` against the local store. `mirror_to_shared_stores()` (`:1326` invocation, `:2142` definition) does a second full SIP parse + a second `dialog_store.process_message` against the `Arc<RwLock<...>>` shared store. Result: every matching packet is parsed twice when `--api` is on in batch mode.
 - [ ] **Refactor batch mode to share stores from the start**, mirroring the TUI mode pattern (which already passes `Arc<RwLock<...>>` between the processing thread and `start_api_server`). After the refactor: one parse per packet, regardless of how many output sinks are attached. The EventBus from 8.4a will subscribe off this single parse path.
 - [ ] **Gate:** `cargo bench parser_bench` shows no regression in batch-without-API throughput, and shows the previous batch-with-API throughput approximately double (because the second parse is gone). An end-to-end test confirms `cargo run -- -I <pcap> --api :0 --json` produces JSON output identical to the pre-refactor output.
 
@@ -473,7 +473,7 @@ Add the remaining read-only tools that round out the agent's debugging vocabular
 - [ ] **`search_messages(query, since=null, until=null, limit=50)`** — substring match over SIP method, status, From, To, User-Agent, and body across all dialogs. Returns `(call_id, message_index, snippet)` triples. Wraps the same iteration the `--filter` CLI path uses.
 - [ ] **`tail_dialogs(cursor=null, limit=50)`** — incremental fetch of dialogs updated since a cursor. Cursor is an opaque [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) timestamp string (the `updated_at` of the last dialog returned). Lets a polling agent track changes without re-reading everything.
 - [ ] **`tail_dialogs` post-EOF semantics:** when the capture source is a finished pcap (`-I` mode), the response envelope carries `source_exhausted: true` once all events have been delivered, and a one-shot `sipnab/source_exhausted` MCP notification fires the first time the source ends. Subsequent `tail_dialogs` calls continue to return `source_exhausted: true` with empty `dialogs` arrays. Prevents an agent from polling a finished source forever.
-- [ ] **`security_findings(kinds?=["scanner","reg_flood","digest_leak","fraud","stir_shaken"], since=null, limit=50)`** — recent findings from the existing security detectors. **Prerequisite:** `AlertEngine` ([`src/security/alerting.rs:445`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L445)) currently retains *only* the per-(IP, rule) cooldown map (`:122`); there is no findings history. Phase 8.3 must add a `FindingsHistory` ring buffer to `AlertEngine` as a discrete sub-task — see new task immediately below.
+- [ ] **`security_findings(kinds?=["scanner","reg_flood","digest_leak","fraud","stir_shaken"], since=null, limit=50)`** — recent findings from the existing security detectors. **Prerequisite:** `AlertEngine` ([`src/security/alerting.rs:445`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L445)<!-- "/// Alerting" -->) currently retains *only* the per-(IP, rule) cooldown map (`:122`); there is no findings history. Phase 8.3 must add a `FindingsHistory` ring buffer to `AlertEngine` as a discrete sub-task — see new task immediately below.
 - [ ] **`AlertEngine::FindingsHistory` (new sub-task — prerequisite for `security_findings`):**
   - `Finding` struct: `{rule_name: String, src_ip: IpAddr, detail: String, timestamp: DateTime<Utc>, call_id: Option<String>}`. Captured in `AlertEngine::fire` *after* the cooldown check passes (so deduplicated findings aren't double-counted)
   - Bounded `VecDeque<Finding>`, default capacity 1000, configurable via `--mcp-findings-retain <N>` (Open Question #3). Oldest-evicted-first
@@ -1671,32 +1671,32 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | MCP tool | Wraps |
 |---|---|
-| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1613`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1613)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:1101`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1101)) + `expand_alias` ([`src/sip/dsl.rs:746`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L746)) |
-| `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1597`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1597)) + iterate `dialog.messages` + `output::json::message_to_json` |
-| `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
-| `get_message` | `output::json::message_to_json` ([`src/output/json.rs:725`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L725)) |
+| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1644`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1644)<!-- "pub fn iter(&self) -> impl Iterator<Item = &SipDialog> {" -->) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:1101`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1101)<!-- "/// `true` when the dialog" -->) + `expand_alias` ([`src/sip/dsl.rs:747`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L747)<!-- "pub fn expand_alias(alias:" -->) |
+| `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1609`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1609)<!-- "pub fn get(&self," -->) + iterate `dialog.messages` + `output::json::message_to_json` |
+| `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:55`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L55)<!-- "pub fn generate_call_report(" -->) with `ReportFormat::Json/Markdown/Text` |
+| `get_message` | `output::json::message_to_json` ([`src/output/json.rs:730`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L730)<!-- "pub fn message_to_json(msg: &SipMessage) -> String {" -->) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |
-| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:2509`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2509)) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
+| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:2509`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2509)<!-- "pub fn iter(&self)" -->) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
 | `search_messages` | Same iteration the `--filter` CLI path uses; `FilterExpr` covers most of it |
 | `find_problems` | `list_dialogs` with each `expand_alias` result OR'd |
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5740`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5740)) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5741`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5741)<!-- "async fn get_stats(" -->) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1221`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1221)) |
-| Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:283`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L283), `:309`) |
-| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:584`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L584)) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1231`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1231)<!-- "pub fn parse_bind_addr(addr:" -->) |
+| Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:288`](https://github.com/NormB/sipnab/blob/4eadcc9d8d9a2a8b6db252ec3d9a3a8008f0e15f/src/output/api.rs#L288), `:309`) |
+| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:586`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L586)<!-- "pub struct RateLimiter {" -->) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |
-| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:1069`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1069)) with new routes; reuse the existing `guard()` middleware |
+| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:1076`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1076)<!-- "pub fn build_router(state:" -->) with new routes; reuse the existing `guard()` middleware |
 
 | Phase 8.4 sink | Wraps |
 |---|---|
-| `ExecSink` | Existing `EventExecEngine::fire_dialog_event` / `fire_quality_event` ([`src/output/event_exec.rs:395`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L395), `:131`) — refactored to be one of N sinks rather than the only one |
+| `ExecSink` | Existing `EventExecEngine::fire_dialog_event` / `fire_quality_event` ([`src/output/event_exec.rs:416`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L416)<!-- "pub fn fire_quality_event(&mut" -->, `:131`) — refactored to be one of N sinks rather than the only one |
 | `McpSink` | New, publishes to MCP via rmcp `notifications/resources/updated` and custom `sipnab/dialog_event` |
 | `WsSink` | New, broadcasts NDJSON over `axum::extract::ws::WebSocketUpgrade` |
 | `SseSink` | New, broadcasts SSE frames over `axum::response::sse::Sse` |
@@ -1707,7 +1707,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | Swagger UI mount | New `/docs` route on the existing axum Router |
 | OTel span on capture | `#[tracing::instrument]` on `capture::start_capture` ([`src/capture/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs)) |
 | OTel span on parse | `#[tracing::instrument]` on `sip::parser::parse_sip` ([`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs)) |
-| OTel span on dialog state | `#[tracing::instrument]` on `DialogStore::process_message` ([`src/sip/dialog_store.rs:1465`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1465)) |
+| OTel span on dialog state | `#[tracing::instrument]` on `DialogStore::process_message` ([`src/sip/dialog_store.rs:1468`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1468)<!-- "pub fn process_message(&mut self, msg: SipMessage) {" -->) |
 | OTel span on API handler | `#[tracing::instrument]` on each axum handler in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) |
 | OTel span on MCP tool | `#[tracing::instrument]` on each `#[tool]` method in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) |
 | OTel metrics export | New layer on existing Prometheus endpoint ([`src/output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs)) plus OTLP exporter |
@@ -1722,8 +1722,8 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | Phase 8.6 expansion (★) | Wraps |
 |---|---|
-| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:319`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L319) — bump interval, add `status` field |
-| OK/poor/uncertain trichotomy | New classification function alongside existing `estimate_mos` ([`src/rtp/quality.rs:83`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L83)) |
+| Quality timeline 680ms intervals | Existing `QualityInterval` in [`src/rtp/stream.rs:319`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L319)<!-- "#[derive(Debug, Clone)]" --> — bump interval, add `status` field |
+| OK/poor/uncertain trichotomy | New classification function alongside existing `estimate_mos` ([`src/rtp/quality.rs:84`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L84)<!-- "pub fn estimate_mos(jitter_ms:" -->) |
 | `.sipnab` project file | New module `src/project.rs`; reuses existing `output::json::dialog_to_json` for report content and `audio_export` for WAV files |
 | `--open <foo.sipnab>` | New CLI dispatch path that bypasses the capture pipeline and rehydrates `DialogStore`/`StreamStore` from `report.json` |
 | `--save-project <foo.sipnab>` | Wraps existing JSON output + `audio_export::extract_audio` ([`src/rtp/audio_export.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/audio_export.rs)) into a directory layout |
@@ -1731,13 +1731,13 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | Phase 8.7 surface (★) | Wraps |
 |---|---|
 | `codec_asymmetry` | Compares `RtpStream::codec` (`src/rtp/stream.rs:309 codec_from_pt`) across the two streams of a dialog |
-| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:1163`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L1163)) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
+| `ptime_asymmetry` | Inferred from RTP inter-arrival in `RtpStream::update` ([`src/rtp/stream.rs:1163`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L1163)<!-- "/// the current" -->) or SDP `a=ptime:` parsed in [`src/sip/sdp.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs) |
 | `payload_asymmetry` | Compares payload types across streams; data already in `RtpStream` |
 | `duration_asymmetry` | Compares stream start/end timestamps already tracked in `RtpStream` |
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |
 | `one_sided_silence` | New analysis on decoded PCM samples from `audio_export`; energy threshold computation |
-| All six tags | Extend existing `MediaDiagnosis` struct in [`src/rtp/diagnosis.rs:66`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs#L66) (additive — backwards compatible JSON) |
-| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:746`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L746) |
+| All six tags | Extend existing `MediaDiagnosis` struct in [`src/rtp/diagnosis.rs:239`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs#L239)<!-- "pub struct MediaDiagnosis {" --> (additive — backwards compatible JSON) |
+| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:747`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L747)<!-- "pub fn expand_alias(alias:" --> |
 | TUI badges | Extend existing badge column in [`src/tui/call_list.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_list.rs) |
 | MCP `find_problems` integration | No code change — it consumes `expand_alias` already (Phase 8.3) |
 

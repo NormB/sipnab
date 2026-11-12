@@ -37,11 +37,13 @@
 //! capture that has just been `git add`ed is in the index before it is in any
 //! commit, which is the last moment it is cheap to take back.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
@@ -497,22 +499,9 @@ fn repo() -> PathBuf {
 /// The hook's `GIT_INDEX_FILE` is inherited on purpose: under `git commit` it
 /// names the index being committed, which is the set this gate is about.
 fn tracked_paths() -> Result<Vec<String>, TestError> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo())
-        .args(["ls-files", "-z"])
-        .output()?;
-    assert!(
-        out.status.success(),
-        "git ls-files failed, so the gate cannot see the index: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Ok(out
-        .stdout
-        .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
-        .map(|p| String::from_utf8_lossy(p).into_owned())
-        .collect())
+    // A failure is an error here: without the listing the gate cannot see
+    // the index.
+    tracked::ls_files(repo(), &[])
 }
 
 /// Up to [`HEAD`] leading bytes of a tracked file, or `None` if it is not on

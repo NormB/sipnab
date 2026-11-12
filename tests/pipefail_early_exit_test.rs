@@ -28,6 +28,9 @@
 use std::path::Path;
 use std::process::Command;
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 #[path = "support/pipefail_scan.rs"]
 mod pipefail_scan;
 
@@ -753,18 +756,7 @@ fn is_prose(path: &str) -> bool {
 }
 
 fn tracked_files() -> Result<Vec<String>, TestError> {
-    let out = Command::new("git")
-        .current_dir(repo())
-        .args(["ls-files", "-z"])
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git ls-files: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8(out.stdout)?
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(str::to_owned)
-        .collect())
+    tracked::ls_files(repo(), &[])
 }
 
 #[test]

@@ -1809,7 +1809,14 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // mcp-deploy.md +1, each "Before you start" linking sections of its page;
     // auth.md +7 (its "Before you start" links one of its sections and its
     // troubleshooting table six).
-    const EXPECTED_WIKI_LINKS: usize = 2587;
+    // 2587 -> 2593 (HEP-LISTEN-CONFIG-KEYS): hep.md +4 (config-reference.md,
+    // its own "Have your SIP server send HEP" and "Require a shared secret",
+    // run-as-a-service.md) and config-reference.md +2 (its [hep] section and
+    // hep.md's new section).
+    // 2593 -> 2594 (failed fleet append, merged after the HEP keys):
+    // errors.md +1, the sealed layer's refusal list links to fleet.md's
+    // "Encrypt the center's store".
+    const EXPECTED_WIKI_LINKS: usize = 2594;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1961,7 +1968,10 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // origin/main db378a415.
     // 147 -> 148 (web console): README.md's paragraph on `--api-console`
     // links docs/rest-api.md#web-console.
-    const EXPECTED_COMMUNITY_LINKS: usize = 148;
+    // 148 -> 149 (rsa 0.10): the count the test gave after that change added a
+    // docs/vcon.md link to SECURITY.md and an osv-scanner.toml link to
+    // CONTRIBUTING.md's line on accepted advisories.
+    const EXPECTED_COMMUNITY_LINKS: usize = 149;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

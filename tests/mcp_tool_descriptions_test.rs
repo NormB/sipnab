@@ -22,6 +22,9 @@
 //! after it rejected a correct release commit). One implementation, run by
 //! `cargo test` like every other gate here.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 #[path = "support/mcp_reference.rs"]
 mod mcp_reference;
 
@@ -230,11 +233,7 @@ fn an_export_that_synthesizes_frames_says_so_where_the_model_reads() -> Result<(
 #[test]
 fn every_cited_script_exists() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = std::process::Command::new("git")
-        .args(["ls-files", "*.rs"])
-        .current_dir(repo)
-        .output()?;
-    let listing = String::from_utf8_lossy(&out.stdout);
+    let listing = tracked::ls_files(repo, &["--", "*.rs"])?.join("\n");
 
     // Anchored and extension-bearing, both learned by getting it wrong:
     // an unanchored `scripts/...` clipped the `harness/` off a real path and

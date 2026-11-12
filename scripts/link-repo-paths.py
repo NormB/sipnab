@@ -43,11 +43,12 @@ Under `docs/internals/` the rule inverts, and the link is RELATIVE:
 Linking exposes nothing -- every path matched is already tracked, so it is
 already public; the link only makes it findable.
 """
-import pathlib, re, subprocess, sys
+import pathlib, re, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from lib_markdown import code_trees, fence_mask, repo_root  # noqa: E402
+from lib_tracked import ls_files  # noqa: E402
 
 # Derived from __file__, never hardcoded: this script runs inside git
 # worktrees, and an absolute root makes a fixer invoked from a worktree edit
@@ -56,8 +57,7 @@ ROOT = repo_root()
 BASE = "https://github.com/NormB/sipnab"
 
 def git_files() -> list[str]:
-    return subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True,
-                          text=True, check=True).stdout.split()
+    return ls_files(ROOT)
 
 tracked = set(git_files())
 
