@@ -31,6 +31,8 @@ use std::process::Command;
 
 #[path = "support/release_logic.rs"]
 mod release_logic;
+#[path = "support/release_tags.rs"]
+mod release_tags;
 #[path = "../src/test_scratch.rs"]
 mod test_scratch;
 
@@ -91,10 +93,11 @@ fn crate_version() -> Result<(u32, u32, u32), TestError> {
     Ok(parse_version(raw).ok_or_else(|| format!("unparseable crate version {raw:?}"))?)
 }
 
-/// Every `vX.Y.Z` tag in the repository, ascending.
+/// Every `vX.Y.Z` tag that counts for this checkout
+/// (`tests/support/release_tags.rs`), ascending.
 fn tags() -> Vec<(u32, u32, u32)> {
-    let out = git(&["tag", "--list", "v*"]).unwrap_or_default();
-    let mut v: Vec<_> = out.lines().filter_map(parse_version).collect();
+    let out = release_tags::reachable_release_tags(&repo()).unwrap_or_default();
+    let mut v: Vec<_> = out.iter().filter_map(|t| parse_version(t)).collect();
     v.sort_unstable();
     v
 }
@@ -1362,6 +1365,309 @@ fn the_unreleased_section_names_each_kind_of_change_once() -> Result<(), TestErr
         "CHANGELOG.md's [Unreleased] section repeats a heading; move the entries under one \
          heading (a merge of two branches leaves this without a conflict):\n{}",
         report.join("\n")
+    );
+    Ok(())
+}
+
+// ── Which tags a release test counts (tests/support/release_tags.rs) ──────
+//
+// RELEASE-TESTS-READ-UNREACHABLE-TAGS. `TagFixture` is the case that failed:
+// `main` holds a release tagged `v1.0.0`, and the checkout is on `topic`,
+// which branched before it. The tag is in the repository and is not part of
+// what `topic` holds.
+
+/// The release tags that count in the fixture, sorted.
+fn counted_tags(f: &TagFixture) -> Result<Vec<String>, TestError> {
+    let mut tags = release_tags::reachable_release_tags(f.0.path())
+        .ok_or("git could not list the fixture's tags")?;
+    tags.sort();
+    Ok(tags)
+}
+
+/// The defect: a tag fetched into the repository, on a commit the branch
+/// does not hold, is not one of the branch's releases.
+#[test]
+fn a_tag_the_branch_does_not_hold_is_not_counted() -> Result<(), TestError> {
+    let f = TagFixture::new("tags-unreachable")?;
+    assert_eq!(
+        counted_tags(&f)?,
+        Vec::<String>::new(),
+        "topic branched before v1.0.0 and has not merged it"
+    );
+    Ok(())
+}
+
+/// On the branch that holds the release, its tag counts.
+#[test]
+fn a_tag_on_the_checked_out_branch_is_counted() -> Result<(), TestError> {
+    let f = TagFixture::new("tags-on-branch")?;
+    f.run(&["checkout", "-q", "main"])?;
+    assert_eq!(counted_tags(&f)?, ["v1.0.0"], "main holds the release");
+    Ok(())
+}
+
+/// A merge in progress counts the tags of the side it merges in: the commit
+/// hook runs these tests before the merge commit exists, on a working tree
+/// that already holds the release.
+#[test]
+fn a_merge_in_progress_counts_the_tags_it_brings_in() -> Result<(), TestError> {
+    let f = TagFixture::new("tags-merging")?;
+    f.run(&["merge", "-q", "--no-ff", "--no-commit", "main"])?;
+    assert!(
+        release_tags::merge_in_progress(f.0.path()),
+        "the fixture has a merge in progress"
+    );
+    assert_eq!(
+        counted_tags(&f)?,
+        ["v1.0.0"],
+        "the release being merged in counts before the merge commit exists"
+    );
+    Ok(())
+}
+
+/// Once the merge is committed the tag is reachable from `HEAD` itself.
+#[test]
+fn a_merged_release_tag_is_counted_after_the_merge_commit() -> Result<(), TestError> {
+    let f = TagFixture::new("tags-merged")?;
+    f.run(&["merge", "-q", "--no-ff", "--no-commit", "main"])?;
+    f.run(&["commit", "-qm", "merge the release"])?;
+    assert!(
+        !release_tags::merge_in_progress(f.0.path()),
+        "the merge is committed"
+    );
+    assert_eq!(counted_tags(&f)?, ["v1.0.0"], "the merged release counts");
+    Ok(())
+}
+
+/// A later release on `main` does not count on a branch that merged only
+/// the earlier one: each tag is judged by itself.
+#[test]
+fn only_the_merged_one_of_two_releases_is_counted() -> Result<(), TestError> {
+    let f = TagFixture::new("tags-two-releases")?;
+    f.run(&["merge", "-q", "--no-ff", "-m", "merge the release", "main"])?;
+    f.run(&["checkout", "-q", "main"])?;
+    f.write("src/later.rs", "// in the later release\n")?;
+    f.commit("later release")?;
+    f.run(&["tag", "v1.0.1"])?;
+    assert_eq!(
+        counted_tags(&f)?,
+        ["v1.0.0", "v1.0.1"],
+        "main holds both releases"
+    );
+    f.run(&["checkout", "-q", "topic"])?;
+    assert_eq!(
+        counted_tags(&f)?,
+        ["v1.0.0"],
+        "topic merged v1.0.0 and not v1.0.1"
+    );
+    Ok(())
+}
+
+/// A tag that is not a `v*` tag is not a release tag, reachable or not.
+#[test]
+fn a_tag_that_is_not_a_release_tag_is_not_counted() -> Result<(), TestError> {
+    let f = TagFixture::new("tags-other-names")?;
+    f.run(&["tag", "nightly"])?;
+    f.run(&["tag", "release-1.0.0"])?;
+    f.run(&["tag", "v0.9.0"])?;
+    assert_eq!(
+        counted_tags(&f)?,
+        ["v0.9.0"],
+        "of three tags on HEAD only the v* one is a release tag"
+    );
+    Ok(())
+}
+
+/// An older release tagged on a commit the branch does not hold still
+/// counts, as `v0.5.144` does in this repository: it is not newer than the
+/// newest release the branch holds. On a branch that holds no release it
+/// does not count.
+#[test]
+fn an_older_release_on_a_commit_outside_the_history_is_counted() -> Result<(), TestError> {
+    let f = TagFixture::new("tags-old-side")?;
+    f.run(&["checkout", "-q", "-b", "side", "topic"])?;
+    f.write("side.md", "a release cut from a side commit\n")?;
+    f.commit("side release")?;
+    f.run(&["tag", "v0.9.0"])?;
+    f.run(&["checkout", "-q", "main"])?;
+    assert_eq!(
+        counted_tags(&f)?,
+        ["v0.9.0", "v1.0.0"],
+        "main holds v1.0.0, and v0.9.0 is older than it"
+    );
+    f.run(&["checkout", "-q", "topic"])?;
+    assert_eq!(
+        counted_tags(&f)?,
+        Vec::<String>::new(),
+        "topic holds no release, so no tag is known to be older than one"
+    );
+    Ok(())
+}
+
+/// The rule as a function of the two lists: every tag in the repository, and
+/// the reachable ones.
+#[test]
+fn the_counting_rule_drops_only_releases_newer_than_the_newest_reachable_one() {
+    let list = |names: &[&str]| names.iter().map(|n| (*n).to_string()).collect::<Vec<_>>();
+    let all = list(&[
+        "v0.5.144", "v0.5.245", "v0.5.246", "v0.5.247", "v0.5.9", "vnext",
+    ]);
+    assert_eq!(
+        release_tags::counted_tags(&all, &list(&["v0.5.9", "v0.5.245"])),
+        list(&["v0.5.144", "v0.5.245", "v0.5.9"]),
+        "a checkout at 0.5.245: the two later releases and the unparsed name are dropped"
+    );
+    assert_eq!(
+        release_tags::counted_tags(&all, &list(&["v0.5.9", "v0.5.245", "v0.5.246", "v0.5.247"])),
+        list(&["v0.5.144", "v0.5.245", "v0.5.246", "v0.5.247", "v0.5.9"]),
+        "a checkout at the newest release counts every vX.Y.Z tag"
+    );
+    assert_eq!(
+        release_tags::counted_tags(&all, &list(&["vnext"])),
+        list(&["vnext"]),
+        "a reachable tag counts whatever its name; with no reachable version nothing else does"
+    );
+    assert_eq!(
+        release_tags::counted_tags(&all, &[]),
+        Vec::<String>::new(),
+        "nothing reachable, nothing counted"
+    );
+    assert_eq!(
+        release_tags::counted_tags(&[], &list(&["v1.0.0", "v1.0.0"])),
+        list(&["v1.0.0"]),
+        "a reachable tag missing from the full list still counts, once"
+    );
+}
+
+/// A tag name is a version only as `vX.Y.Z` with three numbers.
+#[test]
+fn a_tag_name_is_a_version_only_as_v_and_three_numbers() {
+    assert_eq!(
+        release_tags::tag_version("v0.5.247"),
+        Some((0, 5, 247)),
+        "vX.Y.Z"
+    );
+    for name in [
+        "0.5.247",
+        "v0.5",
+        "v0.5.247.1",
+        "v0.5.x",
+        "v0.5.247-rc1",
+        "vnext",
+        "v",
+        "",
+    ] {
+        assert_eq!(
+            release_tags::tag_version(name),
+            None,
+            "{name:?} is not vX.Y.Z"
+        );
+    }
+}
+
+/// A directory that is not a repository gives no answer, which is not the
+/// same as an empty list.
+#[test]
+fn a_directory_that_is_not_a_repository_gives_no_tag_list() -> Result<(), TestError> {
+    let dir = test_scratch::ScratchDir::new("sipnab-delivery-tags-no-repo-")?;
+    // GIT_CEILING_DIRECTORIES is not needed: the scratch directory is under
+    // the system temp directory, outside any repository.
+    assert_eq!(
+        release_tags::reachable_release_tags(dir.path()),
+        None,
+        "a directory with no repository"
+    );
+    assert!(
+        !release_tags::merge_in_progress(dir.path()),
+        "no repository, no merge"
+    );
+    Ok(())
+}
+
+/// A repository with no commit yet gives no answer either: `HEAD` names
+/// nothing a tag could be reachable from.
+#[test]
+fn a_repository_with_no_commit_gives_no_tag_list() -> Result<(), TestError> {
+    let dir = test_scratch::ScratchDir::new("sipnab-delivery-tags-unborn-")?;
+    let made = fixture_git(dir.path())
+        .args(["init", "-q", "-b", "main"])
+        .status()?;
+    assert!(made.success(), "git init in the scratch directory");
+    assert_eq!(
+        release_tags::reachable_release_tags(dir.path()),
+        None,
+        "a repository with no commit"
+    );
+    Ok(())
+}
+
+/// The arguments name `HEAD`, name `MERGE_HEAD` only during a merge, and
+/// keep the `v*` pattern.
+#[test]
+fn the_tag_list_arguments_name_head_and_the_merge_only_when_merging() {
+    assert_eq!(
+        release_tags::tag_list_args(false).join(" "),
+        "tag --list v* --merged HEAD",
+        "with no merge in progress"
+    );
+    assert_eq!(
+        release_tags::tag_list_args(true).join(" "),
+        "tag --list v* --merged HEAD --merged MERGE_HEAD",
+        "with a merge in progress"
+    );
+}
+
+/// The hook's own variables do not point the listing at another repository:
+/// git sets `GIT_DIR` and `GIT_INDEX_FILE` for a hook, and this listing runs
+/// inside the commit hook.
+#[test]
+fn the_tag_listing_ignores_a_hooks_git_variables() -> Result<(), TestError> {
+    let f = TagFixture::new("tags-hook-env")?;
+    f.run(&["checkout", "-q", "main"])?;
+    let text = std::fs::read_to_string(repo().join("tests/support/release_tags.rs"))?;
+    for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+        assert!(
+            text.contains(&format!(".env_remove(\"{var}\")")),
+            "tests/support/release_tags.rs does not clear {var}"
+        );
+    }
+    assert_eq!(counted_tags(&f)?, ["v1.0.0"], "the fixture's own tags");
+    Ok(())
+}
+
+/// One rule in one place: no test file lists tags with its own `git tag`
+/// arguments. A second copy of the rule is how three files came to read
+/// every tag in the repository while one read the reachable ones.
+#[test]
+fn only_the_shared_rule_lists_tags() -> Result<(), TestError> {
+    let root = repo().join("tests");
+    let mut found = Vec::new();
+    for dir in [root.clone(), root.join("support")] {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.ends_with("support/release_tags.rs")
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)?;
+            for (i, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or_default();
+                let lists = code.contains(concat!("\"tag\", ", "\"--list\""))
+                    || code.contains(concat!("\"tag\", ", "\"--merged\""))
+                    || code.contains(concat!("\"tag\", ", "\"-l\""));
+                if lists {
+                    let name = path.strip_prefix(&root).unwrap_or(&path).display();
+                    found.push(format!("tests/{name}:{}", i + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "these lines list tags with their own arguments; use \
+         `release_tags::reachable_release_tags` (tests/support/release_tags.rs):\n{}",
+        found.join("\n")
     );
     Ok(())
 }
