@@ -24,8 +24,13 @@ starting. It cannot stop one that is running, so it must be open for about one
 hook's length before a local step. The rule is `window_wanted`:
 
 - open for the landing and the tag;
-- during the pull request's CI, closed, until at most `last_few` checks are
-  pending or `lead_s` seconds remain of CI's expected run;
+- during the pull request's CI, closed, until the pending check with the most
+  time left has at most `lead_s` seconds of it (`longest_remaining`: its
+  start, plus the time the check of that name took on main's head commit);
+- when that time cannot be said (a pending check that main has no successful
+  run of, a pending commit status, a read of main's check runs that failed),
+  closed until at most `last_few` checks are pending or `lead_s` seconds
+  remain of CI's expected run;
 - during the pull request's CI, closed again while a check has waited for a
   runner longer than `queued_grace_s` (`stuck_queued`): it has not started, so
   nothing says when it ends;
@@ -41,6 +46,16 @@ On 0.5.244 the one pending check was a re-run macOS job, queued with no runner
 from 15:39:23Z until GitHub canceled it at 15:55:06Z. It counted as one of the
 last few checks, the window was open for those minutes, the main slot was idle
 and two ordinary jobs waited behind the window (RELEASE-TRAIN-WINDOW-QUEUED-JOB).
+
+On 0.5.246 and 0.5.249 the one pending check was running: Coverage, and a
+macOS job that ran from 16:57:06Z to 17:30:08Z. One check is under `last_few`,
+so the window was open, from 17:09:03Z to 17:32:15Z on 0.5.249, and ordinary
+jobs were held while the main slot was idle
+(RELEASE-TRAIN-WINDOW-OPENS-ON-LONG-LAST-CHECK). The landing waits for every
+check, so the count says nothing about when the landing is; each check's usual
+time does. The usual times are read once (`read_usual`) and kept in the state
+file; while a pending check has none they are read again, at most every
+`usual_retry_s`. A failed read does not stop the train.
 
 Another owner's window is left alone: it holds ordinary jobs just the same.
 
@@ -63,8 +78,9 @@ re-run resumes); 2 usage; 3 the post checks withdrew the release; 4 the
 withdrawal did not complete. After a 3 or a 4 the post checks do not run again
 without --retry-post.
 
-The state file holds two values GitHub cannot be asked for: the post checks'
-exit status and the head the CLA status was posted for.
+The state file holds two values GitHub cannot be asked for, the post checks'
+exit status and the head the CLA status was posted for, and the usual times
+with the time of their last read.
 
 Tested by scripts/tests/test_release_train.py, on a fake clock.
 """
@@ -122,6 +138,7 @@ class Facts:
     run_conclusion: str
     post_rc: int | None
     stuck: int = 0
+    long_remaining: float | None = None
 
 
 @dataclasses.dataclass
@@ -137,6 +154,7 @@ class Config:
     proof_wait_s: int = 300
     proof_poll_s: float = 10.0
     queued_grace_s: int = 120
+    usual_retry_s: int = 300
     window_minutes: int = 60
     bin_dir: str = ""
     retry_post: bool = False
@@ -170,13 +188,20 @@ def stage_of(f: Facts) -> str:
     return "land"
 
 
-def window_wanted(stage: str, pending: int, remaining_s: float, cfg: Config, stuck: int = 0) -> bool:
+def window_wanted(stage: str, pending: int, remaining_s: float, cfg: Config, stuck: int = 0,
+                  long_remaining: float | None = None) -> bool:
     """Whether the release window should be open. `stuck` is `stuck_queued`:
-    during CI, a check that waits for a runner keeps the window closed."""
+    during CI, a check that waits for a runner keeps the window closed.
+    `long_remaining` is `longest_remaining`; when it is known it decides, and
+    the count of pending checks and the whole-run estimate are not used."""
     if stage in ("land", "tag"):
         return True
     if stage == "ci-wait":
-        return stuck == 0 and (pending <= cfg.last_few or remaining_s <= cfg.lead_s)
+        if stuck:
+            return False
+        if long_remaining is not None:
+            return long_remaining <= cfg.lead_s
+        return pending <= cfg.last_few or remaining_s <= cfg.lead_s
     return False
 
 
@@ -219,27 +244,78 @@ def _epoch(text: str | None) -> int | None:
     return int(t.timestamp()) if t.year >= 2000 else None
 
 
+def check_state(c) -> str:
+    """"passed", "failed" or "pending", for one item of a statusCheckRollup.
+    The one place that says which checks the landing still waits for."""
+    if "context" in c:
+        state = c.get("state", "")
+        if state in ("FAILURE", "ERROR"):
+            return "failed"
+        return "passed" if state == "SUCCESS" else "pending"
+    if c.get("status") != "COMPLETED":
+        return "pending"
+    conclusion = (c.get("conclusion") or "").lower()
+    if conclusion in BAD_CONCLUSIONS:
+        return "failed"
+    return "passed" if conclusion in GOOD_CONCLUSIONS else "pending"
+
+
 def read_rollup(items) -> tuple:
     """(pending, failed names, earliest start) of a statusCheckRollup."""
     pending, failed, started = 0, [], []
     for c in items:
-        name = c.get("name") or c.get("context") or "?"
-        if "context" in c:
-            state = c.get("state", "")
-            if state in ("FAILURE", "ERROR"):
-                failed.append(name)
-            elif state != "SUCCESS":
-                pending += 1
-        elif c.get("status") != "COMPLETED":
-            pending += 1
-        elif (c.get("conclusion") or "").lower() in BAD_CONCLUSIONS:
-            failed.append(name)
-        elif (c.get("conclusion") or "").lower() not in GOOD_CONCLUSIONS:
+        state = check_state(c)
+        if state == "failed":
+            failed.append(c.get("name") or c.get("context") or "?")
+        elif state == "pending":
             pending += 1
         t = _epoch(c.get("startedAt"))
         if t is not None:
             started.append(t)
     return pending, tuple(failed), min(started) if started else None
+
+
+def pending_names(items) -> list:
+    """The names of the pending check runs of a statusCheckRollup."""
+    return [c.get("name") or "?" for c in items if "context" not in c and check_state(c) == "pending"]
+
+
+def longest_remaining(items, usual: dict, now: float) -> float | None:
+    """The most seconds any pending check of a statusCheckRollup still has to
+    run: its start, plus what the check of that name took on main (`usual`),
+    less `now`, and never under 0.
+
+    None when that cannot be said: nothing is pending, or a pending item is a
+    commit status (it has no run time), has no start time, or has a name with
+    no usual time. The caller then uses the count of pending checks."""
+    longest = None
+    for c in items:
+        if check_state(c) != "pending":
+            continue
+        t = _epoch(c.get("startedAt"))
+        took = usual.get(c.get("name") or "?")
+        if "context" in c or t is None or not isinstance(took, (int, float)):
+            return None
+        left = max(0, t + took - now)
+        longest = left if longest is None else max(longest, left)
+    return longest
+
+
+def usual_from_runs(runs) -> dict:
+    """Seconds per check name, from the check runs of a commit: the runs that
+    completed with success, the longest when a name has several. A run that
+    failed, was canceled or was skipped says nothing about a full run."""
+    usual: dict = {}
+    for r in runs:
+        if not isinstance(r, dict) or not r.get("name"):
+            continue
+        if r.get("conclusion") != "success":
+            continue
+        start, end = _epoch(r.get("started_at")), _epoch(r.get("completed_at"))
+        if start is None or end is None or end < start:
+            continue
+        usual[r["name"]] = max(usual.get(r["name"], 0), end - start)
+    return usual
 
 
 def parse_window(text: str) -> tuple:
@@ -287,14 +363,56 @@ def _read_json(run, argv):
         raise ReadError(f"{' '.join(argv[:4])}: not JSON: {e}") from e
 
 
+def read_usual(cfg: Config, run) -> dict | None:
+    """Seconds per check name on main's head commit, or None when GitHub could
+    not be read. One line of JSON per check run, so that a paginated answer
+    needs no joining."""
+    r = run(["gh", "api", f"repos/{cfg.repo}/commits/main/check-runs?per_page=100", "--paginate",
+             "--jq", ".check_runs[] | {name, status, conclusion, started_at, completed_at}"], 120)
+    if r.rc != 0:
+        return None
+    runs = []
+    for line in r.out.splitlines():
+        if not line.strip():
+            continue
+        try:
+            runs.append(json.loads(line))
+        except ValueError:
+            return None
+    return usual_from_runs(runs)
+
+
+def usual_for(cfg: Config, run, names, now: float) -> dict:
+    """The usual times, from the state file; read from GitHub when one of
+    `names` has none, and then at most once per `usual_retry_s`.
+
+    A read that fails is not recorded, so the next tick reads again, and the
+    train does not stop for it: the window rule falls back to the count."""
+    state = load_state(cfg)
+    usual = state.get("usual_s")
+    usual = dict(usual) if isinstance(usual, dict) else {}
+    if all(n in usual for n in names):
+        return usual
+    read_at = state.get("usual_read_at")
+    if isinstance(read_at, (int, float)) and 0 <= now - read_at < cfg.usual_retry_s:
+        return usual
+    fresh = read_usual(cfg, run)
+    if fresh is None:
+        return usual
+    usual.update(fresh)
+    save_state(cfg, usual_s=usual, usual_read_at=now)
+    return usual
+
+
 def read_facts(cfg: Config, run, now: float | None = None) -> Facts:
     """The release's facts. With `now`, the checks that wait for a runner are
-    counted (`stuck_queued`); without it their age cannot be judged."""
+    counted (`stuck_queued`) and the longest pending check is estimated
+    (`longest_remaining`); without it neither can be judged."""
     prs = _read_json(run, ["gh", "pr", "list", "--repo", cfg.repo, "--head", f"release/{cfg.version}",
                            "--state", "all", "--json", "number,state,headRefOid,mergeCommit", "--limit", "1"])
     pr = prs[0] if prs else {}
     state = pr.get("state", "")
-    pending, failed, first, stuck = 0, (), None, 0
+    pending, failed, first, stuck, long_remaining = 0, (), None, 0, None
     if state == "OPEN":
         rollup = _read_json(run, ["gh", "pr", "view", str(pr["number"]), "--repo", cfg.repo,
                                   "--json", "statusCheckRollup"])
@@ -302,6 +420,7 @@ def read_facts(cfg: Config, run, now: float | None = None) -> Facts:
         pending, failed, first = read_rollup(items)
         if now is not None:
             stuck = stuck_queued(items, now, cfg.queued_grace_s)
+            long_remaining = longest_remaining(items, usual_for(cfg, run, pending_names(items), now), now)
     tag = run(["git", "-C", str(REPO), "ls-remote", "--tags", "origin", f"refs/tags/v{cfg.version}"], 60)
     if tag.rc != 0:
         raise ReadError(f"git ls-remote: {tag.out.strip()}")
@@ -318,7 +437,7 @@ def read_facts(cfg: Config, run, now: float | None = None) -> Facts:
     return Facts(pr_state=state, pr_number=pr.get("number"), head=pr.get("headRefOid", ""),
                  merge_sha=(pr.get("mergeCommit") or {}).get("oid", ""), pending=pending, failed=failed,
                  first_started=first, tag_exists=bool(tag.out.strip()), run_status=status,
-                 run_conclusion=conclusion, post_rc=post_rc, stuck=stuck)
+                 run_conclusion=conclusion, post_rc=post_rc, stuck=stuck, long_remaining=long_remaining)
 
 
 def sync_window(cfg: Config, run, want: bool, now: float) -> str:
@@ -353,11 +472,20 @@ def post_cla(cfg: Config, run, f: Facts) -> None:
 
 
 def land(cfg: Config, run, f: Facts) -> None:
+    """Land the pull request: `required-checks` on the head, and the merge
+    only if it passes, both under the landing lock. The train waits for the
+    check rollup, but what may land is that script's rule alone.
+
+    Its output is printed when the landing passes too: it is the record that
+    the script ran, and a `warning:` line in it names a check an outside
+    service has not completed."""
     script = (f"{tool(cfg, 'required-checks')} {cfg.repo} {f.head} && "
               f"gh pr merge {f.pr_number} --repo {cfg.repo} --merge --match-head-commit {f.head}")
     r = run([tool(cfg, "land-queue"), "sipnab", "--", "bash", "-c", script], 1800)
     if r.rc != 0:
         raise Stopped(f"landing pull request {f.pr_number} failed: {r.out.strip()}")
+    if r.out.strip():
+        print(r.out.rstrip())
 
 
 def checkout_at_merge(run, f: Facts) -> None:
@@ -450,7 +578,8 @@ def tick(cfg: Config, run, clock, sleep=time.sleep) -> str:
     now = clock()
     f = read_facts(cfg, run, now)
     stage = stage_of(f)
-    sync_window(cfg, run, window_wanted(stage, f.pending, ci_remaining(f, cfg, now), cfg, f.stuck), now)
+    sync_window(cfg, run, window_wanted(stage, f.pending, ci_remaining(f, cfg, now), cfg, f.stuck,
+                                        f.long_remaining), now)
     if stage in ("ci-wait", "land"):
         post_cla(cfg, run, f)
     if stage == "land":
@@ -515,7 +644,19 @@ def git_dir() -> pathlib.Path:
     return pathlib.Path(out)
 
 
+def write_lines_at_once() -> None:
+    """Make standard output hand over each line when it is printed.
+
+    Python block-buffers a standard output that is not a terminal. On 0.5.249
+    the train's output went to a file, and its "stage:" lines appeared only
+    when it ended. An output with no `reconfigure` is left as it is."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(line_buffering=True)
+
+
 def main(argv=None, runner=None) -> int:
+    write_lines_at_once()
     p = argparse.ArgumentParser(prog="release-train.py")
     p.add_argument("version")
     # No default: the VM and its account are the operator's, and this

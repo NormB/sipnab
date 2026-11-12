@@ -1029,7 +1029,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 847 -> 851 (HOOK-FEATURE-SETS, merged after it): build-ci-release.md's
     // rows marked `hook` link .github/feature-combos.txt twice,
     // scripts/check-feature-matrix.py and scripts/gate-cache.py (+4).
-    const EXPECTED_CODE_LINKS: usize = 851;
+    // 851 -> 852 (RELEASE-TRAIN-WINDOW-OPENS-ON-LONG-LAST-CHECK): the window
+    // rule links scripts/tests/test_release_train.py (+1).
+    const EXPECTED_CODE_LINKS: usize = 852;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

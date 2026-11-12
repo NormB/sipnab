@@ -2234,12 +2234,14 @@ python3 scripts/release-train.py <version> --host <user>@<host>
 The checkout can be at any commit when the train starts.
 The train moves it to the merge commit before the tag. See [Before the tag](#before-the-tag).
 
+The train writes each line of its output when it prints it, into a file or a pipe as on a terminal, so `python3 -u` is not needed to follow it.
+
 It runs these stages, each only when the facts say it is due:
 
 | Stage | What happens | Window |
 |---|---|---|
-| `ci-wait` | Posts the CLA status for the head, then waits for the pull request's checks. | Closed, then open for the last few checks |
-| `land` | Lands the pull request through `land-queue` and `required-checks`. | Open |
+| `ci-wait` | Posts the CLA status for the head, then waits for the pull request's checks. | Closed, then open for the last 15 minutes of the longest pending check |
+| `land` | Lands the pull request through `land-queue` and `required-checks`, and prints what the two printed. | Open |
 | `tag` | Moves the checkout to the merge commit, waits for GitHub's proof of that commit, then makes the signed tag and pushes it in the lane. | Open |
 | `release-wait` | Waits for `release.yml` on the tag. | Closed |
 | `post` | Runs `scripts/post-release.py run <version> --host <user>@<host>`. | Closed |
@@ -2248,7 +2250,19 @@ It runs these stages, each only when the facts say it is due:
 So it has to be open for about one hook's length before a local step, and it must not hold the slot during a long remote wait.
 
 - During the pull request's CI the train keeps the window closed.
-- It opens the window when at most 3 checks are pending, or when 15 minutes remain of CI's expected 37.
+- It opens the window when the pending check with the most time left has 15 minutes or less.
+  - The time left of a pending check is its start time, plus the time the check of that name took on the head commit of `main`, less the time now.
+    A check that has run longer than that has no time left.
+  - The train reads the check runs of `main` once and keeps the times in its state file.
+    A time comes only from a run that ended in success; when a name has several runs, the longest counts.
+  - The landing waits for every check, so the number of pending checks does not say when the landing is.
+    On 0.5.249 the one pending check was a macOS job that ran from 16:57:06Z to 17:30:08Z.
+    The window was open from 17:09:03Z to 17:32:15Z, and an ordinary job waited behind it.
+- When the time left has no answer, the train opens the window when at most 3 checks are pending, or when 15 minutes remain of CI's expected 37.
+  - That is the case for a pending check that `main` has no successful run of, for a pending commit status, and when the read of the check runs fails.
+  - The train reads the check runs again at the next poll after a failed read, and every 5 minutes while a pending check has no time.
+    A failed read does not stop the train.
+  - [`test_release_train.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_release_train.py) holds both rules.
 - It keeps the window closed, and closes it again, while a check has waited for a runner for 2 minutes or more.
   - Such a check has not started, so nothing says when it ends.
   - A check queued for less than 2 minutes, or one with no start time, does not count.
