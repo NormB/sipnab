@@ -353,8 +353,8 @@ Next:
     (`--export-vcon`, [Export a call as a vCon](docs/vcon.md)).
   - `--vcon-forward`, a separate process, delivers them to a vCon store. Two
     examples are vcon.store and a self-hosted conserver.
-    - It is in the gnu and macOS builds. The static musl builds lack the
-      `vcon` feature.
+    - It needs the `vcon` feature. The gnu and macOS builds carry it.
+    - The static musl builds and the gnu `-noaudio` packages do not.
   - `--vcon-forward-kind vcon-store` adds vcon.store's ingest path and header.
     - It changes only the copy it sends.
     - The reason: vcon.store's validator rejects the string-array `extensions`
@@ -460,7 +460,7 @@ Audio playback in the TUI also needs `libasound` (ALSA).
 |---|---|---|
 | `native` | Live and file capture, output writers, the CLI. Needed by every feature below except `tls`, `audio` and `wasm` | yes |
 | `tui` | The interactive terminal UI | yes |
-| `audio` | RTP audio playback in the TUI, through the lazily loaded `sipnab-audio` plugin, and WAV export | yes |
+| `audio` | RTP audio playback in the TUI, through the lazily loaded `sipnab-audio` plugin. WAV export does not need it | yes |
 | `metrics` | Standalone Prometheus metrics server (`--metrics`) | yes |
 | `tls` | TLS and DTLS decryption, SRTP key extraction | no |
 | `hep` | HEP v3 send, HEP v1/v2/v3 receive | no |
@@ -520,8 +520,8 @@ These are step-by-step guides.
   - OpenSIPS records calls into it over SIPREC.
   - sipnab can send its own vCons, built from what it saw on the wire.
   - The command `sipnab --vcon-forward` delivers them, to the server or to
-    vcon.store. It is in the gnu and macOS builds, which carry the `vcon`
-    feature.
+    vcon.store. It needs the `vcon` feature, which the static musl builds
+    and the gnu `-noaudio` packages do not carry.
   - [Use a vCon server](docs/vcon-server.md),
     [run sipnab beside it](docs/vcon-sipnab.md),
     [send to vcon.store](docs/vcon-store.md)
