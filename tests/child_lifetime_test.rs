@@ -733,20 +733,46 @@ fn a_pipe_tied_command_reads_dev_null_not_the_pipe() -> Result<(), TestError> {
     Ok(())
 }
 
+/// Prints the target of every descriptor the shell that runs it holds.
+const LIST_DESCRIPTORS: &str = "for fd in /proc/$$/fd/*; do readlink \"$fd\"; done";
+
+/// How many lines of `links` name a pipe.
+fn pipes_in(links: &str) -> usize {
+    links.lines().filter(|l| l.starts_with("pipe:")).count()
+}
+
 /// The command does not inherit the descriptor the `sh` program keeps the
-/// pipe on.
+/// pipe on: it holds as many pipes as the same command started without the
+/// tie.
+///
+/// The count is compared with an untied run, not with the number two. A test
+/// process can itself have been started with pipes that pass to every child
+/// (under `cargo llvm-cov` it holds two), and those are not the tie.
 #[test]
 fn a_pipe_tied_command_does_not_inherit_the_pipe() -> Result<(), TestError> {
-    let out = tied_output(&[
-        "sh",
-        "-c",
-        "for fd in /proc/$$/fd/*; do readlink \"$fd\"; done",
-    ])?;
+    let untied = Command::new("env")
+        .args(["--", "sh", "-c", LIST_DESCRIPTORS])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    // The listing's exit status is that of its last `readlink`, which fails
+    // when the last name is a descriptor the shell closed after listing the
+    // directory; the lines it printed are what is read here.
+    let untied_links = String::from_utf8_lossy(&untied.stdout);
+    let expected = pipes_in(&untied_links);
+    assert!(
+        expected >= 2,
+        "an untied command holds at least its two output pipes: {untied_links:?}"
+    );
+
+    let out = tied_output(&["sh", "-c", LIST_DESCRIPTORS])?;
     let links = String::from_utf8_lossy(&out.stdout);
-    let pipes = links.lines().filter(|l| l.starts_with("pipe:")).count();
     assert_eq!(
-        pipes, 2,
-        "the command holds its two output pipes and no other: {links:?}"
+        pipes_in(&links),
+        expected,
+        "the tied command holds the pipes an untied one holds and no other: \
+         tied {links:?}, untied {untied_links:?}"
     );
     Ok(())
 }
