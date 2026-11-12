@@ -1368,6 +1368,101 @@ fn records_behind_a_gap_read_with_another_key_log_name_the_missing_handshake()
     Ok(())
 }
 
+/// An `OPTIONS` request over TLS with the given Call-ID.
+#[cfg(feature = "tls")]
+fn tls_options(call_id: &str) -> String {
+    format!(
+        "OPTIONS sips:bob@10.9.0.2 SIP/2.0\r\n\
+         Via: SIP/2.0/TLS 10.9.0.1:40111;branch=z9hG4bK{call_id}\r\n\
+         From: <sips:alice@10.9.0.1>;tag=ma\r\nTo: <sips:bob@10.9.0.2>\r\n\
+         Call-ID: {call_id}\r\nCSeq: 1 OPTIONS\r\nMax-Forwards: 70\r\n\
+         Content-Length: 0\r\n\r\n"
+    )
+}
+
+/// A hole in the middle of a TLS connection, where the capture holds the
+/// first half of a record and not the second. The record before the hole and
+/// the two behind it are read. The half record the TLS layer held is dropped
+/// when the stream resumes: without that, the first record behind the hole is
+/// taken for the missing half and neither record behind the hole is read.
+#[cfg(feature = "tls")]
+#[test]
+fn records_behind_a_hole_that_cut_a_record_are_decrypted() -> Result<(), TestError> {
+    cut_record_run(&["behind-hole-1", "behind-hole-2"])
+}
+
+/// The same hole with one record behind it, which is the last thing its
+/// direction sends: the end of the capture releases it, and the half record
+/// is dropped there too.
+#[cfg(feature = "tls")]
+#[test]
+fn a_last_record_behind_a_hole_that_cut_a_record_is_decrypted() -> Result<(), TestError> {
+    cut_record_run(&["behind-hole-1"])
+}
+
+/// Builds a TLS connection whose client sends a whole record, the first half
+/// of a second one, and then one whole record for each Call-ID in `behind`;
+/// reads it with the key log and checks which messages come out.
+#[cfg(feature = "tls")]
+fn cut_record_run(behind: &[&str]) -> Result<(), TestError> {
+    use encrypted_captures::{CLIENT_SECRET, tls13_hellos, tls13_record};
+    let (a, b) = ([10, 9, 0, 1], [10, 9, 0, 2]);
+    let (client, server) = (40_111u16, 5061u16);
+    let (client_hello, server_hello) = tls13_hellos();
+    let mut frames = vec![
+        pcap_build::tcp_frame(a, b, client, server, 1000, 0x02, b""),
+        pcap_build::tcp_frame(b, a, server, client, 5000, 0x12, b""),
+        pcap_build::tcp_frame(a, b, client, server, 1001, 0x18, &client_hello),
+        pcap_build::tcp_frame(b, a, server, client, 5001, 0x18, &server_hello),
+    ];
+    let mut seq = 1001 + client_hello.len() as u32;
+    let mut sent = vec!["before-hole", "cut-by-hole"];
+    sent.extend_from_slice(behind);
+    for (number, call_id) in sent.into_iter().enumerate() {
+        let record = tls13_record(
+            &CLIENT_SECRET,
+            number as u64,
+            tls_options(call_id).as_bytes(),
+        )?;
+        // The capture holds the first half of the second record alone.
+        let held = if number == 1 {
+            &record[..record.len() / 2]
+        } else {
+            &record[..]
+        };
+        frames.push(pcap_build::tcp_frame(a, b, client, server, seq, 0x18, held));
+        seq += record.len() as u32;
+    }
+    let dir = tempfile::tempdir()?;
+    let capture = dir.path().join("cut-record.pcap");
+    let keys = dir.path().join("sip-keys.log");
+    pcap_build::write_pcap(&capture, &frames)?;
+    std::fs::write(&keys, encrypted_captures::tls_keylog())?;
+    let run = sipnab(&[
+        "-N",
+        "--json",
+        "-I",
+        &capture.display().to_string(),
+        "--keylog",
+        &keys.display().to_string(),
+    ])?;
+    exited(&run, 0);
+    let read = stdout(&run);
+    for call_id in ["before-hole"].iter().chain(behind.iter()) {
+        assert!(
+            read.contains(call_id),
+            "the message {call_id} is whole in the capture and was not read; stdout:\n{read}\nstderr:\n{}",
+            stderr(&run)
+        );
+    }
+    assert!(
+        !read.contains("cut-by-hole"),
+        "half of that record is not in the capture; stdout:\n{read}"
+    );
+    printed(&stderr(&run), "1 hole(s) in TCP streams");
+    Ok(())
+}
+
 /// A `--keylog` path that is not there stops the run with exit status 1.
 #[cfg(feature = "tls")]
 #[test]
