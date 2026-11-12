@@ -999,7 +999,15 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // 637 -> 639 (TLS-CAPTURE-NO-KEYLOG-SILENT): src/app/batch.rs, the two lines
 // `no_sip_guidance` prints for a capture with TLS records read without a TLS
 // key (the count and the cause, and the command with --keylog). +2.
-const EXPECTED_TEMPLATES: usize = 639;
+// 639 -> 656 (fleet history store): +17. src/app/fleet_history.rs +12: a
+// row received before 1970, the four refusals of a question's parameters
+// (member, call_id, a parameter given twice, an unknown parameter), three
+// Parquet column refusals, three sealed-layer refusals of a calls file (no
+// path, bytes after its end, written for another path) and a file that
+// would be replaced. src/app/fleet_center.rs +5: the build without the
+// store, a filing that failed, call records that could not be read, and the
+// two retention lines.
+const EXPECTED_TEMPLATES: usize = 656;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -200,6 +200,9 @@ zeroize = { version = "1", features = ["derive"], optional = true }
 ring = { version = "0.17", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"], optional = true }
 aes = { version = "0.9", optional = true }
+# The fleet center's history store (feature `fleet-store`): the column writer
+# and reader only. No Arrow, no compression codec, no async reader.
+parquet = { version = "=60.1.0", default-features = false, optional = true }
 cbc = { version = "0.2", features = ["alloc"], optional = true }
 # RSA private-key (`--tls-key`) decryption of the TLS 1.2 RSA-kx pre-master
 # secret. PKCS#1 v1.5; PEM parsing for PKCS#1/#8 private keys.
@@ -448,7 +451,15 @@ opus = ["vcon", "dep:opus"]
 # release no-audio set: every release binary, musl included, decodes G.729.
 # `sha2` checks the downloaded package's pinned hash.
 g729 = ["native", "dep:g729", "dep:sha2", "dep:rustls", "dep:base64"]
-full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon", "opus", "archive", "g729"]
+# The fleet center's history store: `sipnab fleet serve` files the call
+# records it acknowledged into sealed Parquet files and answers
+# `GET /v1/fleet/calls` from them. IN `full`, so the gnu, macOS and Docker
+# builds carry it; NOT in the static musl builds or the no-audio packages
+# (release.yml's noaudio_set): the `parquet` crate adds about 1.2 MB, more
+# than the musl binary has under its size ceiling. A center built without it
+# says so at start and on the route.
+fleet-store = ["api", "dep:parquet"]
+full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics", "plugins", "vcon", "opus", "archive", "g729", "fleet-store"]
 
 # Userspace half of the eBPF backend. Stable Rust; only the KERNEL half needs
 # nightly.

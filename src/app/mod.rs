@@ -14,6 +14,8 @@ pub mod fleet;
 pub mod fleet_calls;
 #[cfg(feature = "api")]
 pub mod fleet_center;
+#[cfg(feature = "fleet-store")]
+pub mod fleet_history;
 #[cfg(feature = "api")]
 pub mod fleet_intake;
 #[cfg(feature = "api")]

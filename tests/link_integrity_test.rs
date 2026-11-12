@@ -1825,12 +1825,15 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2608 -> 2609 (PRIVILEGE-TEST-LEAVES-SUDO-CHILD-WHEN-CUT-SHORT, merged
     // after the entries above): testing.md's helper table row for
     // root_run.rs links its own section "Children end with their test" (+1).
-    // 2609 -> 2626 (DOCS-HOWTO-GAP, sixth batch, +17): vcon.md +9 (three in
+    // 2609 -> 2620 (fleet history store): +11, each to or inside fleet.md's
+    // "Keep call history at the center": install.md +6 (the build table's
+    // musl and -noaudio rows), fleet.md +3, cli-reference.md +1, errors.md +1.
+    // 2620 -> 2637 (DOCS-HOWTO-GAP, sixth batch, +17): vcon.md +9 (three in
     // "Before you start", three links to that section, three in its table of
     // export failures), vcon-harness.md +3 and vcon-server.md +2 (their
     // prerequisites), vcon-store.md +1 and vcon-sipnab.md +1 (their
     // prerequisites), tls-capture.md +1 (the row for holes in TCP streams).
-    const EXPECTED_WIKI_LINKS: usize = 2626;
+    const EXPECTED_WIKI_LINKS: usize = 2637;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1985,7 +1988,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // 148 -> 149 (rsa 0.10): the count the test gave after that change added a
     // docs/vcon.md link to SECURITY.md and an osv-scanner.toml link to
     // CONTRIBUTING.md's line on accepted advisories.
-    const EXPECTED_COMMUNITY_LINKS: usize = 149;
+    // 149 -> 150 (fleet history store): README.md's `fleet-store` feature row
+    // links docs/fleet.md#keep-call-history-at-the-center.
+    const EXPECTED_COMMUNITY_LINKS: usize = 150;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

@@ -112,7 +112,7 @@ there is no cache. When the library is missing it installs the static musl
 build instead and says so:
 
 ```text
-sipnab-install: libpcap.so.0.8 not found — using the static musl build (no TUI audio, WASM plugins, vCon export or eBPF uprobe backend). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead
+sipnab-install: libpcap.so.0.8 not found — using the static musl build (no TUI audio, WASM plugins, vCon export, eBPF uprobe backend or fleet history store). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead
 ```
 
 - To get the `-gnu` build with TUI audio on Debian or Ubuntu, install the
@@ -142,8 +142,8 @@ On Linux the installer chooses between two builds.
   `libpcap.so.0.8` installed get the dynamically linked **`-gnu`** build.
 - Older hosts, hosts with no glibc, and hosts without `libpcap.so.0.8`
   get the static **musl** build. It needs nothing else.
-  - It lacks TUI audio playback, WASM plugins, vCon export and the eBPF uprobe
-    backend.
+  - It lacks TUI audio playback, WASM plugins, vCon export, Ogg Opus
+    recordings, the eBPF uprobe backend and the fleet history store.
   - It reads password-protected ZIP and 7z archives like every other release
     build ([Read captures from tar, ZIP and 7z archives](archives.md)).
 
@@ -165,14 +165,14 @@ Substitute the release version for `<version>` throughout.
 |---|---|---|---|
 | `sipnab_<version>_amd64.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
 | `sipnab_<version>_arm64.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
-| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, vCon export or Ogg Opus recordings |
-| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, vCon export or Ogg Opus recordings |
+| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](fleet.md#keep-call-history-at-the-center) |
 | `sipnab-<version>-1.x86_64.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
 | `sipnab-<version>-1.aarch64.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
-| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, vCon export or Ogg Opus recordings |
-| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, vCon export or Ogg Opus recordings |
-| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or eBPF uprobe backend |
-| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or eBPF uprobe backend |
+| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings, eBPF uprobe backend or [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings, eBPF uprobe backend or [fleet history store](fleet.md#keep-call-history-at-the-center) |
 | `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
 | `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
@@ -530,9 +530,9 @@ Each release publishes a standard package and a **`-noaudio`** package.
 
 - The `-noaudio` package has no audio plugin and no ALSA dependency.
   - It has no live audio playback in the TUI.
-  - It also lacks three features of the standard package: WASM plugins,
-    vCon export and Ogg Opus recordings. `sipnab --version` lists the
-    features of a binary.
+  - It also lacks four features of the standard package: WASM plugins,
+    vCon export, Ogg Opus recordings and the fleet history store.
+    `sipnab --version` lists the features of a binary.
 - From 0.5.233 the standard package ships the plugin and *recommends*
   `libasound2`. Releases from 0.5.118 to 0.5.232 did neither, so in those
   releases the two packages differ only in name. See
@@ -580,7 +580,8 @@ standard and a `-noaudio` variant.
 - The no-audio variant has no audio plugin and no `alsa-lib` weak
   dependency.
   - It has no live audio playback in the TUI.
-  - It also lacks WASM plugins, vCon export and Ogg Opus recordings.
+  - It also lacks WASM plugins, vCon export, Ogg Opus recordings and the
+    fleet history store.
 - It is for headless servers, mirroring the `.deb` variants.
 
 Download the package for your architecture and variant from the
@@ -990,7 +991,8 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `opus` | Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a `[[vcon.rule]]`). Compiles libopus from the source `opusic-sys` vendors and links it statically, so building it needs `cmake` and a C compiler; the binary needs no system libopus. In `full`; not in the static musl builds, which have no vCon export. | `vcon`, `opus` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
 | `g729` | G.729 Annex A decoding, with Annex B comfort noise, for WAV export, vCon recordings, the live audio route and the dead-air measurement. Adds `--g729-tables`, `[g729]`, and the `sipnab g729 install` and `sipnab g729 status` commands. sipnab ships no ITU-T table values: each host installs them with `sipnab g729 install`, described on the G.729 decoding page. Pure Rust, so in `full` and in the static musl builds. | `native`, `g729` (crates/g729), `sha2`, `rustls`, `base64` |
-| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `opus` + `archive` + `g729` | all |
+| `fleet-store` | The history store of a fleet center (`sipnab fleet serve`): the call records members push, kept in sealed Parquet files, and `GET /v1/fleet/calls`. Adds nothing to a capture run. In `full`; not in the static musl builds or the `-noaudio` packages, where the `parquet` crate does not fit under the binary's size limit. "Keep call history at the center" on the fleet page is the how-to. | `api`, `parquet` |
+| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `opus` + `archive` + `g729` + `fleet-store` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | `wasm-bindgen`, `js-sys`, `web-sys`, `console_error_panic_hook` |
 
 Build with specific features. For the TUI plus TLS decryption and nothing else:

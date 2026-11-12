@@ -18,6 +18,8 @@ pub struct Center {
     pub addr: String,
     /// Its log lines, as they come.
     pub log: std::sync::mpsc::Receiver<String>,
+    /// The lines it logged before it said where it serves.
+    pub early: Vec<String>,
 }
 
 impl Center {
@@ -48,6 +50,7 @@ impl Center {
             }
         });
         let deadline = Instant::now() + Duration::from_secs(30);
+        let mut early = Vec::new();
         while Instant::now() < deadline {
             match log.recv_timeout(Duration::from_millis(200)) {
                 Ok(line) => {
@@ -55,8 +58,14 @@ impl Center {
                         && let Some(rest) = line.split(" on ").nth(1)
                     {
                         let addr = rest.trim().to_string();
-                        return Ok(Self { child, addr, log });
+                        return Ok(Self {
+                            child,
+                            addr,
+                            log,
+                            early,
+                        });
                     }
+                    early.push(line);
                 }
                 Err(_) => {
                     if let Ok(Some(status)) = child.try_wait() {

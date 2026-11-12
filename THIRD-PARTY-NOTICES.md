@@ -51,7 +51,7 @@ Files copied into the repository unmodified from another project's release. None
 | `tests/schemas/publisher/vcon_json_schema.json` | vCon JSON schema: `vcon_json_schema.json` of the IETF vCon working group's draft-ietf-vcon-vcon-core repository, unmodified. Test fixture only; it is in no release artifact. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 | `tests/schemas/vcon.schema.json` | vCon JSON schema: the same file as tests/schemas/publisher/vcon_json_schema.json, byte for byte, under the name sipnab's validator reads. Compiled into the binary as the schema the validate_vcon tool and the REST validate route check against. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 
-## Rust crates (427)
+## Rust crates (437)
 
 | Crate | Version | License |
 |---|---|---|
@@ -115,6 +115,8 @@ Files copied into the repository unmodified from another project's release. None
 | colorchoice | 1.0.5 | MIT OR Apache-2.0 |
 | compact_str | 0.9.0 | MIT |
 | const-oid | 0.10.2 | Apache-2.0 OR MIT |
+| const-random | 0.1.18 | MIT OR Apache-2.0 |
+| const-random-macro | 0.1.16 | MIT OR Apache-2.0 |
 | constant_time_eq | 0.6.1 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | convert_case | 0.10.0 | MIT |
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 |
@@ -127,6 +129,7 @@ Files copied into the repository unmodified from another project's release. None
 | crossbeam-utils | 0.8.21 | MIT OR Apache-2.0 |
 | crossterm | 0.29.0 | MIT |
 | crossterm_winapi | 0.9.1 | MIT |
+| crunchy | 0.2.4 | MIT |
 | crypto-bigint | 0.7.11 | Apache-2.0 OR MIT |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 |
@@ -191,6 +194,7 @@ Files copied into the repository unmodified from another project's release. None
 | glob | 0.3.4 | MIT OR Apache-2.0 |
 | group | 0.14.0 | MIT/Apache-2.0 |
 | h2 | 0.4.16 | MIT |
+| half | 2.7.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.15.5 | MIT OR Apache-2.0 |
 | hashbrown | 0.16.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.17.0 | MIT OR Apache-2.0 |
@@ -255,8 +259,10 @@ Files copied into the repository unmodified from another project's release. None
 | nom | 7.1.3 | MIT |
 | nom | 8.0.0 | MIT |
 | nu-ansi-term | 0.50.3 | MIT |
+| num-bigint | 0.5.1 | MIT OR Apache-2.0 |
 | num-conv | 0.2.1 | MIT OR Apache-2.0 |
 | num-derive | 0.4.2 | MIT OR Apache-2.0 |
+| num-integer | 0.1.46 | MIT OR Apache-2.0 |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 |
 | num_threads | 0.1.7 | MIT OR Apache-2.0 |
 | object | 0.40.0 | Apache-2.0 OR MIT |
@@ -273,6 +279,7 @@ Files copied into the repository unmodified from another project's release. None
 | parking_lot | 0.13.0 | MIT OR Apache-2.0 |
 | parking_lot_core | 0.10.0 | MIT OR Apache-2.0 |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 |
+| parquet | 60.1.0 | Apache-2.0 |
 | pastey | 0.2.2 | MIT OR Apache-2.0 |
 | pbkdf2 | 0.13.0 | MIT OR Apache-2.0 |
 | pcap | 2.5.0 | MIT OR Apache-2.0 |
@@ -336,6 +343,7 @@ Files copied into the repository unmodified from another project's release. None
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 |
 | sec1 | 0.8.1 | Apache-2.0 OR MIT |
 | semver | 1.0.28 | MIT OR Apache-2.0 |
+| seq-macro | 0.3.6 | MIT OR Apache-2.0 |
 | serde | 1.0.229 | MIT OR Apache-2.0 |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 |
@@ -386,6 +394,7 @@ Files copied into the repository unmodified from another project's release. None
 | time | 0.3.47 | MIT OR Apache-2.0 |
 | time-core | 0.1.8 | MIT OR Apache-2.0 |
 | time-macros | 0.2.27 | MIT OR Apache-2.0 |
+| tiny-keccak | 2.0.2 | CC0-1.0 |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
 | tokio | 1.54.1 | MIT |
 | tokio-macros | 2.7.0 | MIT |
@@ -406,6 +415,7 @@ Files copied into the repository unmodified from another project's release. None
 | tracing-log | 0.2.0 | MIT |
 | tracing-subscriber | 0.3.23 | MIT |
 | try-lock | 0.2.5 | MIT |
+| twox-hash | 2.1.5 | MIT |
 | typed-path | 0.13.0 | MIT OR Apache-2.0 |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | ucd-trie | 0.1.7 | MIT OR Apache-2.0 |

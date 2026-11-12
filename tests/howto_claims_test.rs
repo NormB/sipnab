@@ -2899,6 +2899,7 @@ fn left_out_of_the_reduced_builds() -> Result<Vec<&'static str>, TestError> {
         ("plugins", "WASM plugins"),
         ("vcon", "vCon export"),
         ("opus", "Ogg Opus"),
+        ("fleet-store", "fleet history store"),
     ];
     let reduced = noaudio_features()?;
     let full = MANIFEST
@@ -3043,7 +3044,8 @@ fn no_page_says_a_reduced_build_differs_by_audio_alone() -> Result<(), TestError
             );
         }
     }
-    let said = "no TUI audio, WASM plugins, vCon export or eBPF uprobe backend";
+    let said =
+        "no TUI audio, WASM plugins, vCon export, eBPF uprobe backend or fleet history store";
     assert_eq!(
         INSTALLER.matches(said).count(),
         2,

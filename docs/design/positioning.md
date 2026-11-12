@@ -55,7 +55,7 @@ to leave the box and Homer never tried to avoid the database.
 | Conformance lint with RFC citations, triage, MOS diagnosis | — | ships |
 | Frame pointers with verifiable digests | `--show-frame` | ships |
 | Agent access | MCP | ships |
-| Bounded on-disk retention | `--split` rotates files and `--split-keep N` keeps the newest N ([`cli.rs:1064`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1064)<!-- "/// Keep only the newest N split files" -->); **nothing indexes the set for search** | partial: a file ring buffer since 0.5.100 |
+| Bounded on-disk retention | `--split` rotates files and `--split-keep N` keeps the newest N ([`cli.rs:1067`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1067)<!-- "/// Keep only the newest N split files" -->); **nothing indexes the set for search** | partial: a file ring buffer since 0.5.100 |
 
 The single most useful fact here: for OpenSIPS and Kamailio, **sipnab does not
 go on the production host at all** — the proxy's own HEP module points at a

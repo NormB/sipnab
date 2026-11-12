@@ -171,17 +171,43 @@ fn wait_until(
     Ok(false)
 }
 
-/// The call records in the intake of the center whose store is in `dir`,
-/// read from the file with the store key.
+/// The call records the center whose store is in `dir` holds, oldest
+/// first, read from its files with the store key: those in the intake
+/// and, in a build with the history store, those the center filed, each
+/// once.
 fn intake(dir: &Path) -> Result<Vec<serde_json::Value>, TestError> {
     use sipnab::app::fleet_seal::{Keys, Kind, MasterKey, open_log};
     let keys = Keys::new(MasterKey::parse(STORE_KEY)?, Vec::new());
     let bytes = std::fs::read(dir.join("center.store.intake"))?;
     let log = open_log(&bytes, &keys, Kind::Intake).map_err(|e| e.to_string())?;
-    log.records
-        .iter()
-        .map(|line| Ok(serde_json::from_slice(line)?))
-        .collect()
+    #[cfg(not(feature = "fleet-store"))]
+    {
+        log.records
+            .iter()
+            .map(|line| Ok(serde_json::from_slice(line)?))
+            .collect()
+    }
+    #[cfg(feature = "fleet-store")]
+    {
+        use sipnab::app::fleet_history::{History, Query};
+        let waiting = log
+            .records
+            .iter()
+            .map(|line| Ok(serde_json::from_slice(line)?))
+            .collect::<Result<Vec<sipnab::app::fleet_intake::IntakeRecord>, TestError>>()?;
+        let history = History::reader(&dir.join("center.store"), std::sync::Arc::new(keys));
+        let all = Query::all();
+        let answer = history.answer(&all, &history.list(&all)?, waiting);
+        if let Some((file, why)) = answer.refused.first() {
+            return Err(format!("{file}: {why}").into());
+        }
+        answer
+            .rows
+            .iter()
+            .rev()
+            .map(|row| Ok(serde_json::to_value(row)?))
+            .collect()
+    }
 }
 
 /// The member's own REST answer for the dialog `call_id`, without the

@@ -157,9 +157,9 @@ choice_reason() {
       if [ -z "$_glibc" ]; then
         echo "no glibc detected — using the static musl build"
       elif [ "$(glibc_at_least "$_glibc" "$SIPNAB_GLIBC_FLOOR")" != "yes" ]; then
-        echo "glibc $_glibc < $SIPNAB_GLIBC_FLOOR — using the static musl build (no TUI audio, WASM plugins, vCon export or eBPF uprobe backend)"
+        echo "glibc $_glibc < $SIPNAB_GLIBC_FLOOR — using the static musl build (no TUI audio, WASM plugins, vCon export, eBPF uprobe backend or fleet history store)"
       else
-        echo "$SIPNAB_GNU_PCAP_SONAME not found — using the static musl build (no TUI audio, WASM plugins, vCon export or eBPF uprobe backend). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead"
+        echo "$SIPNAB_GNU_PCAP_SONAME not found — using the static musl build (no TUI audio, WASM plugins, vCon export, eBPF uprobe backend or fleet history store). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead"
       fi
       ;;
     *gnu*) echo "glibc $_glibc and $SIPNAB_GNU_PCAP_SONAME found — using the gnu build, which needs libpcap" ;;
