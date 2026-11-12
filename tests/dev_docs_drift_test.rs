@@ -1021,7 +1021,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 842 -> 844 (RUNNER-ORPHAN-LISTENER): build-ci-release.md's runner
     // paragraph links scripts/runner-listeners.py and
     // scripts/tests/test_runner_listeners.py (+2).
-    const EXPECTED_CODE_LINKS: usize = 844;
+    // 844 -> 846 (PRIVILEGE-TEST-LEAVES-SUDO-CHILD-WHEN-CUT-SHORT):
+    // testing.md's helper table and its "How to verify" list link
+    // tests/support/root_run.rs (+2).
+    const EXPECTED_CODE_LINKS: usize = 846;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

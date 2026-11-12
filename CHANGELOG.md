@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A command a test starts under `sudo` ends with the test process (PRIVILEGE-TEST-LEAVES-SUDO-CHILD-WHEN-CUT-SHORT).** `tests/privilege_drop_test.rs` started `sudo sipnab` servers (`--api`) and stopped them 5 s later. A test binary that was ended inside those 5 s left the server running with PID 1 as its parent: the kernel clears `PR_SET_PDEATHSIG` when `sudo` executes, so the rule that ties every other child to its test did not hold. All 19 `sudo` sites now start their command through `root_run::sudo()` (`tests/support/root_run.rs`). The test process holds the write end of a pipe, and the command runs under a small `sh` program, as root, that holds the read end and ends the command when the pipe closes: SIGTERM, then SIGKILL after 2 s. `tests/child_lifetime_test.rs` kills a test process that holds such a command and requires the command to be gone within 10 s, and requires that no other file under `tests/` names `sudo`. [The testing guide](docs/internals/testing.md#children-end-with-their-test) says how to start a command under `sudo`.
+
 ## [0.5.247] - 2026-11-11
 
 ### Changed

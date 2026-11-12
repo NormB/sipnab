@@ -1809,7 +1809,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // mcp-deploy.md +1, each "Before you start" linking sections of its page;
     // auth.md +7 (its "Before you start" links one of its sections and its
     // troubleshooting table six).
-    const EXPECTED_WIKI_LINKS: usize = 2587;
+    // 2587 -> 2588 (PRIVILEGE-TEST-LEAVES-SUDO-CHILD-WHEN-CUT-SHORT):
+    // testing.md's helper table row for root_run.rs links its own section
+    // "Children end with their test" (+1).
+    const EXPECTED_WIKI_LINKS: usize = 2588;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
