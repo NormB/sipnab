@@ -21,6 +21,16 @@ allow = [
 ]
 confidence-threshold = 0.8
 
+# tiny-keccak is CC0-1.0, a public-domain dedication. It is in Cargo.lock
+# through `parquet` (feature `fleet-store`): parquet asks `ahash` for
+# `compile-time-rng` on wasm32 only, which brings `const-random`, whose
+# proc macro uses tiny-keccak at build time. No release target is wasm32 with
+# that feature, so no shipped binary is built with it. The exception is for
+# this one crate; CC0-1.0 is not allowed for any other.
+[[licenses.exceptions]]
+crate = "tiny-keccak"
+allow = ["CC0-1.0"]
+
 # ring uses a custom license (ISC-style + OpenSSL); clarify it so the check passes
 [[licenses.clarify]]
 crate = "ring"

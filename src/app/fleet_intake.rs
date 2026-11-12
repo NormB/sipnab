@@ -235,6 +235,41 @@ impl Intake {
         Ok(first)
     }
 
+    /// The records the intake holds, oldest first, read from the file: what
+    /// the history store files.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be read, the sealed layer refuses it, or a record
+    /// in it does not parse. The message names the file.
+    #[cfg(any(feature = "fleet-store", test))]
+    pub fn rows(&self) -> Result<Vec<IntakeRecord>, String> {
+        let shown = self.log.path().display().to_string();
+        let lines = self
+            .log
+            .held_lines()
+            .map_err(|e| format!("the intake '{shown}': {e}"))?;
+        parsed(&shown, &lines)
+    }
+
+    /// Write the file again with no record in it, after the history store
+    /// filed what it held. Returns how many records it held. These are not
+    /// counted as removed by the bounds ([`Intake::dropped`]).
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be rewritten; it and this intake are then as they
+    /// were.
+    #[cfg(any(feature = "fleet-store", test))]
+    pub fn clear(&mut self) -> Result<usize, String> {
+        let held = self.held.len();
+        self.log
+            .rewrite(std::iter::empty())
+            .map_err(|e| format!("the intake '{}': {e}", self.log.path().display()))?;
+        self.held.clear();
+        Ok(held)
+    }
+
     /// How many records the intake holds.
     #[must_use]
     pub fn records(&self) -> usize {
@@ -279,8 +314,14 @@ fn read(path: &Path, keys: &Keys) -> Result<(Vec<Vec<u8>>, Vec<IntakeRecord>), S
              not finish; it is dropped"
         );
     }
-    let records = log
-        .records
+    let records = parsed(&shown.to_string(), &log.records)?;
+    Ok((log.records, records))
+}
+
+/// The call records the lines `lines` of the intake shown as `shown`
+/// spell, in order.
+fn parsed(shown: &str, lines: &[Vec<u8>]) -> Result<Vec<IntakeRecord>, String> {
+    lines
         .iter()
         .enumerate()
         .map(|(index, line)| {
@@ -291,8 +332,7 @@ fn read(path: &Path, keys: &Keys) -> Result<(Vec<Vec<u8>>, Vec<IntakeRecord>), S
                 )
             })
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((log.records, records))
+        .collect()
 }
 
 /// Refuse an intake file that another user can read or write.
@@ -1087,6 +1127,137 @@ mod tests {
             counts,
             vec![("edge-a", 2, 2), ("edge-b", 7, 1)],
             "success a replayed intake makes its records duplicates"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_rows_the_intake_holds_are_read_from_its_file() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (mut intake, _) = open(&dir.path().join("center.store.intake"))?;
+        intake.append(&[rec("edge-a", 1), rec("edge-b", 2)])?;
+        intake.append(&[rec("edge-a", 3)])?;
+        assert_eq!(
+            intake.rows()?,
+            vec![rec("edge-a", 1), rec("edge-b", 2), rec("edge-a", 3)],
+            "success every record of every append, oldest first"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_cleared_intake_holds_nothing_and_takes_records_again() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store.intake");
+        let (mut intake, _) = open(&path)?;
+        intake.append(&[rec("edge-a", 1), rec("edge-a", 2)])?;
+        assert_eq!(intake.clear()?, 2, "success two records were held");
+        assert_eq!(
+            (intake.records(), intake.bytes(), intake.dropped()),
+            (0, 0, 0),
+            "success nothing is held, and filed records are not counted as removed"
+        );
+        assert!(
+            intake.rows()?.is_empty(),
+            "success the file holds no record"
+        );
+        intake.append(&[rec("edge-a", 3)])?;
+        drop(intake);
+        let (_, records) = open(&path)?;
+        assert_eq!(
+            records,
+            vec![rec("edge-a", 3)],
+            "success a record taken after the clear is the one record a restart finds"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_clear_that_cannot_rewrite_the_file_leaves_the_intake_as_it_was() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub)?;
+        let path = sub.join("center.store.intake");
+        let (mut intake, _) = open(&path)?;
+        intake.append(&[rec("edge-a", 1), rec("edge-a", 2)])?;
+        // The directory moves away: the staged file cannot be created.
+        let moved = dir.path().join("moved");
+        std::fs::rename(&sub, &moved)?;
+        let got = intake.clear();
+        assert!(
+            got.as_ref().is_err_and(|e| e.contains("the intake")),
+            "failure the clear fails and names the intake: {got:?}"
+        );
+        assert_eq!(
+            intake.records(),
+            2,
+            "failure the intake still counts its two records"
+        );
+        std::fs::rename(&moved, &sub)?;
+        assert_eq!(
+            intake.rows()?,
+            vec![rec("edge-a", 1), rec("edge-a", 2)],
+            "failure and its file still holds them"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_rows_of_a_file_that_was_changed_are_refused() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store.intake");
+        let (mut intake, _) = open(&path)?;
+        intake.append(&[rec("edge-a", 1)])?;
+        let mut bytes = std::fs::read(&path)?;
+        let last = bytes.len() - 40;
+        bytes[last] ^= 0x01;
+        std::fs::write(&path, bytes)?;
+        let got = intake.rows();
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.contains("the intake") && e.contains("sealed layer")),
+            "failure a changed intake is not filed: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_rows_do_not_include_what_a_failed_append_left() -> TestResult {
+        let (_dir, _path, intake) = intake_after_a_failure(
+            crate::app::fleet_log::faults::stop_at(60, 28),
+            &[rec("edge-a", 3)],
+        )?;
+        assert_eq!(
+            intake.rows()?,
+            vec![rec("edge-a", 1), rec("edge-a", 2)],
+            "edge only the records of appends that succeeded are filed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_clearing_an_empty_intake_is_nothing() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (mut intake, _) = open(&dir.path().join("center.store.intake"))?;
+        assert_eq!(intake.clear()?, 0, "edge no record was held");
+        assert!(intake.rows()?.is_empty(), "edge and none is");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_clear_after_a_failed_append_leaves_a_file_that_takes_appends() -> TestResult {
+        let (_dir, path, mut intake) = intake_after_a_failure(
+            crate::app::fleet_log::faults::stop_at(60, 28),
+            &[rec("edge-a", 3)],
+        )?;
+        assert_eq!(intake.clear()?, 2, "edge the two whole records were held");
+        intake.append(&[rec("edge-a", 4)])?;
+        drop(intake);
+        let (_, records) = open(&path)?;
+        assert_eq!(
+            records,
+            vec![rec("edge-a", 4)],
+            "edge the file was written whole by the clear and opens with the one new record"
         );
         Ok(())
     }

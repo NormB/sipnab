@@ -7304,12 +7304,12 @@ only.
 
 | Scope | Reaches | Mint it for |
 |---|---|---|
-| `full` (default) | Every read route and `/metrics`. Not the action routes (`/v1/tfps/ban`, `/v1/tfps/unban`, `/v1/actions/revert`) and not the live-audio routes (`/v1/calls/live`). | A dashboard or script that reads calls and streams. |
+| `full` (default) | Every read route and `/metrics`. Not the action routes (`/v1/tfps/ban`, `/v1/tfps/unban`, `/v1/actions/revert`) and not the live-audio routes (`/v1/calls/live`). On a fleet center it reads the call records, `GET /v1/fleet/calls`. | A dashboard or script that reads calls and streams. |
 | `metrics` | `GET /metrics` only. Every other route returns `401`. | A Prometheus scrape job. |
 | `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. It lifts only the bans it placed. | The system that decides to block a source. |
 | `admin` | Everything `actions` reaches, and it also lifts a ban another caller placed. | An operator who must be able to lift any ban. |
 | `audio` | The live-audio routes a `live_audio` vCon rule serves, and nothing else. | A speech-to-text consumer. |
-| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. On a fleet center it also reads `GET /v1/fleet/members`. | A fleet controller running [`sipnab fleet inventory`](fleet.md). |
+| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. On a fleet center it also reads `GET /v1/fleet/members`, and not the call records: `GET /v1/fleet/calls` answers it `401`. | A fleet controller running [`sipnab fleet inventory`](fleet.md). |
 | `fleet-report` | Nothing on this API: every route returns `401`. A fleet center's `POST /v1/fleet/ingest`, which no other scope reaches. | A fleet member reporting to [a fleet center](fleet.md#run-a-fleet-center), minted with the center's key and the member's name as `--token-id`. |
 
 The `read` scope is for MCP tokens. Minting it with `--api-signing-key`
@@ -13516,14 +13516,14 @@ Substitute the release version for `<version>` throughout.
 |---|---|---|---|
 | `sipnab_<version>_amd64.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
 | `sipnab_<version>_arm64.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
-| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency — headless servers |
-| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency — headless servers |
+| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency — headless servers; no [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency — headless servers; no [fleet history store](fleet.md#keep-call-history-at-the-center) |
 | `sipnab-<version>-1.x86_64.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
 | `sipnab-<version>-1.aarch64.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
-| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency |
-| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency |
-| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export or eBPF uprobe backend |
-| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export or eBPF uprobe backend |
+| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export, eBPF uprobe backend or [fleet history store](fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export, eBPF uprobe backend or [fleet history store](fleet.md#keep-call-history-at-the-center) |
 | `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
 | `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
@@ -14337,7 +14337,8 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `opus` | Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a `[[vcon.rule]]`). Compiles libopus from the source `opusic-sys` vendors and links it statically, so building it needs `cmake` and a C compiler; the binary needs no system libopus. In `full`; not in the static musl builds, which have no vCon export. | `vcon`, `opus` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
 | `g729` | G.729 Annex A decoding, with Annex B comfort noise, for WAV export, vCon recordings, the live audio route and the dead-air measurement. Adds `--g729-tables`, `[g729]`, and the `sipnab g729 install` and `sipnab g729 status` commands. sipnab ships no ITU-T table values: each host installs them with `sipnab g729 install`, described on the G.729 decoding page. Pure Rust, so in `full` and in the static musl builds. | `native`, `g729` (crates/g729), `sha2`, `rustls`, `base64` |
-| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `opus` + `archive` + `g729` | all |
+| `fleet-store` | The history store of a fleet center (`sipnab fleet serve`): the call records members push, kept in sealed Parquet files, and `GET /v1/fleet/calls`. Adds nothing to a capture run. In `full`; not in the static musl builds or the `-noaudio` packages, where the `parquet` crate does not fit under the binary's size limit. "Keep call history at the center" on the fleet page is the how-to. | `api`, `parquet` |
+| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` + `plugins` + `vcon` + `opus` + `archive` + `g729` + `fleet-store` | all |
 | `wasm` | WebAssembly target for in-browser pcap analysis | `wasm-bindgen`, `js-sys`, `web-sys`, `console_error_panic_hook` |
 
 Build with specific features. For the TUI plus TLS decryption and nothing else:
@@ -23622,6 +23623,10 @@ It exits `0` when every instance answered and there is no finding, `1` when an i
 - `--silent-after-missed <N>`: a member is silent once more than this many of its heartbeat intervals pass without one, 1 to 1000. Default `3`.
 - `--allowed-host <HOST>`: a `Host` value to serve beyond the loopback names and the bound address, such as the name members use for the center (repeatable). `*` turns the check off.
 - `--rate-limit-per-peer <N>`: requests per second one address may make before it gets `503`. `0` turns the limit off. Default `100`.
+- `--calls-retention-days <DAYS>`: days of call records the history store keeps, 1 to 548. Default `90`. The center removes the days past it at start and every minute. A build without the history store does not use it.
+- `--calls-flush-secs <SECS>`: seconds between two filings of the acknowledged call records into the history store, 1 to 3600. Default `60`. A build without the history store does not use it.
+
+A build whose `--version` lists `fleet-store` has the history store: it keeps the call records members push in sealed Parquet files under `<store>.parquet` and answers `GET /v1/fleet/calls` to a `full` token. A build without it logs `this build has no history store` at start, and that route answers `501`. [Keep call history at the center](fleet.md#keep-call-history-at-the-center) is the how-to.
 
 It exits `0` once stopped, and `2` when it refuses an argument, the signing key, the store or the listener.
 
@@ -29625,6 +29630,162 @@ The center's answer to a record whose interval is under 1 second or over
 3600, after the line number.
 
 **What to do:** Send `heartbeat_secs` from 1 to 3600.
+
+### `fleet center: {NO_HISTORY_STORE}`
+
+A warning at start, from a center built without the history store. The text
+after `fleet center:` is `this build has no history store (cargo feature
+fleet-store)`, with what follows from it: call records wait in the intake,
+which holds at most 64 MiB and `--retention-hours` of them, and
+`GET /v1/fleet/calls` answers `501`. The text names the builds that have the
+store. The route's `501` carries the same text as its `detail`.
+
+**What to do:** To keep call history, install a build whose `--version` lists
+`fleet-store` and start the center on the same store.
+[Keep call history at the center](fleet.md#keep-call-history-at-the-center)
+lists the builds.
+
+### `fleet center: the call records were not filed and stay in the intake: {e}`
+
+A warning. The center could not move the call records from its intake into
+the history store, for the reason at the end of the line. The records stay in
+the intake and the center tries again after `--calls-flush-secs`.
+`failed_filings` in `GET /v1/fleet/members` counts these.
+
+**What to do:** Fix the cause the line ends with: a directory under
+`<store>.parquet` that the center cannot write, a full disk, or a file it
+cannot read. The intake holds at most 64 MiB, and past that the oldest
+waiting records go first.
+
+### `fleet center: the call records could not be read: {e}`
+
+An error. `GET /v1/fleet/calls` could not read the intake or list the
+directories of the history store, and answered `503`. The line ends with the
+file or directory and the system's reason.
+
+**What to do:** Check that the center's user can read the intake and every
+directory under `<store>.parquet`.
+
+### `fleet center: past --calls-retention-days {retention_days} and not removed: {left}`
+
+A warning. A day of the history store is past its retention, and the center
+left something in it: a file it did not write, or a file or directory the
+system refused to remove. The line names it and the reason.
+
+**What to do:** Remove the named file by hand, or fix its permissions. The
+center removes the day's directory once it is empty.
+
+### `fleet center: retention of the history store: {e}`
+
+A warning. The center could not list the days of the history store to remove
+the ones past `--calls-retention-days`. It removed nothing.
+
+**What to do:** Check that the center's user can read `<store>.parquet` and
+the `calls` directory in it.
+
+### `the history store: {rel} exists and holds other rows; it is not replaced`
+
+Printed after `the call records were not filed and stay in the intake:`. The
+records to file would get the name of a file that exists and that holds other
+records: the same member, stream, position and millisecond of receipt, sent
+at another time. The center does not replace a file.
+
+**What to do:** Move the named file out of the directory, keep it, and let
+the next filing write the waiting records. Tell us how the member came to
+send two records at one position of one stream.
+
+### `a call record of member '{}' was received at {at}, before 1970; the history store keeps no such row`
+
+Printed after `the call records were not filed and stay in the intake:`. The
+center's clock was before 1970 when it took the record. The history store
+names files and prunes questions by the time of receipt, and keeps no time
+before 1970 or past the year 2262.
+
+**What to do:** Set the center's clock. The record stays in the intake until
+`--retention-hours` removes it.
+
+### `{rel}: sealed layer: the file was written as '{written}' and is not at that path`
+
+A reason in the `refused` list of `GET /v1/fleet/calls`, or after `the call
+records were not filed`. The file opened under the store key, and the center
+wrote it for another path under `<store>.parquet` than the one it is at. A
+file of one member or day does not open as a file of another.
+
+**What to do:** Move the file back to the path the message gives.
+
+### `{rel}: sealed layer: the file was truncated: its last record is incomplete`
+
+A reason in the `refused` list of `GET /v1/fleet/calls`, or after `the call
+records were not filed`. Bytes follow the end of the file as the center
+wrote it. The center writes a history file once and appends nothing to it.
+
+**What to do:** Restore the file from a backup, or move it out of the
+directory. Its records are then not answered.
+
+### `{rel}: sealed layer: the file holds no path`
+
+A reason in the `refused` list of `GET /v1/fleet/calls`, or after `the call
+records were not filed`. The file is a sealed calls file with no record in
+it. The center writes no such file.
+
+**What to do:** Restore the file from a backup, or move it out of the
+directory.
+
+### `parquet: column {column} is not a 64-bit number`
+
+A reason in the `refused` list of `GET /v1/fleet/calls`, after the file's
+path. The file opened under the store key, and the Parquet in it does not
+have the columns of a call record file. This build did not write it.
+
+**What to do:** Move the file out of the directory. Tell us which release
+wrote it.
+
+### `parquet: column {column} is not a byte text`
+
+As `parquet: column {column} is not a 64-bit number`, for a column that
+holds text.
+
+**What to do:** Move the file out of the directory. Tell us which release
+wrote it.
+
+### `parquet: column {column} holds {} of its {rows} rows`
+
+A reason in the `refused` list of `GET /v1/fleet/calls`, after the file's
+path. A column of the Parquet in the file ended before the rows its row group
+counts. The sealed layer authenticated the file, so the center wrote it this
+way.
+
+**What to do:** Move the file out of the directory and tell us, with the
+center's version.
+
+### `member must be 1 to {} letters, digits, '.', '_' or '-'`
+
+The `detail` of a `400` from `GET /v1/fleet/calls`: the `member` parameter is
+not a member's name.
+
+**What to do:** Give the member's token id, as `GET /v1/fleet/members` lists
+it.
+
+### `call_id must be 1 to {MAX_CALL_ID_BYTES} bytes`
+
+The `detail` of a `400` from `GET /v1/fleet/calls`: the `call_id` parameter
+is empty or longer than 1024 bytes.
+
+**What to do:** Give the whole Call-ID, percent-encoded, with `@` as `%40`.
+
+### `{} is given twice`
+
+The `detail` of a `400` from `GET /v1/fleet/calls`: the query string holds
+the named parameter more than once.
+
+**What to do:** Give each parameter once.
+
+### `{} is not a parameter of this route; it takes member, from, to, call_id and limit`
+
+The `detail` of a `400` from `GET /v1/fleet/calls`: the query string holds a
+parameter the route does not take.
+
+**What to do:** Use `member`, `from`, `to`, `call_id` and `limit`.
 
 ## Startup, privileges and the process
 
@@ -41381,7 +41542,9 @@ that the callee answered and that then ended.
 - **Room at the center.** The center keeps the records in one sealed file
   beside its store, `<store>.intake`, for `--retention-hours`, and holds at
   most 64 MiB there (`MAX_INTAKE_BYTES`); past that the oldest records go
-  first. A later release files them into Parquet.
+  first. A center with the history store moves them from there into files
+  it keeps for days, as
+  [Keep call history at the center](#keep-call-history-at-the-center) shows.
 
 **Steps.**
 
@@ -41870,6 +42033,243 @@ shows a key.
   ```text
   sipnab fleet serve: --store-encryption modular: this build cannot read or write Parquet modular encryption; `sealed` is the one value it runs under
   ```
+
+### Keep call history at the center
+
+**Purpose.** A center with the history store keeps the call records its
+members push for `--calls-retention-days` (default 90), and answers
+`GET /v1/fleet/calls`: the calls of one member, of a time window, or the call
+with one Call-ID. Without it, a record stays in the intake for
+`--retention-hours` and no route reads it.
+
+The center files the records into Parquet files under a directory beside its
+store, `<store>.parquet`. It seals each file with the store key before the
+file reaches the disk, so no call record is on the center's disk in clear.
+
+The outputs below come from a run on 2026-11-11 on one host, with a
+development build after 0.5.247: a center on `127.0.0.1:18447` over HTTP on
+loopback, with `--calls-flush-secs 5`, and two call records sent by hand as
+member `edge-a`. The commands name files as a deployment would, and the log
+lines show file names without the run's directory. The `WARN` line of a
+build without the history store is the text that build logs. It does not
+come from this run.
+
+**Before you start.**
+
+- **A build with the history store.** `sipnab --version` lists `fleet-store`
+  among its features. The gnu tarballs, the `.deb` and `.rpm` packages that
+  are not `-noaudio`, the macOS builds and the container image have it. The
+  static musl tarballs and the `-noaudio` packages do not: the Parquet
+  library is larger than the room the static binary has under its size
+  limit. A center from one of those says so when it starts, and the route
+  answers `501`:
+
+  ```text
+  WARN sipnab::app::fleet_center: fleet center: this build has no history store (cargo feature fleet-store): call records wait in the intake, which holds at most 64 MiB and --retention-hours of them, and GET /v1/fleet/calls answers 501. The gnu tarballs, the .deb and .rpm packages that are not -noaudio, the macOS builds and the container image have the history store; the static musl tarballs and the -noaudio packages do not
+  ```
+
+- **A center that takes call records, and members that push them**, as
+  [Push call records to the center](#push-call-records-to-the-center) sets
+  up. The member needs no change for the history store.
+- **The store key and its backup**, as
+  [Encrypt the center's store](#encrypt-the-centers-store) describes. The
+  center seals the history files under the same key. Without the key no one reads
+  them.
+- **A token that reads calls.** `GET /v1/fleet/calls` needs scope `full`. A
+  call record holds the numbers and addresses of a call, so an `inventory`
+  token does not read it.
+- **Room on the center's disk.** In the run of the tests, 20,000 records of
+  about 1.3 kB each made one file of 25,477,354 bytes. The files are not
+  compressed.
+- **Other systems.** Nothing changes on OpenSIPS, Kamailio, Homer or any HEP
+  collector. A backup of the center now includes the directory
+  `<store>.parquet`.
+
+**Steps.**
+
+1. **[center]** Start the center with the retention you want. Both flags are
+   optional:
+
+   ```bash
+   sipnab fleet serve --listen 127.0.0.1:8444 --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey \
+     --signing-key-file /etc/sipnab/center.signing \
+     --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key \
+     --calls-retention-days 90 --calls-flush-secs 60
+   ```
+
+   ```text
+   INFO sipnab::app::fleet_center: fleet center history store 'center.store.parquet': call records are kept 90 day(s)
+   ```
+
+   - `--calls-retention-days` takes 1 to 548. The center removes the days
+     past it at start and every minute. A day is the UTC day on which the
+     center received the records.
+   - `--calls-flush-secs` takes 1 to 3600. It is the time between two
+     filings of the intake. The center also files when it starts and when it
+     stops on a signal.
+
+2. **[center]** Mint a token that reads calls:
+
+   ```bash
+   sipnab --mint-token --token-scope full --token-id fleet-ops \
+     --api-signing-key-file /etc/sipnab/center.signing --api-token-ttl 86400
+   ```
+
+3. **[controller]** Ask for calls. With no parameter the answer is the newest
+   100 records:
+
+   ```bash
+   curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $OPS_TOKEN" \
+     'https://127.0.0.1:8444/v1/fleet/calls?member=edge-a&call_id=busy-1%40192.0.2.10' | jq .
+   ```
+
+   ```json
+   {
+     "calls": [
+       {
+         "call": {
+           "call_id": "busy-1@192.0.2.10",
+           "final_status": 486,
+           "from": "sip:+12025550101@example.com",
+           "state": "failed",
+           "to": "sip:+12025550102@example.com"
+         },
+         "member": "edge-a",
+         "received_at": "2026-11-11T23:54:37.489276093Z",
+         "selected_by": "failed",
+         "sent_at": "2026-11-11T23:54:37Z",
+         "seq": 1,
+         "stream": "edge-a-manual"
+       }
+     ],
+     "complete": true,
+     "count": 1,
+     "files_read": 1,
+     "more": false,
+     "refused": []
+   }
+   ```
+
+   The parameters, each optional:
+
+   | Parameter | Meaning |
+   |---|---|
+   | `member` | Records of this member only. |
+   | `from` | Records the center received at this RFC 3339 time or later. |
+   | `to` | Records the center received before this RFC 3339 time. |
+   | `call_id` | The record of the call with this Call-ID. Percent-encode `@` as `%40`. |
+   | `limit` | The most records to return, 1 to 1000 (`MAX_LIMIT`). Default 100. The newest come first. |
+
+   `more` is `true` when the limit cut the answer. Narrow the window or raise
+   `limit` to read the rest. A record is in the answer from the moment the
+   center acknowledges it, before the center files it.
+
+**Verify.**
+
+- **[controller]** `GET /v1/fleet/members` reports what the history store
+  did since the center started. After one filing of two records:
+
+  ```bash
+  curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $READER_TOKEN" \
+    https://127.0.0.1:8444/v1/fleet/members | jq -c '.history, .intake'
+  ```
+
+  ```json
+  {"available":true,"failed_filings":0,"files_written":1,"retention_days":90,"rows_filed":2}
+  {"bytes":0,"call_records":0,"removed":0}
+  ```
+
+- **[center]** The center logs each filing:
+
+  ```text
+  INFO sipnab::app::fleet_center: fleet center: filed 2 call record(s) in 1 file(s) of the history store; 0 were in it already
+  ```
+
+- **[center]** The files are under class, day and member. Each name holds
+  the first and the last receive time in the file, in milliseconds, and the
+  stream and position of its first record:
+
+  ```bash
+  cd /var/lib/sipnab && find center.store.parquet -type f
+  ```
+
+  ```text
+  center.store.parquet/calls/date=2026-11-11/member=edge-a/1794441277489-1794441277489-edge-a-manual-1.sealed
+  ```
+
+- **[center]** The center sealed each file. Its first four bytes are `SNFS`, not the
+  `PAR1` of a Parquet file in clear:
+
+  ```bash
+  head -c 4 center.store.parquet/calls/date=2026-11-11/member=edge-a/*.sealed; echo
+  ```
+
+  ```text
+  SNFS
+  ```
+
+  The directories have mode `0700` and the files mode `0600`.
+
+**Troubleshoot.**
+
+- **`401` on `GET /v1/fleet/calls`.** The token's scope is not `full`. An
+  `inventory`, `metrics` or `fleet-report` token does not read call records.
+  Mint a `full` token, as step 2 does.
+- **`400` with a `detail`.** The detail names the parameter and what it
+  accepts:
+
+  ```text
+  {"detail":"limit must be a number from 1 to 1000","status":400,"title":"Bad Request","type":"https://sipnab.com/problems/bad-request"}
+  {"detail":"\"membr\" is not a parameter of this route; it takes member, from, to, call_id and limit","status":400,"title":"Bad Request","type":"https://sipnab.com/problems/bad-request"}
+  ```
+
+- **`501` and `this build has no history store`.** The center runs a build
+  without the history store. Install a build that has it, as
+  **Before you start** lists, and start the center on the same store. The
+  center files the records still in the intake at that start.
+- **`"complete": false` and a `refused` list.** The center could not read a
+  file the question needed. The answer holds the records of the other files.
+  Each entry names the file under `<store>.parquet` and the reason:
+
+  ```json
+  {
+    "calls": [],
+    "complete": false,
+    "count": 0,
+    "files_read": 0,
+    "more": false,
+    "refused": [
+      {
+        "file": "calls/date=2026-11-11/member=edge-a/1794441277489-1794441277489-edge-a-manual-1.sealed",
+        "reason": "calls/date=2026-11-11/member=edge-a/1794441277489-1794441277489-edge-a-manual-1.sealed: sealed layer: the file has a record 2 that did not authenticate (the file was modified, or its records were moved)"
+      }
+    ]
+  }
+  ```
+
+  - `did not authenticate`, `was truncated` or `was cut at its end`: the file
+    changed after the center wrote it. Restore the file from a backup, or
+    move it out of the directory. The records in it are then not answered.
+  - `was written under key id <id>, which is not loaded`: the file is under
+    an earlier store key. Start the center with that key in
+    `--store-old-key-file`.
+  - `was written as '<path>' and is not at that path`: someone moved or
+    renamed the file. Move it back to the path the message gives.
+- **The center logs `the call records were not filed and stay in the
+  intake`.** The line ends with the cause: a directory the center cannot
+  write, a full disk, or a file of the same day and member that it cannot
+  read. The records wait in the intake, and the center tries again after
+  `--calls-flush-secs`. `failed_filings` in `GET /v1/fleet/members` counts
+  the tries that failed. Fix the cause before the intake reaches its 64 MiB:
+  past that the oldest waiting records go first.
+- **The center logs `past --calls-retention-days <n> and not removed`.** The
+  line names a file in an expired day that the center did not write, or one
+  the system refused to remove. The center leaves such a file and its
+  directory. Remove it by hand.
+- **What the history store cannot show.** A whole file that someone deleted
+  leaves no trace in the store, as for the store file itself. An answer does
+  not include records the intake dropped at its size limit before a filing.
 
 ### Troubleshoot the center
 
@@ -63426,13 +63826,13 @@ Distribute the printed token to clients.
 
 | Scope | Surface | What it reaches |
 |---|---|---|
-| `full` | either | Every read route or tool on the token's audience. Not the actions, and not the live-audio routes. |
+| `full` | either | Every read route or tool on the token's audience. Not the actions, and not the live-audio routes. On a fleet center it reads the call records, `GET /v1/fleet/calls`. |
 | `metrics` | REST API | `GET /metrics`, and nothing else. Every `/v1/` route answers `401`. |
 | `read` | MCP | Only the tools `tools/list` marks read-only. Calling any other tool gets a JSON-RPC error refusal, not a `401`. |
 | `actions` | either | Everything `full` reaches, plus the actions that change another system, such as a TFPS ban, where the server enables them with `--allow-action`. It lifts only the bans it placed. |
 | `admin` | either | Everything `actions` reaches, and it also lifts a ban another caller placed, for example one placed by a token since lost. |
 | `audio` | REST API | The live-audio routes under `/v1/calls/`, and nothing else. No other scope reaches them. |
-| `inventory` | REST API | `GET /v1/inventory`, and a fleet center's `GET /v1/fleet/members`, and nothing else. `full`, `actions` and `admin` reach it too. For [`sipnab fleet inventory`](fleet.md). |
+| `inventory` | REST API | `GET /v1/inventory`, and a fleet center's `GET /v1/fleet/members`, and nothing else. It does not read a center's call records: `GET /v1/fleet/calls` answers it `401`. `full`, `actions` and `admin` reach what it reaches. For [`sipnab fleet inventory`](fleet.md). |
 | `fleet-report` | REST API | A fleet center's `POST /v1/fleet/ingest`, and nothing else; no other scope reaches it. Its `--token-id` is the member's name. For [a fleet center](fleet.md#run-a-fleet-center). |
 
 Give each client the narrowest scope that does its job:

@@ -136,6 +136,17 @@ pub struct ServeFlags {
     /// Requests per second one address may make; 0 turns the limit off.
     #[arg(long, value_name = "N", default_value_t = 100)]
     pub rate_limit_per_peer: u32,
+    /// Days of call records the history store keeps. A build without the
+    /// history store has no use for it.
+    #[arg(long, value_name = "DAYS", default_value_t = 90,
+          value_parser = clap::value_parser!(u32).range(1..=548))]
+    pub calls_retention_days: u32,
+    /// Seconds between two filings of the acknowledged call records into
+    /// the history store. A build without the history store has no use
+    /// for it.
+    #[arg(long, value_name = "SECS", default_value_t = 60,
+          value_parser = clap::value_parser!(u64).range(1..=3600))]
+    pub calls_flush_secs: u64,
 }
 
 /// `--store-encryption`: how the center encrypts what it stores. There is

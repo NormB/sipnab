@@ -971,6 +971,34 @@ pub struct ServeArgs {
     pub allowed_hosts: Vec<String>,
     /// `--rate-limit-per-peer`: requests per second per address; 0 is off.
     pub rate_limit_per_peer: u32,
+    /// `--calls-retention-days`: the days of call records the history
+    /// store keeps.
+    pub calls_retention_days: u32,
+    /// `--calls-flush-secs`: how often the intake is filed into the
+    /// history store.
+    pub calls_flush_secs: u64,
+}
+
+/// What a build without the `fleet-store` feature says where a build with
+/// it keeps call history: at start, and on `GET /v1/fleet/calls`.
+pub const NO_HISTORY_STORE: &str = "this build has no history store (cargo feature \
+    fleet-store): call records wait in the intake, which holds at most 64 MiB and \
+    --retention-hours of them, and GET /v1/fleet/calls answers 501. The gnu tarballs, the \
+    .deb and .rpm packages that are not -noaudio, the macOS builds and the container image \
+    have the history store; the static musl tarballs and the -noaudio packages do not";
+
+/// Whether this build has the history store.
+pub const HAS_HISTORY_STORE: bool = cfg!(feature = "fleet-store");
+
+/// What the center filed into its history store since it started.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct FilingCounts {
+    /// The files written.
+    pub files_written: u64,
+    /// The call records in them.
+    pub rows_filed: u64,
+    /// The filings that failed; the records stayed in the intake.
+    pub failed: u64,
 }
 
 /// The center a running `sipnab fleet serve` holds.
@@ -981,6 +1009,11 @@ struct Center {
     store: Store,
     /// The call records the center acknowledged.
     intake: super::fleet_intake::Intake,
+    /// The history store the intake is filed into.
+    #[cfg(feature = "fleet-store")]
+    history: super::fleet_history::History,
+    /// What was filed since the center started.
+    filing: FilingCounts,
 }
 
 impl Center {
@@ -1004,6 +1037,8 @@ impl Center {
         let (mut file, records) = Store::open(store, Arc::clone(&keys))?;
         let mut registry = Registry::from_records(records);
         let gone = registry.expire(now, retention);
+        #[cfg(feature = "fleet-store")]
+        let history = super::fleet_history::History::open(store, Arc::clone(&keys))?;
         let (intake, stored) =
             Intake::open(&path_for(store), keys, now, retention, MAX_INTAKE_BYTES)?;
         replay(&mut registry, &stored);
@@ -1014,9 +1049,45 @@ impl Center {
                 registry,
                 store: file,
                 intake,
+                #[cfg(feature = "fleet-store")]
+                history,
+                filing: FilingCounts::default(),
             },
             gone,
         ))
+    }
+
+    /// File every call record the intake holds into the history store,
+    /// and then empty the intake. Returns what was filed.
+    ///
+    /// A stop between the two leaves the records in both; the next filing
+    /// leaves out the rows a file already holds
+    /// ([`super::fleet_history::History::file`]).
+    ///
+    /// # Errors
+    ///
+    /// The intake cannot be read or emptied, or the history store cannot
+    /// be written. The records then stay in the intake, and the failure is
+    /// counted.
+    #[cfg(feature = "fleet-store")]
+    fn file_calls(&mut self) -> Result<super::fleet_history::Filed, String> {
+        if self.intake.records() == 0 {
+            return Ok(super::fleet_history::Filed::default());
+        }
+        let filed = self
+            .intake
+            .rows()
+            .and_then(|rows| self.history.file(&rows))
+            .and_then(|filed| self.intake.clear().map(|_| filed));
+        match &filed {
+            Ok(filed) => {
+                self.filing.files_written =
+                    self.filing.files_written.saturating_add(filed.files as u64);
+                self.filing.rows_filed = self.filing.rows_filed.saturating_add(filed.rows as u64);
+            }
+            Err(_) => self.filing.failed = self.filing.failed.saturating_add(1),
+        }
+        filed
     }
 
     /// Take `batch` from `member` at `peer`, received at `now`: the new
@@ -1078,6 +1149,12 @@ struct CenterState {
     missed: u32,
     /// `--retention-hours`.
     retention_hours: u64,
+    /// `--calls-retention-days`.
+    calls_retention_days: u32,
+    /// `--calls-flush-secs`. A build without the history store files
+    /// nothing and does not read it.
+    #[cfg(feature = "fleet-store")]
+    calls_flush: std::time::Duration,
 }
 
 /// The most peers the rate limiter tracks.
@@ -1159,12 +1236,13 @@ fn prepare(
         audience: crate::auth::AUDIENCE_API.to_string(),
     });
     let keys = store_keys(args)?;
-    let (center, gone) = Center::open(
+    let (mut center, gone) = Center::open(
         &args.store,
         keys,
         Utc::now(),
         retention(args.retention_hours),
     )?;
+    start_history(&mut center, args.calls_retention_days);
     tracing::info!(
         "fleet center store '{}': {} member(s), {} past --retention-hours {} removed; {} \
          call record(s) in its intake",
@@ -1182,6 +1260,9 @@ fn prepare(
         )),
         missed: args.silent_after_missed,
         retention_hours: args.retention_hours,
+        calls_retention_days: args.calls_retention_days,
+        #[cfg(feature = "fleet-store")]
+        calls_flush: std::time::Duration::from_secs(args.calls_flush_secs),
     };
     let server_config = crate::output::api::ApiServerConfig {
         max_conn: 0,
@@ -1193,6 +1274,70 @@ fn prepare(
         console: false,
     };
     Ok((addr, state, server_config))
+}
+
+/// As the center starts: file what the intake held when it last stopped
+/// and remove the days past `retention_days`, logging both. A build
+/// without the history store says so instead, once.
+fn start_history(center: &mut Center, retention_days: u32) {
+    #[cfg(feature = "fleet-store")]
+    {
+        tracing::info!(
+            "fleet center history store '{}': call records are kept {retention_days} day(s)",
+            center.history.dir().display()
+        );
+        file_and_log(center);
+        expire_history(center, Utc::now(), retention_days);
+    }
+    #[cfg(not(feature = "fleet-store"))]
+    {
+        let _ = (center, retention_days);
+        tracing::warn!("fleet center: {NO_HISTORY_STORE}");
+    }
+}
+
+/// File the intake into the history store and log what was filed, or why
+/// it was not.
+#[cfg(feature = "fleet-store")]
+fn file_and_log(center: &mut Center) {
+    match center.file_calls() {
+        Ok(filed) if filed.rows > 0 || filed.already > 0 => tracing::info!(
+            "fleet center: filed {} call record(s) in {} file(s) of the history store; {} \
+             were in it already",
+            filed.rows,
+            filed.files,
+            filed.already
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            "fleet center: the call records were not filed and stay in the intake: {e}"
+        ),
+    }
+}
+
+/// Remove the days of the history store past `retention_days` at `now`,
+/// and log what went and what was left.
+#[cfg(feature = "fleet-store")]
+fn expire_history(center: &Center, now: DateTime<Utc>, retention_days: u32) {
+    match center.history.expire(now.date_naive(), retention_days) {
+        Ok(expired) => {
+            if expired.days > 0 || expired.files > 0 {
+                tracing::info!(
+                    "fleet center: {} day(s) and {} file(s) of call records past \
+                     --calls-retention-days {retention_days} were removed",
+                    expired.days,
+                    expired.files
+                );
+            }
+            for left in &expired.left {
+                tracing::warn!(
+                    "fleet center: past --calls-retention-days {retention_days} and not \
+                     removed: {left}"
+                );
+            }
+        }
+        Err(e) => tracing::warn!("fleet center: retention of the history store: {e}"),
+    }
 }
 
 /// The keys `sipnab fleet serve` encrypts its store with, read from the
@@ -1312,6 +1457,8 @@ async fn stop_requested() {
 /// Rewrite the store once more as the center stops.
 fn rewrite_on_exit(state: &CenterState) {
     let mut center = state.center.lock();
+    #[cfg(feature = "fleet-store")]
+    file_and_log(&mut center);
     let Center {
         registry, store, ..
     } = &mut *center;
@@ -1326,6 +1473,7 @@ fn router(state: CenterState) -> axum::Router {
     axum::Router::new()
         .route("/v1/fleet/ingest", post(ingest))
         .route("/v1/fleet/members", get(members))
+        .route("/v1/fleet/calls", get(calls))
         .layer(axum::extract::DefaultBodyLimit::max(MAX_INGEST_BYTES))
         .with_state(state)
 }
@@ -1413,7 +1561,80 @@ async fn members(
         "bytes": center.intake.bytes(),
         "removed": center.intake.dropped(),
     });
+    report["history"] = serde_json::json!({
+        "available": HAS_HISTORY_STORE,
+        "retention_days": state.calls_retention_days,
+        "files_written": center.filing.files_written,
+        "rows_filed": center.filing.rows_filed,
+        "failed_filings": center.filing.failed,
+    });
     Ok(axum::Json(report))
+}
+
+/// `GET /v1/fleet/calls`: the call records the center holds, newest first.
+/// Needs scope `full`, as the REST API's dialog routes do: a call record
+/// carries the numbers and addresses of a call, which an `inventory`
+/// token does not read.
+///
+/// Parameters: `member`, `from` (included) and `to` (not included) as RFC
+/// 3339 times of receipt, `call_id`, and `limit` (100 when absent, at most
+/// 1000). `400` names a parameter that is refused. The answer holds the
+/// rows in `calls`, their `count`, `more` when rows were cut by the limit,
+/// and `complete`: `false` when a file could not be read, with each such
+/// file and the reason in `refused`.
+///
+/// A build without the history store answers `501` with
+/// [`NO_HISTORY_STORE`].
+async fn calls(
+    axum::extract::State(state): axum::extract::State<CenterState>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    uri: axum::http::Uri,
+) -> Result<axum::Json<serde_json::Value>, crate::output::api::Problem> {
+    use crate::output::api::Problem;
+    use axum::http::StatusCode;
+    limit(&state, peer.ip())?;
+    crate::output::api::verify_bearer(&state.verifier, &headers, crate::auth::SCOPE_FULL)?;
+    #[cfg(not(feature = "fleet-store"))]
+    {
+        let _ = uri;
+        Err(Problem::detailed(
+            StatusCode::NOT_IMPLEMENTED,
+            NO_HISTORY_STORE,
+        ))
+    }
+    #[cfg(feature = "fleet-store")]
+    {
+        use super::fleet_history::Query;
+        let pairs: Vec<(String, String)> = axum::extract::Query::try_from_uri(&uri)
+            .map(|axum::extract::Query(pairs)| pairs)
+            .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e.to_string()))?;
+        let query =
+            Query::parse(&pairs).map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
+        // The rows that wait and the list of files are taken as one step,
+        // so a filing between the two cannot hide a row; the files are
+        // read after, without the lock.
+        let (history, files, waiting) = {
+            let center = state.center.lock();
+            let waiting = center.intake.rows();
+            let files = center.history.list(&query);
+            (center.history.clone(), files, waiting)
+        };
+        let unreadable = |e: String| {
+            tracing::error!("fleet center: the call records could not be read: {e}");
+            Problem::detailed(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the center could not read its call records; its log names the file",
+            )
+        };
+        let files = files.map_err(unreadable)?;
+        let waiting = waiting.map_err(unreadable)?;
+        let answer =
+            tokio::task::spawn_blocking(move || history.answer(&query, &files, waiting).json())
+                .await
+                .map_err(|_| Problem::new(StatusCode::INTERNAL_SERVER_ERROR))?;
+        Ok(axum::Json(answer))
+    }
 }
 
 /// Log members going silent and coming back, every [`SILENCE_CHECK`]; apply
@@ -1422,13 +1643,22 @@ async fn upkeep(state: CenterState) {
     let mut silent: BTreeSet<String> = BTreeSet::new();
     let mut tick = tokio::time::interval(SILENCE_CHECK);
     let mut last_upkeep = tokio::time::Instant::now();
+    #[cfg(feature = "fleet-store")]
+    let mut last_filing = tokio::time::Instant::now();
     loop {
         tick.tick().await;
         let now = Utc::now();
         let mut center = state.center.lock();
         silent = log_silence_changes(&center.registry, now, state.missed, &silent);
+        #[cfg(feature = "fleet-store")]
+        if last_filing.elapsed() >= state.calls_flush {
+            last_filing = tokio::time::Instant::now();
+            file_and_log(&mut center);
+        }
         if last_upkeep.elapsed() >= UPKEEP_EVERY {
             last_upkeep = tokio::time::Instant::now();
+            #[cfg(feature = "fleet-store")]
+            expire_history(&center, now, state.calls_retention_days);
             for member in apply_retention(&mut center, now, state.retention_hours) {
                 silent.remove(&member);
             }
@@ -1486,6 +1716,7 @@ fn apply_retention(center: &mut Center, now: DateTime<Utc>, retention_hours: u64
         registry,
         store,
         intake,
+        ..
     } = center;
     trim_intake(intake, now, retention_hours);
     let gone = registry.expire(now, retention(retention_hours));
@@ -2502,6 +2733,9 @@ mod behavior_tests {
             )),
             missed: 3,
             retention_hours: 72,
+            calls_retention_days: 90,
+            #[cfg(feature = "fleet-store")]
+            calls_flush: std::time::Duration::from_secs(60),
         })
     }
 
@@ -4497,6 +4731,517 @@ mod behavior_tests {
             "failure an intake failure still leaves the position where it was"
         );
         assert_eq!(intake_ids(dir.path())?.len(), 1, "the record is held once");
+        Ok(())
+    }
+
+    // ── THE HISTORY STORE ───────────────────────────────────────────────
+
+    /// A token of `scope` for an operator.
+    fn operator(scope: &str) -> String {
+        bearer(&token("ops", scope, 3600, crate::auth::AUDIENCE_API))
+    }
+
+    /// Post call records `from` to `to` of stream `s` as `member`, each
+    /// sent now, and return the status.
+    async fn push_calls(
+        st: &CenterState,
+        member_id: &str,
+        from: u64,
+        to: u64,
+    ) -> Result<u16, TestError> {
+        let mut body = String::new();
+        for seq in from..=to {
+            body.push_str(&call_line(
+                "s",
+                seq,
+                &Utc::now().to_rfc3339(),
+                &format!("call-{seq}@example.com"),
+            )?);
+            body.push('\n');
+        }
+        let (status, _) = call(
+            st,
+            "POST",
+            "/v1/fleet/ingest",
+            Some(&bearer(&member(member_id))),
+            body.into_bytes(),
+        )
+        .await?;
+        Ok(status)
+    }
+
+    /// `GET path` with a `full` token: the status and the JSON body.
+    async fn get_json(st: &CenterState, path: &str) -> Result<(u16, serde_json::Value), TestError> {
+        let (status, body) = call(
+            st,
+            "GET",
+            path,
+            Some(&operator(crate::auth::SCOPE_FULL)),
+            Vec::new(),
+        )
+        .await?;
+        Ok((status, serde_json::from_str(&body).unwrap_or_default()))
+    }
+
+    /// The positions of the calls in an answer of the calls route.
+    #[cfg(feature = "fleet-store")]
+    fn positions(answer: &serde_json::Value) -> Vec<u64> {
+        answer["calls"]
+            .as_array()
+            .map(|calls| calls.iter().filter_map(|c| c["seq"].as_u64()).collect())
+            .unwrap_or_default()
+    }
+
+    /// A center in `dir` that took a heartbeat and call records 2 to 4 of
+    /// `edge-a`.
+    #[cfg(feature = "fleet-store")]
+    fn center_with_three_calls(dir: &Path) -> Result<Center, TestError> {
+        let mut center = center_at(dir, "2026-11-07T12:00:00Z")?;
+        let batch = [
+            Record::Heartbeat(hb("s", 1, "2026-11-07T12:00:00Z")?),
+            call_at(2, "2026-11-07T12:00:05Z")?,
+            call_at(3, "2026-11-07T12:00:06Z")?,
+            call_at(4, "2026-11-07T12:00:07Z")?,
+        ];
+        center.take("edge-a", "192.0.2.7", t("2026-11-07T12:00:08Z")?, &batch)?;
+        Ok(center)
+    }
+
+    /// Every row the history store of `center` holds, as positions, newest
+    /// first.
+    #[cfg(feature = "fleet-store")]
+    fn filed_positions(center: &Center) -> Result<Vec<u64>, TestError> {
+        let query = crate::app::fleet_history::Query {
+            limit: 1000,
+            ..crate::app::fleet_history::Query::all()
+        };
+        let answer = center
+            .history
+            .answer(&query, &center.history.list(&query)?, Vec::new());
+        if let Some((file, why)) = answer.refused.first() {
+            return Err(format!("{file}: {why}").into());
+        }
+        Ok(answer.rows.iter().map(|r| r.seq).collect())
+    }
+
+    #[test]
+    fn success_the_text_of_a_build_without_the_store_names_the_builds_that_have_it() {
+        for needle in [
+            "fleet-store",
+            "GET /v1/fleet/calls answers 501",
+            "musl",
+            "-noaudio",
+            "container image",
+            "64 MiB",
+        ] {
+            assert!(
+                NO_HISTORY_STORE.contains(needle),
+                "success the text says {needle:?}: {NO_HISTORY_STORE}"
+            );
+        }
+        assert_eq!(
+            HAS_HISTORY_STORE,
+            cfg!(feature = "fleet-store"),
+            "success the build knows whether it has the store"
+        );
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[test]
+    fn success_a_filing_moves_the_intake_into_the_history_store() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut center = center_with_three_calls(dir.path())?;
+        let filed = center.file_calls()?;
+        assert_eq!(
+            (filed.files, filed.rows, filed.already),
+            (1, 3, 0),
+            "success three call records are one file"
+        );
+        assert_eq!(center.intake.records(), 0, "success the intake is empty");
+        assert_eq!(
+            filed_positions(&center)?,
+            vec![4, 3, 2],
+            "success the history store holds the three records"
+        );
+        assert_eq!(
+            center.filing,
+            FilingCounts {
+                files_written: 1,
+                rows_filed: 3,
+                failed: 0
+            },
+            "success and the center counted them"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[test]
+    fn success_a_start_files_what_the_intake_held_at_the_stop() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        drop(center_with_three_calls(dir.path())?);
+        let mut center = center_at(dir.path(), "2026-11-07T12:01:00Z")?;
+        assert_eq!(
+            center.intake.records(),
+            3,
+            "success the records waited in the intake over the stop"
+        );
+        start_history(&mut center, 90);
+        assert_eq!(center.intake.records(), 0, "success the start filed them");
+        assert_eq!(
+            filed_positions(&center)?,
+            vec![4, 3, 2],
+            "success into the history store"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[tokio::test]
+    async fn success_the_calls_route_answers_filed_and_waiting_rows() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        assert_eq!(
+            push_calls(&st, "edge-a", 1, 3).await?,
+            200,
+            "success pushed"
+        );
+        st.center.lock().file_calls()?;
+        assert_eq!(
+            push_calls(&st, "edge-a", 4, 5).await?,
+            200,
+            "success pushed"
+        );
+        let (status, answer) = get_json(&st, "/v1/fleet/calls").await?;
+        assert_eq!(status, 200, "success the route answers");
+        assert_eq!(
+            positions(&answer),
+            vec![5, 4, 3, 2, 1],
+            "success rows in files and rows still in the intake, newest first"
+        );
+        assert_eq!(answer["count"], 5, "success five rows");
+        assert_eq!(answer["complete"], true, "success complete");
+        assert_eq!(answer["files_read"], 1, "success from one file");
+        assert_eq!(
+            answer["calls"][0]["call"]["call_id"], "call-5@example.com",
+            "success a row carries the call the member sent"
+        );
+        assert_eq!(
+            answer["calls"][0]["selected_by"], "failed",
+            "success and what selected it"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[tokio::test]
+    async fn success_the_calls_route_narrows_by_member_call_id_and_limit() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        push_calls(&st, "edge-a", 1, 4).await?;
+        push_calls(&st, "edge-b", 1, 2).await?;
+        st.center.lock().file_calls()?;
+        let (_, by_member) = get_json(&st, "/v1/fleet/calls?member=edge-b").await?;
+        assert_eq!(
+            positions(&by_member),
+            vec![2, 1],
+            "success one member's rows"
+        );
+        assert_eq!(
+            by_member["files_read"], 1,
+            "success from that member's file alone"
+        );
+        let (_, by_call) = get_json(
+            &st,
+            "/v1/fleet/calls?member=edge-a&call_id=call-3%40example.com",
+        )
+        .await?;
+        assert_eq!(positions(&by_call), vec![3], "success one call");
+        let (_, limited) = get_json(&st, "/v1/fleet/calls?member=edge-a&limit=2").await?;
+        assert_eq!(positions(&limited), vec![4, 3], "success the newest two");
+        assert_eq!(limited["more"], true, "success and more exist");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn success_the_members_report_says_what_the_history_store_did() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        push_calls(&st, "edge-a", 1, 3).await?;
+        #[cfg(feature = "fleet-store")]
+        st.center.lock().file_calls()?;
+        let (status, body) = call(
+            &st,
+            "GET",
+            "/v1/fleet/members",
+            Some(&operator(crate::auth::SCOPE_INVENTORY)),
+            Vec::new(),
+        )
+        .await?;
+        assert_eq!(status, 200, "success the report answers");
+        let report: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            report["history"]["available"], HAS_HISTORY_STORE,
+            "success the report says whether this build has the store"
+        );
+        let filed = if HAS_HISTORY_STORE { 3 } else { 0 };
+        assert_eq!(
+            report["history"]["rows_filed"], filed,
+            "success and how many call records it filed"
+        );
+        assert_eq!(
+            report["intake"]["call_records"],
+            3 - filed,
+            "success the rest wait in the intake"
+        );
+        assert_eq!(
+            report["history"]["retention_days"], 90,
+            "success with the retention in days"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failure_the_calls_route_needs_a_token_that_reads_calls() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let (none, _) = call(&st, "GET", "/v1/fleet/calls", None, Vec::new()).await?;
+        assert_eq!(none, 401, "failure no token");
+        for scope in [
+            crate::auth::SCOPE_INVENTORY,
+            crate::auth::SCOPE_FLEET_REPORT,
+            crate::auth::SCOPE_METRICS,
+            crate::auth::SCOPE_READ,
+            crate::auth::SCOPE_AUDIO,
+        ] {
+            let (status, body) = call(
+                &st,
+                "GET",
+                "/v1/fleet/calls",
+                Some(&operator(scope)),
+                Vec::new(),
+            )
+            .await?;
+            assert_eq!(
+                status, 401,
+                "failure a {scope} token does not read call records: {body}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "fleet-store"))]
+    #[tokio::test]
+    async fn failure_a_build_without_the_store_answers_501_and_says_why() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        push_calls(&st, "edge-a", 1, 2).await?;
+        let (status, answer) = get_json(&st, "/v1/fleet/calls").await?;
+        assert_eq!(status, 501, "failure no history store: not an empty list");
+        assert_eq!(
+            answer["detail"], NO_HISTORY_STORE,
+            "failure the problem says which builds have the store"
+        );
+        assert!(
+            !dir.path().join("center.store.parquet").exists(),
+            "failure and no history directory was made"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[tokio::test]
+    async fn failure_a_bad_question_is_refused_naming_the_parameter() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        for (query, needle) in [
+            ("limit=0", "limit"),
+            ("membr=edge-a", "membr"),
+            ("from=noon", "from"),
+            ("member=a&member=b", "member"),
+            ("from=2026-11-11T00:00:02Z&to=2026-11-11T00:00:01Z", "after"),
+        ] {
+            let (status, answer) = get_json(&st, &format!("/v1/fleet/calls?{query}")).await?;
+            assert_eq!(status, 400, "failure ?{query} is a bad request");
+            assert!(
+                answer["detail"]
+                    .as_str()
+                    .is_some_and(|d| d.contains(needle)),
+                "failure ?{query} names {needle}: {answer}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[test]
+    fn failure_a_filing_that_cannot_write_leaves_the_records_in_the_intake() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let mut center = center_with_three_calls(dir.path())?;
+        // A file where the class directory goes.
+        let class = center.history.dir().join("calls");
+        std::fs::write(&class, b"in the way")?;
+        let got = center.file_calls();
+        assert!(got.is_err(), "failure the filing fails: {got:?}");
+        assert_eq!(
+            center.intake.records(),
+            3,
+            "failure the records stay in the intake"
+        );
+        assert_eq!(center.filing.failed, 1, "failure the failure is counted");
+        std::fs::remove_file(&class)?;
+        let filed = center.file_calls()?;
+        assert_eq!(filed.rows, 3, "failure the next filing files them");
+        assert_eq!(center.intake.records(), 0, "failure and empties the intake");
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[tokio::test]
+    async fn failure_a_changed_file_makes_the_answer_say_it_is_not_complete()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        push_calls(&st, "edge-a", 1, 3).await?;
+        st.center.lock().file_calls()?;
+        push_calls(&st, "edge-a", 4, 4).await?;
+        let (_, before) = get_json(&st, "/v1/fleet/calls").await?;
+        assert_eq!(before["complete"], true, "failure whole before the change");
+        let listed = {
+            let center = st.center.lock();
+            center
+                .history
+                .list(&crate::app::fleet_history::Query::all())?
+        };
+        let path = st.center.lock().history.dir().join(&listed[0].rel);
+        let mut bytes = std::fs::read(&path)?;
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x01;
+        std::fs::write(&path, bytes)?;
+        let (status, after) = get_json(&st, "/v1/fleet/calls").await?;
+        assert_eq!(status, 200, "failure the route still answers");
+        assert_eq!(after["complete"], false, "failure and says it is not whole");
+        assert_eq!(
+            after["refused"][0]["file"],
+            listed[0].rel.as_str(),
+            "failure naming the file"
+        );
+        assert_eq!(
+            positions(&after),
+            vec![4],
+            "failure with the rows it could read"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[test]
+    fn edge_a_stop_between_filing_and_emptying_files_no_row_twice() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let center = center_with_three_calls(dir.path())?;
+        // The files are written and the center stops before it empties the
+        // intake.
+        center.history.file(&center.intake.rows()?)?;
+        drop(center);
+        let mut again = center_at(dir.path(), "2026-11-07T12:01:00Z")?;
+        assert_eq!(
+            again.intake.records(),
+            3,
+            "edge the intake still holds them"
+        );
+        let filed = again.file_calls()?;
+        assert_eq!(
+            (filed.files, filed.rows, filed.already),
+            (0, 0, 3),
+            "edge the start files none of them a second time"
+        );
+        assert_eq!(again.intake.records(), 0, "edge and empties the intake");
+        assert_eq!(
+            filed_positions(&again)?,
+            vec![4, 3, 2],
+            "edge each row is in the store once"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[test]
+    fn edge_an_empty_intake_files_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut center = center_at(dir.path(), "2026-11-07T12:00:00Z")?;
+        let intake = crate::app::fleet_intake::path_for(&dir.path().join("center.store"));
+        let before = std::fs::read(&intake)?;
+        assert_eq!(
+            center.file_calls()?,
+            crate::app::fleet_history::Filed::default(),
+            "edge nothing to file"
+        );
+        assert_eq!(
+            std::fs::read(&intake)?,
+            before,
+            "edge and the intake file is not written again for nothing"
+        );
+        assert!(
+            !center.history.dir().join("calls").exists(),
+            "edge and no directory is made for nothing"
+        );
+        assert_eq!(
+            center.filing,
+            FilingCounts::default(),
+            "edge nothing is counted"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[tokio::test]
+    async fn edge_rows_are_answered_before_any_filing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        push_calls(&st, "edge-a", 1, 2).await?;
+        let (_, answer) = get_json(&st, "/v1/fleet/calls").await?;
+        assert_eq!(
+            positions(&answer),
+            vec![2, 1],
+            "edge a record is answered from the moment it is acknowledged"
+        );
+        assert_eq!(answer["files_read"], 0, "edge with no file read");
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[tokio::test]
+    async fn edge_a_row_in_a_file_and_in_the_intake_is_answered_once() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        push_calls(&st, "edge-a", 1, 3).await?;
+        {
+            let center = st.center.lock();
+            center.history.file(&center.intake.rows()?)?;
+        }
+        let (_, answer) = get_json(&st, "/v1/fleet/calls").await?;
+        assert_eq!(
+            positions(&answer),
+            vec![3, 2, 1],
+            "edge filed and not yet removed from the intake: each row once"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "fleet-store")]
+    #[tokio::test]
+    async fn edge_a_question_no_row_answers_is_an_empty_complete_answer() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        push_calls(&st, "edge-a", 1, 3).await?;
+        st.center.lock().file_calls()?;
+        let (status, answer) = get_json(&st, "/v1/fleet/calls?member=edge-z").await?;
+        assert_eq!(status, 200, "edge a member with no rows is not an error");
+        assert_eq!(answer["count"], 0, "edge no rows");
+        assert_eq!(answer["complete"], true, "edge and the answer is whole");
+        assert_eq!(answer["files_read"], 0, "edge no file was opened for it");
         Ok(())
     }
 }

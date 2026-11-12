@@ -247,12 +247,12 @@ only.
 
 | Scope | Reaches | Mint it for |
 |---|---|---|
-| `full` (default) | Every read route and `/metrics`. Not the action routes (`/v1/tfps/ban`, `/v1/tfps/unban`, `/v1/actions/revert`) and not the live-audio routes (`/v1/calls/live`). | A dashboard or script that reads calls and streams. |
+| `full` (default) | Every read route and `/metrics`. Not the action routes (`/v1/tfps/ban`, `/v1/tfps/unban`, `/v1/actions/revert`) and not the live-audio routes (`/v1/calls/live`). On a fleet center it reads the call records, `GET /v1/fleet/calls`. | A dashboard or script that reads calls and streams. |
 | `metrics` | `GET /metrics` only. Every other route returns `401`. | A Prometheus scrape job. |
 | `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. It lifts only the bans it placed. | The system that decides to block a source. |
 | `admin` | Everything `actions` reaches, and it also lifts a ban another caller placed. | An operator who must be able to lift any ban. |
 | `audio` | The live-audio routes a `live_audio` vCon rule serves, and nothing else. | A speech-to-text consumer. |
-| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. On a fleet center it also reads `GET /v1/fleet/members`. | A fleet controller running [`sipnab fleet inventory`](@/docs/fleet.md). |
+| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. On a fleet center it also reads `GET /v1/fleet/members`, and not the call records: `GET /v1/fleet/calls` answers it `401`. | A fleet controller running [`sipnab fleet inventory`](@/docs/fleet.md). |
 | `fleet-report` | Nothing on this API: every route returns `401`. A fleet center's `POST /v1/fleet/ingest`, which no other scope reaches. | A fleet member reporting to [a fleet center](@/docs/fleet.md#run-a-fleet-center), minted with the center's key and the member's name as `--token-id`. |
 
 The `read` scope is for MCP tokens. Minting it with `--api-signing-key`

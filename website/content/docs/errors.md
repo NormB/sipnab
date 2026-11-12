@@ -5859,6 +5859,162 @@ The center's answer to a record whose interval is under 1 second or over
 
 **What to do:** Send `heartbeat_secs` from 1 to 3600.
 
+### `fleet center: {NO_HISTORY_STORE}`
+
+A warning at start, from a center built without the history store. The text
+after `fleet center:` is `this build has no history store (cargo feature
+fleet-store)`, with what follows from it: call records wait in the intake,
+which holds at most 64 MiB and `--retention-hours` of them, and
+`GET /v1/fleet/calls` answers `501`. The text names the builds that have the
+store. The route's `501` carries the same text as its `detail`.
+
+**What to do:** To keep call history, install a build whose `--version` lists
+`fleet-store` and start the center on the same store.
+[Keep call history at the center](@/docs/fleet.md#keep-call-history-at-the-center)
+lists the builds.
+
+### `fleet center: the call records were not filed and stay in the intake: {e}`
+
+A warning. The center could not move the call records from its intake into
+the history store, for the reason at the end of the line. The records stay in
+the intake and the center tries again after `--calls-flush-secs`.
+`failed_filings` in `GET /v1/fleet/members` counts these.
+
+**What to do:** Fix the cause the line ends with: a directory under
+`<store>.parquet` that the center cannot write, a full disk, or a file it
+cannot read. The intake holds at most 64 MiB, and past that the oldest
+waiting records go first.
+
+### `fleet center: the call records could not be read: {e}`
+
+An error. `GET /v1/fleet/calls` could not read the intake or list the
+directories of the history store, and answered `503`. The line ends with the
+file or directory and the system's reason.
+
+**What to do:** Check that the center's user can read the intake and every
+directory under `<store>.parquet`.
+
+### `fleet center: past --calls-retention-days {retention_days} and not removed: {left}`
+
+A warning. A day of the history store is past its retention, and the center
+left something in it: a file it did not write, or a file or directory the
+system refused to remove. The line names it and the reason.
+
+**What to do:** Remove the named file by hand, or fix its permissions. The
+center removes the day's directory once it is empty.
+
+### `fleet center: retention of the history store: {e}`
+
+A warning. The center could not list the days of the history store to remove
+the ones past `--calls-retention-days`. It removed nothing.
+
+**What to do:** Check that the center's user can read `<store>.parquet` and
+the `calls` directory in it.
+
+### `the history store: {rel} exists and holds other rows; it is not replaced`
+
+Printed after `the call records were not filed and stay in the intake:`. The
+records to file would get the name of a file that exists and that holds other
+records: the same member, stream, position and millisecond of receipt, sent
+at another time. The center does not replace a file.
+
+**What to do:** Move the named file out of the directory, keep it, and let
+the next filing write the waiting records. Tell us how the member came to
+send two records at one position of one stream.
+
+### `a call record of member '{}' was received at {at}, before 1970; the history store keeps no such row`
+
+Printed after `the call records were not filed and stay in the intake:`. The
+center's clock was before 1970 when it took the record. The history store
+names files and prunes questions by the time of receipt, and keeps no time
+before 1970 or past the year 2262.
+
+**What to do:** Set the center's clock. The record stays in the intake until
+`--retention-hours` removes it.
+
+### `{rel}: sealed layer: the file was written as '{written}' and is not at that path`
+
+A reason in the `refused` list of `GET /v1/fleet/calls`, or after `the call
+records were not filed`. The file opened under the store key, and the center
+wrote it for another path under `<store>.parquet` than the one it is at. A
+file of one member or day does not open as a file of another.
+
+**What to do:** Move the file back to the path the message gives.
+
+### `{rel}: sealed layer: the file was truncated: its last record is incomplete`
+
+A reason in the `refused` list of `GET /v1/fleet/calls`, or after `the call
+records were not filed`. Bytes follow the end of the file as the center
+wrote it. The center writes a history file once and appends nothing to it.
+
+**What to do:** Restore the file from a backup, or move it out of the
+directory. Its records are then not answered.
+
+### `{rel}: sealed layer: the file holds no path`
+
+A reason in the `refused` list of `GET /v1/fleet/calls`, or after `the call
+records were not filed`. The file is a sealed calls file with no record in
+it. The center writes no such file.
+
+**What to do:** Restore the file from a backup, or move it out of the
+directory.
+
+### `parquet: column {column} is not a 64-bit number`
+
+A reason in the `refused` list of `GET /v1/fleet/calls`, after the file's
+path. The file opened under the store key, and the Parquet in it does not
+have the columns of a call record file. This build did not write it.
+
+**What to do:** Move the file out of the directory. Tell us which release
+wrote it.
+
+### `parquet: column {column} is not a byte text`
+
+As `parquet: column {column} is not a 64-bit number`, for a column that
+holds text.
+
+**What to do:** Move the file out of the directory. Tell us which release
+wrote it.
+
+### `parquet: column {column} holds {} of its {rows} rows`
+
+A reason in the `refused` list of `GET /v1/fleet/calls`, after the file's
+path. A column of the Parquet in the file ended before the rows its row group
+counts. The sealed layer authenticated the file, so the center wrote it this
+way.
+
+**What to do:** Move the file out of the directory and tell us, with the
+center's version.
+
+### `member must be 1 to {} letters, digits, '.', '_' or '-'`
+
+The `detail` of a `400` from `GET /v1/fleet/calls`: the `member` parameter is
+not a member's name.
+
+**What to do:** Give the member's token id, as `GET /v1/fleet/members` lists
+it.
+
+### `call_id must be 1 to {MAX_CALL_ID_BYTES} bytes`
+
+The `detail` of a `400` from `GET /v1/fleet/calls`: the `call_id` parameter
+is empty or longer than 1024 bytes.
+
+**What to do:** Give the whole Call-ID, percent-encoded, with `@` as `%40`.
+
+### `{} is given twice`
+
+The `detail` of a `400` from `GET /v1/fleet/calls`: the query string holds
+the named parameter more than once.
+
+**What to do:** Give each parameter once.
+
+### `{} is not a parameter of this route; it takes member, from, to, call_id and limit`
+
+The `detail` of a `400` from `GET /v1/fleet/calls`: the query string holds a
+parameter the route does not take.
+
+**What to do:** Use `member`, `from`, `to`, `call_id` and `limit`.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`
