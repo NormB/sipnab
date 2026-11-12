@@ -35,7 +35,7 @@ capture was verifiable here, and none of it is asserted.
 sipnab correlates legs **seven** ways. It was five when this was written, and
 the two added since are the ones proposed below.
 [`CorrelationReason`](../../src/sip/dialog_store.rs) at
-[`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43)<!-- "#[non_exhaustive]" --> enumerates them, and
+[`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43)<!-- "#[non_exhaustive] pub enum CorrelationReason {" --> enumerates them, and
 [`find_correlated_scored`](../../src/sip/dialog_store.rs) at
 [`:2111`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2111)<!-- "pub fn find_correlated_scored(&self, call_id: &str)" --> evaluates them in a fixed order,
 first match wins:

@@ -113,7 +113,7 @@ parser already tells the two kinds of packet apart:
   source. Live capture sets the device name ([`src/capture/live.rs:582`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L582)<!-- "interface_name: Some(crate::capture::packet::SourceName::interned( &fanout_source_name(device, socket_index)," -->); the
   HEP listener sets `hep:<capture-id>@<peer>` via `hep_source_label`
   ([`src/capture/hep_roster.rs:229`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L229)<!-- "pub fn hep_source_label(capture_id:" -->) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)<!-- "/// * `hep` —" -->).
-- `ParsedPacket` ([`src/capture/parse.rs:172`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L172)<!-- "#[derive(Debug, Clone)]" -->) carries an `input_origin`
+- `ParsedPacket` ([`src/capture/parse.rs:172`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L172)<!-- "#[derive(Debug, Clone)] pub struct ParsedPacket {" -->) carries an `input_origin`
   field holding the `InputOrigin` enum ([`src/capture/parse.rs:90`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L90)<!-- "/// - [`Vcon`](Self::Vcon)" -->) — `Wire`, `Hep` or
   `Uprobe`. Line [`src/capture/parse.rs:2727`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L2727)<!-- "input_origin: match" --> derives it per packet from the presence of
   pre-parsed addressing and the source name. Nothing in that derivation consults
@@ -244,7 +244,7 @@ mode**, and it is the reason stage one should accept HEP from exactly one node.
 **F3 — Endpoint reuse over time.** `associated_dialog` is set only when unset
 ([`src/rtp/stream_store.rs:2058`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2058)<!-- "if stream.associated_dialog.is_none() { stream.associated_dialog = Some(call_id.to_string());" -->), and `sdp_endpoints` is bounded by insertion
 order with oldest-out eviction rather than by age
-([`src/rtp/stream_store.rs:2159`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2159)<!-- "if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams {" -->). A media gateway cycles a finite RTP port range,
+([`src/rtp/stream_store.rs:2159`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2159)<!-- "if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams { let batch = (self.max_streams / 10).max(1).min(self.sdp_endpoints.len()); self.sdp_endpoints.drain(0..batch); self.endpoints_learned.drop_front(batch); } self.sdp_endpoints.insert(" -->). A media gateway cycles a finite RTP port range,
 so on a process running for days — which is precisely the deployment shape this
 feature is for, unlike the minutes-long pcap read the eviction policy was sized
 for — a stale entry can outlive its call and claim the next stream on that
@@ -321,7 +321,7 @@ operator discount a suspicious attribution instead of trusting it.
 [`docs/design/packet-provenance.md`](https://github.com/NormB/sipnab/blob/main/docs/design/packet-provenance.md) shipped in five stages. `FrameRef`
 ([`src/capture/packet.rs:765`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L765)<!-- "pub struct FrameRef" -->) resolves a fact to the bytes behind it, and
 `SipMessage::frame` ([`src/sip/message.rs:100`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L100)<!-- "pub frame: Option<crate::capture::packet::FrameRef>," -->), `SipDialog`
-([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)<!-- "#[derive(Debug)]" -->), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:452`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L452)<!-- "#[derive(Debug, Clone)]" -->) carries the same field at line 323
+([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)<!-- "#[derive(Debug)]" -->), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:452`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L452)<!-- "#[derive(Debug, Clone)] pub struct RtpStream {" -->) carries the same field at line 323
 carry it downstream.
 
 The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:926`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L926)<!-- "pub fn frame_ref(&self)" -->)

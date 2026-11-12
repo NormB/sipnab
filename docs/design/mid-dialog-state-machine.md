@@ -146,7 +146,7 @@ And two security detectors are **silently off** for every such call.
 the dialog is `Completed | Canceled`
 ([`fraud_detect.rs:396-404`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L396-L404)<!-- "fn record_if_short_call(&mut" -->), and
 `record_if_refused_call` — the sequential-scan signal — unless it is `Failed`
-([`:456`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L456)<!-- "if dialog.method != crate::sip::SipMethod::Invite" -->). A wrong state does not merely
+([`:456`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L456)<!-- "dialog.state() != &DialogState::Failed" -->). A wrong state does not merely
 mislabel a row; it turns off two detectors with no error anywhere.
 
 **Both gates have a second clause that
@@ -540,8 +540,8 @@ machine sees the messages."*
   dashboard. It belongs in the release notes, not in a footnote.
 - **The two fraud detectors stay off, and that is a defect this change does not
   close.** Both gates open with `dialog.method != SipMethod::Invite`
-  ([`fraud_detect.rs:397`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L397)<!-- "if dialog.method != crate::sip::SipMethod::Invite" -->,
-  [`:456`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L456)<!-- "if dialog.method != crate::sip::SipMethod::Invite" -->).
+  ([`fraud_detect.rs:396-397`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L396-L397)<!-- "fn record_if_short_call(" -->,
+  [`:456`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L456)<!-- "dialog.state() != &DialogState::Failed" -->).
   [Section 3, "The central design decision: the dispatch key is wrong"](#3-the-central-design-decision-the-dispatch-key-is-wrong)
   deliberately leaves
   `dialog.method` reading `BYE` or `CANCEL` on a mid-dialog-seeded call, so those

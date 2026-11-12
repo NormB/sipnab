@@ -83637,16 +83637,21 @@ phrase:  <!-- "pub fn run_batch(" -->
     earlier or later fails.
   - It must not contain `|`: GitHub splits a table row on it before it reads
     the comment.
-  - Quote enough to occur only once in the file. The fixer can only follow a
-    phrase it finds exactly once.
+  - It must begin on one line of the cited file only. Quote more of the line,
+    or run on into the next line, until it does. The gate refuses a phrase
+    that begins on two lines even while the citation sits on one of them: the
+    fixer could not follow it when the code moves, and a citation on the
+    other line would pass.
   - The same test fails when a citation of a file on `main` has no phrase
-    (`unanchored`), or when its phrase does not begin on its line
-    (`wrong_content`).
+    (`unanchored`), when its phrase does not begin on its line
+    (`wrong_content`), or when its phrase begins on more than one line
+    (`ambiguous`).
 - Run `python3 scripts/check-line-drift.py --apply` ([`scripts/prepare-commit.sh`](../../scripts/prepare-commit.sh)
   runs it for you).
   - It moves each citation whose phrase now begins on another line to that
     line, label and fragment together, and keeps a range's length.
-  - It leaves alone a phrase that occurs twice or not at all, and says so.
+  - It leaves alone a phrase that begins on more than one line or on none,
+    and says so.
 - If the sentence describes code that has since changed or gone, pin the link
   to a commit that still has it instead.
   - Replace `blob/main/` with `blob/<commit>/`, the full 40-character hash,
@@ -83664,15 +83669,20 @@ phrase:  <!-- "pub fn run_batch(" -->
     rewrite it: it cannot know which commit you read.
 
 Verify: `python3 scripts/check-line-drift.py docs/your-page.md` exits 0, and its
-`two-part references:` line shows `wrong_content=0`, `unanchored=0` and
-`unpinned=0`.
+`two-part references:` line shows `wrong_content=0`, `unanchored=0`,
+`unpinned=0` and `ambiguous=0`.
 
 Troubleshooting:
 
 - **`does not begin on that line (it begins on line [N])`**: the code moved.
   Run `--apply`, which re-points the citation to line N.
-- **`(it begins on line [N, M])`**: the phrase occurs twice. Lengthen it until
-  it occurs once, then run `--apply`.
+- **`begins on 2 lines of <file> (lines N, M)`**: the phrase does not say
+  which of those lines the citation means. Lengthen it until it begins on one
+  line. If the message ends `line L is not one of them`, the code also moved:
+  run `--apply` after you lengthen the phrase.
+- **No part of the line makes the phrase begin on one line without `|`**: cite
+  a range that starts one line earlier, such as the `fn` line above a
+  condition, and quote that line.
 - **`(it is nowhere in the file)`**: the quoted code changed. Find what the
   sentence means in today's file, re-point and re-quote it, or pin the link.
 - **`carries no phrase`**: add the phrase. The message goes on to quote
