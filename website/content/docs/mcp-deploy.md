@@ -2797,12 +2797,15 @@ This is [`clients/typescript/sipnab-mcp.ts`](https://github.com/NormB/sipnab/blo
   `package-lock.json` pins.
 - Node.js 22.18 or later runs the `.ts` file directly, as
   `node sipnab-mcp.ts /path/to/capture.pcap`.
+- It installs `@modelcontextprotocol/client`, the client package of the MCP
+  TypeScript SDK. The example starts sipnab and talks to it over stdio, and
+  that package has no HTTP server among its dependencies.
 
 <!-- snippet: clients/typescript/sipnab-mcp.ts#sipnab-mcp -->
 ```typescript
-// npm i @modelcontextprotocol/sdk
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+// npm i @modelcontextprotocol/client
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const transport = new StdioClientTransport({
   command: "sipnab",

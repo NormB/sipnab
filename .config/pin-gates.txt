@@ -1,0 +1,49 @@
+# The test binaries scripts/pin-gates.py runs: the gates that count tracked
+# files. One name a line; `!name reason` leaves a pin gate to the hook.
+# scripts/pin-gates.py and scripts/tests/test_pin_gates.py refuse this list
+# when a test under tests/ that counts tracked files is on neither side.
+docs_drift_test
+dev_docs_drift_test
+site_journey_test
+link_integrity_test
+us_spelling_test
+owed_bulk_edit_gates_test
+workflow_supply_chain_test
+client_snippets_test
+error_reference_test
+# Page gates that hold no count, and that a new page or CHANGELOG entry
+# meets: both failed the first hook run of the change that added this file.
+doc_ellipsis_quote_test
+howto_sections_test
+closed_stderr_test
+commit_subject_gate_test
+committed_capture_provenance_test
+corpus_charging_vector_population_test
+crate_package_test
+demo_capture_agreement_test
+dependabot_coverage_test
+dependency_policy_doc_test
+digest_010_confinement_test
+discriminator_test
+doc_coverage_ratchets_test
+filter_output_paths_test
+fixture_isolation_test
+format_coverage_test
+link_layer_decap_test
+link_type_fixtures_test
+lint_suppression_test
+mcp_tool_descriptions_test
+minimatch_advisory_test
+pipefail_early_exit_test
+private_identity_test
+repo_hygiene_test
+rust_style_test
+section_references_test
+silent_sip_loss_test
+source_file_headers_test
+staged_inputs_gate_test
+startup_refusal_stderr_test
+support_selftest
+two_part_reference_test
+unwrap_ratchet_test
+vcon_draft_citation_test
