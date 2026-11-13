@@ -83,7 +83,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_engines::Gate;
+    use crate::test_engines::{FinishOrder, Gate};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -172,38 +172,48 @@ mod tests {
     }
 
     /// Answers that arrive last-first still come back first-first.
+    ///
+    /// The order they finish in is set by an event, not by time: item `i`
+    /// finishes only after the `2 - i` items behind it have. Sleeps of
+    /// 150 ms apart set it before, and on a loaded CI runner item 1 once
+    /// finished before item 2.
     #[test]
     fn answers_that_arrive_in_reverse_keep_the_given_order() {
-        let finished = std::sync::Mutex::new(Vec::new());
-        let out = ask_each(vec![0_u64, 1, 2], |i| {
-            std::thread::sleep(Duration::from_millis(150 * (2 - i)));
-            if let Ok(mut f) = finished.lock() {
-                f.push(i);
-            }
-            i
+        let finished = FinishOrder::new();
+        let out = ask_each(vec![0_usize, 1, 2], |i| {
+            let in_turn = finished.finish_after(2 - i, i, Duration::from_secs(30));
+            (i, in_turn)
         });
         assert_eq!(
-            finished.lock().map(|f| f.clone()).unwrap_or_default(),
+            finished.order(),
             vec![2, 1, 0],
             "the fixture made them finish in reverse"
         );
-        assert_eq!(out, vec![0, 1, 2], "the answers are in the given order");
+        assert_eq!(
+            out,
+            vec![(0, true), (1, true), (2, true)],
+            "the answers are in the given order, and none gave up its wait"
+        );
     }
 
     /// A panicking ask is raised again, and only after every other ask has
     /// finished: no thread is left running.
+    ///
+    /// The other asks are still at work when the first panics, by an event
+    /// and not by a sleep: each finishes only after the one before it, and
+    /// the first records its finish and then panics.
     #[test]
     fn a_panicking_ask_is_raised_after_the_others_finish() -> Result<(), TestError> {
-        let finished = AtomicUsize::new(0);
+        let finished = FinishOrder::new();
         // catch_unwind: the panic is the input under test, caught so the test
         // can check it was raised again and when.
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            ask_each(vec![0_u64, 1, 2], |i| {
+            ask_each(vec![0_usize, 1, 2], |i| {
+                let in_turn = finished.finish_after(i, i, Duration::from_secs(30));
                 if i == 0 {
                     panic!("engine 0 panicked");
                 }
-                std::thread::sleep(Duration::from_millis(200));
-                finished.fetch_add(1, Ordering::SeqCst);
+                in_turn
             })
         }));
         let payload = caught.err().ok_or("the panic must be raised again")?;
@@ -217,9 +227,9 @@ mod tests {
             "the panic raised again is the ask's own"
         );
         assert_eq!(
-            finished.load(Ordering::SeqCst),
-            2,
-            "both other asks finished before the panic was raised"
+            finished.order(),
+            vec![0, 1, 2],
+            "both other asks finished, after the one that panicked, before the panic was raised"
         );
         Ok(())
     }

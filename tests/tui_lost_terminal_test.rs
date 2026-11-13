@@ -69,6 +69,21 @@ struct PtyRun {
     stall: Arc<Mutex<Stall>>,
     /// The reader thread, which owns the master side.
     reader: Option<thread::JoinHandle<()>>,
+    /// The master side of a separate input terminal ([`Self::spawn_split`]),
+    /// held so that terminal stays open when the output terminal hangs up.
+    _input: Option<OwnedFd>,
+}
+
+/// Which terminals a run gets.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Terminals {
+    /// One pty for standard input, output and error. With `controlling` it
+    /// is the session's controlling terminal.
+    One { controlling: bool },
+    /// Standard input on one pty, which stays open, and standard output and
+    /// error on another, which [`PtyRun::hang_up`] hangs up: the terminal
+    /// the TUI draws on goes away while the one it reads stays.
+    Split,
 }
 
 impl PtyRun {
@@ -87,15 +102,52 @@ impl PtyRun {
         Self::spawn_command(cmd, controlling)
     }
 
+    /// Start `sipnab -I sip_call.pcap` as [`Self::spawn`] does, with standard
+    /// input on one pty and standard output and error on another
+    /// ([`Terminals::Split`]). `home` is the run's home directory, where a
+    /// crash report would be written.
+    fn spawn_split(home: &std::path::Path) -> Result<Self, TestError> {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+        cmd.current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"))
+            .args(["--no-config", "-I", "sip_call.pcap"])
+            .env("SIPNAB_LOG", "off")
+            .env("HOME", home)
+            .env_remove("XDG_STATE_HOME")
+            .env("TERM", "xterm-256color");
+        Self::spawn_on(cmd, Terminals::Split)
+    }
+
     /// Start `cmd` on a new 200x50 pty, in a new session, as [`Self::spawn`]
     /// starts sipnab. The pty is its standard input, output and error.
-    fn spawn_command(mut cmd: Command, controlling: bool) -> Result<Self, TestError> {
+    fn spawn_command(cmd: Command, controlling: bool) -> Result<Self, TestError> {
+        Self::spawn_on(cmd, Terminals::One { controlling })
+    }
+
+    /// Start `cmd` in a new session on new 200x50 terminals, as `terminals`
+    /// says.
+    fn spawn_on(mut cmd: Command, terminals: Terminals) -> Result<Self, TestError> {
         let spawning = SPAWNING
             .lock()
             .map_err(|_| "a test panicked while spawning")?;
         let (master, slave) = open_pty(50, 200)?;
-        cmd.stdin(Stdio::from(slave.try_clone()?))
-            .stdout(Stdio::from(slave.try_clone()?))
+        // The input terminal of a split run is the session's controlling
+        // terminal, so hanging the output terminal up sends no SIGHUP.
+        let controlling = terminals != Terminals::One { controlling: false };
+        let input = if terminals == Terminals::Split {
+            let (input_master, input_slave) = open_pty(50, 200)?;
+            cmd.stdin(Stdio::from(input_slave));
+            Some(input_master)
+        } else {
+            cmd.stdin(Stdio::from(slave.try_clone()?));
+            None
+        };
+        // Where the cursor-position answers are typed: the terminal sipnab
+        // reads.
+        let answers = match &input {
+            Some(input) => Some(std::fs::File::from(input.try_clone()?)),
+            None => None,
+        };
+        cmd.stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
         // SAFETY: the closure runs in the forked child before exec and calls
         // only setsid(2) and ioctl(2), both async-signal-safe. The pty's slave
@@ -124,7 +176,9 @@ impl PtyRun {
             let hang_up = Arc::clone(&hang_up);
             let typed = Arc::clone(&typed);
             let stall = Arc::clone(&stall);
-            thread::spawn(move || serve_terminal(master, &output, &hang_up, &typed, &stall))
+            thread::spawn(move || {
+                serve_terminal(master, answers, &output, &hang_up, &typed, &stall);
+            })
         };
         Ok(PtyRun {
             child,
@@ -133,6 +187,7 @@ impl PtyRun {
             typed,
             stall,
             reader: Some(reader),
+            _input: input,
         })
     }
 
@@ -344,8 +399,12 @@ static SPAWNING: Mutex<()> = Mutex::new(());
 /// returns nothing: Linux's master side reads `EIO` once no process holds
 /// the slave side open and no byte written to it is left, so that read
 /// comes only after the child has exited and its output is in `output`.
+///
+/// The answers are typed into `answers`, the master side of a separate input
+/// terminal, when there is one.
 fn serve_terminal(
     master: OwnedFd,
+    mut answers: Option<std::fs::File>,
     output: &Mutex<Vec<u8>>,
     hang_up: &AtomicBool,
     typed: &Mutex<Vec<u8>>,
@@ -397,7 +456,10 @@ fn serve_terminal(
             .count();
         drop(out);
         while answered < queries {
-            let _ = file.write_all(CURSOR_ANSWER);
+            let _ = match answers.as_mut() {
+                Some(input) => input.write_all(CURSOR_ANSWER),
+                None => file.write_all(CURSOR_ANSWER),
+            };
             answered += 1;
         }
     }
@@ -451,6 +513,140 @@ fn a_calls_only_tui_whose_terminal_hangs_up_exits_129() -> Result<(), TestError>
         129,
         "a lost terminal stops the -c run as SIGHUP does",
     );
+    Ok(())
+}
+
+/// The crash reports under `home`, where a run started by
+/// [`PtyRun::spawn_split`] writes them.
+fn crash_reports(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(home.join(".local/state/sipnab"))
+        .map(|entries| entries.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default()
+}
+
+/// The terminal the TUI draws on hangs up while the one it reads stays
+/// (TUI-LOST-OUTPUT-TERMINAL): the run ends as a hang-up, exit 129, and does
+/// not panic. Before the fix the failed frame was an error of the run, the
+/// ratatui Terminal was dropped, its failure to show the cursor was printed
+/// with `eprintln!` to the terminal that had gone, and that panicked: exit
+/// 101 and a crash report.
+#[test]
+fn a_tui_whose_output_terminal_hangs_up_exits_129() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let mut run = PtyRun::spawn_split(home.path())?;
+    run.wait_until_drawn()?;
+    run.hang_up()?;
+    let status = run.wait_for_exit(test_timeout(15), "its output terminal hung up")?;
+    assert_exit(status, 129, "a lost output terminal is a hang-up");
+    assert_eq!(
+        crash_reports(home.path()),
+        Vec::<std::path::PathBuf>::new(),
+        "a lost output terminal is not a crash"
+    );
+    Ok(())
+}
+
+/// The same with a stop signal right after the hang-up. The signal and the
+/// next frame race, so the run ends as the signal's stop or as the hang-up;
+/// it never panics, whichever is seen first.
+#[test]
+fn a_stop_signal_after_the_output_terminal_hangs_up_does_not_panic() -> Result<(), TestError> {
+    for (signal, name, codes) in [
+        (libc::SIGTERM, "SIGTERM", [0, 129]),
+        (libc::SIGINT, "SIGINT", [0, 129]),
+        (libc::SIGHUP, "SIGHUP", [129, 129]),
+    ] {
+        let home = tempfile::tempdir()?;
+        let mut run = PtyRun::spawn_split(home.path())?;
+        run.wait_until_drawn()?;
+        run.hang_up()?;
+        // The run may have ended on the lost terminal already.
+        let _ = run.signal(signal);
+        let status = run.wait_for_exit(test_timeout(15), name)?;
+        assert_eq!(status.signal(), None, "{name}: ended by a signal: {status}");
+        assert!(
+            status.code().is_some_and(|code| codes.contains(&code)),
+            "{name} after the output terminal hung up: {status}, wanted one of {codes:?}"
+        );
+        assert_eq!(
+            crash_reports(home.path()),
+            Vec::<std::path::PathBuf>::new(),
+            "{name} after the output terminal hung up is not a crash"
+        );
+    }
+    Ok(())
+}
+
+/// A split run whose terminals both stay is an ordinary run: SIGTERM stops
+/// it with exit 0 and the terminal restored. This holds the harness: the
+/// answers typed on the input terminal reach the TUI, and what it draws is
+/// read from the output terminal.
+#[test]
+fn sigterm_stops_a_tui_on_split_terminals_and_restores_the_output() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let mut run = PtyRun::spawn_split(home.path())?;
+    run.wait_until_drawn()?;
+    run.signal(libc::SIGTERM)?;
+    let status = run.wait_for_exit(test_timeout(15), "SIGTERM")?;
+    assert_exit(status, 0, "SIGTERM is a graceful stop");
+    assert!(
+        run.wrote(LEAVE_ALTERNATE_SCREEN),
+        "the TUI must restore the output terminal on its way out"
+    );
+    assert_eq!(
+        crash_reports(home.path()),
+        Vec::<std::path::PathBuf>::new(),
+        "a SIGTERM stop is not a crash"
+    );
+    Ok(())
+}
+
+/// A page of the repository with each run of white space as one space, so a
+/// sentence is found wherever the page wraps it.
+fn page_text(page: &str) -> Result<String, TestError> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(page);
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// The service page states what the tests above hold: a run on two terminals
+/// that loses either one exits 129.
+#[test]
+fn the_service_page_states_the_exit_for_either_lost_terminal() -> Result<(), TestError> {
+    let page = page_text("docs/run-as-a-service.md")?;
+    for sentence in [
+        "sipnab stops as it does for `SIGHUP` and exits 129, whether or not the signal arrives.",
+        "A run that reads one terminal and draws on another (standard output redirected to a \
+         second terminal) stops the same way and exits 129 when either of the two goes away.",
+    ] {
+        assert!(
+            page.contains(sentence),
+            "docs/run-as-a-service.md must state: {sentence}"
+        );
+    }
+    Ok(())
+}
+
+/// The two exit-code tables give 129 to a lost terminal, and do not name
+/// which terminal: the row covers the one the run reads and the one it draws
+/// on.
+#[test]
+fn the_exit_code_tables_give_129_to_a_lost_terminal() -> Result<(), TestError> {
+    for (page, row) in [
+        (
+            "docs/cli-reference.md",
+            "| `129` | Stopped by `SIGHUP`, or the terminal of a terminal interface run went away.",
+        ),
+        (
+            "docs/errors.md",
+            "| `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away.",
+        ),
+    ] {
+        assert!(
+            page_text(page)?.contains(row),
+            "{page} must hold the exit-code row that begins: {row}"
+        );
+    }
     Ok(())
 }
 
