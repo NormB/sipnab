@@ -1838,7 +1838,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // at the center", and four inside the new section: two to "Keep call
     // history at the center", two to "Run a fleet center"), cli-reference.md
     // +1 (the new section).
-    const EXPECTED_WIKI_LINKS: usize = 2643;
+    // 2643 -> 2644 (one history file for each filing): +1 in fleet.md, from
+    // "Keep heartbeat history at the center" to the new section "The files
+    // of the history store".
+    const EXPECTED_WIKI_LINKS: usize = 2644;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

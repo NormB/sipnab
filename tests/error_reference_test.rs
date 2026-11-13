@@ -1015,7 +1015,12 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // parameter the history route does not take. Two templates changed and kept
 // their place: the row received before 1970 names its class, and the
 // retention line names its setting.
-const EXPECTED_TEMPLATES: usize = 662;
+// 662 -> 664 (one history file for each filing): +2 in
+// src/app/fleet_center.rs, the two warnings of a start that reached the
+// bound on the files it reads: the member registry rebuilt from the newest
+// files of heartbeats, and the restored members' positions moved past the
+// call records of the newest files.
+const EXPECTED_TEMPLATES: usize = 664;
 
 // ---------------------------------------------------------------------------
 // The page gates

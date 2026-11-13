@@ -526,9 +526,16 @@ mod with_the_store {
         assert!(
             files.iter().any(|(p, _)| p
                 .to_string_lossy()
-                .contains("center.store.parquet/calls/date=")
-                && p.to_string_lossy().contains("/member=edge-a/")),
-            "success the file is under class, day and member: {:?}",
+                .contains("center.store.parquet/calls/date=")),
+            "success the file is under class and day: {:?}",
+            files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
+        assert!(
+            !files.iter().any(|(p, _)| {
+                let p = p.to_string_lossy();
+                p.contains("member=") || p.contains("edge-a")
+            }),
+            "success no path under the center's directory names a member: {:?}",
             files.iter().map(|(p, _)| p).collect::<Vec<_>>()
         );
         for (path, bytes) in &files {
@@ -639,19 +646,231 @@ mod with_the_store {
         Ok(())
     }
 
+    /// The call record at `seq` of `member`, received at `at`.
+    fn row_at(member: &str, at: chrono::DateTime<chrono::Utc>, seq: u64) -> IntakeRecord {
+        IntakeRecord {
+            member: member.to_string(),
+            received_at: at,
+            stream: "s".to_string(),
+            seq,
+            sent_at: at,
+            selected_by: "failed".to_string(),
+            call: serde_json::json!({"call_id": format!("call-{seq}@example.com")}),
+        }
+    }
+
+    /// Write `rows`, all of one member and one day, as release 0.5.249
+    /// filed them: one sealed Parquet file under `member=<id>`, named by
+    /// its times and its first row. No build writes that layout any more,
+    /// so the test builds the file from the pieces that release used.
+    fn file_as_0_5_249(dir: &Path, rows: &[IntakeRecord]) -> Result<PathBuf, TestError> {
+        use sipnab::app::fleet_history::{
+            CHUNK_BYTES, FileName, Partition, dir_for, encode, sealed_lines,
+        };
+        use sipnab::app::fleet_seal::{Kind, LogSealer, system_draw};
+        let first = rows.first().ok_or("a file holds at least one row")?;
+        let rel = format!(
+            "{}/{}",
+            Partition::of(first).rel_dir("calls"),
+            FileName::of(rows)?.text()
+        );
+        let (mut sealer, header) =
+            LogSealer::new(&MasterKey::parse(STORE_KEY)?, Kind::Calls, &system_draw)?;
+        let mut bytes = header.to_vec();
+        for line in sealed_lines(&rel, &encode(rows)?, CHUNK_BYTES) {
+            bytes.extend(sealer.record(&line)?);
+        }
+        bytes.extend(sealer.base_end()?);
+        let path = dir_for(&dir.join("center.store")).join(&rel);
+        std::fs::create_dir_all(path.parent().ok_or("a file has a directory")?)?;
+        std::fs::write(&path, bytes)?;
+        Ok(path)
+    }
+
+    #[test]
+    fn the_members_of_one_filing_share_one_file_whose_path_names_no_member() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let c = center(dir.path(), &["--calls-flush-secs", "3600"])?;
+        push(&c.addr, "edge-a", 1, 3)?;
+        push(&c.addr, "edge-b", 1, 2)?;
+        push(&c.addr, "edge-c", 1, 1)?;
+        drop(c);
+        // The start files what the intake held: one filing for six
+        // records of three members.
+        let c = center(dir.path(), &["--calls-flush-secs", "3600"])?;
+        assert!(
+            c.early
+                .iter()
+                .any(|l| l.contains("filed 6 call record(s) in 1 file(s)")),
+            "success three members' records of one filing are one file: {:?}",
+            c.early
+        );
+        let files = files_under(&dir.path().join("center.store.parquet"))?;
+        assert_eq!(
+            files.len(),
+            1,
+            "success one file on disk: {:?}",
+            files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
+        let path = files[0].0.to_string_lossy().into_owned();
+        assert!(
+            path.contains("center.store.parquet/calls/date=")
+                && !path.contains("member=")
+                && !path.contains("edge-"),
+            "success its path is the class, the day and a name, with no member: {path}"
+        );
+        let (_, one) = calls(&c.addr, "?member=edge-b")?;
+        assert_eq!(
+            (&one["count"], &one["files_read"], &one["complete"]),
+            (
+                &serde_json::json!(2),
+                &serde_json::json!(1),
+                &serde_json::json!(true)
+            ),
+            "success one member's records are read from the shared file: {one}"
+        );
+        assert!(
+            one["calls"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().all(|row| row["member"] == "edge-b")),
+            "success and no other member's record is answered: {one}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn files_release_0_5_249_wrote_are_answered_and_stay_where_they_are() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let hour_ago = chrono::Utc::now() - chrono::TimeDelta::hours(1);
+        // An hour ago can be yesterday: each file's rows are of one day.
+        let old_a = file_as_0_5_249(
+            dir.path(),
+            &[row_at("edge-a", hour_ago, 1), row_at("edge-a", hour_ago, 2)],
+        )?;
+        let old_b = file_as_0_5_249(dir.path(), &[row_at("edge-b", hour_ago, 7)])?;
+        assert!(
+            old_a.to_string_lossy().contains("/member=edge-a/"),
+            "success the file is at a path of release 0.5.249: {}",
+            old_a.display()
+        );
+        let c = center(dir.path(), &["--calls-flush-secs", "3600"])?;
+        let (status, all) = calls(&c.addr, "")?;
+        assert_eq!(
+            (status, &all["count"], &all["complete"]),
+            (200, &serde_json::json!(3), &serde_json::json!(true)),
+            "success the rows of both old files are answered: {all}"
+        );
+        let (_, one) = calls(&c.addr, "?member=edge-a")?;
+        assert_eq!(
+            (&one["count"], &one["files_read"]),
+            (&serde_json::json!(2), &serde_json::json!(1)),
+            "success one member's old file is opened and the other's is not: {one}"
+        );
+        let (_, none) = calls(&c.addr, "?member=edge-z")?;
+        assert_eq!(
+            (&none["count"], &none["files_read"]),
+            (&serde_json::json!(0), &serde_json::json!(0)),
+            "success a member with no directory opens no old file: {none}"
+        );
+        assert!(
+            old_a.exists() && old_b.exists(),
+            "success a start leaves the old files at their paths"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_start_removes_past_days_of_both_layouts_and_counts_their_files() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let now = chrono::Utc::now();
+        let long_ago = now - chrono::TimeDelta::days(40);
+        let old = file_as_0_5_249(dir.path(), &[row_at("edge-a", long_ago, 1)])?;
+        let store = history(dir.path())?;
+        store.file(&[row_at("edge-a", long_ago, 2), row_at("edge-b", long_ago, 1)])?;
+        store.file(&[row_at("edge-a", now, 3)])?;
+        let c = center(dir.path(), &["--calls-retention-days", "2"])?;
+        assert!(
+            c.early
+                .iter()
+                .any(|l| l.contains("1 day(s) and 2 file(s)")
+                    && l.contains("--calls-retention-days 2")),
+            "success the start removes the old day and counts the file of each layout: {:?}",
+            c.early
+        );
+        assert!(
+            !old.exists(),
+            "success the file release 0.5.249 wrote is gone"
+        );
+        let left = files_under(&dir.path().join("center.store.parquet"))?;
+        assert_eq!(left.len(), 1, "success today's file is the one left");
+        let (_, answer) = calls(&c.addr, "")?;
+        assert_eq!(
+            answer["count"], 1,
+            "success and its row is answered: {answer}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn records_release_0_5_249_filed_before_a_kill_are_not_filed_again() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let c = center(dir.path(), &["--calls-flush-secs", "3600"])?;
+        push(&c.addr, "edge-a", 1, 4)?;
+        let keys = Keys::new(MasterKey::parse(STORE_KEY)?, Vec::new());
+        let intake = std::fs::read(dir.path().join("center.store.intake"))?;
+        let waiting: Vec<IntakeRecord> = sipnab::app::fleet_seal::open_log(
+            &intake,
+            &keys,
+            sipnab::app::fleet_seal::Kind::Intake,
+        )
+        .map_err(|e| e.to_string())?
+        .records
+        .iter()
+        .map(|line| serde_json::from_slice(line))
+        .collect::<Result<_, _>>()?;
+        assert_eq!(waiting.len(), 4, "edge the intake holds the four records");
+        // Release 0.5.249 filed two of them and was stopped before it
+        // emptied its intake; this build starts on what it left.
+        let same_day = waiting[0].received_at.date_naive() == waiting[1].received_at.date_naive();
+        assert!(same_day, "edge the two records are of one day");
+        file_as_0_5_249(dir.path(), &waiting[..2])?;
+        drop(c);
+        let c = center(dir.path(), &["--calls-flush-secs", "3600"])?;
+        assert!(
+            c.early
+                .iter()
+                .any(|l| l.contains("filed 2 call record(s) in 1 file(s)")
+                    && l.contains("2 were in it already")),
+            "edge the start files the two rows no file holds and leaves the two an old file \
+             holds: {:?}",
+            c.early
+        );
+        let (_, answer) = calls(&c.addr, "")?;
+        assert_eq!(
+            (&answer["count"], &answer["files_read"]),
+            (&serde_json::json!(4), &serde_json::json!(2)),
+            "edge four rows, none twice, from one file of each layout: {answer}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_changed_file_is_reported_and_the_center_keeps_serving() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let c = center(dir.path(), &["--calls-flush-secs", "1"])?;
+        // Two filings, so two files: the first holds edge-a's rows, and
+        // every row of the second was received after `between`.
         push(&c.addr, "edge-a", 1, 3)?;
+        let filed = wait_until(WAIT, || Ok(history_report(&c.addr)?["rows_filed"] == 3))?;
+        assert!(filed, "failure edge-a's records were filed first");
+        let files = files_under(&dir.path().join("center.store.parquet"))?;
+        assert_eq!(files.len(), 1, "failure one filing is one file");
+        let between = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         push(&c.addr, "edge-b", 1, 2)?;
         let filed = wait_until(WAIT, || Ok(history_report(&c.addr)?["rows_filed"] == 5))?;
-        assert!(filed, "failure the records were filed first");
-        let files = files_under(&dir.path().join("center.store.parquet"))?;
-        let (path, mut bytes) = files
-            .into_iter()
-            .find(|(p, _)| p.to_string_lossy().contains("member=edge-a"))
-            .ok_or("edge-a's file")?;
+        assert!(filed, "failure edge-b's records were filed next");
+        let (path, mut bytes) = files.into_iter().next().ok_or("the first file")?;
         let mid = bytes.len() / 2;
         bytes[mid] ^= 0x01;
         std::fs::write(&path, bytes)?;
@@ -680,9 +899,9 @@ mod with_the_store {
         );
         assert_eq!(
             answer["count"], 2,
-            "failure the other member's rows are answered"
+            "failure the rows of the other file are answered"
         );
-        let (status, narrow) = calls(&c.addr, "?member=edge-b")?;
+        let (status, narrow) = calls(&c.addr, &format!("?from={between}"))?;
         assert_eq!(
             (status, &narrow["complete"]),
             (200, &serde_json::json!(true)),
@@ -920,9 +1139,10 @@ mod heartbeat_history {
         assert!(
             paths.iter().any(|p| {
                 let p = p.to_string_lossy();
-                p.contains("center.store.parquet/members/date=") && p.contains("/member=edge-a/")
+                p.contains("center.store.parquet/members/date=") && !p.contains("member=")
             }),
-            "success the file is under class members, day and member: {paths:?}"
+            "success the file is under class members and its day, with no member in the path: \
+             {paths:?}"
         );
         for path in paths_under(dir.path())? {
             let bytes = std::fs::read(&path)?;

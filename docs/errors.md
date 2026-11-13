@@ -5932,14 +5932,42 @@ and the system's reason.
 ### `fleet center: the history store: {file} was not read for the member registry: {why}`
 
 A warning at start. The center compares its store file with the newest
-heartbeat file of each member, and takes the member from the history when the
-store file holds nothing of it or an older heartbeat. The named file did not
-open, for the reason at the end of the line. The center starts, and lists
-that member from its store file alone.
+heartbeat files, and takes a member from the history when the store file
+holds nothing of it or an older heartbeat. The named file did not open, for
+the reason at the end of the line. The center starts, and lists the members
+of that file from its store file and from the files before it.
 
 **What to do:** Act on the reason as for a `refused` entry of `GET
 /v1/fleet/calls`: restore the file from a backup, give an earlier key with
 `--store-old-key-file`, or move the file out of the directory.
+
+### `fleet center: the member registry was rebuilt from the newest {} file(s) of heartbeats; {} older file(s) were not read`
+
+A warning at start. The center had no store file, or one older than the
+heartbeat history, and it read heartbeat files from the newest back to
+rebuild its member list. A rebuild opens at most 4,096 files
+(`MAX_FILES_PER_QUESTION`): about 2.8 days at the default
+`--calls-flush-secs 60`. The center does not list a member whose last
+heartbeat is in an older file until that member sends a heartbeat again.
+
+**What to do:** Nothing for members that still send. For a member that went
+silent before the files the center read, read its last heartbeat with `GET
+/v1/fleet/members/{id}/history`, with `from` and `to` around the time it was
+last seen. Restore the store file from a backup when one exists: a center
+whose store file holds its members reads one heartbeat file at start.
+
+### `fleet center: the positions of {restored} restored member(s) were moved past the call records of the newest {} file(s); {} older file(s) were not read`
+
+A warning at start, after the center took members from the heartbeat
+history. It moves each such member's position past the call records filed
+after that member's last heartbeat, so a record the member sends again is a
+duplicate. More than 4,096 call record files could hold such records, and the
+center read the newest 4,096.
+
+**What to do:** Nothing in most cases: a member sends again only the records
+the center did not acknowledge. When `GET /v1/fleet/calls` shows a call
+record of a restored member twice, both rows hold the same `stream` and
+`seq`. Count such a call once.
 
 ### `fleet center: the member registry was not checked against {e}`
 

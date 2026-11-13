@@ -1618,33 +1618,20 @@ fn restore_from_history(
         .map(|r| (r.member.clone(), r.received_at))
         .collect();
     let oldest = super::fleet_history::oldest_kept_at(now, retention);
-    let found = match history.newest_heartbeats(oldest, &known) {
-        Ok(found) => found,
-        Err(e) => {
-            tracing::warn!("fleet center: the member registry was not checked against {e}");
-            return 0;
-        }
+    let Some(found) = newest_in_history(history, oldest, &known, &unread) else {
+        return 0;
     };
-    for (file, why) in &found.refused {
-        unread(file, why);
-    }
-    let mut restored = 0;
+    // The members taken, each with the receive time of its heartbeat: the
+    // call records the store filed after it are read in one pass.
+    let mut since = BTreeMap::new();
     for record in found.members {
-        let (member, since) = (record.member.clone(), record.received_at);
-        if !registry.restore(record) {
-            continue;
-        }
-        restored += 1;
-        match history.calls_since(&member, since) {
-            Ok((calls, refused)) => {
-                super::fleet_intake::replay(registry, &calls);
-                for (file, why) in &refused {
-                    unread(file, why);
-                }
-            }
-            Err(e) => unread(&format!("the call records of member '{member}'"), &e),
+        let (member, at) = (record.member.clone(), record.received_at);
+        if registry.restore(record) {
+            since.insert(member, at);
         }
     }
+    let restored = since.len() as u64;
+    move_past_filed_calls(history, registry, &since, &unread);
     if restored > 0 {
         tracing::info!(
             "fleet center: {restored} member(s) the store file held nothing of, or an older \
@@ -1652,6 +1639,77 @@ fn restore_from_history(
         );
     }
     restored
+}
+
+/// The newest heartbeats the history store holds for a registry that
+/// `known` describes, from the days from `oldest` on
+/// ([`super::fleet_history::History::newest_heartbeats`]), or nothing when
+/// the store's directories cannot be read. A file that cannot be read goes
+/// to `unread` with the reason, and files left unread at the bound are
+/// logged.
+#[cfg(feature = "fleet-store")]
+fn newest_in_history(
+    history: &super::fleet_history::History,
+    oldest: chrono::NaiveDate,
+    known: &BTreeMap<String, DateTime<Utc>>,
+    unread: &dyn Fn(&str, &str),
+) -> Option<super::fleet_history::Restored> {
+    let found = match history.newest_heartbeats(
+        oldest,
+        known,
+        super::fleet_history::MAX_FILES_PER_QUESTION,
+    ) {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::warn!("fleet center: the member registry was not checked against {e}");
+            return None;
+        }
+    };
+    for (file, why) in &found.refused {
+        unread(file, why);
+    }
+    if found.files_not_read > 0 {
+        tracing::warn!(
+            "fleet center: the member registry was rebuilt from the newest {} file(s) of \
+             heartbeats; {} older file(s) were not read",
+            found.files_read,
+            found.files_not_read
+        );
+    }
+    Some(found)
+}
+
+/// Move the position of each member of `since`, a member the start took
+/// from the heartbeat history, past the call records the history store
+/// filed at or after that member's instant, so a record the member sends
+/// again is a duplicate. The files are read in one pass for all of them. A
+/// file that cannot be read goes to `unread` with the reason.
+#[cfg(feature = "fleet-store")]
+fn move_past_filed_calls(
+    history: &super::fleet_history::History,
+    registry: &mut Registry,
+    since: &BTreeMap<String, DateTime<Utc>>,
+    unread: &dyn Fn(&str, &str),
+) {
+    let restored = since.len();
+    match history.calls_after(since, super::fleet_history::MAX_FILES_PER_QUESTION) {
+        Ok(calls) => {
+            super::fleet_intake::replay(registry, &calls.rows);
+            for (file, why) in &calls.refused {
+                unread(file, why);
+            }
+            if calls.files_not_read > 0 {
+                tracing::warn!(
+                    "fleet center: the positions of {restored} restored member(s) were moved \
+                     past the call records of the newest {} file(s); {} older file(s) were not \
+                     read",
+                    calls.files_read,
+                    calls.files_not_read
+                );
+            }
+        }
+        Err(e) => unread("the call records of the restored members", &e),
+    }
 }
 
 /// File the intake into the history store and log what was filed, or why
@@ -5723,7 +5781,10 @@ mod behavior_tests {
         assert_eq!(status, 200, "edge a member with no rows is not an error");
         assert_eq!(answer["count"], 0, "edge no rows");
         assert_eq!(answer["complete"], true, "edge and the answer is whole");
-        assert_eq!(answer["files_read"], 0, "edge no file was opened for it");
+        assert_eq!(
+            answer["files_read"], 1,
+            "edge the one file of the filing holds every member's rows and was opened"
+        );
         Ok(())
     }
 }

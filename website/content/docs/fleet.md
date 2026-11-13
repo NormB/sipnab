@@ -1300,8 +1300,22 @@ answer with this page.
    One question opens at most 4,096 files (`MAX_FILES_PER_QUESTION`), those
    with the latest records first. When a question rules in more, the answer
    holds what those files gave, `complete` is `false`, and `files_not_read`
-   counts the files left. Give `member`, `from` and `to` to rule files out by
-   their paths: the center writes one file for each member and filing.
+   counts the files left. The center writes one file for each filing and
+   day, which holds every member's records of that filing, so 4,096 files
+   are about 2.8 days at the default `--calls-flush-secs 60` (4,096 minutes),
+   whatever the number of members. To reach further back with one question:
+
+   - Give `from` and `to`. They rule files out by the day in the path and
+     the times in the name, so the center answers a window of up to 2.8
+     days whole, anywhere in the retention. Ask for a longer time one
+     window at a time.
+   - Or start the center with a longer `--calls-flush-secs`. At `600` one
+     question reaches 28 days (4,096 times 10 minutes). Records then wait up
+     to that long in the intake before the center files them; a question
+     reads the waiting records too.
+
+   `member` does not rule a file out: the center opens each file of the
+   window and reads only the part that can hold that member's records.
 
 **Verify.**
 
@@ -1329,23 +1343,24 @@ answer with this page.
   INFO sipnab::app::fleet_center: fleet center: filed 2 call record(s) in 1 file(s) of the history store; 0 were in it already
   ```
 
-- **[center]** The files are under class, day and member. Each name holds
-  the first and the last receive time in the file, in milliseconds, and the
-  stream and position of its first record:
+- **[center]** The files are under class and day: one file for each filing,
+  which holds the records of every member. Each name holds the first and the
+  last receive time in the file, in milliseconds, and `h` with 16 hex digits
+  that tell the file's records from any other records of the same times:
 
   ```bash
   cd /var/lib/sipnab && find center.store.parquet -type f
   ```
 
   ```text
-  center.store.parquet/calls/date=2026-11-11/member=edge-a/1794441277489-1794441277489-edge-a-manual-1.sealed
+  center.store.parquet/calls/date=2026-11-11/1794355201000-1794355203000-he7b857d7ce5986b7.sealed
   ```
 
 - **[center]** The center sealed each file. Its first four bytes are `SNFS`, not the
   `PAR1` of a Parquet file in clear:
 
   ```bash
-  head -c 4 center.store.parquet/calls/date=2026-11-11/member=edge-a/*.sealed; echo
+  head -c 4 center.store.parquet/calls/date=2026-11-11/*.sealed; echo
   ```
 
   ```text
@@ -1385,7 +1400,7 @@ answer with this page.
     "more": false,
     "refused": [
       {
-        "file": "calls/date=2026-11-12/member=edge-a/1794517150849-1794517150849-edge-a-manual-3.sealed",
+        "file": "calls/date=2026-11-11/1794355201000-1794355203000-he7b857d7ce5986b7.sealed",
         "reason": "sealed layer: the file has a record 2 that did not authenticate (the file was modified, or its records were moved)"
       }
     ]
@@ -1407,8 +1422,8 @@ answer with this page.
   `to`, for a part of the time at a time.
 - **The center logs `the call records were not filed and stay in the
   intake`.** The line ends with the cause: a directory the center cannot
-  write, a full disk, or a file of the same day and member that it cannot
-  read. The records wait in the intake, and the center tries again after
+  write, a full disk, or a file of the same day that it cannot read. The
+  records wait in the intake, and the center tries again after
   `--calls-flush-secs`. `failed_filings` in `GET /v1/fleet/members` counts
   the tries that failed. Fix the cause before the intake reaches its 64 MiB:
   past that the oldest waiting records go first.
@@ -1419,6 +1434,149 @@ answer with this page.
 - **What the history store cannot show.** A whole file that someone deleted
   leaves no trace in the store, as for the store file itself. An answer does
   not include records the intake dropped at its size limit before a filing.
+
+### The files of the history store
+
+**Purpose.** Know what the center writes under `<store>.parquet`, how many
+files that is, what a person who can list the directory learns without the
+store key, and what to do with the files release 0.5.249 wrote.
+
+**The layout.**
+
+```text
+<store>.parquet/calls/date=YYYY-MM-DD/<first>-<last>-h<mark>.sealed
+<store>.parquet/members/date=YYYY-MM-DD/<first>-<last>-h<mark>.sealed
+```
+
+- `calls` holds call records and `members` holds heartbeats. The day is the
+  UTC day on which the center received the rows.
+- The center writes one file for each filing and day. The file holds the
+  rows of every member that the center received since the filing before.
+  The number of files does not depend on the number of members: at the
+  default `--calls-flush-secs 60` a center writes at most 1,440 files a day
+  in each class, for 1 member and for 2,000. A filing with no new rows
+  writes no file.
+- `<first>` and `<last>` are the earliest and the latest receive time in the
+  file, in milliseconds since 1970. `<mark>` is 16 hex digits computed from
+  the rows; it keeps two files of the same times apart.
+- With 90 days of call records and 72 hours of heartbeats at 60 seconds, a
+  center holds at most 129,600 call record files and 5,760 heartbeat files
+  (the heartbeat retention removes whole days, so up to four days are on
+  disk).
+
+**What a file holds.** Inside the seal, each file is one Parquet file
+without compression. The column `member` is the member's id. The rows are in
+order of member and then of receive time. A row group ends where the member
+changes once it holds 128 rows, and at 10,000 rows at the latest, and each
+row group records its least and its greatest member. A question for one
+member opens each file of its window and decodes only the row groups that
+can hold that member: in a file with one row for each of 2,000 members, 1
+row group of 16.
+
+What follows from that layout:
+
+- A question for one member opens every file of its window, and the center
+  unseals each of those files whole before it picks the row group. In a
+  release build, one member's newest 1,000 heartbeats among 2,000 members
+  came from 1,001 files in 2.8 s.
+- One answer holds at most 1,000 rows (`limit`). A member's 24 hours at one
+  heartbeat a minute are 1,440 rows: ask twice, with `from` and `to`.
+- A center that starts without its store file reads the heartbeat files
+  from the newest back, up to 4,096 of them, to rebuild its member list: 25.7
+  s in a release build for 1,440 files of 2,000 members. A center that
+  starts with its store file reads one.
+
+**Reading the files with other tools.** No other tool reads a file as it is
+on disk: the center seals every file under the store key, and the first
+bytes are `SNFS`, not `PAR1`. Read the history through the center, which
+answers JSON that `jq`, a spreadsheet import or a script takes:
+
+```bash
+curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $OPS_TOKEN" \
+  'https://127.0.0.1:8444/v1/fleet/calls?from=2026-11-11T00:00:00Z&to=2026-11-12T00:00:00Z&limit=1000' \
+  | jq -c '.calls[] | {member, received_at, call_id: .call.call_id}'
+```
+
+sipnab has no command that writes a file's Parquet in clear.
+
+**What the directory shows without the key.** A person who can list the
+directory sees the days that have rows, the time of each filing to the
+millisecond, and the size of each file, which grows with the rows of that
+filing. The names hold no member id, no count and no part of a record. In
+release 0.5.249 each member had a directory `member=<id>`, so a listing
+showed every member's id and the times at which each member had new records.
+
+**Files that release 0.5.249 wrote.** Release 0.5.249 wrote call records
+under `calls/date=YYYY-MM-DD/member=<id>/`, one file for each member and
+filing. This release writes no file there and does not move or rewrite the
+files that are there:
+
+- `GET /v1/fleet/calls` answers their rows together with the rows of the new
+  files. A question with `member` opens only that member's old files.
+- The retention removes them with their day, and the log line that counts
+  the removed files counts them.
+- A start after 0.5.249 stopped between a filing and the emptying of its
+  intake does not file those records a second time.
+- The member ids in those paths stay on disk until the day passes
+  `--calls-retention-days`.
+
+**Count the files, and check the inodes.** A center of release 0.5.249 with
+many members wrote many small files: one for each member with a new call
+record in each filing, which for 2,000 such members at 60 seconds is
+2,880,000 files a day. A file system holds a fixed number of inodes, and a
+center that runs out of them cannot file.
+
+1. **[center]** Count the files of the history store:
+
+   ```bash
+   find /var/lib/sipnab/center.store.parquet -type f | wc -l
+   ```
+
+   And the files of the 0.5.249 layout among them:
+
+   ```bash
+   find /var/lib/sipnab/center.store.parquet/calls -path '*/member=*' -type f | wc -l
+   ```
+
+2. **[center]** Read how many inodes the file system has left (`IFree`, and
+   `IUse%`):
+
+   ```bash
+   df -i /var/lib/sipnab
+   ```
+
+3. **[center]** When `IUse%` is near 100, lower the retention so that the
+   center removes the oldest days. The center removes the days past the
+   retention at start and every minute:
+
+   ```bash
+   sipnab fleet serve --listen 127.0.0.1:8444 --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey \
+     --signing-key-file /etc/sipnab/center.signing \
+     --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key \
+     --calls-retention-days 7
+   ```
+
+   The center logs a line of this form with the days and files it removed,
+   and `df -i` then shows the inodes as free:
+
+   ```text
+   INFO sipnab::app::fleet_center: fleet center: 1 day(s) and 2 file(s) of call records past --calls-retention-days 7 were removed
+   ```
+
+   The center no longer has the call records of the removed days. To keep
+   them, copy the `date=` directories to another file system first. The
+   center reads a copied directory again once it is back at its path.
+
+**Troubleshoot.**
+
+- **The center logs `the call records were not filed and stay in the
+  intake` with `No space left on device` while `df -h` shows free space.**
+  The file system has no free inode. Do step 3. The records wait in the
+  intake, at most 64 MiB of them, and the center files them when it can.
+- **A listing still shows `member=` directories after the upgrade.** They
+  are the files of release 0.5.249. The center reads them and removes them
+  when their day passes the retention.
 
 ### Keep heartbeat history at the center
 
@@ -1459,14 +1617,18 @@ would.
   scope of `GET /v1/fleet/members`. `full`, `actions` and `admin` reach it
   too. A `fleet-report` token does not.
 - **Room on the center's disk, and files.** The center writes one file for
-  each member with new heartbeats at each filing. In a run of the tests on
-  2026-11-12 (a debug build on a loaded host), 2,000 members with one
-  heartbeat each made 2,000 files of 2,501 bytes each in 19.5 s. The center
-  answers members during that time. With 2,000 members and the default
-  `--calls-flush-secs 60` that is 2,880,000 files a day (2,000 times 1,440
-  filings). `--calls-flush-secs 600` makes it 288,000. Heartbeats that wait
-  for a filing are in the store file, and at most 64 MiB of them wait
-  (`MAX_WAITING_BYTES`).
+  each filing, which holds the heartbeats of every member: at the default
+  `--calls-flush-secs 60` that is 1,440 files a day for 1 member and for
+  2,000 ([The files of the history store](#the-files-of-the-history-store)).
+  In a run of the tests on 2026-11-12 (a debug build, load average 14 to
+  25), 2,000 members with one heartbeat of about 300 bytes each made one
+  file of 602,454 bytes in 137 ms, and 1,440 such filings, 24 hours, made
+  887,745,307 bytes. A release build on the same host wrote the one file
+  in 127 ms, read one member's newest 1,000 heartbeats from 1,001 files in
+  2.8 s, and rebuilt the member list without a store file from all 1,440
+  files in 25.7 s. The center answers members while it writes a file.
+  Heartbeats that wait for a filing are in the store file, and at most
+  64 MiB of them wait (`MAX_WAITING_BYTES`).
 - **Other systems.** Nothing changes on a member, on OpenSIPS, Kamailio,
   Homer or any HEP collector. A backup of the center includes the directory
   `<store>.parquet`.
@@ -1552,7 +1714,11 @@ would.
 
    A heartbeat is in the answer from the moment the center acknowledges it.
    A member the center has no heartbeat of has an empty answer with status
-   `200`. One question opens at most 4,096 files, as for call records.
+   `200`. One question opens at most 4,096 files, as for call records: about
+   2.8 days of heartbeats at the default `--calls-flush-secs 60`, so one
+   question reaches most of the default `--retention-hours 72`. Give `from`
+   and `to` for the oldest hours. One answer holds at most 1,000 heartbeats
+   (`limit`), which for one member at one heartbeat a minute is 16.7 hours.
 
 **Verify.**
 
@@ -1572,16 +1738,16 @@ would.
   `heartbeats_removed` those that left before a filing, and `members_restored` the
   members the last start took from the history store.
 
-- **[center]** The files are under class `members`, day and member. Each
-  name holds the first and the last receive time in the file, in
-  milliseconds, the stream, and the count of its first heartbeat:
+- **[center]** The files are under class `members` and day: one file for
+  each filing, which holds the heartbeats of every member. The names are
+  spelled as those of call record files:
 
   ```bash
   cd /var/lib/sipnab && find center.store.parquet/members -type f
   ```
 
   ```text
-  center.store.parquet/members/date=2026-11-12/member=edge-a/1794517149266-1794517150551-edge-a-manual-1.sealed
+  center.store.parquet/members/date=2026-11-11/1794355201000-1794355203000-he7b857d7ce5986b7.sealed
   ```
 
 - **[center]** To see the rebuild on a test center, stop the center, move
@@ -1618,19 +1784,26 @@ would.
   [Keep call history at the center](#keep-call-history-at-the-center):
 
   ```json
-  {"complete":false,"refused":[{"file":"members/date=2026-11-12/member=edge-a/1794517149266-1794517150551-edge-a-manual-1.sealed","reason":"sealed layer: the file has a record 2 that did not authenticate (the file was modified, or its records were moved)"}],"files_read":0,"files_not_read":0,"count":0}
+  {"complete":false,"refused":[{"file":"members/date=2026-11-11/1794355201000-1794355203000-he7b857d7ce5986b7.sealed","reason":"sealed layer: the file has a record 2 that did not authenticate (the file was modified, or its records were moved)"}],"files_read":0,"files_not_read":0,"count":0}
   ```
 
 - **The center logs `the heartbeats were not filed and wait in the store
   file`.** The line ends with the cause: a directory the center cannot
-  write, a full disk, or a file of the same day and member that it cannot
-  read. The center tries again after `--calls-flush-secs`, and
+  write, a full disk, or a file of the same day that it cannot read. The
+  center tries again after `--calls-flush-secs`, and
   `failed_filings` counts the tries. Past 64 MiB of waiting heartbeats, and
   past `--retention-hours`, the oldest leave before a filing and
   `heartbeats_removed` counts them.
-- **The center logs `was not read for the member registry`.** At start, the
-  newest heartbeat file of a member did not open. The line names the file
-  and the reason. The center starts and lists that member from its store
+- **The center logs `the member registry was rebuilt from the newest`.** The
+  center had no store file, or one older than the history, and more than
+  4,096 heartbeat files could hold a member's last heartbeat. The center
+  read the newest 4,096, about 2.8 days at `--calls-flush-secs 60`. It lists
+  a member that went silent before them when that member sends a heartbeat
+  again.
+- **The center logs `was not read for the member registry`.** At start, a
+  heartbeat file the center read for its member list did not open. The line
+  names the file and the reason. The center starts and lists a member from
+  an older file or from its store
   file alone. When the store file is also lost, the member returns to the
   list with its next heartbeat.
 - **A member is missing after a start without the store file.** The center
