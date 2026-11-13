@@ -139,7 +139,7 @@ AssertWithoutMessage	src/mcp/tools/expectations.rs	30
 AssertWithoutMessage	src/mcp/tools/hep.rs	16
 AssertWithoutMessage	src/mcp/tools/inspect.rs	1
 AssertWithoutMessage	src/mcp/tools/provenance.rs	3
-AssertWithoutMessage	src/mcp/tools/relay.rs	166
+AssertWithoutMessage	src/mcp/tools/relay.rs	165
 AssertWithoutMessage	src/mcp/tools/tfps.rs	26
 AssertWithoutMessage	src/mcp/tools/vcon.rs	19
 AssertWithoutMessage	src/mcp/transport.rs	24

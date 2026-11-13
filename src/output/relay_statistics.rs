@@ -206,6 +206,20 @@ pub fn relay_rest_ok(payload_json: &str) -> String {
     v.to_string()
 }
 
+/// The REST envelope for a reply of `subject` that holds no answer to what
+/// was asked: `refused` with the relay's own words after `subject`, or
+/// `suspect` for a reply of another kind. The decision is
+/// [`ControlReply::unanswered`](crate::relay::types::ControlReply::unanswered)'s.
+#[must_use]
+pub fn relay_rest_unanswered(
+    reply: &crate::relay::types::ControlReply,
+    asked: crate::relay::types::ReplyKind,
+    subject: &str,
+) -> String {
+    let (outcome, detail) = asked.unanswered_by(reply, subject);
+    relay_rest_outcome(outcome, &detail)
+}
+
 /// The REST envelope for a request that did NOT yield a clean answer (ST5,
 /// ST-S4).
 ///

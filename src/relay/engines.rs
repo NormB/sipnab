@@ -1456,10 +1456,13 @@ pub fn call_target_listed(
             |(control, relay)| {
                 let answer = match relay.list(permit, limit) {
                     Ok(crate::relay::types::ControlReply::Calls(e)) => Ok(e),
-                    Ok(crate::relay::types::ControlReply::Refused { reason }) => {
-                        Err(format!("refused: {reason}"))
+                    Ok(other) => {
+                        use crate::relay::types::{ReplyKind, Unanswered};
+                        match other.unanswered(ReplyKind::CallList) {
+                            Some(Unanswered::Refused(reason)) => Err(format!("refused: {reason}")),
+                            _ => Err(ReplyKind::CallList.wrong_kind_phrase().to_string()),
+                        }
                     }
-                    Ok(_) => Err("answered with something other than a call list".to_string()),
                     Err(e) => Err(format!("{e:#}")),
                 };
                 EngineList {
