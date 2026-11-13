@@ -235,6 +235,8 @@ pub enum Kind {
     Spool,
     /// A Parquet file of call records in the center's history store.
     Calls,
+    /// A Parquet file of heartbeats in the center's history store.
+    Members,
 }
 
 impl Kind {
@@ -245,6 +247,7 @@ impl Kind {
             Self::Intake => 2,
             Self::Spool => 3,
             Self::Calls => 4,
+            Self::Members => 5,
         }
     }
 
@@ -255,6 +258,7 @@ impl Kind {
             Self::Intake => "intake",
             Self::Spool => "spool",
             Self::Calls => "calls",
+            Self::Members => "members",
         }
     }
 
@@ -265,6 +269,7 @@ impl Kind {
             2 => Some(Self::Intake),
             3 => Some(Self::Spool),
             4 => Some(Self::Calls),
+            5 => Some(Self::Members),
             _ => None,
         }
     }
@@ -1583,6 +1588,27 @@ mod tests {
     }
 
     #[test]
+    fn failure_a_heartbeat_file_and_a_calls_file_do_not_open_as_each_other() -> TestResult {
+        for (written, asked) in [(Kind::Members, Kind::Calls), (Kind::Calls, Kind::Members)] {
+            let source = counting();
+            let (mut sealer, header) = LogSealer::new(&key(1), written, &source)?;
+            let mut bytes = header.to_vec();
+            bytes.extend(sealer.base_end()?);
+            let text = open_log(&bytes, &only(key(1)), asked)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            assert!(
+                text.contains(written.name()) && text.contains(asked.name()),
+                "failure a file of kind {} asked for as {} is refused with both named: {text}",
+                written.name(),
+                asked.name()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn a_kind_byte_changed_to_pass_the_check_fails_the_header() -> TestResult {
         let source = counting();
         let (mut sealer, header) = LogSealer::new(&key(1), Kind::Intake, &source)?;
@@ -2683,7 +2709,13 @@ mod tests {
 
     #[test]
     fn success_a_file_of_every_kind_carries_its_counts_and_opens() -> TestResult {
-        for kind in [Kind::Registry, Kind::Intake, Kind::Spool, Kind::Calls] {
+        for kind in [
+            Kind::Registry,
+            Kind::Intake,
+            Kind::Spool,
+            Kind::Calls,
+            Kind::Members,
+        ] {
             let source = counting();
             let (mut sealer, header) = LogSealer::new(&key(1), kind, &source)?;
             let mut out = header.to_vec();

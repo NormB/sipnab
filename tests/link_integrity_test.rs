@@ -1836,9 +1836,17 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2637 -> 2642 (DOCS-HOWTO-GAP, seventh batch, +5): one link in the
     // prerequisites of each of rtpengine.md, rtpengine-relay.md,
     // rtpproxy-relay.md, rtpengine-sipnab.md and rtpproxy-sipnab.md.
-    // 2642 -> 2643 (MACOS-JOBS-NOT-ACQUIRED-TURN-RUNS-RED, +1):
+    // 2642 -> 2648 (fleet heartbeat history): +6. fleet.md +5 (one from
+    // "Keep call history at the center" to the new "Keep heartbeat history
+    // at the center", and four inside the new section: two to "Keep call
+    // history at the center", two to "Run a fleet center"), cli-reference.md
+    // +1 (the new section).
+    // 2648 -> 2649 (one history file for each filing): +1 in fleet.md, from
+    // "Keep heartbeat history at the center" to the new section "The files
+    // of the history store".
+    // 2649 -> 2650 (MACOS-JOBS-NOT-ACQUIRED-TURN-RUNS-RED, +1):
     // build-ci-release.md's workflow row links "A job no runner took".
-    const EXPECTED_WIKI_LINKS: usize = 2643;
+    const EXPECTED_WIKI_LINKS: usize = 2650;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
