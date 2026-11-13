@@ -134,25 +134,23 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,648 | 60,315 |
-| signaling | 21 | 23,576 | 76,040 |
-| captures | 11 | 12,723 | 30,211 |
+| core | 9 | 12,648 | 62,047 |
+| signaling | 21 | 23,524 | 78,739 |
+| captures | 11 | 12,723 | 30,259 |
 | security | 6 | 9,954 | 9,954 |
-| media | 4 | 3,480 | 16,048 |
-| relay | 5 | 5,109 | 31,609 |
-| tfps | 7 | 5,717 | 16,101 |
-| server | 6 | 5,976 | 35,136 |
-| vcon | 7 | 10,714 | 34,446 |
-| tls | 3 | 2,903 | 4,996 |
-| full | 79 | 92,800 | 314,856 |
+| media | 4 | 3,480 | 16,122 |
+| relay | 5 | 4,988 | 39,164 |
+| tfps | 7 | 5,717 | 16,267 |
+| server | 6 | 5,976 | 38,359 |
+| vcon | 7 | 10,714 | 34,582 |
+| tls | 3 | 2,903 | 5,009 |
+| full | 79 | 92,627 | 330,502 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.232 with `fleet_inventory`, `th_mappings` and `relay_stats_polled` added** on a build with every feature.
+> **Measured by the test suite on each build with every feature.** A test fails when a row of this table differs from the measurement.
 >
-> - The `regex` option of `search_messages` added 332 bytes to its entry, and
->   so to the `core` and `full` rows, in both columns.
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
 >   bundles are smaller.

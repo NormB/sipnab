@@ -13348,8 +13348,37 @@ mod tests {
             // core row above says; full measured 92,627 over 79 tools.
             ("full", 93_000),
         ];
+        let measured = bundle_measure(false)?;
+        let mut over = Vec::new();
+        for (bundle, ceiling) in CEILINGS {
+            let (_, bytes) = *measured.get(*bundle).ok_or("a built-in bundle or full")?;
+            if bytes > *ceiling {
+                over.push(format!("{bundle}: {bytes} > {ceiling}"));
+            }
+        }
+        assert!(
+            crate::mcp_profile::BUNDLES.len() + 1 == CEILINGS.len(),
+            "every bundle and full carry a ceiling"
+        );
+        assert!(over.is_empty(), "bundles over their byte budget: {over:?}");
+        Ok(())
+    }
+
+    /// The tool count and the bytes of every bundle and of `full`: the
+    /// compact JSON of each tool's `tools/list` entry, summed over the bundle,
+    /// with or without output schemas. The one measurement the ceilings above
+    /// and the size table in docs/mcp-tools.md are both held to.
+    #[cfg(all(
+        feature = "mcp-http",
+        feature = "tls",
+        feature = "hep",
+        target_os = "linux"
+    ))]
+    fn bundle_measure(
+        output_schemas: bool,
+    ) -> Result<std::collections::BTreeMap<String, (usize, usize)>, TestError> {
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
-            .with_output_schemas(false)
+            .with_output_schemas(output_schemas)
             .tool_router
             .list_all()
             .iter()
@@ -13362,26 +13391,77 @@ mod tests {
                 ))
             })
             .collect::<Result<_, _>>()?;
-        let mut over = Vec::new();
-        for (bundle, ceiling) in CEILINGS {
-            let bytes: usize = if *bundle == crate::mcp_profile::FULL {
-                sizes.values().sum()
-            } else {
-                crate::mcp_profile::bundle(bundle)
-                    .ok_or("a built-in bundle")?
-                    .iter()
-                    .map(|t| sizes.get(*t).copied().ok_or("a registered tool"))
-                    .sum::<Result<usize, _>>()?
-            };
-            if bytes > *ceiling {
-                over.push(format!("{bundle}: {bytes} > {ceiling}"));
-            }
+        let mut measured = std::collections::BTreeMap::new();
+        for (bundle, tools) in crate::mcp_profile::BUNDLES {
+            let bytes = tools
+                .iter()
+                .map(|t| sizes.get(*t).copied().ok_or("a registered tool"))
+                .sum::<Result<usize, _>>()?;
+            measured.insert((*bundle).to_string(), (tools.len(), bytes));
         }
-        assert!(
-            crate::mcp_profile::BUNDLES.len() + 1 == CEILINGS.len(),
-            "every bundle and full carry a ceiling"
+        measured.insert(
+            crate::mcp_profile::FULL.to_string(),
+            (sizes.len(), sizes.values().sum()),
         );
-        assert!(over.is_empty(), "bundles over their byte budget: {over:?}");
+        Ok(measured)
+    }
+
+    /// The size table in docs/mcp-tools.md is the measurement: every bundle
+    /// and `full`, the tool count and both byte columns.
+    ///
+    /// The table was written by hand from a run, and its rows summed to 92,468
+    /// for `full` while this measurement gave 92,295: nothing tied the two.
+    #[cfg(all(
+        feature = "mcp-http",
+        feature = "tls",
+        feature = "hep",
+        target_os = "linux"
+    ))]
+    #[test]
+    fn the_size_table_in_the_docs_is_the_measurement() -> Result<(), TestError> {
+        let default = bundle_measure(false)?;
+        let with_schemas = bundle_measure(true)?;
+        let thousands = |n: usize| -> String {
+            let digits = n.to_string();
+            let mut out = String::new();
+            for (i, c) in digits.chars().enumerate() {
+                if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                    out.push(',');
+                }
+                out.push(c);
+            }
+            out
+        };
+        let order: Vec<&str> = crate::mcp_profile::BUNDLES
+            .iter()
+            .map(|(name, _)| *name)
+            .chain([crate::mcp_profile::FULL])
+            .collect();
+        let mut expected = Vec::new();
+        for name in order {
+            let (tools, bytes) = *default.get(name).ok_or("measured without schemas")?;
+            let (_, wide) = *with_schemas.get(name).ok_or("measured with schemas")?;
+            expected.push(format!(
+                "| {name} | {tools} | {} | {} |",
+                thousands(bytes),
+                thousands(wide)
+            ));
+        }
+        let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/mcp-tools.md");
+        let text = std::fs::read_to_string(&page)?;
+        let head = "| Bundle | Tools | Bytes (default) | Bytes with output schemas |";
+        let rows: Vec<&str> = text
+            .lines()
+            .skip_while(|l| *l != head)
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+            .collect();
+        assert_eq!(
+            rows,
+            expected,
+            "docs/mcp-tools.md's size table is not the measurement. The rows it must hold:\n{}",
+            expected.join("\n")
+        );
         Ok(())
     }
 
