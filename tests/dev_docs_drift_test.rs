@@ -1031,7 +1031,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/check-feature-matrix.py and scripts/gate-cache.py (+4).
     // 851 -> 852 (RELEASE-TRAIN-WINDOW-OPENS-ON-LONG-LAST-CHECK): the window
     // rule links scripts/tests/test_release_train.py (+1).
-    const EXPECTED_CODE_LINKS: usize = 856;
+    // 856 -> 859 (hook step log): testing.md's "Where a hook run spent its
+    // time" links scripts/hook-steps.py and its two test files (+3).
+    const EXPECTED_CODE_LINKS: usize = 859;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

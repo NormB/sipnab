@@ -1045,17 +1045,19 @@ def test_edge_a_bound_of_zero_asks_once_and_stops_if_the_proof_is_not_there(cfg)
 # only when the landing failed. A `warning:` line of required-checks names a
 # check an outside service has not completed, and a landing report quotes it.
 
-LANDED = ("Coverage: success\n"
-          "warning: codecov/patch: queued for 12 min, allowed unreported after 10 min\n"
-          "Merged pull request #9\n")
+#
+# The one line a landing that passed can print is that warning: until
+# 2026-11-13 this fixture also held "Coverage: success" and "Merged pull
+# request #9", which neither tool writes for a pass (see the next section).
+
+LANDED = "warning: codecov/patch: queued for 12 min, allowed unreported after 10 min\n"
 
 
 def test_success_the_output_of_a_landing_that_passed_is_printed(cfg, capsys):
     w = World()
     w.land_out = LANDED
     assert drive(cfg, w) == 0
-    out = capsys.readouterr().out
-    assert "Coverage: success" in out and "Merged pull request #9" in out
+    assert capsys.readouterr().out.count(LANDED) == 1
 
 
 def test_success_a_warning_line_of_required_checks_reaches_the_trains_output(cfg, capsys):
@@ -1076,6 +1078,129 @@ def test_failure_the_output_of_a_landing_that_failed_is_in_the_stop_message_once
     w.overrides.append(("land-queue", (1, "Coverage: failure\n")))
     assert drive(cfg, w) == 1
     assert capsys.readouterr().out.count("Coverage: failure") == 1
+
+
+# --- the landing's own record ------------------------------------------------
+#
+# On 0.5.250 the train's output again held no line of the landing between
+# "stage: land" and the checkout line. The landing had run (the landing log has
+# the command at 04:38:23Z, rc 0). Read on 2026-11-13: `required-checks` on
+# that head prints 0 bytes and ends 0, since it names only a check that is not
+# a success; and the merge command printed nothing with its output in a pipe.
+# So a landing that passed has no output to print, and the fixture LANDED
+# above holds lines that neither tool writes for a pass. The train now writes
+# the record itself, after "stage: land", from what it knows: the exit status
+# 0 of `required-checks ... && gh pr merge ...`.
+
+CHECKS_LINE = f"land: required-checks NormB/sipnab {HEAD} passed (exit status 0)"
+MERGE_LINE = f"land: pull request 9 merged with --match-head-commit {HEAD}"
+
+
+def train_lines(cfg, w, capsys):
+    rc = drive(cfg, w)
+    return rc, capsys.readouterr().out.splitlines()
+
+
+def test_success_a_silent_landing_that_passed_leaves_a_required_checks_line(cfg, capsys):
+    rc, lines = train_lines(cfg, World(), capsys)
+    assert rc == 0
+    assert lines.count(CHECKS_LINE) == 1
+
+
+def test_success_a_silent_landing_that_passed_leaves_a_merge_line(cfg, capsys):
+    rc, lines = train_lines(cfg, World(), capsys)
+    assert rc == 0
+    assert lines.count(MERGE_LINE) == 1
+
+
+def test_success_the_landing_lines_sit_between_the_land_stage_and_the_checkout(cfg, capsys):
+    _, lines = train_lines(cfg, World(), capsys)
+    at = [lines.index("stage: land"), lines.index(CHECKS_LINE), lines.index(MERGE_LINE),
+          next(i for i, line in enumerate(lines) if line.startswith("checkout: "))]
+    assert at == sorted(at) and len(set(at)) == 4, lines
+
+
+def test_success_what_the_landing_printed_sits_between_the_two_lines(cfg, capsys):
+    w = World()
+    w.land_out = "warning: codecov/patch: queued for 12 min, allowed unreported after 10 min\n"
+    _, lines = train_lines(cfg, w, capsys)
+    i = lines.index(CHECKS_LINE)
+    assert lines[i + 1] == w.land_out.rstrip() and lines[i + 2] == MERGE_LINE, lines
+
+
+def test_success_the_lines_name_the_repository_of_the_train(tmp_path, capsys):
+    other = rt.Config(version=VERSION, host="releaser@vm.example.invalid", repo="example/other",
+                      state_file=tmp_path / "train.json")
+    _, lines = train_lines(other, World(), capsys)
+    assert f"land: required-checks example/other {HEAD} passed (exit status 0)" in lines
+
+
+def test_success_each_stage_line_comes_before_the_lines_of_its_step(cfg, capsys):
+    _, lines = train_lines(cfg, World(), capsys)
+    assert lines.index("stage: tag") < next(i for i, line in enumerate(lines) if line.startswith("checkout: "))
+    assert lines.index("stage: post") < lines.index("bpf: OK")
+
+
+def test_failure_a_failed_landing_leaves_no_passed_line(cfg, capsys):
+    w = World()
+    w.overrides.append(("land-queue", (1, "Coverage: failure\n")))
+    rc, lines = train_lines(cfg, w, capsys)
+    assert rc == 1
+    assert not [line for line in lines if line.startswith("land: ")], lines
+
+
+def test_failure_a_failed_landing_is_stopped_after_its_stage_line(cfg, capsys):
+    w = World()
+    w.overrides.append(("land-queue", (1, "Coverage: failure\n")))
+    _, lines = train_lines(cfg, w, capsys)
+    stop = next(i for i, line in enumerate(lines) if line.startswith("stopped: landing pull request 9 failed"))
+    assert lines.index("stage: land") < stop, lines
+
+
+def test_failure_a_landing_that_timed_out_leaves_no_passed_line(cfg, capsys):
+    w = World()
+    w.overrides.append(("land-queue", (124, "timed out after 1800 s")))
+    rc, lines = train_lines(cfg, w, capsys)
+    assert rc == 1
+    assert CHECKS_LINE not in lines and MERGE_LINE not in lines
+
+
+def test_failure_a_failed_check_never_reaches_the_landing_lines(cfg, capsys):
+    rc, lines = train_lines(cfg, World(conclusion="FAILURE"), capsys)
+    assert rc == 1
+    assert "stage: land" not in lines and not [line for line in lines if line.startswith("land: ")]
+
+
+def test_edge_a_resume_after_the_landing_prints_no_landing_line(cfg, capsys):
+    w = World()
+    w.pr["state"] = "MERGED"
+    w.pr["mergeCommit"] = {"oid": MERGE}
+    w.merged_at = w.now - 600
+    rc, lines = train_lines(cfg, w, capsys)
+    assert rc == 0
+    assert not [line for line in lines if line.startswith("land: ")], lines
+
+
+def test_edge_each_stage_line_is_printed_once(cfg, capsys):
+    _, lines = train_lines(cfg, World(), capsys)
+    stages = [line for line in lines if line.startswith("stage: ")]
+    assert stages == ["stage: ci-wait", "stage: land", "stage: tag", "stage: release-wait", "stage: post",
+                      "stage: done"], stages
+
+
+def test_edge_a_landing_that_printed_only_blank_lines_adds_none(cfg, capsys):
+    w = World()
+    w.land_out = "\n\n"
+    drive(cfg, w)
+    out = capsys.readouterr().out
+    assert "\n\n" not in out and CHECKS_LINE + "\n" + MERGE_LINE + "\n" in out
+
+
+def test_edge_tick_without_a_listener_still_lands(cfg, capsys):
+    w = World(ci_minutes=0)
+    w.now += 60
+    assert rt.tick(cfg, w, w.clock) == "land"
+    assert capsys.readouterr().out.splitlines() == [CHECKS_LINE, MERGE_LINE]
 
 
 # --- each line at once, whatever standard output is --------------------------

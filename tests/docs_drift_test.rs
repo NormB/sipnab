@@ -335,6 +335,30 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/testing.md",
         ],
     ),
+    // `scripts/hook-steps.py --runs N`, `--mean N` and `--log FILE`, in the
+    // testing page's "Where a hook run spent its time". Flags of a
+    // repository script, not sipnab's.
+    (
+        "runs",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "mean",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "log",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
     // The suite runs as `cargo nextest run --profile suite`, and
     // `SIPNAB_TEST_JOBS` becomes nextest's `--test-threads`
     // (TEST-DEADLINE-NEXTEST-SIPNAB). nextest's flags, not sipnab's.

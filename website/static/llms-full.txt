@@ -83417,6 +83417,20 @@ The script runs the tests the way the hook does: the same nextest profile, featu
 It names each binary to cargo with `--test`. A nextest filter alone would build every test target first.
 [`scripts/tests/test_pin_gates.py`](../../scripts/tests/test_pin_gates.py) holds the list to the tree: a test under `tests/` that declares a count constant (a `usize` whose name begins `EXPECTED_`), or reads the list of tracked files, must appear in the list, as a binary to run or as an exclusion with a reason.
 
+**Where a hook run spent its time.** The pre-commit hook appends one line per step to `sipnab-pre-commit-steps.log` in the checkout's git directory: the run, the step under the name its heading prints, whole seconds and the exit status, separated by tabs.
+The last line of a run is the step `total`, counted from the start of the hook.
+[`scripts/hook-steps.py`](../../scripts/hook-steps.py) prints the table.
+
+- Purpose: read which step of the hook costs the time, from a file the hook already wrote, with no extra hook run.
+- Prerequisites: one full hook run in this checkout since the hook gained the log. A run that a pass stamp skips whole writes no line.
+- Steps: `python3 scripts/hook-steps.py` prints the newest run; `--runs N` prints the newest N runs, oldest first; `--mean N` prints each step's mean and longest time over the newest N runs that passed; `--log FILE` reads another checkout's log.
+- Verify: the table ends with the line `total`, and its first line says `passed`, or `FAILED at` with the step that failed. The line `(outside the steps)` is the time before the first heading and between steps: reading the pass stamps is most of it.
+- Troubleshoot: `NOT ENDED` in the first line means the run has no `total` line: a signal ended the hook, or the hook is still running. Exit status 1 with `cannot be read` means no full run has written the log yet.
+  A step that printed `CACHED` is in the log with the seconds its stamp read took.
+
+The step `Tests` holds the build of the test binaries, the nextest run and the doctests together. The hook cuts the log to its newest 2,000 lines once it passes 4,000, and a line that it cannot write does not fail the hook.
+[`scripts/tests/test_hook_steps.py`](../../scripts/tests/test_hook_steps.py) runs the hook in its sandbox and reads the log. [`scripts/tests/test_hook_steps_table.py`](../../scripts/tests/test_hook_steps_table.py) holds the table.
+
 **nextest.** The suite runs under cargo-nextest, in the pre-commit hook and in CI, through [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py).
 
 - `cargo test` bounds no single test, so one hung test held the hook until its 30-minute watchdog fired, with no name attached.
