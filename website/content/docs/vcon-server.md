@@ -374,9 +374,12 @@ git checkout 8da4be3355
 sudo mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 dpkg-buildpackage -us -uc -b -j2
 cd ..
-sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_amd64.deb \
+sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_$(dpkg --print-architecture).deb \
   ./ngcp-rtpengine-utils_26.3.0.0+0~mr26.3.0.0_all.deb
 ```
+
+The build names the daemon's package after the machine's architecture, which
+`dpkg --print-architecture` prints.
 
 The package's configuration asks for rtpengine's kernel forwarding module. This
 guide does not install that module. Tell rtpengine to forward in userspace, and

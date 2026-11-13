@@ -59,6 +59,14 @@ const RTPPROXY_RELAY: &str = include_str!("../docs/rtpproxy-relay.md");
 const RTPPROXY_SIPNAB: &str = include_str!("../docs/rtpproxy-sipnab.md");
 const RELAY_ENGINES: &str = include_str!("../docs/relay-engines.md");
 const RELAY_STATISTICS: &str = include_str!("../docs/relay-statistics.md");
+const OPENSIPS: &str = include_str!("../docs/opensips.md");
+const OPENSIPS_SIPNAB: &str = include_str!("../docs/opensips-sipnab.md");
+const KAMAILIO: &str = include_str!("../docs/kamailio.md");
+const KAMAILIO_SIPNAB: &str = include_str!("../docs/kamailio-sipnab.md");
+const ASTERISK: &str = include_str!("../docs/asterisk.md");
+const ASTERISK_SIPNAB: &str = include_str!("../docs/asterisk-sipnab.md");
+const FREESWITCH: &str = include_str!("../docs/freeswitch.md");
+const FREESWITCH_SIPNAB: &str = include_str!("../docs/freeswitch-sipnab.md");
 const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const HARNESS_COMPOSE: &str = include_str!("../harness/docker-compose.yml");
@@ -3798,6 +3806,7 @@ fn the_vcon_sipnab_prerequisites_say_what_changes_on_the_other_system() -> Resul
         "`conserver` and `api`",
         "without the `-noaudio` suffix",
         "`sipnab_<version>_amd64.deb`",
+        "`sipnab_<version>_arm64.deb`",
         "No change on the SIP server",
     ] {
         page_says(needs, named, "vcon-sipnab");
@@ -3812,7 +3821,7 @@ fn the_vcon_sipnab_prerequisites_say_what_changes_on_the_other_system() -> Resul
     }
     page_says(
         from_heading(VCON_SIPNAB, "## Install sipnab")?,
-        "sipnab_${V}_amd64.deb",
+        "sipnab_${V}_${A}.deb",
         "vcon-sipnab",
     );
     Ok(())
@@ -5170,4 +5179,592 @@ fn the_engine_check_exits_0_with_one_answer_and_1_with_none() -> Result<(), Test
         none.dump()
     );
     Ok(())
+}
+
+// ── opensips, opensips-sipnab, kamailio, kamailio-sipnab, asterisk, ──────
+// ── asterisk-sipnab, freeswitch, freeswitch-sipnab ───────────────────────
+
+/// The four guides that set up a SIP server say what changes on other
+/// systems, and each has a check with a command the guide itself runs.
+#[test]
+fn the_sip_server_guides_have_prerequisites_and_a_check_with_its_command() -> Result<(), TestError>
+{
+    // (page, text, check heading, the heading after it, what the check runs)
+    for (page, doc, check, next, runs) in [
+        (
+            "opensips",
+            OPENSIPS,
+            "### Check that the call went through OpenSIPS",
+            "## Operate it",
+            "grep -m1 -i '^Record-Route:'",
+        ),
+        (
+            "kamailio",
+            KAMAILIO,
+            "### Check that the call went through Kamailio",
+            "## Operate it",
+            "grep -m1 -i '^Record-Route:'",
+        ),
+        (
+            "asterisk",
+            ASTERISK,
+            "### Check that Asterisk handled the call",
+            "## Operate it",
+            "sudo asterisk -rx 'core show calls'",
+        ),
+        (
+            "freeswitch",
+            FREESWITCH,
+            "### Check that a call has two legs",
+            "## Operate it",
+            "fs_cli -x 'show channels as json'",
+        ),
+    ] {
+        let needs = one_line(section(doc, "## Before you start")?);
+        for named in ["other system", "`sudo`", "Debian 13", "Ubuntu 24.04"] {
+            page_says(&needs, named, page);
+        }
+        let checked = between(doc, check, next)?;
+        page_says(checked, "```", page);
+        page_says(checked, runs, page);
+        assert_eq!(
+            doc.matches(runs).count(),
+            if page == "asterisk" { 2 } else { 1 },
+            "{page}: the check runs a command of the guide's own steps: {runs}"
+        );
+    }
+    Ok(())
+}
+
+/// The four pages that put sipnab beside a SIP server say what changes on
+/// the other system, the server, and name the guide that sets it up.
+#[test]
+fn the_pages_beside_a_sip_server_say_what_changes_on_the_other_system() -> Result<(), TestError> {
+    for (page, doc, guide, also) in [
+        (
+            "opensips-sipnab",
+            OPENSIPS_SIPNAB,
+            "(opensips.md)",
+            "script",
+        ),
+        (
+            "kamailio-sipnab",
+            KAMAILIO_SIPNAB,
+            "(kamailio.md)",
+            "no module",
+        ),
+        (
+            "asterisk-sipnab",
+            ASTERISK_SIPNAB,
+            "(asterisk.md)",
+            "`hep.conf`",
+        ),
+        (
+            "freeswitch-sipnab",
+            FREESWITCH_SIPNAB,
+            "(freeswitch.md)",
+            "HEP",
+        ),
+    ] {
+        let needs = one_line(section(doc, "## Before you start")?);
+        for named in ["other system", "root", guide, also] {
+            page_says(&needs, named, page);
+        }
+    }
+    Ok(())
+}
+
+/// The capture of one call through an OpenSIPS proxy: both legs, 13 messages.
+const PROXIED_CALL: &str = "tests/fixtures/opensips-proxy-signaling.pcap";
+
+/// The check of the two proxy pages: sipnab lists a call it saw on both
+/// sides of the proxy once, as `Completed`, with the messages of both legs.
+#[test]
+fn the_proxy_check_lists_the_call_once_as_completed_with_13_messages() -> Result<(), TestError> {
+    for (page, doc) in [
+        ("opensips-sipnab", OPENSIPS_SIPNAB),
+        ("kamailio-sipnab", KAMAILIO_SIPNAB),
+    ] {
+        let check = one_line(section(doc, CHECK)?);
+        for named in ["--report", "`Completed`", "13 messages", "one row"] {
+            page_says(&check, named, page);
+        }
+    }
+    let proxied = capture(PROXIED_CALL)?.display().to_string();
+    let run = sipnab(&["-N", "-I", &proxied, "--report", "--no-cli-print"])?;
+    exited(&run, 0);
+    let report = stdout(&run);
+    let rows: Vec<&str> = report
+        .lines()
+        .filter(|line| line.contains("Completed"))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the call is on one row; the report was:\n{report}"
+    );
+    let cells: Vec<&str> = rows[0].split_whitespace().collect();
+    assert!(
+        cells.contains(&"200") && cells.contains(&"13"),
+        "the row shows code 200 and 13 messages: {}",
+        rows[0]
+    );
+    Ok(())
+}
+
+/// A capture of one call whose SIP is on `sip_port` at both ends, with 20
+/// RTP packets each way on ports 6000 and 7000.
+fn call_on_port(dir: &Path, call_id: &str, sip_port: u16) -> Result<String, TestError> {
+    const CALLER: [u8; 4] = [192, 0, 2, 10];
+    const SERVER: [u8; 4] = [192, 0, 2, 20];
+    let mut frames: Vec<Vec<u8>> = pcap_build::sip_call(call_id, "howto1", "sipp", "echo")
+        .iter()
+        .map(|message| {
+            if message.starts_with("SIP/2.0") {
+                pcap_build::udp_frame(SERVER, CALLER, sip_port, sip_port, message.as_bytes())
+            } else {
+                pcap_build::udp_frame(CALLER, SERVER, sip_port, sip_port, message.as_bytes())
+            }
+        })
+        .collect();
+    for seq in 0u16..20 {
+        for (src, sport, dst, dport, ssrc) in [
+            (CALLER, 6000, SERVER, 7000, 0x1111_2222u32),
+            (SERVER, 7000, CALLER, 6000, 0x3333_4444u32),
+        ] {
+            let mut rtp = vec![0x80, 0x00];
+            rtp.extend_from_slice(&seq.to_be_bytes());
+            rtp.extend_from_slice(&(u32::from(seq) * 160).to_be_bytes());
+            rtp.extend_from_slice(&ssrc.to_be_bytes());
+            rtp.extend_from_slice(&[0xff; 160]);
+            frames.push(pcap_build::udp_frame(src, dst, sport, dport, &rtp));
+        }
+    }
+    let path = dir.join("call.pcap");
+    pcap_build::write_pcap(&path, &frames)?;
+    Ok(path.display().to_string())
+}
+
+/// The first item of three troubleshooting lists: a server on a port outside
+/// 5060-5061 leaves sipnab with the audio and none of the SIP, and sipnab
+/// says so in the line the pages quote with the counts of their own run.
+#[test]
+fn sip_on_another_port_gives_the_line_the_server_pages_quote() -> Result<(), TestError> {
+    let quoted = "No SIP signaling found, but 839 RTP packets across 2 stream(s) were parsed.";
+    for (page, doc) in [
+        ("opensips-sipnab", OPENSIPS_SIPNAB),
+        ("kamailio-sipnab", KAMAILIO_SIPNAB),
+        ("freeswitch-sipnab", FREESWITCH_SIPNAB),
+    ] {
+        let listed = one_line(section(doc, TROUBLESHOOT)?);
+        page_says(&listed, quoted, page);
+        page_says(&listed, "`--portrange", page);
+    }
+    for port in [5062, 5080] {
+        let dir = tempfile::tempdir()?;
+        let path = call_on_port(dir.path(), "howto-port-1@192.0.2.10", port)?;
+        let run = sipnab(&["-N", "-I", &path, "--report", "--no-cli-print"])?;
+        let said = format!("{}{}", stdout(&run), stderr(&run));
+        printed(&said, &quoted.replace("839 RTP packets", "40 RTP packets"));
+        assert!(
+            !said.contains("Completed"),
+            "no call is listed for SIP on port {port}; sipnab printed:\n{said}"
+        );
+    }
+    Ok(())
+}
+
+/// The fix those lists give: with the server's port in `--portrange`, the
+/// same capture lists the call.
+#[test]
+fn the_port_range_flag_lists_the_call_on_another_port() -> Result<(), TestError> {
+    for (port, range) in [(5062, "5060-5062"), (5080, "5060-5080")] {
+        let dir = tempfile::tempdir()?;
+        let path = call_on_port(dir.path(), "howto-port-1@192.0.2.10", port)?;
+        let run = sipnab(&[
+            "-N",
+            "-I",
+            &path,
+            "--portrange",
+            range,
+            "--report",
+            "--no-cli-print",
+        ])?;
+        exited(&run, 0);
+        let report = stdout(&run);
+        printed(&report, "howto-port-1@192.0.2.10");
+        printed(&report, "Completed");
+        assert!(
+            !report.contains("No SIP signaling found"),
+            "with --portrange {range} the SIP on {port} is read; the report was:\n{report}"
+        );
+    }
+    Ok(())
+}
+
+/// The second item of the FreeSWITCH list: reading a file whose SIP is on
+/// 5080 with the default range, sipnab warns that it skips SIP outside the
+/// range, names the port, and does not find the call.
+#[test]
+fn a_file_with_sip_on_5080_gives_the_warning_the_freeswitch_page_quotes() -> Result<(), TestError> {
+    let listed = one_line(section(FREESWITCH_SIPNAB, TROUBLESHOOT)?);
+    let skipped = "SIP outside --portrange 5060-5061 is being skipped";
+    let busiest = "Busiest port(s): 5080";
+    for quoted in [skipped, busiest, "not found in tracked dialogs"] {
+        page_says(&listed, quoted, "freeswitch-sipnab");
+    }
+    let dir = tempfile::tempdir()?;
+    let path = call_on_port(dir.path(), "howto-port-1@192.0.2.10", 5080)?;
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        &path,
+        "--call-report",
+        "howto-port-1@192.0.2.10",
+        "--no-cli-print",
+    ])?;
+    exited(&run, 1);
+    let err = stderr(&run);
+    printed(&err, skipped);
+    printed(&err, busiest);
+    printed(
+        &err,
+        "Call-ID 'howto-port-1@192.0.2.10' not found in tracked dialogs",
+    );
+    Ok(())
+}
+
+/// The check of the two B2BUA pages: the two legs of a call through the
+/// server have a Call-ID each, and the report lists them as two dialogs,
+/// both `Completed`.
+#[test]
+fn the_b2bua_check_lists_the_two_legs_as_two_completed_dialogs() -> Result<(), TestError> {
+    for (page, doc) in [
+        ("asterisk-sipnab", ASTERISK_SIPNAB),
+        ("freeswitch-sipnab", FREESWITCH_SIPNAB),
+    ] {
+        let check = one_line(section(doc, CHECK)?);
+        for named in ["--report", "two", "`Completed`"] {
+            page_says(&check, named, page);
+        }
+    }
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("legs.pcap");
+    let mut frames = pcap_build::sip_call_frames("leg-in@192.0.2.10", "legin", "sipp", "100");
+    frames.extend(pcap_build::sip_call_frames(
+        "leg-out@192.0.2.10",
+        "legout",
+        "sipp",
+        "callee",
+    ));
+    pcap_build::write_pcap(&path, &frames)?;
+    let path = path.display().to_string();
+    let run = sipnab(&["-N", "-I", &path, "--report", "--no-cli-print"])?;
+    exited(&run, 0);
+    let report = stdout(&run);
+    for leg in ["leg-in@192.0.2.10", "leg-out@192.0.2.10"] {
+        let row = report
+            .lines()
+            .find(|line| line.starts_with(leg))
+            .ok_or_else(|| format!("no row for {leg} in:\n{report}"))?;
+        assert!(
+            row.contains("Completed"),
+            "the leg {leg} is Completed: {row}"
+        );
+    }
+    Ok(())
+}
+
+/// The first item of the Asterisk list quotes what sipnab says when the
+/// terminal UI has no terminal. The test harness gives the child none.
+#[cfg(feature = "tui")]
+#[test]
+fn the_asterisk_page_quotes_the_message_of_a_terminal_ui_without_a_terminal()
+-> Result<(), TestError> {
+    let listed = one_line(section(ASTERISK_SIPNAB, TROUBLESHOOT)?);
+    let message = "sipnab: the terminal UI could not start: No such device or address (os error \
+                   6). It needs a terminal; add -N for a run without one.";
+    page_says(&listed, message, "asterisk-sipnab");
+    let run = sipnab(&["-I", SAMPLE_CALL])?;
+    exited(&run, 1);
+    let err = stderr(&run);
+    printed(&err, "sipnab: the terminal UI could not start: ");
+    printed(&err, "It needs a terminal; add -N for a run without one.");
+    if cfg!(target_os = "linux") {
+        printed(&err, message);
+    }
+    Ok(())
+}
+
+/// The second item of the Asterisk list quotes the line a HEP listener that
+/// received nothing ends with.
+#[cfg(all(unix, feature = "hep"))]
+#[test]
+fn a_hep_listener_that_received_nothing_ends_with_the_line_the_asterisk_page_quotes()
+-> Result<(), TestError> {
+    let listed = one_line(section(ASTERISK_SIPNAB, TROUBLESHOOT)?);
+    let quoted = "HEP listener on 127.0.0.1:9060 finished: 0 packets received";
+    page_says(&listed, quoted, "asterisk-sipnab");
+    let done = fake_relay::run_to_exit(&["-L", "127.0.0.1:0", "--duration", "1", "--report"])?;
+    assert_eq!(
+        done.code,
+        Some(0),
+        "the run ends by itself: {}",
+        done.dump()
+    );
+    let line = done
+        .stderr
+        .lines()
+        .find(|line| line.contains("HEP listener on 127.0.0.1:") && line.contains("finished"))
+        .ok_or_else(|| format!("no line for the end of the listener: {}", done.dump()))?;
+    assert!(
+        line.ends_with("finished: 0 packets received"),
+        "the listener received nothing and says so: {line}"
+    );
+    Ok(())
+}
+
+/// The third item of the Asterisk list quotes the body of the REST API's
+/// answer to a request without a key.
+#[cfg(all(unix, feature = "api"))]
+#[test]
+fn a_request_without_a_key_gets_the_401_body_the_asterisk_page_quotes() -> Result<(), TestError> {
+    let listed = one_line(section(ASTERISK_SIPNAB, TROUBLESHOOT)?);
+    let quoted = r#"{"status":401,"title":"Unauthorized","type":"https://sipnab.com/problems/unauthorized"}"#;
+    page_says(&listed, quoted, "asterisk-sipnab");
+    let api =
+        server::ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]).map_err(|e| e.to_string())?;
+    let got = api.get("/v1/dialogs").map_err(|e| e.to_string())?;
+    assert_eq!(got.status, 401, "a request without a key: {}", got.body);
+    assert_eq!(
+        got.body.trim(),
+        quoted,
+        "the body is the one the page quotes"
+    );
+    Ok(())
+}
+
+// ── the install steps of six guides, run again on 2026-11-13 ─────────────
+//
+// The install blocks of opensips, kamailio, asterisk, freeswitch,
+// rtpengine-relay and rtpproxy-relay ran again on 2026-11-13, in Debian 13
+// containers on an arm64 host. A test cannot reach the servers those blocks
+// download from, so each test below holds a page to what that run found.
+
+/// The lines inside the fenced blocks of `doc`.
+fn fenced_lines(doc: &str) -> Vec<&str> {
+    let mut inside = false;
+    let mut lines = Vec::new();
+    for line in doc.lines() {
+        if line.starts_with("```") {
+            inside = !inside;
+        } else if inside {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+/// On 2026-11-13 both downloads of the Asterisk guide answered 404. The
+/// directory `pub/telephony/asterisk/` keeps only the newest release of each
+/// series, and 22.12.0 had replaced 22.11.0 there. Its `releases/` directory
+/// answered 200 for both files.
+#[test]
+fn the_asterisk_guide_downloads_from_the_directory_that_keeps_every_release() {
+    let lines = fenced_lines(ASTERISK);
+    let urls: Vec<&str> = lines
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .filter(|word| word.starts_with("https://downloads.asterisk.org/"))
+        .collect();
+    assert_eq!(
+        urls.len(),
+        2,
+        "the archive and its checksum are the two downloads: {urls:?}"
+    );
+    for url in urls {
+        assert!(
+            url.starts_with(
+                "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-22."
+            ),
+            "{url} is not under releases/, the directory that keeps a release \
+             after the next one is published"
+        );
+    }
+}
+
+/// The rtpproxy project's zip holds packages built for x86_64 only, and the
+/// install of one on an arm64 machine ended with "Unable to satisfy
+/// dependencies". A guide that installs a package file built for one
+/// architecture names that architecture among its prerequisites.
+#[test]
+fn a_guide_that_installs_an_amd64_package_file_asks_for_an_x86_64_machine() -> Result<(), TestError>
+{
+    let relay_start = "## Before you start: your SIP server";
+    let guides = [
+        ("opensips", OPENSIPS, "## Before you start"),
+        ("kamailio", KAMAILIO, "## Before you start"),
+        ("asterisk", ASTERISK, "## Before you start"),
+        ("freeswitch", FREESWITCH, "## Before you start"),
+        ("rtpengine-relay", RTPENGINE_RELAY, relay_start),
+        ("rtpproxy-relay", RTPPROXY_RELAY, relay_start),
+    ];
+    let mut held = Vec::new();
+    for (page, text, heading) in guides {
+        let installs_amd64 = fenced_lines(text)
+            .iter()
+            .any(|line| line.contains("_amd64.deb"));
+        if installs_amd64 {
+            page_says(section(text, heading)?, "x86_64", page);
+            held.push(page);
+        }
+    }
+    assert_eq!(
+        held,
+        ["rtpproxy-relay"],
+        "the guides whose steps name a package file built for amd64"
+    );
+    Ok(())
+}
+
+/// The rtpengine guide builds its packages on the reader's machine. On arm64
+/// the build wrote `ngcp-rtpengine-daemon_<version>_arm64.deb`, and a step
+/// that named the `_amd64.deb` file ended with "Unsupported file". With the
+/// architecture `dpkg` prints in the name, the install passed.
+#[test]
+fn the_guides_that_build_rtpengine_install_the_package_the_build_made_on_this_machine() {
+    for (page, text) in [
+        ("rtpengine-relay", RTPENGINE_RELAY),
+        ("vcon-server", VCON_SERVER),
+    ] {
+        let lines = fenced_lines(text);
+        let installs: Vec<&&str> = lines
+            .iter()
+            .filter(|line| line.contains("./ngcp-rtpengine-daemon_"))
+            .collect();
+        assert_eq!(
+            installs.len(),
+            1,
+            "{page} installs the daemon package it built, once"
+        );
+        for line in installs {
+            assert!(
+                line.contains("_$(dpkg --print-architecture).deb"),
+                "{page} names the daemon package by this machine's architecture: {line}"
+            );
+        }
+    }
+    assert!(
+        !fenced_lines(RTPENGINE_RELAY)
+            .iter()
+            .any(|line| line.contains("_amd64.deb")),
+        "no step of rtpengine-relay names a package file of one architecture"
+    );
+}
+
+/// The OpenSIPS project's repository listed `i386 amd64 all` as its
+/// architectures on 2026-11-13, and `apt-get install opensips` on arm64
+/// answered "Unable to locate package opensips". The source build passed
+/// there.
+#[test]
+fn the_opensips_guide_says_which_machines_its_packages_are_for() -> Result<(), TestError> {
+    let packages = one_line(between(
+        OPENSIPS,
+        "### Install the 4.0 packages",
+        "### Or build master from source",
+    )?);
+    page_says(&packages, "x86_64", "opensips");
+    page_says(&packages, "build master from source", "opensips");
+    let listed = one_line(section(OPENSIPS, TROUBLESHOOT)?);
+    page_says(&listed, "E: Unable to locate package opensips", "opensips");
+    Ok(())
+}
+
+/// What is wrong with the lines of a page's fenced blocks that fetch or
+/// install sipnab's Debian package, or nothing.
+///
+/// Each release carries `sipnab_<version>_amd64.deb` and
+/// `sipnab_<version>_arm64.deb`. A step that names one of them fails on the
+/// other machine. The step sets `A` from `dpkg --print-architecture` and
+/// names `sipnab_${V}_${A}.deb`.
+fn package_step_fault(lines: &[&str]) -> Option<String> {
+    let package: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.contains("sipnab_${V}_"))
+        .collect();
+    if package.is_empty() {
+        return None;
+    }
+    if let Some(line) = package
+        .iter()
+        .find(|line| !line.contains("sipnab_${V}_${A}.deb"))
+    {
+        return Some(format!("names a package of one architecture: {line}"));
+    }
+    if !lines.contains(&"A=$(dpkg --print-architecture)") {
+        return Some("uses ${A} and never sets it from dpkg".to_owned());
+    }
+    None
+}
+
+/// On 2026-11-13 the release 0.5.249 held `.deb` packages for amd64 and
+/// arm64, and the block as it is now installed `sipnab 0.5.249 arm64` in a
+/// Debian 13 container on an arm64 machine. Before, every one of these pages
+/// fetched the amd64 file on any machine.
+#[test]
+fn every_page_beside_sipnab_installs_the_package_for_this_machine() -> Result<(), TestError> {
+    let mut pages = Vec::new();
+    for entry in std::fs::read_dir(repo().join("docs"))? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        if !name.ends_with("-sipnab.md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)?;
+        let lines = fenced_lines(&text);
+        if !lines.iter().any(|line| line.contains("sipnab_${V}_")) {
+            continue;
+        }
+        if let Some(fault) = package_step_fault(&lines) {
+            return Err(format!("docs/{name} {fault}").into());
+        }
+        pages.push(name);
+    }
+    assert!(
+        pages.len() >= 11,
+        "the eleven pages that install sipnab beside another system were read: {pages:?}"
+    );
+    Ok(())
+}
+
+/// The rule refuses a step that names one architecture and a step that uses
+/// `${A}` without setting it, and accepts a page with no package step.
+#[test]
+fn the_package_step_rule_refuses_one_architecture_and_an_unset_name() {
+    let fetch_amd64 = "curl -fsSLO https://example.com/v$V/sipnab_${V}_amd64.deb";
+    let fetch = "curl -fsSLO https://example.com/v$V/sipnab_${V}_${A}.deb";
+    let set = "A=$(dpkg --print-architecture)";
+    assert!(
+        package_step_fault(&[set, fetch_amd64]).is_some_and(|fault| fault.contains("_amd64.deb")),
+        "a step that names the amd64 file is refused"
+    );
+    assert_eq!(
+        package_step_fault(&[fetch]),
+        Some("uses ${A} and never sets it from dpkg".to_owned()),
+        "a step that never sets A is refused"
+    );
+    assert_eq!(
+        package_step_fault(&[set, fetch]),
+        None,
+        "the step the pages carry is accepted"
+    );
+    assert_eq!(
+        package_step_fault(&["sipnab --version"]),
+        None,
+        "a page with no package step is accepted"
+    );
 }

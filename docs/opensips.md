@@ -21,6 +21,18 @@ This guide does not use sipnab. When you have this working, [Run sipnab beside
 OpenSIPS](opensips-sipnab.md) adds sipnab. If you use Kamailio instead, see
 [Use Kamailio as your voice stack's SIP server](kamailio.md).
 
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages and the source the
+  steps download.
+- **UDP ports 5060, 5070 and 5080 free on it.** OpenSIPS takes 5060, and the
+  test callee and caller take the other two.
+- **No other system changes.** OpenSIPS, the test caller and the test callee
+  run on this one machine. Phones and carriers reach it only when you point
+  them at its address, which this guide does not do.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01.
@@ -38,6 +50,13 @@ Every block on this page ran as written, in order, on 2026-10-01.
 - Every test call carried audio both ways, counted on the wire.
 - Causing each fault under [When something does not
   work](#when-something-does-not-work) produced the message it quotes, on both.
+- On 2026-11-13 the install blocks ran again, in a Debian 13 container on an
+  arm64 machine:
+  - The repository block installed `opensips-cli`.
+  - The package block ended with `E: Unable to locate package opensips`.
+  - The source build printed `version: opensips 4.1.0-dev (aarch64/linux)`.
+  - The container has no systemd, so the block that adds the unit stopped at
+    `systemctl`.
 
 | Software | Version or commit |
 |---|---|
@@ -77,6 +96,10 @@ sudo apt-get install -y opensips-cli
 ```
 
 ### Install the 4.0 packages
+
+The OpenSIPS project builds its packages for x86_64 and 32-bit x86 machines.
+On 2026-11-13 its repository listed no other architecture. On an arm64
+machine, [build master from source](#or-build-master-from-source) instead.
 
 ```bash
 # Run all of these, in order.
@@ -283,14 +306,24 @@ sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd=
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
 sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -trace_msg -message_file uas.msg -bg
 sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
-awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
 ```
 
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 
 - It sends about 7 seconds of audio, then a short DTMF clip, and hangs up.
 - At the end, SIPp's statistics screen shows `Successful call` at 1.
-- The last line prints the `Record-Route` OpenSIPS added.
+
+### Check that the call went through OpenSIPS
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
+```
+
+The command prints the `Record-Route` OpenSIPS added to the `INVITE` the
+callee received. An `INVITE` that did not pass through OpenSIPS has none, and
+the command prints nothing.
 
 OpenSIPS carries the signaling only. The audio goes straight between the two
 ends, at the addresses and ports their SDP names. So this proxy never touches
@@ -381,6 +414,12 @@ share a machine as long as they do not share a port.
   - Another package tool holds the lock. On a machine that has just booted,
     this is usually the system's own scheduled update.
   - Wait for it to finish, then run the block again.
+- **`apt-get install -y opensips` says `E: Unable to locate package
+  opensips`.**
+  - `dpkg --print-architecture` shows what the machine is. The OpenSIPS
+    project's repository has packages for `amd64` and `i386` only.
+  - On any other machine,
+    [build master from source](#or-build-master-from-source).
 - **`opensips -C` reports `could not open module <signaling.so>`.**
   - The `mpath` line is missing or names the wrong directory.
   - OpenSIPS does not fall back to its own module directory without it.

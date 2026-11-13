@@ -38,6 +38,18 @@ This guide does the following:
 This guide does not use sipnab. When you have this working, [Run sipnab beside
 FreeSWITCH](@/docs/freeswitch-sipnab.md) adds sipnab.
 
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages and the source the
+  steps download.
+- **UDP ports 5060, 5070, 5080 and 5090 free on it.** FreeSWITCH holds 5060
+  and 5080, and the test callee and caller take the other two.
+- **No other system changes.** FreeSWITCH, the test caller and the test
+  callee run on this one machine. Phones and carriers reach it only when you
+  point them at its address, which this guide does not do.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-12.
@@ -53,6 +65,9 @@ Every block on this page ran as written, in order, on 2026-10-12.
 - Every test call carried audio both ways on both legs, counted on the wire.
 - Causing each fault under [When something does not
   work](#when-something-does-not-work) produced the message it quotes, on both.
+- On 2026-11-13 the four install blocks ran again, in a Debian 13 container on
+  an arm64 machine. They printed the candidates `1.12.11` and `0.0.6`, the
+  status `401`, the versions `1.13.18` and `3.1.1`, and `1.11.3-release`.
 
 | Software | Version |
 |---|---|
@@ -339,9 +354,9 @@ Each leg has its own audio.
 [Run sipnab beside
 FreeSWITCH](@/docs/freeswitch-sipnab.md) shows all four streams.
 
-## Operate it
+### Check that a call has two legs
 
-**See a call's two legs while it is up.** FreeSWITCH calls each leg a
+FreeSWITCH calls each leg a
 channel. Start a call in the background and list the channels:
 
 ```bash
@@ -362,6 +377,8 @@ outbound sofia/external/echo@127.0.0.1:5070 PCMU
 - The `inbound` channel is the caller's leg, in PCMA.
 - The `outbound` one is the callee's, in PCMU.
 - The last line waits for the call to end.
+
+## Operate it
 
 **Check health and read the logs.**
 

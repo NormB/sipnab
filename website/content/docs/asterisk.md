@@ -34,6 +34,18 @@ This guide does the following:
 This guide does not use sipnab. When you have this working,
 [Run sipnab beside Asterisk](@/docs/asterisk-sipnab.md) adds sipnab.
 
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages and the source the
+  steps download.
+- **UDP ports 5060, 5070 and 5080 free on it.** Asterisk takes 5060, and the
+  test callee and caller take the other two.
+- **No other system changes.** Asterisk, the test caller and the test callee
+  run on this one machine. Phones and carriers reach it only when you point
+  them at its address, which this guide does not do.
+
 ## Tested on
 
 Every block on this page ran as written on 2026-10-12.
@@ -49,6 +61,8 @@ Every block on this page ran as written on 2026-10-12.
 - Causing each fault under
   [When something does not work](#when-something-does-not-work) produced what
   it describes, on both.
+- On 2026-11-13 the install block ran again, in a Debian 13 container on an
+  arm64 machine. It printed `Asterisk 22.11.0`.
 
 | Software | Version |
 |---|---|
@@ -76,8 +90,8 @@ sudo apt-get install -y --no-install-recommends build-essential curl ca-certific
   libedit-dev libjansson-dev libxml2-dev uuid-dev libsqlite3-dev libssl-dev
 sudo mkdir -p /usr/local/src/voice && sudo chown "$USER": /usr/local/src/voice
 cd /usr/local/src/voice
-curl -fsSLO https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-22.11.0.tar.gz
-curl -fsSL https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-22.11.0.sha256 | sha256sum -c -
+curl -fsSLO https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-22.11.0.tar.gz
+curl -fsSL https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-22.11.0.sha256 | sha256sum -c -
 tar xzf asterisk-22.11.0.tar.gz
 cd asterisk-22.11.0
 ./configure
@@ -86,6 +100,10 @@ sudo make install
 sudo asterisk -V
 ```
 
+- Both downloads come from the server's `releases` directory, which keeps
+  every release.
+  - The directory above it keeps only the newest release of each series.
+  - On 2026-11-13 it held 22.12.0, and it answered 404 for 22.11.0.
 - `sha256sum -c` prints `asterisk-22.11.0.tar.gz: OK`.
   - The checksum file comes from the same server as the source.
   - So it detects a damaged download, not a replaced one.
@@ -284,6 +302,15 @@ sudo sipp -sn uac_pcap 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s 100 -m 1 -timeou
 - The caller sends about 7 seconds of audio, then a short DTMF clip, and hangs
   up.
 - At the end SIPp's statistics screen shows `Successful call` at 1.
+
+### Check that Asterisk handled the call
+
+```bash
+sudo asterisk -rx 'core show calls'
+```
+
+Once the test call has ended, the command prints `0 active calls` and a
+`calls processed` count.
 
 Unlike a proxy, Asterisk carries the audio as well as the signaling.
 
