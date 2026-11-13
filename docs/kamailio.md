@@ -42,6 +42,9 @@ Every block on this page ran as written on 2026-10-01.
 - Causing each fault under [When
   something does not work](#when-something-does-not-work) produced what it
   describes, on both.
+- On 2026-11-13 the install block ran again, in a Debian 13 container on an
+  arm64 machine. The key's fingerprint matched, the package did not start
+  Kamailio, and the repository's release was then 6.1.5.
 
 | Software | Version |
 |---|---|

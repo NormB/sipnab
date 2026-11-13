@@ -1839,7 +1839,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2642 -> 2647 (DOCS-HOWTO-GAP, eighth batch, +5): the prerequisites of
     // opensips-sipnab.md +2, kamailio-sipnab.md +1, asterisk-sipnab.md +1 and
     // freeswitch-sipnab.md +1.
-    const EXPECTED_WIKI_LINKS: usize = 2647;
+    // 2647 -> 2649 (install steps run again, +2): opensips.md links its source
+    // build from "Install the 4.0 packages" and from its troubleshooting entry
+    // for a machine the packages are not built for.
+    const EXPECTED_WIKI_LINKS: usize = 2649;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

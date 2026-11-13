@@ -50,6 +50,13 @@ Every block on this page ran as written, in order, on 2026-10-01.
 - Every test call carried audio both ways, counted on the wire.
 - Causing each fault under [When something does not
   work](#when-something-does-not-work) produced the message it quotes, on both.
+- On 2026-11-13 the install blocks ran again, in a Debian 13 container on an
+  arm64 machine:
+  - The repository block installed `opensips-cli`.
+  - The package block ended with `E: Unable to locate package opensips`.
+  - The source build printed `version: opensips 4.1.0-dev (aarch64/linux)`.
+  - The container has no systemd, so the block that adds the unit stopped at
+    `systemctl`.
 
 | Software | Version or commit |
 |---|---|
@@ -89,6 +96,10 @@ sudo apt-get install -y opensips-cli
 ```
 
 ### Install the 4.0 packages
+
+The OpenSIPS project builds its packages for x86_64 and 32-bit x86 machines.
+On 2026-11-13 its repository listed no other architecture. On an arm64
+machine, [build master from source](#or-build-master-from-source) instead.
 
 ```bash
 # Run all of these, in order.
@@ -403,6 +414,12 @@ share a machine as long as they do not share a port.
   - Another package tool holds the lock. On a machine that has just booted,
     this is usually the system's own scheduled update.
   - Wait for it to finish, then run the block again.
+- **`apt-get install -y opensips` says `E: Unable to locate package
+  opensips`.**
+  - `dpkg --print-architecture` shows what the machine is. The OpenSIPS
+    project's repository has packages for `amd64` and `i386` only.
+  - On any other machine,
+    [build master from source](#or-build-master-from-source).
 - **`opensips -C` reports `could not open module <signaling.so>`.**
   - The `mpath` line is missing or names the wrong directory.
   - OpenSIPS does not fall back to its own module directory without it.

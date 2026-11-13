@@ -57,6 +57,9 @@ Every block on this page ran as written, in order, on 2026-10-12.
 - Every test call carried audio both ways on both legs, counted on the wire.
 - Causing each fault under [When something does not
   work](#when-something-does-not-work) produced the message it quotes, on both.
+- On 2026-11-13 the four install blocks ran again, in a Debian 13 container on
+  an arm64 machine. They printed the candidates `1.12.11` and `0.0.6`, the
+  status `401`, the versions `1.13.18` and `3.1.1`, and `1.11.3-release`.
 
 | Software | Version |
 |---|---|

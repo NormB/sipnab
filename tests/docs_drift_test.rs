@@ -2210,6 +2210,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/vcon-server.md",
             "website/content/docs/vcon-server.md",
+            "docs/rtpengine-relay.md",
+            "website/content/docs/rtpengine-relay.md",
+            "docs/opensips.md",
+            "website/content/docs/opensips.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
             "docs/prometheus.md",

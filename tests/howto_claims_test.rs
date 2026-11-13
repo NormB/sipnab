@@ -5542,3 +5542,139 @@ fn a_request_without_a_key_gets_the_401_body_the_asterisk_page_quotes() -> Resul
     );
     Ok(())
 }
+
+// ── the install steps of six guides, run again on 2026-11-13 ─────────────
+//
+// The install blocks of opensips, kamailio, asterisk, freeswitch,
+// rtpengine-relay and rtpproxy-relay ran again on 2026-11-13, in Debian 13
+// containers on an arm64 host. A test cannot reach the servers those blocks
+// download from, so each test below holds a page to what that run found.
+
+/// The lines inside the fenced blocks of `doc`.
+fn fenced_lines(doc: &str) -> Vec<&str> {
+    let mut inside = false;
+    let mut lines = Vec::new();
+    for line in doc.lines() {
+        if line.starts_with("```") {
+            inside = !inside;
+        } else if inside {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+/// On 2026-11-13 both downloads of the Asterisk guide answered 404. The
+/// directory `pub/telephony/asterisk/` keeps only the newest release of each
+/// series, and 22.12.0 had replaced 22.11.0 there. Its `releases/` directory
+/// answered 200 for both files.
+#[test]
+fn the_asterisk_guide_downloads_from_the_directory_that_keeps_every_release() {
+    let lines = fenced_lines(ASTERISK);
+    let urls: Vec<&str> = lines
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .filter(|word| word.starts_with("https://downloads.asterisk.org/"))
+        .collect();
+    assert_eq!(
+        urls.len(),
+        2,
+        "the archive and its checksum are the two downloads: {urls:?}"
+    );
+    for url in urls {
+        assert!(
+            url.starts_with(
+                "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-22."
+            ),
+            "{url} is not under releases/, the directory that keeps a release \
+             after the next one is published"
+        );
+    }
+}
+
+/// The rtpproxy project's zip holds packages built for x86_64 only, and the
+/// install of one on an arm64 machine ended with "Unable to satisfy
+/// dependencies". A guide that installs a package file built for one
+/// architecture names that architecture among its prerequisites.
+#[test]
+fn a_guide_that_installs_an_amd64_package_file_asks_for_an_x86_64_machine() -> Result<(), TestError>
+{
+    let relay_start = "## Before you start: your SIP server";
+    let guides = [
+        ("opensips", OPENSIPS, "## Before you start"),
+        ("kamailio", KAMAILIO, "## Before you start"),
+        ("asterisk", ASTERISK, "## Before you start"),
+        ("freeswitch", FREESWITCH, "## Before you start"),
+        ("rtpengine-relay", RTPENGINE_RELAY, relay_start),
+        ("rtpproxy-relay", RTPPROXY_RELAY, relay_start),
+    ];
+    let mut held = Vec::new();
+    for (page, text, heading) in guides {
+        let installs_amd64 = fenced_lines(text)
+            .iter()
+            .any(|line| line.contains("_amd64.deb"));
+        if installs_amd64 {
+            page_says(section(text, heading)?, "x86_64", page);
+            held.push(page);
+        }
+    }
+    assert_eq!(
+        held,
+        ["rtpproxy-relay"],
+        "the guides whose steps name a package file built for amd64"
+    );
+    Ok(())
+}
+
+/// The rtpengine guide builds its packages on the reader's machine. On arm64
+/// the build wrote `ngcp-rtpengine-daemon_<version>_arm64.deb`, and a step
+/// that named the `_amd64.deb` file ended with "Unsupported file". With the
+/// architecture `dpkg` prints in the name, the install passed.
+#[test]
+fn the_guides_that_build_rtpengine_install_the_package_the_build_made_on_this_machine() {
+    for (page, text) in [
+        ("rtpengine-relay", RTPENGINE_RELAY),
+        ("vcon-server", VCON_SERVER),
+    ] {
+        let lines = fenced_lines(text);
+        let installs: Vec<&&str> = lines
+            .iter()
+            .filter(|line| line.contains("./ngcp-rtpengine-daemon_"))
+            .collect();
+        assert_eq!(
+            installs.len(),
+            1,
+            "{page} installs the daemon package it built, once"
+        );
+        for line in installs {
+            assert!(
+                line.contains("_$(dpkg --print-architecture).deb"),
+                "{page} names the daemon package by this machine's architecture: {line}"
+            );
+        }
+    }
+    assert!(
+        !fenced_lines(RTPENGINE_RELAY)
+            .iter()
+            .any(|line| line.contains("_amd64.deb")),
+        "no step of rtpengine-relay names a package file of one architecture"
+    );
+}
+
+/// The OpenSIPS project's repository listed `i386 amd64 all` as its
+/// architectures on 2026-11-13, and `apt-get install opensips` on arm64
+/// answered "Unable to locate package opensips". The source build passed
+/// there.
+#[test]
+fn the_opensips_guide_says_which_machines_its_packages_are_for() -> Result<(), TestError> {
+    let packages = one_line(between(
+        OPENSIPS,
+        "### Install the 4.0 packages",
+        "### Or build master from source",
+    )?);
+    page_says(&packages, "x86_64", "opensips");
+    page_says(&packages, "build master from source", "opensips");
+    let listed = one_line(section(OPENSIPS, TROUBLESHOOT)?);
+    page_says(&listed, "E: Unable to locate package opensips", "opensips");
+    Ok(())
+}

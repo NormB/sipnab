@@ -65803,9 +65803,12 @@ git checkout 8da4be3355
 sudo mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 dpkg-buildpackage -us -uc -b -j2
 cd ..
-sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_amd64.deb \
+sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_$(dpkg --print-architecture).deb \
   ./ngcp-rtpengine-utils_26.3.0.0+0~mr26.3.0.0_all.deb
 ```
+
+The build names the daemon's package after the machine's architecture, which
+`dpkg --print-architecture` prints.
 
 The package's configuration asks for rtpengine's kernel forwarding module. This
 guide does not install that module. Tell rtpengine to forward in userspace, and
@@ -68273,6 +68276,11 @@ On each machine, it ran:
 On Debian 13, on 2026-09-28, causing each fault under [When something does
 not work](#when-something-does-not-work) produced what it describes.
 
+On 2026-11-13 the Build rtpengine block ran again, in a Debian 13 container
+on an arm64 machine. The build and its test suite passed, and the block
+installed `ngcp-rtpengine-daemon` 26.3.0.0 for `arm64`. No other block ran
+there.
+
 The commands pin the components to the versions below. Newer commits may
 behave differently. Pinning them keeps the guide describing what you get.
 
@@ -68345,9 +68353,13 @@ git checkout 8da4be3355
 sudo mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 dpkg-buildpackage -us -uc -b -j2
 cd ..
-sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_amd64.deb \
+sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_$(dpkg --print-architecture).deb \
   ./ngcp-rtpengine-utils_26.3.0.0+0~mr26.3.0.0_all.deb
 ```
+
+The build names the daemon's package after the machine's architecture, which
+`dpkg --print-architecture` prints: `amd64` on an x86_64 machine, `arm64` on
+an arm64 one.
 
 The package's configuration asks for rtpengine's kernel forwarding module.
 This guide does not install that module. Tell rtpengine to forward in
@@ -69354,7 +69366,12 @@ proxy. It read rtpproxy's own counters:
 
 On both systems, causing each fault under
 [When something does not work](#when-something-does-not-work) produced what it
-describes. arm64 was not tested.
+describes.
+
+On 2026-11-13 the Install rtpproxy block ran again, in a Debian 13 container
+on an arm64 machine. The download matched its digest. The zip held packages
+for `amd64` only, and `apt-get` ended with `Unable to satisfy dependencies`.
+No other block ran there.
 
 The commands pin the components to the versions below. Newer ones may behave
 differently. Pinning them keeps the guide describing what you get.
@@ -69371,6 +69388,9 @@ The examples use `192.0.2.10` as the machine's address. Replace it with yours
 everywhere it appears.
 
 ## Before you start: your SIP server
+
+This guide needs an x86_64 machine. The rtpproxy project's 3.2.0 packages are
+for `amd64` only.
 
 Find your case, and follow the steps it names:
 
@@ -74575,6 +74595,13 @@ Every block on this page ran as written, in order, on 2026-10-01.
 - Every test call carried audio both ways, counted on the wire.
 - Causing each fault under [When something does not
   work](#when-something-does-not-work) produced the message it quotes, on both.
+- On 2026-11-13 the install blocks ran again, in a Debian 13 container on an
+  arm64 machine:
+  - The repository block installed `opensips-cli`.
+  - The package block ended with `E: Unable to locate package opensips`.
+  - The source build printed `version: opensips 4.1.0-dev (aarch64/linux)`.
+  - The container has no systemd, so the block that adds the unit stopped at
+    `systemctl`.
 
 | Software | Version or commit |
 |---|---|
@@ -74614,6 +74641,10 @@ sudo apt-get install -y opensips-cli
 ```
 
 ### Install the 4.0 packages
+
+The OpenSIPS project builds its packages for x86_64 and 32-bit x86 machines.
+On 2026-11-13 its repository listed no other architecture. On an arm64
+machine, [build master from source](#or-build-master-from-source) instead.
 
 ```bash
 # Run all of these, in order.
@@ -74928,6 +74959,12 @@ share a machine as long as they do not share a port.
   - Another package tool holds the lock. On a machine that has just booted,
     this is usually the system's own scheduled update.
   - Wait for it to finish, then run the block again.
+- **`apt-get install -y opensips` says `E: Unable to locate package
+  opensips`.**
+  - `dpkg --print-architecture` shows what the machine is. The OpenSIPS
+    project's repository has packages for `amd64` and `i386` only.
+  - On any other machine,
+    [build master from source](#or-build-master-from-source).
 - **`opensips -C` reports `could not open module <signaling.so>`.**
   - The `mpath` line is missing or names the wrong directory.
   - OpenSIPS does not fall back to its own module directory without it.
@@ -75694,6 +75731,9 @@ Every block on this page ran as written on 2026-10-01.
 - Causing each fault under [When
   something does not work](#when-something-does-not-work) produced what it
   describes, on both.
+- On 2026-11-13 the install block ran again, in a Debian 13 container on an
+  arm64 machine. The key's fingerprint matched, the package did not start
+  Kamailio, and the repository's release was then 6.1.5.
 
 | Software | Version |
 |---|---|
@@ -76217,6 +76257,8 @@ Every block on this page ran as written on 2026-10-12.
 - Causing each fault under
   [When something does not work](#when-something-does-not-work) produced what
   it describes, on both.
+- On 2026-11-13 the install block ran again, in a Debian 13 container on an
+  arm64 machine. It printed `Asterisk 22.11.0`.
 
 | Software | Version |
 |---|---|
@@ -76244,8 +76286,8 @@ sudo apt-get install -y --no-install-recommends build-essential curl ca-certific
   libedit-dev libjansson-dev libxml2-dev uuid-dev libsqlite3-dev libssl-dev
 sudo mkdir -p /usr/local/src/voice && sudo chown "$USER": /usr/local/src/voice
 cd /usr/local/src/voice
-curl -fsSLO https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-22.11.0.tar.gz
-curl -fsSL https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-22.11.0.sha256 | sha256sum -c -
+curl -fsSLO https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-22.11.0.tar.gz
+curl -fsSL https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-22.11.0.sha256 | sha256sum -c -
 tar xzf asterisk-22.11.0.tar.gz
 cd asterisk-22.11.0
 ./configure
@@ -76254,6 +76296,10 @@ sudo make install
 sudo asterisk -V
 ```
 
+- Both downloads come from the server's `releases` directory, which keeps
+  every release.
+  - The directory above it keeps only the newest release of each series.
+  - On 2026-11-13 it held 22.12.0, and it answered 404 for 22.11.0.
 - `sha256sum -c` prints `asterisk-22.11.0.tar.gz: OK`.
   - The checksum file comes from the same server as the source.
   - So it detects a damaged download, not a replaced one.
@@ -77100,6 +77146,9 @@ Every block on this page ran as written, in order, on 2026-10-12.
 - Every test call carried audio both ways on both legs, counted on the wire.
 - Causing each fault under [When something does not
   work](#when-something-does-not-work) produced the message it quotes, on both.
+- On 2026-11-13 the four install blocks ran again, in a Debian 13 container on
+  an arm64 machine. They printed the candidates `1.12.11` and `0.0.6`, the
+  status `401`, the versions `1.13.18` and `3.1.1`, and `1.11.3-release`.
 
 | Software | Version |
 |---|---|
