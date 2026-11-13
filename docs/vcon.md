@@ -77,8 +77,10 @@ So sipnab emits **observer** vCons.
 ## Before you start
 
 - **A sipnab binary that carries the `vcon` feature.**
-  - The release packages without a `-noaudio` suffix carry it.
-  - The `-noaudio` packages and the static musl build do not carry it.
+  - The release packages carry it.
+  - The `-noaudio` packages carry it from 0.5.252.
+    Their recordings are WAV: they have no `opus` feature.
+  - The static musl build does not carry it.
   - A default source build does not carry it.
   - [Check that the binary carries the export](#check-that-the-binary-carries-the-export)
     shows how to tell.
@@ -379,7 +381,8 @@ Which builds carry it:
 
 - `opus` is its own Cargo feature, in `full`. It compiles libopus from source, which needs `cmake` and a C compiler.
 - The gnu tarballs and packages, the macOS tarballs and the Docker image carry it.
-- The static musl tarballs and the `-noaudio` packages do not. They have no vCon export.
+- The `-noaudio` packages carry the vCon export without `opus`: their recordings are WAV, and they refuse `audio_format = "opus"`.
+- The static musl tarballs carry neither. They have no vCon export.
 - `sipnab --version` lists `opus` when the binary carries it.
 - A build without it refuses `audio_format = "opus"` at startup and names the feature.
 
@@ -4543,7 +4546,7 @@ subdomain of it.
 
 | Symptom | Likely cause |
 |---|---|
-| `--export-vcon needs the 'vcon' Cargo feature, which this build does not carry.`, exit 2 | The binary has no `vcon` feature. Install a release package without the `-noaudio` suffix, or build from source with the `vcon` feature |
+| `--export-vcon needs the 'vcon' Cargo feature, which this build does not carry.`, exit 2 | The binary has no `vcon` feature. A `-noaudio` package older than 0.5.252 and the static musl tarball do not have it. Install a current release package, or build from source with the `vcon` feature |
 | `Call-ID 'nope@example.com' not found in tracked dialogs, so there is no dialog to export.`, exit 1 | The capture holds no call with that Call-ID. Run with `--report` to list the Call-IDs it holds |
 | `error: the following required arguments were not provided:` and `--export-vcon <CALL-ID>`, exit 2 | `--vcon-out` needs `--export-vcon` with the Call-ID |
 | `error: the following required arguments were not provided:` and `--export-vcon-dir <DIR>`, exit 2 | `--export-vcon-when` needs `--export-vcon-dir` with the directory to write to |

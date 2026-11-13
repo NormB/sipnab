@@ -1846,7 +1846,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // of the history store".
     // 2649 -> 2650 (MACOS-JOBS-NOT-ACQUIRED-TURN-RUNS-RED, +1):
     // build-ci-release.md's workflow row links "A job no runner took".
-    const EXPECTED_WIKI_LINKS: usize = 2650;
+    // 2650 -> 2652 (NOAUDIO-PACKAGES-LACK-VCON, +2): install.md's .deb and
+    // .rpm sections link the vCon page where they say the -noaudio package
+    // carries the export.
+    const EXPECTED_WIKI_LINKS: usize = 2652;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

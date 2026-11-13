@@ -145,7 +145,7 @@
         <h3 class="metric-name"><a class="metric-std" href="https://datatracker.ietf.org/doc/draft-ietf-vcon-vcon-core/" target="_blank" rel="noopener noreferrer">draft-ietf-vcon-vcon-core</a></h3>
         <p class="metric-topic">Virtualized Conversation</p>
         <ul class="metric-list">
-          <li><strong>Export</strong> &mdash; one observed dialog as a vCon container: the parties, the SIP ladder, a diagnosis of the call and what the capture missed. Needs the <code>vcon</code> feature, which the gnu and macOS builds carry. The static musl builds and the gnu no-audio packages do not carry it.</li>
+          <li><strong>Export</strong> &mdash; one observed dialog as a vCon container: the parties, the SIP ladder, a diagnosis of the call and what the capture missed. Needs the <code>vcon</code> feature, which the gnu and macOS builds carry, the gnu no-audio packages among them. The static musl builds do not carry it.</li>
           <li><strong>Audio inline</strong> &mdash; RTP the run retained travels inside the container as a <code>recording</code> Dialog Object with a <code>sha512</code> content hash.</li>
         </ul>
       </div>

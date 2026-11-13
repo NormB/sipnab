@@ -526,9 +526,9 @@ fn musl_feature_set() -> Result<BTreeSet<String>, TestError> {
     let wf = read(".github/workflows/release.yml")?;
     let line = wf
         .lines()
-        .find(|l| l.trim_start().starts_with("noaudio_set="))
+        .find(|l| l.trim_start().starts_with("static_set="))
         .ok_or(
-            "no `noaudio_set=` assignment in .github/workflows/release.yml — \
+            "no `static_set=` assignment in .github/workflows/release.yml — \
              the musl feature set is computed some other way now and this \
              gate reads nothing",
         )?;
@@ -1505,14 +1505,29 @@ fn the_prometheus_capability_names_the_call_series() -> Result<(), TestError> {
 #[test]
 fn the_plugins_capability_names_the_no_audio_packages() -> Result<(), TestError> {
     let release = read(".github/workflows/release.yml")?;
-    let noaudio = release
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("noaudio_set=\""))
-        .and_then(|s| s.strip_suffix('"'))
-        .ok_or("release.yml has no noaudio_set line")?;
+    // The no-audio set is the static set, by reference, and what the gnu
+    // packages add to it: neither line may name `plugins`.
+    let set = |name: &str| -> Result<&str, TestError> {
+        let prefix = format!("{name}=\"");
+        release
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(prefix.as_str()))
+            .and_then(|s| s.strip_suffix('"'))
+            .ok_or_else(|| format!("release.yml has no {name} line").into())
+    };
+    let noaudio = set("noaudio_set")?;
+    let fixed = set("static_set")?;
     assert!(
-        !noaudio.split(',').any(|f| f == "plugins"),
-        "the no-audio set now carries plugins ({noaudio}); this test's premise is gone"
+        noaudio.split(',').any(|f| f == "${static_set}"),
+        "the no-audio set no longer holds the static set by reference ({noaudio}); \
+         read it the way release.yml now builds it"
+    );
+    assert!(
+        !noaudio
+            .split(',')
+            .chain(fixed.split(','))
+            .any(|f| f == "plugins"),
+        "the no-audio set now carries plugins ({noaudio}; {fixed}); this test's premise is gone"
     );
     let section = capabilities_section(&strip_comments(&homepage()?)?)?;
     let row = enclosing_block(&section, "WASM plugins")?;

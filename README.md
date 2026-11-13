@@ -354,7 +354,8 @@ Next:
   - `--vcon-forward`, a separate process, delivers them to a vCon store. Two
     examples are vcon.store and a self-hosted conserver.
     - It needs the `vcon` feature. The gnu and macOS builds carry it.
-    - The static musl builds and the gnu `-noaudio` packages do not.
+    - The gnu `-noaudio` packages carry it from 0.5.252.
+    - The static musl builds do not.
   - `--vcon-forward-kind vcon-store` adds vcon.store's ingest path and header.
     - It changes only the copy it sends.
     - The reason: vcon.store's validator rejects the string-array `extensions`
@@ -521,7 +522,7 @@ These are step-by-step guides.
   - sipnab can send its own vCons, built from what it saw on the wire.
   - The command `sipnab --vcon-forward` delivers them, to the server or to
     vcon.store. It needs the `vcon` feature, which the static musl builds
-    and the gnu `-noaudio` packages do not carry.
+    do not carry.
   - [Use a vCon server](docs/vcon-server.md),
     [run sipnab beside it](docs/vcon-sipnab.md),
     [send to vcon.store](docs/vcon-store.md)

@@ -173,12 +173,12 @@ Substitute the release version for `<version>` throughout.
 |---|---|---|---|
 | `sipnab_<version>_amd64.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
 | `sipnab_<version>_arm64.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
-| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center) |
-| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center) |
+| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.252, with WAV recordings |
+| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.252, with WAV recordings |
 | `sipnab-<version>-1.x86_64.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
 | `sipnab-<version>-1.aarch64.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
-| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center) |
-| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, vCon export, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center) |
+| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.252, with WAV recordings |
+| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.252, with WAV recordings |
 | `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings, eBPF uprobe backend or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center) |
 | `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings, eBPF uprobe backend or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center) |
 | `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
@@ -538,9 +538,11 @@ Each release publishes a standard package and a **`-noaudio`** package.
 
 - The `-noaudio` package has no audio plugin and no ALSA dependency.
   - It has no live audio playback in the TUI.
-  - It also lacks four features of the standard package: WASM plugins,
-    vCon export, Ogg Opus recordings and the fleet history store.
+  - It also lacks three features of the standard package: WASM plugins,
+    Ogg Opus recordings and the fleet history store.
     `sipnab --version` lists the features of a binary.
+  - It carries the vCon export from 0.5.252, with WAV recordings
+    ([Export a call as a vCon](@/docs/vcon.md)).
   - WAV export (`--export-audio`) works as in the standard package.
 - From 0.5.233 the standard package ships the plugin and *recommends*
   `libasound2`. Releases from 0.5.118 to 0.5.232 did neither, so in those
@@ -589,8 +591,10 @@ standard and a `-noaudio` variant.
 - The no-audio variant has no audio plugin and no `alsa-lib` weak
   dependency.
   - It has no live audio playback in the TUI.
-  - It also lacks WASM plugins, vCon export, Ogg Opus recordings and the
+  - It also lacks WASM plugins, Ogg Opus recordings and the
     fleet history store.
+  - It carries the vCon export from 0.5.252, with WAV recordings
+    ([Export a call as a vCon](@/docs/vcon.md)).
 - It is for headless servers, mirroring the `.deb` variants.
 
 Download the package for your architecture and variant from the

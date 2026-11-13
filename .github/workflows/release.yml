@@ -262,11 +262,18 @@ jobs:
         id: features
         shell: bash
         run: |
-          # No-audio set = `full` minus `audio`, `opus`, `plugins` and `vcon`,
-          # and NO_AUDIO_EXCLUSIONS in tests/release_pipeline_gate_test.rs names
-          # the same four: a feature added to `full` fails that gate until it is
-          # added here or excluded there with a reason. `archive` (ZIP and 7z
-          # input, archive passwords) is pure Rust and ships here too.
+          # Static set (musl) = `full` minus `audio`, `fleet-store`, `opus`,
+          # `plugins` and `vcon`, and MUSL_EXCLUSIONS in
+          # tests/release_pipeline_gate_test.rs names the same five: a feature
+          # added to `full` fails that gate until it is added here or excluded
+          # there with a reason. `archive` (ZIP and 7z input, archive
+          # passwords) is pure Rust and ships here too.
+          # No-audio set (the gnu `-noaudio` .deb and .rpm) = the static set
+          # plus `vcon` (decided 2026-11-13; GNU_NOAUDIO_EXCLUSIONS in the same
+          # test file). Those packages have no size ceiling. The static set
+          # stays without `vcon`: it added 1,508,928 bytes to an aarch64 gnu
+          # build of this set, and the x86_64 musl binary of 0.5.249 had
+          # 857,472 bytes under its ceiling.
           # musl is ALWAYS no-audio, and not as a preference: the playback
           # plugin is loaded with dlopen, and static musl has no dynamic loader — dlopen returns NULL with
           # "Dynamic loading not supported". Compiling `audio` in would produce
@@ -276,11 +283,12 @@ jobs:
           # plugin, but only runs on musl hosts, so it is not what these
           # portable tarballs are for. The gnu `variant: noaudio` matrix entries
           # build the no-audio set with a "-noaudio" artifact suffix.
-          noaudio_set="native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729"
+          static_set="native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729"
+          noaudio_set="${static_set},vcon"
 
           case "${{ matrix.target }}" in
             *-linux-musl)
-              features="$noaudio_set"
+              features="$static_set"
               suffix=""
               ;;
             *)
