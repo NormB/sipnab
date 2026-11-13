@@ -48,6 +48,22 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // "A job no runner took" names `scripts/rerun-not-acquired.py --run-id`
+    // and `--apply`.
+    (
+        "run-id",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "apply",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "The release train" names `scripts/release-train.py --retry-post`.
     (
         "retry-post",
