@@ -390,6 +390,14 @@ const NODE_SERVER_LINES: &[(Option<u64>, &str)] = &[
     (Some(2), NODE_SERVER_FIXED_2),
 ];
 
+/// The first `hono` release past the five advisories published late on
+/// 2026-11-12: GHSA-3gg2-335m-rxc6 (CVE-2026-126359), GHSA-4m76-xfj5-7975
+/// (CVE-2026-126357), GHSA-h7mg-cq63-vhpq (CVE-2026-126358),
+/// GHSA-46wx-v44x-9hh2 (CVE-2026-126355) and GHSA-4h7h-rv7c-7m2v
+/// (CVE-2026-126356). Two of them cover every earlier release.
+const HONO_FIXED: &str = "4.13.16";
+const HONO_LINES: &[(Option<u64>, &str)] = &[(None, HONO_FIXED)];
+
 /// Requirements that still admit an affected release.
 #[test]
 fn a_requirement_below_the_fix_admits_an_affected_release() {
@@ -595,6 +603,91 @@ fn the_node_server_override_is_removed_when_the_sdk_asks_for_the_fix() -> Result
          ({asked:?}); remove the override from clients/typescript/package.json"
     );
     Ok(())
+}
+
+/// The TypeScript client's lockfile resolves `hono` at or past the fixed
+/// release, wherever it appears.
+#[test]
+fn the_typescript_client_locks_a_fixed_hono() -> Result<(), TestError> {
+    let found: Vec<String> = lockfile_packages_in(TS_LOCK)?
+        .into_iter()
+        .filter(|(path, _)| path.rsplit("node_modules/").next() == Some("hono"))
+        .map(|(_, version)| version)
+        .collect();
+    assert!(
+        !found.is_empty(),
+        "hono is not in {TS_LOCK}; delete this test and the hono override, or the parser \
+         missed it"
+    );
+    for version in &found {
+        assert!(
+            at_least(version, HONO_FIXED),
+            "{TS_LOCK} resolves hono {version}; the advisories are fixed in {HONO_FIXED}"
+        );
+    }
+    Ok(())
+}
+
+/// The `hono` override in `clients/typescript/package.json` starts at the
+/// fixed release, and is still needed: a package in the lockfile (the MCP
+/// SDK, or `@hono/node-server` as a peer) admits releases before the fix.
+/// When the last assertion fails, every one of them has caught up: remove
+/// the override.
+#[test]
+fn the_hono_override_is_removed_when_its_parents_ask_for_the_fix() -> Result<(), TestError> {
+    let floor = overrides_in("clients/typescript/package.json")?
+        .into_iter()
+        .find(|(pkg, _)| pkg == "hono")
+        .map(|(_, req)| req);
+    assert_eq!(
+        floor.as_deref().map(|req| admits_affected(req, HONO_LINES)),
+        Some(false),
+        "the hono override in clients/typescript/package.json must start at {HONO_FIXED} or \
+         later, found {floor:?}"
+    );
+    let asked = requirements_for(TS_LOCK, "hono")?;
+    assert!(
+        !asked.is_empty(),
+        "no package in {TS_LOCK} asks for hono; delete its override"
+    );
+    assert!(
+        asked.iter().any(|req| admits_affected(req, HONO_LINES)),
+        "every package that asks for hono now asks for {HONO_FIXED} or later ({asked:?}); \
+         remove the hono override from clients/typescript/package.json"
+    );
+    Ok(())
+}
+
+/// How the reader places the requirements on `hono` this lockfile has held
+/// and could hold.
+#[test]
+fn the_reader_places_requirements_on_hono() {
+    for req in [
+        "^4.11.4",
+        "^4",
+        "^4 || ^5.0.0-0",
+        "^4.13.15",
+        "~4.13.13",
+        "^3.12.0",
+    ] {
+        assert!(
+            admits_affected(req, HONO_LINES),
+            "{req:?} admits a hono before {HONO_FIXED}"
+        );
+    }
+    for req in [
+        "^4.13.16",
+        "^4.13.18",
+        "~4.13.16",
+        "^4.14.0",
+        "^5.0.0",
+        ">=4.13.16",
+    ] {
+        assert!(
+            !admits_affected(req, HONO_LINES),
+            "{req:?} admits no hono before {HONO_FIXED}"
+        );
+    }
 }
 
 // ── the package that had no fix is simply gone ──────────────────────
