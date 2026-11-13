@@ -780,6 +780,7 @@ zeroized
 zeroizes
 zeroizing
 zsh
+zstd
 nftables
 iptables
 [Mm]ebibytes?

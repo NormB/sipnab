@@ -1020,7 +1020,10 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // bound on the files it reads: the member registry rebuilt from the newest
 // files of heartbeats, and the restored members' positions moved past the
 // call records of the newest files.
-const EXPECTED_TEMPLATES: usize = 664;
+// 664 -> 665 (fleet history compression): +1 in src/app/fleet_history.rs,
+// the refusal of a history file whose Parquet names a codec this build
+// does not read.
+const EXPECTED_TEMPLATES: usize = 665;
 
 // ---------------------------------------------------------------------------
 // The page gates
