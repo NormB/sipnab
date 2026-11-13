@@ -170,7 +170,16 @@ def test_only_the_test_measured_past_the_deadline_gets_a_longer_one():
     # to 17 on 14 cores they took 42.48 s and 36.30 s (2026-11-11). In the
     # suite at a load average of 44 to 50, nextest stopped both at 180 s
     # (180.405 s and 180.259 s, the hook run that ended 03:46:27Z that day).
-    # Six periods is about twice what that load made of them.
+    # Six periods, about twice what that load made of them, were passed too:
+    # at a load average of 38 both were ended at 300 s by their own limit
+    # (2026-11-12). Each harness is about 45 s of processor time in short
+    # processes, one after another, so its run time is that work divided by
+    # the share of a core the host gives it, and no number of seconds fits
+    # every load. The two tests now end a harness themselves when its log
+    # stops growing for 120 s or passes 4 MiB (`HookLimits` in that file),
+    # which does not depend on the load. nextest's limit for them is no longer
+    # what ends a hang: it is 30 periods, the 30 minutes of the hook's own
+    # watch on the suite, for the case that the tests' watch itself fails.
     overrides = suite_profile()["profile"][pt.PROFILE].get("overrides", [])
     assert overrides == [
         {
@@ -183,9 +192,36 @@ def test_only_the_test_measured_past_the_deadline_gets_a_longer_one():
                 "test(=test_pre_commit_sh_leaves_the_hooks_repository_alone) | "
                 "test(=test_pre_push_sh_leaves_the_hooks_repository_alone))"
             ),
-            "slow-timeout": {"period": "60s", "terminate-after": 6},
+            "slow-timeout": {"period": "60s", "terminate-after": 30},
         },
     ]
+
+
+def test_the_harness_tests_end_a_hang_themselves_before_nextest_would():
+    """The long nextest limit of the two harness tests is safe only while
+    they hold a limit of their own that is far below it."""
+    source = (REPO / "tests" / "hook_test_scripts_git_env_test.rs").read_text()
+    limits = re.search(
+        r"const HOOK_LIMITS: HookLimits = HookLimits \{\s*"
+        r"silence: std::time::Duration::from_secs\((\d+)\),\s*"
+        r"log_bytes: ([0-9 *]+),\s*\};",
+        source,
+    )
+    assert limits, "tests/hook_test_scripts_git_env_test.rs no longer declares HOOK_LIMITS in the form read here"
+    silence = int(limits.group(1))
+    overrides = suite_profile()["profile"][pt.PROFILE].get("overrides", [])
+    harness = [o for o in overrides if "hook_test_scripts_git_env_test" in o["filter"]]
+    assert len(harness) == 1, harness
+    slow = harness[0]["slow-timeout"]
+    assert slow["period"] == "60s", slow
+    backstop = 60 * slow["terminate-after"]
+    assert silence * 10 <= backstop, (
+        f"the harness tests end a silent hook after {silence} s; nextest's {backstop} s must be at least ten times that"
+    )
+    assert "HOOK_DEADLINE" not in source, "a limit on the whole run of a harness is back"
+    assert "commit_with_deadline(&scratch.worktree, &scratch.log, &HOOK_LIMITS)" in source, (
+        "the harness run no longer uses HOOK_LIMITS"
+    )
 
 
 def test_every_test_given_a_longer_deadline_exists():

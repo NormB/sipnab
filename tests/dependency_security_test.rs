@@ -383,7 +383,10 @@ fn requirements_for(rel: &str, pkg: &str) -> Result<Vec<String>, TestError> {
         .collect())
 }
 
-/// Which releases of each package the advisories of 2026-11-12 cover.
+/// Which releases of each package the advisories of 2026-11-12 cover. The
+/// tree holds only `basic-ftp` of the three now; the `@hono/node-server` and
+/// `hono` tables are cases for the requirement reader (two release lines, and
+/// one).
 const BASIC_FTP_LINES: &[(Option<u64>, &str)] = &[(None, BASIC_FTP_FIXED)];
 const NODE_SERVER_LINES: &[(Option<u64>, &str)] = &[
     (Some(1), NODE_SERVER_FIXED_1),
@@ -544,122 +547,13 @@ fn the_basic_ftp_override_is_removed_when_its_parent_asks_for_the_fix() -> Resul
     Ok(())
 }
 
-/// The TypeScript client's lockfile resolves `@hono/node-server` at or past
-/// the fixed release, wherever it appears.
-#[test]
-fn the_typescript_client_locks_a_fixed_node_server() -> Result<(), TestError> {
-    let found: Vec<String> = lockfile_packages_in(TS_LOCK)?
-        .into_iter()
-        .filter(|(path, _)| path.rsplit("node_modules/").next() == Some("@hono/node-server"))
-        .map(|(_, version)| version)
-        .collect();
-    assert!(
-        !found.is_empty(),
-        "@hono/node-server is not in {TS_LOCK}; delete this test and its override, or the \
-         parser missed it"
-    );
-    for version in &found {
-        let fixed = if version.starts_with("1.") {
-            NODE_SERVER_FIXED_1
-        } else {
-            NODE_SERVER_FIXED_2
-        };
-        assert!(
-            at_least(version, fixed),
-            "{TS_LOCK} resolves @hono/node-server {version}; the advisories are fixed in {fixed}"
-        );
-    }
-    Ok(())
-}
+// The lock and override tests for `hono` and `@hono/node-server` in the
+// TypeScript client left with the packages (see "the TypeScript client
+// installs no HTTP server" below, which holds that they stay out). Their
+// fixed-release tables remain as cases for the requirement reader.
 
-/// The `@hono/node-server` override in `clients/typescript/package.json`
-/// starts at the fixed release, and is still needed: the MCP SDK admits
-/// releases before the fix. When the second assertion fails, the SDK has
-/// caught up: remove the override.
-#[test]
-fn the_node_server_override_is_removed_when_the_sdk_asks_for_the_fix() -> Result<(), TestError> {
-    let floor = overrides_in("clients/typescript/package.json")?
-        .into_iter()
-        .find(|(pkg, _)| pkg == "@hono/node-server")
-        .map(|(_, req)| req);
-    assert_eq!(
-        floor
-            .as_deref()
-            .map(|req| admits_affected(req, NODE_SERVER_LINES)),
-        Some(false),
-        "the @hono/node-server override in clients/typescript/package.json must start at \
-         {NODE_SERVER_FIXED_2} or later, found {floor:?}"
-    );
-    let asked = requirements_for(TS_LOCK, "@hono/node-server")?;
-    assert!(
-        !asked.is_empty(),
-        "no package in {TS_LOCK} asks for @hono/node-server; delete its override"
-    );
-    assert!(
-        asked
-            .iter()
-            .any(|req| admits_affected(req, NODE_SERVER_LINES)),
-        "every package that asks for @hono/node-server now asks for a fixed release \
-         ({asked:?}); remove the override from clients/typescript/package.json"
-    );
-    Ok(())
-}
-
-/// The TypeScript client's lockfile resolves `hono` at or past the fixed
-/// release, wherever it appears.
-#[test]
-fn the_typescript_client_locks_a_fixed_hono() -> Result<(), TestError> {
-    let found: Vec<String> = lockfile_packages_in(TS_LOCK)?
-        .into_iter()
-        .filter(|(path, _)| path.rsplit("node_modules/").next() == Some("hono"))
-        .map(|(_, version)| version)
-        .collect();
-    assert!(
-        !found.is_empty(),
-        "hono is not in {TS_LOCK}; delete this test and the hono override, or the parser \
-         missed it"
-    );
-    for version in &found {
-        assert!(
-            at_least(version, HONO_FIXED),
-            "{TS_LOCK} resolves hono {version}; the advisories are fixed in {HONO_FIXED}"
-        );
-    }
-    Ok(())
-}
-
-/// The `hono` override in `clients/typescript/package.json` starts at the
-/// fixed release, and is still needed: a package in the lockfile (the MCP
-/// SDK, or `@hono/node-server` as a peer) admits releases before the fix.
-/// When the last assertion fails, every one of them has caught up: remove
-/// the override.
-#[test]
-fn the_hono_override_is_removed_when_its_parents_ask_for_the_fix() -> Result<(), TestError> {
-    let floor = overrides_in("clients/typescript/package.json")?
-        .into_iter()
-        .find(|(pkg, _)| pkg == "hono")
-        .map(|(_, req)| req);
-    assert_eq!(
-        floor.as_deref().map(|req| admits_affected(req, HONO_LINES)),
-        Some(false),
-        "the hono override in clients/typescript/package.json must start at {HONO_FIXED} or \
-         later, found {floor:?}"
-    );
-    let asked = requirements_for(TS_LOCK, "hono")?;
-    assert!(
-        !asked.is_empty(),
-        "no package in {TS_LOCK} asks for hono; delete its override"
-    );
-    assert!(
-        asked.iter().any(|req| admits_affected(req, HONO_LINES)),
-        "every package that asks for hono now asks for {HONO_FIXED} or later ({asked:?}); \
-         remove the hono override from clients/typescript/package.json"
-    );
-    Ok(())
-}
-
-/// How the reader places the requirements on `hono` this lockfile has held
-/// and could hold.
+/// How the reader places requirements on `hono` that the TypeScript client's
+/// lockfile held while it installed the SDK package.
 #[test]
 fn the_reader_places_requirements_on_hono() {
     for req in [
@@ -688,6 +582,117 @@ fn the_reader_places_requirements_on_hono() {
             "{req:?} admits no hono before {HONO_FIXED}"
         );
     }
+}
+
+// ── the TypeScript client installs no HTTP server ───────────────────
+
+/// HTTP server packages the TypeScript example never calls: it talks to
+/// sipnab over stdio. `@modelcontextprotocol/sdk` 1.x declares all six as
+/// regular dependencies, and eight advisories in them in one evening
+/// (2026-11-12) failed the code scanning check on every pull request. The
+/// example now installs `@modelcontextprotocol/client`, which depends on none
+/// of them.
+const TS_HTTP_SERVER_PACKAGES: &[&str] = &[
+    "hono",
+    "@hono/node-server",
+    "express",
+    "express-rate-limit",
+    "cors",
+    "raw-body",
+];
+
+/// The package names in the lockfile at `rel` that are in `unwanted`, each
+/// with the path it is installed at.
+fn unwanted_in(rel: &str, unwanted: &[&str]) -> Result<Vec<String>, TestError> {
+    Ok(lockfile_packages_in(rel)?
+        .into_iter()
+        .filter(|(path, _)| {
+            path.rsplit("node_modules/")
+                .next()
+                .is_some_and(|name| unwanted.contains(&name))
+        })
+        .map(|(path, version)| format!("{path} {version}"))
+        .collect())
+}
+
+/// The TypeScript client's lockfile holds no HTTP server package.
+#[test]
+fn the_typescript_client_locks_no_http_server_package() -> Result<(), TestError> {
+    let all = lockfile_packages_in(TS_LOCK)?;
+    assert!(
+        all.iter()
+            .any(|(path, _)| path == "node_modules/@modelcontextprotocol/client"),
+        "{TS_LOCK} does not hold @modelcontextprotocol/client, so the parser missed the \
+         lockfile or the example moved again; this test would prove nothing"
+    );
+    let found = unwanted_in(TS_LOCK, TS_HTTP_SERVER_PACKAGES)?;
+    assert!(
+        found.is_empty(),
+        "{TS_LOCK} holds HTTP server packages the stdio example never calls: {found:?}"
+    );
+    Ok(())
+}
+
+/// `clients/typescript/package.json` depends on the client package alone and
+/// not on the SDK package that brings the servers.
+#[test]
+fn the_typescript_client_depends_on_the_client_package_only() -> Result<(), TestError> {
+    let manifest = read("clients/typescript/package.json")?;
+    assert!(
+        manifest.contains("\"@modelcontextprotocol/client\": \""),
+        "clients/typescript/package.json does not depend on @modelcontextprotocol/client"
+    );
+    assert!(
+        !manifest.contains("\"@modelcontextprotocol/sdk\""),
+        "clients/typescript/package.json depends on @modelcontextprotocol/sdk, which installs \
+         hono and express"
+    );
+    let source = read("clients/typescript/sipnab-mcp.ts")?;
+    assert!(
+        !source.contains("@modelcontextprotocol/sdk"),
+        "clients/typescript/sipnab-mcp.ts still imports from, or names, @modelcontextprotocol/sdk"
+    );
+    Ok(())
+}
+
+/// With the server packages gone, nothing is left to override: the `hono` and
+/// `@hono/node-server` floors left `clients/typescript/package.json` with
+/// them, and an override for a package the tree does not hold is a floor
+/// nobody checks.
+#[test]
+fn the_typescript_client_overrides_nothing() -> Result<(), TestError> {
+    let manifest = read("clients/typescript/package.json")?;
+    assert!(
+        !manifest.contains("\"overrides\""),
+        "clients/typescript/package.json has an overrides block again; hold each floor in it \
+         with a test of the lockfile, as e2e/package.json's are"
+    );
+    assert_eq!(
+        overrides_in("clients/typescript/package.json")?,
+        Vec::new(),
+        "clients/typescript/package.json overrides a package"
+    );
+    Ok(())
+}
+
+/// [`unwanted_in`] finds a package at the top level and nested under another,
+/// and does not take a name that only ends like one.
+#[test]
+fn unwanted_packages_are_found_wherever_they_are_installed() -> Result<(), TestError> {
+    // The site-test lockfile holds `debug` and `ms` nested and at the top.
+    let found = unwanted_in(E2E_LOCK, &["ms"])?;
+    assert!(
+        found
+            .iter()
+            .any(|entry| entry.starts_with("node_modules/ms ")),
+        "ms at the top level of {E2E_LOCK} was not found: {found:?}"
+    );
+    let none = unwanted_in(E2E_LOCK, &["s", "no-such-package-in-any-tree"])?;
+    assert!(
+        none.is_empty(),
+        "a name that is only the end of another package's name was taken: {none:?}"
+    );
+    Ok(())
 }
 
 // ── the package that had no fix is simply gone ──────────────────────

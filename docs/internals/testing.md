@@ -436,9 +436,11 @@ What the script does that a reader of the user page does not need to:
 - [`.config/nextest.toml`](../../.config/nextest.toml) defines three profiles:
   - `default` (no retries, 60 s slow timeout, stopped after 180 s), for local runs.
   - `suite`, what `parallel-tests.py` runs: the same deadline, no retries, no fail-fast, and a JUnit report.
-    Three tests have a deadline of their own, six periods: `every_documented_command_runs_or_says_why_not`, whose binary took 191.85 s on CI's `macos-latest` runner,
-    and `test_pre_commit_sh_leaves_the_hooks_repository_alone` and `test_pre_push_sh_leaves_the_hooks_repository_alone`, which each run a whole hook harness.
-    Those two take about 40 s alone, and the suite stopped both at 180 s on a host with a load average of 44 to 50.
+    Three tests have a deadline of their own. `every_documented_command_runs_or_says_why_not`, whose binary took 191.85 s on CI's `macos-latest` runner, has six periods.
+    `test_pre_commit_sh_leaves_the_hooks_repository_alone` and `test_pre_push_sh_leaves_the_hooks_repository_alone` each run a whole hook harness: about 45 s of processor time in short processes, one after another.
+    Their run time is that work divided by the share of a core the host gives them, so no number of seconds fits every load: the suite stopped both at 180 s at a load average of 44 to 50, and at 300 s at a load average of 38.
+    The two tests end a harness themselves when its log stops growing for 120 s or passes 4 MiB (`HookLimits` in [`tests/hook_test_scripts_git_env_test.rs`](../../tests/hook_test_scripts_git_env_test.rs)), which does not depend on the load.
+    Their nextest deadline is 30 periods, the 30 minutes of the hook's own watch on the suite, and only covers a failure of that watch.
   - `e2e` (2 retries, 60 s timeout) for the timing-sensitive tmux tests.
 - nextest does not run doctests, so `parallel-tests.py` runs them after it with `cargo test --doc`.
 - The script renders nextest's JUnit report as `cargo test`'s text, one block per test binary.
