@@ -17,6 +17,7 @@ entry that carries them.
   - The checks `Check (ubuntu-latest)` and `Check (macos-latest)` are now `Check (ubuntu-24.04)` and `Check (macos-26)`.
   - [Build, CI and release](docs/internals/build-ci-release.md) says how to move to a newer image.
 - **The script tests no longer rewrite pages of the checkout they run in (SCRIPT-TEST-REWRITES-REAL-TREE).** Two tests ran the path linker with `--apply` in the real checkout. A full `pytest scripts/tests` then changed a page that was already staged, and the pre-commit hook failed on a tree the pin gates had passed. The two tests now run the linker in a clone, and the test suite fails any test file that changes a tracked file or the index of its checkout.
+- **The site tests' lockfile installs under npm 10 and npm 11 (E2E-LOCKFILE-NEEDS-NPM-11).** `e2e/package-lock.json` resolved the peer `proxy-agent >=8.0.1` of `@puppeteer/browsers` to `proxy-agent` 6.5.0. npm 11 accepts that, and npm 10 ends `npm ci` with "Missing: proxy-agent@8.0.2 from lock file". The Accessibility and Lighthouse jobs passed only on the Ubuntu 26.04 image, which the floating runner label had given them. The lockfile now holds the 13 packages npm 10 asks for, no locked version changed, and a test fails when a lockfile resolves a peer outside the range its package asks for.
 
 ## [0.5.253] - 2026-11-13
 

@@ -756,3 +756,233 @@ fn the_version_comparison_is_numeric_not_lexical() -> Result<(), TestError> {
     assert!(at_least("2.0.1", "2.0.1"));
     Ok(())
 }
+
+// ── every npm that CI runs accepts the lockfile ──────────────────────
+
+/// `(package path, peer name, range)` for every `peerDependencies` entry of
+/// the lockfile at `rel`.
+fn peer_requirements_in(rel: &str) -> Result<Vec<(String, String, String)>, TestError> {
+    let text = read(rel)?;
+    let mut out = Vec::new();
+    let mut current: Option<String> = None;
+    let mut in_peers = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("\"node_modules/") && t.ends_with('{') {
+            current = t
+                .trim_start_matches('"')
+                .split("\":")
+                .next()
+                .map(str::to_string);
+            in_peers = false;
+        } else if t == "\"peerDependencies\": {" {
+            in_peers = true;
+        } else if in_peers && t.starts_with('}') {
+            in_peers = false;
+        } else if in_peers
+            && let Some(pkg) = &current
+            && let (Some(name), Some(range)) = (t.split('"').nth(1), t.split('"').nth(3))
+        {
+            out.push((pkg.clone(), name.to_string(), range.to_string()));
+        }
+    }
+    Ok(out)
+}
+
+/// The version of `name` that the package at `path` loads: the nearest
+/// `node_modules/<name>` from its own directory up to the root.
+fn resolved_peer(packages: &[(String, String)], path: &str, name: &str) -> Option<String> {
+    let mut base = Some(path);
+    while let Some(dir) = base {
+        let candidate = format!("{dir}/node_modules/{name}");
+        if let Some((_, v)) = packages.iter().find(|(p, _)| *p == candidate) {
+            return Some(v.clone());
+        }
+        base = dir.rfind("/node_modules/").map(|at| &dir[..at]);
+    }
+    let root = format!("node_modules/{name}");
+    packages
+        .iter()
+        .find(|(p, _)| *p == root)
+        .map(|(_, v)| v.clone())
+}
+
+/// Whether `have` meets `range`, for the forms this reader places: `>=X`,
+/// `^X`, `~X`, an exact version, `*`, and alternatives joined by `||`.
+/// `None` for a form it does not place (a compound or a hyphen range).
+fn meets(have: &str, range: &str) -> Option<bool> {
+    let numbers = |s: &str| -> Vec<u64> {
+        s.split(['.', '-'])
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+    let mut any = false;
+    for part in range.split("||").map(str::trim) {
+        let ok = if part == "*" || part.is_empty() {
+            true
+        } else if let Some(want) = part.strip_prefix(">=") {
+            let want = want.trim();
+            if want.contains(' ') {
+                return None;
+            }
+            at_least(have, want)
+        } else if let Some(want) = part.strip_prefix('^') {
+            let (h, w) = (numbers(have), numbers(want));
+            if w.first().copied().unwrap_or(0) == 0 {
+                return None;
+            }
+            h.first() == w.first() && at_least(have, want)
+        } else if let Some(want) = part.strip_prefix('~') {
+            let (h, w) = (numbers(have), numbers(want));
+            h.first() == w.first() && h.get(1) == w.get(1) && at_least(have, want)
+        } else if part.chars().all(|c| c.is_ascii_digit() || c == '.') {
+            have == part
+        } else {
+            return None;
+        };
+        any |= ok;
+    }
+    Some(any)
+}
+
+/// Peers a lockfile resolves to a version outside the range the package
+/// asks for, as `path wants name range, resolves version`.
+fn unmet_peers_in(rel: &str) -> Result<(Vec<String>, usize), TestError> {
+    let packages = lockfile_packages_in(rel)?;
+    let mut unmet = Vec::new();
+    let mut placed = 0;
+    for (path, name, range) in peer_requirements_in(rel)? {
+        let Some(have) = resolved_peer(&packages, &path, &name) else {
+            continue;
+        };
+        match meets(&have, &range) {
+            Some(true) => placed += 1,
+            Some(false) => {
+                placed += 1;
+                unmet.push(format!("{path} wants {name} {range}, resolves {have}"));
+            }
+            None => {}
+        }
+    }
+    Ok((unmet, placed))
+}
+
+/// No package in a lockfile resolves a peer to a version outside the range it
+/// asks for.
+///
+/// On 2026-11-12 `e2e/package-lock.json` was written so that
+/// `@puppeteer/browsers` 3.2.6, whose peer range for `proxy-agent` is
+/// `>=8.0.1`, resolved the `proxy-agent` 6.5.0 at the root. npm 11.19.1
+/// accepts that tree. npm 10.9.9 does not: `npm ci` ends with "Missing:
+/// proxy-agent@8.0.2 from lock file". CI passed only while the floating
+/// runner label gave the two site jobs the Ubuntu 26.04 image; on
+/// `ubuntu-24.04` both failed at `npm ci` with that message (run
+/// 43523849580). A lockfile in which every placed peer is met was accepted
+/// by both npm versions (`npm ci --dry-run`, 2026-11-13).
+#[test]
+fn every_peer_a_lockfile_resolves_is_in_the_range_asked_for() -> Result<(), TestError> {
+    // Measured 2026-11-13: 6 peers placed in the site-test lockfile. The
+    // TypeScript client's lockfile has few packages; it is read all the same.
+    for (rel, at_least_placed) in [(E2E_LOCK, 5), (TS_LOCK, 0)] {
+        let (unmet, placed) = unmet_peers_in(rel)?;
+        assert!(
+            placed >= at_least_placed,
+            "{rel}: only {placed} peer requirement(s) were placed; the reader stopped matching"
+        );
+        assert!(
+            unmet.is_empty(),
+            "{rel}: npm 10 refuses this lockfile (`npm ci`: Missing ... from lock file). \
+             Write it again with `npm install --package-lock-only` under npm 10:\n{}",
+            unmet.join("\n")
+        );
+    }
+    Ok(())
+}
+
+/// The range reader places the forms the lockfiles use and says so when it
+/// cannot place one.
+#[test]
+fn the_peer_range_reader_places_what_it_can() {
+    assert_eq!(meets("6.5.0", ">=8.0.1"), Some(false), "below a floor");
+    assert_eq!(meets("8.0.2", ">=8.0.1"), Some(true), "at or past a floor");
+    assert_eq!(
+        meets("1.65.0", ">= 1.0.0"),
+        Some(true),
+        "a floor with a space"
+    );
+    assert_eq!(meets("1.9.1", "^1.9.0"), Some(true), "a caret range");
+    assert_eq!(
+        meets("2.0.0", "^1.9.0"),
+        Some(false),
+        "a caret range, next major"
+    );
+    assert_eq!(
+        meets("1.8.9", "^1.9.0"),
+        Some(false),
+        "a caret range, below"
+    );
+    assert_eq!(meets("1.2.5", "~1.2.3"), Some(true), "a tilde range");
+    assert_eq!(
+        meets("1.3.0", "~1.2.3"),
+        Some(false),
+        "a tilde range, next minor"
+    );
+    assert_eq!(
+        meets("3.0.0", "^1.0.0 || ^3.0.0"),
+        Some(true),
+        "alternatives"
+    );
+    assert_eq!(
+        meets("2.0.0", "^1.0.0 || ^3.0.0"),
+        Some(false),
+        "no alternative"
+    );
+    assert_eq!(meets("4.1.0", "*"), Some(true), "any version");
+    assert_eq!(meets("4.1.0", "4.1.0"), Some(true), "an exact version");
+    assert_eq!(
+        meets("4.1.1", "4.1.0"),
+        Some(false),
+        "another exact version"
+    );
+    assert_eq!(
+        meets("1.5.0", ">=1.0.0 <2.0.0"),
+        None,
+        "a compound range is not placed"
+    );
+    assert_eq!(
+        meets("0.3.1", "^0.3.0"),
+        None,
+        "a caret range below 1 is not placed"
+    );
+}
+
+/// A peer is read from the nearest `node_modules`, as node loads it.
+#[test]
+fn a_peer_resolves_to_the_nearest_copy() {
+    let packages = vec![
+        ("node_modules/proxy-agent".to_string(), "6.5.0".to_string()),
+        (
+            "node_modules/puppeteer-core/node_modules/proxy-agent".to_string(),
+            "8.0.2".to_string(),
+        ),
+    ];
+    assert_eq!(
+        resolved_peer(
+            &packages,
+            "node_modules/puppeteer-core/node_modules/@puppeteer/browsers",
+            "proxy-agent"
+        ),
+        Some("8.0.2".to_string()),
+        "the copy beside the package wins over the root's"
+    );
+    assert_eq!(
+        resolved_peer(&packages, "node_modules/lighthouse", "proxy-agent"),
+        Some("6.5.0".to_string()),
+        "a package with no nearer copy loads the root's"
+    );
+    assert_eq!(
+        resolved_peer(&packages, "node_modules/lighthouse", "webpack"),
+        None,
+        "a peer that is not installed resolves to nothing"
+    );
+}

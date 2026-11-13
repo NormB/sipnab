@@ -981,6 +981,46 @@ fn the_runner_rule_refuses_a_floating_label() {
     }
 }
 
+/// The two site jobs print the image's Node and npm versions before `npm ci`.
+///
+/// The jobs use the Node the runner image carries. On 2026-11-13 `npm ci`
+/// passed on the Ubuntu 26.04 image and failed on `ubuntu-24.04` with
+/// "Missing: proxy-agent@8.0.2 from lock file", and neither log said which
+/// npm had run: the difference was found by trying npm 10.9.9 and 11.19.1 by
+/// hand. With the versions in the log, the next image change shows them.
+#[test]
+fn the_site_jobs_print_node_and_npm_before_npm_ci() -> Result<(), TestError> {
+    let text = read(".github/workflows/quality.yml")?;
+    let steps: Vec<&str> = text
+        .split("      - name: Install browser-test dependencies\n")
+        .skip(1)
+        .map(|rest| rest.split("\n      - name:").next().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        steps.len(),
+        2,
+        "quality.yml must hold the install step of the Accessibility and the Lighthouse job"
+    );
+    for step in steps {
+        let at = |needle: &str| step.find(needle);
+        let (node, npm, ci) = (
+            at("\n          node --version\n"),
+            at("\n          npm --version\n"),
+            at("\n          npm ci\n"),
+        );
+        assert!(
+            node.is_some() && npm.is_some() && ci.is_some(),
+            "the install step must run `node --version`, `npm --version` and `npm ci`, \
+             each on a line of its own:\n{step}"
+        );
+        assert!(
+            node < ci && npm < ci,
+            "the versions must print before `npm ci`, which can fail:\n{step}"
+        );
+    }
+    Ok(())
+}
+
 /// The text scan finds the label wherever a workflow can carry it, and
 /// leaves a comment alone.
 #[test]

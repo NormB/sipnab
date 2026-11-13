@@ -911,9 +911,14 @@ jobs:
       # e2e/package-lock.json and fails if package.json disagrees with it. Every
       # package is fixed by an `integrity` sha512 in that lockfile, which is the
       # same guarantee the `sha256sum -c` above gives the Zola tarball.
+      # The versions come from the runner image and decide whether `npm ci`
+      # accepts the lockfile: printed first, so a failure shows them.
       - name: Install browser-test dependencies
         working-directory: e2e
-        run: npm ci
+        run: |
+          node --version
+          npm --version
+          npm ci
 
       # Prefer the Chrome already on the runner image over downloading
       # Playwright's own build. It is the local-first argument
@@ -1056,9 +1061,14 @@ jobs:
             exit 1
           fi
 
+      # The versions come from the runner image and decide whether `npm ci`
+      # accepts the lockfile: printed first, so a failure shows them.
       - name: Install browser-test dependencies
         working-directory: e2e
-        run: npm ci
+        run: |
+          node --version
+          npm --version
+          npm ci
 
       - name: Resolve a Chrome for Lighthouse
         working-directory: e2e
