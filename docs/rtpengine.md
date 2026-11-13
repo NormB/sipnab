@@ -17,6 +17,27 @@ A call that was already up when the capture opened left no control message for
 the mirror to carry. So `--rtpengine-control` asks the relay for that one
 directly.
 
+## Before you start
+
+- **sipnab on the relay's host, with the right to capture.** Capturing an
+  interface needs root or the capture capabilities `sudo sipnab --setup-caps`
+  grants once. Reading a capture file needs neither.
+- **A build with the `hep` feature.** sipnab reads the mirror as HEP. Every
+  release binary has the feature, and `sipnab --version` lists `hep` when the
+  binary carries it.
+- **On the other system, rtpengine, one setting at most.**
+  - rtpengine that already mirrors its control plane to Homer needs no
+    change.
+  - rtpengine that reports nowhere needs `homer-enable-ng = true` and a
+    `homer` destination, then a restart. [Set it up](#set-it-up) has the
+    lines.
+  - rtpengine takes one Homer destination. Pointing it at sipnab takes it
+    away from a collector it feeds.
+- **Nothing changes on the SIP proxy, on Homer or on the phones.**
+- **For `--rtpengine-control`:** the relay's `listen-ng` address, reachable
+  from sipnab, and a live capture. rtpengine's control protocol has no
+  authentication, so run sipnab on the relay's own host.
+
 ## The problem, on a relay capture
 
 Both runs below read the same forty RTP packets on the same four sockets. The
@@ -264,8 +285,12 @@ Place one call through the relay, then check that sipnab saw control traffic:
 sudo sipnab -N -d eth0 --report
 ```
 
-A working setup names the call under **Calls named by a media relay**. If it
-does not, work down this list:
+A working setup names the call under **Calls named by a media relay**, and
+the report has no `Orphaned Streams:` section for the relay's media.
+
+## When sipnab does not name the call
+
+Work down this list:
 
 | Symptom | Cause | Fix |
 |---|---|---|

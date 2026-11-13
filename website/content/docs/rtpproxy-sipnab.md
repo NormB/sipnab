@@ -36,6 +36,22 @@ sipnab never talks to the proxy. So every step is the same for each proxy.
 The one exception is the line in the rtpproxy on its own machine step that
 edits the proxy's configuration.
 
+## Before you start
+
+- **The stack from
+  [Add rtpproxy to your voice stack](@/docs/rtpproxy-relay.md)**, with its test call
+  working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on the machine that runs rtpproxy.** sipnab captures there, and the
+  steps use `sudo`.
+- **The address and port of rtpproxy's UDP control socket,** its `-s udp:`
+  option, for `--rtpproxy-control`.
+- **On the other system, rtpproxy, nothing changes.** sipnab sends rtpproxy
+  nothing. It reads the control traffic from its capture.
+- **On the SIP proxy,** nothing changes while it shares the relay's machine.
+  The rtpproxy on its own machine step changes one line of its configuration,
+  the address of the test callee.
+- **On the phones and carriers,** nothing changes.
+
 ## What sipnab sends rtpproxy
 
 Nothing.
@@ -263,6 +279,28 @@ A run with no retries logs nothing about them. This line came from sipnab
 0.5.232 watching an rtpproxy 2.1.1 control socket in the repository's harness,
 with one command sent twice by hand, and the socket written here as this
 guide's `127.0.0.1:7722`.
+
+## Check that it worked
+
+Place a test call while this runs, on the machine that runs rtpproxy:
+
+```bash
+sudo sipnab -N -d any --rtpproxy-control 127.0.0.1:7722 --duration 25 --report "portrange 5060-5061 or udp port 7722 or udp portrange 50000-59999"
+```
+
+- The report has no `Orphaned Streams:` section. Every stream of the call
+  carries its Call-ID.
+- On a machine that also sees the SIP, the call is in the report's first
+  table, with its streams under `RTP Streams:`.
+- On a machine that sees no SIP, the report names the call under this
+  heading:
+
+  ```text
+  Calls named by a media relay (no SIP for them in this capture):
+  ```
+
+- With rtpproxy on its own machine, give `--rtpproxy-control` the address of
+  the control socket there, `192.0.2.20:7722` in this guide.
 
 ## When something does not work
 

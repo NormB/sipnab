@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **The seven media relay pages carry every part of a how-to (DOCS-HOWTO-GAP, seventh batch).** [Attribute media on an rtpengine relay](docs/rtpengine.md#before-you-start) gained its prerequisites, and its list of causes has its own heading, [When sipnab does not name the call](docs/rtpengine.md#when-sipnab-does-not-name-the-call). [Add rtpengine to your voice stack](docs/rtpengine-relay.md#before-you-start-your-sip-server) and [Add rtpproxy to your voice stack](docs/rtpproxy-relay.md#before-you-start-your-sip-server) say what changes on other systems, and the comparison of the two SDPs is under "Check that the relay carried the call". [Let sipnab name rtpengine's media](docs/rtpengine-sipnab.md#before-you-start) and [Let sipnab name rtpproxy's media](docs/rtpproxy-sipnab.md#before-you-start) gained prerequisites and a check. [Ask each call's rtpengine engine](docs/relay-engines.md#check-that-it-worked) and [Ask a media relay about itself](docs/relay-statistics.md#check-that-it-worked) say what changes on other systems, and each check has its command. `tests/howto_claims_test.rs` runs the binary against a relay on loopback that answers rtpengine's control protocol, and against a capture of an rtpproxy control socket, for the lines and exit statuses the pages quote. The relay and the run helpers of `tests/relay_fetch_end_to_end_test.rs` moved to `tests/support/fake_relay.rs`, which both files use. `KNOWN_GAPS` went from 23 pages to 16.
+
 ## [0.5.250] - 2026-11-13
 
 ### Changed
