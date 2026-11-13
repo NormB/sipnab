@@ -28,7 +28,7 @@
 //!
 //! # The layout of release 0.5.249
 //!
-//! Release 0.5.249 wrote
+//! Releases 0.5.249 and 0.5.250 wrote
 //! `calls/date=YYYY-MM-DD/member=<id>/<first>-<last>-<stream>-<seq>.sealed`
 //! ([`Partition`], [`FileName`]): one file for each day and member of a
 //! filing, 2,880,000 files a day for 2,000 members at 60 seconds. No build

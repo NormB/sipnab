@@ -1407,7 +1407,7 @@ answer with this page.
   }
   ```
 
-  In 0.5.249 the reason started with a second copy of the path.
+  In 0.5.249 and 0.5.250 the reason started with a second copy of the path.
 
   - `did not authenticate`, `was truncated` or `was cut at its end`: the file
     changed after the center wrote it. Restore the file from a backup, or
@@ -1506,9 +1506,10 @@ filing. The names hold no member id, no count and no part of a record. In
 release 0.5.249 each member had a directory `member=<id>`, so a listing
 showed every member's id and the times at which each member had new records.
 
-**Files that release 0.5.249 wrote.** Release 0.5.249 wrote call records
-under `calls/date=YYYY-MM-DD/member=<id>/`, one file for each member and
-filing. This release writes no file there and does not move or rewrite the
+**Files that release 0.5.249 wrote.** Releases 0.5.249 and 0.5.250 wrote
+call records under `calls/date=YYYY-MM-DD/member=<id>/`, one file for each
+member and filing. What this page says of the files of release 0.5.249 is
+true of the files of 0.5.250 too. This release writes no file there and does not move or rewrite the
 files that are there:
 
 - `GET /v1/fleet/calls` answers their rows together with the rows of the new
@@ -1520,7 +1521,8 @@ files that are there:
 - The member ids in those paths stay on disk until the day passes
   `--calls-retention-days`.
 
-**Count the files, and check the inodes.** A center of release 0.5.249 with
+**Count the files, and check the inodes.** A center of release 0.5.249 or
+0.5.250 with
 many members wrote many small files: one for each member with a new call
 record in each filing, which for 2,000 such members at 60 seconds is
 2,880,000 files a day. A file system holds a fixed number of inodes, and a
