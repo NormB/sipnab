@@ -24,7 +24,8 @@ calls behind the media on a relay, see
   already listens on, its `listen-ng` setting. Every request only reads:
   `statistics`, `list` and `query`. Nothing here can create, change or delete
   a call.
-- **No change to the SIP proxy, Homer or anything else.**
+- **No change on any other system.** The SIP proxy, Homer and the phones stay
+  as they are.
 - **The control address must be reachable from sipnab.** rtpengine's control
   protocol has no authentication, so run sipnab on the relay's own machine, or
   on a host your firewall already lets reach `listen-ng`.
@@ -554,7 +555,12 @@ they can belong to an earlier call on the same port.
 
 ### Check that it worked
 
-- `--relay-sessions` exits 0, and its second line starts `reachable;`.
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 127.0.0.1:22222 --relay-sessions 2>/dev/null; echo "exit $?"
+```
+
+- `--relay-sessions` exits 0, so the last line is `exit 0`, and its second
+  line starts `reachable;`.
 - Every call the relay holds is in the answer, as a row with verdicts or as
   `not queried`.
 - On a call with audio both ways, both directions read `flowing`. If they do

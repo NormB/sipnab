@@ -1833,15 +1833,18 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // export failures), vcon-harness.md +3 and vcon-server.md +2 (their
     // prerequisites), vcon-store.md +1 and vcon-sipnab.md +1 (their
     // prerequisites), tls-capture.md +1 (the row for holes in TCP streams).
-    // 2637 -> 2643 (fleet heartbeat history): +6. fleet.md +5 (one from
+    // 2637 -> 2642 (DOCS-HOWTO-GAP, seventh batch, +5): one link in the
+    // prerequisites of each of rtpengine.md, rtpengine-relay.md,
+    // rtpproxy-relay.md, rtpengine-sipnab.md and rtpproxy-sipnab.md.
+    // 2642 -> 2648 (fleet heartbeat history): +6. fleet.md +5 (one from
     // "Keep call history at the center" to the new "Keep heartbeat history
     // at the center", and four inside the new section: two to "Keep call
     // history at the center", two to "Run a fleet center"), cli-reference.md
     // +1 (the new section).
-    // 2643 -> 2644 (one history file for each filing): +1 in fleet.md, from
+    // 2648 -> 2649 (one history file for each filing): +1 in fleet.md, from
     // "Keep heartbeat history at the center" to the new section "The files
     // of the history store".
-    const EXPECTED_WIKI_LINKS: usize = 2644;
+    const EXPECTED_WIKI_LINKS: usize = 2649;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

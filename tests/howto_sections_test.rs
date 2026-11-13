@@ -191,13 +191,6 @@ const KNOWN_GAPS: &[(&str, &[Part])] = &[
     ("opensips-sipnab", &[Prerequisites, Verify]),
     ("prometheus", &[OtherSystems, Verify]),
     ("prometheus-sipnab", &[Prerequisites, Verify]),
-    ("relay-engines", &[OtherSystems, Verify]),
-    ("relay-statistics", &[OtherSystems, Verify]),
-    ("rtpengine", &[Prerequisites, Troubleshoot]),
-    ("rtpengine-relay", &[OtherSystems, Verify]),
-    ("rtpengine-sipnab", &[Prerequisites, Verify]),
-    ("rtpproxy-relay", &[OtherSystems, Verify]),
-    ("rtpproxy-sipnab", &[Prerequisites, Verify]),
     ("tfps", &[Prerequisites]),
     ("tfps-sipnab", &[Prerequisites]),
 ];
