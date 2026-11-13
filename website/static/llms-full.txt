@@ -73319,6 +73319,21 @@ This guide sets up both against the stack from
 The sipnab as a second receiver step differs for Kamailio, and says how. The
 sipnab as a source for Homer step is the same for both.
 
+## Before you start
+
+- **The stack from [Add Homer to your voice stack](homer.md),** with its test
+  call stored in Homer. The steps here reuse its SIPp files in `~/sipp`.
+- **root on each machine that runs sipnab.** The steps use `sudo`.
+- **On the other system that sends HEP, your SIP server:**
+  - OpenSIPS gains a second HEP destination, and the step restarts it.
+  - Kamailio either does not change, or its `duplicate_uri` moves from Homer
+    to sipnab. The step says which.
+- **On the Homer machine:**
+  - Nothing changes when sipnab is a second receiver.
+  - When sipnab is a source on a second machine, the Homer machine's firewall
+    must let that machine reach UDP port 9060.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01, with
@@ -73576,6 +73591,29 @@ from anyone who can reach port 9060. So open that port only to:
 
 - your SIP servers,
 - the machines where sipnab forwards.
+
+## Check that it worked
+
+**As a second receiver.** Run the listener again, and place a test call while
+it runs:
+
+```bash
+sudo sipnab -N -L 127.0.0.1:9062 --duration 30 --report --hep-senders
+```
+
+- The report lists the call as `Completed`.
+- The line under `HEP senders` ends with `refused 0`.
+- The table has a row for your SIP server's capture id, `hep:101@127.0.0.1`
+  with OpenSIPS on the same machine.
+
+**As a source.** The count query of
+[sipnab as a source for Homer](#sipnab-as-a-source-for-homer) has a row for
+capture id `2002`.
+
+- A row for 101 and none for 2002 means that Homer did not receive sipnab's
+  copies.
+- A HEP listener names what sipnab forwards in the same way. It lists the
+  sender as `hep:2002@` and the address the copies came from.
 
 ## When something does not work
 
@@ -74333,6 +74371,22 @@ The proxy is one of these:
 
 sipnab reads the calls off the wire, so every step is the same for each.
 
+## Before you start
+
+- **The stack from
+  [Add Prometheus and Grafana to your voice stack](prometheus.md),** with its
+  test call counted. The steps here reuse its SIPp files in `~/sipp` and its
+  `/opt/monitoring` directory.
+- **root on the machine that runs sipnab.** The steps use `sudo`.
+- **On the other system, Prometheus,** the Scrape sipnab step adds a `sipnab`
+  job to `prometheus.yml` and restarts Prometheus. Grafana gains one
+  dashboard.
+- **With Prometheus on another machine,** the firewall between the two opens
+  sipnab's metrics port to Prometheus's address.
+  [Scrape sipnab from another machine](#scrape-sipnab-from-another-machine)
+  has the steps.
+- **On the SIP proxy, the phones and the carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-09-28, with
@@ -74575,6 +74629,25 @@ sudo systemctl restart sipnab
 
 The Scrape sipnab step then prints three targets, `opensips`, `kamailio` and
 `sipnab`, all `up`. A call through either proxy adds one to sipnab's count.
+
+## Check that it worked
+
+After a test call, ask sipnab's endpoint and then Prometheus:
+
+```bash
+# Run all of these, in order.
+curl -s 127.0.0.1:9091/metrics | grep -c '^sipnab_'
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=sum(sipnab_dialogs_total{state="completed"})' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["result"][0]["value"][1])'
+```
+
+- The first line counts the series sipnab serves. Zero, or no answer, means
+  that the endpoint is not up on that port.
+- The second prints how many calls sipnab saw complete, as Prometheus stored
+  it. It is 1 after the first test call.
+- Started with `SIPNAB_LOG=info` in its environment, sipnab also logs
+  `Prometheus metrics server listening on 127.0.0.1:9091` once the endpoint
+  is up.
 
 ## When something does not work
 
@@ -78709,6 +78782,17 @@ same `scanner_detected` lines, and sipnab sends nothing to the scanner. This
 option is newer than the tests below. See
 [Detect scanners without answering them](examples.md#detect-scanners-without-answering-them).
 
+## Before you start
+
+- **The machine as [Ban SIP scanners with fail2ban](fail2ban.md) leaves it**
+  before its uninstall: OpenSIPS, fail2ban, nftables and the two test
+  addresses.
+- **root on that machine.** The steps use `sudo`.
+- **No other system changes.** The ban is in this machine's own firewall.
+- **What a scanner sees does change with `--kill-scanner`:** sipnab answers
+  its requests with a `200 OK` that carries your SIP server's address. With
+  `--kill-scanner-detect-only` sipnab sends nothing.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01. So did every
@@ -79015,6 +79099,22 @@ To remove sipnab too:
 ```bash
 sudo apt-get purge -y sipnab
 ```
+
+## Check that it worked
+
+After the scanner's requests of
+[Watch sipnab's lines become a ban](#watch-sipnabs-lines-become-a-ban):
+
+```bash
+# Run all of these, in order.
+sudo grep -c 'scanner_detected src=198.51.100.60 ' /var/log/sipnab.log
+sudo fail2ban-client status sipnab-scanner
+```
+
+- The first line counts sipnab's lines for the scanner. It is 5 after the
+  five requests of that step.
+- The jail's `Banned IP list:` names `198.51.100.60`.
+- A count of 0 means that sipnab wrote nothing. See the second item below.
 
 ## When something does not work
 

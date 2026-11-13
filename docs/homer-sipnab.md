@@ -24,6 +24,21 @@ This guide sets up both against the stack from
 The sipnab as a second receiver step differs for Kamailio, and says how. The
 sipnab as a source for Homer step is the same for both.
 
+## Before you start
+
+- **The stack from [Add Homer to your voice stack](homer.md),** with its test
+  call stored in Homer. The steps here reuse its SIPp files in `~/sipp`.
+- **root on each machine that runs sipnab.** The steps use `sudo`.
+- **On the other system that sends HEP, your SIP server:**
+  - OpenSIPS gains a second HEP destination, and the step restarts it.
+  - Kamailio either does not change, or its `duplicate_uri` moves from Homer
+    to sipnab. The step says which.
+- **On the Homer machine:**
+  - Nothing changes when sipnab is a second receiver.
+  - When sipnab is a source on a second machine, the Homer machine's firewall
+    must let that machine reach UDP port 9060.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01, with
@@ -281,6 +296,29 @@ from anyone who can reach port 9060. So open that port only to:
 
 - your SIP servers,
 - the machines where sipnab forwards.
+
+## Check that it worked
+
+**As a second receiver.** Run the listener again, and place a test call while
+it runs:
+
+```bash
+sudo sipnab -N -L 127.0.0.1:9062 --duration 30 --report --hep-senders
+```
+
+- The report lists the call as `Completed`.
+- The line under `HEP senders` ends with `refused 0`.
+- The table has a row for your SIP server's capture id, `hep:101@127.0.0.1`
+  with OpenSIPS on the same machine.
+
+**As a source.** The count query of
+[sipnab as a source for Homer](#sipnab-as-a-source-for-homer) has a row for
+capture id `2002`.
+
+- A row for 101 and none for 2002 means that Homer did not receive sipnab's
+  copies.
+- A HEP listener names what sipnab forwards in the same way. It lists the
+  sender as `hep:2002@` and the address the copies came from.
 
 ## When something does not work
 

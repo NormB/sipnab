@@ -72,6 +72,9 @@ const PROMETHEUS: &str = include_str!("../docs/prometheus.md");
 const FAIL2BAN: &str = include_str!("../docs/fail2ban.md");
 const TFPS: &str = include_str!("../docs/tfps.md");
 const TFPS_SIPNAB: &str = include_str!("../docs/tfps-sipnab.md");
+const HOMER_SIPNAB: &str = include_str!("../docs/homer-sipnab.md");
+const PROMETHEUS_SIPNAB: &str = include_str!("../docs/prometheus-sipnab.md");
+const FAIL2BAN_SIPNAB: &str = include_str!("../docs/fail2ban-sipnab.md");
 const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const HARNESS_COMPOSE: &str = include_str!("../harness/docker-compose.yml");
@@ -5795,6 +5798,237 @@ fn the_tfps_sipnab_prerequisites_name_the_release_and_the_other_system() -> Resu
         &one_line(TFPS_SIPNAB),
         "On the TFPS machine, a dedicated account's key can run `tfps_ctl` and nothing else.",
         "tfps-sipnab",
+    );
+    Ok(())
+}
+
+// ── homer-sipnab, prometheus-sipnab, fail2ban-sipnab ─────────────────────
+
+/// The capture with a scanner's `OPTIONS` and a burst of refused REGISTERs.
+const SCANNER_CAPTURE: &str = "tests/fixtures/sip-scanner-and-register-flood.pcap";
+
+/// The prerequisites of the three pages say what changes on the other
+/// system each page touches, and each check repeats a command of the page's
+/// own steps.
+#[test]
+fn the_three_pages_beside_a_collector_say_what_changes_and_check_with_their_own_commands()
+-> Result<(), TestError> {
+    // (page, text, what the prerequisites name, the step that holds the
+    // command, the heading after that step, the command the check repeats)
+    for (page, doc, named, step, after_step, command) in [
+        (
+            "homer-sipnab",
+            HOMER_SIPNAB,
+            ["other system", "second HEP destination", "UDP port 9060"],
+            "## sipnab as a second receiver",
+            "## sipnab as a source for Homer",
+            "sudo sipnab -N -L 127.0.0.1:9062 --duration 30 --report --hep-senders",
+        ),
+        (
+            "prometheus-sipnab",
+            PROMETHEUS_SIPNAB,
+            ["other system", "`prometheus.yml`", "`sipnab` job"],
+            "## Place a call and watch sipnab count it",
+            "## Scrape sipnab from another machine",
+            "query=sum(sipnab_dialogs_total{state=\"completed\"})",
+        ),
+        (
+            "fail2ban-sipnab",
+            FAIL2BAN_SIPNAB,
+            ["other system", "`200 OK`", "`--kill-scanner-detect-only`"],
+            "## Watch sipnab's lines become a ban",
+            "## Watch a registration flood become a ban",
+            "sudo fail2ban-client status sipnab-scanner",
+        ),
+    ] {
+        let needs = one_line(between(doc, "## Before you start", "## Tested on")?);
+        for text in named {
+            page_says(&needs, text, page);
+        }
+        page_says(between(doc, step, after_step)?, command, page);
+        let check = between(doc, CHECK, TROUBLESHOOT)?;
+        page_says(check, "```", page);
+        page_says(check, command, page);
+    }
+    Ok(())
+}
+
+/// The check of the Homer page says how a HEP listener lists what
+/// `-H <address> --hep-id 2002` sends: under the capture id, with the address
+/// it came from.
+#[cfg(all(unix, feature = "mcp-http", feature = "hep"))]
+#[test]
+fn what_sipnab_forwards_with_a_capture_id_arrives_under_the_name_the_homer_page_gives()
+-> Result<(), TestError> {
+    let check = one_line(between(HOMER_SIPNAB, CHECK, TROUBLESHOOT)?);
+    page_says(&check, "`hep:2002@`", "homer-sipnab");
+    page_says(
+        between(HOMER_SIPNAB, "## sipnab as a source for Homer", CHECK)?,
+        "sudo sipnab -N -d any -H 192.0.2.10:9060 --hep-id 2002 --duration 30",
+        "homer-sipnab",
+    );
+    let host = CaptureHost::start()?;
+    let session = mcp::establish_session(&host.mcp)?;
+    let sender = sipnab(&[
+        "-N",
+        "--no-cli-print",
+        "--quiet",
+        "-I",
+        &capture(PROBLEM_CALL)?.display().to_string(),
+        "-H",
+        &host.hep,
+        "--hep-id",
+        "2002",
+    ])?;
+    exited(&sender, 0);
+    // The listener reads the datagrams after the sender exits: ask until it
+    // has listed the sender, within a bound.
+    let mut seen = serde_json::Value::Null;
+    for id in 2..400 {
+        seen = host.senders(&session, id)?;
+        if seen["senders"][0]["source"].is_string() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert_eq!(
+        seen["senders"][0]["source"], "hep:2002@127.0.0.1",
+        "the capture id the sender was given, and its address: {seen}"
+    );
+    Ok(())
+}
+
+/// The check of the Prometheus page quotes the line sipnab logs once its
+/// metrics endpoint is up, with the address of the page's drop-in.
+#[cfg(all(unix, feature = "hep", feature = "metrics"))]
+#[test]
+fn a_run_with_metrics_logs_the_line_the_prometheus_page_quotes() -> Result<(), TestError> {
+    let check = one_line(between(PROMETHEUS_SIPNAB, CHECK, TROUBLESHOOT)?);
+    page_says(
+        &check,
+        "Prometheus metrics server listening on 127.0.0.1:9091",
+        "prometheus-sipnab",
+    );
+    let done = fake_relay::run_to_exit(&[
+        "-L",
+        "127.0.0.1:0",
+        "--metrics",
+        "127.0.0.1:0",
+        "--duration",
+        "1",
+    ])?;
+    assert_eq!(
+        done.code,
+        Some(0),
+        "the run ends by itself: {}",
+        done.dump()
+    );
+    assert!(
+        done.stderr
+            .lines()
+            .any(|line| line.contains("Prometheus metrics server listening on 127.0.0.1:")),
+        "the endpoint logs the address it bound: {}",
+        done.dump()
+    );
+    Ok(())
+}
+
+/// The first troubleshooting item of the Prometheus page quotes what sipnab
+/// says when another process holds the metrics port. The test holds the port
+/// for the whole run, so nothing else can be given it.
+#[cfg(all(unix, feature = "hep", feature = "metrics"))]
+#[test]
+fn a_metrics_port_another_process_holds_gives_the_message_the_prometheus_page_quotes()
+-> Result<(), TestError> {
+    let listed = one_line(section(PROMETHEUS_SIPNAB, TROUBLESHOOT)?);
+    page_says(
+        &listed,
+        "Failed to bind metrics server on 127.0.0.1:9090: Address already in use",
+        "prometheus-sipnab",
+    );
+    let held = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let addr = held.local_addr()?.to_string();
+    let done =
+        fake_relay::run_to_exit(&["-L", "127.0.0.1:0", "--metrics", &addr, "--duration", "1"])?;
+    assert_ne!(
+        done.code,
+        Some(0),
+        "a run that cannot serve its metrics does not end well: {}",
+        done.dump()
+    );
+    let wanted = format!("Failed to bind metrics server on {addr}: Address already in use");
+    assert!(
+        done.stderr.contains(&wanted),
+        "the message names the address and the cause: {}",
+        done.dump()
+    );
+    // The listener is bound until this function returns: nothing closes it.
+    assert_eq!(
+        held.local_addr()?.to_string(),
+        addr,
+        "the test still holds the port the run was refused"
+    );
+    Ok(())
+}
+
+/// The page shows a `scanner_detected` line. The scanner detector writes one
+/// of that shape for the scanner of the sample capture.
+#[test]
+fn the_scanner_line_of_the_fail2ban_page_is_the_one_the_detector_writes() -> Result<(), TestError> {
+    let what = section(FAIL2BAN_SIPNAB, "## What sipnab writes")?;
+    page_says(
+        what,
+        "scanner_detected src=198.51.100.60 ua=\"friendly-scanner\" method=\"OPTIONS\"",
+        "fail2ban-sipnab",
+    );
+    let run = sipnab(&[
+        "-N",
+        "--no-cli-print",
+        "-I",
+        &capture(SCANNER_CAPTURE)?.display().to_string(),
+        "--kill-scanner",
+        "--fail2ban",
+    ])?;
+    exited(&run, 0);
+    let out = stdout(&run);
+    let line = out
+        .lines()
+        .find(|line| line.contains("scanner_detected"))
+        .ok_or_else(|| format!("no scanner line: {out}"))?;
+    assert!(
+        line.ends_with(
+            ": scanner_detected src=203.0.113.42 ua=\"friendly-scanner\" method=\"OPTIONS\""
+        ),
+        "the fields and their order are the page's: {line}"
+    );
+    assert!(
+        line.contains(" sipnab["),
+        "the line names the program and its process, as the page's does: {line}"
+    );
+    Ok(())
+}
+
+/// The page quotes what sipnab warns of when `--fail2ban` has no detector
+/// beside it, and says such a run writes no line.
+#[test]
+fn fail2ban_output_without_a_detector_warns_as_the_page_says_and_writes_nothing()
+-> Result<(), TestError> {
+    let what = one_line(section(FAIL2BAN_SIPNAB, "## What sipnab writes")?);
+    let quoted = "no detector is running, so this run will emit nothing";
+    page_says(&what, quoted, "fail2ban-sipnab");
+    let run = sipnab(&[
+        "-N",
+        "--no-cli-print",
+        "-I",
+        &capture(SCANNER_CAPTURE)?.display().to_string(),
+        "--fail2ban",
+    ])?;
+    exited(&run, 0);
+    printed(&one_line(&stderr(&run)), quoted);
+    let out = stdout(&run);
+    assert!(
+        !out.contains("scanner_detected") && !out.contains("reg_flood"),
+        "no detector ran, so no line: {out}"
     );
     Ok(())
 }

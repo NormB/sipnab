@@ -23,6 +23,22 @@ The proxy is one of these:
 
 sipnab reads the calls off the wire, so every step is the same for each.
 
+## Before you start
+
+- **The stack from
+  [Add Prometheus and Grafana to your voice stack](prometheus.md),** with its
+  test call counted. The steps here reuse its SIPp files in `~/sipp` and its
+  `/opt/monitoring` directory.
+- **root on the machine that runs sipnab.** The steps use `sudo`.
+- **On the other system, Prometheus,** the Scrape sipnab step adds a `sipnab`
+  job to `prometheus.yml` and restarts Prometheus. Grafana gains one
+  dashboard.
+- **With Prometheus on another machine,** the firewall between the two opens
+  sipnab's metrics port to Prometheus's address.
+  [Scrape sipnab from another machine](#scrape-sipnab-from-another-machine)
+  has the steps.
+- **On the SIP proxy, the phones and the carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-09-28, with
@@ -265,6 +281,25 @@ sudo systemctl restart sipnab
 
 The Scrape sipnab step then prints three targets, `opensips`, `kamailio` and
 `sipnab`, all `up`. A call through either proxy adds one to sipnab's count.
+
+## Check that it worked
+
+After a test call, ask sipnab's endpoint and then Prometheus:
+
+```bash
+# Run all of these, in order.
+curl -s 127.0.0.1:9091/metrics | grep -c '^sipnab_'
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=sum(sipnab_dialogs_total{state="completed"})' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["result"][0]["value"][1])'
+```
+
+- The first line counts the series sipnab serves. Zero, or no answer, means
+  that the endpoint is not up on that port.
+- The second prints how many calls sipnab saw complete, as Prometheus stored
+  it. It is 1 after the first test call.
+- Started with `SIPNAB_LOG=info` in its environment, sipnab also logs
+  `Prometheus metrics server listening on 127.0.0.1:9091` once the endpoint
+  is up.
 
 ## When something does not work
 

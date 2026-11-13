@@ -72,6 +72,17 @@ same `scanner_detected` lines, and sipnab sends nothing to the scanner. This
 option is newer than the tests below. See
 [Detect scanners without answering them](@/docs/cookbook.md#detect-scanners-without-answering-them).
 
+## Before you start
+
+- **The machine as [Ban SIP scanners with fail2ban](@/docs/fail2ban.md) leaves it**
+  before its uninstall: OpenSIPS, fail2ban, nftables and the two test
+  addresses.
+- **root on that machine.** The steps use `sudo`.
+- **No other system changes.** The ban is in this machine's own firewall.
+- **What a scanner sees does change with `--kill-scanner`:** sipnab answers
+  its requests with a `200 OK` that carries your SIP server's address. With
+  `--kill-scanner-detect-only` sipnab sends nothing.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01. So did every
@@ -378,6 +389,22 @@ To remove sipnab too:
 ```bash
 sudo apt-get purge -y sipnab
 ```
+
+## Check that it worked
+
+After the scanner's requests of
+[Watch sipnab's lines become a ban](#watch-sipnab-s-lines-become-a-ban):
+
+```bash
+# Run all of these, in order.
+sudo grep -c 'scanner_detected src=198.51.100.60 ' /var/log/sipnab.log
+sudo fail2ban-client status sipnab-scanner
+```
+
+- The first line counts sipnab's lines for the scanner. It is 5 after the
+  five requests of that step.
+- The jail's `Banned IP list:` names `198.51.100.60`.
+- A count of 0 means that sipnab wrote nothing. See the second item below.
 
 ## When something does not work
 
