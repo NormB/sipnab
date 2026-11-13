@@ -43,6 +43,23 @@ edits the proxy's configuration.
 The [rtpengine reference](@/docs/rtpengine.md) explains what sipnab does with the
 relay's answers, and how far it trusts them.
 
+## Before you start
+
+- **The stack from
+  [Add rtpengine to your voice stack](@/docs/rtpengine-relay.md)**, with its test
+  call working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on the machine that runs rtpengine.** sipnab captures there, and the
+  steps use `sudo`.
+- **On the other system, rtpengine:**
+  - Nothing changes for `--rtpengine-control`. sipnab asks on the `listen-ng`
+    address rtpengine already has. No command sipnab sends changes a call.
+  - The rtpengine on its own machine step adds four `homer` lines, with
+    `homer-enable-ng = true` among them, and restarts rtpengine.
+- **On the SIP proxy,** nothing changes while it shares the relay's machine.
+  The rtpengine on its own machine step changes one line of its
+  configuration, the address of the test callee.
+- **On the phones and carriers,** nothing changes.
+
 ## What sipnab asks rtpengine
 
 sipnab sends rtpengine three of its commands, and no others. All three only
@@ -296,6 +313,27 @@ Run sipnab on the relay's machine rather than asking across the network.
 
 - rtpengine's control protocol has no authentication.
 - Only your SIP proxy should reach it.
+
+## Check that it worked
+
+Start a test call as in the Name a call that was already up step, then run
+sipnab with the relay's control address:
+
+```bash
+sudo sipnab -N -d any --rtpengine-control 127.0.0.1:2223 --duration 6 --report \
+  "portrange 5060-5061 or udp portrange 30000-39999"
+```
+
+- Before the capture opens, sipnab logs what the relay answered. With one
+  call up, the line is:
+
+  ```text
+  rtpengine at 127.0.0.1:2223: 1 call(s) enumerated, complete; queried 1 of them, 4 relay port(s) now attributable
+  ```
+
+- The report names the call under `Calls named by a media relay`, with the
+  Call-ID `rtpengine-ctl list sessions all` prints.
+- The report has no `Orphaned Streams:` section.
 
 ## When something does not work
 

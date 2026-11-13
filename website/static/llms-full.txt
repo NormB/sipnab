@@ -7309,7 +7309,7 @@ only.
 | `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. It lifts only the bans it placed. | The system that decides to block a source. |
 | `admin` | Everything `actions` reaches, and it also lifts a ban another caller placed. | An operator who must be able to lift any ban. |
 | `audio` | The live-audio routes a `live_audio` vCon rule serves, and nothing else. | A speech-to-text consumer. |
-| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. On a fleet center it also reads `GET /v1/fleet/members`, and not the call records: `GET /v1/fleet/calls` answers it `401`. | A fleet controller running [`sipnab fleet inventory`](fleet.md). |
+| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. On a fleet center it also reads `GET /v1/fleet/members` and a member's heartbeats, `GET /v1/fleet/members/{id}/history`, and not the call records: `GET /v1/fleet/calls` answers it `401`. | A fleet controller running [`sipnab fleet inventory`](fleet.md). |
 | `fleet-report` | Nothing on this API: every route returns `401`. A fleet center's `POST /v1/fleet/ingest`, which no other scope reaches. | A fleet member reporting to [a fleet center](fleet.md#run-a-fleet-center), minted with the center's key and the member's name as `--token-id`. |
 
 The `read` scope is for MCP tokens. Minting it with `--api-signing-key`
@@ -13425,7 +13425,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.249 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.250 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13448,7 +13448,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.249` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.250` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13637,7 +13637,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.249) | Plugin | `Recommends` |
+| Artifact (0.5.250) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13677,11 +13677,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.249 for the
+it first, in the same shell, to the release you want, e.g. 0.5.250 for the
 latest:
 
 ```bash
-VERSION=0.5.249
+VERSION=0.5.250
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13821,13 +13821,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.249, as in
+you want, e.g. 0.5.250, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.249
+   VERSION=0.5.250
    ```
 
 - Download the package:
@@ -13944,25 +13944,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.249-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.250-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.249-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.250-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.249-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.250-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.249-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.250-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14448,14 +14448,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.249
+docker pull ghcr.io/normb/sipnab:0.5.250
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.249` | That release |
+| `0.5.250` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14493,7 +14493,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.249 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.250 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14506,11 +14506,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.249 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.250 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.249` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.249`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.250` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.250`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14708,7 +14708,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.250 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.251 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -14932,7 +14932,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.249
+docker pull ghcr.io/normb/sipnab:0.5.250
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -15137,6 +15137,27 @@ it belongs to. This page fixes that.
 A call that was already up when the capture opened left no control message for
 the mirror to carry. So `--rtpengine-control` asks the relay for that one
 directly.
+
+## Before you start
+
+- **sipnab on the relay's host, with the right to capture.** Capturing an
+  interface needs root or the capture capabilities `sudo sipnab --setup-caps`
+  grants once. Reading a capture file needs neither.
+- **A build with the `hep` feature.** sipnab reads the mirror as HEP. Every
+  release binary has the feature, and `sipnab --version` lists `hep` when the
+  binary carries it.
+- **On the other system, rtpengine, one setting at most.**
+  - rtpengine that already mirrors its control plane to Homer needs no
+    change.
+  - rtpengine that reports nowhere needs `homer-enable-ng = true` and a
+    `homer` destination, then a restart. [Set it up](#set-it-up) has the
+    lines.
+  - rtpengine takes one Homer destination. Pointing it at sipnab takes it
+    away from a collector it feeds.
+- **Nothing changes on the SIP proxy, on Homer or on the phones.**
+- **For `--rtpengine-control`:** the relay's `listen-ng` address, reachable
+  from sipnab, and a live capture. rtpengine's control protocol has no
+  authentication, so run sipnab on the relay's own host.
 
 ## The problem, on a relay capture
 
@@ -15385,8 +15406,12 @@ Place one call through the relay, then check that sipnab saw control traffic:
 sudo sipnab -N -d eth0 --report
 ```
 
-A working setup names the call under **Calls named by a media relay**. If it
-does not, work down this list:
+A working setup names the call under **Calls named by a media relay**, and
+the report has no `Orphaned Streams:` section for the relay's media.
+
+## When sipnab does not name the call
+
+Work down this list:
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -23625,14 +23650,14 @@ It exits `0` when every instance answered and there is no finding, `1` when an i
 - `--tls-cert <FILE>` and `--tls-key <FILE>`: serve HTTPS with this certificate chain and key. The key must be readable by this user only.
 - `--tls-client-ca <FILE>`: require each member to present a TLS client certificate from a CA in this PEM file, as well as its token (mutual TLS). Needs `--tls-cert` and `--tls-key`. Alone it means `--tls-client-auth required`. The rules are those of `--api-tls-client-ca`. How-to: [Require client certificates](mtls.md#require-member-certificates-on-a-fleet-center).
 - `--tls-client-auth <off|optional|required>`: when the center asks for a client certificate. Default `required` with `--tls-client-ca`, else `off`. sipnab refuses `optional` or `required` without `--tls-client-ca`. `off` wins over `--tls-client-ca`.
-- `--retention-hours <HOURS>`: hours a member stays after its last heartbeat, 1 to 87600. Default `72`.
+- `--retention-hours <HOURS>`: hours a member stays after its last heartbeat, 1 to 87600. Default `72`. A build with the history store keeps heartbeats that long too, by whole UTC days.
 - `--silent-after-missed <N>`: a member is silent once more than this many of its heartbeat intervals pass without one, 1 to 1000. Default `3`.
 - `--allowed-host <HOST>`: a `Host` value to serve beyond the loopback names and the bound address, such as the name members use for the center (repeatable). `*` turns the check off.
 - `--rate-limit-per-peer <N>`: requests per second one address may make before it gets `503`. `0` turns the limit off. Default `100`.
 - `--calls-retention-days <DAYS>`: days of call records the history store keeps, 1 to 548. Default `90`. The center removes the days past it at start and every minute. A build without the history store does not use it.
-- `--calls-flush-secs <SECS>`: seconds between two filings of the acknowledged call records into the history store, 1 to 3600. Default `60`. A build without the history store does not use it.
+- `--calls-flush-secs <SECS>`: seconds between two filings of the acknowledged call records and heartbeats into the history store, 1 to 3600. Default `60`. Each filing writes one file for each class and day, whatever the number of members, so `60` is at most 1,440 files a day in each class. One question opens at most 4,096 files: about 2.8 days at `60`, 28 days at `600`. A build without the history store does not use it.
 
-A build whose `--version` lists `fleet-store` has the history store: it keeps the call records members push in sealed Parquet files under `<store>.parquet` and answers `GET /v1/fleet/calls` to a `full` token. A build without it logs `this build has no history store` at start, and that route answers `501`. [Keep call history at the center](fleet.md#keep-call-history-at-the-center) is the how-to.
+A build whose `--version` lists `fleet-store` has the history store: it keeps the call records members push and every heartbeat in sealed Parquet files under `<store>.parquet`, answers `GET /v1/fleet/calls` to a `full` token and `GET /v1/fleet/members/{id}/history` to an `inventory` token, and rebuilds its member list from the heartbeats when it starts without its store file. A build without it logs `this build has no history store` at start, and those routes answer `501`. [Keep call history at the center](fleet.md#keep-call-history-at-the-center) and [Keep heartbeat history at the center](fleet.md#keep-heartbeat-history-at-the-center) are the how-tos.
 
 It exits `0` once stopped, and `2` when it refuses an argument, the signing key, the store or the listener.
 
@@ -29672,11 +29697,13 @@ file or directory and the system's reason.
 **What to do:** Check that the center's user can read the intake and every
 directory under `<store>.parquet`.
 
-### `fleet center: past --calls-retention-days {retention_days} and not removed: {left}`
+### `fleet center: past {past} and not removed: {left}`
 
 A warning. A day of the history store is past its retention, and the center
 left something in it: a file it did not write, or a file or directory the
-system refused to remove. The line names it and the reason.
+system refused to remove. The line names the setting, `--calls-retention-days
+<n>` for call records or `--retention-hours <n>` for heartbeats, then what
+the center left and the reason.
 
 **What to do:** Remove the named file by hand, or fix its permissions. The
 center removes the day's directory once it is empty.
@@ -29684,10 +29711,83 @@ center removes the day's directory once it is empty.
 ### `fleet center: retention of the history store: {e}`
 
 A warning. The center could not list the days of the history store to remove
-the ones past `--calls-retention-days`. It removed nothing.
+the ones past `--calls-retention-days` or `--retention-hours`. It removed
+nothing of that class.
 
 **What to do:** Check that the center's user can read `<store>.parquet` and
-the `calls` directory in it.
+the `calls` and `members` directories in it.
+
+### `fleet center: the heartbeats were not filed and wait in the store file: {e}`
+
+A warning. The center could not write the heartbeats it acknowledged into the
+history store, for the reason at the end of the line. They stay in the store
+file and in the answers of `GET /v1/fleet/members/{id}/history`, and the
+center tries again after `--calls-flush-secs`. `failed_filings` in `GET
+/v1/fleet/members` counts these.
+
+**What to do:** Fix the cause the line ends with: a directory under
+`<store>.parquet/members` that the center cannot write, a full disk, or a
+file it cannot read. At most 64 MiB of heartbeats wait. Past that, and past
+`--retention-hours`, the oldest leave before a filing, and
+`heartbeats_removed` counts them.
+
+### `fleet center: the heartbeats could not be read: {e}`
+
+An error. `GET /v1/fleet/members/{id}/history` could not list the directories
+of the history store, and answered `503`. The line ends with the directory
+and the system's reason.
+
+**What to do:** Check that the center's user can read every directory under
+`<store>.parquet/members`.
+
+### `fleet center: the history store: {file} was not read for the member registry: {why}`
+
+A warning at start. The center compares its store file with the newest
+heartbeat files, and takes a member from the history when the store file
+holds nothing of it or an older heartbeat. The named file did not open, for
+the reason at the end of the line. The center starts, and lists the members
+of that file from its store file and from the files before it.
+
+**What to do:** Act on the reason as for a `refused` entry of `GET
+/v1/fleet/calls`: restore the file from a backup, give an earlier key with
+`--store-old-key-file`, or move the file out of the directory.
+
+### `fleet center: the member registry was rebuilt from the newest {} file(s) of heartbeats; {} older file(s) were not read`
+
+A warning at start. The center had no store file, or one older than the
+heartbeat history, and it read heartbeat files from the newest back to
+rebuild its member list. A rebuild opens at most 4,096 files
+(`MAX_FILES_PER_QUESTION`): about 2.8 days at the default
+`--calls-flush-secs 60`. The center does not list a member whose last
+heartbeat is in an older file until that member sends a heartbeat again.
+
+**What to do:** Nothing for members that still send. For a member that went
+silent before the files the center read, read its last heartbeat with `GET
+/v1/fleet/members/{id}/history`, with `from` and `to` around the time it was
+last seen. Restore the store file from a backup when one exists: a center
+whose store file holds its members reads one heartbeat file at start.
+
+### `fleet center: the positions of {restored} restored member(s) were moved past the call records of the newest {} file(s); {} older file(s) were not read`
+
+A warning at start, after the center took members from the heartbeat
+history. It moves each such member's position past the call records filed
+after that member's last heartbeat, so a record the member sends again is a
+duplicate. More than 4,096 call record files could hold such records, and the
+center read the newest 4,096.
+
+**What to do:** Nothing in most cases: a member sends again only the records
+the center did not acknowledge. When `GET /v1/fleet/calls` shows a call
+record of a restored member twice, both rows hold the same `stream` and
+`seq`. Count such a call once.
+
+### `fleet center: the member registry was not checked against {e}`
+
+A warning at start. The center could not list the directories of heartbeats
+in its history store, so it took no member from them. The line ends with the
+system's reason. The center starts with the members of its store file.
+
+**What to do:** Check that the center's user can read every directory under
+`<store>.parquet/members`.
 
 ### `the history store: {rel} exists and holds other rows; it is not replaced`
 
@@ -29700,15 +29800,27 @@ at another time. The center does not replace a file.
 the next filing write the waiting records. Tell us how the member came to
 send two records at one position of one stream.
 
-### `a call record of member '{}' was received at {at}, before 1970; the history store keeps no such row`
+### `a {} of member '{}' was received at {at}, before 1970; the history store keeps no such row`
 
-Printed after `the call records were not filed and stay in the intake:`. The
-center's clock was before 1970 when it took the record. The history store
-names files and prunes questions by the time of receipt, and keeps no time
-before 1970 or past the year 2262.
+Printed after `the call records were not filed and stay in the intake:` for
+a call record, or after `the heartbeats were not filed and wait in the store
+file:` for a heartbeat. The center's clock was before 1970 when it took the
+record. The history store names files and prunes questions by the time of
+receipt, and keeps no time before 1970 or past the year 2262.
 
-**What to do:** Set the center's clock. The record stays in the intake until
-`--retention-hours` removes it.
+**What to do:** Set the center's clock. A call record stays in the intake,
+and a heartbeat waits in the store file, until `--retention-hours` removes
+it.
+
+### `parquet: the file's schema is not the {} schema this build reads`
+
+A reason in the `refused` list of `GET /v1/fleet/calls` or `GET
+/v1/fleet/members/{id}/history`. The file opened under the store key, and the
+Parquet in it has other columns than this build writes for a call record or
+for a heartbeat. This build did not write it.
+
+**What to do:** Move the file out of the directory. Tell us which release
+wrote it.
 
 ### `{rel}: sealed layer: the file was written as '{written}' and is not at that path`
 
@@ -29792,6 +29904,14 @@ The `detail` of a `400` from `GET /v1/fleet/calls`: the query string holds a
 parameter the route does not take.
 
 **What to do:** Use `member`, `from`, `to`, `call_id` and `limit`.
+
+### `{} is not a parameter of this route; it takes from, to and limit`
+
+The `detail` of a `400` from `GET /v1/fleet/members/{id}/history`: the query
+string holds a parameter the route does not take. The member is the id in
+the path, and a heartbeat has no Call-ID.
+
+**What to do:** Use `from`, `to` and `limit`.
 
 ## Startup, privileges and the process
 
@@ -37315,7 +37435,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.250 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   sipnab 0.5.251 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -38017,7 +38137,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.250"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.251"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -38702,7 +38822,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.250",
+  "version": "0.5.251",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -39645,7 +39765,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.250"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.251"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -42056,11 +42176,15 @@ The outputs below come from a run on 2026-11-11 on one host, with a
 development build after 0.5.247: a center on `127.0.0.1:18447` over HTTP on
 loopback, with `--calls-flush-secs 5`, and two call records sent by hand as
 member `edge-a`. The commands name files as a deployment would, and the log
-lines show file names without the run's directory. The `WARN` line of a
-build without the history store comes from another run, on 2026-11-12: a
-center of a build with the features of the `-noaudio` packages, over HTTP on
-loopback. The test suite starts such a center in each build without the
-history store and compares its log line and its `501` answer with this page.
+lines show file names without the run's directory. A second run, on
+2026-11-12 with a development build after 0.5.249, gave the lines that
+changed in that build: the history store's start line, the `history` object
+of the members report (one call record and two heartbeats filed), and the
+answer for a changed file. The answer of step 3 shows `files_not_read` as
+that build answers it. The `WARN` line of a build without the history store
+is the text such a build logs. The test suite starts such a center in each
+build without the history store and compares its log line and its `501`
+answer with this page.
 
 **Before you start.**
 
@@ -42073,7 +42197,7 @@ history store and compares its log line and its `501` answer with this page.
   answers `501`:
 
   ```text
-  WARN sipnab::app::fleet_center: fleet center: this build has no history store (cargo feature fleet-store): call records wait in the intake, which holds at most 64 MiB and --retention-hours of them, and GET /v1/fleet/calls answers 501. The gnu tarballs, the .deb and .rpm packages that are not -noaudio, the macOS builds and the container image have the history store; the static musl tarballs and the -noaudio packages do not
+  WARN sipnab::app::fleet_center: fleet center: this build has no history store (cargo feature fleet-store): call records wait in the intake, which holds at most 64 MiB and --retention-hours of them, no heartbeat history is kept, and GET /v1/fleet/calls and GET /v1/fleet/members/{id}/history answer 501. The gnu tarballs, the .deb and .rpm packages that are not -noaudio, the macOS builds and the container image have the history store; the static musl tarballs and the -noaudio packages do not
   ```
 
 - **A center that takes call records, and members that push them**, as
@@ -42107,7 +42231,7 @@ history store and compares its log line and its `501` answer with this page.
    ```
 
    ```text
-   INFO sipnab::app::fleet_center: fleet center history store 'center.store.parquet': call records are kept 90 day(s)
+   INFO sipnab::app::fleet_center: fleet center history store 'center.store.parquet': call records are kept 90 day(s), heartbeats 72 hour(s)
    ```
 
    - `--calls-retention-days` takes 1 to 548. The center removes the days
@@ -42153,6 +42277,7 @@ history store and compares its log line and its `501` answer with this page.
      ],
      "complete": true,
      "count": 1,
+     "files_not_read": 0,
      "files_read": 1,
      "more": false,
      "refused": []
@@ -42173,10 +42298,31 @@ history store and compares its log line and its `501` answer with this page.
    `limit` to read the rest. A record is in the answer from the moment the
    center acknowledges it, before the center files it.
 
+   One question opens at most 4,096 files (`MAX_FILES_PER_QUESTION`), those
+   with the latest records first. When a question rules in more, the answer
+   holds what those files gave, `complete` is `false`, and `files_not_read`
+   counts the files left. The center writes one file for each filing and
+   day, which holds every member's records of that filing, so 4,096 files
+   are about 2.8 days at the default `--calls-flush-secs 60` (4,096 minutes),
+   whatever the number of members. To reach further back with one question:
+
+   - Give `from` and `to`. They rule files out by the day in the path and
+     the times in the name, so the center answers a window of up to 2.8
+     days whole, anywhere in the retention. Ask for a longer time one
+     window at a time.
+   - Or start the center with a longer `--calls-flush-secs`. At `600` one
+     question reaches 28 days (4,096 times 10 minutes). Records then wait up
+     to that long in the intake before the center files them; a question
+     reads the waiting records too.
+
+   `member` does not rule a file out: the center opens each file of the
+   window and reads only the part that can hold that member's records.
+
 **Verify.**
 
 - **[controller]** `GET /v1/fleet/members` reports what the history store
-  did since the center started. After one filing of two records:
+  did since the center started. After one filing of one call record and one
+  of two heartbeats:
 
   ```bash
   curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $READER_TOKEN" \
@@ -42184,9 +42330,13 @@ history store and compares its log line and its `501` answer with this page.
   ```
 
   ```json
-  {"available":true,"failed_filings":0,"files_written":1,"retention_days":90,"rows_filed":2}
+  {"available":true,"failed_filings":0,"files_written":1,"heartbeat_files_written":1,"heartbeats_filed":2,"heartbeats_removed":0,"heartbeats_waiting":0,"members_restored":0,"retention_days":90,"rows_filed":1}
   {"bytes":0,"call_records":0,"removed":0}
   ```
+
+  `files_written` and `rows_filed` count call records. The `heartbeat`
+  fields and `members_restored` are those of
+  [Keep heartbeat history at the center](#keep-heartbeat-history-at-the-center).
 
 - **[center]** The center logs each filing:
 
@@ -42194,23 +42344,24 @@ history store and compares its log line and its `501` answer with this page.
   INFO sipnab::app::fleet_center: fleet center: filed 2 call record(s) in 1 file(s) of the history store; 0 were in it already
   ```
 
-- **[center]** The files are under class, day and member. Each name holds
-  the first and the last receive time in the file, in milliseconds, and the
-  stream and position of its first record:
+- **[center]** The files are under class and day: one file for each filing,
+  which holds the records of every member. Each name holds the first and the
+  last receive time in the file, in milliseconds, and `h` with 16 hex digits
+  that tell the file's records from any other records of the same times:
 
   ```bash
   cd /var/lib/sipnab && find center.store.parquet -type f
   ```
 
   ```text
-  center.store.parquet/calls/date=2026-11-11/member=edge-a/1794441277489-1794441277489-edge-a-manual-1.sealed
+  center.store.parquet/calls/date=2026-11-11/1794355201000-1794355203000-he7b857d7ce5986b7.sealed
   ```
 
 - **[center]** The center sealed each file. Its first four bytes are `SNFS`, not the
   `PAR1` of a Parquet file in clear:
 
   ```bash
-  head -c 4 center.store.parquet/calls/date=2026-11-11/member=edge-a/*.sealed; echo
+  head -c 4 center.store.parquet/calls/date=2026-11-11/*.sealed; echo
   ```
 
   ```text
@@ -42245,16 +42396,19 @@ history store and compares its log line and its `501` answer with this page.
     "calls": [],
     "complete": false,
     "count": 0,
+    "files_not_read": 0,
     "files_read": 0,
     "more": false,
     "refused": [
       {
-        "file": "calls/date=2026-11-11/member=edge-a/1794441277489-1794441277489-edge-a-manual-1.sealed",
-        "reason": "calls/date=2026-11-11/member=edge-a/1794441277489-1794441277489-edge-a-manual-1.sealed: sealed layer: the file has a record 2 that did not authenticate (the file was modified, or its records were moved)"
+        "file": "calls/date=2026-11-11/1794355201000-1794355203000-he7b857d7ce5986b7.sealed",
+        "reason": "sealed layer: the file has a record 2 that did not authenticate (the file was modified, or its records were moved)"
       }
     ]
   }
   ```
+
+  In 0.5.249 and 0.5.250 the reason started with a second copy of the path.
 
   - `did not authenticate`, `was truncated` or `was cut at its end`: the file
     changed after the center wrote it. Restore the file from a backup, or
@@ -42264,10 +42418,13 @@ history store and compares its log line and its `501` answer with this page.
     `--store-old-key-file`.
   - `was written as '<path>' and is not at that path`: someone moved or
     renamed the file. Move it back to the path the message gives.
+- **`"complete": false` and `files_not_read` above 0.** The question ruled
+  in more files than one question opens. Ask again with `member`, `from` and
+  `to`, for a part of the time at a time.
 - **The center logs `the call records were not filed and stay in the
   intake`.** The line ends with the cause: a directory the center cannot
-  write, a full disk, or a file of the same day and member that it cannot
-  read. The records wait in the intake, and the center tries again after
+  write, a full disk, or a file of the same day that it cannot read. The
+  records wait in the intake, and the center tries again after
   `--calls-flush-secs`. `failed_filings` in `GET /v1/fleet/members` counts
   the tries that failed. Fix the cause before the intake reaches its 64 MiB:
   past that the oldest waiting records go first.
@@ -42278,6 +42435,391 @@ history store and compares its log line and its `501` answer with this page.
 - **What the history store cannot show.** A whole file that someone deleted
   leaves no trace in the store, as for the store file itself. An answer does
   not include records the intake dropped at its size limit before a filing.
+
+### The files of the history store
+
+**Purpose.** Know what the center writes under `<store>.parquet`, how many
+files that is, what a person who can list the directory learns without the
+store key, and what to do with the files release 0.5.249 wrote.
+
+**The layout.**
+
+```text
+<store>.parquet/calls/date=YYYY-MM-DD/<first>-<last>-h<mark>.sealed
+<store>.parquet/members/date=YYYY-MM-DD/<first>-<last>-h<mark>.sealed
+```
+
+- `calls` holds call records and `members` holds heartbeats. The day is the
+  UTC day on which the center received the rows.
+- The center writes one file for each filing and day. The file holds the
+  rows of every member that the center received since the filing before.
+  The number of files does not depend on the number of members: at the
+  default `--calls-flush-secs 60` a center writes at most 1,440 files a day
+  in each class, for 1 member and for 2,000. A filing with no new rows
+  writes no file.
+- `<first>` and `<last>` are the earliest and the latest receive time in the
+  file, in milliseconds since 1970. `<mark>` is 16 hex digits computed from
+  the rows; it keeps two files of the same times apart.
+- With 90 days of call records and 72 hours of heartbeats at 60 seconds, a
+  center holds at most 129,600 call record files and 5,760 heartbeat files
+  (the heartbeat retention removes whole days, so up to four days are on
+  disk).
+
+**What a file holds.** Inside the seal, each file is one Parquet file
+without compression. The column `member` is the member's id. The rows are in
+order of member and then of receive time. A row group ends where the member
+changes once it holds 128 rows, and at 10,000 rows at the latest, and each
+row group records its least and its greatest member. A question for one
+member opens each file of its window and decodes only the row groups that
+can hold that member: in a file with one row for each of 2,000 members, 1
+row group of 16.
+
+What follows from that layout:
+
+- A question for one member opens every file of its window, and the center
+  unseals each of those files whole before it picks the row group. In a
+  release build, one member's newest 1,000 heartbeats among 2,000 members
+  came from 1,001 files in 2.8 s.
+- One answer holds at most 1,000 rows (`limit`). A member's 24 hours at one
+  heartbeat a minute are 1,440 rows: ask twice, with `from` and `to`.
+- A center that starts without its store file reads the heartbeat files
+  from the newest back, up to 4,096 of them, to rebuild its member list: 25.7
+  s in a release build for 1,440 files of 2,000 members. A center that
+  starts with its store file reads one.
+
+**Reading the files with other tools.** No other tool reads a file as it is
+on disk: the center seals every file under the store key, and the first
+bytes are `SNFS`, not `PAR1`. Read the history through the center, which
+answers JSON that `jq`, a spreadsheet import or a script takes:
+
+```bash
+curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $OPS_TOKEN" \
+  'https://127.0.0.1:8444/v1/fleet/calls?from=2026-11-11T00:00:00Z&to=2026-11-12T00:00:00Z&limit=1000' \
+  | jq -c '.calls[] | {member, received_at, call_id: .call.call_id}'
+```
+
+sipnab has no command that writes a file's Parquet in clear.
+
+**What the directory shows without the key.** A person who can list the
+directory sees the days that have rows, the time of each filing to the
+millisecond, and the size of each file, which grows with the rows of that
+filing. The names hold no member id, no count and no part of a record. In
+release 0.5.249 each member had a directory `member=<id>`, so a listing
+showed every member's id and the times at which each member had new records.
+
+**Files that release 0.5.249 wrote.** Releases 0.5.249 and 0.5.250 wrote
+call records under `calls/date=YYYY-MM-DD/member=<id>/`, one file for each
+member and filing. What this page says of the files of release 0.5.249 is
+true of the files of 0.5.250 too. This release writes no file there and does not move or rewrite the
+files that are there:
+
+- `GET /v1/fleet/calls` answers their rows together with the rows of the new
+  files. A question with `member` opens only that member's old files.
+- The retention removes them with their day, and the log line that counts
+  the removed files counts them.
+- A start after 0.5.249 stopped between a filing and the emptying of its
+  intake does not file those records a second time.
+- The member ids in those paths stay on disk until the day passes
+  `--calls-retention-days`.
+
+**Count the files, and check the inodes.** A center of release 0.5.249 or
+0.5.250 with
+many members wrote many small files: one for each member with a new call
+record in each filing, which for 2,000 such members at 60 seconds is
+2,880,000 files a day. A file system holds a fixed number of inodes, and a
+center that runs out of them cannot file.
+
+1. **[center]** Count the files of the history store:
+
+   ```bash
+   find /var/lib/sipnab/center.store.parquet -type f | wc -l
+   ```
+
+   And the files of the 0.5.249 layout among them:
+
+   ```bash
+   find /var/lib/sipnab/center.store.parquet/calls -path '*/member=*' -type f | wc -l
+   ```
+
+2. **[center]** Read how many inodes the file system has left (`IFree`, and
+   `IUse%`):
+
+   ```bash
+   df -i /var/lib/sipnab
+   ```
+
+3. **[center]** When `IUse%` is near 100, lower the retention so that the
+   center removes the oldest days. The center removes the days past the
+   retention at start and every minute:
+
+   ```bash
+   sipnab fleet serve --listen 127.0.0.1:8444 --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey \
+     --signing-key-file /etc/sipnab/center.signing \
+     --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key \
+     --calls-retention-days 7
+   ```
+
+   The center logs a line of this form with the days and files it removed,
+   and `df -i` then shows the inodes as free:
+
+   ```text
+   INFO sipnab::app::fleet_center: fleet center: 1 day(s) and 2 file(s) of call records past --calls-retention-days 7 were removed
+   ```
+
+   The center no longer has the call records of the removed days. To keep
+   them, copy the `date=` directories to another file system first. The
+   center reads a copied directory again once it is back at its path.
+
+**Troubleshoot.**
+
+- **The center logs `the call records were not filed and stay in the
+  intake` with `No space left on device` while `df -h` shows free space.**
+  The file system has no free inode. Do step 3. The records wait in the
+  intake, at most 64 MiB of them, and the center files them when it can.
+- **A listing still shows `member=` directories after the upgrade.** They
+  are the files of release 0.5.249. The center reads them and removes them
+  when their day passes the retention.
+
+### Keep heartbeat history at the center
+
+**Purpose.** A center with the history store keeps every heartbeat it
+accepts, not only the newest of each member. `GET
+/v1/fleet/members/{id}/history` answers one member's heartbeats: when the
+center heard the member, from which address, and what the member's inventory
+said at that time. The same rows rebuild the member list for a center that
+starts without its store file: the center lists a member that was silent
+before the stop as silent after the start, and still counts a record the
+member sends again as a duplicate.
+
+The center files the heartbeats into Parquet files under
+`<store>.parquet/members`, sealed with the store key as the call records
+are. It keeps them for `--retention-hours`, the time a member stays listed
+after its last heartbeat.
+
+The outputs below come from a run on 2026-11-12 on one host, with a
+development build after 0.5.249: a center on `127.0.0.1:18449` over HTTP on
+loopback, with `--calls-flush-secs 5`, and two heartbeats and one call record
+sent by hand as member `edge-a`. The commands name files as a deployment
+would.
+
+**Before you start.**
+
+- **A build with the history store**, as
+  [Keep call history at the center](#keep-call-history-at-the-center) lists:
+  `sipnab --version` shows `fleet-store`. The static musl tarballs and the
+  `-noaudio` packages do not have it. A center from one of those keeps each
+  member's newest heartbeat in its store file, as before, and answers `501`
+  on the history route.
+- **A center and members that send heartbeats**, as
+  [Run a fleet center](#run-a-fleet-center) sets up. The member needs no
+  change.
+- **The store key and its backup.** The center seals the heartbeat files
+  under the store key. Without the key no one reads them.
+- **A token that reads members.** The route needs scope `inventory`, the
+  scope of `GET /v1/fleet/members`. `full`, `actions` and `admin` reach it
+  too. A `fleet-report` token does not.
+- **Room on the center's disk, and files.** The center writes one file for
+  each filing, which holds the heartbeats of every member: at the default
+  `--calls-flush-secs 60` that is 1,440 files a day for 1 member and for
+  2,000 ([The files of the history store](#the-files-of-the-history-store)).
+  In a run of the tests on 2026-11-12 (a debug build, load average 14 to
+  25), 2,000 members with one heartbeat of about 300 bytes each made one
+  file of 602,454 bytes in 137 ms, and 1,440 such filings, 24 hours, made
+  887,745,307 bytes. A release build on the same host wrote the one file
+  in 127 ms, read one member's newest 1,000 heartbeats from 1,001 files in
+  2.8 s, and rebuilt the member list without a store file from all 1,440
+  files in 25.7 s. The center answers members while it writes a file.
+  Heartbeats that wait for a filing are in the store file, and at most
+  64 MiB of them wait (`MAX_WAITING_BYTES`).
+- **Other systems.** Nothing changes on a member, on OpenSIPS, Kamailio,
+  Homer or any HEP collector. A backup of the center includes the directory
+  `<store>.parquet`.
+
+**Steps.**
+
+1. **[center]** Start the center as before. No flag turns the heartbeat
+   history on: a build with the history store keeps it. Two flags you may
+   already set govern it:
+
+   ```bash
+   sipnab fleet serve --listen 127.0.0.1:8444 --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey \
+     --signing-key-file /etc/sipnab/center.signing \
+     --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key \
+     --retention-hours 72 --calls-flush-secs 60
+   ```
+
+   ```text
+   INFO sipnab::app::fleet_center: fleet center history store 'center.store.parquet': call records are kept 90 day(s), heartbeats 72 hour(s)
+   ```
+
+   - `--retention-hours` is how long a member stays listed after its last
+     heartbeat, and how long the center keeps heartbeats. The center removes
+     a UTC day of heartbeats once every hour of that day is past the
+     retention, at start and every minute.
+   - `--calls-flush-secs` is the time between two filings, of call records
+     and of heartbeats. The center also files when it starts and when it
+     stops on a signal.
+
+2. **[controller]** Ask for a member's heartbeats with the token that reads
+   the member list. With no parameter the answer is the newest 100:
+
+   ```bash
+   curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $READER_TOKEN" \
+     'https://127.0.0.1:8444/v1/fleet/members/edge-a/history?limit=1' | jq .
+   ```
+
+   ```json
+   {
+     "complete": true,
+     "count": 1,
+     "files_not_read": 0,
+     "files_read": 1,
+     "heartbeats": [
+       {
+         "member": "edge-a",
+         "self_reported": {
+           "calls": null,
+           "heartbeat_secs": 5,
+           "inventory": {
+             "node_name": "edge-a",
+             "version": "0.5.249"
+           },
+           "sent_at": "2026-11-12T20:59:10Z",
+           "seq": 2,
+           "stream": "edge-a-manual"
+         },
+         "verified": {
+           "call_records": 0,
+           "heartbeats": 2,
+           "peer": "127.0.0.1",
+           "received_at": "2026-11-12T20:59:10Z"
+         }
+       }
+     ],
+     "member": "edge-a",
+     "more": true,
+     "refused": []
+   }
+   ```
+
+   A row has the fields of the member's row in `GET /v1/fleet/members`:
+   `verified` is what the center saw, `self_reported` is what the member
+   said. `verified.heartbeats` counts the member's heartbeats up to this
+   one. The parameters, each optional:
+
+   | Parameter | Meaning |
+   |---|---|
+   | `from` | Heartbeats the center received at this RFC 3339 time or later. |
+   | `to` | Heartbeats the center received before this RFC 3339 time. |
+   | `limit` | The most heartbeats to return, 1 to 1000. Default 100. The newest come first. |
+
+   A heartbeat is in the answer from the moment the center acknowledges it.
+   A member the center has no heartbeat of has an empty answer with status
+   `200`. One question opens at most 4,096 files, as for call records: about
+   2.8 days of heartbeats at the default `--calls-flush-secs 60`, so one
+   question reaches most of the default `--retention-hours 72`. Give `from`
+   and `to` for the oldest hours. One answer holds at most 1,000 heartbeats
+   (`limit`), which for one member at one heartbeat a minute is 16.7 hours.
+
+**Verify.**
+
+- **[controller]** `GET /v1/fleet/members` reports the filings since the
+  center started:
+
+  ```bash
+  curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $READER_TOKEN" \
+    https://127.0.0.1:8444/v1/fleet/members | jq -c .history
+  ```
+
+  ```json
+  {"available":true,"failed_filings":0,"files_written":1,"heartbeat_files_written":1,"heartbeats_filed":2,"heartbeats_removed":0,"heartbeats_waiting":0,"members_restored":0,"retention_days":90,"rows_filed":1}
+  ```
+
+  `heartbeats_waiting` counts the heartbeats not yet in a file,
+  `heartbeats_removed` those that left before a filing, and `members_restored` the
+  members the last start took from the history store.
+
+- **[center]** The files are under class `members` and day: one file for
+  each filing, which holds the heartbeats of every member. The names are
+  spelled as those of call record files:
+
+  ```bash
+  cd /var/lib/sipnab && find center.store.parquet/members -type f
+  ```
+
+  ```text
+  center.store.parquet/members/date=2026-11-11/1794355201000-1794355203000-he7b857d7ce5986b7.sealed
+  ```
+
+- **[center]** To see the rebuild on a test center, stop the center, move
+  its store file away and start it. In the run, the member had also sent
+  one call record after its last heartbeat:
+
+  ```text
+  INFO sipnab::app::fleet_center: fleet center: 1 member(s) the store file held nothing of, or an older heartbeat of, were taken from the history store
+  WARN sipnab::app::fleet_center: fleet member 'edge-a' is silent: no heartbeat for 8 s, more than 1 of its 5 s intervals
+  ```
+
+  `GET /v1/fleet/members` then lists the member with 2 heartbeats, at
+  position 3 of its stream (past the call record) and silent, and
+  `history.members_restored` is `1`.
+
+**Troubleshoot.**
+
+- **`401`.** The token's scope does not read members. Mint an `inventory`
+  token, as step 2 of [Run a fleet center](#run-a-fleet-center) does.
+- **`400` with a `detail`.** The detail names the parameter, or says the id
+  in the path is no member id. This route takes no `member` and no
+  `call_id`:
+
+  ```text
+  {"detail":"\"call_id\" is not a parameter of this route; it takes from, to and limit","status":400,"title":"Bad Request","type":"https://sipnab.com/problems/bad-request"}
+  ```
+
+- **`501` and `this build has no history store`.** Install a build that has
+  it and start the center on the same store. The history starts at that
+  start: a build without the store keeps no earlier heartbeat.
+- **`"complete": false`.** The center could not read a file (`refused` names
+  it and the reason), or the question ruled in more files than one question opens
+  (`files_not_read`). The reasons and their fixes are those of
+  [Keep call history at the center](#keep-call-history-at-the-center):
+
+  ```json
+  {"complete":false,"refused":[{"file":"members/date=2026-11-11/1794355201000-1794355203000-he7b857d7ce5986b7.sealed","reason":"sealed layer: the file has a record 2 that did not authenticate (the file was modified, or its records were moved)"}],"files_read":0,"files_not_read":0,"count":0}
+  ```
+
+- **The center logs `the heartbeats were not filed and wait in the store
+  file`.** The line ends with the cause: a directory the center cannot
+  write, a full disk, or a file of the same day that it cannot read. The
+  center tries again after `--calls-flush-secs`, and
+  `failed_filings` counts the tries. Past 64 MiB of waiting heartbeats, and
+  past `--retention-hours`, the oldest leave before a filing and
+  `heartbeats_removed` counts them.
+- **The center logs `the member registry was rebuilt from the newest`.** The
+  center had no store file, or one older than the history, and more than
+  4,096 heartbeat files could hold a member's last heartbeat. The center
+  read the newest 4,096, about 2.8 days at `--calls-flush-secs 60`. It lists
+  a member that went silent before them when that member sends a heartbeat
+  again.
+- **The center logs `was not read for the member registry`.** At start, a
+  heartbeat file the center read for its member list did not open. The line
+  names the file and the reason. The center starts and lists a member from
+  an older file or from its store
+  file alone. When the store file is also lost, the member returns to the
+  list with its next heartbeat.
+- **A member is missing after a start without the store file.** The center
+  restores a member from heartbeats it filed. A member whose last heartbeat
+  is older than `--retention-hours` is not listed, with or without the store
+  file. The center no longer has the heartbeats that still waited in the
+  lost store file.
+- **The center logs `past --retention-hours <n> and not removed`.** The line
+  names a file in an expired day that the center did not write, or one the
+  system refused to remove. Remove it by hand.
+- **What the heartbeat history is not.** The store file stays the member
+  list's own record in every build: keep it in the backup. The history
+  rebuilds what the file lacks; it does not replace it.
 
 ### Troubleshoot the center
 
@@ -50071,7 +50613,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.250",
+  "version": "0.5.251",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -63899,7 +64441,7 @@ Distribute the printed token to clients.
 | `actions` | either | Everything `full` reaches, plus the actions that change another system, such as a TFPS ban, where the server enables them with `--allow-action`. It lifts only the bans it placed. |
 | `admin` | either | Everything `actions` reaches, and it also lifts a ban another caller placed, for example one placed by a token since lost. |
 | `audio` | REST API | The live-audio routes under `/v1/calls/`, and nothing else. No other scope reaches them. |
-| `inventory` | REST API | `GET /v1/inventory`, and a fleet center's `GET /v1/fleet/members`, and nothing else. It does not read a center's call records: `GET /v1/fleet/calls` answers it `401`. `full`, `actions` and `admin` reach what it reaches. For [`sipnab fleet inventory`](fleet.md). |
+| `inventory` | REST API | `GET /v1/inventory`, and a fleet center's `GET /v1/fleet/members` and `GET /v1/fleet/members/{id}/history`, and nothing else. It does not read a center's call records: `GET /v1/fleet/calls` answers it `401`. `full`, `actions` and `admin` reach what it reaches. For [`sipnab fleet inventory`](fleet.md). |
 | `fleet-report` | REST API | A fleet center's `POST /v1/fleet/ingest`, and nothing else; no other scope reaches it. Its `--token-id` is the member's name. For [a fleet center](fleet.md#run-a-fleet-center). |
 
 Give each client the narrowest scope that does its job:
@@ -68291,6 +68833,18 @@ Find your case, and follow the steps it names:
 - **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above.
   Then see [With Kamailio](#with-kamailio), which covers both.
 
+What changes on other systems:
+
+- **With everything on one machine, no other system changes.** The phones and
+  carriers keep sending their SIP to your proxy. The SDP the proxy hands them
+  names the relay's ports, so a firewall in front of the machine must let
+  them reach UDP 30000-39999.
+- **With rtpengine on a machine of its own,** that machine's firewall lets
+  your SIP proxies, and nothing else, reach UDP 2223, and lets the phones and
+  carriers reach UDP 30000-39999.
+  [Put rtpengine on its own machine](#put-rtpengine-on-its-own-machine) has
+  the steps.
+
 ## Build rtpengine
 
 rtpengine's own documentation recommends building Debian packages from the
@@ -68599,7 +69153,9 @@ sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -tim
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 At the end SIPp's statistics screen shows `Successful call` at 1.
 
-Now compare the SDP the caller sent with the SDP the callee received:
+### Check that the relay carried the call
+
+Compare the SDP the caller sent with the SDP the callee received:
 
 ```bash
 # Run all of these, in order.
@@ -68925,6 +69481,23 @@ edits the proxy's configuration.
 The [rtpengine reference](rtpengine.md) explains what sipnab does with the
 relay's answers, and how far it trusts them.
 
+## Before you start
+
+- **The stack from
+  [Add rtpengine to your voice stack](rtpengine-relay.md)**, with its test
+  call working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on the machine that runs rtpengine.** sipnab captures there, and the
+  steps use `sudo`.
+- **On the other system, rtpengine:**
+  - Nothing changes for `--rtpengine-control`. sipnab asks on the `listen-ng`
+    address rtpengine already has. No command sipnab sends changes a call.
+  - The rtpengine on its own machine step adds four `homer` lines, with
+    `homer-enable-ng = true` among them, and restarts rtpengine.
+- **On the SIP proxy,** nothing changes while it shares the relay's machine.
+  The rtpengine on its own machine step changes one line of its
+  configuration, the address of the test callee.
+- **On the phones and carriers,** nothing changes.
+
 ## What sipnab asks rtpengine
 
 sipnab sends rtpengine three of its commands, and no others. All three only
@@ -69179,6 +69752,27 @@ Run sipnab on the relay's machine rather than asking across the network.
 - rtpengine's control protocol has no authentication.
 - Only your SIP proxy should reach it.
 
+## Check that it worked
+
+Start a test call as in the Name a call that was already up step, then run
+sipnab with the relay's control address:
+
+```bash
+sudo sipnab -N -d any --rtpengine-control 127.0.0.1:2223 --duration 6 --report \
+  "portrange 5060-5061 or udp portrange 30000-39999"
+```
+
+- Before the capture opens, sipnab logs what the relay answered. With one
+  call up, the line is:
+
+  ```text
+  rtpengine at 127.0.0.1:2223: 1 call(s) enumerated, complete; queried 1 of them, 4 relay port(s) now attributable
+  ```
+
+- The report names the call under `Calls named by a media relay`, with the
+  Call-ID `rtpengine-ctl list sessions all` prints.
+- The report has no `Orphaned Streams:` section.
+
 ## When something does not work
 
 - **The report shows calls but `0 RTP packets`.** sipnab's filter admitted
@@ -69323,6 +69917,18 @@ Find your case, and follow the steps it names:
   Then see [With Kamailio](#with-kamailio), which covers both.
 - **rtpengine already runs on this machine.** Follow every step. Then see
   [rtpengine and rtpproxy on one machine](#rtpengine-and-rtpproxy-on-one-machine).
+
+What changes on other systems:
+
+- **With everything on one machine, no other system changes.** The phones and
+  carriers keep sending their SIP to your proxy. The SDP the proxy hands them
+  names the relay's ports, so a firewall in front of the machine must let
+  them reach UDP 50000-59999.
+- **With rtpproxy on a machine of its own,** that machine's firewall lets
+  your SIP proxies, and nothing else, reach UDP 7722, and lets the phones and
+  carriers reach UDP 50000-59999.
+  [Put rtpproxy on its own machine](#put-rtpproxy-on-its-own-machine) has the
+  steps.
 
 ## Install rtpproxy
 
@@ -69669,7 +70275,9 @@ sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -tim
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 At the end SIPp's statistics screen shows `Successful call` at 1.
 
-Now compare the SDP the caller sent with the SDP the callee received:
+### Check that the relay carried the call
+
+Compare the SDP the caller sent with the SDP the callee received:
 
 ```bash
 # Run all of these, in order.
@@ -70111,6 +70719,22 @@ sipnab never talks to the proxy. So every step is the same for each proxy.
 The one exception is the line in the rtpproxy on its own machine step that
 edits the proxy's configuration.
 
+## Before you start
+
+- **The stack from
+  [Add rtpproxy to your voice stack](rtpproxy-relay.md)**, with its test call
+  working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on the machine that runs rtpproxy.** sipnab captures there, and the
+  steps use `sudo`.
+- **The address and port of rtpproxy's UDP control socket,** its `-s udp:`
+  option, for `--rtpproxy-control`.
+- **On the other system, rtpproxy, nothing changes.** sipnab sends rtpproxy
+  nothing. It reads the control traffic from its capture.
+- **On the SIP proxy,** nothing changes while it shares the relay's machine.
+  The rtpproxy on its own machine step changes one line of its configuration,
+  the address of the test callee.
+- **On the phones and carriers,** nothing changes.
+
 ## What sipnab sends rtpproxy
 
 Nothing.
@@ -70339,6 +70963,28 @@ A run with no retries logs nothing about them. This line came from sipnab
 with one command sent twice by hand, and the socket written here as this
 guide's `127.0.0.1:7722`.
 
+## Check that it worked
+
+Place a test call while this runs, on the machine that runs rtpproxy:
+
+```bash
+sudo sipnab -N -d any --rtpproxy-control 127.0.0.1:7722 --duration 25 --report "portrange 5060-5061 or udp port 7722 or udp portrange 50000-59999"
+```
+
+- The report has no `Orphaned Streams:` section. Every stream of the call
+  carries its Call-ID.
+- On a machine that also sees the SIP, the call is in the report's first
+  table, with its streams under `RTP Streams:`.
+- On a machine that sees no SIP, the report names the call under this
+  heading:
+
+  ```text
+  Calls named by a media relay (no SIP for them in this capture):
+  ```
+
+- With rtpproxy on its own machine, give `--rtpproxy-control` the address of
+  the control socket there, `192.0.2.20:7722` in this guide.
+
 ## When something does not work
 
 - **The report shows calls but `0 RTP packets`.** sipnab's filter admitted
@@ -70389,7 +71035,8 @@ calls behind the media on a relay, see
   already listens on, its `listen-ng` setting. Every request only reads:
   `statistics`, `list` and `query`. Nothing here can create, change or delete
   a call.
-- **No change to the SIP proxy, Homer or anything else.**
+- **No change on any other system.** The SIP proxy, Homer and the phones stay
+  as they are.
 - **The control address must be reachable from sipnab.** rtpengine's control
   protocol has no authentication, so run sipnab on the relay's own machine, or
   on a host your firewall already lets reach `listen-ng`.
@@ -70919,7 +71566,12 @@ they can belong to an earlier call on the same port.
 
 ### Check that it worked
 
-- `--relay-sessions` exits 0, and its second line starts `reachable;`.
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 127.0.0.1:22222 --relay-sessions 2>/dev/null; echo "exit $?"
+```
+
+- `--relay-sessions` exits 0, so the last line is `exit 0`, and its second
+  line starts `reachable;`.
 - Every call the relay holds is in the answer, as a row with verdicts or as
   `not queried`.
 - On a call with audio both ways, both directions read `flowing`. If they do
@@ -71344,6 +71996,10 @@ it. To read another engine's names, name that engine with
     engines apart by port alone.
   - nothing else. sipnab sends only `list`, `query` and, for the
     relay-statistics requests, `statistics`. None of them changes a call.
+- **On every other system, a firewall rule at most.** Where a firewall stands
+  between the sipnab host and an engine, it must let the sipnab host reach
+  that engine's `listen-ng` address. rtpengine's own configuration stays as it
+  is.
 - **On the SIP proxy: nothing to change.** OpenSIPS with several engines in
   its `rtpengine_sock` set, or Kamailio with several `rtpengine` nodes, picks
   the engine as before.
@@ -72241,6 +72897,18 @@ Measured on the two engines above, before any `delete`:
   30 s by default, so `previous.holds` can stay true for that long.
 
 ## Check that it worked
+
+Ask every engine of your map what it holds:
+
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.5:2223 \
+  --rtpengine-engine '203.0.113.5 30000-39999 192.0.2.5:2223' \
+  --rtpengine-engine '203.0.113.5 40000-49999 192.0.2.6:2223' \
+  --relay-holdings 2>/dev/null; echo "exit $?"
+```
+
+The run prints one `Holdings of` block per engine and `exit 0`. It prints
+`exit 1` when no engine answered.
 
 - A question about a captured call names the engine and the row that chose
   it, for example `chosen by engine row 203.0.113.5 40000-49999 192.0.2.6:2223
@@ -89508,6 +90176,7 @@ Each successful run gets a row here.
 | 0.5.247 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-11 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.248 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-12 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.249 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-12 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.250 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-13 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it
