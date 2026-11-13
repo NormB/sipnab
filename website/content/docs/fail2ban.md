@@ -85,6 +85,10 @@ yours everywhere it appears.
 - The section "Make OpenSIPS log scanners and wrong passwords" below replaces that guide's configuration.
   - The new configuration authenticates phones.
   - It logs what fail2ban needs.
+- No other system changes.
+  - fail2ban bans an address in this machine's own firewall, nftables, which
+    the Install fail2ban step installs.
+  - The scanner and the phone of the tests run on this machine.
 
 ## Make OpenSIPS log scanners and wrong passwords
 

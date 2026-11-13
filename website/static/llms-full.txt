@@ -67969,6 +67969,17 @@ Two terms used below:
   - TFPS compiles its XDP program against it during the install.
   - So the kernel needs BTF built in.
 
+## Before you start
+
+- **The machine that receives SIP from the Internet,** and an account on it
+  that can use `sudo`.
+- **Linux 5.15 or newer, built with BTF.** The Check the kernel step has the
+  two commands that show it.
+- **Internet access from that machine,** for the packages and the source the
+  Install TFPS step downloads.
+- **No other system changes.** TFPS needs nothing from your SIP server, and
+  the phones and carriers keep their settings.
+
 ## Tested on
 
 Every block on this page, and every command in the table of the "Operate it"
@@ -68309,6 +68320,20 @@ sipnab runs `tfps_ctl`, TFPS's own command, and reads its answers:
 | `GET /v1/tfps/dropped` | `tfps_dropped` | nothing yet | a TFPS release that reports its kernel drops; none does yet, so this answers `502` |
 
 The [REST API reference](rest-api.md) gives every request and response.
+
+## Before you start
+
+- **TFPS installed and enforcing,** as [Add TFPS to your voice stack](tfps.md)
+  leaves it, from a build at `984577dc` or later. Earlier builds do not answer
+  `--json` in the form sipnab reads.
+- **root on the machine that runs sipnab.** The steps use `sudo`.
+- **On the other system, TFPS:**
+  - sipnab on the same machine changes nothing in TFPS until you turn on
+    `--allow-action`. Then a ban or an unban you ask for changes TFPS's block
+    map.
+  - sipnab on a different machine needs a dedicated account on the TFPS
+    machine, whose SSH key can run `tfps_ctl` and nothing else.
+- **On the SIP server, the phones and the carriers,** nothing changes.
 
 ## Tested on
 
@@ -73183,6 +73208,15 @@ Find your case, and follow the steps it names:
 - **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above, then
   see [With Kamailio](#with-kamailio), which covers both.
 
+What changes on other systems:
+
+- **Your SIP proxy** gets a configuration that sends a HEP copy of every
+  message to Homer, on UDP port 9060.
+- **The phones and carriers** see no change.
+- **With Homer on a machine of its own,** the proxy sends to that machine's
+  address. [Put the parts on different machines](#put-the-parts-on-different-machines)
+  has the steps.
+
 ## Install Docker
 
 Homer runs as containers. Install Docker Engine and the Compose plugin from
@@ -73555,6 +73589,8 @@ The web interface at `http://192.0.2.10:9080` searches what heplify-server
 stored. To check from the command line, query the database heplify-server
 writes.
 
+### Check that Homer stored the call
+
 - heplify-server writes in batches, at least every 4 seconds. So the first
   line waits for the last batch.
 - Each row is one message.
@@ -73827,6 +73863,21 @@ This guide sets up both against the stack from
 The sipnab as a second receiver step differs for Kamailio, and says how. The
 sipnab as a source for Homer step is the same for both.
 
+## Before you start
+
+- **The stack from [Add Homer to your voice stack](homer.md),** with its test
+  call stored in Homer. The steps here reuse its SIPp files in `~/sipp`.
+- **root on each machine that runs sipnab.** The steps use `sudo`.
+- **On the other system that sends HEP, your SIP server:**
+  - OpenSIPS gains a second HEP destination, and the step restarts it.
+  - Kamailio either does not change, or its `duplicate_uri` moves from Homer
+    to sipnab. The step says which.
+- **On the Homer machine:**
+  - Nothing changes when sipnab is a second receiver.
+  - When sipnab is a source on a second machine, the Homer machine's firewall
+    must let that machine reach UDP port 9060.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01, with
@@ -74086,6 +74137,29 @@ from anyone who can reach port 9060. So open that port only to:
 - your SIP servers,
 - the machines where sipnab forwards.
 
+## Check that it worked
+
+**As a second receiver.** Run the listener again, and place a test call while
+it runs:
+
+```bash
+sudo sipnab -N -L 127.0.0.1:9062 --duration 30 --report --hep-senders
+```
+
+- The report lists the call as `Completed`.
+- The line under `HEP senders` ends with `refused 0`.
+- The table has a row for your SIP server's capture id, `hep:101@127.0.0.1`
+  with OpenSIPS on the same machine.
+
+**As a source.** The count query of
+[sipnab as a source for Homer](#sipnab-as-a-source-for-homer) has a row for
+capture id `2002`.
+
+- A row for 101 and none for 2002 means that Homer did not receive sipnab's
+  copies.
+- A HEP listener names what sipnab forwards in the same way. It lists the
+  sender as `hep:2002@` and the address the copies came from.
+
 ## When something does not work
 
 - **sipnab shows no messages.** Check that the SIP server sends to it.
@@ -74196,6 +74270,16 @@ Find your case, and follow the steps it names:
   the rest.
 - **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above.
   Then see [With Kamailio](#with-kamailio), which covers both.
+
+What changes on other systems:
+
+- **Your SIP proxy** gets a configuration that publishes its statistics on a
+  metrics endpoint, `127.0.0.1:8888` for OpenSIPS.
+- **The phones and carriers** see no change.
+- **With Prometheus on a machine of its own,** the proxy publishes on an
+  address Prometheus can reach. The endpoint has no authentication.
+  [Put the parts on different machines](#put-the-parts-on-different-machines)
+  has the steps.
 
 ## Install Docker
 
@@ -74531,6 +74615,8 @@ sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
 sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
 ```
 
+### Check that Prometheus counted the call
+
 Prometheus scrapes every 5 seconds. Wait for one scrape. Then ask it how many
 dialogs OpenSIPS has processed:
 
@@ -74830,6 +74916,22 @@ The proxy is one of these:
 
 sipnab reads the calls off the wire, so every step is the same for each.
 
+## Before you start
+
+- **The stack from
+  [Add Prometheus and Grafana to your voice stack](prometheus.md),** with its
+  test call counted. The steps here reuse its SIPp files in `~/sipp` and its
+  `/opt/monitoring` directory.
+- **root on the machine that runs sipnab.** The steps use `sudo`.
+- **On the other system, Prometheus,** the Scrape sipnab step adds a `sipnab`
+  job to `prometheus.yml` and restarts Prometheus. Grafana gains one
+  dashboard.
+- **With Prometheus on another machine,** the firewall between the two opens
+  sipnab's metrics port to Prometheus's address.
+  [Scrape sipnab from another machine](#scrape-sipnab-from-another-machine)
+  has the steps.
+- **On the SIP proxy, the phones and the carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-09-28, with
@@ -75073,6 +75175,25 @@ sudo systemctl restart sipnab
 
 The Scrape sipnab step then prints three targets, `opensips`, `kamailio` and
 `sipnab`, all `up`. A call through either proxy adds one to sipnab's count.
+
+## Check that it worked
+
+After a test call, ask sipnab's endpoint and then Prometheus:
+
+```bash
+# Run all of these, in order.
+curl -s 127.0.0.1:9091/metrics | grep -c '^sipnab_'
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=sum(sipnab_dialogs_total{state="completed"})' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["result"][0]["value"][1])'
+```
+
+- The first line counts the series sipnab serves. Zero, or no answer, means
+  that the endpoint is not up on that port.
+- The second prints how many calls sipnab saw complete, as Prometheus stored
+  it. It is 1 after the first test call.
+- Started with `SIPNAB_LOG=info` in its environment, sipnab also logs
+  `Prometheus metrics server listening on 127.0.0.1:9091` once the endpoint
+  is up.
 
 ## When something does not work
 
@@ -78564,6 +78685,10 @@ yours everywhere it appears.
 - The section "Make OpenSIPS log scanners and wrong passwords" below replaces that guide's configuration.
   - The new configuration authenticates phones.
   - It logs what fail2ban needs.
+- No other system changes.
+  - fail2ban bans an address in this machine's own firewall, nftables, which
+    the Install fail2ban step installs.
+  - The scanner and the phone of the tests run on this machine.
 
 ## Make OpenSIPS log scanners and wrong passwords
 
@@ -79207,6 +79332,17 @@ same `scanner_detected` lines, and sipnab sends nothing to the scanner. This
 option is newer than the tests below. See
 [Detect scanners without answering them](examples.md#detect-scanners-without-answering-them).
 
+## Before you start
+
+- **The machine as [Ban SIP scanners with fail2ban](fail2ban.md) leaves it**
+  before its uninstall: OpenSIPS, fail2ban, nftables and the two test
+  addresses.
+- **root on that machine.** The steps use `sudo`.
+- **No other system changes.** The ban is in this machine's own firewall.
+- **What a scanner sees does change with `--kill-scanner`:** sipnab answers
+  its requests with a `200 OK` that carries your SIP server's address. With
+  `--kill-scanner-detect-only` sipnab sends nothing.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01. So did every
@@ -79514,6 +79650,22 @@ To remove sipnab too:
 ```bash
 sudo apt-get purge -y sipnab
 ```
+
+## Check that it worked
+
+After the scanner's requests of
+[Watch sipnab's lines become a ban](#watch-sipnabs-lines-become-a-ban):
+
+```bash
+# Run all of these, in order.
+sudo grep -c 'scanner_detected src=198.51.100.60 ' /var/log/sipnab.log
+sudo fail2ban-client status sipnab-scanner
+```
+
+- The first line counts sipnab's lines for the scanner. It is 5 after the
+  five requests of that step.
+- The jail's `Banned IP list:` names `198.51.100.60`.
+- A count of 0 means that sipnab wrote nothing. See the second item below.
 
 ## When something does not work
 
