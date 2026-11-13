@@ -45,9 +45,24 @@ pub(crate) enum Wait {
 pub(crate) enum Interest {
     /// Input or a hang-up, whichever comes first.
     Input,
-    /// A hang-up only, for the full timeout. Only one `poll(2)` reports
-    /// (`POLLHUP` on Linux); macOS's shows at the next [`TerminalInput::gone`].
+    /// A hang-up only: input that is queued does not end the wait.
     HangupOnly,
+}
+
+/// The events a wait for `interest` asks `poll(2)` for. Pure.
+///
+/// The hang-up-only wait asks for POLLHUP, not for nothing. Linux reports
+/// POLLHUP, POLLERR and POLLNVAL whatever is asked. macOS reports a hang-up
+/// only to a wait that asked for an event: for a pty whose other side had
+/// closed it answered nothing when no event was asked and POLLHUP when
+/// POLLHUP was (CI's macOS run of 2026-11-13), so a wait that asked nothing
+/// ran to its timeout on a terminal that had gone. On both, a wait that asks
+/// POLLHUP is not ended by input that is queued.
+pub(crate) fn requested(interest: Interest) -> libc::c_short {
+    match interest {
+        Interest::Input => libc::POLLIN,
+        Interest::HangupOnly => libc::POLLHUP,
+    }
 }
 
 /// The [`Wait`] that `poll(2)`'s `revents` for the terminal mean, with
@@ -56,10 +71,12 @@ pub(crate) enum Interest {
 ///
 /// A hang-up wins over input: a hung-up terminal reports `POLLIN` as well
 /// (its reads return end-of-file at once), and reading it is what spins.
-/// Linux reports the hang-up as `POLLHUP`. macOS does not: its hung-up
-/// terminal is only readable, with nothing to read. A raw-mode terminal is
+/// Linux reports the hang-up as `POLLHUP` and `POLLERR`, and macOS as
+/// `POLLHUP` with `POLLIN` when input was asked for (CI's macOS run of
+/// 2026-11-13, a pty whose other side had closed). A terminal that is only
+/// readable with nothing to read has gone too: a raw-mode terminal is
 /// readable only once a byte is queued, so readable with none queued, or
-/// with a queue that cannot be read, is end-of-file: the terminal has gone.
+/// with a queue that cannot be read, is end-of-file.
 pub(crate) fn classify(revents: libc::c_short, queued: Option<libc::c_int>) -> Wait {
     if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
         Wait::Gone
@@ -200,17 +217,9 @@ impl TerminalInput {
     ///
     /// `poll(2)` failed for a reason other than a signal.
     pub(crate) fn wait(&self, timeout: Duration, interest: Interest) -> io::Result<Wait> {
-        let events = match interest {
-            Interest::Input => libc::POLLIN,
-            // Linux reports POLLHUP, POLLERR and POLLNVAL whatever `events`
-            // asks. macOS may not (see `output_gone`): there this wait can
-            // run to its timeout, and the `Input` wait after it sees the
-            // hang-up.
-            Interest::HangupOnly => 0,
-        };
         // A signal reads as nothing happened (0, so `Idle`): the caller
         // checks the stop flag before waiting again.
-        let revents = crate::input_wait::poll_one(self.fd, events, timeout)?;
+        let revents = crate::input_wait::poll_one(self.fd, requested(interest), timeout)?;
         let queued = (revents & libc::POLLIN != 0)
             .then(|| self.queued())
             .flatten();
@@ -233,8 +242,8 @@ impl TerminalInput {
     ///
     /// `poll(2)` failed for a reason other than a signal.
     pub(crate) fn gone(&self) -> io::Result<bool> {
-        // Interest in input too: macOS reports a hang-up only as readable
-        // with nothing queued.
+        // Interest in input too: a terminal that is readable with nothing
+        // queued has gone, and only a wait that asks for input sees that.
         Ok(self.wait(Duration::ZERO, Interest::Input)? == Wait::Gone)
     }
 }
@@ -242,6 +251,30 @@ impl TerminalInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each wait asks `poll(2)` for an event. macOS reports a hang-up only
+    /// to a wait that asked for one: its pty with a closed master answered
+    /// nothing when no event was asked and POLLHUP when POLLHUP was (CI's
+    /// macOS run of 2026-11-13). A wait that asks POLLHUP does not end on
+    /// queued input on either platform, which the pty tests below measure.
+    #[test]
+    fn every_wait_asks_poll_for_an_event() {
+        assert_eq!(
+            requested(Interest::HangupOnly),
+            libc::POLLHUP,
+            "the hang-up-only wait asks for the hang-up"
+        );
+        assert_eq!(
+            requested(Interest::Input),
+            libc::POLLIN,
+            "the wait for input asks for input"
+        );
+        assert_eq!(
+            requested(Interest::HangupOnly) & libc::POLLIN,
+            0,
+            "the hang-up-only wait does not ask for input, which would end it at once"
+        );
+    }
 
     /// A hang-up, an error and a closed descriptor each mean the terminal has
     /// gone, also when input is reported with them.
@@ -258,9 +291,8 @@ mod tests {
     }
 
     /// Readable with nothing queued is end-of-file: the terminal has gone.
-    /// macOS reports a hung-up terminal this way, with no POLLHUP. A queue
-    /// that cannot be read (Linux answers EIO on a hung-up terminal) is the
-    /// same.
+    /// A queue that cannot be read (Linux answers EIO on a hung-up terminal)
+    /// is the same.
     #[test]
     fn readable_with_nothing_queued_is_a_hang_up() {
         assert_eq!(classify(libc::POLLIN, Some(0)), Wait::Gone, "end-of-file");
