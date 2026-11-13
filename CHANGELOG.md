@@ -29,6 +29,13 @@ entry that carries them.
 - **The release train prints the output of a landing that passed.** The train runs `required-checks` on the head before the merge, and printed what it said only when the landing failed. On 0.5.249 the train's output held no line from it. The lines of `required-checks`, a `warning:` line among them, and the line of the merge are now in the train's output.
 - **The release train writes each line when it prints it.** With its output in a file or a pipe, the train's `stage:` lines appeared only when it ended, and on 0.5.249 it was resumed with `python3 -u`. `main` now sets its standard output to hand over each line at once.
 
+### Security
+
+- **Two npm lockfiles advanced past three advisories published on 2026-11-12.** No sipnab binary or package contains either dependency.
+  - [GHSA-jpvv-r467-5p4w](https://osv.dev/vulnerability/GHSA-jpvv-r467-5p4w) (CVE-2026-126210) and [GHSA-qv5m-9pm6-hqp3](https://osv.dev/vulnerability/GHSA-qv5m-9pm6-hqp3) (CVE-2026-126343): `@hono/node-server` 2.1.5 read a backslash in a request path as a path separator, and a connection reset during a WebSocket upgrade ended the process. `clients/typescript/package-lock.json`, the lockfile of the TypeScript MCP client that [`docs/mcp-deploy.md`](docs/mcp-deploy.md) shows, now resolves 2.1.6. A reader who installed that client from an earlier lockfile has 2.1.5 under `@modelcontextprotocol/sdk`; the client connects over standard input and output and starts no HTTP server. The `overrides` entry in `clients/typescript/package.json` now starts at 2.1.6.
+  - [GHSA-5pm8-86m8-9m6r](https://osv.dev/vulnerability/GHSA-5pm8-86m8-9m6r) (CVE-2026-126345): `basic-ftp` before 6.2.4 threw on a `__proto__` fact name in a directory listing. `e2e/package-lock.json`, which only the site tests in CI install, now resolves 6.2.4, and the `overrides` entry in `e2e/package.json` starts there.
+  - `tests/dependency_security_test.rs` holds both lockfiles and both `overrides` entries to the fixed releases. It fails when the package that asks for each dependency asks for a fixed release itself, which is when the `overrides` entry is to be removed.
+
 ## [0.5.249] - 2026-11-12
 
 ### Added
