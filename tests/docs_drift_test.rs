@@ -318,6 +318,23 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/testing.md",
         ],
     ),
+    // `scripts/pin-gates.py --allow-untracked`, and `heavy-run --quick`, the
+    // shared build host's queue the testing page says to run it through.
+    // Flags of a repository script and of a host tool, not sipnab's.
+    (
+        "allow-untracked",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "quick",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
     // The suite runs as `cargo nextest run --profile suite`, and
     // `SIPNAB_TEST_JOBS` becomes nextest's `--test-threads`
     // (TEST-DEADLINE-NEXTEST-SIPNAB). nextest's flags, not sipnab's.

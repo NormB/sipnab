@@ -158,6 +158,51 @@ impl Gate {
     }
 }
 
+/// The order callers finish in, set by an event and not by time: each
+/// caller finishes only once a given number of others have, so a test can
+/// make work started first finish last on a host of any load. Sleeps of
+/// different lengths do not: a loaded CI runner ran two of them out of order.
+pub(crate) struct FinishOrder<T> {
+    finished: std::sync::Mutex<Vec<T>>,
+    one_more: std::sync::Condvar,
+}
+
+impl<T: Clone> FinishOrder<T> {
+    /// Nobody has finished.
+    pub(crate) fn new() -> Self {
+        Self {
+            finished: std::sync::Mutex::new(Vec::new()),
+            one_more: std::sync::Condvar::new(),
+        }
+    }
+
+    /// Wait up to `limit` until `earlier` callers have finished, then
+    /// finish as `who`. True when that many had finished in time.
+    ///
+    /// A caller that gives up at `limit` is recorded all the same, so the
+    /// order a test then reads shows what happened and no thread waits for
+    /// ever.
+    pub(crate) fn finish_after(&self, earlier: usize, who: T, limit: Duration) -> bool {
+        let Ok(finished) = self.finished.lock() else {
+            return false;
+        };
+        let Ok((mut finished, waited)) = self
+            .one_more
+            .wait_timeout_while(finished, limit, |f| f.len() < earlier)
+        else {
+            return false;
+        };
+        finished.push(who);
+        self.one_more.notify_all();
+        !waited.timed_out()
+    }
+
+    /// Who has finished, first to last.
+    pub(crate) fn order(&self) -> Vec<T> {
+        self.finished.lock().map(|f| f.clone()).unwrap_or_default()
+    }
+}
+
 /// A relay client for the engine at `addr`, giving up after `timeout`.
 pub(crate) fn client(
     addr: SocketAddr,
@@ -221,4 +266,94 @@ pub(crate) fn live_permit()
         },
     )
     .ok_or("a live source grants a permit")?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A caller that waits for nobody records at once, and reports that it
+    /// did not give up.
+    #[test]
+    fn a_caller_that_waits_for_nobody_finishes_at_once() {
+        let order = FinishOrder::new();
+        assert!(
+            order.finish_after(0, "a", Duration::from_secs(30)),
+            "nothing to wait for"
+        );
+        assert_eq!(order.order(), vec!["a"], "it is recorded");
+    }
+
+    /// Callers started in any order finish in the order their counts name:
+    /// each waits for that many others to have finished, and is released by
+    /// their finishing, long before its limit. A caller nobody releases
+    /// stays its whole limit, and at the limit can still find its count
+    /// reached.
+    #[test]
+    fn callers_finish_in_the_order_their_counts_name() {
+        let order = FinishOrder::new();
+        let started = std::time::Instant::now();
+        let in_turn = std::thread::scope(|scope| {
+            // The counts name an order that is neither the order started in
+            // nor its reverse: threads that did not wait have been seen to
+            // finish in each of those two.
+            let threads: Vec<_> = [2_usize, 0, 3, 1]
+                .into_iter()
+                .enumerate()
+                .map(|(i, earlier)| {
+                    let order = &order;
+                    scope.spawn(move || order.finish_after(earlier, i, Duration::from_secs(30)))
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|t| t.join().unwrap_or(false))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(in_turn, vec![true; 4], "none gave up its wait");
+        assert_eq!(
+            order.order(),
+            vec![1, 3, 0, 2],
+            "each finished after as many others as its count"
+        );
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_secs(30),
+            "each was released by a finish, not by its 30 s limit: took {took:?}"
+        );
+    }
+
+    /// A caller whose turn never comes gives up at its limit, says so, and
+    /// is still recorded, so a test's assertion on the order shows what
+    /// happened and no thread waits for ever.
+    #[test]
+    fn a_caller_whose_turn_never_comes_gives_up_and_says_so() {
+        let order = FinishOrder::new();
+        assert!(
+            !order.finish_after(1, "alone", Duration::from_millis(20)),
+            "nobody finished before it, so it gave up"
+        );
+        assert_eq!(order.order(), vec!["alone"], "recorded all the same");
+    }
+
+    /// A caller that arrives once its count is already reached does not
+    /// wait: with no limit at all it finishes and reports that it did not
+    /// give up.
+    #[test]
+    fn a_caller_whose_count_is_already_reached_does_not_wait() {
+        let order = FinishOrder::new();
+        assert!(
+            order.finish_after(0, "first", Duration::ZERO),
+            "the first waits for nobody"
+        );
+        assert!(
+            order.finish_after(1, "second", Duration::ZERO),
+            "one had finished, which is the count the second names"
+        );
+        assert!(
+            !order.finish_after(3, "third", Duration::ZERO),
+            "two have finished, not three, and it has no time to wait"
+        );
+        assert_eq!(order.order(), vec!["first", "second", "third"], "in turn");
+    }
 }

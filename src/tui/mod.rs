@@ -2352,16 +2352,20 @@ pub fn run_tui_with_pause(
     // because the terminal has gone is the same lost terminal, not a failure
     // of the run.
     let outcome = event_loop(&mut terminal, &mut app, &input);
-    let (outcome, hung_up) = terminal_input::settle(outcome, || input.gone().unwrap_or(false));
+    // The terminal read and the one drawn on can differ (standard output
+    // redirected to another terminal), so both are asked.
+    let (outcome, hung_up) = terminal_input::settle(outcome, || {
+        input.gone().unwrap_or(false)
+            || terminal_input::output_gone(libc::STDOUT_FILENO).unwrap_or(false)
+    });
     if hung_up {
         tracing::warn!("the terminal has gone; stopping");
         crate::signals::request_hangup();
-        // ratatui's Terminal shows the cursor when it drops, and reports a
-        // failure with `eprintln!`, which panics when standard error is the
-        // terminal that has gone. Nothing can be shown on that terminal, so
-        // the Terminal is not dropped.
-        std::mem::forget(terminal);
     }
+    // Every end of the run, not only a reported hang-up: a stop flag seen
+    // before the loop noticed the lost terminal ends the loop with the
+    // terminal gone too, and ratatui's own Drop panics on one.
+    terminal_input::release(terminal);
     outcome
 }
 

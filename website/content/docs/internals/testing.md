@@ -437,6 +437,21 @@ What the script does that a reader of the user page does not need to:
   - That is also what callgrind wants.
 - Baselines live in [`benches/BASELINES.md`](https://github.com/NormB/sipnab/blob/main/benches/BASELINES.md).
 
+**The pin gates, before the hook.** Some tests hold a count of something the repository tracks: pages, links between them, code links, workflows, error templates.
+A new page, script or workflow moves those counts, and the tests that hold them run among 16,000 others at the end of the pre-commit hook, about 25 minutes in.
+[`scripts/pin-gates.py`](https://github.com/NormB/sipnab/blob/main/scripts/pin-gates.py) runs only those tests, in under a minute once their binaries exist.
+
+- Purpose: meet every count pin a change moves in one short run, before the hook.
+- Prerequisites: `cargo-nextest` at the version the hook pins, and the change staged. The tests list files with `git ls-files`, which reads the index, so a file that is not staged is not counted.
+- Steps: `git add <paths>`, then `python3 scripts/pin-gates.py`. On the shared build host, run it through `heavy-run --quick`.
+- Verify: the run ends with the suite's own summary lines and exit status 0. A failing test prints the count it found and the constant to change.
+- Troubleshoot: exit status 2 with `untracked, so not counted by any gate` names files to `git add`; `--allow-untracked` runs anyway, for a scratch file that stays out of the commit.
+  Exit status 2 with `neither run nor excluded` means a new test counts tracked files: add its name to [`.config/pin-gates.txt`](https://github.com/NormB/sipnab/blob/main/.config/pin-gates.txt).
+
+The script runs the tests the way the hook does: the same nextest profile, feature set and environment, so it builds no binary the hook does not build.
+It names each binary to cargo with `--test`. A nextest filter alone would build every test target first.
+[`scripts/tests/test_pin_gates.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_pin_gates.py) holds the list to the tree: a test under `tests/` that declares a count constant (a `usize` whose name begins `EXPECTED_`), or reads the list of tracked files, must appear in the list, as a binary to run or as an exclusion with a reason.
+
 **nextest.** The suite runs under cargo-nextest, in the pre-commit hook and in CI, through [`scripts/parallel-tests.py`](https://github.com/NormB/sipnab/blob/main/scripts/parallel-tests.py).
 
 - `cargo test` bounds no single test, so one hung test held the hook until its 30-minute watchdog fired, with no name attached.
