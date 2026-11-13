@@ -65,13 +65,24 @@ slow-timeout = { period = "60s", terminate-after = 6 }
 # 14 cores, they took 42.48 s and 36.30 s (2026-11-11). In the suite, at a
 # load average of 44 to 50, nextest stopped both at 180 s (180.405 s and
 # 180.259 s, the commit hook run that ended 03:46:27Z on 2026-11-11), and two
-# more commit hooks failed the same way that day. Six periods is about twice
-# what that load made of them. The pre-commit hook's own share of each hook
-# run was cut first, from 2.24 s to 1.28 s in a sandbox (its suite watch slept
-# a whole second).
+# more commit hooks failed the same way that day. The pre-commit hook's own
+# share of each hook run was cut first, from 2.24 s to 1.28 s in a sandbox
+# (its suite watch slept a whole second), and the limit went to six periods.
+# At a load average of 38 that was passed as well (both ended at 300 s by
+# their own limit, 2026-11-12). The cause: each harness is about 45 s of
+# processor time in a row (46.0 s and 44.4 s, measured alone with `cargo`
+# stubbed, 2026-11-13), so its run time is that work divided by the share of a
+# core the host gives it, and no number of seconds fits every load. The two
+# tests now end a harness themselves when its log stops growing for 120 s or
+# passes 4 MiB (`HookLimits` in tests/hook_test_scripts_git_env_test.rs),
+# which does not depend on the load. The limit here is no longer what ends a
+# hang of these two: 30 periods are the 30 minutes of the pre-commit hook's
+# own watch on the suite, for the case that the tests' own watch fails.
+# `test_the_harness_tests_end_a_hang_themselves_before_nextest_would` in
+# scripts/tests/test_parallel_tests_nextest.py holds the two together.
 [[profile.suite.overrides]]
 filter = "binary(=hook_test_scripts_git_env_test) & (test(=test_pre_commit_sh_leaves_the_hooks_repository_alone) | test(=test_pre_push_sh_leaves_the_hooks_repository_alone))"
-slow-timeout = { period = "60s", terminate-after = 6 }
+slow-timeout = { period = "60s", terminate-after = 30 }
 
 # PTY / terminal E2E tests (tests/tui_e2e_test.rs) can be timing-flaky; allow a
 # couple of retries here ONLY. Per spec §13.4 they must also pass a no-retry

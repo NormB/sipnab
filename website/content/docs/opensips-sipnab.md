@@ -62,10 +62,11 @@ The examples use `192.0.2.10` as the machine's address.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 

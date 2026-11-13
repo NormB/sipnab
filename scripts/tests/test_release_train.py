@@ -41,6 +41,12 @@ def iso(t):
     return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def main_run(name, seconds, conclusion="success", status="completed", start=T0 - 3600):
+    """One line of the check-runs read: a check run of main's head commit."""
+    return json.dumps({"name": name, "status": status, "conclusion": conclusion,
+                       "started_at": iso(start), "completed_at": iso(start + seconds)})
+
+
 def facts(**kw):
     base = dict(pr_state="OPEN", pr_number=9, head=HEAD, merge_sha="", pending=0, failed=(),
                 first_started=T0, tag_exists=False, run_status="", run_conclusion="", post_rc=None)
@@ -92,6 +98,10 @@ class World:
         self.merged_at = None
         self.proof_lag = 20
         self.proof_asks = []
+        # main's head commit: seconds each check took there (None: the read
+        # fails). Empty by default, so the older tests run on the count rule.
+        self.usual = {}
+        self.usual_asks = []
 
     def sleep(self, s):
         self.now += s
@@ -137,6 +147,11 @@ class World:
             self.window = None
             self.window_log.append((self.now, "close"))
             return rt.Result(0, "closed\n")
+        if "/check-runs" in j:
+            self.usual_asks.append(self.now)
+            if self.usual is None:
+                return rt.Result(1, "gh: HTTP 502\n")
+            return rt.Result(0, "".join(main_run(n, s) + "\n" for n, s in self.usual.items()))
         if "gh pr list" in j:
             return rt.Result(0, json.dumps([self.pr]))
         if "gh pr view" in j:
@@ -157,7 +172,7 @@ class World:
             self.pr["state"] = "MERGED"
             self.pr["mergeCommit"] = {"oid": MERGE}
             self.merged_at = self.now
-            return rt.Result(0, "")
+            return rt.Result(0, getattr(self, "land_out", ""))
         if "fetch origin" in j:
             return rt.Result(0, "")
         if "rev-parse HEAD" in j:
@@ -743,7 +758,11 @@ def test_failure_no_host_is_a_usage_error():
 def test_edge_the_state_file_holds_only_the_post_result(cfg):
     w = World()
     drive(cfg, w)
-    assert json.loads(cfg.state_file.read_text()) == {"post_rc": 0, "cla_head": HEAD}
+    # The usual times: main's head had no completed run to read, so the table
+    # is empty and the last read is some time inside the 36 min of CI.
+    state = json.loads(cfg.state_file.read_text())
+    assert T0 <= state.pop("usual_read_at") <= T0 + 36 * MIN
+    assert state == {"post_rc": 0, "cla_head": HEAD, "usual_s": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -1001,3 +1020,814 @@ def test_edge_a_bound_of_zero_asks_once_and_stops_if_the_proof_is_not_there(cfg)
     cfg.proof_wait_s = 0
     assert drive(cfg, w) == 1
     assert len(w.proof_asks) == 1 and "tag-push" not in w.names()
+
+
+# ---------------------------------------------------------------------------
+# RELEASE-TRAIN-WINDOW-OPENS-ON-LONG-LAST-CHECK: one long last check
+# ---------------------------------------------------------------------------
+#
+# Measured on 0.5.246: with one check pending (Coverage, running since
+# 11:57:38Z) the window was open at 12:31Z, the main slot was idle, and two
+# ordinary jobs were held 13 and 4 minutes. Measured on 0.5.249: the window
+# opened at 17:09:03Z and closed at 17:32:15Z while one check, a macOS job that
+# ran from 16:57:06Z to 17:30:08Z, was the only one pending.
+#
+# The landing waits for every check, so the count of pending checks says
+# nothing about when the landing is. What does is each pending check's start
+# plus the time the same check took on main's head commit.
+
+
+# --- the landing's output ---------------------------------------------------
+#
+# On 0.5.249 the train's output held no line from required-checks, and the
+# release agent could not say from it that the script had run. It had (the
+# landing log has the command at 17:30:21Z), and the train printed its output
+# only when the landing failed. A `warning:` line of required-checks names a
+# check an outside service has not completed, and a landing report quotes it.
+
+#
+# The one line a landing that passed can print is that warning: until
+# 2026-11-13 this fixture also held "Coverage: success" and "Merged pull
+# request #9", which neither tool writes for a pass (see the next section).
+
+LANDED = "warning: codecov/patch: queued for 12 min, allowed unreported after 10 min\n"
+
+
+def test_success_the_output_of_a_landing_that_passed_is_printed(cfg, capsys):
+    w = World()
+    w.land_out = LANDED
+    assert drive(cfg, w) == 0
+    assert capsys.readouterr().out.count(LANDED) == 1
+
+
+def test_success_a_warning_line_of_required_checks_reaches_the_trains_output(cfg, capsys):
+    w = World()
+    w.land_out = LANDED
+    drive(cfg, w)
+    assert "warning: codecov/patch: queued for 12 min, allowed unreported after 10 min" in capsys.readouterr().out
+
+
+def test_edge_a_landing_that_printed_nothing_adds_no_empty_line(cfg, capsys):
+    w = World()
+    assert drive(cfg, w) == 0
+    assert "\n\n" not in capsys.readouterr().out
+
+
+def test_failure_the_output_of_a_landing_that_failed_is_in_the_stop_message_once(cfg, capsys):
+    w = World()
+    w.overrides.append(("land-queue", (1, "Coverage: failure\n")))
+    assert drive(cfg, w) == 1
+    assert capsys.readouterr().out.count("Coverage: failure") == 1
+
+
+# --- the landing's own record ------------------------------------------------
+#
+# On 0.5.250 the train's output again held no line of the landing between
+# "stage: land" and the checkout line. The landing had run (the landing log has
+# the command at 04:38:23Z, rc 0). Read on 2026-11-13: `required-checks` on
+# that head prints 0 bytes and ends 0, since it names only a check that is not
+# a success; and the merge command printed nothing with its output in a pipe.
+# So a landing that passed has no output to print, and the fixture LANDED
+# above holds lines that neither tool writes for a pass. The train now writes
+# the record itself, after "stage: land", from what it knows: the exit status
+# 0 of `required-checks ... && gh pr merge ...`.
+
+CHECKS_LINE = f"land: required-checks NormB/sipnab {HEAD} passed (exit status 0)"
+MERGE_LINE = f"land: pull request 9 merged with --match-head-commit {HEAD}"
+
+
+def train_lines(cfg, w, capsys):
+    rc = drive(cfg, w)
+    return rc, capsys.readouterr().out.splitlines()
+
+
+def test_success_a_silent_landing_that_passed_leaves_a_required_checks_line(cfg, capsys):
+    rc, lines = train_lines(cfg, World(), capsys)
+    assert rc == 0
+    assert lines.count(CHECKS_LINE) == 1
+
+
+def test_success_a_silent_landing_that_passed_leaves_a_merge_line(cfg, capsys):
+    rc, lines = train_lines(cfg, World(), capsys)
+    assert rc == 0
+    assert lines.count(MERGE_LINE) == 1
+
+
+def test_success_the_landing_lines_sit_between_the_land_stage_and_the_checkout(cfg, capsys):
+    _, lines = train_lines(cfg, World(), capsys)
+    at = [lines.index("stage: land"), lines.index(CHECKS_LINE), lines.index(MERGE_LINE),
+          next(i for i, line in enumerate(lines) if line.startswith("checkout: "))]
+    assert at == sorted(at) and len(set(at)) == 4, lines
+
+
+def test_success_what_the_landing_printed_sits_between_the_two_lines(cfg, capsys):
+    w = World()
+    w.land_out = "warning: codecov/patch: queued for 12 min, allowed unreported after 10 min\n"
+    _, lines = train_lines(cfg, w, capsys)
+    i = lines.index(CHECKS_LINE)
+    assert lines[i + 1] == w.land_out.rstrip() and lines[i + 2] == MERGE_LINE, lines
+
+
+def test_success_the_lines_name_the_repository_of_the_train(tmp_path, capsys):
+    other = rt.Config(version=VERSION, host="releaser@vm.example.invalid", repo="example/other",
+                      state_file=tmp_path / "train.json")
+    _, lines = train_lines(other, World(), capsys)
+    assert f"land: required-checks example/other {HEAD} passed (exit status 0)" in lines
+
+
+def test_success_each_stage_line_comes_before_the_lines_of_its_step(cfg, capsys):
+    _, lines = train_lines(cfg, World(), capsys)
+    assert lines.index("stage: tag") < next(i for i, line in enumerate(lines) if line.startswith("checkout: "))
+    assert lines.index("stage: post") < lines.index("bpf: OK")
+
+
+def test_failure_a_failed_landing_leaves_no_passed_line(cfg, capsys):
+    w = World()
+    w.overrides.append(("land-queue", (1, "Coverage: failure\n")))
+    rc, lines = train_lines(cfg, w, capsys)
+    assert rc == 1
+    assert not [line for line in lines if line.startswith("land: ")], lines
+
+
+def test_failure_a_failed_landing_is_stopped_after_its_stage_line(cfg, capsys):
+    w = World()
+    w.overrides.append(("land-queue", (1, "Coverage: failure\n")))
+    _, lines = train_lines(cfg, w, capsys)
+    stop = next(i for i, line in enumerate(lines) if line.startswith("stopped: landing pull request 9 failed"))
+    assert lines.index("stage: land") < stop, lines
+
+
+def test_failure_a_landing_that_timed_out_leaves_no_passed_line(cfg, capsys):
+    w = World()
+    w.overrides.append(("land-queue", (124, "timed out after 1800 s")))
+    rc, lines = train_lines(cfg, w, capsys)
+    assert rc == 1
+    assert CHECKS_LINE not in lines and MERGE_LINE not in lines
+
+
+def test_failure_a_failed_check_never_reaches_the_landing_lines(cfg, capsys):
+    rc, lines = train_lines(cfg, World(conclusion="FAILURE"), capsys)
+    assert rc == 1
+    assert "stage: land" not in lines and not [line for line in lines if line.startswith("land: ")]
+
+
+def test_edge_a_resume_after_the_landing_prints_no_landing_line(cfg, capsys):
+    w = World()
+    w.pr["state"] = "MERGED"
+    w.pr["mergeCommit"] = {"oid": MERGE}
+    w.merged_at = w.now - 600
+    rc, lines = train_lines(cfg, w, capsys)
+    assert rc == 0
+    assert not [line for line in lines if line.startswith("land: ")], lines
+
+
+def test_edge_each_stage_line_is_printed_once(cfg, capsys):
+    _, lines = train_lines(cfg, World(), capsys)
+    stages = [line for line in lines if line.startswith("stage: ")]
+    assert stages == ["stage: ci-wait", "stage: land", "stage: tag", "stage: release-wait", "stage: post",
+                      "stage: done"], stages
+
+
+def test_edge_a_landing_that_printed_only_blank_lines_adds_none(cfg, capsys):
+    w = World()
+    w.land_out = "\n\n"
+    drive(cfg, w)
+    out = capsys.readouterr().out
+    assert "\n\n" not in out and CHECKS_LINE + "\n" + MERGE_LINE + "\n" in out
+
+
+def test_edge_tick_without_a_listener_still_lands(cfg, capsys):
+    w = World(ci_minutes=0)
+    w.now += 60
+    assert rt.tick(cfg, w, w.clock) == "land"
+    assert capsys.readouterr().out.splitlines() == [CHECKS_LINE, MERGE_LINE]
+
+
+# --- each line at once, whatever standard output is --------------------------
+#
+# On 0.5.249 the train ran with its output in a file, not on a terminal.
+# Python block-buffers such an output, so the "stage:" lines appeared only
+# when the train ended, and the release agent resumed it with `python3 -u`.
+#
+# The driver below runs the real `main` in a child process whose standard
+# output is a pipe. Its runner answers the first tick (a pull request with one
+# running check), says "blocked" on standard error at the first read of the
+# second tick, and waits there until its standard input closes. So when
+# "blocked" arrives the train is alive and has printed "stage: ci-wait"; the
+# only question is whether that line has left the process.
+
+DRIVER = r'''
+import importlib.util, json, pathlib, sys
+script, state_dir = sys.argv[1], pathlib.Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("release_train_child", script)
+rt = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = rt
+spec.loader.exec_module(rt)
+rt.git_dir = lambda: state_dir
+lists = 0
+
+def runner(argv, timeout):
+    global lists
+    j = " ".join(argv)
+    if "gh pr list" in j:
+        lists += 1
+        if lists == 2:
+            sys.stderr.write("blocked\n")
+            sys.stderr.flush()
+            sys.stdin.read()
+        if lists >= 2:
+            return rt.Result(1, "the test is over\n")
+        return rt.Result(0, json.dumps([{"number": 9, "state": "OPEN", "headRefOid": "a" * 40, "mergeCommit": None}]))
+    if "gh pr view" in j:
+        return rt.Result(0, json.dumps({"statusCheckRollup": [
+            {"name": "Coverage", "status": "IN_PROGRESS", "conclusion": "", "startedAt": "2026-01-01T00:00:00Z"}]}))
+    if "/check-runs" in j:
+        return rt.Result(1, "no history\n")
+    if "--release-window status" in j:
+        return rt.Result(0, "closed\n")
+    return rt.Result(0, "")
+
+sys.exit(rt.main(["0.5.242", "--host", "releaser@vm.example.invalid", "--poll", "0"] + sys.argv[3:], runner=runner))
+'''
+
+
+def piped_train(tmp_path, *args):
+    """Start the driver with pipes; return (process, whether "blocked" came)."""
+    import subprocess
+    import sys
+
+    driver = tmp_path / "driver.py"
+    driver.write_text(DRIVER, encoding="utf-8")
+    p = subprocess.Popen([sys.executable, str(driver), str(rt.SCRIPTS / "release-train.py"), str(tmp_path), *args],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return p, p.stderr.readline() == b"blocked\n"
+
+
+def finish(p):
+    p.stdin.close()
+    rest = p.stdout.read()
+    p.stderr.read()
+    return rest, p.wait(timeout=60)
+
+
+def readable(stream, seconds):
+    import select
+
+    return bool(select.select([stream], [], [], seconds)[0])
+
+
+def test_success_a_stage_line_can_be_read_from_a_pipe_while_the_train_is_running(tmp_path):
+    p, blocked = piped_train(tmp_path)
+    try:
+        assert blocked, "the driver never reached its second tick"
+        assert p.poll() is None, "the train ended before the line was looked for"
+        # The line was printed before "blocked" was written; 5 s is only how
+        # long a train that kept the line to itself is given.
+        assert readable(p.stdout, 5), "no line left the train while it was running"
+        assert p.stdout.readline() == b"stage: ci-wait\n"
+        assert p.poll() is None
+    finally:
+        finish(p)
+
+
+def test_success_the_lines_after_the_wait_follow_and_the_train_ends(tmp_path):
+    p, blocked = piped_train(tmp_path)
+    assert blocked
+    rest, rc = finish(p)
+    assert rc == 1
+    lines = rest.decode().splitlines()
+    assert lines[0] == "stage: ci-wait"
+    assert lines[-1] == "stopped: GitHub or git could not be read; re-run to resume"
+
+
+def test_failure_a_usage_error_still_exits_2_with_its_output_on_a_pipe(tmp_path):
+    import subprocess
+    import sys
+
+    r = subprocess.run([sys.executable, str(rt.SCRIPTS / "release-train.py"), "not-a-version", "--host", "h"],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 2 and "the version is X.Y.Z" in r.stderr
+
+
+def test_edge_an_output_that_cannot_be_reconfigured_does_not_stop_the_train(tmp_path, monkeypatch):
+    class Plain:
+        """A standard output with write and flush and nothing else."""
+
+        def __init__(self):
+            self.text = ""
+
+        def write(self, s):
+            self.text += s
+
+        def flush(self):
+            pass
+
+    out = Plain()
+    monkeypatch.setattr(rt.sys, "stdout", out)
+    monkeypatch.setattr(rt, "train", lambda cfg, run: 0)
+    monkeypatch.setattr(rt, "git_dir", lambda: tmp_path)
+    assert rt.main([VERSION, "--host", "releaser@vm.example.invalid"]) == 0
+
+
+def test_edge_the_setting_is_made_once_in_main_before_the_train_starts(tmp_path, monkeypatch):
+    seen = []
+
+    class Recording:
+        def reconfigure(self, **kw):
+            seen.append(("reconfigure", kw))
+
+        def write(self, s):
+            pass
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(rt.sys, "stdout", Recording())
+    monkeypatch.setattr(rt, "train", lambda cfg, run: seen.append(("train", {})) or 0)
+    monkeypatch.setattr(rt, "git_dir", lambda: tmp_path)
+    rt.main([VERSION, "--host", "releaser@vm.example.invalid"])
+    assert seen == [("reconfigure", {"line_buffering": True}), ("train", {})]
+
+
+def check(name, start, status="IN_PROGRESS", conclusion=""):
+    return {"name": name, "status": status, "conclusion": conclusion, "startedAt": iso(start)}
+
+
+class Asks:
+    """A runner that answers the check-runs read from a list of results, in
+    order (the last one again after that), and counts the asks."""
+
+    def __init__(self, *results):
+        self.results = list(results)
+        self.argvs = []
+
+    def __call__(self, argv, timeout):
+        self.argvs.append(argv)
+        r = self.results[min(len(self.argvs), len(self.results)) - 1]
+        return rt.Result(*r)
+
+
+# --- longest_remaining -----------------------------------------------------
+
+
+def test_success_one_running_check_has_its_usual_time_less_the_time_it_has_run():
+    items = [check("Coverage", T0)]
+    assert rt.longest_remaining(items, {"Coverage": 38 * MIN}, T0 + 8 * MIN) == 30 * MIN
+
+
+def test_success_the_longest_of_several_pending_checks_decides():
+    items = [check("a", T0), check("b", T0 + 60), check("c", T0)]
+    assert rt.longest_remaining(items, {"a": 600, "b": 1800, "c": 900}, T0 + 300) == 1560
+
+
+def test_success_completed_checks_are_not_counted():
+    items = [check("slow", T0, "COMPLETED", "SUCCESS"), check("fast", T0)]
+    assert rt.longest_remaining(items, {"slow": 3600, "fast": 120}, T0 + 20) == 100
+
+
+def test_success_a_check_past_its_usual_time_has_none_left():
+    assert rt.longest_remaining([check("Coverage", T0)], {"Coverage": 600}, T0 + 900) == 0
+
+
+def test_success_a_check_just_queued_counts_from_the_time_it_was_made():
+    assert rt.longest_remaining([check("mac", T0, "QUEUED")], {"mac": 1200}, T0 + 10) == 1190
+
+
+def test_success_a_passed_commit_status_does_not_hide_the_estimate():
+    items = [check("Coverage", T0), {"context": "license/cla", "state": "SUCCESS", "startedAt": iso(T0)}]
+    assert rt.longest_remaining(items, {"Coverage": 600}, T0) == 600
+
+
+def test_failure_a_pending_check_with_no_usual_time_gives_no_estimate():
+    assert rt.longest_remaining([check("new-check", T0)], {"Coverage": 600}, T0) is None
+
+
+def test_failure_one_unknown_check_among_known_ones_gives_no_estimate():
+    items = [check("Coverage", T0), check("new-check", T0)]
+    assert rt.longest_remaining(items, {"Coverage": 600}, T0) is None
+
+
+def test_failure_a_pending_commit_status_gives_no_estimate():
+    items = [check("Coverage", T0), {"context": "codecov/patch", "state": "PENDING", "startedAt": iso(T0)}]
+    assert rt.longest_remaining(items, {"Coverage": 600, "codecov/patch": 5}, T0) is None
+
+
+def test_failure_a_pending_check_with_no_start_time_gives_no_estimate():
+    items = [{"name": "Coverage", "status": "IN_PROGRESS", "conclusion": ""}]
+    assert rt.longest_remaining(items, {"Coverage": 600}, T0) is None
+
+
+def test_edge_a_start_time_of_year_1_gives_no_estimate():
+    items = [{"name": "Coverage", "status": "QUEUED", "conclusion": "", "startedAt": "0001-01-01T00:00:00Z"}]
+    assert rt.longest_remaining(items, {"Coverage": 600}, T0) is None
+
+
+def test_edge_nothing_pending_gives_no_estimate():
+    assert rt.longest_remaining([check("a", T0, "COMPLETED", "SUCCESS")], {"a": 600}, T0) is None
+
+
+def test_edge_an_empty_rollup_gives_no_estimate():
+    assert rt.longest_remaining([], {"a": 600}, T0) is None
+
+
+def test_edge_a_failed_check_is_not_pending_and_is_not_counted():
+    items = [check("bad", T0, "COMPLETED", "FAILURE"), check("b", T0)]
+    assert rt.longest_remaining(items, {"b": 60}, T0) == 60
+
+
+def test_edge_a_completed_check_with_an_unknown_conclusion_is_still_pending_here_too():
+    # read_rollup counts it as pending, so the estimate must cover it as well.
+    items = [check("odd", T0, "COMPLETED", "STALE")]
+    assert rt.read_rollup(items)[0] == 1
+    assert rt.longest_remaining(items, {"odd": 300}, T0 + 100) == 200
+    assert rt.longest_remaining(items, {}, T0 + 100) is None
+
+
+def test_edge_a_usual_time_of_zero_leaves_nothing():
+    assert rt.longest_remaining([check("a", T0)], {"a": 0}, T0) == 0
+
+
+def test_edge_a_pending_commit_status_gives_no_estimate_whatever_names_have_a_usual_time():
+    # A commit status has no name; "?" is what a nameless item is called.
+    items = [{"context": "codecov/patch", "state": "PENDING", "startedAt": iso(T0)}]
+    assert rt.longest_remaining(items, {"?": 5, "codecov/patch": 5}, T0) is None
+
+
+def test_success_the_pending_names_are_those_of_the_check_runs_still_to_finish():
+    items = [check("a", T0), check("b", T0, "COMPLETED", "SUCCESS"), check("c", T0, "QUEUED"),
+             check("d", T0, "COMPLETED", "FAILURE"),
+             {"context": "codecov/patch", "state": "PENDING", "startedAt": iso(T0)}]
+    assert rt.pending_names(items) == ["a", "c"]
+
+
+# --- usual_from_runs -------------------------------------------------------
+
+
+def runs(*lines):
+    return [json.loads(x) for x in lines]
+
+
+def test_success_a_successful_run_gives_its_duration():
+    assert rt.usual_from_runs(runs(main_run("Coverage", 2289))) == {"Coverage": 2289}
+
+
+def test_success_every_name_gets_its_own_time():
+    got = rt.usual_from_runs(runs(main_run("a", 10), main_run("b", 20), main_run("c", 30)))
+    assert got == {"a": 10, "b": 20, "c": 30}
+
+
+def test_edge_two_runs_of_one_name_give_the_longer():
+    got = rt.usual_from_runs(runs(main_run("docker", 100), main_run("docker", 400), main_run("docker", 250)))
+    assert got == {"docker": 400}
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out", "skipped", "neutral", "action_required"])
+def test_failure_a_run_that_did_not_succeed_is_not_a_usual_time(conclusion):
+    assert rt.usual_from_runs(runs(main_run("Coverage", 40, conclusion=conclusion))) == {}
+
+
+def test_failure_a_run_still_in_progress_is_not_a_usual_time():
+    line = {"name": "Coverage", "status": "in_progress", "conclusion": None,
+            "started_at": iso(T0), "completed_at": None}
+    assert rt.usual_from_runs([line]) == {}
+
+
+def test_failure_a_run_with_times_that_do_not_parse_is_left_out():
+    line = {"name": "Coverage", "status": "completed", "conclusion": "success",
+            "started_at": "yesterday", "completed_at": iso(T0)}
+    assert rt.usual_from_runs([line, json.loads(main_run("b", 7))]) == {"b": 7}
+
+
+def test_edge_a_run_that_ends_before_it_starts_is_left_out():
+    assert rt.usual_from_runs(runs(main_run("a", -5))) == {}
+
+
+def test_edge_a_run_that_took_no_time_has_a_usual_time_of_zero():
+    assert rt.usual_from_runs(runs(main_run("a", 0))) == {"a": 0}
+
+
+def test_edge_no_runs_give_no_times():
+    assert rt.usual_from_runs([]) == {}
+
+
+def test_edge_a_run_with_no_name_or_that_is_not_an_object_is_left_out():
+    nameless = json.loads(main_run("x", 9))
+    nameless["name"] = None
+    assert rt.usual_from_runs([nameless, "text", 3, None]) == {}
+
+
+def test_edge_a_failed_run_does_not_hide_a_successful_one_of_the_same_name():
+    got = rt.usual_from_runs(runs(main_run("a", 900, conclusion="failure"), main_run("a", 60)))
+    assert got == {"a": 60}
+
+
+# --- window_wanted with the estimate ---------------------------------------
+
+
+def test_success_one_pending_check_with_thirty_minutes_left_keeps_the_window_closed(cfg):
+    # The defect: one pending check is under `last_few`, and the window opened.
+    assert not rt.window_wanted("ci-wait", 1, 30 * MIN, cfg, long_remaining=30 * MIN)
+
+
+def test_success_the_window_stays_closed_past_the_whole_run_estimate_while_a_check_has_long_to_run(cfg):
+    assert not rt.window_wanted("ci-wait", 1, 0, cfg, long_remaining=cfg.lead_s + 1)
+
+
+def test_success_the_window_opens_when_the_longest_check_is_at_the_lead(cfg):
+    assert rt.window_wanted("ci-wait", 12, 30 * MIN, cfg, long_remaining=cfg.lead_s)
+
+
+def test_success_the_window_opens_for_a_check_past_its_usual_time(cfg):
+    assert rt.window_wanted("ci-wait", 1, 30 * MIN, cfg, long_remaining=0)
+
+
+def test_success_the_landing_and_the_tag_are_open_whatever_the_estimate(cfg):
+    assert rt.window_wanted("land", 0, 0, cfg, long_remaining=9999)
+    assert rt.window_wanted("tag", 0, 0, cfg, long_remaining=9999)
+
+
+def test_failure_a_check_that_waits_for_a_runner_keeps_the_window_closed_whatever_the_estimate(cfg):
+    assert not rt.window_wanted("ci-wait", 1, 0, cfg, stuck=1, long_remaining=0)
+
+
+def test_failure_no_estimate_falls_back_to_the_count_of_pending_checks(cfg):
+    assert rt.window_wanted("ci-wait", cfg.last_few, 30 * MIN, cfg, long_remaining=None)
+    assert not rt.window_wanted("ci-wait", cfg.last_few + 1, cfg.lead_s + 1, cfg, long_remaining=None)
+
+
+def test_failure_no_estimate_falls_back_to_the_whole_run_estimate(cfg):
+    assert rt.window_wanted("ci-wait", 15, cfg.lead_s, cfg, long_remaining=None)
+
+
+def test_failure_the_estimate_opens_no_window_outside_the_pull_request_ci(cfg):
+    for stage in ("release-wait", "post", "done", "ci-failed", "no-pr"):
+        assert not rt.window_wanted(stage, 0, 0, cfg, long_remaining=0), stage
+
+
+def test_edge_nothing_left_opens_the_window_however_many_checks_are_pending(cfg):
+    # An estimate of 0 is an estimate: the count rule would keep this closed.
+    assert rt.window_wanted("ci-wait", cfg.last_few + 9, cfg.lead_s + 600, cfg, long_remaining=0)
+
+
+def test_edge_one_second_past_the_lead_is_still_closed(cfg):
+    assert not rt.window_wanted("ci-wait", 1, 0, cfg, long_remaining=cfg.lead_s + 1)
+    assert rt.window_wanted("ci-wait", 1, 0, cfg, long_remaining=cfg.lead_s)
+
+
+def test_edge_a_lead_of_zero_opens_only_when_nothing_is_left(cfg):
+    cfg.lead_s = 0
+    assert not rt.window_wanted("ci-wait", 1, 0, cfg, long_remaining=1)
+    assert rt.window_wanted("ci-wait", 1, 0, cfg, long_remaining=0)
+
+
+# --- the read of main's check runs -----------------------------------------
+
+
+def test_success_the_read_gives_seconds_per_check_name(cfg):
+    run = Asks((0, main_run("Coverage", 2289) + "\n" + main_run("Check (macos-latest)", 1260) + "\n"))
+    assert rt.read_usual(cfg, run) == {"Coverage": 2289, "Check (macos-latest)": 1260}
+
+
+def test_success_the_read_asks_for_the_check_runs_of_main_in_this_repository(cfg):
+    run = Asks((0, ""))
+    rt.read_usual(cfg, run)
+    argv = run.argvs[0]
+    assert argv[:2] == ["gh", "api"] and "--paginate" in argv
+    assert any(a.startswith("repos/NormB/sipnab/commits/main/check-runs") for a in argv)
+
+
+def test_failure_a_read_that_fails_gives_nothing_rather_than_an_empty_history(cfg):
+    assert rt.read_usual(cfg, Asks((1, "gh: HTTP 502\n"))) is None
+
+
+def test_failure_a_failed_read_that_prints_check_runs_is_still_a_failed_read(cfg):
+    assert rt.read_usual(cfg, Asks((1, main_run("a", 5) + "\n"))) is None
+
+
+def test_failure_a_read_with_a_line_that_is_not_json_gives_nothing(cfg):
+    assert rt.read_usual(cfg, Asks((0, main_run("a", 5) + "\nwarning: something\n"))) is None
+
+
+def test_edge_a_read_with_no_lines_is_an_empty_history(cfg):
+    assert rt.read_usual(cfg, Asks((0, "\n"))) == {}
+
+
+def test_success_the_usual_times_are_kept_in_the_state_file(cfg):
+    run = Asks((0, main_run("Coverage", 2289) + "\n"))
+    assert rt.usual_for(cfg, run, ["Coverage"], T0) == {"Coverage": 2289}
+    state = json.loads(cfg.state_file.read_text())
+    assert state["usual_s"] == {"Coverage": 2289} and state["usual_read_at"] == T0
+
+
+def test_success_known_names_are_not_read_again(cfg):
+    run = Asks((0, main_run("Coverage", 2289) + "\n"))
+    for i in range(5):
+        assert rt.usual_for(cfg, run, ["Coverage"], T0 + 1000 * i) == {"Coverage": 2289}
+    assert len(run.argvs) == 1
+
+
+def test_failure_a_failed_read_is_not_saved_and_is_made_again_at_the_next_tick(cfg):
+    run = Asks((1, "gh: HTTP 502\n"), (0, main_run("Coverage", 2289) + "\n"))
+    assert rt.usual_for(cfg, run, ["Coverage"], T0) == {}
+    assert not cfg.state_file.exists()
+    assert rt.usual_for(cfg, run, ["Coverage"], T0 + 30) == {"Coverage": 2289}
+    assert len(run.argvs) == 2
+
+
+def test_failure_a_failed_read_keeps_the_times_already_saved(cfg):
+    run = Asks((0, main_run("a", 50) + "\n"), (1, "gh: HTTP 502\n"))
+    rt.usual_for(cfg, run, ["a"], T0)
+    assert rt.usual_for(cfg, run, ["a", "b"], T0 + cfg.usual_retry_s) == {"a": 50}
+    assert json.loads(cfg.state_file.read_text())["usual_read_at"] == T0
+
+
+def test_edge_a_name_main_does_not_have_is_asked_for_again_only_after_the_retry_time(cfg):
+    run = Asks((0, main_run("a", 50) + "\n"), (0, main_run("a", 50) + "\n" + main_run("b", 70) + "\n"))
+    assert rt.usual_for(cfg, run, ["a", "b"], T0) == {"a": 50}
+    assert rt.usual_for(cfg, run, ["a", "b"], T0 + cfg.usual_retry_s - 1) == {"a": 50}
+    assert len(run.argvs) == 1
+    assert rt.usual_for(cfg, run, ["a", "b"], T0 + cfg.usual_retry_s) == {"a": 50, "b": 70}
+    assert len(run.argvs) == 2
+
+
+def test_edge_no_pending_check_means_no_read(cfg):
+    run = Asks((0, ""))
+    assert rt.usual_for(cfg, run, [], T0) == {}
+    assert run.argvs == []
+
+
+def test_edge_a_state_file_with_times_that_are_not_a_table_is_read_as_none(cfg):
+    cfg.state_file.write_text(json.dumps({"usual_s": [1, 2], "usual_read_at": "then", "post_rc": 3}))
+    run = Asks((0, main_run("a", 50) + "\n"))
+    assert rt.usual_for(cfg, run, ["a"], T0) == {"a": 50}
+    assert json.loads(cfg.state_file.read_text())["post_rc"] == 3
+
+
+def test_edge_a_read_time_in_the_future_does_not_stop_the_next_read(cfg):
+    cfg.state_file.write_text(json.dumps({"usual_s": {}, "usual_read_at": T0 + 10_000}))
+    run = Asks((0, main_run("a", 50) + "\n"))
+    assert rt.usual_for(cfg, run, ["a"], T0) == {"a": 50}
+
+
+def test_edge_a_later_read_does_not_drop_a_name_main_no_longer_shows(cfg):
+    run = Asks((0, main_run("a", 50) + "\n"), (0, main_run("b", 70) + "\n"))
+    rt.usual_for(cfg, run, ["a"], T0)
+    assert rt.usual_for(cfg, run, ["a", "b"], T0 + cfg.usual_retry_s) == {"a": 50, "b": 70}
+
+
+# --- read_facts ------------------------------------------------------------
+
+
+def test_success_the_facts_carry_the_longest_remaining_time(cfg):
+    w = World(ci_minutes=10, n_checks=2)
+    w.usual = {"job-0": 300, "job-1": 2000}
+    f = rt.read_facts(cfg, w, T0 + 30)
+    assert f.long_remaining == 2000
+
+
+def test_edge_facts_read_without_a_time_carry_no_estimate_and_read_no_history(cfg):
+    w = World(ci_minutes=10, n_checks=2)
+    w.usual = {"job-0": 300, "job-1": 2000}
+    assert rt.read_facts(cfg, w).long_remaining is None
+    assert w.usual_asks == []
+
+
+def test_edge_a_merged_pull_request_reads_no_history(cfg):
+    w = World()
+    w.pr["state"] = "MERGED"
+    w.pr["mergeCommit"] = {"oid": MERGE}
+    assert rt.read_facts(cfg, w, T0).long_remaining is None
+    assert w.usual_asks == []
+
+
+def test_failure_facts_with_a_history_that_cannot_be_read_carry_no_estimate(cfg):
+    w = World(ci_minutes=10, n_checks=2)
+    w.usual = None
+    assert rt.read_facts(cfg, w, T0 + 30).long_remaining is None
+
+
+# --- a whole release with one long last check ------------------------------
+
+LONG_END = T0 + 45 * MIN
+
+
+def long_last_check_world():
+    """Twenty checks done in 10 min, and Coverage, which runs until minute 45
+    as it did on main."""
+    w = World(ci_minutes=10, n_checks=20)
+    w.checks.append({"name": "Coverage", "start": T0 + 30, "end": LONG_END, "conclusion": "SUCCESS"})
+    w.usual = {f"job-{i}": 600 for i in range(20)}
+    w.usual["Coverage"] = LONG_END - (T0 + 30)
+    return w
+
+
+def first_open(w):
+    return next(t for t, kind in w.window_log if kind == "open")
+
+
+def test_success_the_window_stays_closed_until_the_lead_before_the_long_checks_end(cfg):
+    w = long_last_check_world()
+    assert drive(cfg, w) == 0
+    assert first_open(w) >= LONG_END - cfg.lead_s, (first_open(w) - T0) / MIN
+
+
+def test_success_the_window_still_opens_the_lead_before_the_landing(cfg):
+    w = long_last_check_world()
+    assert drive(cfg, w) == 0
+    assert w.at("land")[2]
+    assert w.at("land")[0] - first_open(w) >= cfg.lead_s - cfg.poll
+
+
+def test_success_the_history_is_read_once_in_a_whole_release(cfg):
+    w = long_last_check_world()
+    assert drive(cfg, w) == 0
+    assert w.usual_asks == [T0]
+
+
+def test_success_a_resumed_train_uses_the_saved_times_and_reads_nothing(cfg):
+    w = long_last_check_world()
+    rt.tick(cfg, w, w.clock, w.sleep)
+    w.usual = None  # any further read would fail
+    w.now = T0 + 20 * MIN
+    assert drive(cfg, w) == 0
+    assert len(w.usual_asks) == 1
+    assert first_open(w) >= LONG_END - cfg.lead_s
+
+
+def test_success_a_long_check_that_overruns_has_the_window_open_from_its_usual_end(cfg):
+    w = long_last_check_world()
+    w.usual["Coverage"] = 20 * MIN
+    assert drive(cfg, w) == 0
+    opened = first_open(w)
+    assert T0 + 30 + 20 * MIN - cfg.lead_s <= opened <= T0 + 30 + 20 * MIN - cfg.lead_s + cfg.poll
+
+
+def test_failure_a_history_that_cannot_be_read_leaves_the_count_rule_and_the_release_completes(cfg):
+    w = long_last_check_world()
+    w.usual = None
+    assert drive(cfg, w) == 0
+    # The old rule: open once the last few checks remain, long before Coverage ends.
+    assert first_open(w) < T0 + 10 * MIN
+
+
+def test_failure_a_history_that_cannot_be_read_is_asked_for_at_every_tick_of_the_ci_wait(cfg):
+    w = long_last_check_world()
+    w.usual = None
+    assert drive(cfg, w) == 0
+    assert len(w.usual_asks) == 45 * 2
+    assert "usual_s" not in json.loads(cfg.state_file.read_text())
+
+
+def test_failure_a_history_that_comes_back_closes_the_window_the_count_rule_opened(cfg):
+    w = long_last_check_world()
+    saved, w.usual = w.usual, None
+    while w.now < T0 + 12 * MIN:
+        rt.tick(cfg, w, w.clock, w.sleep)
+        w.sleep(cfg.poll)
+    assert w.window is not None
+    w.usual = saved
+    rt.tick(cfg, w, w.clock, w.sleep)
+    assert w.window is None and w.window_log[-1][1] == "close"
+
+
+def test_failure_a_long_check_main_never_ran_falls_back_to_the_count_rule(cfg):
+    w = long_last_check_world()
+    del w.usual["Coverage"]
+    assert drive(cfg, w) == 0
+    assert first_open(w) < T0 + 10 * MIN
+    # Asked again every five minutes while Coverage is pending: minutes 0 to 40.
+    assert w.usual_asks == [T0 + 300 * i for i in range(9)]
+
+
+def test_edge_a_long_check_that_waits_for_a_runner_keeps_the_window_closed_with_a_history(cfg):
+    w = long_last_check_world()
+    real = w.rollup
+
+    def rollup():
+        items = real()
+        for c in items:
+            if c.get("name") == "Coverage" and w.now < T0 + 20 * MIN:
+                c["status"] = "QUEUED"
+        return items
+
+    w.rollup = rollup
+    w.usual["Coverage"] = 60
+    seen = []
+    real_call = w.__call__
+
+    def spy(argv, timeout):
+        # From the tick after the one that first counts it as waiting.
+        if "--release-window status" in " ".join(argv) \
+                and T0 + 30 + cfg.queued_grace_s + cfg.poll <= w.now < T0 + 20 * MIN:
+            seen.append(w.window is None)
+        return real_call(argv, timeout)
+
+    assert rt.train(cfg, spy, sleep=w.sleep, clock=w.clock) == 0
+    assert seen and all(seen)
+
+
+def test_edge_the_state_file_of_a_release_holds_the_usual_times(cfg):
+    w = long_last_check_world()
+    drive(cfg, w)
+    state = json.loads(cfg.state_file.read_text())
+    assert state["usual_s"] == w.usual and state["usual_read_at"] == T0 and state["post_rc"] == 0

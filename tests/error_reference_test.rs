@@ -1007,7 +1007,20 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // would be replaced. src/app/fleet_center.rs +5: the build without the
 // store, a filing that failed, call records that could not be read, and the
 // two retention lines.
-const EXPECTED_TEMPLATES: usize = 656;
+// 656 -> 662 (fleet heartbeat history): +6. src/app/fleet_center.rs +4:
+// heartbeats that were not filed, heartbeats that could not be read, a file
+// not read for the member registry, and a registry not checked against the
+// history. src/app/fleet_history.rs +2: a file whose schema is another
+// class's (the text was a plain literal before, outside the count), and a
+// parameter the history route does not take. Two templates changed and kept
+// their place: the row received before 1970 names its class, and the
+// retention line names its setting.
+// 662 -> 664 (one history file for each filing): +2 in
+// src/app/fleet_center.rs, the two warnings of a start that reached the
+// bound on the files it reads: the member registry rebuilt from the newest
+// files of heartbeats, and the restored members' positions moved past the
+// call records of the newest files.
+const EXPECTED_TEMPLATES: usize = 664;
 
 // ---------------------------------------------------------------------------
 // The page gates

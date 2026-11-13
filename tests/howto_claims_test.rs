@@ -3814,6 +3814,7 @@ fn the_vcon_sipnab_prerequisites_say_what_changes_on_the_other_system() -> Resul
         "`conserver` and `api`",
         "without the `-noaudio` suffix",
         "`sipnab_<version>_amd64.deb`",
+        "`sipnab_<version>_arm64.deb`",
         "No change on the SIP server",
     ] {
         page_says(needs, named, "vcon-sipnab");
@@ -3828,7 +3829,7 @@ fn the_vcon_sipnab_prerequisites_say_what_changes_on_the_other_system() -> Resul
     }
     page_says(
         from_heading(VCON_SIPNAB, "## Install sipnab")?,
-        "sipnab_${V}_amd64.deb",
+        "sipnab_${V}_${A}.deb",
         "vcon-sipnab",
     );
     Ok(())
@@ -5685,6 +5686,95 @@ fn the_opensips_guide_says_which_machines_its_packages_are_for() -> Result<(), T
     let listed = one_line(section(OPENSIPS, TROUBLESHOOT)?);
     page_says(&listed, "E: Unable to locate package opensips", "opensips");
     Ok(())
+}
+
+/// What is wrong with the lines of a page's fenced blocks that fetch or
+/// install sipnab's Debian package, or nothing.
+///
+/// Each release carries `sipnab_<version>_amd64.deb` and
+/// `sipnab_<version>_arm64.deb`. A step that names one of them fails on the
+/// other machine. The step sets `A` from `dpkg --print-architecture` and
+/// names `sipnab_${V}_${A}.deb`.
+fn package_step_fault(lines: &[&str]) -> Option<String> {
+    let package: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.contains("sipnab_${V}_"))
+        .collect();
+    if package.is_empty() {
+        return None;
+    }
+    if let Some(line) = package
+        .iter()
+        .find(|line| !line.contains("sipnab_${V}_${A}.deb"))
+    {
+        return Some(format!("names a package of one architecture: {line}"));
+    }
+    if !lines.contains(&"A=$(dpkg --print-architecture)") {
+        return Some("uses ${A} and never sets it from dpkg".to_owned());
+    }
+    None
+}
+
+/// On 2026-11-13 the release 0.5.249 held `.deb` packages for amd64 and
+/// arm64, and the block as it is now installed `sipnab 0.5.249 arm64` in a
+/// Debian 13 container on an arm64 machine. Before, every one of these pages
+/// fetched the amd64 file on any machine.
+#[test]
+fn every_page_beside_sipnab_installs_the_package_for_this_machine() -> Result<(), TestError> {
+    let mut pages = Vec::new();
+    for entry in std::fs::read_dir(repo().join("docs"))? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        if !name.ends_with("-sipnab.md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)?;
+        let lines = fenced_lines(&text);
+        if !lines.iter().any(|line| line.contains("sipnab_${V}_")) {
+            continue;
+        }
+        if let Some(fault) = package_step_fault(&lines) {
+            return Err(format!("docs/{name} {fault}").into());
+        }
+        pages.push(name);
+    }
+    assert!(
+        pages.len() >= 11,
+        "the eleven pages that install sipnab beside another system were read: {pages:?}"
+    );
+    Ok(())
+}
+
+/// The rule refuses a step that names one architecture and a step that uses
+/// `${A}` without setting it, and accepts a page with no package step.
+#[test]
+fn the_package_step_rule_refuses_one_architecture_and_an_unset_name() {
+    let fetch_amd64 = "curl -fsSLO https://example.com/v$V/sipnab_${V}_amd64.deb";
+    let fetch = "curl -fsSLO https://example.com/v$V/sipnab_${V}_${A}.deb";
+    let set = "A=$(dpkg --print-architecture)";
+    assert!(
+        package_step_fault(&[set, fetch_amd64]).is_some_and(|fault| fault.contains("_amd64.deb")),
+        "a step that names the amd64 file is refused"
+    );
+    assert_eq!(
+        package_step_fault(&[fetch]),
+        Some("uses ${A} and never sets it from dpkg".to_owned()),
+        "a step that never sets A is refused"
+    );
+    assert_eq!(
+        package_step_fault(&[set, fetch]),
+        None,
+        "the step the pages carry is accepted"
+    );
+    assert_eq!(
+        package_step_fault(&["sipnab --version"]),
+        None,
+        "a page with no package step is accepted"
+    );
 }
 
 // ── homer, prometheus, fail2ban, tfps, tfps-sipnab ───────────────────────

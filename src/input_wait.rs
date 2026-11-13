@@ -34,7 +34,9 @@ const CHUNK: usize = 64 * 1024;
 /// reported, or 0 when the wait timed out or a signal interrupted it. On 0
 /// the caller checks its stop flag before it waits again.
 ///
-/// `POLLHUP`, `POLLERR` and `POLLNVAL` are reported whatever `events` asks.
+/// Linux reports `POLLHUP`, `POLLERR` and `POLLNVAL` whatever `events` asks.
+/// macOS reported no hang-up for a pipe with no reader when `events` was 0,
+/// so a caller that must see a hang-up there asks for an event.
 ///
 /// # Errors
 ///

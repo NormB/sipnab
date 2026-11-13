@@ -48,6 +48,22 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // "A job no runner took" names `scripts/rerun-not-acquired.py --run-id`
+    // and `--apply`.
+    (
+        "run-id",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "apply",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "The release train" names `scripts/release-train.py --retry-post`.
     (
         "retry-post",
@@ -314,6 +330,47 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    // `scripts/pin-gates.py --allow-untracked`, and `heavy-run --quick`, the
+    // shared build host's queue the testing page says to run it through.
+    // Flags of a repository script and of a host tool, not sipnab's.
+    (
+        "allow-untracked",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "quick",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    // `scripts/hook-steps.py --runs N`, `--mean N` and `--log FILE`, in the
+    // testing page's "Where a hook run spent its time". Flags of a
+    // repository script, not sipnab's.
+    (
+        "runs",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "mean",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "log",
+        &[
             "docs/internals/testing.md",
             "website/content/docs/internals/testing.md",
         ],
@@ -2218,6 +2275,29 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/homer.md",
             "docs/prometheus.md",
             "website/content/docs/prometheus.md",
+            // The pages that install sipnab's package for this machine.
+            "docs/asterisk-sipnab.md",
+            "website/content/docs/asterisk-sipnab.md",
+            "docs/fail2ban-sipnab.md",
+            "website/content/docs/fail2ban-sipnab.md",
+            "docs/freeswitch-sipnab.md",
+            "website/content/docs/freeswitch-sipnab.md",
+            "docs/homer-sipnab.md",
+            "website/content/docs/homer-sipnab.md",
+            "docs/kamailio-sipnab.md",
+            "website/content/docs/kamailio-sipnab.md",
+            "docs/opensips-sipnab.md",
+            "website/content/docs/opensips-sipnab.md",
+            "docs/prometheus-sipnab.md",
+            "website/content/docs/prometheus-sipnab.md",
+            "docs/rtpengine-sipnab.md",
+            "website/content/docs/rtpengine-sipnab.md",
+            "docs/rtpproxy-sipnab.md",
+            "website/content/docs/rtpproxy-sipnab.md",
+            "docs/tfps-sipnab.md",
+            "website/content/docs/tfps-sipnab.md",
+            "docs/vcon-sipnab.md",
+            "website/content/docs/vcon-sipnab.md",
         ],
     ),
     // docker compose's and curl's, starting vcon-server and posting to it.
@@ -6280,7 +6360,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1486 -> 1488 (DOCS-HOWTO-GAP, sixth batch): the table of export
     // failures in docs/vcon.md's "When an export does not work", with its
     // site mirror (+2).
-    const EXPECTED_TABLES: usize = 1488;
+    // 1488 -> 1490 (fleet heartbeat history): the table of the parameters of
+    // `GET /v1/fleet/members/{id}/history` in docs/fleet.md's "Keep heartbeat
+    // history at the center", with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1490;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

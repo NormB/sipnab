@@ -187,6 +187,7 @@ fn the_full_workflow_set_is_accounted_for() -> Result<(), TestError> {
         "quality.yml",
         "release.yml",
         "reproducible.yml",
+        "rerun-not-acquired.yml",
         "sanitizers.yml",
         "scorecard.yml",
         "self-hosted-smoke.yml",

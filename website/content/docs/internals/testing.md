@@ -437,6 +437,35 @@ What the script does that a reader of the user page does not need to:
   - That is also what callgrind wants.
 - Baselines live in [`benches/BASELINES.md`](https://github.com/NormB/sipnab/blob/main/benches/BASELINES.md).
 
+**The pin gates, before the hook.** Some tests hold a count of something the repository tracks: pages, links between them, code links, workflows, error templates.
+A new page, script or workflow moves those counts, and the tests that hold them run among 16,000 others at the end of the pre-commit hook, about 25 minutes in.
+[`scripts/pin-gates.py`](https://github.com/NormB/sipnab/blob/main/scripts/pin-gates.py) runs only those tests, in under a minute once their binaries exist.
+
+- Purpose: meet every count pin a change moves in one short run, before the hook.
+- Prerequisites: `cargo-nextest` at the version the hook pins, and the change staged. The tests list files with `git ls-files`, which reads the index, so a file that is not staged is not counted.
+- Steps: `git add <paths>`, then `python3 scripts/pin-gates.py`. On the shared build host, run it through `heavy-run --quick`.
+- Verify: the run ends with the suite's own summary lines and exit status 0. A failing test prints the count it found and the constant to change.
+- Troubleshoot: exit status 2 with `untracked, so not counted by any gate` names files to `git add`; `--allow-untracked` runs anyway, for a scratch file that stays out of the commit.
+  Exit status 2 with `neither run nor excluded` means a new test counts tracked files: add its name to [`.config/pin-gates.txt`](https://github.com/NormB/sipnab/blob/main/.config/pin-gates.txt).
+
+The script runs the tests the way the hook does: the same nextest profile, feature set and environment, so it builds no binary the hook does not build.
+It names each binary to cargo with `--test`. A nextest filter alone would build every test target first.
+[`scripts/tests/test_pin_gates.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_pin_gates.py) holds the list to the tree: a test under `tests/` that declares a count constant (a `usize` whose name begins `EXPECTED_`), or reads the list of tracked files, must appear in the list, as a binary to run or as an exclusion with a reason.
+
+**Where a hook run spent its time.** The pre-commit hook appends one line per step to `sipnab-pre-commit-steps.log` in the checkout's git directory: the run, the step under the name its heading prints, whole seconds and the exit status, separated by tabs.
+The last line of a run is the step `total`, counted from the start of the hook.
+[`scripts/hook-steps.py`](https://github.com/NormB/sipnab/blob/main/scripts/hook-steps.py) prints the table.
+
+- Purpose: read which step of the hook costs the time, from a file the hook already wrote, with no extra hook run.
+- Prerequisites: one full hook run in this checkout since the hook gained the log. A run that a pass stamp skips whole writes no line.
+- Steps: `python3 scripts/hook-steps.py` prints the newest run; `--runs N` prints the newest N runs, oldest first; `--mean N` prints each step's mean and longest time over the newest N runs that passed; `--log FILE` reads another checkout's log.
+- Verify: the table ends with the line `total`, and its first line says `passed`, or `FAILED at` with the step that failed. The line `(outside the steps)` is the time before the first heading and between steps: reading the pass stamps is most of it.
+- Troubleshoot: `NOT ENDED` in the first line means the run has no `total` line: a signal ended the hook, or the hook is still running. Exit status 1 with `cannot be read` means no full run has written the log yet.
+  A step that printed `CACHED` is in the log with the seconds its stamp read took.
+
+The step `Tests` holds the build of the test binaries, the nextest run and the doctests together. The hook cuts the log to its newest 2,000 lines once it passes 4,000, and a line that it cannot write does not fail the hook.
+[`scripts/tests/test_hook_steps.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_hook_steps.py) runs the hook in its sandbox and reads the log. [`scripts/tests/test_hook_steps_table.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_hook_steps_table.py) holds the table.
+
 **nextest.** The suite runs under cargo-nextest, in the pre-commit hook and in CI, through [`scripts/parallel-tests.py`](https://github.com/NormB/sipnab/blob/main/scripts/parallel-tests.py).
 
 - `cargo test` bounds no single test, so one hung test held the hook until its 30-minute watchdog fired, with no name attached.
@@ -444,9 +473,11 @@ What the script does that a reader of the user page does not need to:
 - [`.config/nextest.toml`](https://github.com/NormB/sipnab/blob/main/.config/nextest.toml) defines three profiles:
   - `default` (no retries, 60 s slow timeout, stopped after 180 s), for local runs.
   - `suite`, what `parallel-tests.py` runs: the same deadline, no retries, no fail-fast, and a JUnit report.
-    Three tests have a deadline of their own, six periods: `every_documented_command_runs_or_says_why_not`, whose binary took 191.85 s on CI's `macos-latest` runner,
-    and `test_pre_commit_sh_leaves_the_hooks_repository_alone` and `test_pre_push_sh_leaves_the_hooks_repository_alone`, which each run a whole hook harness.
-    Those two take about 40 s alone, and the suite stopped both at 180 s on a host with a load average of 44 to 50.
+    Three tests have a deadline of their own. `every_documented_command_runs_or_says_why_not`, whose binary took 191.85 s on CI's `macos-latest` runner, has six periods.
+    `test_pre_commit_sh_leaves_the_hooks_repository_alone` and `test_pre_push_sh_leaves_the_hooks_repository_alone` each run a whole hook harness: about 45 s of processor time in short processes, one after another.
+    Their run time is that work divided by the share of a core the host gives them, so no number of seconds fits every load: the suite stopped both at 180 s at a load average of 44 to 50, and at 300 s at a load average of 38.
+    The two tests end a harness themselves when its log stops growing for 120 s or passes 4 MiB (`HookLimits` in [`tests/hook_test_scripts_git_env_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/hook_test_scripts_git_env_test.rs)), which does not depend on the load.
+    Their nextest deadline is 30 periods, the 30 minutes of the hook's own watch on the suite, and only covers a failure of that watch.
   - `e2e` (2 retries, 60 s timeout) for the timing-sensitive tmux tests.
 - nextest does not run doctests, so `parallel-tests.py` runs them after it with `cargo test --doc`.
 - The script renders nextest's JUnit report as `cargo test`'s text, one block per test binary.

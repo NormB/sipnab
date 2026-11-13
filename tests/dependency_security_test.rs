@@ -60,7 +60,18 @@ fn read(rel: &str) -> Result<String, TestError> {
 /// Parsed by hand rather than with a JSON crate the test tree does not
 /// otherwise need. The lockfile is machine-generated, so its shape is stable.
 fn lockfile_packages() -> Result<Vec<(String, String)>, TestError> {
-    let text = read("e2e/package-lock.json")?;
+    lockfile_packages_in(E2E_LOCK)
+}
+
+/// The site-test tooling's lockfile. Nothing in it ships to a user.
+const E2E_LOCK: &str = "e2e/package-lock.json";
+
+/// The lockfile of the TypeScript MCP client `docs/mcp-deploy.md` shows.
+const TS_LOCK: &str = "clients/typescript/package-lock.json";
+
+/// Every `(path, version)` pair in the lockfile at `rel`.
+fn lockfile_packages_in(rel: &str) -> Result<Vec<(String, String)>, TestError> {
+    let text = read(rel)?;
     let mut out = Vec::new();
     let mut current: Option<String> = None;
     for line in text.lines() {
@@ -91,7 +102,12 @@ fn versions_of(pkg: &str) -> Result<Vec<String>, TestError> {
 
 /// The `overrides` block of `e2e/package.json`, as `(package, requirement)`.
 fn overrides() -> Result<Vec<(String, String)>, TestError> {
-    let text = read("e2e/package.json")?;
+    overrides_in("e2e/package.json")
+}
+
+/// The `overrides` block of the `package.json` at `rel`.
+fn overrides_in(rel: &str) -> Result<Vec<(String, String)>, TestError> {
+    let text = read(rel)?;
     let Some(start) = text.find("\"overrides\"") else {
         return Ok(Vec::new());
     };
@@ -144,7 +160,23 @@ const MUST_BE_PATCHED: &[(&str, &str)] = &[
     // for `glob` 13, and 11.11.0 for `glob` 14 (which also takes `minimatch`
     // 11, past GHSA-g3hv-75wg-m249; tests/minimatch_advisory_test.rs).
     ("glob", "14.0.2"),
+    // GHSA-5pm8-86m8-9m6r (CVE-2026-126345): a `__proto__` fact name in an
+    // MLSD directory listing makes `Client.list()` throw. Every release
+    // before 6.2.4 is affected.
+    ("basic-ftp", BASIC_FTP_FIXED),
 ];
+
+/// The first `basic-ftp` release past GHSA-5pm8-86m8-9m6r.
+const BASIC_FTP_FIXED: &str = "6.2.4";
+
+/// The first `@hono/node-server` 2.x release past GHSA-jpvv-r467-5p4w
+/// (CVE-2026-126210: a backslash in the request path is read as a path
+/// separator) and GHSA-qv5m-9pm6-hqp3 (CVE-2026-126343: a connection reset
+/// during a WebSocket upgrade ends the process).
+const NODE_SERVER_FIXED_2: &str = "2.1.6";
+
+/// The first `@hono/node-server` 1.x release past GHSA-jpvv-r467-5p4w.
+const NODE_SERVER_FIXED_1: &str = "1.19.18";
 
 /// Compare two dotted versions numerically.
 fn at_least(have: &str, want: &str) -> bool {
@@ -301,6 +333,365 @@ fn no_override_names_a_package_the_tree_no_longer_has() -> Result<(), TestError>
              the entry rather than leaving it to be read as protection"
         );
     }
+    Ok(())
+}
+
+// ── an override stays only while a parent still asks for less ───────
+
+/// Whether the npm requirement `req` admits a release an advisory covers.
+///
+/// `fixed` lists the first fixed release for each major line as
+/// `(Some(major), version)`, and `(None, version)` for every line without an
+/// entry of its own. A line with no entry at all is not affected. `req` is
+/// read as its alternatives (`||`), each by the lowest release it admits:
+/// the version after `^`, `~`, `>=` or `=`. An alternative that is not
+/// written that way counts as admitting one, so that an override stays.
+fn admits_affected(req: &str, fixed: &[(Option<u64>, &str)]) -> bool {
+    req.split("||").any(|alternative| {
+        let floor = alternative
+            .trim()
+            .trim_start_matches(['^', '~', '>', '=', 'v', ' ']);
+        let numbers: Vec<&str> = floor.split('.').collect();
+        let well_formed = numbers
+            .iter()
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if !well_formed {
+            return true;
+        }
+        // Digits only, so the one failure left is a number past `u64`.
+        let Some(major) = numbers.first().and_then(|n| n.parse::<u64>().ok()) else {
+            return true;
+        };
+        let own = fixed.iter().find(|(line, _)| *line == Some(major));
+        let any = fixed.iter().find(|(line, _)| line.is_none());
+        match own.or(any) {
+            Some((_, first_fixed)) => !at_least(floor, first_fixed),
+            None => false,
+        }
+    })
+}
+
+/// The requirements for `pkg` that other packages in the lockfile at `rel`
+/// declare: every `"pkg": "requirement"` line.
+fn requirements_for(rel: &str, pkg: &str) -> Result<Vec<String>, TestError> {
+    let key = format!("\"{pkg}\": \"");
+    Ok(read(rel)?
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(key.as_str()))
+        .filter_map(|rest| rest.split('"').next())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Which releases of each package the advisories of 2026-11-12 cover. The
+/// tree holds only `basic-ftp` of the three now; the `@hono/node-server` and
+/// `hono` tables are cases for the requirement reader (two release lines, and
+/// one).
+const BASIC_FTP_LINES: &[(Option<u64>, &str)] = &[(None, BASIC_FTP_FIXED)];
+const NODE_SERVER_LINES: &[(Option<u64>, &str)] = &[
+    (Some(1), NODE_SERVER_FIXED_1),
+    (Some(2), NODE_SERVER_FIXED_2),
+];
+
+/// The first `hono` release past the five advisories published late on
+/// 2026-11-12: GHSA-3gg2-335m-rxc6 (CVE-2026-126359), GHSA-4m76-xfj5-7975
+/// (CVE-2026-126357), GHSA-h7mg-cq63-vhpq (CVE-2026-126358),
+/// GHSA-46wx-v44x-9hh2 (CVE-2026-126355) and GHSA-4h7h-rv7c-7m2v
+/// (CVE-2026-126356). Two of them cover every earlier release.
+const HONO_FIXED: &str = "4.13.16";
+const HONO_LINES: &[(Option<u64>, &str)] = &[(None, HONO_FIXED)];
+
+/// Requirements that still admit an affected release.
+#[test]
+fn a_requirement_below_the_fix_admits_an_affected_release() {
+    for (req, lines) in [
+        ("^5.0.2", BASIC_FTP_LINES),
+        ("^5.3.1", BASIC_FTP_LINES),
+        ("^6.2.1", BASIC_FTP_LINES),
+        ("^6.2.3", BASIC_FTP_LINES),
+        ("~6.2.0", BASIC_FTP_LINES),
+        ("6.2.1", BASIC_FTP_LINES),
+        (">=4.0.0", BASIC_FTP_LINES),
+        ("^1.19.9 || ^2.0.5", NODE_SERVER_LINES),
+        ("^2.1.3", NODE_SERVER_LINES),
+        ("^2.1.5", NODE_SERVER_LINES),
+        ("^1.19.17", NODE_SERVER_LINES),
+        ("^1.19.18 || ^2.1.5", NODE_SERVER_LINES),
+        ("^1.19.17 || ^2.1.6", NODE_SERVER_LINES),
+        ("~2.0.0", NODE_SERVER_LINES),
+    ] {
+        assert!(
+            admits_affected(req, lines),
+            "{req:?} admits a release before the fix in {lines:?}"
+        );
+    }
+}
+
+/// Requirements whose every alternative starts at or past the fix.
+#[test]
+fn a_requirement_at_or_past_the_fix_admits_no_affected_release() {
+    for (req, lines) in [
+        ("^6.2.4", BASIC_FTP_LINES),
+        ("^6.2.6", BASIC_FTP_LINES),
+        ("^6.3.0", BASIC_FTP_LINES),
+        ("^7.0.0", BASIC_FTP_LINES),
+        ("~6.2.4", BASIC_FTP_LINES),
+        ("6.2.4", BASIC_FTP_LINES),
+        (">=6.2.4", BASIC_FTP_LINES),
+        ("^10.0.0", BASIC_FTP_LINES),
+        ("^2.1.6", NODE_SERVER_LINES),
+        ("^2.1.8", NODE_SERVER_LINES),
+        ("^1.19.18", NODE_SERVER_LINES),
+        ("^1.19.18 || ^2.1.6", NODE_SERVER_LINES),
+        ("^1.20.0 || ^2.2.0", NODE_SERVER_LINES),
+        ("~2.1.6", NODE_SERVER_LINES),
+    ] {
+        assert!(
+            !admits_affected(req, lines),
+            "{req:?} admits no release before the fix in {lines:?}"
+        );
+    }
+}
+
+/// Requirements at the edges of what the reader takes.
+#[test]
+fn a_requirement_the_reader_cannot_place_keeps_the_override() {
+    // Not written as a lowest release: counted as admitting an affected one.
+    for req in [
+        "*",
+        "",
+        "latest",
+        "x",
+        "6.x",
+        "^6",
+        "^6.2",
+        "<7.0.0",
+        "6.2.4 - 7.0.0",
+        "^6.2.4-beta.1",
+        "^6.2.4 || *",
+        "^6.2.4 ||",
+        "^six.2.4",
+        "^99999999999999999999999.0.0",
+        "^7.",
+        "^7..0",
+    ] {
+        assert!(
+            admits_affected(req, BASIC_FTP_LINES),
+            "{req:?} is not a lowest release, so it counts as affected"
+        );
+    }
+    // A major line no advisory entry covers is not affected.
+    assert!(
+        !admits_affected("^3.0.0", NODE_SERVER_LINES),
+        "a 3.x line has no entry"
+    );
+    assert!(
+        !admits_affected("^0.9.0", NODE_SERVER_LINES),
+        "a 0.x line has no entry"
+    );
+    // The number comparison is by number: 6.10.0 is past 6.2.4.
+    assert!(
+        !admits_affected("^6.10.0", BASIC_FTP_LINES),
+        "6.10.0 is past 6.2.4"
+    );
+    assert!(
+        admits_affected("^6.2.04", BASIC_FTP_LINES) == admits_affected("^6.2.4", BASIC_FTP_LINES),
+        "a leading zero does not change the number"
+    );
+    // Spaces around the alternatives do not matter.
+    assert!(
+        !admits_affected("  ^1.19.18  ||  ^2.1.6  ", NODE_SERVER_LINES),
+        "spaces around the alternatives"
+    );
+    assert!(
+        admits_affected("^1.19.18||^2.1.5", NODE_SERVER_LINES),
+        "no spaces around the alternatives"
+    );
+    // With no advisory entry at all nothing is affected.
+    assert!(
+        !admits_affected("^1.0.0", &[]),
+        "no advisory, no affected release"
+    );
+}
+
+/// The `basic-ftp` override in `e2e/package.json` is still needed: the
+/// package that asks for `basic-ftp` (`get-uri`, under `@lhci/cli`) admits
+/// releases before the fix. When this fails, the parent has caught up:
+/// remove the override and this test's reason for it.
+#[test]
+fn the_basic_ftp_override_is_removed_when_its_parent_asks_for_the_fix() -> Result<(), TestError> {
+    let asked = requirements_for(E2E_LOCK, "basic-ftp")?;
+    assert!(
+        !asked.is_empty(),
+        "no package in {E2E_LOCK} asks for basic-ftp; delete its override"
+    );
+    assert!(
+        asked
+            .iter()
+            .any(|req| admits_affected(req, BASIC_FTP_LINES)),
+        "every package that asks for basic-ftp now asks for {BASIC_FTP_FIXED} or later \
+         ({asked:?}); remove the basic-ftp override from e2e/package.json"
+    );
+    let floor = overrides()?
+        .into_iter()
+        .find(|(pkg, _)| pkg == "basic-ftp")
+        .map(|(_, req)| req);
+    assert_eq!(
+        floor
+            .as_deref()
+            .map(|req| admits_affected(req, BASIC_FTP_LINES)),
+        Some(false),
+        "the basic-ftp override in e2e/package.json must start at {BASIC_FTP_FIXED} or later, \
+         found {floor:?}"
+    );
+    Ok(())
+}
+
+// The lock and override tests for `hono` and `@hono/node-server` in the
+// TypeScript client left with the packages (see "the TypeScript client
+// installs no HTTP server" below, which holds that they stay out). Their
+// fixed-release tables remain as cases for the requirement reader.
+
+/// How the reader places requirements on `hono` that the TypeScript client's
+/// lockfile held while it installed the SDK package.
+#[test]
+fn the_reader_places_requirements_on_hono() {
+    for req in [
+        "^4.11.4",
+        "^4",
+        "^4 || ^5.0.0-0",
+        "^4.13.15",
+        "~4.13.13",
+        "^3.12.0",
+    ] {
+        assert!(
+            admits_affected(req, HONO_LINES),
+            "{req:?} admits a hono before {HONO_FIXED}"
+        );
+    }
+    for req in [
+        "^4.13.16",
+        "^4.13.18",
+        "~4.13.16",
+        "^4.14.0",
+        "^5.0.0",
+        ">=4.13.16",
+    ] {
+        assert!(
+            !admits_affected(req, HONO_LINES),
+            "{req:?} admits no hono before {HONO_FIXED}"
+        );
+    }
+}
+
+// ── the TypeScript client installs no HTTP server ───────────────────
+
+/// HTTP server packages the TypeScript example never calls: it talks to
+/// sipnab over stdio. `@modelcontextprotocol/sdk` 1.x declares all six as
+/// regular dependencies, and eight advisories in them in one evening
+/// (2026-11-12) failed the code scanning check on every pull request. The
+/// example now installs `@modelcontextprotocol/client`, which depends on none
+/// of them.
+const TS_HTTP_SERVER_PACKAGES: &[&str] = &[
+    "hono",
+    "@hono/node-server",
+    "express",
+    "express-rate-limit",
+    "cors",
+    "raw-body",
+];
+
+/// The package names in the lockfile at `rel` that are in `unwanted`, each
+/// with the path it is installed at.
+fn unwanted_in(rel: &str, unwanted: &[&str]) -> Result<Vec<String>, TestError> {
+    Ok(lockfile_packages_in(rel)?
+        .into_iter()
+        .filter(|(path, _)| {
+            path.rsplit("node_modules/")
+                .next()
+                .is_some_and(|name| unwanted.contains(&name))
+        })
+        .map(|(path, version)| format!("{path} {version}"))
+        .collect())
+}
+
+/// The TypeScript client's lockfile holds no HTTP server package.
+#[test]
+fn the_typescript_client_locks_no_http_server_package() -> Result<(), TestError> {
+    let all = lockfile_packages_in(TS_LOCK)?;
+    assert!(
+        all.iter()
+            .any(|(path, _)| path == "node_modules/@modelcontextprotocol/client"),
+        "{TS_LOCK} does not hold @modelcontextprotocol/client, so the parser missed the \
+         lockfile or the example moved again; this test would prove nothing"
+    );
+    let found = unwanted_in(TS_LOCK, TS_HTTP_SERVER_PACKAGES)?;
+    assert!(
+        found.is_empty(),
+        "{TS_LOCK} holds HTTP server packages the stdio example never calls: {found:?}"
+    );
+    Ok(())
+}
+
+/// `clients/typescript/package.json` depends on the client package alone and
+/// not on the SDK package that brings the servers.
+#[test]
+fn the_typescript_client_depends_on_the_client_package_only() -> Result<(), TestError> {
+    let manifest = read("clients/typescript/package.json")?;
+    assert!(
+        manifest.contains("\"@modelcontextprotocol/client\": \""),
+        "clients/typescript/package.json does not depend on @modelcontextprotocol/client"
+    );
+    assert!(
+        !manifest.contains("\"@modelcontextprotocol/sdk\""),
+        "clients/typescript/package.json depends on @modelcontextprotocol/sdk, which installs \
+         hono and express"
+    );
+    let source = read("clients/typescript/sipnab-mcp.ts")?;
+    assert!(
+        !source.contains("@modelcontextprotocol/sdk"),
+        "clients/typescript/sipnab-mcp.ts still imports from, or names, @modelcontextprotocol/sdk"
+    );
+    Ok(())
+}
+
+/// With the server packages gone, nothing is left to override: the `hono` and
+/// `@hono/node-server` floors left `clients/typescript/package.json` with
+/// them, and an override for a package the tree does not hold is a floor
+/// nobody checks.
+#[test]
+fn the_typescript_client_overrides_nothing() -> Result<(), TestError> {
+    let manifest = read("clients/typescript/package.json")?;
+    assert!(
+        !manifest.contains("\"overrides\""),
+        "clients/typescript/package.json has an overrides block again; hold each floor in it \
+         with a test of the lockfile, as e2e/package.json's are"
+    );
+    assert_eq!(
+        overrides_in("clients/typescript/package.json")?,
+        Vec::new(),
+        "clients/typescript/package.json overrides a package"
+    );
+    Ok(())
+}
+
+/// [`unwanted_in`] finds a package at the top level and nested under another,
+/// and does not take a name that only ends like one.
+#[test]
+fn unwanted_packages_are_found_wherever_they_are_installed() -> Result<(), TestError> {
+    // The site-test lockfile holds `debug` and `ms` nested and at the top.
+    let found = unwanted_in(E2E_LOCK, &["ms"])?;
+    assert!(
+        found
+            .iter()
+            .any(|entry| entry.starts_with("node_modules/ms ")),
+        "ms at the top level of {E2E_LOCK} was not found: {found:?}"
+    );
+    let none = unwanted_in(E2E_LOCK, &["s", "no-such-package-in-any-tree"])?;
+    assert!(
+        none.is_empty(),
+        "a name that is only the end of another package's name was taken: {none:?}"
+    );
     Ok(())
 }
 

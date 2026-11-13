@@ -356,6 +356,10 @@ until `SIGKILL` ended it. The TUI of 0.5.234 also kept running after
 `SIGTERM`, `SIGINT` and `SIGHUP`, and that of 0.5.233 and earlier after
 `SIGTERM` and `SIGINT`.
 
+A run that reads one terminal and draws on another (standard output
+redirected to a second terminal) stops the same way and exits 129 when
+either of the two goes away.
+
 A run that waits for input stops on the same signals, with the same status:
 `--vcon-fetch -` while it waits for its uuid list on standard input, and the
 archive password prompt. 0.5.234 and earlier: `--vcon-fetch -` waited for the

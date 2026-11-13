@@ -31,6 +31,9 @@
 //! - The command starts with SIGINT and SIGQUIT ignored, as every background
 //!   command of a non-interactive `sh` does; a command that installs its own
 //!   handlers is not affected.
+//! - The `sh` program starts with SIGTERM, SIGINT, SIGHUP and SIGUSR1 at
+//!   their default dispositions and unblocked, whatever the test process
+//!   inherited from the shell or harness that started it.
 
 use std::io::{PipeReader, PipeWriter};
 use std::process::{Command, Stdio};
@@ -131,12 +134,62 @@ fn lifeline() -> std::io::Result<&'static (PipeReader, PipeWriter)> {
     Ok(LIFELINE.get_or_init(|| pipe))
 }
 
+/// The signals the `sh` program traps, or sends to itself from its waiting
+/// part. Each must reach the program and be trappable.
+const RELIED_ON: [libc::c_int; 4] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGUSR1];
+
+/// Give the calling process the default disposition for every signal in
+/// [`RELIED_ON`] and take them out of its signal mask.
+///
+/// A process inherits its ignored signals and its mask from whatever started
+/// it, and passes both on across `exec`. A shell starts a background command
+/// with SIGINT ignored, `nohup` ignores SIGHUP, and a harness can block any
+/// of them. A non-interactive `sh` cannot set a trap for a signal that was
+/// ignored when it started, and a blocked signal is never delivered: a test
+/// binary started that way ran the program with traps that never fired
+/// (2026-11-12: two SIGINT tests failed when the binary was started from a
+/// shell job, and passed under the hook).
+///
+/// # Errors
+/// The operating system refused a call; the error is `errno`.
+///
+/// # Safety
+/// Calls only signal(2), sigemptyset(3), sigaddset(3) and sigprocmask(2),
+/// which are async-signal-safe, and allocates nothing, so it may run between
+/// `fork` and `exec`.
+fn restore_relied_on_signals() -> std::io::Result<()> {
+    // SAFETY: plain libc calls on a locally owned, zero-initialized set.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&raw mut set);
+        for signal in RELIED_ON {
+            if libc::signal(signal, libc::SIG_DFL) == libc::SIG_ERR {
+                return Err(std::io::Error::last_os_error());
+            }
+            libc::sigaddset(&raw mut set, signal);
+        }
+        if libc::sigprocmask(libc::SIG_UNBLOCK, &raw const set, std::ptr::null_mut()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// Append the tied `sh` program to `cmd` and give it the pipe's read end.
+/// The program starts with the signals it relies on at their defaults and
+/// unblocked, whatever this process inherited; with `sudo` above it, `sudo`
+/// starts that way and hands the same state on.
 fn tie(mut cmd: Command) -> std::io::Result<Command> {
+    use std::os::unix::process::CommandExt as _;
     let (reader, _writer) = lifeline()?;
     let program = TIED_SH.replace("$GRACE", &GRACE_SECS.to_string());
     cmd.args(["sh", "-c", &program, TIED_NAME])
         .stdin(Stdio::from(reader.try_clone()?));
+    // SAFETY: the closure runs between fork and exec in the child and calls
+    // only `restore_relied_on_signals`, which is written for that place.
+    unsafe {
+        cmd.pre_exec(restore_relied_on_signals);
+    }
     Ok(cmd)
 }
 

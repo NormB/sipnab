@@ -88,7 +88,7 @@ So a green `--features full` says nothing about whether `--features tls` alone
 compiles.
 That is exactly why CI has a feature matrix.
 
-## The eighteen workflows
+## The nineteen workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -110,6 +110,7 @@ That is exactly why CI has a feature matrix.
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
+| `rerun-not-acquired.yml` | when a `CI` or `Release` run completes without success; manual, which prints the decision for one run and re-runs nothing | Re-runs the failed jobs of a run in which every job that did not succeed has the conclusion `skipped` or never started, because no hosted runner took it. See [A job no runner took](#a-job-no-runner-took). |
 
 ### ThreadSanitizer
 
@@ -523,6 +524,70 @@ The `test` job runs the Linux suite on two runners at once.
     The union of the shards must be every target, and the shards disjoint, so no shard can miss a new `tests/*.rs` file.
   - Every `tests/*.rs` file must be one of `cargo metadata`'s test targets.
 - The shards share one cache family, `cargo-test`, which only shard 0 saves, on `main`.
+
+### A job no runner took
+
+GitHub cancels a job when no hosted runner takes it.
+The job ends with the conclusion `"cancelled"`, no steps, and this annotation:
+"The job was not acquired by Runner of type hosted even after multiple attempts".
+Its run ends as failed although no test ran red.
+On 2026-11-12 that happened six times on the hosted macOS runners.
+Main's CI turned red three times, and a release waited 43 minutes for a person to re-run one build job.
+
+[`.github/workflows/rerun-not-acquired.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/rerun-not-acquired.yml) starts when a `CI` or `Release` run completes without success.
+The script looks into a run that concluded `failure` or `"cancelled"`, and leaves every other conclusion.
+It runs [`scripts/rerun-not-acquired.py`](https://github.com/NormB/sipnab/blob/main/scripts/rerun-not-acquired.py) from `main`, which reads the jobs of that attempt and their annotations.
+The script re-runs the run's failed jobs when every job of the attempt is in one of these states:
+
+- The job succeeded.
+- The job has the conclusion `skipped` and lists no steps.
+  The jobs that need a job that never started end this way.
+- The job never started: its status is `completed`, its conclusion is `"cancelled"`, its list of steps is empty, and one of its annotations has exactly that message.
+
+A run gets at most three attempts this way.
+The script re-runs attempts 1 and 2, and leaves attempt 3 as it ended.
+The limit is `MAX_ATTEMPTS` in the script, and the workflow file holds no second copy of it.
+
+The script leaves these cases for a person:
+
+- A job that failed or timed out, in a run where another job never started.
+- A job canceled after its first step began.
+- A run or a job that a person canceled.
+  Such a job has no annotation with that message.
+- A self-hosted runner that did not take a job.
+  Its annotation has another message.
+- A run on its third attempt.
+- A workflow other than `CI` and `Release`.
+
+The workflow's one job holds `actions: write` and no other permission.
+GitHub runs the workflow file of the default branch for a `workflow_run` event, and the checkout names no ref.
+The script that runs is the one on `main`, also when the completed run belongs to a pull request.
+
+**See what the script answers for one run.**
+Start the workflow by hand with the run's number.
+This prints the decision and re-runs nothing:
+
+```sh
+gh workflow run rerun-not-acquired.yml -f run_id=<run id>
+```
+
+The same answer on a workstation, with a `gh` that can read the repository:
+
+```sh
+python3 scripts/rerun-not-acquired.py --repo <owner>/<name> --run-id <run id>
+```
+
+The output ends with `decision: rerun:` or `decision: leave:` and the reason, which names each job that blocks a re-run.
+Only the `workflow_run` event passes `--apply`.
+
+**When a run that should have been re-run was not.**
+Read the log of the `Re-run jobs no runner took` run that followed it.
+An `error:` line means the script could not read GitHub's API, and that run fails.
+A `decision: leave:` line names the job or the attempt that ruled the re-run out.
+A run there whose one job did not start means the completed run concluded `success`.
+No run there means the completed run belongs to another workflow.
+
+[`scripts/tests/test_rerun_not_acquired.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_rerun_not_acquired.py) tests the decision against two answers captured from GitHub's API, in [`tests/fixtures/rerun_not_acquired`](https://github.com/NormB/sipnab/blob/main/tests/fixtures/rerun_not_acquired), and against answers built in the same shape.
 
 ### Dependabot bumps fail on a generated file, not on an API break
 
@@ -2234,12 +2299,14 @@ python3 scripts/release-train.py <version> --host <user>@<host>
 The checkout can be at any commit when the train starts.
 The train moves it to the merge commit before the tag. See [Before the tag](#before-the-tag).
 
+The train writes each line of its output when it prints it, into a file or a pipe as on a terminal, so `python3 -u` is not needed to follow it.
+
 It runs these stages, each only when the facts say it is due:
 
 | Stage | What happens | Window |
 |---|---|---|
-| `ci-wait` | Posts the CLA status for the head, then waits for the pull request's checks. | Closed, then open for the last few checks |
-| `land` | Lands the pull request through `land-queue` and `required-checks`. | Open |
+| `ci-wait` | Posts the CLA status for the head, then waits for the pull request's checks. | Closed, then open for the last 15 minutes of the longest pending check |
+| `land` | Lands the pull request through `land-queue` and `required-checks`, and prints what the two printed. | Open |
 | `tag` | Moves the checkout to the merge commit, waits for GitHub's proof of that commit, then makes the signed tag and pushes it in the lane. | Open |
 | `release-wait` | Waits for `release.yml` on the tag. | Closed |
 | `post` | Runs `scripts/post-release.py run <version> --host <user>@<host>`. | Closed |
@@ -2248,7 +2315,19 @@ It runs these stages, each only when the facts say it is due:
 So it has to be open for about one hook's length before a local step, and it must not hold the slot during a long remote wait.
 
 - During the pull request's CI the train keeps the window closed.
-- It opens the window when at most 3 checks are pending, or when 15 minutes remain of CI's expected 37.
+- It opens the window when the pending check with the most time left has 15 minutes or less.
+  - The time left of a pending check is its start time, plus the time the check of that name took on the head commit of `main`, less the time now.
+    A check that has run longer than that has no time left.
+  - The train reads the check runs of `main` once and keeps the times in its state file.
+    A time comes only from a run that ended in success; when a name has several runs, the longest counts.
+  - The landing waits for every check, so the number of pending checks does not say when the landing is.
+    On 0.5.249 the one pending check was a macOS job that ran from 16:57:06Z to 17:30:08Z.
+    The window was open from 17:09:03Z to 17:32:15Z, and an ordinary job waited behind it.
+- When the time left has no answer, the train opens the window when at most 3 checks are pending, or when 15 minutes remain of CI's expected 37.
+  - That is the case for a pending check that `main` has no successful run of, for a pending commit status, and when the read of the check runs fails.
+  - The train reads the check runs again at the next poll after a failed read, and every 5 minutes while a pending check has no time.
+    A failed read does not stop the train.
+  - [`test_release_train.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_release_train.py) holds both rules.
 - It keeps the window closed, and closes it again, while a check has waited for a runner for 2 minutes or more.
   - Such a check has not started, so nothing says when it ends.
   - A check queued for less than 2 minutes, or one with no start time, does not count.

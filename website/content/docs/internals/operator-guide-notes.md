@@ -127,7 +127,7 @@ traffic in the capture. `--relay-stats`, `--relay-stats-call`,
 ERROR line naming why they do not ask, and the run still exits `0`. The
 control client in [`src/rtpengine/`](https://github.com/NormB/sipnab/blob/main/src/rtpengine) has no command value
 for `offer`, `answer`, `delete` or `start recording`, so sipnab can send only
-`list` and `query`.
+`list`, `statistics` and `query`.
 
 ### HEP sender: the 3-second connect timeout
 
