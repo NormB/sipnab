@@ -1031,6 +1031,166 @@ fn a_run_stopped_after_sigusr1_reports_its_commands_status() -> Result<(), TestE
     )
 }
 
+/// How a signal is left for a process before it starts.
+#[derive(Clone, Copy, Debug)]
+enum Inherited {
+    /// Its disposition is "ignore". A non-interactive `sh` cannot set a trap
+    /// for a signal that was ignored when it started.
+    Ignored,
+    /// It is in the signal mask, so it stays pending and is never delivered.
+    Blocked,
+}
+
+/// The filters that select the tests of the tied `sh` program. No test that
+/// calls [`assert_tied_runs_work_when_started_with`] has a name they match,
+/// so the test binary started again does not start itself a third time.
+const TIED_RUN_FILTERS: [&str; 2] = ["pipe_tied", "run_stopped_after"];
+
+/// Start this test binary again with each signal in `states` left as named,
+/// filtered to the tests of the tied `sh` program, and require all of them
+/// to pass (CHILD-LIFETIME-TESTS-DEPEND-ON-INHERITED-SIGNALS).
+///
+/// A process inherits ignored signals and the signal mask from whatever
+/// started it. A shell that starts a command in the background starts it
+/// with SIGINT ignored; a harness can block or ignore others. The `sh`
+/// program relies on SIGTERM, SIGINT, SIGHUP and SIGUSR1, so `root_run`
+/// sets them itself before the program starts.
+fn assert_tied_runs_work_when_started_with(
+    states: &[(libc::c_int, Inherited)],
+) -> Result<(), TestError> {
+    use std::os::unix::process::CommandExt as _;
+    let states = states.to_vec();
+    let described = format!("{states:?}");
+    let mut again = Command::new(std::env::current_exe()?);
+    again.args(TIED_RUN_FILTERS).stdin(Stdio::null());
+    // SAFETY: the closure runs between fork and exec in the child. It calls
+    // signal(2), sigemptyset(3), sigaddset(3) and sigprocmask(2), which are
+    // async-signal-safe, and allocates nothing: `states` was built before.
+    unsafe {
+        again.pre_exec(move || {
+            for &(signal, state) in &states {
+                let failed = match state {
+                    Inherited::Ignored => libc::signal(signal, libc::SIG_IGN) == libc::SIG_ERR,
+                    Inherited::Blocked => {
+                        let mut set: libc::sigset_t = std::mem::zeroed();
+                        libc::sigemptyset(&raw mut set);
+                        libc::sigaddset(&raw mut set, signal);
+                        libc::sigprocmask(libc::SIG_BLOCK, &raw const set, std::ptr::null_mut())
+                            != 0
+                    }
+                };
+                if failed {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    let out = again.output()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let ran = stdout
+        .lines()
+        .filter(|line| line.starts_with("test ") && line.ends_with(" ... ok"))
+        .count();
+    let failed: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("test ") && line.ends_with("FAILED"))
+        .collect();
+    assert!(
+        out.status.success(),
+        "started with {described}, the tied-run tests failed: {failed:?}"
+    );
+    assert!(
+        ran >= 15,
+        "started with {described}, only {ran} tied-run tests ran; the filters \
+         {TIED_RUN_FILTERS:?} no longer select them"
+    );
+    Ok(())
+}
+
+/// With nothing changed the second start passes: the other tests of this
+/// group fail for the state they set and for no other reason.
+#[test]
+fn tied_runs_work_when_the_binary_is_started_again_unchanged() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[])
+}
+
+/// SIGINT ignored at the start: what a shell leaves for a background job.
+#[test]
+fn tied_runs_work_when_started_with_sigint_ignored() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[(libc::SIGINT, Inherited::Ignored)])
+}
+
+/// SIGTERM ignored at the start.
+#[test]
+fn tied_runs_work_when_started_with_sigterm_ignored() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[(libc::SIGTERM, Inherited::Ignored)])
+}
+
+/// SIGHUP ignored at the start: what `nohup` leaves.
+#[test]
+fn tied_runs_work_when_started_with_sighup_ignored() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[(libc::SIGHUP, Inherited::Ignored)])
+}
+
+/// SIGUSR1 ignored at the start: the kill after the grace period relies on it.
+#[test]
+fn tied_runs_work_when_started_with_sigusr1_ignored() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[(libc::SIGUSR1, Inherited::Ignored)])
+}
+
+/// SIGINT blocked at the start.
+#[test]
+fn tied_runs_work_when_started_with_sigint_blocked() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[(libc::SIGINT, Inherited::Blocked)])
+}
+
+/// SIGTERM blocked at the start.
+#[test]
+fn tied_runs_work_when_started_with_sigterm_blocked() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[(libc::SIGTERM, Inherited::Blocked)])
+}
+
+/// SIGHUP blocked at the start.
+#[test]
+fn tied_runs_work_when_started_with_sighup_blocked() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[(libc::SIGHUP, Inherited::Blocked)])
+}
+
+/// SIGUSR1 blocked at the start.
+#[test]
+fn tied_runs_work_when_started_with_sigusr1_blocked() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[(libc::SIGUSR1, Inherited::Blocked)])
+}
+
+/// All four ignored and blocked at once.
+#[test]
+fn tied_runs_work_when_started_with_all_four_ignored_and_blocked() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[
+        (libc::SIGINT, Inherited::Ignored),
+        (libc::SIGTERM, Inherited::Ignored),
+        (libc::SIGHUP, Inherited::Ignored),
+        (libc::SIGUSR1, Inherited::Ignored),
+        (libc::SIGINT, Inherited::Blocked),
+        (libc::SIGTERM, Inherited::Blocked),
+        (libc::SIGHUP, Inherited::Blocked),
+        (libc::SIGUSR1, Inherited::Blocked),
+    ])
+}
+
+/// Signals the program does not rely on, ignored and blocked: SIGPIPE,
+/// SIGQUIT and SIGUSR2.
+#[test]
+fn tied_runs_work_when_started_with_other_signals_ignored_and_blocked() -> Result<(), TestError> {
+    assert_tied_runs_work_when_started_with(&[
+        (libc::SIGPIPE, Inherited::Ignored),
+        (libc::SIGQUIT, Inherited::Ignored),
+        (libc::SIGUSR2, Inherited::Ignored),
+        (libc::SIGQUIT, Inherited::Blocked),
+        (libc::SIGUSR2, Inherited::Blocked),
+    ])
+}
+
 /// `sudo` is named in one place under `tests/`: the helper that ties what it
 /// starts. A test that names it directly starts a command nothing ends when
 /// the test process is cut short.

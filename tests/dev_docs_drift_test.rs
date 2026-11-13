@@ -1031,7 +1031,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/check-feature-matrix.py and scripts/gate-cache.py (+4).
     // 851 -> 852 (RELEASE-TRAIN-WINDOW-OPENS-ON-LONG-LAST-CHECK): the window
     // rule links scripts/tests/test_release_train.py (+1).
-    const EXPECTED_CODE_LINKS: usize = 852;
+    // 852 -> 856 (MACOS-JOBS-NOT-ACQUIRED-TURN-RUNS-RED): "A job no runner
+    // took" links .github/workflows/rerun-not-acquired.yml,
+    // scripts/rerun-not-acquired.py, its test and its fixtures (+4).
+    const EXPECTED_CODE_LINKS: usize = 856;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1894,7 +1897,7 @@ fn every_site_operator_page_is_in_the_docs_nav_list() -> Result<(), TestError> {
 /// half until `scorecard.yml` became the ninth.
 #[test]
 fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
-    const WORDS: [&str; 19] = [
+    const WORDS: [&str; 21] = [
         "zero",
         "one",
         "two",
@@ -1914,6 +1917,8 @@ fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
         "sixteen",
         "seventeen",
         "eighteen",
+        "nineteen",
+        "twenty",
     ];
     let dir = repo().join(".github/workflows");
     let mut names: Vec<String> = std::fs::read_dir(&dir)?
