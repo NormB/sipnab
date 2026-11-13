@@ -10,6 +10,12 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tests measure what a terminal that has gone reports to the TUI's waits on every platform (MACOS-HANGUP-ONLY-WAIT).** The TUI waits for a hang-up alone after input it could not read as an event, and that wait asks `poll(2)` for no event. macOS `poll(2)` reported no hang-up for a pipe when no event was asked, and the one test of the wait on a real pty was compiled for Linux only. Four unit tests in `src/tui/terminal_input.rs` now run on every platform: they measure what `poll(2)` answers for a pty asked no event, POLLHUP, POLLIN and POLLOUT with its other side open, open with input queued, closed, and closed with input unread, and each failure message prints every answer. No change to the binary.
+
+## [0.5.250] - 2026-11-13
+
 ### Changed
 
 - **Five more task pages carry every part of a how-to (DOCS-HOWTO-GAP, sixth batch).** [Export one observed call as a vCon](docs/vcon.md#before-you-start) gained its prerequisites and a [table of export failures](docs/vcon.md#when-an-export-does-not-work). [Send sipnab's vCons to vcon.store](docs/vcon-store.md#before-you-start) gained its prerequisites, and its check states the counts of a delivery that worked. [Send sipnab's vCons to a vCon server](docs/vcon-sipnab.md#before-you-start) gained its prerequisites, with the change it makes on the vCon server. [Add a vCon server to an OpenSIPS voice stack](docs/vcon-server.md#before-you-start-your-sip-server) states what it changes on each other system. [The vCon capture stack](docs/vcon-harness.md#what-you-need) lists what its scripts use and names the conserver as a system the harness does not start. Four check sections have a heading that says what they check. `tests/howto_claims_test.rs` runs the export, the forwarder and the fetcher against a local stand-in store for each answer the pages describe (`201`, `204`, `401`, `403`, `409`, `422`, `500`, a refused connection). `KNOWN_GAPS` in `tests/howto_sections_test.rs` went from 28 pages to 23.
