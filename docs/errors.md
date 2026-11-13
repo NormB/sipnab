@@ -3196,7 +3196,7 @@ sipnab could not read the signing-key file. `{flag}` is `--api-signing-key-file`
 
 ### `{label} answered {other:?}, not statistics`
 
-A `--relay-stats-interval` poll got a reply that was not a statistics answer. `{label}` is `rtpengine at <addr>`, the engine that answered: with `--rtpengine-engine` or `--rtpengine-ng-engine` rows the poll asks every listed engine. `{other:?}` is the decoded reply. The poll keeps running on its interval.
+A `--relay-stats-interval` poll got a reply that was not a statistics answer. `{label}` is `rtpengine at <addr>`, the engine that answered: with `--rtpengine-engine` or `--rtpengine-ng-engine` rows the poll asks every listed engine. `{other:?}` is the decoded reply. The poll keeps running on its interval. For REST and MCP the poll records the attempt as `refused`, with `<label>: <the relay's words>`, when the reply is the relay's refusal, and as `suspect`, with `<label> answered with something other than statistics`, for a reply of another kind.
 
 **What to do:** Check that `--rtpengine-control` points at the relay's control port.
 

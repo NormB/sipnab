@@ -8,6 +8,13 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The MCP relay tools call a reply of the wrong kind `suspect`, and say why (QUERY-RELAY-WRONG-KIND).** `query_relay` asked a relay for its call list, got statistics back, and reported `outcome: "statistics"`; a query for one call that got a call list back reported `outcome: "calls"`. REST, the TUI, `--relay-holdings` and `--relay-sessions` call the same replies suspect. `query_relay` now reports `outcome: "suspect"` with `detail` "the relay answered with something other than a call list" (or "a call view"), and carries none of the reply's fields. `relay_stats` and `relay_compare` already reported `suspect` for a reply that held no statistics, with no reason; they now carry `detail` "the relay answered with something other than statistics", the reason REST gives. Root cause: each surface matched the reply kinds on its own and wrote the reason as its own text, and the MCP tool accepted every kind as an answer to any question. One rule in `src/relay/types.rs` now holds the decision and the words, and a test refuses a copy of the words elsewhere under `src/`. The periodic relay statistics poll words its failure with the same phrase: "answered with something other than statistics" where it said "answered something other than statistics".
+- **A relay's refusal of a statistics question reads `refused` on every surface, not `suspect` (RELAY-STATS-REFUSAL-SUSPECT).** A refused list or query was already `refused` with the relay's own words. A refusal reply to a statistics question read `suspect`, "the relay answered with something other than statistics", on MCP `relay_stats` and `relay_compare`, the REST statistics and compare routes, the TUI's relay statistics view and the `--relay-stats-interval` poll. All of them now report `refused` with `<relay>: <the relay's words>` (`<relay> for call <Call-ID>: <the relay's words>` on the REST per-call routes; MCP carries the words in `refusal`). The rtpengine client reports a refused statistics request inside the statistics reply (`result: error`), which the per-call surfaces already read as a refusal, so this changes what an operator sees only for a relay client that answers with a refusal reply. Root cause: the statistics surfaces matched "statistics or anything else" on their own. `ControlReply::unanswered` in `src/relay/types.rs` now decides refused or wrong kind for a list, a query and a statistics question, and `ReplyKind::unanswered_by` gives every surface the outcome and the detail.
+
 ## [0.5.252] - 2026-11-13
 
 ### Changed
