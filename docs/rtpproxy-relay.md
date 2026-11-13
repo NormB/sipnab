@@ -71,7 +71,12 @@ proxy. It read rtpproxy's own counters:
 
 On both systems, causing each fault under
 [When something does not work](#when-something-does-not-work) produced what it
-describes. arm64 was not tested.
+describes.
+
+On 2026-11-13 the Install rtpproxy block ran again, in a Debian 13 container
+on an arm64 machine. The download matched its digest. The zip held packages
+for `amd64` only, and `apt-get` ended with `Unable to satisfy dependencies`.
+No other block ran there.
 
 The commands pin the components to the versions below. Newer ones may behave
 differently. Pinning them keeps the guide describing what you get.
@@ -88,6 +93,9 @@ The examples use `192.0.2.10` as the machine's address. Replace it with yours
 everywhere it appears.
 
 ## Before you start: your SIP server
+
+This guide needs an x86_64 machine. The rtpproxy project's 3.2.0 packages are
+for `amd64` only.
 
 Find your case, and follow the steps it names:
 

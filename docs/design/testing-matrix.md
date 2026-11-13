@@ -101,7 +101,7 @@ behind them.
 | `--limitlen` | `-S` | `BYTES` | Capture | parsed | `src/cli.rs` |  |  |
 | `--no-reassembly` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--quiet-bad-parse` | `-x` |  | Capture | e2e | `tests/tui_e2e_test.rs` |  |  |
-| `--portrange` |  | `RANGE` | Capture | e2e | `tests/accused_sources_test.rs`, `tests/analyze_test.rs` +18 |  |  |
+| `--portrange` |  | `RANGE` | Capture | e2e | `tests/accused_sources_test.rs`, `tests/analyze_test.rs` +19 |  |  |
 | `--ws-portrange` |  | `RANGE` | Capture | e2e | `tests/config_cli_defects_test.rs` |  |  |
 | `--multi-device` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--no-rtp` |  |  | Capture | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` |  |  |

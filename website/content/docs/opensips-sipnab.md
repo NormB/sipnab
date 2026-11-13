@@ -25,6 +25,18 @@ This guide adds sipnab to the OpenSIPS proxy from
 [Use OpenSIPS as your voice stack's SIP server](@/docs/opensips.md), installed from
 the packages or built from source.
 
+## Before you start
+
+- **The OpenSIPS proxy from
+  [Use OpenSIPS as your voice stack's SIP server](@/docs/opensips.md),** with its
+  test call working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, OpenSIPS, nothing changes** for every step up to
+  [Calls through topology hiding](#calls-through-topology-hiding). Two of that
+  section's three methods change the OpenSIPS script, and its table says what
+  each changes.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page above
@@ -50,10 +62,11 @@ The examples use `192.0.2.10` as the machine's address.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 
@@ -671,6 +684,19 @@ OpenSIPS script contains the `append_hf` lines above as shown. The captures
 are in `tests/fixtures/th-callid/`, and the tests in
 [`tests/th_callid_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/th_callid_test.rs) run sipnab against
 them on the command line, REST and MCP, including the warning quoted above.
+
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists the call on one row, though sipnab saw it on both sides of
+  OpenSIPS.
+- The row shows `Completed`, code `200` and 13 messages.
+- An `RTP Streams:` table follows it.
 
 ## When something does not work
 

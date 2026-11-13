@@ -74,6 +74,11 @@ On each machine, it ran:
 On Debian 13, on 2026-09-28, causing each fault under [When something does
 not work](#when-something-does-not-work) produced what it describes.
 
+On 2026-11-13 the Build rtpengine block ran again, in a Debian 13 container
+on an arm64 machine. The build and its test suite passed, and the block
+installed `ngcp-rtpengine-daemon` 26.3.0.0 for `arm64`. No other block ran
+there.
+
 The commands pin the components to the versions below. Newer commits may
 behave differently. Pinning them keeps the guide describing what you get.
 
@@ -146,9 +151,13 @@ git checkout 8da4be3355
 sudo mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 dpkg-buildpackage -us -uc -b -j2
 cd ..
-sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_amd64.deb \
+sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_$(dpkg --print-architecture).deb \
   ./ngcp-rtpengine-utils_26.3.0.0+0~mr26.3.0.0_all.deb
 ```
+
+The build names the daemon's package after the machine's architecture, which
+`dpkg --print-architecture` prints: `amd64` on an x86_64 machine, `arm64` on
+an arm64 one.
 
 The package's configuration asks for rtpengine's kernel forwarding module.
 This guide does not install that module. Tell rtpengine to forward in

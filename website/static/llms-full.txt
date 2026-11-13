@@ -66327,9 +66327,12 @@ git checkout 8da4be3355
 sudo mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 dpkg-buildpackage -us -uc -b -j2
 cd ..
-sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_amd64.deb \
+sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_$(dpkg --print-architecture).deb \
   ./ngcp-rtpengine-utils_26.3.0.0+0~mr26.3.0.0_all.deb
 ```
+
+The build names the daemon's package after the machine's architecture, which
+`dpkg --print-architecture` prints.
 
 The package's configuration asks for rtpengine's kernel forwarding module. This
 guide does not install that module. Tell rtpengine to forward in userspace, and
@@ -67001,7 +67004,9 @@ With Kamailio, this is how a vCon server gets vCons at all.
 - **A capture point that sees the calls:** the SIP port, and the media ports
   when the vCons are to carry audio.
 - **A sipnab release package without the `-noaudio` suffix.** The install
-  step fetches `sipnab_<version>_amd64.deb`, which carries the `vcon` feature.
+  step fetches the package for the machine's architecture,
+  `sipnab_<version>_amd64.deb` or `sipnab_<version>_arm64.deb`. Both carry the
+  `vcon` feature.
   The `-noaudio` packages do not carry it. `sipnab --version` lists the
   features of a binary.
 - **A change on one other system, the vCon server.** The first step adds to
@@ -67105,10 +67110,11 @@ docker compose restart conserver api
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 ```
 
 ## Have sipnab write a vCon for every finished call
@@ -68344,10 +68350,11 @@ its version number since the release.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 ```
 
 The package runs sipnab as the `sipnab` user, capturing on every interface.
@@ -68797,6 +68804,11 @@ On each machine, it ran:
 On Debian 13, on 2026-09-28, causing each fault under [When something does
 not work](#when-something-does-not-work) produced what it describes.
 
+On 2026-11-13 the Build rtpengine block ran again, in a Debian 13 container
+on an arm64 machine. The build and its test suite passed, and the block
+installed `ngcp-rtpengine-daemon` 26.3.0.0 for `arm64`. No other block ran
+there.
+
 The commands pin the components to the versions below. Newer commits may
 behave differently. Pinning them keeps the guide describing what you get.
 
@@ -68869,9 +68881,13 @@ git checkout 8da4be3355
 sudo mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 dpkg-buildpackage -us -uc -b -j2
 cd ..
-sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_amd64.deb \
+sudo apt-get install -y ./ngcp-rtpengine-daemon_26.3.0.0+0~mr26.3.0.0_$(dpkg --print-architecture).deb \
   ./ngcp-rtpengine-utils_26.3.0.0+0~mr26.3.0.0_all.deb
 ```
+
+The build names the daemon's package after the machine's architecture, which
+`dpkg --print-architecture` prints: `amd64` on an x86_64 machine, `arm64` on
+an arm64 one.
 
 The package's configuration asks for rtpengine's kernel forwarding module.
 This guide does not install that module. Tell rtpengine to forward in
@@ -69555,10 +69571,11 @@ On the machine that runs rtpengine:
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 
@@ -69878,7 +69895,12 @@ proxy. It read rtpproxy's own counters:
 
 On both systems, causing each fault under
 [When something does not work](#when-something-does-not-work) produced what it
-describes. arm64 was not tested.
+describes.
+
+On 2026-11-13 the Install rtpproxy block ran again, in a Debian 13 container
+on an arm64 machine. The download matched its digest. The zip held packages
+for `amd64` only, and `apt-get` ended with `Unable to satisfy dependencies`.
+No other block ran there.
 
 The commands pin the components to the versions below. Newer ones may behave
 differently. Pinning them keeps the guide describing what you get.
@@ -69895,6 +69917,9 @@ The examples use `192.0.2.10` as the machine's address. Replace it with yours
 everywhere it appears.
 
 ## Before you start: your SIP server
+
+This guide needs an x86_64 machine. The rtpproxy project's 3.2.0 packages are
+for `amd64` only.
 
 Find your case, and follow the steps it names:
 
@@ -70784,10 +70809,11 @@ On the machine that runs rtpproxy:
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 
@@ -73840,10 +73866,11 @@ On each machine that runs sipnab:
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 
@@ -74831,10 +74858,11 @@ The examples use `192.0.2.10` as the machine's address.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 
@@ -75070,6 +75098,18 @@ This guide does not use sipnab. When you have this working, [Run sipnab beside
 OpenSIPS](opensips-sipnab.md) adds sipnab. If you use Kamailio instead, see
 [Use Kamailio as your voice stack's SIP server](kamailio.md).
 
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages and the source the
+  steps download.
+- **UDP ports 5060, 5070 and 5080 free on it.** OpenSIPS takes 5060, and the
+  test callee and caller take the other two.
+- **No other system changes.** OpenSIPS, the test caller and the test callee
+  run on this one machine. Phones and carriers reach it only when you point
+  them at its address, which this guide does not do.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01.
@@ -75087,6 +75127,13 @@ Every block on this page ran as written, in order, on 2026-10-01.
 - Every test call carried audio both ways, counted on the wire.
 - Causing each fault under [When something does not
   work](#when-something-does-not-work) produced the message it quotes, on both.
+- On 2026-11-13 the install blocks ran again, in a Debian 13 container on an
+  arm64 machine:
+  - The repository block installed `opensips-cli`.
+  - The package block ended with `E: Unable to locate package opensips`.
+  - The source build printed `version: opensips 4.1.0-dev (aarch64/linux)`.
+  - The container has no systemd, so the block that adds the unit stopped at
+    `systemctl`.
 
 | Software | Version or commit |
 |---|---|
@@ -75126,6 +75173,10 @@ sudo apt-get install -y opensips-cli
 ```
 
 ### Install the 4.0 packages
+
+The OpenSIPS project builds its packages for x86_64 and 32-bit x86 machines.
+On 2026-11-13 its repository listed no other architecture. On an arm64
+machine, [build master from source](#or-build-master-from-source) instead.
 
 ```bash
 # Run all of these, in order.
@@ -75332,14 +75383,24 @@ sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd=
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
 sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -trace_msg -message_file uas.msg -bg
 sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
-awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
 ```
 
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 
 - It sends about 7 seconds of audio, then a short DTMF clip, and hangs up.
 - At the end, SIPp's statistics screen shows `Successful call` at 1.
-- The last line prints the `Record-Route` OpenSIPS added.
+
+### Check that the call went through OpenSIPS
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
+```
+
+The command prints the `Record-Route` OpenSIPS added to the `INVITE` the
+callee received. An `INVITE` that did not pass through OpenSIPS has none, and
+the command prints nothing.
 
 OpenSIPS carries the signaling only. The audio goes straight between the two
 ends, at the addresses and ports their SDP names. So this proxy never touches
@@ -75430,6 +75491,12 @@ share a machine as long as they do not share a port.
   - Another package tool holds the lock. On a machine that has just booted,
     this is usually the system's own scheduled update.
   - Wait for it to finish, then run the block again.
+- **`apt-get install -y opensips` says `E: Unable to locate package
+  opensips`.**
+  - `dpkg --print-architecture` shows what the machine is. The OpenSIPS
+    project's repository has packages for `amd64` and `i386` only.
+  - On any other machine,
+    [build master from source](#or-build-master-from-source).
 - **`opensips -C` reports `could not open module <signaling.so>`.**
   - The `mpath` line is missing or names the wrong directory.
   - OpenSIPS does not fall back to its own module directory without it.
@@ -75467,6 +75534,18 @@ This guide adds sipnab to the OpenSIPS proxy from
 [Use OpenSIPS as your voice stack's SIP server](opensips.md), installed from
 the packages or built from source.
 
+## Before you start
+
+- **The OpenSIPS proxy from
+  [Use OpenSIPS as your voice stack's SIP server](opensips.md),** with its
+  test call working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, OpenSIPS, nothing changes** for every step up to
+  [Calls through topology hiding](#calls-through-topology-hiding). Two of that
+  section's three methods change the OpenSIPS script, and its table says what
+  each changes.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page above
@@ -75492,10 +75571,11 @@ The examples use `192.0.2.10` as the machine's address.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 
@@ -76114,6 +76194,19 @@ are in `tests/fixtures/th-callid/`, and the tests in
 [`tests/th_callid_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/th_callid_test.rs) run sipnab against
 them on the command line, REST and MCP, including the warning quoted above.
 
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists the call on one row, though sipnab saw it on both sides of
+  OpenSIPS.
+- The row shows `Completed`, code `200` and 13 messages.
+- An `RTP Streams:` table follows it.
+
 ## When something does not work
 
 - **sipnab reports a line such as `No SIP signaling found, but 839 RTP packets
@@ -76143,6 +76236,17 @@ same role:
 This guide does not use sipnab. When you have this working, [Run sipnab beside
 Kamailio](kamailio-sipnab.md) adds sipnab.
 
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages the steps download.
+- **UDP ports 5060, 5070 and 5080 free on it.** Kamailio takes 5060, and the
+  test callee and caller take the other two.
+- **No other system changes.** Kamailio, the test caller and the test callee
+  run on this one machine. Phones and carriers reach it only when you point
+  them at its address, which this guide does not do.
+
 ## Tested on
 
 Every block on this page ran as written on 2026-10-01.
@@ -76160,6 +76264,9 @@ Every block on this page ran as written on 2026-10-01.
 - Causing each fault under [When
   something does not work](#when-something-does-not-work) produced what it
   describes, on both.
+- On 2026-11-13 the install block ran again, in a Debian 13 container on an
+  arm64 machine. The key's fingerprint matched, the package did not start
+  Kamailio, and the repository's release was then 6.1.5.
 
 | Software | Version |
 |---|---|
@@ -76336,15 +76443,27 @@ sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd=
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
 sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -trace_msg -message_file uas.msg -bg
 sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
-awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
 ```
 
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 
 - It sends about 7 seconds of audio, then a short DTMF clip, and hangs up.
 - At the end, SIPp's statistics screen shows `Successful call` at 1.
-- The last line prints the `Record-Route` Kamailio added, such as
-  `<sip:192.0.2.10;lr;ftag=52680SIPpTag091>`. It holds:
+
+### Check that the call went through Kamailio
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
+```
+
+The command prints the `Record-Route` Kamailio added to the `INVITE` the
+callee received. An `INVITE` that did not pass through Kamailio has none, and
+the command prints nothing.
+
+- The header reads such as `<sip:192.0.2.10;lr;ftag=52680SIPpTag091>`. It
+  holds:
   - Kamailio's address,
   - `lr` for loose routing,
   - the caller's `From` tag.
@@ -76488,6 +76607,16 @@ It puts them together into one call.
 This guide adds sipnab to the Kamailio proxy from
 [Use Kamailio as your voice stack's SIP server](kamailio.md).
 
+## Before you start
+
+- **The Kamailio proxy from
+  [Use Kamailio as your voice stack's SIP server](kamailio.md),** with its
+  test call working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, Kamailio, nothing changes:** no module, no
+  configuration change.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01, with sipnab
@@ -76510,10 +76639,11 @@ The examples use `192.0.2.10` as the machine's address.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 
@@ -76580,6 +76710,19 @@ A call through each proxy then appears in the report, one row per call.
   - 236 `PCMA` packets each way for each call,
   - not one stream of 472 across both.
 
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists the call on one row, though sipnab saw it on both sides of
+  Kamailio.
+- The row shows `Completed`, code `200` and 13 messages.
+- An `RTP Streams:` table follows it.
+
 ## When something does not work
 
 - **sipnab reports a line such as `No SIP signaling found, but 839 RTP packets
@@ -76621,6 +76764,18 @@ This guide does the following:
 This guide does not use sipnab. When you have this working,
 [Run sipnab beside Asterisk](asterisk-sipnab.md) adds sipnab.
 
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages and the source the
+  steps download.
+- **UDP ports 5060, 5070 and 5080 free on it.** Asterisk takes 5060, and the
+  test callee and caller take the other two.
+- **No other system changes.** Asterisk, the test caller and the test callee
+  run on this one machine. Phones and carriers reach it only when you point
+  them at its address, which this guide does not do.
+
 ## Tested on
 
 Every block on this page ran as written on 2026-10-12.
@@ -76636,6 +76791,8 @@ Every block on this page ran as written on 2026-10-12.
 - Causing each fault under
   [When something does not work](#when-something-does-not-work) produced what
   it describes, on both.
+- On 2026-11-13 the install block ran again, in a Debian 13 container on an
+  arm64 machine. It printed `Asterisk 22.11.0`.
 
 | Software | Version |
 |---|---|
@@ -76663,8 +76820,8 @@ sudo apt-get install -y --no-install-recommends build-essential curl ca-certific
   libedit-dev libjansson-dev libxml2-dev uuid-dev libsqlite3-dev libssl-dev
 sudo mkdir -p /usr/local/src/voice && sudo chown "$USER": /usr/local/src/voice
 cd /usr/local/src/voice
-curl -fsSLO https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-22.11.0.tar.gz
-curl -fsSL https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-22.11.0.sha256 | sha256sum -c -
+curl -fsSLO https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-22.11.0.tar.gz
+curl -fsSL https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-22.11.0.sha256 | sha256sum -c -
 tar xzf asterisk-22.11.0.tar.gz
 cd asterisk-22.11.0
 ./configure
@@ -76673,6 +76830,10 @@ sudo make install
 sudo asterisk -V
 ```
 
+- Both downloads come from the server's `releases` directory, which keeps
+  every release.
+  - The directory above it keeps only the newest release of each series.
+  - On 2026-11-13 it held 22.12.0, and it answered 404 for 22.11.0.
 - `sha256sum -c` prints `asterisk-22.11.0.tar.gz: OK`.
   - The checksum file comes from the same server as the source.
   - So it detects a damaged download, not a replaced one.
@@ -76872,6 +77033,15 @@ sudo sipp -sn uac_pcap 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s 100 -m 1 -timeou
   up.
 - At the end SIPp's statistics screen shows `Successful call` at 1.
 
+### Check that Asterisk handled the call
+
+```bash
+sudo asterisk -rx 'core show calls'
+```
+
+Once the test call has ended, the command prints `0 active calls` and a
+`calls processed` count.
+
 Unlike a proxy, Asterisk carries the audio as well as the signaling.
 
 - The caller sends its audio to Asterisk, at the port Asterisk's answer names.
@@ -77023,6 +77193,17 @@ This guide adds sipnab to the Asterisk machine from
   Asterisk module.
   - You can leave it out.
 
+## Before you start
+
+- **The Asterisk machine from
+  [Use Asterisk as your voice stack's PBX](asterisk.md),** with its test call
+  working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, Asterisk, nothing changes** for every section up to
+  "Receive Asterisk's HEP". That section writes `hep.conf` and restarts
+  Asterisk. "Remove what this guide added" takes it out again.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-12.
@@ -77047,10 +77228,11 @@ everywhere it appears.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb jq
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb jq
 sipnab --version
 ```
 
@@ -77400,6 +77582,20 @@ sudo systemctl restart asterisk
 - The API key file and the drop-in are yours, so the block removes them.
 - The package leaves the `sipnab` user in place.
 
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists two dialogs, one for each leg, each with a Call-ID of its
+  own.
+- Both rows show `Completed` and code `200`.
+- The `RTP Streams:` table below them shows audio to and from Asterisk on
+  both legs.
+
 ## When something does not work
 
 - **sipnab says `sipnab: the terminal UI could not start: No such device or
@@ -77458,6 +77654,18 @@ This guide does the following:
 This guide does not use sipnab. When you have this working, [Run sipnab beside
 FreeSWITCH](freeswitch-sipnab.md) adds sipnab.
 
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages and the source the
+  steps download.
+- **UDP ports 5060, 5070, 5080 and 5090 free on it.** FreeSWITCH holds 5060
+  and 5080, and the test callee and caller take the other two.
+- **No other system changes.** FreeSWITCH, the test caller and the test
+  callee run on this one machine. Phones and carriers reach it only when you
+  point them at its address, which this guide does not do.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-12.
@@ -77473,6 +77681,9 @@ Every block on this page ran as written, in order, on 2026-10-12.
 - Every test call carried audio both ways on both legs, counted on the wire.
 - Causing each fault under [When something does not
   work](#when-something-does-not-work) produced the message it quotes, on both.
+- On 2026-11-13 the four install blocks ran again, in a Debian 13 container on
+  an arm64 machine. They printed the candidates `1.12.11` and `0.0.6`, the
+  status `401`, the versions `1.13.18` and `3.1.1`, and `1.11.3-release`.
 
 | Software | Version |
 |---|---|
@@ -77759,9 +77970,9 @@ Each leg has its own audio.
 [Run sipnab beside
 FreeSWITCH](freeswitch-sipnab.md) shows all four streams.
 
-## Operate it
+### Check that a call has two legs
 
-**See a call's two legs while it is up.** FreeSWITCH calls each leg a
+FreeSWITCH calls each leg a
 channel. Start a call in the background and list the channels:
 
 ```bash
@@ -77782,6 +77993,8 @@ outbound sofia/external/echo@127.0.0.1:5070 PCMU
 - The `inbound` channel is the caller's leg, in PCMA.
 - The `outbound` one is the callee's, in PCMU.
 - The last line waits for the call to end.
+
+## Operate it
 
 **Check health and read the logs.**
 
@@ -77873,6 +78086,18 @@ protocol SIP servers use to send Homer their traffic.
 This guide adds sipnab to the FreeSWITCH machine from
 [Use FreeSWITCH in your voice stack](freeswitch.md).
 
+## Before you start
+
+- **The FreeSWITCH machine from
+  [Use FreeSWITCH in your voice stack](freeswitch.md),** with its test call
+  working.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, FreeSWITCH, nothing changes** for every section up
+  to "Receive FreeSWITCH's own copy of its SIP (HEP)". That section sets
+  `capture-server` and `sip-capture` in FreeSWITCH's configuration and
+  restarts it.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-12.
@@ -77893,10 +78118,11 @@ The examples use `192.0.2.10` as the machine's address.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 
@@ -78206,6 +78432,20 @@ sipnab does not depend on FreeSWITCH.
 - A capture file you take on the FreeSWITCH machine, such as
   `/tmp/freeswitch-call.pcap`, works on any machine with sipnab installed.
   - It works with "Read one call: timing and audio quality" and "See both legs as one call".
+
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --portrange 5060-5080 --duration 30 --report
+```
+
+- The report lists two dialogs, one for each leg, each with a Call-ID of its
+  own.
+- Both rows show `Completed`.
+- The `RTP Streams:` table below them shows audio to and from FreeSWITCH on
+  both legs.
 
 ## When something does not work
 
@@ -78992,10 +79232,11 @@ namespace took part.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 ```
 
 The package installs a service that runs sipnab as the `sipnab` user. The

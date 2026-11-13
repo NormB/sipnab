@@ -22,6 +22,17 @@ same role:
 This guide does not use sipnab. When you have this working, [Run sipnab beside
 Kamailio](@/docs/kamailio-sipnab.md) adds sipnab.
 
+## Before you start
+
+- **A machine with Debian 13 or Ubuntu 24.04,** the two systems this guide
+  ran on, and an account that can use `sudo`.
+- **Internet access from that machine,** for the packages the steps download.
+- **UDP ports 5060, 5070 and 5080 free on it.** Kamailio takes 5060, and the
+  test callee and caller take the other two.
+- **No other system changes.** Kamailio, the test caller and the test callee
+  run on this one machine. Phones and carriers reach it only when you point
+  them at its address, which this guide does not do.
+
 ## Tested on
 
 Every block on this page ran as written on 2026-10-01.
@@ -39,6 +50,9 @@ Every block on this page ran as written on 2026-10-01.
 - Causing each fault under [When
   something does not work](#when-something-does-not-work) produced what it
   describes, on both.
+- On 2026-11-13 the install block ran again, in a Debian 13 container on an
+  arm64 machine. The key's fingerprint matched, the package did not start
+  Kamailio, and the repository's release was then 6.1.5.
 
 | Software | Version |
 |---|---|
@@ -215,15 +229,27 @@ sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd=
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
 sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -trace_msg -message_file uas.msg -bg
 sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
-awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
 ```
 
 The caller needs `sudo` because it plays the audio sample through a raw socket.
 
 - It sends about 7 seconds of audio, then a short DTMF clip, and hangs up.
 - At the end, SIPp's statistics screen shows `Successful call` at 1.
-- The last line prints the `Record-Route` Kamailio added, such as
-  `<sip:192.0.2.10;lr;ftag=52680SIPpTag091>`. It holds:
+
+### Check that the call went through Kamailio
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
+```
+
+The command prints the `Record-Route` Kamailio added to the `INVITE` the
+callee received. An `INVITE` that did not pass through Kamailio has none, and
+the command prints nothing.
+
+- The header reads such as `<sip:192.0.2.10;lr;ftag=52680SIPpTag091>`. It
+  holds:
   - Kamailio's address,
   - `lr` for loose routing,
   - the caller's `From` tag.
