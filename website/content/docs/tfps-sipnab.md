@@ -42,6 +42,20 @@ sipnab runs `tfps_ctl`, TFPS's own command, and reads its answers:
 
 The [REST API reference](@/docs/api.md) gives every request and response.
 
+## Before you start
+
+- **TFPS installed and enforcing,** as [Add TFPS to your voice stack](@/docs/tfps.md)
+  leaves it, from a build at `984577dc` or later. Earlier builds do not answer
+  `--json` in the form sipnab reads.
+- **root on the machine that runs sipnab.** The steps use `sudo`.
+- **On the other system, TFPS:**
+  - sipnab on the same machine changes nothing in TFPS until you turn on
+    `--allow-action`. Then a ban or an unban you ask for changes TFPS's block
+    map.
+  - sipnab on a different machine needs a dedicated account on the TFPS
+    machine, whose SSH key can run `tfps_ctl` and nothing else.
+- **On the SIP server, the phones and the carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-09-28. The exception

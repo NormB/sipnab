@@ -176,16 +176,7 @@ const PAGES: &[(&str, Kind)] = &[
 /// order. The list is compared exactly with what the pages hold: remove a
 /// page's entry in the change that gives the page its parts. Never add one
 /// for a new page.
-const KNOWN_GAPS: &[(&str, &[Part])] = &[
-    ("fail2ban", &[OtherSystems]),
-    ("fail2ban-sipnab", &[Prerequisites, Verify]),
-    ("homer", &[OtherSystems, Verify]),
-    ("homer-sipnab", &[Prerequisites, Verify]),
-    ("prometheus", &[OtherSystems, Verify]),
-    ("prometheus-sipnab", &[Prerequisites, Verify]),
-    ("tfps", &[Prerequisites]),
-    ("tfps-sipnab", &[Prerequisites]),
-];
+const KNOWN_GAPS: &[(&str, &[Part])] = &[];
 
 /// The last release cut before this gate. "Added" entries of later releases,
 /// and of `[Unreleased]`, link to a heading of a task page.

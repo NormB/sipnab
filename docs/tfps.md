@@ -34,6 +34,17 @@ Two terms used below:
   - TFPS compiles its XDP program against it during the install.
   - So the kernel needs BTF built in.
 
+## Before you start
+
+- **The machine that receives SIP from the Internet,** and an account on it
+  that can use `sudo`.
+- **Linux 5.15 or newer, built with BTF.** The Check the kernel step has the
+  two commands that show it.
+- **Internet access from that machine,** for the packages and the source the
+  Install TFPS step downloads.
+- **No other system changes.** TFPS needs nothing from your SIP server, and
+  the phones and carriers keep their settings.
+
 ## Tested on
 
 Every block on this page, and every command in the table of the "Operate it"

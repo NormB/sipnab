@@ -13519,7 +13519,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.251 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.252 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13542,7 +13542,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.251` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.252` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13731,7 +13731,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.251) | Plugin | `Recommends` |
+| Artifact (0.5.252) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13771,11 +13771,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.251 for the
+it first, in the same shell, to the release you want, e.g. 0.5.252 for the
 latest:
 
 ```bash
-VERSION=0.5.251
+VERSION=0.5.252
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13915,13 +13915,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.251, as in
+you want, e.g. 0.5.252, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.251
+   VERSION=0.5.252
    ```
 
 - Download the package:
@@ -14042,25 +14042,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.251-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.252-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.251-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.252-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.251-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.252-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.251-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.252-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14546,14 +14546,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.251
+docker pull ghcr.io/normb/sipnab:0.5.252
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.251` | That release |
+| `0.5.252` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14591,7 +14591,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.251 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.252 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14604,11 +14604,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.251 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.252 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.251` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.251`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.252` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.252`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14806,7 +14806,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.252 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.253 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -15030,7 +15030,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.251
+docker pull ghcr.io/normb/sipnab:0.5.252
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -37533,7 +37533,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.252 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   sipnab 0.5.253 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -38235,7 +38235,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.252"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.253"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -38920,7 +38920,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.252",
+  "version": "0.5.253",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -39863,7 +39863,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.252"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.253"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -50758,7 +50758,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.252",
+  "version": "0.5.253",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -68101,6 +68101,17 @@ Two terms used below:
   - TFPS compiles its XDP program against it during the install.
   - So the kernel needs BTF built in.
 
+## Before you start
+
+- **The machine that receives SIP from the Internet,** and an account on it
+  that can use `sudo`.
+- **Linux 5.15 or newer, built with BTF.** The Check the kernel step has the
+  two commands that show it.
+- **Internet access from that machine,** for the packages and the source the
+  Install TFPS step downloads.
+- **No other system changes.** TFPS needs nothing from your SIP server, and
+  the phones and carriers keep their settings.
+
 ## Tested on
 
 Every block on this page, and every command in the table of the "Operate it"
@@ -68441,6 +68452,20 @@ sipnab runs `tfps_ctl`, TFPS's own command, and reads its answers:
 | `GET /v1/tfps/dropped` | `tfps_dropped` | nothing yet | a TFPS release that reports its kernel drops; none does yet, so this answers `502` |
 
 The [REST API reference](rest-api.md) gives every request and response.
+
+## Before you start
+
+- **TFPS installed and enforcing,** as [Add TFPS to your voice stack](tfps.md)
+  leaves it, from a build at `984577dc` or later. Earlier builds do not answer
+  `--json` in the form sipnab reads.
+- **root on the machine that runs sipnab.** The steps use `sudo`.
+- **On the other system, TFPS:**
+  - sipnab on the same machine changes nothing in TFPS until you turn on
+    `--allow-action`. Then a ban or an unban you ask for changes TFPS's block
+    map.
+  - sipnab on a different machine needs a dedicated account on the TFPS
+    machine, whose SSH key can run `tfps_ctl` and nothing else.
+- **On the SIP server, the phones and the carriers,** nothing changes.
 
 ## Tested on
 
@@ -73315,6 +73340,15 @@ Find your case, and follow the steps it names:
 - **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above, then
   see [With Kamailio](#with-kamailio), which covers both.
 
+What changes on other systems:
+
+- **Your SIP proxy** gets a configuration that sends a HEP copy of every
+  message to Homer, on UDP port 9060.
+- **The phones and carriers** see no change.
+- **With Homer on a machine of its own,** the proxy sends to that machine's
+  address. [Put the parts on different machines](#put-the-parts-on-different-machines)
+  has the steps.
+
 ## Install Docker
 
 Homer runs as containers. Install Docker Engine and the Compose plugin from
@@ -73687,6 +73721,8 @@ The web interface at `http://192.0.2.10:9080` searches what heplify-server
 stored. To check from the command line, query the database heplify-server
 writes.
 
+### Check that Homer stored the call
+
 - heplify-server writes in batches, at least every 4 seconds. So the first
   line waits for the last batch.
 - Each row is one message.
@@ -73959,6 +73995,21 @@ This guide sets up both against the stack from
 The sipnab as a second receiver step differs for Kamailio, and says how. The
 sipnab as a source for Homer step is the same for both.
 
+## Before you start
+
+- **The stack from [Add Homer to your voice stack](homer.md),** with its test
+  call stored in Homer. The steps here reuse its SIPp files in `~/sipp`.
+- **root on each machine that runs sipnab.** The steps use `sudo`.
+- **On the other system that sends HEP, your SIP server:**
+  - OpenSIPS gains a second HEP destination, and the step restarts it.
+  - Kamailio either does not change, or its `duplicate_uri` moves from Homer
+    to sipnab. The step says which.
+- **On the Homer machine:**
+  - Nothing changes when sipnab is a second receiver.
+  - When sipnab is a source on a second machine, the Homer machine's firewall
+    must let that machine reach UDP port 9060.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01, with
@@ -74218,6 +74269,29 @@ from anyone who can reach port 9060. So open that port only to:
 - your SIP servers,
 - the machines where sipnab forwards.
 
+## Check that it worked
+
+**As a second receiver.** Run the listener again, and place a test call while
+it runs:
+
+```bash
+sudo sipnab -N -L 127.0.0.1:9062 --duration 30 --report --hep-senders
+```
+
+- The report lists the call as `Completed`.
+- The line under `HEP senders` ends with `refused 0`.
+- The table has a row for your SIP server's capture id, `hep:101@127.0.0.1`
+  with OpenSIPS on the same machine.
+
+**As a source.** The count query of
+[sipnab as a source for Homer](#sipnab-as-a-source-for-homer) has a row for
+capture id `2002`.
+
+- A row for 101 and none for 2002 means that Homer did not receive sipnab's
+  copies.
+- A HEP listener names what sipnab forwards in the same way. It lists the
+  sender as `hep:2002@` and the address the copies came from.
+
 ## When something does not work
 
 - **sipnab shows no messages.** Check that the SIP server sends to it.
@@ -74328,6 +74402,16 @@ Find your case, and follow the steps it names:
   the rest.
 - **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above.
   Then see [With Kamailio](#with-kamailio), which covers both.
+
+What changes on other systems:
+
+- **Your SIP proxy** gets a configuration that publishes its statistics on a
+  metrics endpoint, `127.0.0.1:8888` for OpenSIPS.
+- **The phones and carriers** see no change.
+- **With Prometheus on a machine of its own,** the proxy publishes on an
+  address Prometheus can reach. The endpoint has no authentication.
+  [Put the parts on different machines](#put-the-parts-on-different-machines)
+  has the steps.
 
 ## Install Docker
 
@@ -74663,6 +74747,8 @@ sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
 sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
 ```
 
+### Check that Prometheus counted the call
+
 Prometheus scrapes every 5 seconds. Wait for one scrape. Then ask it how many
 dialogs OpenSIPS has processed:
 
@@ -74962,6 +75048,22 @@ The proxy is one of these:
 
 sipnab reads the calls off the wire, so every step is the same for each.
 
+## Before you start
+
+- **The stack from
+  [Add Prometheus and Grafana to your voice stack](prometheus.md),** with its
+  test call counted. The steps here reuse its SIPp files in `~/sipp` and its
+  `/opt/monitoring` directory.
+- **root on the machine that runs sipnab.** The steps use `sudo`.
+- **On the other system, Prometheus,** the Scrape sipnab step adds a `sipnab`
+  job to `prometheus.yml` and restarts Prometheus. Grafana gains one
+  dashboard.
+- **With Prometheus on another machine,** the firewall between the two opens
+  sipnab's metrics port to Prometheus's address.
+  [Scrape sipnab from another machine](#scrape-sipnab-from-another-machine)
+  has the steps.
+- **On the SIP proxy, the phones and the carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-09-28, with
@@ -75205,6 +75307,25 @@ sudo systemctl restart sipnab
 
 The Scrape sipnab step then prints three targets, `opensips`, `kamailio` and
 `sipnab`, all `up`. A call through either proxy adds one to sipnab's count.
+
+## Check that it worked
+
+After a test call, ask sipnab's endpoint and then Prometheus:
+
+```bash
+# Run all of these, in order.
+curl -s 127.0.0.1:9091/metrics | grep -c '^sipnab_'
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=sum(sipnab_dialogs_total{state="completed"})' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["result"][0]["value"][1])'
+```
+
+- The first line counts the series sipnab serves. Zero, or no answer, means
+  that the endpoint is not up on that port.
+- The second prints how many calls sipnab saw complete, as Prometheus stored
+  it. It is 1 after the first test call.
+- Started with `SIPNAB_LOG=info` in its environment, sipnab also logs
+  `Prometheus metrics server listening on 127.0.0.1:9091` once the endpoint
+  is up.
 
 ## When something does not work
 
@@ -78696,6 +78817,10 @@ yours everywhere it appears.
 - The section "Make OpenSIPS log scanners and wrong passwords" below replaces that guide's configuration.
   - The new configuration authenticates phones.
   - It logs what fail2ban needs.
+- No other system changes.
+  - fail2ban bans an address in this machine's own firewall, nftables, which
+    the Install fail2ban step installs.
+  - The scanner and the phone of the tests run on this machine.
 
 ## Make OpenSIPS log scanners and wrong passwords
 
@@ -79339,6 +79464,17 @@ same `scanner_detected` lines, and sipnab sends nothing to the scanner. This
 option is newer than the tests below. See
 [Detect scanners without answering them](examples.md#detect-scanners-without-answering-them).
 
+## Before you start
+
+- **The machine as [Ban SIP scanners with fail2ban](fail2ban.md) leaves it**
+  before its uninstall: OpenSIPS, fail2ban, nftables and the two test
+  addresses.
+- **root on that machine.** The steps use `sudo`.
+- **No other system changes.** The ban is in this machine's own firewall.
+- **What a scanner sees does change with `--kill-scanner`:** sipnab answers
+  its requests with a `200 OK` that carries your SIP server's address. With
+  `--kill-scanner-detect-only` sipnab sends nothing.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01. So did every
@@ -79646,6 +79782,22 @@ To remove sipnab too:
 ```bash
 sudo apt-get purge -y sipnab
 ```
+
+## Check that it worked
+
+After the scanner's requests of
+[Watch sipnab's lines become a ban](#watch-sipnabs-lines-become-a-ban):
+
+```bash
+# Run all of these, in order.
+sudo grep -c 'scanner_detected src=198.51.100.60 ' /var/log/sipnab.log
+sudo fail2ban-client status sipnab-scanner
+```
+
+- The first line counts sipnab's lines for the scanner. It is 5 after the
+  five requests of that step.
+- The jail's `Banned IP list:` names `198.51.100.60`.
+- A count of 0 means that sipnab wrote nothing. See the second item below.
 
 ## When something does not work
 
@@ -90664,6 +90816,7 @@ Each successful run gets a row here.
 | 0.5.249 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-12 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.250 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-13 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.251 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-13 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.252 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-13 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it
