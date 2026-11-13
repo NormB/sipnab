@@ -53,6 +53,8 @@ Every block on this page ran as written on 2026-10-12.
 - Causing each fault under
   [When something does not work](#when-something-does-not-work) produced what
   it describes, on both.
+- On 2026-11-13 the install block ran again, in a Debian 13 container on an
+  arm64 machine. It printed `Asterisk 22.11.0`.
 
 | Software | Version |
 |---|---|
@@ -80,8 +82,8 @@ sudo apt-get install -y --no-install-recommends build-essential curl ca-certific
   libedit-dev libjansson-dev libxml2-dev uuid-dev libsqlite3-dev libssl-dev
 sudo mkdir -p /usr/local/src/voice && sudo chown "$USER": /usr/local/src/voice
 cd /usr/local/src/voice
-curl -fsSLO https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-22.11.0.tar.gz
-curl -fsSL https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-22.11.0.sha256 | sha256sum -c -
+curl -fsSLO https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-22.11.0.tar.gz
+curl -fsSL https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-22.11.0.sha256 | sha256sum -c -
 tar xzf asterisk-22.11.0.tar.gz
 cd asterisk-22.11.0
 ./configure
@@ -90,6 +92,10 @@ sudo make install
 sudo asterisk -V
 ```
 
+- Both downloads come from the server's `releases` directory, which keeps
+  every release.
+  - The directory above it keeps only the newest release of each series.
+  - On 2026-11-13 it held 22.12.0, and it answered 404 for 22.11.0.
 - `sha256sum -c` prints `asterisk-22.11.0.tar.gz: OK`.
   - The checksum file comes from the same server as the source.
   - So it detects a damaged download, not a replaced one.
