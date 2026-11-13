@@ -13,6 +13,7 @@ entry that carries them.
 ### Fixed
 
 - **Tests measure what a terminal that has gone reports to the TUI's waits on every platform (MACOS-HANGUP-ONLY-WAIT).** The TUI waits for a hang-up alone after input it could not read as an event, and that wait asks `poll(2)` for no event. macOS `poll(2)` reported no hang-up for a pipe when no event was asked, and the one test of the wait on a real pty was compiled for Linux only. Four unit tests in `src/tui/terminal_input.rs` now run on every platform: they measure what `poll(2)` answers for a pty asked no event, POLLHUP, POLLIN and POLLOUT with its other side open, open with input queued, closed, and closed with input unread, and each failure message prints every answer. No change to the binary.
+- **The harness README no longer names a `make call` target, and two internals pages name `statistics` (FROM-#634 items 3 and 4).** `harness/README.md` told the reader to run `make call`; `harness/Makefile` has no such target, and `sipp-uac` sends calls in a loop once the stack is up, which the page now says. [Operator guide notes](docs/internals/operator-guide-notes.md) and [the rtpengine control plane](docs/internals/rtpengine-control-plane.md) said the control client sends `list` and `query`; it also sends `statistics`. Two tests in `tests/dev_docs_drift_test.rs` hold every `make` command of the README to a target of the Makefile, and both passages to every verb of `ReadOnlyCommand::verb`.
 
 ## [0.5.250] - 2026-11-13
 
