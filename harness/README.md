@@ -67,10 +67,11 @@ cp .env.example .env
 make up
 ```
 
-Then drive a call through the proxy:
+No command drives a call: once the stack is up, `sipp-uac` sends calls
+through the proxy in a loop (`make scenarios` lists them). Watch them arrive:
 
 ```sh
-make call
+make logs
 ```
 
 The dialog report then carries a "calls named by a media relay" section for

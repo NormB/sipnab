@@ -3121,3 +3121,240 @@ fn page_footer_links_to_the_page_source() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+// ── harness/README.md names targets its Makefile has (FROM-#634 item 3) ─────
+
+/// The targets a makefile defines: each name at the start of a line that a
+/// colon follows. Variable assignments (`NAME := value`), special targets
+/// (`.PHONY:`) and targets named by a variable (`$(ENV_FILE):`) are not
+/// names a reader types after `make`.
+fn makefile_targets(makefile: &str) -> Result<std::collections::BTreeSet<String>, TestError> {
+    let rule = regex::Regex::new(r"(?m)^([a-z][a-z0-9-]*):(?:[^=]|$)")?;
+    Ok(rule
+        .captures_iter(makefile)
+        .map(|c| c[1].to_string())
+        .collect())
+}
+
+/// The `make <target>` commands a page tells its reader to run, each with
+/// its line number: a line of a fenced block that starts with `make `, and
+/// `make <target>` in backticks in prose. Prose that starts a line with the
+/// word "make" is not a command. A line that says the target is upstream's
+/// names another project's makefile and is left out.
+fn make_commands_named(page: &str) -> Result<Vec<(usize, String)>, TestError> {
+    let in_fence = regex::Regex::new(r"^make ([a-z][a-z0-9-]*)")?;
+    let inline = regex::Regex::new(r"`make ([a-z][a-z0-9-]*)`")?;
+    let mut named = Vec::new();
+    let mut fenced = false;
+    for (index, line) in page.lines().enumerate() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            if let Some(c) = in_fence.captures(line) {
+                named.push((index + 1, c[1].to_string()));
+            }
+        } else if !line.contains("upstream") {
+            for c in inline.captures_iter(line) {
+                named.push((index + 1, c[1].to_string()));
+            }
+        }
+    }
+    Ok(named)
+}
+
+/// The `make` commands of `page` that name no target of `makefile`.
+fn make_commands_without_a_target(
+    page: &str,
+    makefile: &str,
+) -> Result<Vec<(usize, String)>, TestError> {
+    let targets = makefile_targets(makefile)?;
+    Ok(make_commands_named(page)?
+        .into_iter()
+        .filter(|(_, target)| !targets.contains(target))
+        .collect())
+}
+
+/// Every `make <target>` the harness README tells a reader to run is a
+/// target of harness/Makefile. The page named `make call`, which no makefile
+/// of the harness ever had.
+#[test]
+fn the_harness_readme_names_only_make_targets_that_exist() -> Result<(), TestError> {
+    let page = read("harness/README.md")?;
+    let makefile = read("harness/Makefile")?;
+    let named = make_commands_named(&page)?;
+    assert!(
+        named.len() >= 20,
+        "harness/README.md names {} make commands; the page or this reader changed",
+        named.len()
+    );
+    let missing = make_commands_without_a_target(&page, &makefile)?;
+    assert!(
+        missing.is_empty(),
+        "harness/README.md tells the reader to run make targets that \
+         harness/Makefile does not have (line, target): {missing:?}"
+    );
+    Ok(())
+}
+
+/// A command for a target the makefile lacks is reported with its line, in
+/// a fenced block and in backticks alike.
+#[test]
+fn a_make_command_with_no_target_is_reported_with_its_line() -> Result<(), TestError> {
+    let makefile = "up: build ## Start\n\tdocker compose up\n";
+    let page = "Start it:\n\n```sh\nmake up\nmake call\n```\n\nThen `make laptop`.\n";
+    assert_eq!(
+        make_commands_without_a_target(page, makefile)?,
+        vec![(5, "call".to_string()), (8, "laptop".to_string())],
+        "the two commands with no target, by line"
+    );
+    Ok(())
+}
+
+/// What is not a command is not read as one: prose that starts with "make",
+/// another project's target, and a trailing comment after a command.
+#[test]
+fn prose_and_upstream_targets_are_not_make_commands() -> Result<(), TestError> {
+    let page = "make sure the stack is up.\n\
+                The upstream `make all` builds every module.\n\
+                Run `make up` first.\n\n\
+                ```sh\nmake ps        # check everything is healthy\n  make indented\n```\n";
+    assert_eq!(
+        make_commands_named(page)?,
+        vec![(3, "up".to_string()), (6, "ps".to_string())],
+        "one command in backticks and one in the fenced block"
+    );
+    Ok(())
+}
+
+/// A makefile's targets are its plain names: not its variables, its special
+/// targets or the targets a variable names.
+#[test]
+fn makefile_targets_are_the_names_a_reader_can_type() -> Result<(), TestError> {
+    let makefile = "ENV_FILE := .env\nurl:=x\n.PHONY: up down\n$(ENV_FILE):\n\tcp a b\n\
+                    up: $(ENV_FILE) ## Start\nlogs-sipnab:\nhelp:\n";
+    let targets: Vec<String> = makefile_targets(makefile)?.into_iter().collect();
+    assert_eq!(
+        targets,
+        ["help", "logs-sipnab", "up"],
+        "plain targets only, sorted"
+    );
+    Ok(())
+}
+
+// ── the commands the rtpengine control client sends (FROM-#634 item 4) ──────
+
+/// The verbs `ReadOnlyCommand::verb` in src/rtpengine/control.rs can put on
+/// the wire, read from `source`, in the order the function lists them.
+fn control_verbs(source: &str) -> Result<Vec<String>, TestError> {
+    let start = source
+        .find("pub fn verb(&self)")
+        .ok_or("src/rtpengine/control.rs has no `pub fn verb(&self)`")?;
+    let body = &source[start..];
+    let end = body.find("\n    }\n").ok_or("`verb` has no end")?;
+    let arm = regex::Regex::new(r#"=> "([a-z]+)""#)?;
+    Ok(arm
+        .captures_iter(&body[..end])
+        .map(|c| c[1].to_string())
+        .collect())
+}
+
+/// The verbs of `verbs` that `passage` does not name in backticks.
+fn verbs_not_named(passage: &str, verbs: &[String]) -> Vec<String> {
+    verbs
+        .iter()
+        .filter(|verb| !passage.contains(&format!("`{verb}`")))
+        .cloned()
+        .collect()
+}
+
+/// The paragraph of `page` that holds `anchor`: the lines around it up to
+/// the nearest blank lines.
+fn paragraph_with<'a>(page: &'a str, anchor: &str) -> Option<&'a str> {
+    page.split("\n\n").find(|p| p.contains(anchor))
+}
+
+/// The two internals passages that say which commands the control client
+/// sends name every one of them. Both named `list` and `query` only after
+/// the client gained `statistics`.
+#[test]
+fn the_internals_pages_name_every_command_the_control_client_sends() -> Result<(), TestError> {
+    let verbs = control_verbs(&read("src/rtpengine/control.rs")?)?;
+    assert!(
+        verbs.len() >= 3,
+        "`ReadOnlyCommand::verb` lists {verbs:?}; it had three verbs when this was written"
+    );
+    for (path, anchor) in [
+        (
+            "docs/internals/operator-guide-notes.md",
+            "so sipnab can send only",
+        ),
+        (
+            "docs/internals/rtpengine-control-plane.md",
+            "| [`src/rtpengine/control.rs`](../../src/rtpengine/control.rs) |",
+        ),
+    ] {
+        let page = read(path)?;
+        let passage = paragraph_with(&page, anchor)
+            .ok_or_else(|| format!("{path} no longer has the passage with `{anchor}`"))?;
+        // A table is one paragraph: of a table, only the row counts.
+        let stated = if anchor.starts_with('|') {
+            passage
+                .lines()
+                .find(|l| l.starts_with(anchor))
+                .ok_or_else(|| format!("{path}: no table row starts with `{anchor}`"))?
+        } else {
+            passage
+        };
+        let missing = verbs_not_named(stated, &verbs);
+        assert!(
+            missing.is_empty(),
+            "{path}: the passage with `{anchor}` does not name {missing:?}, which \
+             `ReadOnlyCommand::verb` sends: {stated}"
+        );
+    }
+    Ok(())
+}
+
+/// A passage that leaves a verb out is reported, and a verb written without
+/// backticks is not counted as named: the word "query" is also plain prose.
+#[test]
+fn a_passage_that_leaves_a_verb_out_is_reported() -> Result<(), TestError> {
+    let verbs = ["list", "query", "statistics"].map(String::from);
+    assert_eq!(
+        verbs_not_named("sipnab can send only `list` and `query`.", &verbs),
+        ["statistics"],
+        "the verb the pages left out"
+    );
+    assert_eq!(
+        verbs_not_named("it can list, query and ask for statistics", &verbs),
+        ["list", "query", "statistics"],
+        "words without backticks name no verb"
+    );
+    assert!(
+        verbs_not_named("`list`, `statistics` and `query`", &verbs).is_empty(),
+        "all three named"
+    );
+    Ok(())
+}
+
+/// The verbs are read from the `verb` function alone, with or without a
+/// payload on the variant, and a source without it is an error.
+#[test]
+fn control_verbs_are_read_from_the_verb_function() -> Result<(), TestError> {
+    let source = "impl C {\n    pub fn other(&self) -> &str {\n        match self { Self::A => \"zzz\" }\n    }\n\
+                  \n    pub fn verb(&self) -> &'static str {\n        match self {\n            \
+                  Self::List { .. } => \"list\",\n            Self::Statistics => \"statistics\",\n        }\n    }\n\
+                  \n    pub fn later(&self) -> &str {\n        match self { Self::A => \"after\" }\n    }\n}\n";
+    assert_eq!(
+        control_verbs(source)?,
+        ["list", "statistics"],
+        "the arms of `verb` only"
+    );
+    assert!(
+        control_verbs("pub fn name(&self) {}").is_err(),
+        "a source without `verb` is an error"
+    );
+    Ok(())
+}

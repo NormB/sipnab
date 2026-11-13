@@ -8,6 +8,13 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **On macOS the TUI sees a terminal that has gone during a wait for a hang-up alone, not one wait later (MACOS-HANGUP-ONLY-WAIT).** After input it could not read as an event, the TUI waits for a hang-up alone, and that wait asked `poll(2)` for no event. Linux reports a hang-up whatever is asked. macOS reports it only to a wait that asked for an event: for a pty whose other side had closed, CI's macOS run of 2026-11-13 measured no answer when no event was asked and POLLHUP when POLLHUP was. So on macOS that wait ran to its timeout, 100 ms or 500 ms, on a terminal that had gone, and the check after it saw the hang-up. The wait now asks for POLLHUP, which queued input does not end on either system. The one test of the wait on a real pty was compiled for Linux only; four unit tests in `src/tui/terminal_input.rs` now run on every platform and print every measured answer when one fails, and two of them failed on macOS before the change. The same run measured that a pty closed with input unread reports the hang-up, with no input left to read. Linux behaves as before.
+- **The harness README no longer names a `make call` target, and two internals pages name `statistics` (FROM-#634 items 3 and 4).** `harness/README.md` told the reader to run `make call`; `harness/Makefile` has no such target, and `sipp-uac` sends calls in a loop once the stack is up, which the page now says. [Operator guide notes](docs/internals/operator-guide-notes.md) and [the rtpengine control plane](docs/internals/rtpengine-control-plane.md) said the control client sends `list` and `query`; it also sends `statistics`. Two tests in `tests/dev_docs_drift_test.rs` hold every `make` command of the README to a target of the Makefile, and both passages to every verb of `ReadOnlyCommand::verb`.
+
 ## [0.5.251] - 2026-11-13
 
 ### Added
