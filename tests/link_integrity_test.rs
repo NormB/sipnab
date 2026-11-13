@@ -1833,9 +1833,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // export failures), vcon-harness.md +3 and vcon-server.md +2 (their
     // prerequisites), vcon-store.md +1 and vcon-sipnab.md +1 (their
     // prerequisites), tls-capture.md +1 (the row for holes in TCP streams).
-    // 2637 -> 2638 (MACOS-JOBS-NOT-ACQUIRED-TURN-RUNS-RED, +1):
+    // 2637 -> 2642 (DOCS-HOWTO-GAP, seventh batch, +5): one link in the
+    // prerequisites of each of rtpengine.md, rtpengine-relay.md,
+    // rtpproxy-relay.md, rtpengine-sipnab.md and rtpproxy-sipnab.md.
+    // 2642 -> 2643 (MACOS-JOBS-NOT-ACQUIRED-TURN-RUNS-RED, +1):
     // build-ci-release.md's workflow row links "A job no runner took".
-    const EXPECTED_WIKI_LINKS: usize = 2638;
+    const EXPECTED_WIKI_LINKS: usize = 2643;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

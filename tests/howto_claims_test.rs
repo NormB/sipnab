@@ -52,6 +52,13 @@ const VCON_STORE: &str = include_str!("../docs/vcon-store.md");
 const VCON_SIPNAB: &str = include_str!("../docs/vcon-sipnab.md");
 const VCON_SERVER: &str = include_str!("../docs/vcon-server.md");
 const VCON_HARNESS: &str = include_str!("../docs/vcon-harness.md");
+const RTPENGINE: &str = include_str!("../docs/rtpengine.md");
+const RTPENGINE_RELAY: &str = include_str!("../docs/rtpengine-relay.md");
+const RTPENGINE_SIPNAB: &str = include_str!("../docs/rtpengine-sipnab.md");
+const RTPPROXY_RELAY: &str = include_str!("../docs/rtpproxy-relay.md");
+const RTPPROXY_SIPNAB: &str = include_str!("../docs/rtpproxy-sipnab.md");
+const RELAY_ENGINES: &str = include_str!("../docs/relay-engines.md");
+const RELAY_STATISTICS: &str = include_str!("../docs/relay-statistics.md");
 const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const HARNESS_COMPOSE: &str = include_str!("../harness/docker-compose.yml");
@@ -82,9 +89,17 @@ const TROUBLESHOOT: &str = "## When something does not work";
 #[cfg(feature = "tls")]
 #[path = "support/encrypted_captures.rs"]
 mod encrypted_captures;
-#[cfg(feature = "tls")]
+// Also the capture of an rtpproxy control socket and its media, which every
+// build reads.
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
+
+// A relay that answers rtpengine's ng protocol on loopback, and the runs
+// that ask it. A run asks only from a live source, and the one a test can
+// open without privileges is a HEP listener.
+#[cfg(all(unix, feature = "hep"))]
+#[path = "support/fake_relay.rs"]
+mod fake_relay;
 
 // A REST API server started on a port the kernel picks, for the pages whose
 // check sends a request.
@@ -4484,6 +4499,675 @@ fn wav_export_writes_the_file_in_this_build() -> Result<(), TestError> {
         wav.len() > 60_000,
         "8.5 s of 8 kHz audio is more than 60 kB, the file holds {} bytes",
         wav.len()
+    );
+    Ok(())
+}
+
+// ── rtpengine, rtpengine-relay, rtpengine-sipnab, rtpproxy-relay, ────────
+// ── rtpproxy-sipnab, relay-engines, relay-statistics ─────────────────────
+
+/// `text` with every run of white space as one space, so that a message a
+/// page wraps over two lines compares with the one line sipnab prints.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The text of `doc` from the heading line `heading` up to the heading line
+/// `next`. [`section`] cannot take a section whose fenced blocks hold a `#`
+/// comment: the comment reads as a heading there.
+fn between<'a>(doc: &'a str, heading: &str, next: &str) -> Result<&'a str, TestError> {
+    let rest = from_heading(doc, heading)?;
+    let end = rest
+        .find(&format!("\n{next}\n"))
+        .ok_or_else(|| format!("no heading {next:?} after {heading:?}"))?;
+    rest.get(..end).ok_or_else(|| "section range".into())
+}
+
+/// The capture of rtpengine's mirrored control plane and the media it names.
+const NG_MIRROR: &str = "tests/fixtures/rtpengine-ng-hep.pcap";
+/// The same media with no control plane.
+const NG_MEDIA_ONLY: &str = "tests/fixtures/rtpengine-media-only.pcap";
+/// The heading the report gives calls only a relay named.
+const NAMED_BY_RELAY: &str = "Calls named by a media relay";
+/// The heading the report gives streams no call names.
+const ORPHANED: &str = "Orphaned Streams";
+
+/// The heading of the troubleshooting section of the rtpengine page.
+const RTPENGINE_TROUBLESHOOT: &str = "## When sipnab does not name the call";
+
+/// The rtpengine prerequisites say which other system changes and which
+/// feature reads the mirror, and `--version` lists that feature in a build
+/// that has it.
+#[test]
+fn the_rtpengine_prerequisites_name_the_feature_and_the_other_system() -> Result<(), TestError> {
+    let needs = one_line(section(RTPENGINE, "## Before you start")?);
+    for named in [
+        "other system",
+        "`homer-enable-ng = true`",
+        "`hep`",
+        "`sipnab --version`",
+        "`listen-ng`",
+        "one Homer destination",
+        "Every release binary has the feature",
+    ] {
+        page_says(&needs, named, "rtpengine");
+    }
+    // The release workflow builds two sets: `full`, and the set of the
+    // `-noaudio` packages and the musl build.
+    let reduced = noaudio_features()?;
+    assert!(
+        reduced.contains(&"hep"),
+        "the page says every release binary has hep; the workflow builds the -noaudio set \
+         with {reduced:?}"
+    );
+    let full = MANIFEST
+        .lines()
+        .find(|line| line.starts_with("full = ["))
+        .ok_or("the manifest no longer has a `full` feature")?;
+    assert!(
+        full.contains("\"hep\""),
+        "the page says every release binary has hep; `full` is {full}"
+    );
+    let (listed, features) = version_lists("hep")?;
+    assert_eq!(
+        listed,
+        cfg!(feature = "hep"),
+        "--version lists hep exactly when the build has it; it printed {features}"
+    );
+    Ok(())
+}
+
+/// The check of the rtpengine page: a capture that holds the mirrored
+/// control plane names the call under the heading the page quotes.
+#[cfg(feature = "hep")]
+#[test]
+fn the_rtpengine_check_names_the_call_under_the_heading_the_page_quotes() -> Result<(), TestError> {
+    let check = section(RTPENGINE, "## Verify it works")?;
+    page_says(check, "--report", "rtpengine");
+    page_says(check, NAMED_BY_RELAY, "rtpengine");
+    let mirror = capture(NG_MIRROR)?.display().to_string();
+    let run = sipnab(&["-N", "-I", &mirror, "--report"])?;
+    exited(&run, 0);
+    let report = stdout(&run);
+    printed(&report, NAMED_BY_RELAY);
+    printed(&report, "km-670bd208@sipnab");
+    assert!(
+        !report.contains(ORPHANED),
+        "the control plane names every stream of the capture; the report was:\n{report}"
+    );
+    Ok(())
+}
+
+/// The first row of the rtpengine troubleshooting table: with no control
+/// plane in the capture, no call is named and the streams stay orphaned.
+#[test]
+fn media_without_the_control_plane_stays_orphaned_as_the_rtpengine_page_says()
+-> Result<(), TestError> {
+    let rows = section(RTPENGINE, RTPENGINE_TROUBLESHOOT)?;
+    page_says(rows, "streams still orphaned", "rtpengine");
+    page_says(rows, "`homer-enable-ng = true`", "rtpengine");
+    let media = capture(NG_MEDIA_ONLY)?.display().to_string();
+    let run = sipnab(&["-N", "-I", &media, "--report"])?;
+    exited(&run, 0);
+    let report = stdout(&run);
+    printed(&report, ORPHANED);
+    assert!(
+        !report.contains(NAMED_BY_RELAY),
+        "nothing in this capture names a call; the report was:\n{report}"
+    );
+    Ok(())
+}
+
+/// The troubleshooting table of the rtpengine page says a build with no
+/// `hep` feature leaves the streams orphaned though the mirror is in the
+/// capture.
+#[cfg(not(feature = "hep"))]
+#[test]
+fn a_build_without_hep_does_not_read_the_mirror_as_the_rtpengine_page_says() -> Result<(), TestError>
+{
+    let rows = section(RTPENGINE, RTPENGINE_TROUBLESHOOT)?;
+    page_says(rows, "the build has no `hep` feature", "rtpengine");
+    let mirror = capture(NG_MIRROR)?.display().to_string();
+    let run = sipnab(&["-N", "-I", &mirror, "--report"])?;
+    exited(&run, 0);
+    let report = stdout(&run);
+    assert!(
+        !report.contains(NAMED_BY_RELAY),
+        "a build without hep does not read the mirror; the report was:\n{report}"
+    );
+    printed(&report, ORPHANED);
+    Ok(())
+}
+
+/// What the relay guides say changes on other systems, and that each guide's
+/// check names the port range and the control port its own steps configure.
+#[test]
+fn the_relay_guides_name_the_other_systems_and_check_the_ports_they_configure()
+-> Result<(), TestError> {
+    // (page, text, control port, first media port, last media port)
+    for (page, doc, control, first, last) in [
+        ("rtpengine-relay", RTPENGINE_RELAY, "2223", "30000", "39999"),
+        ("rtpproxy-relay", RTPPROXY_RELAY, "7722", "50000", "59999"),
+    ] {
+        let needs = one_line(between(
+            doc,
+            "## Before you start: your SIP server",
+            if page == "rtpengine-relay" {
+                "## Build rtpengine"
+            } else {
+                "## Install rtpproxy"
+            },
+        )?);
+        for named in [
+            "other system",
+            "firewall",
+            "phones",
+            &format!("UDP {control}"),
+            &format!("UDP {first}-{last}"),
+        ] {
+            page_says(&needs, named, page);
+        }
+        let check = one_line(between(
+            doc,
+            "### Check that the relay carried the call",
+            "## Operate it",
+        )?);
+        page_says(&check, &format!("between {first} and {last}"), page);
+        page_says(&check, "```", page);
+        // The steps configure what the prerequisites and the check name.
+        let steps = one_line(doc);
+        for configured in [
+            format!("udp:127.0.0.1:{control}"),
+            format!("allow UDP {control} from"),
+            format!("Open UDP {first}-{last} to the phones"),
+        ] {
+            page_says(&steps, &configured, page);
+        }
+    }
+    page_says(
+        RTPENGINE_RELAY,
+        "listen-ng = localhost:2223",
+        "rtpengine-relay",
+    );
+    page_says(RTPPROXY_RELAY, "-m 50000 -M 59999", "rtpproxy-relay");
+    Ok(())
+}
+
+/// The prerequisites of the two pages that put sipnab beside a relay say
+/// what changes on the other systems.
+#[test]
+fn the_relay_naming_prerequisites_say_what_changes_on_the_other_systems() -> Result<(), TestError> {
+    let engine = one_line(section(RTPENGINE_SIPNAB, "## Before you start")?);
+    for named in [
+        "other system",
+        "`listen-ng`",
+        "`homer-enable-ng = true`",
+        "root",
+        "No command sipnab sends changes a call",
+    ] {
+        page_says(&engine, named, "rtpengine-sipnab");
+    }
+    let proxy = one_line(section(RTPPROXY_SIPNAB, "## Before you start")?);
+    for named in [
+        "other system",
+        "`--rtpproxy-control`",
+        "sipnab sends rtpproxy nothing",
+        "root",
+    ] {
+        page_says(&proxy, named, "rtpproxy-sipnab");
+    }
+    Ok(())
+}
+
+/// A relay that holds `ids`, and answers each `query` with the recorded
+/// answer of a call with media both ways.
+#[cfg(all(unix, feature = "hep"))]
+fn relay_holding(ids: &'static [&'static str]) -> Result<fake_relay::FakeRelay, TestError> {
+    let two_way = fake_relay::recorded("h-twoway-query")?;
+    fake_relay::FakeRelay::start(move |verb, _| match verb {
+        "list" => fake_relay::calls(ids),
+        "query" => fake_relay::Answer::Body(two_way.clone()),
+        _ => fake_relay::Answer::Silent,
+    })
+}
+
+/// A relay that receives every request and answers none.
+#[cfg(all(unix, feature = "hep"))]
+fn silent_relay() -> Result<fake_relay::FakeRelay, TestError> {
+    fake_relay::FakeRelay::start(|_, _| fake_relay::Answer::Silent)
+}
+
+/// `text` with the relay's address written as the page writes it.
+#[cfg(all(unix, feature = "hep"))]
+fn as_the_page_writes(text: &str, relay: &fake_relay::FakeRelay, page_address: &str) -> String {
+    text.replace(&relay.addr.to_string(), page_address)
+}
+
+/// The check of the rtpengine-sipnab page: sipnab asks the relay before it
+/// opens the capture and logs the line the page quotes.
+#[cfg(all(unix, feature = "hep"))]
+#[test]
+fn the_rtpengine_naming_check_quotes_the_line_sipnab_logs_at_startup() -> Result<(), TestError> {
+    let check = one_line(section(RTPENGINE_SIPNAB, CHECK)?);
+    let relay = relay_holding(&["1-36802@192.0.2.10"])?;
+    let mut run = fake_relay::Run::start(&relay, &[])?;
+    assert!(
+        run.wait_stderr("call(s) enumerated"),
+        "sipnab did not log what the relay answered:\n{}",
+        run.err.join("\n")
+    );
+    let line = run
+        .err
+        .iter()
+        .find(|line| line.contains("call(s) enumerated"))
+        .cloned()
+        .ok_or("the line was read and is gone")?;
+    let done = run.finish();
+    assert_eq!(done.code, Some(0), "a stopped run exits 0: {}", done.dump());
+    let logged = as_the_page_writes(&line, &relay, "127.0.0.1:2223");
+    let quoted = "rtpengine at 127.0.0.1:2223: 1 call(s) enumerated, complete; queried 1 of \
+                  them, 4 relay port(s) now attributable";
+    printed(&logged, quoted);
+    page_says(&check, quoted, "rtpengine-sipnab");
+    assert_eq!(
+        relay.asked()?,
+        ["list", "query"],
+        "sipnab sends the two commands the page names and no other"
+    );
+    Ok(())
+}
+
+/// The rtpengine-sipnab troubleshooting list quotes what sipnab logs when
+/// nothing answers at the control address. The page's message ends with
+/// `Connection refused (os error 111)`, which the kernel adds when no socket
+/// holds the port. A test cannot hold a UDP port that refuses, so this one
+/// drives a relay that stays silent and compares the message up to there.
+#[cfg(all(unix, feature = "hep"))]
+#[test]
+fn a_relay_that_does_not_answer_at_startup_gives_the_message_the_page_quotes()
+-> Result<(), TestError> {
+    let listed = one_line(section(RTPENGINE_SIPNAB, TROUBLESHOOT)?);
+    let relay = silent_relay()?;
+    let mut run = fake_relay::Run::start(&relay, &[])?;
+    assert!(
+        run.wait_stderr("could not be asked which calls are up"),
+        "sipnab did not log that the relay stayed silent:\n{}",
+        run.err.join("\n")
+    );
+    let logged = as_the_page_writes(&run.err.join("\n"), &relay, "127.0.0.1:2223");
+    let done = run.finish();
+    assert_eq!(
+        done.code,
+        Some(0),
+        "the capture runs without the answer: {}",
+        done.dump()
+    );
+    let quoted = "rtpengine at 127.0.0.1:2223 could not be asked which calls are up: no reply \
+                  from 127.0.0.1:2223 within 2s";
+    printed(&logged, quoted);
+    page_says(&listed, quoted, "rtpengine-sipnab");
+    Ok(())
+}
+
+/// The Call-ID of the call in the rtpproxy capture, and the addresses of the
+/// capture.
+const RTPPROXY_CALL: &str = "howto-rtpproxy-1@192.0.2.10";
+const RTPPROXY_CONTROL: &str = "192.0.2.40:7722";
+
+/// A capture of one call through rtpproxy, with no SIP: the proxy's `U`
+/// command to the control socket at 192.0.2.40:7722, rtpproxy's reply naming
+/// port 50514, and media both ways on that port.
+fn rtpproxy_capture(dir: &Path) -> Result<String, TestError> {
+    const PROXY: [u8; 4] = [192, 0, 2, 10];
+    const RELAY: [u8; 4] = [192, 0, 2, 40];
+    const PHONE: [u8; 4] = [192, 0, 2, 60];
+    let command = format!("c1 U {RTPPROXY_CALL} 192.0.2.60 40000 ftag1\n");
+    let mut frames = vec![
+        pcap_build::udp_frame(PROXY, RELAY, 43000, 7722, command.as_bytes()),
+        pcap_build::udp_frame(RELAY, PROXY, 7722, 43000, b"c1 50514 192.0.2.40\n"),
+    ];
+    for seq in 0u16..20 {
+        for (src, sport, dst, dport, ssrc) in [
+            (PHONE, 40000, RELAY, 50514, 0x1111_2222u32),
+            (RELAY, 50514, PHONE, 40000, 0x3333_4444u32),
+        ] {
+            let mut rtp = vec![0x80, 0x00];
+            rtp.extend_from_slice(&seq.to_be_bytes());
+            rtp.extend_from_slice(&(u32::from(seq) * 160).to_be_bytes());
+            rtp.extend_from_slice(&ssrc.to_be_bytes());
+            rtp.extend_from_slice(&[0xff; 160]);
+            frames.push(pcap_build::udp_frame(src, dst, sport, dport, &rtp));
+        }
+    }
+    let path = dir.join("rtpproxy.pcap");
+    pcap_build::write_pcap(&path, &frames)?;
+    Ok(path.display().to_string())
+}
+
+/// The report of the rtpproxy capture read with `extra` flags.
+fn rtpproxy_report(extra: &[&str]) -> Result<String, TestError> {
+    let dir = tempfile::tempdir()?;
+    let path = rtpproxy_capture(dir.path())?;
+    let mut args = vec!["-N", "-I", &path, "--no-cli-print", "--report"];
+    args.extend_from_slice(extra);
+    let run = sipnab(&args)?;
+    exited(&run, 0);
+    Ok(stdout(&run))
+}
+
+/// The check of the rtpproxy-sipnab page: with the control socket named,
+/// the report names the call under the heading the page quotes and has no
+/// orphaned streams.
+#[test]
+fn the_rtpproxy_naming_check_names_the_call_and_leaves_no_orphaned_stream() -> Result<(), TestError>
+{
+    let check = one_line(section(RTPPROXY_SIPNAB, CHECK)?);
+    for named in [NAMED_BY_RELAY, "`Orphaned Streams:`", "--rtpproxy-control"] {
+        page_says(&check, named, "rtpproxy-sipnab");
+    }
+    let report = rtpproxy_report(&["--rtpproxy-control", RTPPROXY_CONTROL])?;
+    printed(&report, NAMED_BY_RELAY);
+    printed(&report, RTPPROXY_CALL);
+    assert!(
+        !report.contains(ORPHANED),
+        "the control traffic names every stream; the report was:\n{report}"
+    );
+    Ok(())
+}
+
+/// The second item of the rtpproxy-sipnab troubleshooting list: without the
+/// flag, or with a flag that names another address or port, streams appear
+/// and no call names them.
+#[test]
+fn rtpproxy_media_stays_unnamed_without_the_exact_control_address() -> Result<(), TestError> {
+    let listed = one_line(section(RTPPROXY_SIPNAB, TROUBLESHOOT)?);
+    page_says(
+        &listed,
+        "Streams appear, but no call names them",
+        "rtpproxy-sipnab",
+    );
+    page_says(
+        &listed,
+        "names exactly the address and port",
+        "rtpproxy-sipnab",
+    );
+    for extra in [
+        &[][..],
+        &["--rtpproxy-control", "192.0.2.40:7723"],
+        &["--rtpproxy-control", "192.0.2.41:7722"],
+    ] {
+        let report = rtpproxy_report(extra)?;
+        printed(&report, ORPHANED);
+        assert!(
+            !report.contains(RTPPROXY_CALL) && !report.contains(NAMED_BY_RELAY),
+            "with {extra:?} nothing names the call; the report was:\n{report}"
+        );
+    }
+    Ok(())
+}
+
+/// A value of `--rtpproxy-control` that is not an address and a port is
+/// refused before the capture is read.
+#[test]
+fn an_rtpproxy_control_value_without_a_port_is_refused() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let path = rtpproxy_capture(dir.path())?;
+    let run = sipnab(&["-N", "-I", &path, "--rtpproxy-control", "192.0.2.40"])?;
+    exited(&run, 2);
+    printed(&stderr(&run), "--rtpproxy-control");
+    Ok(())
+}
+
+/// The relay-engines and relay-statistics prerequisites say what changes on
+/// other systems: a firewall rule at most.
+#[test]
+fn the_relay_question_prerequisites_say_what_changes_on_the_other_systems() -> Result<(), TestError>
+{
+    let engines = one_line(section(RELAY_ENGINES, "## Before you start")?);
+    for named in ["other system", "firewall", "`listen-ng`"] {
+        page_says(&engines, named, "relay-engines");
+    }
+    let statistics = one_line(section(RELAY_STATISTICS, "## Before you start")?);
+    for named in [
+        "other system",
+        "`listen-ng`",
+        "`statistics`, `list` and `query`",
+    ] {
+        page_says(&statistics, named, "relay-statistics");
+    }
+    Ok(())
+}
+
+/// The two Call-IDs the relay of the relay-statistics tests holds.
+#[cfg(all(unix, feature = "hep"))]
+const HELD: [&str; 2] = ["held-1@192.0.2.10", "held-2@198.51.100.7"];
+
+/// The arguments of a run that asks `relay` and exits: a HEP listener that
+/// receives nothing makes the run live.
+#[cfg(all(unix, feature = "hep"))]
+fn asking(relay: &fake_relay::FakeRelay, extra: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "-L".to_owned(),
+        "127.0.0.1:0".to_owned(),
+        "--rtpengine-control".to_owned(),
+        relay.addr.to_string(),
+    ];
+    args.extend(extra.iter().map(|arg| (*arg).to_owned()));
+    args
+}
+
+/// Runs sipnab with `args` to its exit.
+#[cfg(all(unix, feature = "hep"))]
+fn asked_and_exited(args: &[String]) -> Result<fake_relay::Finished, TestError> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    fake_relay::run_to_exit(&args)
+}
+
+/// The check of the relay-statistics page: `--relay-sessions` exits 0, its
+/// second line starts `reachable;`, and every call the relay holds is in
+/// the answer.
+#[cfg(all(unix, feature = "hep"))]
+#[test]
+fn the_relay_sessions_check_exits_0_and_its_second_line_starts_reachable() -> Result<(), TestError>
+{
+    let check = section(RELAY_STATISTICS, "### Check that it worked")?;
+    for named in ["--relay-sessions", "reachable;", "```", "exit 0"] {
+        page_says(check, named, "relay-statistics");
+    }
+    let relay = relay_holding(&HELD)?;
+    let done = asked_and_exited(&asking(&relay, &["--relay-sessions"]))?;
+    assert_eq!(
+        done.code,
+        Some(0),
+        "the page states exit 0: {}",
+        done.dump()
+    );
+    let second = done.stdout.lines().nth(1).unwrap_or_default();
+    assert!(
+        second.starts_with("reachable; 2 calls listed; queried 2 of 2"),
+        "the second line states the relay answered and how many calls it asked about: {}",
+        done.dump()
+    );
+    for held in HELD {
+        printed(&done.stdout, held);
+    }
+    printed(&done.stdout, "flowing");
+    assert_eq!(
+        relay.asked()?,
+        ["list", "query", "query"],
+        "one list, then one query for each held call"
+    );
+    Ok(())
+}
+
+/// The relay-statistics troubleshooting list quotes the message and the
+/// exit status of `--relay-holdings` when the relay does not answer.
+#[cfg(all(unix, feature = "hep"))]
+#[test]
+fn a_relay_that_does_not_answer_gives_the_holdings_message_the_page_quotes() -> Result<(), TestError>
+{
+    let listed = section(RELAY_STATISTICS, TROUBLESHOOT)?;
+    let quoted = "--relay-holdings: unreachable: relay (rtpengine at 127.0.0.1:22222) did not \
+                  answer (no reply from 127.0.0.1:22222 within 2s); asked, nothing came back";
+    page_says(listed, quoted, "relay-statistics");
+    page_says(
+        &one_line(listed),
+        "`--relay-holdings` exits 1",
+        "relay-statistics",
+    );
+    let relay = silent_relay()?;
+    let done = asked_and_exited(&asking(&relay, &["--relay-holdings"]))?;
+    assert_eq!(
+        done.code,
+        Some(1),
+        "the page states exit 1: {}",
+        done.dump()
+    );
+    printed(
+        &as_the_page_writes(&done.stderr, &relay, "127.0.0.1:22222"),
+        quoted,
+    );
+    Ok(())
+}
+
+/// The relay-statistics troubleshooting list quotes what a run that reads a
+/// file says to each question, and its exit status. Such a run sends the
+/// relay nothing.
+#[cfg(all(unix, feature = "hep"))]
+#[test]
+fn a_relay_question_on_a_file_run_gives_the_messages_the_page_quotes() -> Result<(), TestError> {
+    let listed = one_line(section(RELAY_STATISTICS, TROUBLESHOOT)?);
+    let relay = relay_holding(&HELD)?;
+    let sample = capture(SAMPLE_CALL)?.display().to_string();
+    let control = relay.addr.to_string();
+    for (flag, status) in [("--relay-stats", 0), ("--relay-holdings", 2)] {
+        let quoted = format!("{flag} will not ask a relay on a run that reads a file");
+        page_says(&listed, &quoted, "relay-statistics");
+        let done =
+            fake_relay::run_to_exit(&["-I", &sample, "--rtpengine-control", &control, flag])?;
+        assert_eq!(
+            done.code,
+            Some(status),
+            "the page states exit {status} for {flag}: {}",
+            done.dump()
+        );
+        printed(&done.stderr, &quoted);
+    }
+    assert!(
+        relay.asked()?.is_empty(),
+        "a run that reads a file sends the relay nothing; it sent {:?}",
+        relay.asked()?
+    );
+    Ok(())
+}
+
+/// The last item of the relay-statistics troubleshooting list: an answer
+/// that is not rtpengine's encoding is called suspect, with exit 1. The
+/// reply here starts with `E`, as rtpproxy's error replies do.
+#[cfg(all(unix, feature = "hep"))]
+#[test]
+fn a_reply_that_is_not_bencode_gives_the_message_the_relay_page_quotes() -> Result<(), TestError> {
+    let listed = section(RELAY_STATISTICS, TROUBLESHOOT)?;
+    let quoted = "--relay-holdings: suspect: relay (rtpengine at 127.0.0.1:22223): a relay \
+                  reply could not be trusted: rtpengine reply is not bencode: bencode: 'E' does \
+                  not begin any bencode value; the reply was discarded and not read";
+    page_says(listed, quoted, "relay-statistics");
+    let relay = fake_relay::FakeRelay::start(|_, _| fake_relay::Answer::Body(b"E1\n".to_vec()))?;
+    let done = asked_and_exited(&asking(&relay, &["--relay-holdings"]))?;
+    assert_eq!(
+        done.code,
+        Some(1),
+        "the page states exit 1: {}",
+        done.dump()
+    );
+    printed(
+        &as_the_page_writes(&done.stderr, &relay, "127.0.0.1:22223"),
+        quoted,
+    );
+    Ok(())
+}
+
+/// The arguments of `--relay-holdings` with a map of two engines: `a` is
+/// the engine `--rtpengine-control` names, and each has a row.
+#[cfg(all(unix, feature = "hep"))]
+fn two_engines(a: &fake_relay::FakeRelay, b: &fake_relay::FakeRelay) -> Vec<String> {
+    let rows = [
+        format!("203.0.113.5 30000-39999 {}", a.addr),
+        format!("203.0.113.5 40000-49999 {}", b.addr),
+    ];
+    let mut args = asking(a, &[]);
+    for row in rows {
+        args.push("--rtpengine-engine".to_owned());
+        args.push(row);
+    }
+    args.push("--relay-holdings".to_owned());
+    args
+}
+
+/// The check of the relay-engines page: `--relay-holdings` prints one
+/// `Holdings of` block for each engine of the map, and names a call two
+/// engines hold.
+#[cfg(all(unix, feature = "hep"))]
+#[test]
+fn the_engine_check_prints_one_holdings_block_for_each_engine() -> Result<(), TestError> {
+    let check = section(RELAY_ENGINES, CHECK)?;
+    for named in [
+        "--relay-holdings",
+        "Holdings of",
+        "```",
+        "--rtpengine-engine",
+    ] {
+        page_says(check, named, "relay-engines");
+    }
+    let a = relay_holding(&["moved-1@192.0.2.21"])?;
+    let b = relay_holding(&["moved-1@192.0.2.21", "only-b-1@192.0.2.21"])?;
+    let done = asked_and_exited(&two_engines(&a, &b))?;
+    assert_eq!(done.code, Some(0), "both engines answered: {}", done.dump());
+    assert_eq!(
+        done.stdout
+            .matches("Holdings of relay (rtpengine at ")
+            .count(),
+        2,
+        "one block for each engine: {}",
+        done.dump()
+    );
+    for engine in [&a, &b] {
+        printed(
+            &done.stdout,
+            &format!("Holdings of relay (rtpengine at {})", engine.addr),
+        );
+    }
+    printed(&done.stdout, "Held by several engines: moved-1@192.0.2.21");
+    Ok(())
+}
+
+/// The relay-engines page says the run exits 0 when at least one engine
+/// answered and 1 when none did, and that the block of an engine that
+/// answered prints beside one that did not.
+#[cfg(all(unix, feature = "hep"))]
+#[test]
+fn the_engine_check_exits_0_with_one_answer_and_1_with_none() -> Result<(), TestError> {
+    page_says(
+        &one_line(RELAY_ENGINES),
+        "The run exits 0 when at least one engine answered, and 1 when none did.",
+        "relay-engines",
+    );
+    let answers = relay_holding(&["only-b-1@192.0.2.21"])?;
+    let silent = silent_relay()?;
+    let one = asked_and_exited(&two_engines(&silent, &answers))?;
+    assert_eq!(one.code, Some(0), "one engine answered: {}", one.dump());
+    printed(
+        &one.stdout,
+        &format!("Holdings of relay (rtpengine at {})", answers.addr),
+    );
+    printed(&one.stdout, "only-b-1@192.0.2.21");
+    let other = silent_relay()?;
+    let none = asked_and_exited(&two_engines(&silent, &other))?;
+    assert_eq!(none.code, Some(1), "no engine answered: {}", none.dump());
+    assert!(
+        !none.stdout.contains("call held") && !none.stdout.contains("calls held"),
+        "no engine answered, so no count of held calls prints: {}",
+        none.dump()
     );
     Ok(())
 }
