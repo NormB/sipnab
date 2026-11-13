@@ -134,7 +134,7 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,316 | 59,983 |
+| core | 9 | 12,648 | 60,315 |
 | signaling | 21 | 23,576 | 76,040 |
 | captures | 11 | 12,723 | 30,211 |
 | security | 6 | 9,954 | 9,954 |
@@ -144,13 +144,15 @@ resource.
 | server | 6 | 5,976 | 35,136 |
 | vcon | 7 | 10,714 | 34,446 |
 | tls | 3 | 2,903 | 4,996 |
-| full | 79 | 92,468 | 314,524 |
+| full | 79 | 92,800 | 314,856 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
 > **Measured on sipnab 0.5.232 with `fleet_inventory`, `th_mappings` and `relay_stats_polled` added** on a build with every feature.
 >
+> - The `regex` option of `search_messages` added 332 bytes to its entry, and
+>   so to the `core` and `full` rows, in both columns.
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
 >   bundles are smaller.
@@ -217,7 +219,7 @@ links to its section on the bundle's page.
 | [`runtime_stats`](@/docs/mcp-tools-server.md#runtime-stats) | [server](@/docs/mcp-tools-server.md) | What sipnab is doing and what it costs the host: its own memory, threads, descriptors and CPU; the host's totals and the basis they came from; its share of them and whether that share is load-bearing; per-interface counters; store occupancy against the caps |
 | [`save_findings`](@/docs/mcp-tools-captures.md#save-findings) | [captures](@/docs/mcp-tools-captures.md) | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
 | [`search_by_time`](@/docs/mcp-tools-signaling.md#search-by-time) | [signaling](@/docs/mcp-tools-signaling.md) | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) window |
-| [`search_messages`](@/docs/mcp-tools-core.md#search-messages) | [core](@/docs/mcp-tools-core.md) | A page of substring matches across method/From/To/UA/body, with the total behind it |
+| [`search_messages`](@/docs/mcp-tools-core.md#search-messages) | [core](@/docs/mcp-tools-core.md) | A page of the messages that hold a substring or match a regular expression, with the total behind it |
 | [`security_findings`](@/docs/mcp-tools-security.md#security-findings) | [security](@/docs/mcp-tools-security.md) | Recent `scanner` / `fraud` / `digest` / `reg_flood` findings, plus the detectors this server runs |
 | [`server_capabilities`](@/docs/mcp-tools-server.md#server-capabilities) | [server](@/docs/mcp-tools-server.md) | sipnab version, the optional features this binary carries, and the libpcap it runs |
 | [`show_evidence`](@/docs/mcp-tools-captures.md#show-evidence) | [captures](@/docs/mcp-tools-captures.md) | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |

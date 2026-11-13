@@ -1831,8 +1831,8 @@ pub struct RtpStatsParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct SearchMessagesParams {
-    /// Substring to match against method, status, From, To, User-Agent, body.
-    /// Case-insensitive.
+    /// Substring to find, ASCII case ignored; a regular expression when
+    /// `regex` is true.
     pub query: String,
     /// Maximum hits to return (default 50, max 1000).
     pub limit: Option<u32>,
@@ -1844,6 +1844,12 @@ pub struct SearchMessagesParams {
     /// Past it whole rows are dropped and `truncated_by` is `bytes`.
     #[serde(default)]
     pub max_response_bytes: Option<u64>,
+    /// `true`: `query` is a Rust-syntax regex (no look-around, no
+    /// backreferences) over the raw message bytes, like `payload =~`.
+    /// Case-sensitive unless it starts `(?i)`. Limits: pattern 1024 bytes,
+    /// compiled 1000000 bytes, scan 5 s.
+    #[serde(default)]
+    pub regex: Option<bool>,
 }
 
 /// The tie-break half of a `search_messages` cursor: `<Call-ID>#<index>`.
@@ -1892,42 +1898,6 @@ fn message_cursor_start(raw: &str, call_id: &str) -> Result<usize, String> {
         .parse()
         .map_err(|e| format!("cursor message index '{index}' is not a number: {e}"))?;
     Ok(index.saturating_add(1))
-}
-
-/// Zero-allocation ASCII-case-insensitive substring test used by
-/// `search_messages`: is `needle` (already ASCII-lowercased by the caller)
-/// contained in `haystack`, folding ASCII upper-case bytes on the fly? This
-/// lets each SIP field be scanned in place — no per-message combined-string
-/// `format!` and no whole-message `to_lowercase` allocation.
-fn ascii_contains_ci(haystack: &str, needle: &[u8]) -> bool {
-    ascii_contains_ci_bytes(haystack.as_bytes(), needle)
-}
-
-/// The same scan over raw bytes.
-///
-/// `search_messages` reads the whole message, not a chosen set of fields. It
-/// used to look at method, status, `From`, `To`, `User-Agent` and body only, so
-/// anything in any other header was invisible: measured on the site's own
-/// sample capture, `search_messages` answered `total_matched: 0` for
-/// `Subscription-State`, `dialog-info` and `z9hG4bK-sub` while `list_dialogs`
-/// with `payload =~` found 3, 1 and 3 dialogs in the same store at the same
-/// instant.
-///
-/// An agent that reaches for a tool called "search", gets zero, and concludes
-/// the header is absent has been handed a wrong answer in the most convincing
-/// possible form. The filter DSL's `payload` field already scans `m.raw`; this
-/// scans the same bytes so the two surfaces cannot disagree about what the
-/// capture contains.
-fn ascii_contains_ci_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    if needle.len() > haystack.len() {
-        return false;
-    }
-    haystack
-        .windows(needle.len())
-        .any(|w| w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
 /// Parameters for `tail_dialogs`.
@@ -6342,14 +6312,17 @@ impl SipnabMcp {
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `query` is empty, or when `cursor`'s
-    /// timestamp half is not RFC 3339.
+    /// `invalid_params` (-32602) when `query` is empty, when `regex` is true
+    /// and `query` is too long, compiles too big or does not parse, when a
+    /// regex scan passes its time limit, or when `cursor`'s timestamp half is
+    /// not RFC 3339.
     #[tool(
         name = "search_messages",
         description = "Case-insensitive substring search over the WHOLE SIP \
                        message -- every header, the request line, and the body \
                        -- across all dialogs in the active store. Matches what \
-                       the filter DSL's `payload` field matches. Returns a page of \
+                       the filter DSL's `payload` field matches. `regex: true` \
+                       makes the query a case-sensitive regex. Returns a page of \
                        (call_id, message_index, snippet) hits carrying \
                        total_matched, a truncated flag, and next_cursor for \
                        the remaining matches.",
@@ -6360,13 +6333,31 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<SearchMessagesParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        if params.query.is_empty() {
-            return Err(errors::refuse_param(
-                Reason::InvalidValue,
-                "query",
-                "query must be non-empty".to_string(),
-            ));
-        }
+        let started = std::time::Instant::now();
+        self.search_page(&params, &mut || {
+            started.elapsed() >= super::search::REGEX_SCAN_BUDGET
+        })
+    }
+
+    /// One page of `search_messages`, with the scan's clock as an argument.
+    ///
+    /// `expired` answers true once a regex scan has used its time. The tool
+    /// passes the wall clock against
+    /// [`REGEX_SCAN_BUDGET`](super::search::REGEX_SCAN_BUDGET), and a test
+    /// passes a clock it controls.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an empty query, a regex query that is too
+    /// long, too big or malformed, a regex scan that passed its time limit,
+    /// or a `cursor` whose timestamp half is not RFC 3339.
+    fn search_page(
+        &self,
+        params: &SearchMessagesParams,
+        expired: &mut dyn FnMut() -> bool,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let matcher = super::search::search_matcher(&params.query, params.regex.unwrap_or(false))
+            .map_err(super::search::Refusal::into_error)?;
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
                 super::shape::parse_cursor(raw)
@@ -6375,15 +6366,6 @@ impl SipnabMcp {
             None => None,
         };
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        // Lower-case the needle ONCE (ASCII-fold, matching the TUI search
-        // paths in `tui::msg_raw` / `tui::stream_list`). Each message is then
-        // scanned field-by-field with a zero-allocation case-insensitive
-        // substring test, short-circuiting on the first match — avoiding the
-        // per-message `format!` (a whole-message String) plus a second
-        // whole-message `to_lowercase` allocation the old code paid on every
-        // message of every call.
-        let needle = params.query.to_ascii_lowercase();
-        let needle_bytes = needle.as_bytes();
         let page: (MessagePage, Vec<String>) = {
             // Capture lock first, then the stores — see `CaptureState`. The
             // identity stamped on this page must describe the capture the rows
@@ -6400,31 +6382,15 @@ impl SipnabMcp {
             // fenced snippet costs up to `--mcp-max-body-bytes` per row, so
             // that is done for the page alone: 9000 matches on the sample
             // capture would otherwise mean 36 MB of snippets to return 50.
-            let mut matched: Vec<(&crate::sip::dialog::SipDialog, usize, String)> = Vec::new();
-            for d in ds.iter() {
-                for (idx, msg) in d.messages.iter().enumerate() {
-                    // Cheap borrowed fields first; the body's lossy view (a
-                    // borrow for valid UTF-8) is scanned last and only if the
-                    // earlier fields miss.
-                    let status = msg.status_code.map(|s| s.to_string());
-                    let body = String::from_utf8_lossy(&msg.body);
-                    let hit = ascii_contains_ci(
-                        msg.method.as_ref().map(|m| m.as_str()).unwrap_or(""),
-                        needle_bytes,
-                    ) || ascii_contains_ci(status.as_deref().unwrap_or(""), needle_bytes)
-                        || ascii_contains_ci(msg.from_header().unwrap_or(""), needle_bytes)
-                        || ascii_contains_ci(msg.to_header().unwrap_or(""), needle_bytes)
-                        || ascii_contains_ci(msg.user_agent().unwrap_or(""), needle_bytes)
-                        || ascii_contains_ci(&body, needle_bytes)
-                        // The WHOLE message last: the borrowed fields above are
-                        // cheaper and hit most queries, and this is what makes
-                        // the answer agree with the filter DSL's `payload`.
-                        || ascii_contains_ci_bytes(&msg.raw, needle_bytes);
-                    if hit {
-                        matched.push((d, idx, hit_identity(&d.call_id, idx)));
-                    }
-                }
-            }
+            //
+            // The match itself, and the time limit of a regex scan, are in
+            // `super::search`.
+            let mut matched: Vec<(&crate::sip::dialog::SipDialog, usize, String)> =
+                super::search::scan(ds.iter(), &matcher, expired)
+                    .map_err(super::search::Refusal::into_error)?
+                    .into_iter()
+                    .map(|(d, idx)| (d, idx, hit_identity(&d.call_id, idx)))
+                    .collect();
             let total_matched = matched.len();
 
             // Sorted on the cursor's own key, and sorted BEFORE the cursor
@@ -13303,7 +13269,13 @@ mod tests {
             // 12,223, signaling 22,349, full 82,649). media held under its
             // 3_500 at 3,480, up from 3,112, by `reconcile_orphans`' cursor
             // and byte budget.
-            ("core", 12_500),
+            // core 12_500 -> 13_000 and full 92_500 -> 93_000 by `regex` on
+            // `search_messages` (MCP-SEARCH-REGEX): its entry grew 1,254 ->
+            // 1,586 bytes, +332 after the wording was trimmed from +424: the
+            // `regex` property with its limits +285, the tool description
+            // +54, the `query` description -7. Measured by this test: core
+            // 12,316 -> 12,648, full 92,295 -> 92,627.
+            ("core", 13_000),
             // 22_500 -> 24_000 and full 90_000 -> 91_500 by `th_mappings`,
             // the OpenSIPS topology-hiding mapping listing (1,102 bytes):
             // signaling measured 23,576 over 21 tools and full 91,074 over 77.
@@ -13372,7 +13344,9 @@ mod tests {
             // 5,976) and 1,102 (`th_mappings`, signaling 22,474 -> 23,576).
             // full 92_000 -> 92_500: `relay_stats_polled`, as the relay row
             // above says; full measured 92,136 over 79 tools.
-            ("full", 92_500),
+            // full 92_500 -> 93_000: `regex` on `search_messages`, as the
+            // core row above says; full measured 92,627 over 79 tools.
+            ("full", 93_000),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)
@@ -14867,7 +14841,390 @@ mod tests {
             query: query.to_string(),
             limit,
             cursor: None,
+            regex: None,
         }
+    }
+
+    /// A `search_messages` call with `regex: true`.
+    fn regex_params(pattern: &str, limit: Option<u32>) -> SearchMessagesParams {
+        SearchMessagesParams {
+            regex: Some(true),
+            ..search_params(pattern, limit)
+        }
+    }
+
+    /// The JSON page of a `search_page` call whose clock never runs out.
+    fn search_json(
+        server: &SipnabMcp,
+        params: &SearchMessagesParams,
+    ) -> Result<serde_json::Value, TestError> {
+        let result = server
+            .search_page(params, &mut || false)
+            .map_err(|e| format!("the search should succeed: {e:?}"))?;
+        Ok(serde_json::from_str(&text_of(&result)?)?)
+    }
+
+    /// The JSON error of a `search_page` call that must be refused.
+    fn search_error(
+        server: &SipnabMcp,
+        params: &SearchMessagesParams,
+        expired: bool,
+    ) -> Result<serde_json::Value, TestError> {
+        let err = server
+            .search_page(params, &mut || expired)
+            .err()
+            .ok_or_else(|| format!("{params:?} must be refused"))?;
+        Ok(serde_json::to_value(err)?)
+    }
+
+    /// The `search_messages` entry of the tool list.
+    fn search_tool() -> Result<rmcp::model::Tool, TestError> {
+        Ok(empty_server()
+            .tool_router
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "search_messages")
+            .ok_or("the router lists search_messages")?)
+    }
+
+    // success
+
+    #[test]
+    fn search_messages_regex_returns_the_page_shape() -> Result<(), TestError> {
+        let server = server_with_dialog("re1@x")?;
+        let v = search_json(&server, &regex_params("^INVITE sip:|^SIP/2\\.0 200 ", None))?;
+        assert_eq!(v["total_matched"], 2, "the INVITE and its 200 OK: {v}");
+        assert_eq!(v["returned"], 2, "both fit one page");
+        assert_eq!(v["truncated"], false, "nothing is left");
+        assert!(
+            v["next_cursor"].is_null(),
+            "the final page carries no cursor"
+        );
+        assert_eq!(v["hits"][0]["call_id"], "re1@x", "the hit names its dialog");
+        assert_eq!(v["hits"][1]["message_index"], 1, "the 200 OK is message 1");
+        assert!(
+            v["hits"][0]["snippet"]
+                .as_str()
+                .is_some_and(|s| s.contains("INVITE sip:bob")),
+            "the snippet is the raw message: {v}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_regex_selects_what_a_substring_cannot() -> Result<(), TestError> {
+        let server = server_with_dialog("re2@x")?;
+        let anchored = search_json(&server, &regex_params("^INVITE ", None))?;
+        assert_eq!(
+            anchored["total_matched"], 1,
+            "only the request starts with INVITE"
+        );
+        let substring = search_json(&server, &search_params("INVITE", None))?;
+        assert_eq!(
+            substring["total_matched"], 2,
+            "CSeq names INVITE in the 200 OK too"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_regex_pages_every_hit_exactly_once() -> Result<(), TestError> {
+        let server = server_with_simultaneous_dialogs(&["c@x", "a@x", "b@x"])?;
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        for _ in 0..10 {
+            let v = search_json(
+                &server,
+                &SearchMessagesParams {
+                    cursor: cursor.clone(),
+                    ..regex_params("(?m)^CSeq: 1 INVITE\r$", Some(2))
+                },
+            )?;
+            assert_eq!(
+                v["total_matched"], 6,
+                "the total describes the store on every page"
+            );
+            for hit in v["hits"].as_array().ok_or("hits")? {
+                seen.push(format!("{}#{}", hit["call_id"], hit["message_index"]));
+            }
+            match v["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+        }
+        let mut unique = seen.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(seen.len(), 6, "six hits over three pages: {seen:?}");
+        assert_eq!(unique.len(), 6, "no hit twice: {seen:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_schema_takes_an_optional_boolean_regex() -> Result<(), TestError> {
+        let tool = search_tool()?;
+        let schema = serde_json::Value::Object((*tool.input_schema).clone());
+        let regex = &schema["properties"]["regex"];
+        let types = regex["type"].to_string();
+        assert!(types.contains("boolean"), "regex is a boolean: {regex}");
+        let required = schema["required"].to_string();
+        assert!(!required.contains("regex"), "regex is optional: {required}");
+        assert!(
+            required.contains("query"),
+            "query stays required: {required}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_schema_states_the_regex_limits() -> Result<(), TestError> {
+        use crate::mcp::search::{MAX_REGEX_QUERY_BYTES, REGEX_SCAN_BUDGET};
+        let tool = search_tool()?;
+        let schema = serde_json::Value::Object((*tool.input_schema).clone());
+        let text = schema["properties"]["regex"]["description"]
+            .as_str()
+            .ok_or("regex carries a description")?
+            .to_string();
+        for part in [
+            format!("{MAX_REGEX_QUERY_BYTES} bytes"),
+            format!("{} bytes", crate::sip::dsl::REGEX_SIZE_LIMIT),
+            format!("{} s", REGEX_SCAN_BUDGET.as_secs()),
+            "payload =~".to_string(),
+            "(?i)".to_string(),
+        ] {
+            assert!(
+                text.contains(&part),
+                "the regex description lacks {part:?}: {text}"
+            );
+        }
+        let description = tool.description.as_deref().unwrap_or_default().to_string();
+        assert!(
+            description.contains("regex: true"),
+            "the tool description names the option: {description}"
+        );
+        Ok(())
+    }
+
+    // failure
+
+    #[test]
+    fn search_messages_refuses_a_malformed_regex() -> Result<(), TestError> {
+        let json = search_error(
+            &server_with_dialog("re3@x")?,
+            &regex_params("(INVITE", None),
+            false,
+        )?;
+        assert_eq!(json["code"], -32602, "{json}");
+        assert_eq!(json["data"]["param"], "query", "{json}");
+        assert_eq!(json["data"]["reason"], "invalid_value", "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("not a valid regular expression")),
+            "{json}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_refuses_a_regex_past_the_length_limit() -> Result<(), TestError> {
+        let json = search_error(
+            &empty_server(),
+            &regex_params(&"a|".repeat(600), None),
+            false,
+        )?;
+        assert_eq!(json["code"], -32602, "{json}");
+        assert_eq!(json["data"]["reason"], "limit_exceeded", "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("query is 1200 bytes")),
+            "{json}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_refuses_a_regex_past_the_size_limit() -> Result<(), TestError> {
+        let json = search_error(
+            &empty_server(),
+            &regex_params("(?:\\w{50}){50}", None),
+            false,
+        )?;
+        assert_eq!(json["data"]["reason"], "limit_exceeded", "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("compiles to more than 1000000")),
+            "{json}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_refuses_a_regex_scan_past_its_time() -> Result<(), TestError> {
+        let json = search_error(
+            &server_with_dialog("re4@x")?,
+            &regex_params("INVITE", None),
+            true,
+        )?;
+        assert_eq!(json["code"], -32602, "{json}");
+        assert_eq!(json["data"]["param"], "query", "{json}");
+        assert_eq!(json["data"]["reason"], "limit_exceeded", "{json}");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("5 s limit after 0 messages")),
+            "{json}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_refuses_an_empty_regex() -> Result<(), TestError> {
+        let json = search_error(&empty_server(), &regex_params("", None), false)?;
+        assert_eq!(json["message"], "query must be non-empty", "{json}");
+        assert_eq!(json["data"]["reason"], "invalid_value", "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_refuses_a_regex_that_is_not_a_boolean() -> Result<(), TestError> {
+        for bad in [
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::json!(["a"]),
+        ] {
+            let args = serde_json::json!({"query": "INVITE", "regex": bad});
+            let parsed = serde_json::from_value::<SearchMessagesParams>(args.clone());
+            assert!(parsed.is_err(), "{args} was accepted as {parsed:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_refuses_a_bad_regex_before_it_reads_the_cursor() -> Result<(), TestError> {
+        let params = SearchMessagesParams {
+            cursor: Some("yesterday|x#0000000000".to_string()),
+            ..regex_params("[a-", None)
+        };
+        let json = search_error(&empty_server(), &params, false)?;
+        assert_eq!(
+            json["data"]["param"], "query",
+            "the first refusal names query: {json}"
+        );
+        Ok(())
+    }
+
+    // edge
+
+    #[test]
+    fn search_messages_regex_false_is_the_same_as_absent() -> Result<(), TestError> {
+        let server = server_with_dialog("re5@x")?;
+        let absent = search_json(&server, &search_params("alice", None))?;
+        let off = search_json(
+            &server,
+            &SearchMessagesParams {
+                regex: Some(false),
+                ..search_params("alice", None)
+            },
+        )?;
+        assert_eq!(off, absent, "regex false changes nothing");
+        assert_eq!(
+            absent["total_matched"], 2,
+            "From names Alice in both messages"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_regex_null_and_absent_deserialize_alike() -> Result<(), TestError> {
+        let null: SearchMessagesParams =
+            serde_json::from_value(serde_json::json!({"query": "a", "regex": null}))?;
+        let absent: SearchMessagesParams =
+            serde_json::from_value(serde_json::json!({"query": "a"}))?;
+        assert_eq!(null.regex, None, "null is no choice");
+        assert_eq!(absent.regex, None, "absent is no choice");
+        let on: SearchMessagesParams =
+            serde_json::from_value(serde_json::json!({"query": "a", "regex": true}))?;
+        assert_eq!(on.regex, Some(true), "true is read");
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_substring_ignores_an_expired_clock() -> Result<(), TestError> {
+        let server = server_with_dialog("re6@x")?;
+        let result = server.search_page(&search_params("INVITE", None), &mut || true);
+        assert!(
+            result.is_ok(),
+            "a substring search has no time limit: {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_regex_on_an_empty_store_ignores_the_clock() -> Result<(), TestError> {
+        let result = empty_server()
+            .search_page(&regex_params("INVITE", None), &mut || true)
+            .map_err(|e| format!("nothing was scanned, so nothing is refused: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        assert_eq!(v["total_matched"], 0, "{v}");
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_regex_treats_a_metacharacter_as_one() -> Result<(), TestError> {
+        let server = server_with_dialog("re7@x")?;
+        let as_regex = search_json(&server, &regex_params("Test.A/1", None))?;
+        assert_eq!(
+            as_regex["total_matched"], 1,
+            "as a regex, . is the U of TestUA"
+        );
+        let literal = search_json(&server, &search_params("Test.A/1", None))?;
+        assert_eq!(
+            literal["total_matched"], 0,
+            "no literal `Test.A/1` in the capture"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn search_messages_regex_is_case_sensitive() -> Result<(), TestError> {
+        let server = server_with_dialog("re8@x")?;
+        assert_eq!(
+            search_json(&server, &regex_params("ALICE", None))?["total_matched"],
+            0,
+            "the capture writes alice in lower case"
+        );
+        assert_eq!(
+            search_json(&server, &regex_params("(?i)ALICE@", None))?["total_matched"],
+            2,
+            "(?i) ignores case"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn search_messages_tool_runs_a_regex_within_its_time() -> Result<(), TestError> {
+        // The tool's own clock: two messages scan in far less than the limit.
+        let server = server_with_dialog("re9@x")?;
+        // If this thread does not run for the whole limit, the time refusal is
+        // the right answer, and it too shows that the tool passed `regex` on:
+        // a substring search has no time limit.
+        match server
+            .search_messages(Parameters(regex_params("^SIP/2\\.0 \\d{3} OK", None)))
+            .await
+        {
+            Ok(result) => {
+                let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+                assert_eq!(v["total_matched"], 1, "the 200 OK: {v}");
+            }
+            Err(e) => {
+                let json = serde_json::to_value(e)?;
+                assert_eq!(json["data"]["reason"], "limit_exceeded", "{json}");
+            }
+        }
+        Ok(())
     }
 
     /// An empty query errors with invalid_params (-32602).
@@ -14991,6 +15348,7 @@ mod tests {
                     query: "INVITE".to_string(),
                     limit: Some(1),
                     cursor: cursor.clone(),
+                    regex: None,
                 }))
                 .await
                 .map_err(|e| format!("search should succeed: {e:?}"))?;
@@ -15036,6 +15394,7 @@ mod tests {
                 query: "INVITE".to_string(),
                 limit: None,
                 cursor: Some("yesterday|srch4@x#0000000000".to_string()),
+                regex: None,
             }))
             .await
             .err()
@@ -15063,20 +15422,6 @@ mod tests {
             hit_identity("aaa@x", 999) < hit_identity("aab@x", 0),
             "the Call-ID is the primary key within one instant"
         );
-        Ok(())
-    }
-
-    // ── ascii_contains_ci ────────────────────────────────────────────
-
-    /// The zero-allocation matcher folds ASCII case, honors substrings, and
-    /// rejects a needle longer than the haystack (empty needle always hits).
-    #[test]
-    fn ascii_contains_ci_folds_case_and_bounds() -> Result<(), TestError> {
-        assert!(ascii_contains_ci("INVITE", b"invite"));
-        assert!(ascii_contains_ci("User-Agent: TestUA/1.0", b"testua"));
-        assert!(ascii_contains_ci("anything", b""));
-        assert!(!ascii_contains_ci("abc", b"abcd"));
-        assert!(!ascii_contains_ci("hello", b"xyz"));
         Ok(())
     }
 
@@ -15108,38 +15453,15 @@ mod tests {
             b"Event".as_slice(),
         ] {
             assert!(
-                ascii_contains_ci_bytes(msg, needle),
+                crate::mcp::search::contains_ci(msg, needle),
                 "the raw scan missed {:?}, which is in the message",
                 String::from_utf8_lossy(needle)
             );
         }
         assert!(
-            !ascii_contains_ci_bytes(msg, b"terminated"),
+            !crate::mcp::search::contains_ci(msg, b"terminated"),
             "the raw scan reports a value the message does not carry"
         );
-        Ok(())
-    }
-
-    /// The byte scan and the string scan agree.
-    ///
-    /// `ascii_contains_ci` delegates to the byte version now, so a divergence
-    /// would mean the two surfaces answer differently for the same text.
-    #[test]
-    fn the_byte_scan_and_the_string_scan_agree() -> Result<(), TestError> {
-        for (hay, needle) in [
-            ("INVITE", b"invite".as_slice()),
-            ("User-Agent: TestUA/1.0", b"testua".as_slice()),
-            ("anything", b"".as_slice()),
-            ("abc", b"abcd".as_slice()),
-            ("hello", b"xyz".as_slice()),
-        ] {
-            assert_eq!(
-                ascii_contains_ci(hay, needle),
-                ascii_contains_ci_bytes(hay.as_bytes(), needle),
-                "the two scans disagree on {hay:?} / {:?}",
-                String::from_utf8_lossy(needle)
-            );
-        }
         Ok(())
     }
 
@@ -20265,6 +20587,7 @@ mod tests {
                 limit: Some(100),
                 cursor,
                 max_response_bytes: budget,
+                regex: None,
             }))
         };
         let whole = search(None, None).await.map_err(|e| format!("{e:?}"))?;

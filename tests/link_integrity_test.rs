@@ -1852,7 +1852,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2655 -> 2657 (install steps run again, +2): opensips.md links its source
     // build from "Install the 4.0 packages" and from its troubleshooting entry
     // for a machine the packages are not built for.
-    const EXPECTED_WIKI_LINKS: usize = 2657;
+    // 2657 -> 2662 (MCP-SEARCH-REGEX, +5): mcp-tools-core.md links its own
+    // "Regular expressions" heading and the how-to in mcp.md (+2); the how-to
+    // links the `search_messages` reference, "See it work" and
+    // filter-dsl.md (+3).
+    const EXPECTED_WIKI_LINKS: usize = 2662;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
