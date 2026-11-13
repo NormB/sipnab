@@ -1852,12 +1852,15 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2655 -> 2657 (install steps run again, +2): opensips.md links its source
     // build from "Install the 4.0 packages" and from its troubleshooting entry
     // for a machine the packages are not built for.
-    // 2657 -> 2660 (DOCS-HOWTO-GAP, ninth batch, +3): the prerequisites of
+    // 2657 -> 2659 (NOAUDIO-PACKAGES-LACK-VCON, +2): install.md's .deb and
+    // .rpm sections link the vCon page where they say the -noaudio package
+    // carries the export.
+    // 2659 -> 2662 (DOCS-HOWTO-GAP, ninth batch, +3): the prerequisites of
     // homer.md, prometheus.md and tfps-sipnab.md, one link each.
-    // 2660 -> 2666 (DOCS-HOWTO-GAP, last batch, +6): the prerequisites and
+    // 2662 -> 2668 (DOCS-HOWTO-GAP, last batch, +6): the prerequisites and
     // the check of homer-sipnab.md, prometheus-sipnab.md and
     // fail2ban-sipnab.md, two links each.
-    const EXPECTED_WIKI_LINKS: usize = 2666;
+    const EXPECTED_WIKI_LINKS: usize = 2668;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

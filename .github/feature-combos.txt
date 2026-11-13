@@ -84,10 +84,13 @@ archive
 # uses.
 g729
 # The sets release.yml publishes: the static musl tarballs, and the gnu
-# `-noaudio` .deb/.rpm with `bpf` added.
+# `-noaudio` .deb/.rpm, which add `vcon` and `bpf` to that set.
 # ci_compiles_every_reduced_feature_set_the_release_publishes keeps these
-# equal to what release.yml computes.
+# equal to what release.yml computes. The set with `bpf` and no `vcon` is
+# what the `-noaudio` packages were built with up to 0.5.251; it stays
+# checked (scripts/tests/test_feature_matrix_groups.py lets none go).
 native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729
 native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729,bpf
+native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729,vcon,bpf
 # The library for wasm32.
 wasm needs=wasm32

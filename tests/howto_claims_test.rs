@@ -2856,44 +2856,179 @@ const G711_CALL_ID: &str = "1-1966@10.0.2.20";
 /// The heading of the troubleshooting table of the vCon page.
 const VCON_TROUBLESHOOT: &str = "## When an export does not work";
 
-/// The feature list of the `-noaudio` packages and the static musl build, as
-/// the release workflow sets it.
-fn noaudio_features() -> Result<Vec<&'static str>, TestError> {
-    let line = RELEASE_WORKFLOW
+/// The value the release workflow's feature step gives the shell variable
+/// `name`, as written (a `${static_set}` reference is left in place).
+fn workflow_set(name: &str) -> Result<&'static str, TestError> {
+    let prefix = format!("{name}=\"");
+    let value = RELEASE_WORKFLOW
         .lines()
         .map(str::trim)
-        .find_map(|line| line.strip_prefix("noaudio_set=\""))
-        .ok_or("the release workflow no longer sets noaudio_set")?;
-    Ok(line.trim_end_matches('"').split(',').collect())
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+        .ok_or_else(|| format!("the release workflow no longer sets {name}"))?;
+    Ok(value.trim_end_matches('"'))
+}
+
+/// The feature list of the static musl build, as the release workflow sets
+/// it.
+fn static_features() -> Result<Vec<&'static str>, TestError> {
+    let list: Vec<&str> = workflow_set("static_set")?.split(',').collect();
+    assert!(
+        list.iter().all(|name| !name.contains('$')),
+        "static_set is a plain list: {list:?}"
+    );
+    Ok(list)
+}
+
+/// The feature list of the gnu `-noaudio` packages, as the release workflow
+/// sets it: the static list, by reference, and what the packages add to it.
+fn noaudio_features() -> Result<Vec<&'static str>, TestError> {
+    let mut list = Vec::new();
+    for name in workflow_set("noaudio_set")?.split(',') {
+        if name == "${static_set}" {
+            list.extend(static_features()?);
+        } else {
+            assert!(
+                !name.contains('$'),
+                "noaudio_set refers to a variable this test does not read: {name}"
+            );
+            list.push(name);
+        }
+    }
+    Ok(list)
+}
+
+/// The release in which the `-noaudio` packages first carry `vcon`, as the
+/// pages state it.
+const NOAUDIO_VCON_SINCE: &str = "0.5.253";
+
+/// The sentence the vCon pages use for it.
+fn noaudio_carry_it_since() -> String {
+    format!("The `-noaudio` packages carry it from {NOAUDIO_VCON_SINCE}")
+}
+
+/// The version of the `## [x.y.z]` CHANGELOG section that holds `entry`, or
+/// `None` while the entry sits in `[Unreleased]`.
+fn changelog_section_of(changelog: &str, entry: &str) -> Result<Option<String>, TestError> {
+    let mut heading = None;
+    for line in changelog.lines() {
+        if let Some(rest) = line.strip_prefix("## [") {
+            heading = rest.split(']').next();
+        } else if line.contains(entry) {
+            let name = heading.ok_or("the entry sits above every release heading")?;
+            return Ok((name != "Unreleased").then(|| name.to_string()));
+        }
+    }
+    Err(format!("CHANGELOG.md has no entry that says {entry:?}").into())
+}
+
+/// The patch release after `version`.
+fn next_patch(version: &str) -> Result<String, TestError> {
+    let (head, patch) = version.rsplit_once('.').ok_or("a version has dots")?;
+    Ok(format!("{head}.{}", patch.parse::<u32>()? + 1))
+}
+
+/// The release the pages name for the `-noaudio` packages' vCon export is the
+/// release that ships it: the CHANGELOG section that holds the entry, or,
+/// while the entry is unreleased, the patch release after the manifest's
+/// version. A release cut between writing the pages and landing them fails
+/// here until the number follows.
+#[test]
+fn the_noaudio_vcon_release_is_the_one_that_ships_the_change() -> Result<(), TestError> {
+    let entry = "The `-noaudio` `.deb` and `.rpm` packages carry the vCon export";
+    let version = MANIFEST
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .ok_or("Cargo.toml has no version line")?
+        .trim_end_matches('"');
+    let ships = match changelog_section_of(include_str!("../CHANGELOG.md"), entry)? {
+        Some(released) => released,
+        None => next_patch(version)?,
+    };
+    assert_eq!(
+        NOAUDIO_VCON_SINCE, ships,
+        "the pages say the -noaudio packages carry vcon from {NOAUDIO_VCON_SINCE}; \
+         the CHANGELOG and the manifest ({version}) put the change in {ships}"
+    );
+    Ok(())
+}
+
+/// The reading of the CHANGELOG that the release check rests on: released,
+/// unreleased, absent, and the patch arithmetic.
+#[test]
+fn the_changelog_section_reader_tells_released_from_unreleased() -> Result<(), TestError> {
+    let log = "# Changelog\n\n## [Unreleased]\n\n### Changed\n\n- New thing.\n\n\
+               ## [1.2.10] - 2026-01-02\n\n### Fixed\n\n- Old thing, fixed.\n\n\
+               ## [1.2.9] - 2026-01-01\n\n- Older thing.\n";
+    assert_eq!(
+        changelog_section_of(log, "New thing")?,
+        None,
+        "an entry under [Unreleased]"
+    );
+    assert_eq!(
+        changelog_section_of(log, "Old thing")?,
+        Some("1.2.10".to_string()),
+        "an entry under a released heading"
+    );
+    assert_eq!(
+        changelog_section_of(log, "Older thing")?,
+        Some("1.2.9".to_string()),
+        "an entry under the last heading"
+    );
+    assert!(
+        changelog_section_of(log, "No such thing").is_err(),
+        "an entry the file does not hold"
+    );
+    assert!(
+        changelog_section_of("- Stray thing.\n## [1.0.0]\n", "Stray thing").is_err(),
+        "an entry above every heading"
+    );
+    assert_eq!(
+        next_patch("1.2.9")?,
+        "1.2.10",
+        "the patch carries into two digits"
+    );
+    assert_eq!(next_patch("0.5.251")?, "0.5.252", "the next patch release");
+    assert!(next_patch("12").is_err(), "a version without a dot");
+    assert!(next_patch("1.2.x").is_err(), "a patch that is not a number");
+    Ok(())
 }
 
 /// The prerequisites of the vCon page name the feature, the packages that
 /// carry it, the flag for audio and the other system. The package statement
-/// follows the release workflow and the manifest: the `full` set holds
-/// `vcon`, and the set of the `-noaudio` packages and the musl build does not.
+/// follows the release workflow and the manifest: the `full` set and the set
+/// of the `-noaudio` packages hold `vcon`, and the set of the musl build does
+/// not.
 #[test]
 fn the_vcon_prerequisites_name_the_feature_the_packages_and_the_other_system()
 -> Result<(), TestError> {
     let needs = section(VCON, "## Before you start")?;
+    let since = noaudio_carry_it_since();
     for named in [
         "`vcon` feature",
-        "without a `-noaudio` suffix carry it",
-        "The `-noaudio` packages and the static musl build do not carry it",
+        "The release packages carry it",
+        since.as_str(),
+        "The static musl build does not carry it",
         "`--retain-audio`",
         "`--report`",
         "other system",
     ] {
         page_says(needs, named, "vcon");
     }
-    let reduced = noaudio_features()?;
+    let noaudio = noaudio_features()?;
+    assert!(
+        noaudio.contains(&"vcon"),
+        "the page says the -noaudio packages carry vcon; the workflow builds them with {noaudio:?}"
+    );
+    let reduced = static_features()?;
     assert!(
         !reduced.contains(&"vcon"),
-        "the page says the -noaudio packages lack vcon; the workflow builds them with {reduced:?}"
+        "the page says the musl build lacks vcon; the workflow builds it with {reduced:?}"
     );
     for carried in ["api", "mcp"] {
         assert!(
-            reduced.contains(&carried),
-            "the page says every release package carries {carried}; the reduced set is {reduced:?}"
+            reduced.contains(&carried) && noaudio.contains(&carried),
+            "the page says every release package carries {carried}; the reduced sets are \
+             {reduced:?} and {noaudio:?}"
         );
     }
     let full = MANIFEST
@@ -2923,17 +3058,108 @@ fn no_vcon_page_says_every_release_package_carries_the_feature() {
         ] {
             assert!(
                 !text.contains(wrong),
-                "{page} still says {wrong:?}, which the -noaudio packages contradict"
+                "{page} still says {wrong:?}, which the static musl build contradicts"
             );
         }
     }
 }
 
-/// The features of the `full` set that the `-noaudio` packages and the
-/// static musl build lack, each with the words the pages use for it. A
-/// feature that joins or leaves the difference fails here until the pages
-/// and this table follow.
-fn left_out_of_the_reduced_builds() -> Result<Vec<&'static str>, TestError> {
+/// The vCon page says what an export from a `-noaudio` package holds and
+/// what to do with an older one: the Opus section names the WAV recordings
+/// and the refused `audio_format`, and the troubleshooting row for the
+/// missing feature names the release from which a `-noaudio` package has it.
+#[test]
+fn the_vcon_page_says_what_a_noaudio_package_exports() -> Result<(), TestError> {
+    let noaudio = noaudio_features()?;
+    assert!(
+        noaudio.contains(&"vcon") && !noaudio.contains(&"opus"),
+        "the page says a -noaudio package exports vCons with WAV recordings and no Ogg \
+         Opus; the workflow builds it with {noaudio:?}"
+    );
+    for said in [
+        "- The `-noaudio` packages carry the vCon export without `opus`: \
+         their recordings are WAV, and they refuse `audio_format = \"opus\"`.",
+        "- The static musl tarballs carry neither. They have no vCon export.",
+    ] {
+        page_says(VCON, said, "vcon");
+    }
+    let rows = table_rows(
+        VCON,
+        "--export-vcon needs the 'vcon' Cargo feature, which this build does not carry.",
+    );
+    assert_eq!(
+        rows.len(),
+        1,
+        "one troubleshooting row for the missing feature: {rows:?}"
+    );
+    let fix = format!(
+        "A `-noaudio` package older than {NOAUDIO_VCON_SINCE} and the static musl tarball \
+         do not have it. Install a current release package"
+    );
+    for row in rows {
+        assert!(
+            row.contains(fix.as_str())
+                && row.contains("or build from source with the `vcon` feature"),
+            "the row does not send the reader to a package that has the feature: {row}"
+        );
+    }
+    Ok(())
+}
+
+/// No page still says that the `-noaudio` packages lack the vCon export, or
+/// sends a reader away from them to get it. Each phrase stood on a page
+/// before the packages gained the feature.
+#[test]
+fn no_page_says_the_noaudio_packages_lack_the_vcon_export() {
+    for (page, text) in [
+        ("docs/vcon.md", VCON),
+        ("docs/vcon-store.md", VCON_STORE),
+        ("docs/vcon-sipnab.md", VCON_SIPNAB),
+        ("docs/install.md", INSTALL),
+        ("README.md", include_str!("../README.md")),
+        (
+            "website/content/features.md",
+            include_str!("../website/content/features.md"),
+        ),
+        (
+            "website/templates/standards.html",
+            include_str!("../website/templates/standards.html"),
+        ),
+        (
+            "website/templates/index.html",
+            include_str!("../website/templates/index.html"),
+        ),
+        ("Cargo.toml", MANIFEST),
+    ] {
+        for wrong in [
+            "without a `-noaudio` suffix carry it",
+            "without the `-noaudio` suffix",
+            "The `-noaudio` packages and the static musl build do not carry it",
+            "The `-noaudio` packages do not carry it",
+            "The `-noaudio` release packages and the static musl",
+            "The static musl tarballs and the `-noaudio` packages do not. They have no vCon export",
+            "The static musl builds and the gnu `-noaudio` packages do not.",
+            "which the static musl builds\n    and the gnu `-noaudio` packages do not carry",
+            "the static musl builds and the gnu `-noaudio` packages do not.",
+            "the gnu no-audio packages do not carry it",
+            "WASM plugins, vCon export, Ogg Opus recordings or [fleet history store]",
+            "WASM plugins,\n    vCon export, Ogg Opus recordings and the fleet history store",
+            "It also lacks WASM plugins, vCon export",
+            "noaudio_set leaves out `vcon`",
+        ] {
+            assert!(
+                !text.contains(wrong),
+                "{page} still says {wrong:?}; the -noaudio packages carry vcon"
+            );
+        }
+    }
+}
+
+/// The features of the `full` set that the build with the feature list
+/// `reduced` lacks, each with the words the pages use for it. A feature that
+/// joins or leaves the difference fails here until the pages and `expected`
+/// follow.
+fn left_out_of(reduced: &[&str], expected: &[&str]) -> Result<Vec<&'static str>, TestError> {
     let words = [
         ("audio", "live audio playback"),
         ("plugins", "WASM plugins"),
@@ -2941,7 +3167,6 @@ fn left_out_of_the_reduced_builds() -> Result<Vec<&'static str>, TestError> {
         ("opus", "Ogg Opus"),
         ("fleet-store", "fleet history store"),
     ];
-    let reduced = noaudio_features()?;
     let full = MANIFEST
         .lines()
         .find(|line| line.starts_with("full = ["))
@@ -2964,11 +3189,58 @@ fn left_out_of_the_reduced_builds() -> Result<Vec<&'static str>, TestError> {
         named.push(*phrase);
     }
     assert_eq!(
-        named.len(),
-        words.len(),
-        "the reduced builds lack {lacking:?}; the pages name {words:?}"
+        lacking, expected,
+        "a reduced build lacks {lacking:?} of `full`; the pages were written for {expected:?}"
     );
     Ok(named)
+}
+
+/// What the pages say the static musl build lacks.
+fn left_out_of_the_musl_build() -> Result<Vec<&'static str>, TestError> {
+    left_out_of(
+        &static_features()?,
+        &["audio", "plugins", "vcon", "opus", "fleet-store"],
+    )
+}
+
+/// What the pages say the gnu `-noaudio` packages lack: the musl list
+/// without the vCon export.
+fn left_out_of_the_noaudio_packages() -> Result<Vec<&'static str>, TestError> {
+    left_out_of(
+        &noaudio_features()?,
+        &["audio", "plugins", "opus", "fleet-store"],
+    )
+}
+
+/// The two lists differ by the vCon export alone, and each follows the order
+/// of `full`.
+#[test]
+fn the_noaudio_packages_lack_what_the_musl_build_lacks_less_the_vcon_export()
+-> Result<(), TestError> {
+    let musl = left_out_of_the_musl_build()?;
+    let noaudio = left_out_of_the_noaudio_packages()?;
+    assert_eq!(
+        musl,
+        [
+            "live audio playback",
+            "WASM plugins",
+            "vCon export",
+            "Ogg Opus",
+            "fleet history store"
+        ],
+        "what the pages say the musl build lacks"
+    );
+    assert_eq!(
+        noaudio,
+        [
+            "live audio playback",
+            "WASM plugins",
+            "Ogg Opus",
+            "fleet history store"
+        ],
+        "what the pages say the -noaudio packages lack"
+    );
+    Ok(())
 }
 
 /// The rows of a Markdown table in `page` whose first cell holds `marker`.
@@ -2989,13 +3261,30 @@ fn table_rows<'a>(page: &'a str, marker: &str) -> Vec<&'a str> {
 /// workflow adds to the gnu targets alone.
 #[test]
 fn the_install_table_names_what_each_reduced_build_leaves_out() -> Result<(), TestError> {
-    let phrases = left_out_of_the_reduced_builds()?;
     let noaudio = table_rows(INSTALL, "-noaudio.");
     assert_eq!(noaudio.len(), 4, "two .deb and two .rpm rows: {noaudio:?}");
     let musl = table_rows(INSTALL, "-unknown-linux-musl.tar.gz");
     assert_eq!(musl.len(), 2, "two musl rows: {musl:?}");
-    for row in noaudio.iter().chain(musl.iter()) {
-        for phrase in &phrases {
+    let carries = format!("; carries vCon export from {NOAUDIO_VCON_SINCE}, with WAV recordings");
+    for row in &noaudio {
+        for phrase in left_out_of_the_noaudio_packages()? {
+            assert!(
+                row.contains(phrase),
+                "the row does not say the package lacks {phrase}: {row}"
+            );
+        }
+        assert!(
+            row.contains(carries.as_str()),
+            "the row does not say {carries:?}: {row}"
+        );
+        assert_eq!(
+            row.matches("vCon export").count(),
+            1,
+            "the row names the vCon export once, as carried: {row}"
+        );
+    }
+    for row in &musl {
+        for phrase in left_out_of_the_musl_build()? {
             assert!(
                 row.contains(phrase),
                 "the row does not say the build lacks {phrase}: {row}"
@@ -3021,7 +3310,7 @@ fn the_install_table_names_what_each_reduced_build_leaves_out() -> Result<(), Te
 /// build carries the vCon export.
 #[test]
 fn no_page_says_a_reduced_build_differs_by_audio_alone() -> Result<(), TestError> {
-    let phrases = left_out_of_the_reduced_builds()?;
+    let phrases = left_out_of_the_noaudio_packages()?;
     let readme = include_str!("../README.md");
     let standards = include_str!("../website/templates/standards.html");
     for (name, text, wrong) in [
@@ -3083,6 +3372,15 @@ fn no_page_says_a_reduced_build_differs_by_audio_alone() -> Result<(), TestError
                 "{section_heading} does not say the -noaudio package lacks {phrase}"
             );
         }
+        let carries = format!("carries the vCon export from {NOAUDIO_VCON_SINCE}");
+        assert!(
+            text.contains(carries.as_str()),
+            "{section_heading} does not say the -noaudio package {carries}"
+        );
+        assert!(
+            text.contains("WAV recordings"),
+            "{section_heading} does not say which recordings a -noaudio package's vCon holds"
+        );
     }
     let said =
         "no TUI audio, WASM plugins, vCon export, eBPF uprobe backend or fleet history store";
@@ -3530,13 +3828,14 @@ fn the_store_prerequisites_name_the_feature_the_token_and_the_other_system() -> 
     let needs = section(VCON_STORE, "## Before you start")?;
     for named in [
         "`vcon` feature",
-        "`-noaudio` release packages and the static musl",
+        "The static musl build does not carry it",
         "other system",
         "`$VCON_STORE_TOKEN`",
         "`api.vcon.store`",
     ] {
         page_says(needs, named, "vcon-store");
     }
+    page_says(needs, &noaudio_carry_it_since(), "vcon-store");
     Ok(())
 }
 
@@ -3812,13 +4111,14 @@ fn the_vcon_sipnab_prerequisites_say_what_changes_on_the_other_system() -> Resul
         "an ingress list named `sipnab`",
         "`vcons_observed`",
         "`conserver` and `api`",
-        "without the `-noaudio` suffix",
+        "**A sipnab release package.**",
         "`sipnab_<version>_amd64.deb`",
         "`sipnab_<version>_arm64.deb`",
         "No change on the SIP server",
     ] {
         page_says(needs, named, "vcon-sipnab");
     }
+    page_says(needs, &noaudio_carry_it_since(), "vcon-sipnab");
     // The first step is where the page makes the change it announces.
     let step = from_heading(VCON_SIPNAB, "## Add an ingress list and a chain for sipnab")?;
     for made in [
@@ -4569,11 +4869,12 @@ fn the_rtpengine_prerequisites_name_the_feature_and_the_other_system() -> Result
     ] {
         page_says(&needs, named, "rtpengine");
     }
-    // The release workflow builds two sets: `full`, and the set of the
-    // `-noaudio` packages and the musl build.
+    // The release workflow builds three sets: `full`, the set of the musl
+    // build, and the set of the `-noaudio` packages, which holds the musl
+    // set by reference.
     let reduced = noaudio_features()?;
     assert!(
-        reduced.contains(&"hep"),
+        reduced.contains(&"hep") && static_features()?.contains(&"hep"),
         "the page says every release binary has hep; the workflow builds the -noaudio set \
          with {reduced:?}"
     );
