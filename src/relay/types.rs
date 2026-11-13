@@ -85,6 +85,74 @@ pub enum ControlReply {
     },
 }
 
+/// What a reply of the wrong kind did, with the kind that was asked for. The
+/// one place these words are written: [`ReplyKind::wrong_kind_reason`] and
+/// [`ReplyKind::wrong_kind_phrase`] are built from it.
+macro_rules! wrong_kind_phrase {
+    ($asked:literal) => {
+        concat!("answered with something other than ", $asked)
+    };
+}
+
+/// The kind of answer a question to a relay asks for.
+///
+/// A reply of another kind arrived and cannot be the answer, so every surface
+/// calls it `suspect`, for the reason [`ReplyKind::wrong_kind_reason`] gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyKind {
+    /// A `list` asks for the Call-IDs the relay holds.
+    CallList,
+    /// A `query` asks for one call as the relay holds it.
+    CallView,
+    /// A statistics question asks for the relay's counters.
+    Statistics,
+}
+
+impl ReplyKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [Self; 3] = [Self::CallList, Self::CallView, Self::Statistics];
+
+    /// Why a reply of another kind is `suspect`, in the words every surface
+    /// uses for it.
+    #[must_use]
+    pub fn wrong_kind_reason(self) -> &'static str {
+        match self {
+            Self::CallList => concat!("the relay ", wrong_kind_phrase!("a call list")),
+            Self::CallView => concat!("the relay ", wrong_kind_phrase!("a call view")),
+            Self::Statistics => concat!("the relay ", wrong_kind_phrase!("statistics")),
+        }
+    }
+
+    /// The same reason without its subject, for a line that names the relay
+    /// itself: `<relay> answered with something other than <the kind>`.
+    #[must_use]
+    pub fn wrong_kind_phrase(self) -> &'static str {
+        match self {
+            Self::CallList => wrong_kind_phrase!("a call list"),
+            Self::CallView => wrong_kind_phrase!("a call view"),
+            Self::Statistics => wrong_kind_phrase!("statistics"),
+        }
+    }
+}
+
+impl ControlReply {
+    /// Why this reply cannot answer a question that asked for `asked`.
+    ///
+    /// `None` when the reply is of that kind, or is a refusal: a relay can
+    /// decline any question, and its refusal is its answer. Otherwise the
+    /// reason the reply is `suspect`.
+    #[must_use]
+    pub fn wrong_kind_for(&self, asked: ReplyKind) -> Option<&'static str> {
+        let kind = match self {
+            Self::Calls(_) => ReplyKind::CallList,
+            Self::Call(_) => ReplyKind::CallView,
+            Self::Statistics(_) => ReplyKind::Statistics,
+            Self::Refused { .. } => return None,
+        };
+        (kind != asked).then(|| asked.wrong_kind_reason())
+    }
+}
+
 /// A relay reply arrived but cannot be trusted -- ST-S4 `suspect` (the answer's
 /// own problem), never `unreachable` (asked, nothing came back).
 ///
@@ -240,4 +308,163 @@ pub struct CallView {
     pub call_id: String,
     /// Each side of the call.
     pub tags: Vec<RelayTag>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One reply of each kind, with the kind it answers (`None` for a
+    /// refusal, which answers every question).
+    fn one_of_each() -> [(ControlReply, Option<ReplyKind>); 4] {
+        [
+            (
+                ControlReply::Calls(Enumeration {
+                    call_ids: vec!["call-1@192.0.2.10".to_string()],
+                    truncated: false,
+                }),
+                Some(ReplyKind::CallList),
+            ),
+            (
+                ControlReply::Call(CallView {
+                    call_id: "call-1@192.0.2.10".to_string(),
+                    tags: Vec::new(),
+                }),
+                Some(ReplyKind::CallView),
+            ),
+            (
+                ControlReply::Statistics(vec![("total".to_string(), "3".to_string())]),
+                Some(ReplyKind::Statistics),
+            ),
+            (
+                ControlReply::Refused {
+                    reason: "busy".to_string(),
+                },
+                None,
+            ),
+        ]
+    }
+
+    /// A reply answers the question that asked for its kind, a refusal
+    /// answers any question, and every other pairing is `suspect` for the
+    /// reason of the kind that was asked for.
+    #[test]
+    fn a_reply_of_another_kind_is_suspect_for_the_kind_asked() {
+        for (reply, kind) in one_of_each() {
+            for asked in ReplyKind::ALL {
+                let expected = match kind {
+                    Some(k) if k != asked => Some(asked.wrong_kind_reason()),
+                    _ => None,
+                };
+                assert_eq!(
+                    reply.wrong_kind_for(asked),
+                    expected,
+                    "{reply:?} asked for {asked:?}"
+                );
+            }
+        }
+    }
+
+    /// The reasons are the words REST and `--relay-holdings` already used,
+    /// and no two kinds share one.
+    #[test]
+    fn each_kind_has_its_own_reason() {
+        assert_eq!(
+            ReplyKind::CallList.wrong_kind_reason(),
+            "the relay answered with something other than a call list",
+            "the call-list reason"
+        );
+        assert_eq!(
+            ReplyKind::CallView.wrong_kind_reason(),
+            "the relay answered with something other than a call view",
+            "the call-view reason"
+        );
+        assert_eq!(
+            ReplyKind::Statistics.wrong_kind_reason(),
+            "the relay answered with something other than statistics",
+            "the statistics reason"
+        );
+    }
+
+    /// The suspect pairings exist: of the twelve reply/question pairs, the
+    /// six where a non-refusal reply meets a question for another kind.
+    #[test]
+    fn six_pairings_are_suspect() {
+        let suspect = one_of_each()
+            .iter()
+            .flat_map(|(reply, _)| ReplyKind::ALL.map(|asked| reply.wrong_kind_for(asked)))
+            .filter(Option::is_some)
+            .count();
+        assert_eq!(suspect, 6, "three kinds, each wrong for two questions");
+    }
+
+    /// The phrase is the reason without its subject, for every kind.
+    #[test]
+    fn the_phrase_is_the_reason_without_the_relay() {
+        for kind in ReplyKind::ALL {
+            assert_eq!(
+                format!("the relay {}", kind.wrong_kind_phrase()),
+                kind.wrong_kind_reason(),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            ReplyKind::CallList.wrong_kind_phrase(),
+            "answered with something other than a call list",
+            "the call-list phrase"
+        );
+    }
+
+    /// Every `.rs` file under `dir`, recursively.
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                rust_files(&path, out)?;
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    /// No surface writes the wrong-kind words itself: outside this file, no
+    /// source line under `src/` holds them, in product code or in a test.
+    ///
+    /// REST, the TUI, `--relay-holdings`, `--relay-sessions`, the batch
+    /// statistics poll and the fleet's engine listing each had the sentence
+    /// as a literal, and the MCP tool had no such sentence at all.
+    #[test]
+    fn the_wrong_kind_words_are_written_in_this_file_only() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_files(&src, &mut files)?;
+        assert!(
+            files.len() > 100,
+            "the walk found src/: {} files",
+            files.len()
+        );
+        let words: Vec<String> = ["a call list", "a call view", "statistics"]
+            .iter()
+            .map(|kind| format!("something other than {kind}"))
+            .collect();
+        let mut found = Vec::new();
+        for path in files {
+            if path.ends_with("relay/types.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)?;
+            for (n, line) in text.lines().enumerate() {
+                if words.iter().any(|w| line.contains(w.as_str())) {
+                    found.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "these lines write the wrong-kind words; take them from ReplyKind: {found:#?}"
+        );
+        Ok(())
+    }
 }

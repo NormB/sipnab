@@ -6035,7 +6035,7 @@ fn relay_wide_answer(
         }
         Ok(_) => fmt::relay_rest_outcome(
             O::Suspect,
-            "the relay answered with something other than statistics",
+            crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
         ),
         Err(e) => {
             let (outcome, detail) = crate::output::query::relay_holdings::fetch_failure(label, &e);
@@ -6184,7 +6184,7 @@ fn relay_rest_answer_with(
             }
             Ok(_) => to_value(fmt::relay_rest_outcome(
                 O::Suspect,
-                "the relay answered with something other than statistics",
+                crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
             )),
             Err(e) => fetch_failure(&e),
         },
@@ -6206,7 +6206,7 @@ fn relay_rest_answer_with(
             }
             Ok(_) => to_value(fmt::relay_rest_outcome(
                 O::Suspect,
-                "the relay answered with something other than statistics",
+                crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
             )),
             Err(e) => fetch_failure(&e),
         },
@@ -6278,7 +6278,7 @@ fn relay_rest_answer_with(
                 }
                 Ok(_) => to_value(fmt::relay_rest_outcome(
                     O::Suspect,
-                    "the relay answered with something other than statistics",
+                    crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
                 )),
                 Err(e) => fetch_failure(&e),
             }
@@ -6363,7 +6363,7 @@ fn relay_rest_answer_with(
             )),
             Ok(_) => to_value(fmt::relay_rest_outcome(
                 O::Suspect,
-                "the relay answered with something other than a call view",
+                crate::relay::types::ReplyKind::CallView.wrong_kind_reason(),
             )),
             Err(e) => fetch_failure(&e),
         },

@@ -1011,7 +1011,10 @@ impl RelayStatsPoll {
                 self.publish_failure(
                     &label,
                     crate::stats_vocab::StatisticsOutcome::Suspect,
-                    format!("{label} answered something other than statistics"),
+                    format!(
+                        "{label} {}",
+                        crate::relay::types::ReplyKind::Statistics.wrong_kind_phrase()
+                    ),
                 );
                 tracing::error!("{label} answered {other:?}, not statistics");
             }

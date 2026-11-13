@@ -1459,7 +1459,9 @@ pub fn call_target_listed(
                     Ok(crate::relay::types::ControlReply::Refused { reason }) => {
                         Err(format!("refused: {reason}"))
                     }
-                    Ok(_) => Err("answered with something other than a call list".to_string()),
+                    Ok(_) => Err(crate::relay::types::ReplyKind::CallList
+                        .wrong_kind_phrase()
+                        .to_string()),
                     Err(e) => Err(format!("{e:#}")),
                 };
                 EngineList {

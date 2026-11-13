@@ -672,7 +672,9 @@ fn ask_call(
         Ok(_) => unanswered_call(
             call_id,
             StatisticsOutcome::Suspect,
-            "the relay answered with something other than a call view".to_string(),
+            crate::relay::types::ReplyKind::CallView
+                .wrong_kind_reason()
+                .to_string(),
             sip,
         ),
         Err(e) => {
@@ -739,7 +741,9 @@ pub fn relay_sessions(
             unanswered(
                 &mut out,
                 StatisticsOutcome::Suspect,
-                "the relay answered with something other than a call list".to_string(),
+                crate::relay::types::ReplyKind::CallList
+                    .wrong_kind_reason()
+                    .to_string(),
             );
             out.obtained_at = clock().to_rfc3339();
             return out;
@@ -858,8 +862,11 @@ pub fn relay_sessions_routed(
             }
             Ok(_) => {
                 listing.reach = StatisticsOutcome::Suspect.as_wire_str().to_string();
-                listing.detail =
-                    Some("the relay answered with something other than a call list".to_string());
+                listing.detail = Some(
+                    crate::relay::types::ReplyKind::CallList
+                        .wrong_kind_reason()
+                        .to_string(),
+                );
             }
             Err(e) => {
                 let (outcome, detail) = super::relay_holdings::fetch_failure(label, &e);
@@ -1102,8 +1109,11 @@ fn ask_previous(
         }
         Ok(_) => {
             out.outcome = StatisticsOutcome::Suspect.as_wire_str().to_string();
-            out.detail =
-                Some("the relay answered with something other than a call view".to_string());
+            out.detail = Some(
+                crate::relay::types::ReplyKind::CallView
+                    .wrong_kind_reason()
+                    .to_string(),
+            );
         }
         Err(e) => {
             let (outcome, detail) = super::relay_holdings::fetch_failure(label, &e);

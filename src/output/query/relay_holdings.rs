@@ -89,29 +89,44 @@ pub fn ask(
     max_calls: u32,
     now: DateTime<Utc>,
 ) -> Holdings {
-    let label = relay_label(relay);
-    match relay.list(permit, max_calls) {
-        Ok(ControlReply::Calls(calls)) => Holdings::Held {
-            calls,
-            relay: label,
-            obtained_at: now,
-        },
-        Ok(ControlReply::Refused { reason }) => Holdings::NotAnswered {
-            relay: label.clone(),
-            outcome: StatisticsOutcome::Refused,
-            detail: format!("{label}: {reason}"),
-        },
-        Ok(_) => Holdings::NotAnswered {
-            relay: label,
-            outcome: StatisticsOutcome::Suspect,
-            detail: "the relay answered with something other than a call list".to_string(),
-        },
-        Err(e) => {
-            let (outcome, detail) = fetch_failure(&label, &e);
-            Holdings::NotAnswered {
+    Holdings::from_list_reply(relay.list(permit, max_calls), relay_label(relay), now)
+}
+
+impl Holdings {
+    /// What a `list` reply says about the holdings of the relay `label`: a
+    /// call list is held, a refusal is the relay's own words, any other reply
+    /// is `suspect`, and a failed fetch is classified by [`fetch_failure`].
+    #[must_use]
+    pub fn from_list_reply(
+        reply: anyhow::Result<ControlReply>,
+        label: String,
+        now: DateTime<Utc>,
+    ) -> Self {
+        match reply {
+            Ok(ControlReply::Calls(calls)) => Holdings::Held {
+                calls,
                 relay: label,
-                outcome,
-                detail,
+                obtained_at: now,
+            },
+            Ok(ControlReply::Refused { reason }) => Holdings::NotAnswered {
+                relay: label.clone(),
+                outcome: StatisticsOutcome::Refused,
+                detail: format!("{label}: {reason}"),
+            },
+            Ok(_) => Holdings::NotAnswered {
+                relay: label,
+                outcome: StatisticsOutcome::Suspect,
+                detail: crate::relay::types::ReplyKind::CallList
+                    .wrong_kind_reason()
+                    .to_string(),
+            },
+            Err(e) => {
+                let (outcome, detail) = fetch_failure(&label, &e);
+                Holdings::NotAnswered {
+                    relay: label,
+                    outcome,
+                    detail,
+                }
             }
         }
     }
@@ -439,11 +454,10 @@ mod tests {
         assert_eq!(body["outcome"], "suspect");
         assert_eq!(body["responsibility"], "answer");
         assert!(body.get("call_ids").is_none(), "{body}");
-        assert!(
-            answer
-                .render(ReportFormat::Text)
-                .starts_with("suspect: the relay answered with something other than a call list"),
-        );
+        assert!(answer.render(ReportFormat::Text).starts_with(&format!(
+            "suspect: {}",
+            crate::relay::types::ReplyKind::CallList.wrong_kind_reason()
+        )),);
         Ok(())
     }
 

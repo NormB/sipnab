@@ -164,7 +164,7 @@ pub fn compose_counters_or_names(
     let ControlReply::Statistics(pairs) = reply else {
         return compose_outcome_text(
             StatisticsOutcome::Suspect,
-            "the relay answered with something other than statistics",
+            crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
         );
     };
     if per_call && let Some(reason) = relay_reply_refusal(pairs) {
@@ -203,7 +203,7 @@ pub fn compose_holdings(
             }
             _ => compose_outcome_text(
                 StatisticsOutcome::Suspect,
-                "the relay answered with something other than a call list",
+                crate::relay::types::ReplyKind::CallList.wrong_kind_reason(),
             ),
         };
     };
@@ -276,7 +276,7 @@ pub fn compose_compare(
     let ControlReply::Statistics(pairs) = reply else {
         return compose_outcome_text(
             StatisticsOutcome::Suspect,
-            "the relay answered with something other than statistics",
+            crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
         );
     };
     if let Some(reason) = relay_reply_refusal(pairs) {
@@ -695,7 +695,7 @@ mod tests {
         let wrong = compose_holdings(&stats(&[("x", "1")]), "relay X", at()?);
         assert!(
             wrong.contains(StatisticsOutcome::Suspect.as_wire_str())
-                && wrong.contains("something other than a call list"),
+                && wrong.contains(crate::relay::types::ReplyKind::CallList.wrong_kind_reason()),
             "{wrong}"
         );
         Ok(())
@@ -719,7 +719,7 @@ mod tests {
         );
         assert!(
             wrong.contains(StatisticsOutcome::Suspect.as_wire_str())
-                && wrong.contains("something other than statistics"),
+                && wrong.contains(crate::relay::types::ReplyKind::Statistics.wrong_kind_reason()),
             "{wrong}"
         );
 
