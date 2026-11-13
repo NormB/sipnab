@@ -442,8 +442,9 @@ archive = ["native", "dep:zip", "dep:zeroize", "dep:unicode-normalization", "dep
 # Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a
 # `[[vcon.rule]]`). Its own feature because it is C: libopus, compiled from
 # vendored source with cmake. IN `full`, so the gnu, macOS and Docker builds
-# carry it; NOT in the static musl builds, which keep WAV (release.yml's
-# noaudio_set leaves out `vcon`, and so this).
+# carry it; NOT in the static musl builds (release.yml's static_set leaves
+# out `vcon`, and so this) or the gnu `-noaudio` packages, which carry `vcon`
+# and keep WAV (release.yml's noaudio_set adds `vcon` alone).
 opus = ["vcon", "dep:opus"]
 # G.729 decoding for audio export, the live audio route and amplitude
 # measurement. The codebook tables are not compiled in; `sipnab g729 install`
@@ -455,7 +456,7 @@ g729 = ["native", "dep:g729", "dep:sha2", "dep:rustls", "dep:base64"]
 # records it acknowledged into sealed Parquet files and answers
 # `GET /v1/fleet/calls` from them. IN `full`, so the gnu, macOS and Docker
 # builds carry it; NOT in the static musl builds or the no-audio packages
-# (release.yml's noaudio_set): the `parquet` crate adds about 1.2 MB, more
+# (release.yml's static_set and noaudio_set): the `parquet` crate adds about 1.2 MB, more
 # than the musl binary has under its size ceiling. A center built without it
 # says so at start and on the route.
 fleet-store = ["api", "dep:parquet"]

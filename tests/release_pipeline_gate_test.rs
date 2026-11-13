@@ -1043,23 +1043,50 @@ fn the_backend_record_refuses_a_musl_binary_with_no_libpcap_banner() -> Result<(
 // PW-MUSL: the static musl tarballs and the -noaudio packages read archives.
 // ---------------------------------------------------------------------------
 
-/// What the no-audio set leaves out of `full`, each on purpose.
+/// What the static musl set leaves out of `full`, each on purpose.
 ///
 /// `audio` because the playback plugin arrives through `dlopen` and static musl
-/// has no dynamic loader. `plugins` and `vcon` because no release has ever
-/// built them into these artifacts and adding either changes what a static
-/// binary carries, a decision nobody has taken. `opus` because it writes Ogg
-/// Opus recordings into vCon containers, and these artifacts have no `vcon`;
-/// it is also C (libopus, compiled with cmake), which the static builds were
-/// decided to leave out. `fleet-store` because of size (decided 2026-11-11):
-/// the `parquet` crate added 1,245,248 bytes to a release build of this
-/// feature set (aarch64 gnu), and the x86_64 musl binary of 0.5.246 had
-/// 1,041,920 bytes under its 26,214,400-byte ceiling. A fleet center built
-/// from these artifacts says at start that it has no history store, and
+/// has no dynamic loader. `plugins` because no release has ever built it into
+/// these artifacts and adding it changes what a static binary carries, a
+/// decision nobody has taken. `vcon` because of size: it added 1,508,928
+/// bytes to a release build of this feature set (aarch64 gnu, measured
+/// 2026-11-12), and the x86_64 musl binary of 0.5.249 had 857,472 bytes under
+/// its 26,214,400-byte ceiling. `opus` because it writes Ogg Opus recordings
+/// into vCon containers, and these artifacts have no `vcon`; it is also C
+/// (libopus, compiled with cmake), which the static builds were decided to
+/// leave out. `fleet-store` because of size (decided 2026-11-11): the
+/// `parquet` crate added 1,245,248 bytes to a release build of this feature
+/// set (aarch64 gnu), and the x86_64 musl binary of 0.5.246 had 1,041,920
+/// bytes under its 26,214,400-byte ceiling. A fleet center built from these
+/// artifacts says at start that it has no history store, and
 /// `GET /v1/fleet/calls` answers `501` with the builds that have one.
 /// Anything else `full` gains reaches these artifacts too, unless someone
 /// names it here with a reason.
-const NO_AUDIO_EXCLUSIONS: [&str; 5] = ["audio", "fleet-store", "opus", "plugins", "vcon"];
+const MUSL_EXCLUSIONS: [&str; 5] = ["audio", "fleet-store", "opus", "plugins", "vcon"];
+
+/// What the gnu `-noaudio` packages leave out of `full`, each on purpose.
+///
+/// The musl list without `vcon` (decided 2026-11-13): the gnu `-noaudio`
+/// `.deb` and `.rpm` have no size ceiling, and a headless server is where a
+/// vCon export runs. `opus` stays out: it is C (libopus, compiled with
+/// cmake), and the decision covered `vcon` alone, so these packages write WAV
+/// recordings into a vCon container. `audio`, `plugins` and `fleet-store` as
+/// in the musl list.
+const GNU_NOAUDIO_EXCLUSIONS: [&str; 4] = ["audio", "fleet-store", "opus", "plugins"];
+
+/// The feature list of the static musl builds, which the decision of
+/// 2026-11-13 leaves as it was.
+const MUSL_FEATURES: &str = "native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729";
+
+/// The named exclusions of one reduced release build.
+fn exclusions_of(target: &str) -> BTreeSet<String> {
+    let names: &[&str] = if target.ends_with("-linux-musl") {
+        &MUSL_EXCLUSIONS
+    } else {
+        &GNU_NOAUDIO_EXCLUSIONS
+    };
+    names.iter().map(|s| s.to_string()).collect()
+}
 
 /// Every published binary reads password-protected ZIP and 7z archives.
 ///
@@ -1089,7 +1116,7 @@ fn every_published_binary_reads_password_protected_archives() -> Result<(), Test
     Ok(())
 }
 
-/// The no-audio set is `full` minus the named exclusions, and nothing else.
+/// Each reduced set is `full` minus its named exclusions, and nothing else.
 ///
 /// The release comment called it "full minus audio" while it also dropped
 /// `plugins`, `vcon` and `archive`. Reading both sides from their sources
@@ -1101,12 +1128,12 @@ fn the_no_audio_set_is_full_minus_its_named_exclusions() -> Result<(), TestError
     // The aggregate's own name is not a feature any binary lacks.
     let mut full = expand("full", &table);
     full.remove("full");
-    let excluded: BTreeSet<String> = NO_AUDIO_EXCLUSIONS.iter().map(|s| s.to_string()).collect();
     let mut checked = 0usize;
     for (target, variant) in release_matrix()? {
         if !target.ends_with("-linux-musl") && variant != "noaudio" {
             continue;
         }
+        let excluded = exclusions_of(&target);
         let outputs = feature_step_outputs(&target, &variant)?;
         let features = &outputs["features"];
         let got = expand(features, &table);
@@ -1116,7 +1143,8 @@ fn the_no_audio_set_is_full_minus_its_named_exclusions() -> Result<(), TestError
             "release.yml builds {target} (variant {variant:?}) with \
              `--features {features}`. Against `full` it lacks {missing:?}, and \
              the named exclusions are {excluded:?}. Add the feature to \
-             noaudio_set, or name it in NO_AUDIO_EXCLUSIONS with the reason."
+             static_set or noaudio_set, or name it in MUSL_EXCLUSIONS or \
+             GNU_NOAUDIO_EXCLUSIONS with the reason."
         );
         checked += 1;
     }
@@ -1124,6 +1152,229 @@ fn the_no_audio_set_is_full_minus_its_named_exclusions() -> Result<(), TestError
         checked, 4,
         "expected two musl entries and two gnu noaudio entries, examined {checked}"
     );
+    Ok(())
+}
+
+/// The gnu `-noaudio` packages carry `vcon`; the static musl builds keep the
+/// feature list they had, to the letter.
+///
+/// Decided 2026-11-13. The musl list is compared as text, not as a set: the
+/// decision left that build alone, and a set comparison passes a reordering
+/// that changes the published binary's hash for no reason.
+#[test]
+fn the_gnu_noaudio_packages_carry_vcon_and_the_musl_builds_are_unchanged() -> Result<(), TestError>
+{
+    let table = feature_table()?;
+    let mut gnu = 0usize;
+    let mut musl = 0usize;
+    for (target, variant) in release_matrix()? {
+        let outputs = feature_step_outputs(&target, &variant)?;
+        let features = &outputs["features"];
+        if target.ends_with("-linux-musl") {
+            assert_eq!(
+                features, MUSL_FEATURES,
+                "release.yml builds {target} with a feature list other than the one \
+                 the musl build had before the -noaudio packages gained vcon"
+            );
+            musl += 1;
+        } else if variant == "noaudio" {
+            let got = expand(features, &table);
+            assert!(
+                got.contains("vcon"),
+                "release.yml builds {target} (variant noaudio) with `--features \
+                 {features}`, which has no `vcon`: that package refuses --export-vcon"
+            );
+            assert_eq!(
+                features,
+                &format!("{MUSL_FEATURES},vcon,bpf"),
+                "the gnu -noaudio list is the musl list with vcon and bpf added"
+            );
+            gnu += 1;
+        }
+    }
+    assert_eq!(
+        (gnu, musl),
+        (2, 2),
+        "two gnu noaudio entries and two musl entries"
+    );
+    Ok(())
+}
+
+/// The musl size ceiling is the 25 MiB (26,214,400 bytes) it was, and the
+/// step that enforces it still runs on the musl targets alone.
+#[test]
+fn the_musl_size_ceiling_is_unchanged_and_covers_musl_alone() -> Result<(), TestError> {
+    let config = read("website/config.toml")?;
+    let ceiling: Vec<&str> = config
+        .lines()
+        .filter(|l| l.starts_with("binary_size_ceiling_mb = "))
+        .collect();
+    assert_eq!(
+        ceiling,
+        ["binary_size_ceiling_mb = \"25\""],
+        "website/config.toml states the ceiling once, as 25"
+    );
+    let workflow = read(".github/workflows/release.yml")?;
+    assert!(
+        workflow.contains(
+            "      - name: Enforce published binary size (musl targets)\n        \
+             if: contains(matrix.target, '-linux-musl')\n"
+        ),
+        "the size step no longer runs on the musl targets alone"
+    );
+    Ok(())
+}
+
+/// A package cargo resolves for a feature list, by name, from `cargo tree`.
+///
+/// `--offline --locked` reads Cargo.lock and the local registry index and
+/// reaches no network. `--target all` so that a dependency of any platform
+/// counts.
+fn resolved_packages(features: &str) -> Result<BTreeSet<String>, TestError> {
+    let out = std::process::Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "--offline",
+            "--locked",
+            "--edges",
+            "normal,build",
+            "--target",
+            "all",
+            "--prefix",
+            "none",
+            "--no-default-features",
+            "--features",
+            features,
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()?;
+    if !out.status.success() {
+        return Err(format!(
+            "cargo tree --features {features} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+        .into());
+    }
+    Ok(String::from_utf8(out.stdout)?
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .map(str::to_string)
+        .collect())
+}
+
+/// The sound packages: a binary that resolves one of them links, or loads,
+/// the ALSA library.
+const SOUND_PACKAGES: [&str; 5] = ["alsa", "alsa-sys", "cpal", "rodio", "coreaudio-rs"];
+
+/// The sound packages among `packages`.
+fn sound_packages_in(packages: &BTreeSet<String>) -> Vec<&'static str> {
+    SOUND_PACKAGES
+        .iter()
+        .copied()
+        .filter(|name| packages.contains(*name))
+        .collect()
+}
+
+/// The sound-package filter, on sets that hold one, several and none, and on
+/// names that only resemble one.
+#[test]
+fn the_sound_package_filter_names_each_sound_package_in_a_set() {
+    let set =
+        |names: &[&str]| -> BTreeSet<String> { names.iter().map(|s| s.to_string()).collect() };
+    for (names, expected) in [
+        (&["p256", "alsa-sys"][..], &["alsa-sys"][..]),
+        (&["rodio", "cpal", "serde"][..], &["cpal", "rodio"][..]),
+        (&["alsa"][..], &["alsa"][..]),
+        (&["coreaudio-rs"][..], &["coreaudio-rs"][..]),
+        (
+            &["alsa", "alsa-sys", "cpal", "rodio", "coreaudio-rs"][..],
+            &["alsa", "alsa-sys", "cpal", "rodio", "coreaudio-rs"][..],
+        ),
+        (&[][..], &[][..]),
+        (&["p256", "serde", "tokio"][..], &[][..]),
+        (&["alsa-like", "salsa20", "rodio-extras"][..], &[][..]),
+        (&["ALSA", "Rodio"][..], &[][..]),
+    ] {
+        assert_eq!(
+            sound_packages_in(&set(names)),
+            expected,
+            "the sound packages among {names:?}"
+        );
+    }
+}
+
+/// The `-noaudio` packages have no ALSA dependency: the feature list they are
+/// built with resolves no sound package, with `vcon` in it as before it.
+///
+/// The packaging tests (packaging/deb/test-build-deb.sh and the rpm one) hold
+/// the other half: the `noaudio` variant declares no `libasound` in its
+/// control data and ships no playback plugin.
+#[test]
+fn the_gnu_noaudio_feature_list_resolves_no_sound_package() -> Result<(), TestError> {
+    let mut checked = 0usize;
+    for (target, variant) in release_matrix()? {
+        if variant != "noaudio" {
+            continue;
+        }
+        let outputs = feature_step_outputs(&target, &variant)?;
+        let features = &outputs["features"];
+        let packages = resolved_packages(features)?;
+        assert!(
+            packages.contains("p256"),
+            "`--features {features}` should resolve the vCon signer's p256; \
+             the tree read was {} packages",
+            packages.len()
+        );
+        let sound = sound_packages_in(&packages);
+        assert!(
+            sound.is_empty(),
+            "release.yml builds {target} (variant noaudio) with `--features \
+             {features}`, which resolves {sound:?}: the -noaudio package would \
+             need the ALSA library"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 2, "two gnu noaudio entries");
+    Ok(())
+}
+
+/// The sound-package check can see a sound package: the workspace's playback
+/// plugin resolves `rodio`, so the names in SOUND_PACKAGES are the ones cargo
+/// prints.
+#[test]
+fn the_sound_package_names_match_what_the_playback_plugin_resolves() -> Result<(), TestError> {
+    let out = std::process::Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "--offline",
+            "--locked",
+            "--edges",
+            "normal",
+            "--target",
+            "all",
+            "--prefix",
+            "none",
+            "--package",
+            "sipnab-audio",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()?;
+    assert!(
+        out.status.success(),
+        "cargo tree --package sipnab-audio failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout)?;
+    let names: BTreeSet<&str> = text
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    for needed in SOUND_PACKAGES {
+        assert!(
+            names.contains(needed) && SOUND_PACKAGES.contains(&needed),
+            "the playback plugin should resolve {needed}, and SOUND_PACKAGES should name it"
+        );
+    }
     Ok(())
 }
 

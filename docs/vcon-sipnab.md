@@ -32,12 +32,12 @@ With Kamailio, this is how a vCon server gets vCons at all.
   install steps use all three.
 - **A capture point that sees the calls:** the SIP port, and the media ports
   when the vCons are to carry audio.
-- **A sipnab release package without the `-noaudio` suffix.** The install
+- **A sipnab release package.** The install
   step fetches the package for the machine's architecture,
   `sipnab_<version>_amd64.deb` or `sipnab_<version>_arm64.deb`. Both carry the
   `vcon` feature.
-  The `-noaudio` packages do not carry it. `sipnab --version` lists the
-  features of a binary.
+  The `-noaudio` packages carry it from 0.5.253.
+  `sipnab --version` lists the features of a binary.
 - **A change on one other system, the vCon server.** The first step adds to
   its `config.yml`:
   - an ingress list named `sipnab`, with its own key,
