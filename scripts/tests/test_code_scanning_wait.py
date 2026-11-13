@@ -647,7 +647,12 @@ def test_live_a_failed_run_exits_2_and_says_no_analysis_exists(tmp_path):
                       "--head-sha", HEAD, "--max-wait-secs", "20", "--settle-secs", "0")
     assert rc == 2, out
     assert "no CodeQL analysis" in out and "completed: failure" in out
-    assert "after 0 s" in out, out
+    # The run had failed, so the wait ends at the first answer and not at
+    # --max-wait-secs. The seconds are the real clock's, around two `gh`
+    # stand-ins this test starts: 0 on an idle host, 1 or more on a loaded
+    # one (a pre-commit run on 2026-11-13 printed "after 1 s").
+    waited = re.search(r" after (\d+) s:", out)
+    assert waited and int(waited.group(1)) < 20, out
 
 
 def test_live_no_run_exits_2_and_says_no_run(tmp_path):
