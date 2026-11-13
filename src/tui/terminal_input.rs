@@ -18,6 +18,11 @@
 //! and crossterm's read of the same event, a window of a few microseconds
 //! while input is pending, still reaches crossterm's loop; only a change to
 //! crossterm's event source can close it.
+//!
+//! The end of a run is here too (TUI-LOST-OUTPUT-TERMINAL): [`output_gone`]
+//! asks the terminal the TUI draws on, which can be another one than it
+//! reads, and [`release`] gives up the ratatui `Terminal` without letting its
+//! Drop print to a terminal that has gone.
 
 use std::fs::File;
 use std::io;
@@ -105,6 +110,59 @@ pub(crate) fn settle<E>(
     }
 }
 
+/// Whether the terminal or pipe behind `fd`, a descriptor the TUI writes to,
+/// has gone: hung up or failed. Does not wait.
+///
+/// The TUI can read one terminal and draw on another (standard input a
+/// terminal, standard output redirected to a second one), and
+/// [`TerminalInput::gone`] asks only the one it reads. A platform that
+/// reports neither a hung-up terminal nor a pipe with no reader answers
+/// `false`, and [`release`] still keeps the run from panicking.
+///
+/// The question asked is "can this be written": macOS reports a hang-up only
+/// for an event that was asked for, and reported none for a pipe with no
+/// reader when no event was asked (CI's macOS run of 2026-11-12). Linux
+/// reports a hang-up whatever is asked.
+///
+/// # Errors
+///
+/// `poll(2)` failed for a reason other than a signal.
+pub(crate) fn output_gone(fd: RawFd) -> io::Result<bool> {
+    let revents = crate::input_wait::poll_one(fd, libc::POLLOUT, Duration::ZERO)?;
+    Ok(output_has_gone(revents))
+}
+
+/// Whether what `poll(2)` reported for a descriptor asked "can this be
+/// written" says it has gone. Pure. Writable is not gone, and nor is a full
+/// pipe, which reports nothing.
+///
+/// POLLNVAL is not gone either: it says that `poll` cannot judge the
+/// descriptor (it is closed, or it is a device `poll` does not serve on that
+/// platform), not that a terminal hung up. On macOS the question asked of
+/// `/dev/null` was answered "gone" while POLLNVAL counted (CI's macOS run of
+/// 2026-11-12). The caller asks only after a read or a write failed, and a
+/// failure with no hang-up reported stays an error of the run.
+pub(crate) fn output_has_gone(revents: libc::c_short) -> bool {
+    revents & (libc::POLLHUP | libc::POLLERR) != 0
+}
+
+/// Give up a ratatui `Terminal` at the end of a run: `true` when its cursor
+/// could be shown again, `false` when it could not.
+///
+/// ratatui's `Terminal` shows the cursor when it drops and reports a failure
+/// with `eprintln!`, which panics when standard error cannot be written: the
+/// terminal that has gone is usually standard error too. So the cursor is
+/// shown here, where a failure is a value, and a `Terminal` whose cursor
+/// cannot be shown is not dropped: nothing can be shown on that terminal.
+pub(crate) fn release<B: ratatui::backend::Backend>(mut terminal: ratatui::Terminal<B>) -> bool {
+    // A shown cursor is recorded in the Terminal, so its Drop writes nothing.
+    let shown = terminal.show_cursor().is_ok();
+    if !shown {
+        std::mem::forget(terminal);
+    }
+    shown
+}
+
 /// The terminal crossterm reads input from, for waiting on.
 pub(crate) struct TerminalInput {
     /// The descriptor polled: standard input, or the opened `/dev/tty`.
@@ -144,7 +202,10 @@ impl TerminalInput {
     pub(crate) fn wait(&self, timeout: Duration, interest: Interest) -> io::Result<Wait> {
         let events = match interest {
             Interest::Input => libc::POLLIN,
-            // POLLHUP, POLLERR and POLLNVAL are reported whatever `events` asks.
+            // Linux reports POLLHUP, POLLERR and POLLNVAL whatever `events`
+            // asks. macOS may not (see `output_gone`): there this wait can
+            // run to its timeout, and the `Input` wait after it sees the
+            // hang-up.
             Interest::HangupOnly => 0,
         };
         // A signal reads as nothing happened (0, so `Idle`): the caller
@@ -307,6 +368,238 @@ mod tests {
         }
     }
 
+    /// What a [`Probe`] backend saw, shared with the test that made it.
+    #[derive(Default)]
+    struct Seen {
+        /// Calls of `show_cursor`.
+        shows: std::cell::Cell<u32>,
+        /// Whether the backend was dropped.
+        dropped: std::cell::Cell<bool>,
+    }
+
+    /// A backend whose `show_cursor` fails when `broken`, as a write to a
+    /// terminal that has gone does; everything else succeeds and does nothing.
+    struct Probe {
+        broken: bool,
+        seen: std::rc::Rc<Seen>,
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.seen.dropped.set(true);
+        }
+    }
+
+    impl ratatui::backend::Backend for Probe {
+        type Error = io::Error;
+
+        fn draw<'a, I>(&mut self, _content: I) -> io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            Ok(())
+        }
+
+        fn hide_cursor(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            self.seen.shows.set(self.seen.shows.get() + 1);
+            if self.broken {
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn get_cursor_position(&mut self) -> io::Result<ratatui::layout::Position> {
+            Ok(ratatui::layout::Position::ORIGIN)
+        }
+
+        fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+            &mut self,
+            _position: P,
+        ) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn clear(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn clear_region(&mut self, _clear_type: ratatui::backend::ClearType) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn size(&self) -> io::Result<ratatui::layout::Size> {
+            Ok(ratatui::layout::Size::new(80, 24))
+        }
+
+        fn window_size(&mut self) -> io::Result<ratatui::backend::WindowSize> {
+            Ok(ratatui::backend::WindowSize {
+                columns_rows: ratatui::layout::Size::new(80, 24),
+                pixels: ratatui::layout::Size::new(0, 0),
+            })
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A ratatui Terminal on a [`Probe`], with the cursor hidden when
+    /// `hidden`, as a run that has drawn a frame leaves it.
+    fn probe_terminal(
+        broken: bool,
+        hidden: bool,
+    ) -> io::Result<(ratatui::Terminal<Probe>, std::rc::Rc<Seen>)> {
+        let seen = std::rc::Rc::new(Seen::default());
+        let mut terminal = ratatui::Terminal::new(Probe {
+            broken,
+            seen: std::rc::Rc::clone(&seen),
+        })?;
+        if hidden {
+            terminal.hide_cursor()?;
+        }
+        Ok((terminal, seen))
+    }
+
+    /// A Terminal whose cursor cannot be shown is not dropped: ratatui's
+    /// Drop would try again and print the failure with `eprintln!`, which
+    /// panics when standard error is the terminal that has gone
+    /// (TUI-LOST-OUTPUT-TERMINAL). The cursor is asked for once.
+    #[test]
+    fn a_terminal_whose_cursor_cannot_be_shown_is_not_dropped() -> io::Result<()> {
+        let (terminal, seen) = probe_terminal(true, true)?;
+        assert!(!release(terminal), "the cursor could not be shown");
+        assert_eq!(
+            seen.shows.get(),
+            1,
+            "the cursor is asked for once, not again by ratatui's Drop"
+        );
+        assert!(
+            !seen.dropped.get(),
+            "a Terminal on a gone terminal must not be dropped"
+        );
+        Ok(())
+    }
+
+    /// The same when no frame hid the cursor: the release still asks once,
+    /// finds the terminal gone, and does not drop it.
+    #[test]
+    fn a_gone_terminal_that_never_hid_its_cursor_is_not_dropped() -> io::Result<()> {
+        let (terminal, seen) = probe_terminal(true, false)?;
+        assert!(!release(terminal), "the cursor could not be shown");
+        assert_eq!(seen.shows.get(), 1, "asked once");
+        assert!(!seen.dropped.get(), "not dropped");
+        Ok(())
+    }
+
+    /// A Terminal that is still there has its cursor shown once and is
+    /// dropped: ratatui's Drop finds the cursor shown and writes nothing.
+    #[test]
+    fn a_terminal_that_is_there_is_shown_its_cursor_and_dropped() -> io::Result<()> {
+        for hidden in [true, false] {
+            let (terminal, seen) = probe_terminal(false, hidden)?;
+            assert!(release(terminal), "the cursor was shown (hidden: {hidden})");
+            assert_eq!(
+                seen.shows.get(),
+                1,
+                "the cursor is shown once (hidden: {hidden})"
+            );
+            assert!(
+                seen.dropped.get(),
+                "a Terminal that is there is dropped (hidden: {hidden})"
+            );
+        }
+        Ok(())
+    }
+
+    /// A pipe nobody reads has gone for a writer, and one with a reader has
+    /// not; nor has a device that takes every write.
+    ///
+    /// Each message carries what `poll(2)` reported, as `output_gone` asks
+    /// it, so a platform that answers another way names its answer in the
+    /// failure.
+    #[test]
+    fn an_output_with_no_reader_has_gone() -> io::Result<()> {
+        let asked = |fd: RawFd| crate::input_wait::poll_one(fd, libc::POLLOUT, Duration::ZERO);
+        let (reader, writer) = io::pipe()?;
+        assert!(
+            !output_gone(writer.as_raw_fd())?,
+            "a pipe with a reader has not gone: poll reported {:#x}",
+            asked(writer.as_raw_fd())?
+        );
+        drop(reader);
+        assert!(
+            output_gone(writer.as_raw_fd())?,
+            "a pipe with no reader has gone: poll reported {:#x}",
+            asked(writer.as_raw_fd())?
+        );
+        let file = File::options().write(true).open("/dev/null")?;
+        assert!(
+            !output_gone(file.as_raw_fd())?,
+            "/dev/null has not gone: poll reported {:#x}",
+            asked(file.as_raw_fd())?
+        );
+        Ok(())
+    }
+
+    /// What `poll(2)` reported for an output: a hang-up or an error is gone,
+    /// alone or with "writable"; writable, nothing (a full pipe) and
+    /// readable are not, and nor is POLLNVAL, which says only that `poll`
+    /// cannot judge the descriptor.
+    #[test]
+    fn what_poll_reported_for_an_output_is_read() {
+        for (revents, gone, what) in [
+            (libc::POLLHUP, true, "hung up"),
+            (libc::POLLERR, true, "failed"),
+            (libc::POLLNVAL, false, "poll cannot judge it"),
+            (libc::POLLOUT | libc::POLLNVAL, false, "writable, unjudged"),
+            (libc::POLLHUP | libc::POLLNVAL, true, "hung up, not judged"),
+            (libc::POLLOUT | libc::POLLHUP, true, "writable and hung up"),
+            (libc::POLLOUT | libc::POLLERR, true, "writable and failed"),
+            (libc::POLLOUT, false, "writable"),
+            (0, false, "nothing reported"),
+            (libc::POLLIN, false, "readable"),
+        ] {
+            assert_eq!(output_has_gone(revents), gone, "{what}");
+        }
+    }
+
+    /// A pipe that is full and has a reader has not gone: it cannot be
+    /// written now, which is not a hang-up. It has gone once its reader has.
+    #[test]
+    fn a_full_pipe_with_a_reader_has_not_gone() -> io::Result<()> {
+        use std::io::Write as _;
+        let (reader, mut writer) = io::pipe()?;
+        // Fill it without a write that waits: while the pipe reports
+        // "writable", a write of no more than PIPE_BUF (at least 512 bytes
+        // by POSIX) is taken whole at once.
+        let block = [0u8; 512];
+        let mut written = 0usize;
+        while crate::input_wait::poll_one(writer.as_raw_fd(), libc::POLLOUT, Duration::ZERO)?
+            & libc::POLLOUT
+            != 0
+        {
+            writer.write_all(&block)?;
+            written += block.len();
+            assert!(written <= 64 << 20, "the pipe took 64 MiB and is not full");
+        }
+        assert!(written > 0, "an empty pipe must report writable");
+        assert!(
+            !output_gone(writer.as_raw_fd())?,
+            "a full pipe with a reader has not gone"
+        );
+        drop(reader);
+        assert!(
+            output_gone(writer.as_raw_fd())?,
+            "a full pipe with no reader has gone"
+        );
+        Ok(())
+    }
+
     /// Wait for what `interest` names for up to 5 s, waiting again after an
     /// `Idle`. `wait` reports a signal that interrupts `poll(2)` as `Idle`,
     /// so one wait can end early with nothing seen; a pre-commit run of the
@@ -372,8 +665,16 @@ mod tests {
             "pending input does not end a hang-up-only wait"
         );
         assert!(!input.gone()?, "an open pty has not gone");
+        assert!(
+            !output_gone(slave.as_raw_fd())?,
+            "an open pty has not gone for its writer"
+        );
         drop(master);
         assert!(input.gone()?, "a closed master is a hang-up");
+        assert!(
+            output_gone(slave.as_raw_fd())?,
+            "a closed master is a hang-up for the writer too"
+        );
         assert_eq!(
             wait_past_idle(&input, Interest::Input)?,
             Wait::Gone,
