@@ -10,13 +10,32 @@
 //!
 //! # Layout
 //!
-//! `calls/date=YYYY-MM-DD/member=<id>/<first>-<last>-<stream>-<seq>.sealed`.
-//! The date is the UTC day the center received the rows on, `<first>` and
-//! `<last>` are the earliest and the latest receive time in the file in
-//! milliseconds, and `<stream>-<seq>` is the file's first row. A question
-//! for one member, one day or one hour opens only the files whose path
-//! says they can hold an answer ([`Query::wants_partition`],
-//! [`Query::wants_file`]).
+//! `<class>/date=YYYY-MM-DD/<first>-<last>-h<mark>.sealed`
+//! ([`IntervalName`]): one file for each filing and day, which holds the
+//! rows of every member, so the number of files a day does not grow with
+//! the number of members. The date is the UTC day the center received the
+//! rows on, `<first>` and `<last>` are the earliest and the latest receive
+//! time in the file in milliseconds, and `<mark>` tells the file's rows
+//! from other rows of the same times ([`rows_mark`]). A path names no
+//! member and states no count.
+//!
+//! A file holds its rows by member and then by receive time ([`sorted`]),
+//! in row groups that end where the member changes ([`group_cuts`]). A
+//! question for one day or one hour opens only the files whose path says
+//! they can hold an answer ([`Query::wants_date`], [`Query::wants_span`]),
+//! and a question for one member reads only the row groups whose least and
+//! greatest member do not rule it out.
+//!
+//! # The layout of release 0.5.249
+//!
+//! Releases 0.5.249 and 0.5.250 wrote
+//! `calls/date=YYYY-MM-DD/member=<id>/<first>-<last>-<stream>-<seq>.sealed`
+//! ([`Partition`], [`FileName`]): one file for each day and member of a
+//! filing, 2,880,000 files a day for 2,000 members at 60 seconds. No build
+//! writes that layout any more. Its files are told apart by their depth
+//! under the day, and are still listed, read, counted and removed with
+//! their day ([`History::list`], [`History::expire_before`]); a filing
+//! leaves out the rows one of them holds.
 //!
 //! # No clear text on disk
 //!
@@ -29,11 +48,11 @@
 //!
 //! # Files are written once
 //!
-//! [`History::file`] writes a new file for each day and member that has
-//! rows; it never changes a file. The center calls it with every row of
+//! [`History::file`] writes a new file for each day that has rows; it
+//! never changes a file. The center calls it with every row of
 //! its intake and then empties the intake. When the center stops between
 //! the two, the next start files the same rows again: rows a file of the
-//! same day and member already holds are left out ([`without_stored`]),
+//! same day already holds are left out ([`without_stored`]),
 //! so no row is filed twice.
 //!
 //! # What is pure and what is not
@@ -49,16 +68,89 @@ use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
 
-use super::fleet_center::is_valid_id;
+use super::fleet_center::{MemberRecord, is_valid_id};
 use super::fleet_intake::IntakeRecord;
 use super::fleet_seal::{Keys, Kind};
 
-/// The directory of the data class this module files: call records.
+/// The directory of the data class of call records.
 pub const CLASS_CALLS: &str = "calls";
 
-/// The rows of one Parquet row group. A question reads only the row groups
-/// whose statistics and Call-ID filter say they can hold an answer.
+/// The directory of the data class of heartbeats: one row for each
+/// heartbeat the center accepted.
+pub const CLASS_MEMBERS: &str = "members";
+
+/// The most files one question opens. The files are read from the latest
+/// rows back; a question that rules in more is answered from these, and
+/// the answer says how many files were not read.
+pub const MAX_FILES_PER_QUESTION: usize = 4096;
+
+/// One column of a row group, as a class writes and reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Column {
+    /// 64-bit numbers.
+    Longs(Vec<i64>),
+    /// Byte texts.
+    Texts(Vec<Vec<u8>>),
+}
+
+/// A row of one data class of the history store.
+///
+/// The filing, the listing, the reading and the retention of the store are
+/// written once, over this trait: a class says where its files go, what
+/// its Parquet schema is and how a row becomes columns and back.
+pub trait Row: Clone + Sized {
+    /// The directory of the class under the history directory.
+    const CLASS: &'static str;
+    /// The sealed kind of the class's files.
+    const KIND: Kind;
+    /// The Parquet schema of the class's files. The first column is the
+    /// receive time in nanoseconds since 1970.
+    const SCHEMA: &'static str;
+    /// What a row is called in a message.
+    const NOUN: &'static str;
+    /// The name of the column that carries a filter for a point question,
+    /// when the class has one.
+    const FILTER_COLUMN: Option<&'static str>;
+
+    /// The member the row came from.
+    fn member(&self) -> &str;
+    /// When the center received the row.
+    fn received_at(&self) -> DateTime<Utc>;
+    /// The stream a file that starts with this row is named by.
+    fn stream(&self) -> &str;
+    /// The number a file that starts with this row is named by.
+    fn seq(&self) -> u64;
+    /// What makes this row the same row as another of its member.
+    fn identity(&self) -> (&str, u64, DateTime<Utc>);
+    /// Whether the row answers what `query` asks of this class beyond the
+    /// member and the time.
+    fn answers(&self, query: &Query) -> bool;
+    /// `rows` as the columns of [`Self::SCHEMA`], in order.
+    ///
+    /// # Errors
+    ///
+    /// A row holds a value the schema cannot carry.
+    fn columns(rows: &[Self]) -> Result<Vec<Column>, String>;
+    /// The `rows` rows the columns of one row group hold.
+    ///
+    /// # Errors
+    ///
+    /// The columns are not those of [`Self::SCHEMA`], or a value in them
+    /// does not parse.
+    fn from_columns(columns: Vec<Column>, rows: usize) -> Result<Vec<Self>, String>;
+}
+
+/// The most rows of one Parquet row group. A question reads only the row
+/// groups whose statistics and Call-ID filter say they can hold an answer.
 pub const ROWS_PER_GROUP: usize = 10_000;
+
+/// The rows a row group holds before it ends where the member changes
+/// ([`group_cuts`]): a file of many members has many row groups, and a
+/// question about one member reads the one that holds it.
+pub const GROUP_ROWS: usize = 128;
+
+/// The column of the member in every class's schema.
+const COL_MEMBER: usize = 1;
 
 /// The bytes of Parquet one sealed record carries, under the sealed
 /// layer's bound for a record ([`super::fleet_seal::MAX_RECORD_BYTES`]).
@@ -74,7 +166,7 @@ pub const MAX_LIMIT: usize = 1000;
 pub const MAX_CALL_ID_BYTES: usize = 1024;
 
 /// The Parquet schema of a call record file.
-const SCHEMA: &str = "message call {
+const CALLS_SCHEMA: &str = "message call {
     required int64 received_at (TIMESTAMP(NANOS,true));
     required binary member (STRING);
     required binary stream (STRING);
@@ -85,11 +177,260 @@ const SCHEMA: &str = "message call {
     required binary call (JSON);
 }";
 
-/// The column of the receive time in [`SCHEMA`].
+/// The Parquet schema of a heartbeat file.
+const MEMBERS_SCHEMA: &str = "message heartbeat {
+    required int64 received_at (TIMESTAMP(NANOS,true));
+    required binary member (STRING);
+    required binary peer (STRING);
+    required int64 heartbeats (INTEGER(64,false));
+    required binary stream (STRING);
+    required int64 seq (INTEGER(64,false));
+    required binary sent_at (STRING);
+    required int64 heartbeat_secs (INTEGER(64,false));
+    required int64 call_records (INTEGER(64,false));
+    required binary calls (JSON);
+    required binary inventory (JSON);
+}";
+
+/// The column of the receive time in every class's schema.
 const COL_RECEIVED_AT: usize = 0;
 
-/// The column of the Call-ID in [`SCHEMA`].
-const COL_CALL_ID: usize = 6;
+/// A count as a Parquet column of unsigned 64-bit numbers holds it.
+const fn long(value: u64) -> i64 {
+    i64::from_ne_bytes(value.to_ne_bytes())
+}
+
+/// The count a Parquet column of unsigned 64-bit numbers holds as `value`.
+const fn count(value: i64) -> u64 {
+    u64::from_ne_bytes(value.to_ne_bytes())
+}
+
+/// The column at `column` of `columns` as numbers.
+fn longs(columns: &[Column], column: usize) -> Result<&[i64], String> {
+    match columns.get(column) {
+        Some(Column::Longs(values)) => Ok(values),
+        _ => Err(format!("parquet: column {column} is not a 64-bit number")),
+    }
+}
+
+/// The column at `column` of `columns` as byte texts.
+fn texts(columns: &[Column], column: usize) -> Result<&[Vec<u8>], String> {
+    match columns.get(column) {
+        Some(Column::Texts(values)) => Ok(values),
+        _ => Err(format!("parquet: column {column} is not a byte text")),
+    }
+}
+
+/// The text of row `row` of `column`.
+fn text(column: &[Vec<u8>], row: usize) -> Result<String, String> {
+    column
+        .get(row)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .map(str::to_string)
+        .ok_or_else(|| format!("parquet: row {} holds text that is not UTF-8", row + 1))
+}
+
+/// The send time row `row` of `column` spells.
+fn sent_time(column: &[Vec<u8>], row: usize) -> Result<DateTime<Utc>, String> {
+    DateTime::parse_from_rfc3339(&text(column, row)?)
+        .map(|at| at.with_timezone(&Utc))
+        .map_err(|_| format!("parquet: row {} has a send time that is no time", row + 1))
+}
+
+/// The receive times of `rows`, each checked ([`received_ns`]).
+fn received_column<R: Row>(rows: &[R]) -> Result<Column, String> {
+    rows.iter()
+        .map(received_ns)
+        .collect::<Result<Vec<i64>, String>>()
+        .map(Column::Longs)
+}
+
+/// A column of the texts `of` gives for each of `rows`.
+fn text_column<R>(rows: &[R], of: impl Fn(&R) -> Vec<u8>) -> Column {
+    Column::Texts(rows.iter().map(of).collect())
+}
+
+impl Row for IntakeRecord {
+    const CLASS: &'static str = CLASS_CALLS;
+    const KIND: Kind = Kind::Calls;
+    const SCHEMA: &'static str = CALLS_SCHEMA;
+    const NOUN: &'static str = "call record";
+    const FILTER_COLUMN: Option<&'static str> = Some("call_id");
+
+    fn member(&self) -> &str {
+        &self.member
+    }
+
+    fn received_at(&self) -> DateTime<Utc> {
+        self.received_at
+    }
+
+    fn stream(&self) -> &str {
+        &self.stream
+    }
+
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    fn identity(&self) -> (&str, u64, DateTime<Utc>) {
+        (&self.stream, self.seq, self.sent_at)
+    }
+
+    fn answers(&self, query: &Query) -> bool {
+        query
+            .call_id
+            .as_ref()
+            .is_none_or(|call_id| call_id == call_id_of(self))
+    }
+
+    fn columns(rows: &[Self]) -> Result<Vec<Column>, String> {
+        let calls = rows
+            .iter()
+            .map(|row| serde_json::to_vec(&row.call).map_err(|e| e.to_string()))
+            .collect::<Result<Vec<Vec<u8>>, String>>()?;
+        Ok(vec![
+            received_column(rows)?,
+            text_column(rows, |row| row.member.clone().into_bytes()),
+            text_column(rows, |row| row.stream.clone().into_bytes()),
+            Column::Longs(rows.iter().map(|row| long(row.seq)).collect()),
+            text_column(rows, |row| sent_text(row.sent_at).into_bytes()),
+            text_column(rows, |row| row.selected_by.clone().into_bytes()),
+            text_column(rows, |row| call_id_of(row).as_bytes().to_vec()),
+            Column::Texts(calls),
+        ])
+    }
+
+    fn from_columns(columns: Vec<Column>, rows: usize) -> Result<Vec<Self>, String> {
+        let received = longs(&columns, 0)?;
+        let members = texts(&columns, 1)?;
+        let streams = texts(&columns, 2)?;
+        let positions = longs(&columns, 3)?;
+        let sent = texts(&columns, 4)?;
+        let selected = texts(&columns, 5)?;
+        let calls = texts(&columns, 7)?;
+        (0..rows)
+            .map(|row| {
+                let call = serde_json::from_slice(&calls[row]).map_err(|e| {
+                    format!("parquet: row {} has a call that is not JSON: {e}", row + 1)
+                })?;
+                Ok(Self {
+                    member: text(members, row)?,
+                    received_at: DateTime::from_timestamp_nanos(received[row]),
+                    stream: text(streams, row)?,
+                    seq: count(positions[row]),
+                    sent_at: sent_time(sent, row)?,
+                    selected_by: text(selected, row)?,
+                    call,
+                })
+            })
+            .collect()
+    }
+}
+
+impl Row for MemberRecord {
+    const CLASS: &'static str = CLASS_MEMBERS;
+    const KIND: Kind = Kind::Members;
+    const SCHEMA: &'static str = MEMBERS_SCHEMA;
+    const NOUN: &'static str = "heartbeat";
+    const FILTER_COLUMN: Option<&'static str> = None;
+
+    fn member(&self) -> &str {
+        &self.member
+    }
+
+    fn received_at(&self) -> DateTime<Utc> {
+        self.received_at
+    }
+
+    fn stream(&self) -> &str {
+        &self.cursor.stream
+    }
+
+    fn seq(&self) -> u64 {
+        self.heartbeats
+    }
+
+    fn identity(&self) -> (&str, u64, DateTime<Utc>) {
+        ("", self.heartbeats, self.received_at)
+    }
+
+    fn answers(&self, _query: &Query) -> bool {
+        true
+    }
+
+    fn columns(rows: &[Self]) -> Result<Vec<Column>, String> {
+        let json = |value: Result<Vec<u8>, serde_json::Error>| value.map_err(|e| e.to_string());
+        let calls = rows
+            .iter()
+            .map(|row| json(serde_json::to_vec(&row.calls)))
+            .collect::<Result<Vec<Vec<u8>>, String>>()?;
+        let inventories = rows
+            .iter()
+            .map(|row| json(serde_json::to_vec(&row.inventory)))
+            .collect::<Result<Vec<Vec<u8>>, String>>()?;
+        let counts =
+            |of: fn(&Self) -> u64| Column::Longs(rows.iter().map(|r| long(of(r))).collect());
+        Ok(vec![
+            received_column(rows)?,
+            text_column(rows, |row| row.member.clone().into_bytes()),
+            text_column(rows, |row| row.peer.clone().into_bytes()),
+            counts(|row| row.heartbeats),
+            text_column(rows, |row| row.cursor.stream.clone().into_bytes()),
+            counts(|row| row.cursor.seq),
+            text_column(rows, |row| sent_text(row.cursor.sent_at).into_bytes()),
+            counts(|row| row.heartbeat_secs),
+            counts(|row| row.call_records),
+            Column::Texts(calls),
+            Column::Texts(inventories),
+        ])
+    }
+
+    fn from_columns(columns: Vec<Column>, rows: usize) -> Result<Vec<Self>, String> {
+        let received = longs(&columns, 0)?;
+        let members = texts(&columns, 1)?;
+        let peers = texts(&columns, 2)?;
+        let heartbeats = longs(&columns, 3)?;
+        let streams = texts(&columns, 4)?;
+        let positions = longs(&columns, 5)?;
+        let sent = texts(&columns, 6)?;
+        let intervals = longs(&columns, 7)?;
+        let call_records = longs(&columns, 8)?;
+        let calls = texts(&columns, 9)?;
+        let inventories = texts(&columns, 10)?;
+        (0..rows)
+            .map(|row| {
+                let calls = serde_json::from_slice(&calls[row]).map_err(|e| {
+                    format!(
+                        "parquet: row {} has call counts that do not parse: {e}",
+                        row + 1
+                    )
+                })?;
+                let inventory = serde_json::from_slice(&inventories[row]).map_err(|e| {
+                    format!(
+                        "parquet: row {} has an inventory that is not JSON: {e}",
+                        row + 1
+                    )
+                })?;
+                Ok(Self {
+                    member: text(members, row)?,
+                    received_at: DateTime::from_timestamp_nanos(received[row]),
+                    peer: text(peers, row)?,
+                    heartbeats: count(heartbeats[row]),
+                    cursor: super::fleet_center::Cursor {
+                        stream: text(streams, row)?,
+                        seq: count(positions[row]),
+                        sent_at: sent_time(sent, row)?,
+                    },
+                    heartbeat_secs: count(intervals[row]),
+                    inventory,
+                    call_records: count(call_records[row]),
+                    calls,
+                })
+            })
+            .collect()
+    }
+}
 
 /// The directory of the history store beside the store file `store`.
 #[must_use]
@@ -105,26 +446,28 @@ pub fn dir_for(store: &Path) -> PathBuf {
 ///
 /// The time is before 1970 or past what 63 bits of nanoseconds hold (the
 /// year 2262): the store keeps no such row.
-pub fn received_ns(record: &IntakeRecord) -> Result<i64, String> {
-    let at = record.received_at;
+pub fn received_ns<R: Row>(record: &R) -> Result<i64, String> {
+    let at = record.received_at();
     if at < DateTime::<Utc>::UNIX_EPOCH {
         return Err(format!(
-            "a call record of member '{}' was received at {at}, before 1970; the history store \
-             keeps no such row",
-            record.member
+            "a {} of member '{}' was received at {at}, before 1970; the history store keeps no \
+             such row",
+            R::NOUN,
+            record.member()
         ));
     }
     at.timestamp_nanos_opt().ok_or_else(|| {
         format!(
-            "a call record of member '{}' was received at {at}, past the year 2262; the \
-             history store keeps no such row",
-            record.member
+            "a {} of member '{}' was received at {at}, past the year 2262; the history store \
+             keeps no such row",
+            R::NOUN,
+            record.member()
         )
     })
 }
 
 /// When the center received `record`, in milliseconds since 1970.
-fn received_ms(record: &IntakeRecord) -> Result<u64, String> {
+fn received_ms<R: Row>(record: &R) -> Result<u64, String> {
     Ok(u64::try_from(received_ns(record)?).unwrap_or(0) / 1_000_000)
 }
 
@@ -170,19 +513,19 @@ pub struct Partition {
 impl Partition {
     /// The partition `record` belongs to.
     #[must_use]
-    pub fn of(record: &IntakeRecord) -> Self {
+    pub fn of<R: Row>(record: &R) -> Self {
         Self {
-            date: record.received_at.date_naive(),
-            member: record.member.clone(),
+            date: record.received_at().date_naive(),
+            member: record.member().to_string(),
         }
     }
 
-    /// The partition's directory under the history directory, with `/`
-    /// between its parts.
+    /// The partition's directory in the class `class` under the history
+    /// directory, with `/` between its parts.
     #[must_use]
-    pub fn rel_dir(&self) -> String {
+    pub fn rel_dir(&self, class: &str) -> String {
         format!(
-            "{CLASS_CALLS}/{DATE_PREFIX}{}/{MEMBER_PREFIX}{}",
+            "{class}/{DATE_PREFIX}{}/{MEMBER_PREFIX}{}",
             self.date.format(DATE_FORMAT),
             self.member
         )
@@ -221,7 +564,7 @@ impl FileName {
     ///
     /// `rows` is empty, or a row's receive time is refused
     /// ([`received_ns`]).
-    pub fn of(rows: &[IntakeRecord]) -> Result<Self, String> {
+    pub fn of<R: Row>(rows: &[R]) -> Result<Self, String> {
         let first = rows.first().ok_or("no rows: a file holds at least one")?;
         let mut first_ms = u64::MAX;
         let mut last_ms = 0u64;
@@ -233,8 +576,8 @@ impl FileName {
         Ok(Self {
             first_ms,
             last_ms,
-            stream: first.stream.clone(),
-            seq: first.seq,
+            stream: first.stream().to_string(),
+            seq: first.seq(),
         })
     }
 
@@ -267,11 +610,165 @@ impl FileName {
     }
 }
 
+/// What the name of a file that holds one filing of one day says: the
+/// earliest and the latest receive time in it and a number that tells its
+/// rows from any other rows of the same times. The name states neither a
+/// member nor a count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntervalName {
+    /// The earliest receive time in the file, in milliseconds since 1970.
+    pub first_ms: u64,
+    /// The latest receive time in the file, in milliseconds since 1970.
+    pub last_ms: u64,
+    /// The mark of the file's rows ([`rows_mark`]).
+    pub mark: u64,
+}
+
+impl IntervalName {
+    /// The name of the file that holds `rows`, in any order.
+    ///
+    /// # Errors
+    ///
+    /// `rows` is empty, or a row's receive time is refused
+    /// ([`received_ns`]).
+    pub fn of<R: Row>(rows: &[R]) -> Result<Self, String> {
+        if rows.is_empty() {
+            return Err("no rows: a file holds at least one".to_string());
+        }
+        let mut first_ms = u64::MAX;
+        let mut last_ms = 0u64;
+        for row in rows {
+            let ms = received_ms(row)?;
+            first_ms = first_ms.min(ms);
+            last_ms = last_ms.max(ms);
+        }
+        Ok(Self {
+            first_ms,
+            last_ms,
+            mark: rows_mark(rows)?,
+        })
+    }
+
+    /// The file name.
+    #[must_use]
+    pub fn text(&self) -> String {
+        format!(
+            "{:013}-{:013}-{MARK_PREFIX}{:016x}{FILE_SUFFIX}",
+            self.first_ms, self.last_ms, self.mark
+        )
+    }
+
+    /// What `name` says, if it is a name this module writes.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        let stem = name.strip_suffix(FILE_SUFFIX)?;
+        let (first, rest) = stem.split_once('-')?;
+        let (last, mark) = rest.split_once('-')?;
+        let parsed = Self {
+            first_ms: first.parse().ok()?,
+            last_ms: last.parse().ok()?,
+            mark: u64::from_str_radix(mark.strip_prefix(MARK_PREFIX)?, 16).ok()?,
+        };
+        // Only the one spelling `text` writes is a name.
+        (parsed.first_ms <= parsed.last_ms && parsed.text() == name).then_some(parsed)
+    }
+}
+
+/// What the mark in a file's name starts with. No name of release 0.5.249
+/// ends in a part that starts with a letter, so no name is one of both
+/// layouts.
+const MARK_PREFIX: char = 'h';
+
+/// A number that is the same for the same rows in any order and, for
+/// practical purposes, different for different rows: 64-bit FNV-1a over
+/// each row's member, stream, position and receive time, in sorted order.
+///
+/// # Errors
+///
+/// A row's receive time is refused ([`received_ns`]).
+pub fn rows_mark<R: Row>(rows: &[R]) -> Result<u64, String> {
+    /// The FNV-1a offset basis and prime for 64 bits.
+    const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut keys = rows
+        .iter()
+        .map(|row| Ok((row.member(), row.stream(), row.seq(), received_ns(row)?)))
+        .collect::<Result<Vec<(&str, &str, u64, i64)>, String>>()?;
+    keys.sort_unstable();
+    let mut mark = BASIS;
+    let mut take = |bytes: &[u8]| {
+        for byte in bytes {
+            mark = (mark ^ u64::from(*byte)).wrapping_mul(PRIME);
+        }
+    };
+    for (member, stream, seq, received) in keys {
+        // No id holds a zero byte, so one ends each text.
+        take(member.as_bytes());
+        take(&[0]);
+        take(stream.as_bytes());
+        take(&[0]);
+        take(&seq.to_be_bytes());
+        take(&received.to_be_bytes());
+    }
+    Ok(mark)
+}
+
+/// `rows` in the order a file holds them: by member, then by receive time,
+/// then by stream and position.
+#[must_use]
+pub fn sorted<R: Row>(rows: Vec<R>) -> Vec<R> {
+    let mut rows = rows;
+    rows.sort_by(|a, b| {
+        a.member()
+            .cmp(b.member())
+            .then_with(|| a.received_at().cmp(&b.received_at()))
+            .then_with(|| a.stream().cmp(b.stream()))
+            .then_with(|| a.seq().cmp(&b.seq()))
+    });
+    rows
+}
+
+/// How many rows each row group of a file takes, for rows whose members
+/// are `members`, in file order: a group ends where the member changes
+/// once it holds `least` rows, and at `most` rows wherever that falls. A
+/// member with fewer than `most` rows after a group's end is in one group,
+/// so the least and the greatest member a group records rule it out for a
+/// question about another member.
+#[must_use]
+pub fn group_cuts(members: &[&str], least: usize, most: usize) -> Vec<usize> {
+    let most = most.max(1);
+    let mut cuts = Vec::new();
+    let mut held = 0usize;
+    for (index, member) in members.iter().enumerate() {
+        held += 1;
+        let ends_member = members.get(index + 1).is_none_or(|next| next != member);
+        let is_last = index + 1 == members.len();
+        if is_last || held >= most || (ends_member && held >= least) {
+            cuts.push(held);
+            held = 0;
+        }
+    }
+    cuts
+}
+
+/// The rows of `records` by the UTC day the center received them on, each
+/// day's rows in the order they came in.
+#[must_use]
+pub fn by_date<R: Row>(records: &[R]) -> BTreeMap<NaiveDate, Vec<R>> {
+    let mut out: BTreeMap<NaiveDate, Vec<R>> = BTreeMap::new();
+    for record in records {
+        out.entry(record.received_at().date_naive())
+            .or_default()
+            .push(record.clone());
+    }
+    out
+}
+
 /// The rows of `records` by partition, each partition's rows in the order
 /// they came in.
 #[must_use]
-pub fn groups(records: &[IntakeRecord]) -> BTreeMap<Partition, Vec<IntakeRecord>> {
-    let mut out: BTreeMap<Partition, Vec<IntakeRecord>> = BTreeMap::new();
+pub fn groups<R: Row>(records: &[R]) -> BTreeMap<Partition, Vec<R>> {
+    let mut out: BTreeMap<Partition, Vec<R>> = BTreeMap::new();
     for record in records {
         out.entry(Partition::of(record))
             .or_default()
@@ -367,6 +864,29 @@ impl Query {
         Ok(query)
     }
 
+    /// The question `GET /v1/fleet/members/{id}/history` asks about the
+    /// member `member` with the query string's `pairs`.
+    ///
+    /// # Errors
+    ///
+    /// `member` is no member id, a parameter is not one of `from`, `to`
+    /// and `limit`, is given twice, or has a value outside what it
+    /// accepts. The message names the parameter and what it accepts.
+    pub fn parse_heartbeats(member: &str, pairs: &[(String, String)]) -> Result<Self, String> {
+        if let Some((name, _)) = pairs
+            .iter()
+            .find(|(name, _)| !matches!(name.as_str(), "from" | "to" | "limit"))
+        {
+            return Err(format!(
+                "{} is not a parameter of this route; it takes from, to and limit",
+                shown(name)
+            ));
+        }
+        let mut all = vec![("member".to_string(), member.to_string())];
+        all.extend_from_slice(pairs);
+        Self::parse(&all)
+    }
+
     /// Whether a file in `partition` can hold an answer.
     #[must_use]
     pub fn wants_partition(&self, partition: &Partition) -> bool {
@@ -379,30 +899,41 @@ impl Query {
             && self.to.is_none_or(|to| partition.date <= to.date_naive())
     }
 
+    /// Whether a file of the day `date` can hold an answer.
+    #[must_use]
+    pub fn wants_date(&self, date: NaiveDate) -> bool {
+        self.from.is_none_or(|from| date >= from.date_naive())
+            && self.to.is_none_or(|to| date <= to.date_naive())
+    }
+
     /// Whether a file named `name` can hold an answer.
     #[must_use]
     pub fn wants_file(&self, name: &FileName) -> bool {
+        self.wants_span(name.first_ms, name.last_ms)
+    }
+
+    /// Whether a file whose rows were received from `first_ms` to
+    /// `last_ms`, in milliseconds since 1970, can hold an answer.
+    #[must_use]
+    pub fn wants_span(&self, first_ms: u64, last_ms: u64) -> bool {
         // A name's times are whole milliseconds, rounded down, so a file is
         // ruled out only when every time it can hold is outside the window.
         self.from
-            .is_none_or(|from| i128::from(name.last_ms) >= i128::from(from.timestamp_millis()))
+            .is_none_or(|from| i128::from(last_ms) >= i128::from(from.timestamp_millis()))
             && self
                 .to
-                .is_none_or(|to| i128::from(name.first_ms) <= i128::from(to.timestamp_millis()))
+                .is_none_or(|to| i128::from(first_ms) <= i128::from(to.timestamp_millis()))
     }
 
     /// Whether `record` is an answer.
     #[must_use]
-    pub fn wants_row(&self, record: &IntakeRecord) -> bool {
+    pub fn wants_row<R: Row>(&self, record: &R) -> bool {
         self.member
             .as_ref()
-            .is_none_or(|member| *member == record.member)
-            && self.from.is_none_or(|from| record.received_at >= from)
-            && self.to.is_none_or(|to| record.received_at < to)
-            && self
-                .call_id
-                .as_ref()
-                .is_none_or(|call_id| call_id == call_id_of(record))
+            .is_none_or(|member| member == record.member())
+            && self.from.is_none_or(|from| record.received_at() >= from)
+            && self.to.is_none_or(|to| record.received_at() < to)
+            && record.answers(self)
     }
 }
 
@@ -427,55 +958,49 @@ fn instant(name: &str, value: &str) -> Result<DateTime<Utc>, String> {
 ///
 /// `rows` is empty, a row's receive time is refused ([`received_ns`]), or
 /// the Parquet writer fails.
-pub fn encode(rows: &[IntakeRecord]) -> Result<Vec<u8>, String> {
-    encode_grouped(rows, ROWS_PER_GROUP)
+pub fn encode<R: Row>(rows: &[R]) -> Result<Vec<u8>, String> {
+    encode_cut(rows, GROUP_ROWS, ROWS_PER_GROUP)
 }
 
-/// [`encode`] with `per_group` rows to a row group.
-fn encode_grouped(rows: &[IntakeRecord], per_group: usize) -> Result<Vec<u8>, String> {
+/// [`encode`] with `per_group` rows to a row group, wherever a member's
+/// rows end.
+#[cfg(test)]
+fn encode_grouped<R: Row>(rows: &[R], per_group: usize) -> Result<Vec<u8>, String> {
+    encode_cut(rows, per_group, per_group)
+}
+
+/// [`encode`] with row groups of `least` to `most` rows ([`group_cuts`]).
+fn encode_cut<R: Row>(rows: &[R], least: usize, most: usize) -> Result<Vec<u8>, String> {
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use parquet::file::writer::SerializedFileWriter;
     use parquet::schema::types::ColumnPath;
     if rows.is_empty() {
         return Err("no rows: a file holds at least one".to_string());
     }
-    let schema = parquet::schema::parser::parse_message_type(SCHEMA).map_err(parquet_error)?;
-    let properties = WriterProperties::builder()
+    let schema = parquet::schema::parser::parse_message_type(R::SCHEMA).map_err(parquet_error)?;
+    let mut properties = WriterProperties::builder()
         .set_created_by("sipnab".to_string())
-        .set_statistics_enabled(EnabledStatistics::Chunk)
-        .set_column_bloom_filter_enabled(ColumnPath::from("call_id"), true)
-        .build();
-    let mut writer = SerializedFileWriter::new(Vec::new(), Arc::new(schema), Arc::new(properties))
-        .map_err(parquet_error)?;
-    for chunk in rows.chunks(per_group.max(1)) {
-        let received = chunk
-            .iter()
-            .map(received_ns)
-            .collect::<Result<Vec<i64>, String>>()?;
-        let calls = chunk
-            .iter()
-            .map(|row| serde_json::to_vec(&row.call).map_err(|e| e.to_string()))
-            .collect::<Result<Vec<Vec<u8>>, String>>()?;
+        .set_statistics_enabled(EnabledStatistics::Chunk);
+    if let Some(column) = R::FILTER_COLUMN {
+        properties = properties.set_column_bloom_filter_enabled(ColumnPath::from(column), true);
+    }
+    let mut writer =
+        SerializedFileWriter::new(Vec::new(), Arc::new(schema), Arc::new(properties.build()))
+            .map_err(parquet_error)?;
+    let members: Vec<&str> = rows.iter().map(Row::member).collect();
+    let mut rest = rows;
+    for cut in group_cuts(&members, least, most) {
+        let (chunk, after) = rest.split_at(cut.min(rest.len()));
+        rest = after;
         let mut group = writer.next_row_group().map_err(parquet_error)?;
-        write_longs(&mut group, &received)?;
-        write_texts(&mut group, chunk.iter().map(|row| row.member.as_bytes()))?;
-        write_texts(&mut group, chunk.iter().map(|row| row.stream.as_bytes()))?;
-        let positions: Vec<i64> = chunk
-            .iter()
-            .map(|row| i64::from_ne_bytes(row.seq.to_ne_bytes()))
-            .collect();
-        write_longs(&mut group, &positions)?;
-        let sent: Vec<String> = chunk.iter().map(|row| sent_text(row.sent_at)).collect();
-        write_texts(&mut group, sent.iter().map(String::as_bytes))?;
-        write_texts(
-            &mut group,
-            chunk.iter().map(|row| row.selected_by.as_bytes()),
-        )?;
-        write_texts(
-            &mut group,
-            chunk.iter().map(|row| call_id_of(row).as_bytes()),
-        )?;
-        write_texts(&mut group, calls.iter().map(Vec::as_slice))?;
+        for column in R::columns(chunk)? {
+            match column {
+                Column::Longs(values) => write_longs(&mut group, &values)?,
+                Column::Texts(values) => {
+                    write_texts(&mut group, values.iter().map(Vec::as_slice))?;
+                }
+            }
+        }
         group.close().map_err(parquet_error)?;
     }
     writer.into_inner().map_err(parquet_error)
@@ -501,7 +1026,7 @@ fn write_longs(group: &mut GroupWriter<'_>, values: &[i64]) -> Result<(), String
     let mut column = group
         .next_column()
         .map_err(parquet_error)?
-        .ok_or("parquet: the schema has fewer columns than a call record")?;
+        .ok_or("parquet: the schema has fewer columns than a row")?;
     column
         .typed::<parquet::data_type::Int64Type>()
         .write_batch(values, None, None)
@@ -519,7 +1044,7 @@ fn write_texts<'a>(
     let mut column = group
         .next_column()
         .map_err(parquet_error)?
-        .ok_or("parquet: the schema has fewer columns than a call record")?;
+        .ok_or("parquet: the schema has fewer columns than a row")?;
     column
         .typed::<parquet::data_type::ByteArrayType>()
         .write_batch(&values, None, None)
@@ -527,11 +1052,11 @@ fn write_texts<'a>(
     column.close().map_err(parquet_error)
 }
 
-/// What [`decode`] read.
+/// What `decode` read.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Decoded {
+pub struct Decoded<R> {
     /// The rows that answer the question, in the file's order.
-    pub rows: Vec<IntakeRecord>,
+    pub rows: Vec<R>,
     /// The row groups the file holds.
     pub groups: usize,
     /// The row groups that were read: those whose receive times and
@@ -545,7 +1070,7 @@ pub struct Decoded {
 ///
 /// `bytes` is not a Parquet file of [`encode`]'s schema, or a row in it
 /// does not parse.
-pub fn decode(bytes: Vec<u8>, query: &Query) -> Result<Decoded, String> {
+pub fn decode<R: Row>(bytes: Vec<u8>, query: &Query) -> Result<Decoded<R>, String> {
     use parquet::file::properties::ReaderProperties;
     use parquet::file::reader::FileReader as _;
     use parquet::file::serialized_reader::{ReadOptionsBuilder, SerializedFileReader};
@@ -558,13 +1083,20 @@ pub fn decode(bytes: Vec<u8>, query: &Query) -> Result<Decoded, String> {
         .build();
     let reader = SerializedFileReader::new_with_options(bytes::Bytes::from(bytes), options)
         .map_err(parquet_error)?;
-    let expected = parquet::schema::parser::parse_message_type(SCHEMA).map_err(parquet_error)?;
+    let expected = parquet::schema::parser::parse_message_type(R::SCHEMA).map_err(parquet_error)?;
     let found = reader.metadata().file_metadata().schema();
     if *found != expected {
-        return Err(
-            "parquet: the file's schema is not the call record schema this build reads".to_string(),
-        );
+        return Err(format!(
+            "parquet: the file's schema is not the {} schema this build reads",
+            R::NOUN
+        ));
     }
+    let filter = R::FILTER_COLUMN.and_then(|name| {
+        expected
+            .get_fields()
+            .iter()
+            .position(|field| field.name() == name)
+    });
     let mut decoded = Decoded {
         rows: Vec::new(),
         groups: reader.num_row_groups(),
@@ -572,13 +1104,13 @@ pub fn decode(bytes: Vec<u8>, query: &Query) -> Result<Decoded, String> {
     };
     for index in 0..reader.num_row_groups() {
         let group = reader.get_row_group(index).map_err(parquet_error)?;
-        if !may_answer(&*group, query) {
+        if !may_answer(&*group, query, filter) {
             continue;
         }
         decoded.groups_read += 1;
         let rows = usize::try_from(group.metadata().num_rows())
             .map_err(|_| "parquet: a row group has a negative row count".to_string())?;
-        for row in group_rows(&*group, rows)? {
+        for row in group_rows::<R>(&*group, rows)? {
             if query.wants_row(&row) {
                 decoded.rows.push(row);
             }
@@ -590,8 +1122,25 @@ pub fn decode(bytes: Vec<u8>, query: &Query) -> Result<Decoded, String> {
 /// Whether the row group `group` can hold an answer to `query`, by the
 /// least and the greatest receive time it records and by its Call-ID
 /// filter. A row group that records neither is read.
-fn may_answer(group: &dyn parquet::file::reader::RowGroupReader, query: &Query) -> bool {
+fn may_answer(
+    group: &dyn parquet::file::reader::RowGroupReader,
+    query: &Query,
+    filter: Option<usize>,
+) -> bool {
     use parquet::file::statistics::Statistics;
+    // A file holds its rows by member, so the least and the greatest
+    // member of a row group rule it out for a question about another.
+    if let (Some(member), Some(Statistics::ByteArray(members))) = (
+        query.member.as_ref(),
+        group.metadata().column(COL_MEMBER).statistics(),
+    ) {
+        let asked = member.as_bytes();
+        if members.min_opt().is_some_and(|min| asked < min.data())
+            || members.max_opt().is_some_and(|max| asked > max.data())
+        {
+            return false;
+        }
+    }
     if let Some(Statistics::Int64(times)) = group.metadata().column(COL_RECEIVED_AT).statistics() {
         let before = |at: DateTime<Utc>| at.timestamp_nanos_opt();
         if let (Some(from), Some(max)) = (query.from.and_then(before), times.max_opt())
@@ -607,7 +1156,7 @@ fn may_answer(group: &dyn parquet::file::reader::RowGroupReader, query: &Query) 
     }
     if let (Some(call_id), Some(filter)) = (
         query.call_id.as_ref(),
-        group.get_column_bloom_filter(COL_CALL_ID),
+        filter.and_then(|column| group.get_column_bloom_filter(column)),
     ) && !filter.check(&parquet::data_type::ByteArray::from(call_id.as_str()))
     {
         return false;
@@ -616,42 +1165,21 @@ fn may_answer(group: &dyn parquet::file::reader::RowGroupReader, query: &Query) 
 }
 
 /// The `rows` rows of the row group `group`.
-fn group_rows(
+fn group_rows<R: Row>(
     group: &dyn parquet::file::reader::RowGroupReader,
     rows: usize,
-) -> Result<Vec<IntakeRecord>, String> {
-    let received = read_longs(group, 0, rows)?;
-    let members = read_texts(group, 1, rows)?;
-    let streams = read_texts(group, 2, rows)?;
-    let positions = read_longs(group, 3, rows)?;
-    let sent = read_texts(group, 4, rows)?;
-    let selected = read_texts(group, 5, rows)?;
-    let calls = read_texts(group, 7, rows)?;
-    let text = |column: &[parquet::data_type::ByteArray], row: usize| {
-        column[row]
-            .as_utf8()
-            .map(str::to_string)
-            .map_err(|_| format!("parquet: row {} holds text that is not UTF-8", row + 1))
-    };
-    (0..rows)
-        .map(|row| {
-            let sent_at = DateTime::parse_from_rfc3339(&text(&sent, row)?)
-                .map_err(|_| format!("parquet: row {} has a send time that is no time", row + 1))?
-                .with_timezone(&Utc);
-            let call = serde_json::from_slice(calls[row].data()).map_err(|e| {
-                format!("parquet: row {} has a call that is not JSON: {e}", row + 1)
-            })?;
-            Ok(IntakeRecord {
-                member: text(&members, row)?,
-                received_at: DateTime::from_timestamp_nanos(received[row]),
-                stream: text(&streams, row)?,
-                seq: u64::from_ne_bytes(positions[row].to_ne_bytes()),
-                sent_at,
-                selected_by: text(&selected, row)?,
-                call,
-            })
-        })
-        .collect()
+) -> Result<Vec<R>, String> {
+    let columns = (0..group.num_columns())
+        .map(
+            |column| match group.metadata().column(column).column_type() {
+                parquet::basic::Type::INT64 => read_longs(group, column, rows).map(Column::Longs),
+                _ => read_texts(group, column, rows).map(|values| {
+                    Column::Texts(values.iter().map(|value| value.data().to_vec()).collect())
+                }),
+            },
+        )
+        .collect::<Result<Vec<Column>, String>>()?;
+    R::from_columns(columns, rows)
 }
 
 /// The `rows` values of column `column` of `group`, a column of 64-bit
@@ -724,11 +1252,11 @@ pub fn sealed_lines(rel: &str, parquet: &[u8], chunk: usize) -> Vec<Vec<u8>> {
 ///
 /// # Errors
 ///
-/// The sealed layer refuses the file (not a sealed calls file, key not
-/// loaded, modified, truncated), or the file was written for another path
-/// than `rel`. The message starts with `rel` and names the layer.
-pub fn unseal(rel: &str, bytes: &[u8], keys: &Keys) -> Result<Vec<u8>, String> {
-    let log = super::fleet_seal::open_log(bytes, keys, Kind::Calls)
+/// The sealed layer refuses the file (not a sealed file of kind `kind`, key
+/// not loaded, modified, truncated), or the file was written for another
+/// path than `rel`. The message starts with `rel` and names the layer.
+pub fn unseal(rel: &str, bytes: &[u8], keys: &Keys, kind: Kind) -> Result<Vec<u8>, String> {
+    let log = super::fleet_seal::open_log(bytes, keys, kind)
         .map_err(|e| format!("{rel}: sealed layer: the file {e}"))?;
     if log.torn_tail {
         return Err(format!(
@@ -747,27 +1275,45 @@ pub fn unseal(rel: &str, bytes: &[u8], keys: &Keys) -> Result<Vec<u8>, String> {
     Ok(pieces.concat())
 }
 
-/// The rows of `rows` that `stored` does not hold, in order. Both are rows
-/// of one partition; a row is the same row when its stream, its position
-/// and its send time are the same.
+/// The rows of `rows` that `stored` does not hold, in order. A row is the
+/// same row when its member and its identity are the same
+/// ([`Row::identity`]): for a call record its stream, its position and its
+/// send time, for a heartbeat its count and its receive time.
 #[must_use]
-pub fn without_stored(rows: Vec<IntakeRecord>, stored: &[IntakeRecord]) -> Vec<IntakeRecord> {
-    let held: BTreeSet<(&str, u64, DateTime<Utc>)> = stored
+pub fn without_stored<R: Row>(rows: Vec<R>, stored: &[R]) -> Vec<R> {
+    /// A member and what tells one of its rows from another.
+    type Key<'a> = (&'a str, (&'a str, u64, DateTime<Utc>));
+    let held: BTreeSet<Key<'_>> = stored
         .iter()
-        .map(|row| (row.stream.as_str(), row.seq, row.sent_at))
+        .map(|row| (row.member(), row.identity()))
         .collect();
     rows.into_iter()
-        .filter(|row| !held.contains(&(row.stream.as_str(), row.seq, row.sent_at)))
+        .filter(|row| !held.contains(&(row.member(), row.identity())))
         .collect()
+}
+
+/// The oldest day a retention of `days` days keeps on the day `today`.
+#[must_use]
+pub fn oldest_kept(today: NaiveDate, days: u32) -> NaiveDate {
+    today
+        .checked_sub_days(chrono::Days::new(u64::from(days)))
+        .unwrap_or(NaiveDate::MIN)
+}
+
+/// The oldest day of heartbeats a member retention of `retention` keeps at
+/// `now`: the day the oldest kept instant falls on, so a day is removed
+/// only once every instant of it is past the retention.
+#[must_use]
+pub fn oldest_kept_at(now: DateTime<Utc>, retention: chrono::Duration) -> NaiveDate {
+    now.checked_sub_signed(retention)
+        .map_or(NaiveDate::MIN, |at| at.date_naive())
 }
 
 /// The days of `dates` that are past a retention of `days` days on the
 /// day `today`: a day is kept while it is at most `days` days old.
 #[must_use]
 pub fn expired(dates: &[NaiveDate], today: NaiveDate, days: u32) -> Vec<NaiveDate> {
-    let oldest_kept = today
-        .checked_sub_days(chrono::Days::new(u64::from(days)))
-        .unwrap_or(NaiveDate::MIN);
+    let oldest_kept = oldest_kept(today, days);
     dates
         .iter()
         .copied()
@@ -778,19 +1324,19 @@ pub fn expired(dates: &[NaiveDate], today: NaiveDate, days: u32) -> Vec<NaiveDat
 /// The newest `limit` rows of `rows`, newest first, each row once, and
 /// whether there were more.
 #[must_use]
-pub fn newest(rows: Vec<IntakeRecord>, limit: usize) -> (Vec<IntakeRecord>, bool) {
+pub fn newest<R: Row>(rows: Vec<R>, limit: usize) -> (Vec<R>, bool) {
     let mut rows = rows;
     rows.sort_by(|a, b| {
-        b.received_at
-            .cmp(&a.received_at)
-            .then_with(|| a.member.cmp(&b.member))
-            .then_with(|| a.stream.cmp(&b.stream))
-            .then_with(|| b.seq.cmp(&a.seq))
-            .then_with(|| b.sent_at.cmp(&a.sent_at))
+        let (a_stream, a_seq, a_at) = a.identity();
+        let (b_stream, b_seq, b_at) = b.identity();
+        b.received_at()
+            .cmp(&a.received_at())
+            .then_with(|| a.member().cmp(b.member()))
+            .then_with(|| a_stream.cmp(b_stream))
+            .then_with(|| b_seq.cmp(&a_seq))
+            .then_with(|| b_at.cmp(&a_at))
     });
-    rows.dedup_by(|a, b| {
-        a.member == b.member && a.stream == b.stream && a.seq == b.seq && a.sent_at == b.sent_at
-    });
+    rows.dedup_by(|a, b| a.member() == b.member() && a.identity() == b.identity());
     let more = rows.len() > limit;
     rows.truncate(limit);
     (rows, more)
@@ -813,8 +1359,15 @@ pub struct Listed {
     /// The file's path under the history directory, with `/` between its
     /// parts.
     pub rel: String,
-    /// What its name says.
-    pub name: FileName,
+    /// The earliest receive time its name states, in milliseconds since
+    /// 1970.
+    pub first_ms: u64,
+    /// The latest receive time its name states.
+    pub last_ms: u64,
+    /// The member whose rows it holds, when its path names one: a file
+    /// release 0.5.249 wrote, under `member=<id>`. A file of the layout
+    /// this build writes holds every member's rows and names none.
+    pub member: Option<String>,
 }
 
 /// What one [`History::expire`] did.
@@ -832,33 +1385,56 @@ pub struct Expired {
 
 /// The answer to one question.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Answer {
+pub struct Answer<R> {
     /// The rows, newest first, at most the question's limit.
-    pub rows: Vec<IntakeRecord>,
+    pub rows: Vec<R>,
     /// Whether more rows answer the question than were returned.
     pub more: bool,
     /// The files that could not be read, each with the reason.
     pub refused: Vec<(String, String)>,
     /// The files that were opened.
     pub files_read: usize,
+    /// The files that were left unread because the question ruled in more
+    /// than [`MAX_FILES_PER_QUESTION`].
+    pub files_not_read: usize,
+    /// The row groups the files that were opened hold.
+    pub groups: usize,
+    /// The row groups of them that were read: those whose member, receive
+    /// times and Call-ID filter do not rule out an answer.
+    pub groups_read: usize,
 }
 
-impl Answer {
-    /// The answer as `GET /v1/fleet/calls` returns it.
+impl<R> Answer<R> {
+    /// The answer as a route returns it, with the rows under `key`, each
+    /// as `row` shows it. `complete` is true when every file the question
+    /// needed was read.
     #[must_use]
-    pub fn json(&self) -> serde_json::Value {
+    pub fn json_as(&self, key: &str, row: impl Fn(&R) -> serde_json::Value) -> serde_json::Value {
         let refused: Vec<serde_json::Value> = self
             .refused
             .iter()
             .map(|(file, reason)| serde_json::json!({"file": file, "reason": reason}))
             .collect();
-        serde_json::json!({
-            "calls": self.rows,
+        let rows: Vec<serde_json::Value> = self.rows.iter().map(row).collect();
+        let mut answer = serde_json::json!({
             "count": self.rows.len(),
             "more": self.more,
-            "complete": self.refused.is_empty(),
+            "complete": self.refused.is_empty() && self.files_not_read == 0,
             "refused": refused,
             "files_read": self.files_read,
+            "files_not_read": self.files_not_read,
+        });
+        answer[key] = serde_json::Value::Array(rows);
+        answer
+    }
+}
+
+impl Answer<IntakeRecord> {
+    /// The answer as `GET /v1/fleet/calls` returns it.
+    #[must_use]
+    pub fn json(&self) -> serde_json::Value {
+        self.json_as("calls", |row| {
+            serde_json::to_value(row).unwrap_or(serde_json::Value::Null)
         })
     }
 }
@@ -925,10 +1501,22 @@ impl History {
             dir: dir.clone(),
             keys,
         };
-        for (_, _, member_dir) in history.member_dirs().map_err(refused)? {
-            for (name, is_dir) in names(&member_dir).map_err(refused)? {
-                if !is_dir && is_staged(&name) {
-                    std::fs::remove_file(member_dir.join(&name)).map_err(refused)?;
+        for class in [CLASS_CALLS, CLASS_MEMBERS] {
+            for (_, day) in history.day_dirs(class).map_err(refused)? {
+                // A day's own files, and those of the member directories
+                // release 0.5.249 wrote in it.
+                let mut dirs = vec![day.clone()];
+                for (name, is_dir) in names(&day).map_err(refused)? {
+                    if is_dir {
+                        dirs.push(day.join(name));
+                    }
+                }
+                for dir in dirs {
+                    for (name, is_dir) in names(&dir).map_err(refused)? {
+                        if !is_dir && is_staged(&name) {
+                            std::fs::remove_file(dir.join(&name)).map_err(refused)?;
+                        }
+                    }
                 }
             }
         }
@@ -945,20 +1533,62 @@ impl History {
         }
     }
 
-    /// Every member directory of the store: the day's directory name, the
-    /// member's, and the path. Directories under names this module does
-    /// not write are included, for the caller to rule out.
-    fn member_dirs(&self) -> std::io::Result<Vec<(String, String, PathBuf)>> {
-        let class = self.dir.join(CLASS_CALLS);
+    /// Every directory of the class `class`, each with its name and its
+    /// path: the days, and directories under names this module does not
+    /// write, for the caller to rule out.
+    fn day_dirs(&self, class: &str) -> std::io::Result<Vec<(String, PathBuf)>> {
+        let class = self.dir.join(class);
+        Ok(names(&class)?
+            .into_iter()
+            .filter(|(_, is_dir)| *is_dir)
+            .map(|(name, _)| {
+                let path = class.join(&name);
+                (name, path)
+            })
+            .collect())
+    }
+
+    /// The files of the day at `day`, whose directory is named `date_dir`
+    /// in the class `class`, that pass `wants`: the files of the day
+    /// itself, which hold every member's rows, and the files release
+    /// 0.5.249 wrote under `member=<id>` for the members `member` passes.
+    fn day_files(
+        class: &str,
+        date_dir: &str,
+        day: &Path,
+        member: &dyn Fn(&str) -> bool,
+        wants: &dyn Fn(u64, u64) -> bool,
+    ) -> std::io::Result<Vec<Listed>> {
         let mut out = Vec::new();
-        for (date_dir, is_dir) in names(&class)? {
+        for (entry, is_dir) in names(day)? {
             if !is_dir {
+                if let Some(name) = IntervalName::parse(&entry)
+                    && wants(name.first_ms, name.last_ms)
+                {
+                    out.push(Listed {
+                        rel: format!("{class}/{date_dir}/{entry}"),
+                        first_ms: name.first_ms,
+                        last_ms: name.last_ms,
+                        member: None,
+                    });
+                }
                 continue;
             }
-            for (member_dir, is_dir) in names(&class.join(&date_dir))? {
-                if is_dir {
-                    let path = class.join(&date_dir).join(&member_dir);
-                    out.push((date_dir.clone(), member_dir, path));
+            let Some(partition) =
+                Partition::parse(date_dir, &entry).filter(|partition| member(&partition.member))
+            else {
+                continue;
+            };
+            for (file, is_dir) in names(&day.join(&entry))? {
+                if let Some(name) = FileName::parse(&file).filter(|_| !is_dir)
+                    && wants(name.first_ms, name.last_ms)
+                {
+                    out.push(Listed {
+                        rel: format!("{}/{file}", partition.rel_dir(class)),
+                        first_ms: name.first_ms,
+                        last_ms: name.last_ms,
+                        member: Some(partition.member.clone()),
+                    });
                 }
             }
         }
@@ -971,9 +1601,10 @@ impl History {
         &self.dir
     }
 
-    /// File `records`: one new file for each day and member with rows that
-    /// no file of that day and member already holds. Every file is on disk
-    /// before this returns.
+    /// File `records`: one new file for each day with rows that no file of
+    /// that day already holds, whatever the number of members the rows
+    /// came from. A file holds its rows by member and then by receive
+    /// time ([`sorted`]). Every file is on disk before this returns.
     ///
     /// # Errors
     ///
@@ -981,24 +1612,107 @@ impl History {
     /// written, or a file that may already hold some of the rows cannot be
     /// read. Files written before the error stay; filing the same records
     /// again leaves their rows out.
-    pub fn file(&self, records: &[IntakeRecord]) -> Result<Filed, String> {
+    pub fn file<R: Row>(&self, records: &[R]) -> Result<Filed, String> {
+        let mut filed = Filed::default();
+        for (date, rows) in by_date(records) {
+            let date_dir = format!("{DATE_PREFIX}{}", date.format(DATE_FORMAT));
+            let rel_dir = format!("{}/{date_dir}", R::CLASS);
+            let dir = self.dir.join(&rel_dir);
+            let refused = |e: std::io::Error| format!("the history store: {rel_dir}: {e}");
+            let asked = rows.len();
+            let earliest = IntervalName::of(&rows)?.first_ms;
+            create_private_dir(&dir).map_err(refused)?;
+            // A row given twice is filed once: the first given stays.
+            let mut given = BTreeSet::new();
+            let mut rows: Vec<R> = rows
+                .into_iter()
+                .filter(|row| {
+                    let (stream, seq, at) = row.identity();
+                    given.insert((row.member().to_string(), stream.to_string(), seq, at))
+                })
+                .collect();
+            // A file whose latest row is not before these rows' earliest
+            // may hold some of them: after a stop between filing and
+            // emptying the intake, it holds all of them. That is so for a
+            // file of this layout and for a file release 0.5.249 wrote for
+            // one of these rows' members.
+            let members: BTreeSet<&str> = rows.iter().map(Row::member).collect();
+            let may_hold = Self::day_files(
+                R::CLASS,
+                &date_dir,
+                &dir,
+                &|member| members.contains(member),
+                &|_, last_ms| last_ms >= earliest,
+            )
+            .map_err(refused)?;
+            drop(members);
+            for file in may_hold {
+                let stored = self.read::<R>(&file.rel, &Query::all())?;
+                rows = without_stored(rows, &stored.rows);
+            }
+            filed.already += asked - rows.len();
+            if rows.is_empty() {
+                continue;
+            }
+            let rows = sorted(rows);
+            let name = IntervalName::of(&rows)?.text();
+            let rel = format!("{rel_dir}/{name}");
+            let path = dir.join(&name);
+            if path.exists() {
+                return Err(format!(
+                    "the history store: {rel} exists and holds other rows; it is not replaced"
+                ));
+            }
+            let lines = sealed_lines(&rel, &encode(&rows)?, CHUNK_BYTES);
+            super::fleet_center::write_sealed_reading(
+                &path,
+                &self.keys,
+                R::KIND,
+                lines.into_iter().map(Ok),
+                &|staged| std::fs::read(staged),
+            )
+            .and_then(|_| std::fs::File::open(&dir)?.sync_all())
+            .map_err(|e| format!("the history store: {rel}: {e}"))?;
+            filed.files += 1;
+            filed.rows += rows.len();
+        }
+        Ok(filed)
+    }
+
+    /// File `records` as release 0.5.249 did: one new file for each day
+    /// and member, under `member=<id>`. Tests build the files of that
+    /// release with it; no build writes them.
+    ///
+    /// # Errors
+    ///
+    /// As [`History::file`].
+    #[cfg(test)]
+    pub(crate) fn file_per_member<R: Row>(&self, records: &[R]) -> Result<Filed, String> {
         let mut filed = Filed::default();
         for (partition, rows) in groups(records) {
-            let rel_dir = partition.rel_dir();
+            let rel_dir = partition.rel_dir(R::CLASS);
             let dir = self.dir.join(&rel_dir);
             let refused = |e: std::io::Error| format!("the history store: {rel_dir}: {e}");
             let asked = rows.len();
             let earliest = FileName::of(&rows)?.first_ms;
             create_private_dir(&dir).map_err(refused)?;
+            // A row given twice is filed once: the first given stays.
+            let mut given = BTreeSet::new();
+            let mut rows: Vec<R> = rows
+                .into_iter()
+                .filter(|row| {
+                    let (stream, seq, at) = row.identity();
+                    given.insert((stream.to_string(), seq, at))
+                })
+                .collect();
             // A file whose latest row is not before this group's earliest
             // may hold some of the group: after a stop between filing and
             // emptying the intake, it holds all of it.
-            let mut rows = rows;
             for (name, is_dir) in names(&dir).map_err(refused)? {
                 let may_hold = !is_dir
                     && FileName::parse(&name).is_some_and(|stored| stored.last_ms >= earliest);
                 if may_hold {
-                    let stored = self.read(&format!("{rel_dir}/{name}"), &Query::all())?;
+                    let stored = self.read::<R>(&format!("{rel_dir}/{name}"), &Query::all())?;
                     rows = without_stored(rows, &stored.rows);
                 }
             }
@@ -1018,7 +1732,7 @@ impl History {
             super::fleet_center::write_sealed_reading(
                 &path,
                 &self.keys,
-                Kind::Calls,
+                R::KIND,
                 lines.into_iter().map(Ok),
                 &|staged| std::fs::read(staged),
             )
@@ -1030,39 +1744,31 @@ impl History {
         Ok(filed)
     }
 
-    /// The files that can hold an answer to `query`, by their paths alone,
-    /// the file with the latest rows first.
+    /// The files of the class `class` that can hold an answer to `query`,
+    /// by their paths alone, the file with the latest rows first.
     ///
     /// # Errors
     ///
     /// A directory of the store cannot be read.
-    pub fn list(&self, query: &Query) -> Result<Vec<Listed>, String> {
+    pub fn list(&self, class: &str, query: &Query) -> Result<Vec<Listed>, String> {
         let refused = |e: std::io::Error| format!("the history store: {e}");
         let mut out = Vec::new();
-        for (date_dir, member_dir, path) in self.member_dirs().map_err(refused)? {
-            let Some(partition) = Partition::parse(&date_dir, &member_dir) else {
-                continue;
-            };
-            if !query.wants_partition(&partition) {
+        for (date_dir, day) in self.day_dirs(class).map_err(refused)? {
+            if !parse_date_dir(&date_dir).is_some_and(|date| query.wants_date(date)) {
                 continue;
             }
-            for (file, is_dir) in names(&path).map_err(refused)? {
-                if let Some(name) = FileName::parse(&file).filter(|_| !is_dir)
-                    && query.wants_file(&name)
-                {
-                    out.push(Listed {
-                        rel: format!("{}/{file}", partition.rel_dir()),
-                        name,
-                    });
-                }
-            }
+            out.extend(
+                Self::day_files(
+                    class,
+                    &date_dir,
+                    &day,
+                    &|member| query.member.as_deref().is_none_or(|asked| asked == member),
+                    &|first_ms, last_ms| query.wants_span(first_ms, last_ms),
+                )
+                .map_err(refused)?,
+            );
         }
-        out.sort_by(|a, b| {
-            b.name
-                .last_ms
-                .cmp(&a.name.last_ms)
-                .then_with(|| a.rel.cmp(&b.rel))
-        });
+        out.sort_by(|a, b| b.last_ms.cmp(&a.last_ms).then_with(|| a.rel.cmp(&b.rel)));
         Ok(out)
     }
 
@@ -1072,46 +1778,67 @@ impl History {
     ///
     /// The file cannot be read, the sealed layer refuses it, or its
     /// Parquet does not parse. The message starts with `rel`.
-    pub fn read(&self, rel: &str, query: &Query) -> Result<Decoded, String> {
+    pub fn read<R: Row>(&self, rel: &str, query: &Query) -> Result<Decoded<R>, String> {
         self.read_io(rel, query).map_err(|e| e.to_string())
     }
 
     /// [`History::read`], with a file that is absent told apart.
-    fn read_io(&self, rel: &str, query: &Query) -> std::io::Result<Decoded> {
+    fn read_io<R: Row>(&self, rel: &str, query: &Query) -> std::io::Result<Decoded<R>> {
         let bytes = match std::fs::read(self.dir.join(rel)) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(e),
             Err(e) => return Err(std::io::Error::other(format!("{rel}: {e}"))),
         };
-        let parquet = unseal(rel, &bytes, &self.keys).map_err(std::io::Error::other)?;
+        let parquet = unseal(rel, &bytes, &self.keys, R::KIND).map_err(std::io::Error::other)?;
         decode(parquet, query).map_err(|e| std::io::Error::other(format!("{rel}: {e}")))
     }
 
-    /// Remove the days past a retention of `days` days on the day `today`
-    /// ([`expired`]): the files this module wrote in them, and then their
-    /// directories.
+    /// Remove the days of the class `class` past a retention of `days` days
+    /// on the day `today` ([`expired`]): the files this module wrote in
+    /// them, and then their directories.
     ///
     /// # Errors
     ///
     /// The store's directory cannot be read.
-    pub fn expire(&self, today: NaiveDate, days: u32) -> Result<Expired, String> {
+    pub fn expire(&self, class: &str, today: NaiveDate, days: u32) -> Result<Expired, String> {
+        self.expire_before(class, oldest_kept(today, days))
+    }
+
+    /// Remove the days of the class `class` before the day `oldest_kept`:
+    /// the files this module wrote in them, and then their directories.
+    ///
+    /// # Errors
+    ///
+    /// The store's directory cannot be read.
+    pub fn expire_before(
+        &self,
+        class_name: &str,
+        oldest_kept: NaiveDate,
+    ) -> Result<Expired, String> {
         let refused = |e: std::io::Error| format!("the history store: {e}");
-        let class = self.dir.join(CLASS_CALLS);
+        let class = self.dir.join(class_name);
         let dated: Vec<(NaiveDate, String)> = names(&class)
             .map_err(refused)?
             .into_iter()
             .filter(|(_, is_dir)| *is_dir)
             .filter_map(|(name, _)| parse_date_dir(&name).map(|date| (date, name)))
             .collect();
-        let dates: Vec<NaiveDate> = dated.iter().map(|(date, _)| *date).collect();
-        let gone = expired(&dates, today, days);
         let mut out = Expired::default();
-        for (_, date_dir) in dated.iter().filter(|(date, _)| gone.contains(date)) {
+        for (_, date_dir) in dated.iter().filter(|(date, _)| *date < oldest_kept) {
             let day = class.join(date_dir);
             for (member_dir, is_dir) in names(&day).map_err(refused)? {
-                let rel = format!("{CLASS_CALLS}/{date_dir}/{member_dir}");
+                let rel = format!("{class_name}/{date_dir}/{member_dir}");
                 if !is_dir {
-                    out.left.push(format!("{rel}: not a file of the store"));
+                    // A file of the day itself: one that holds every
+                    // member's rows, or a staged one.
+                    let ours = IntervalName::parse(&member_dir).is_some() || is_staged(&member_dir);
+                    if !ours {
+                        out.left.push(format!("{rel}: not a file of the store"));
+                    } else if let Err(e) = std::fs::remove_file(day.join(&member_dir)) {
+                        out.left.push(format!("{rel}: {e}"));
+                    } else if !is_staged(&member_dir) {
+                        out.files += 1;
+                    }
                     continue;
                 }
                 let member = day.join(&member_dir);
@@ -1142,7 +1869,21 @@ impl History {
     /// latest rows back, and reading stops once no file left can hold a
     /// row among the newest the limit allows.
     #[must_use]
-    pub fn answer(&self, query: &Query, files: &[Listed], waiting: Vec<IntakeRecord>) -> Answer {
+    pub fn answer<R: Row>(&self, query: &Query, files: &[Listed], waiting: Vec<R>) -> Answer<R> {
+        self.answer_within(query, files, waiting, MAX_FILES_PER_QUESTION)
+    }
+
+    /// [`History::answer`] that opens at most `max_files` files: the files
+    /// left when that many were opened are counted in
+    /// [`Answer::files_not_read`].
+    #[must_use]
+    pub fn answer_within<R: Row>(
+        &self,
+        query: &Query,
+        files: &[Listed],
+        waiting: Vec<R>,
+        max_files: usize,
+    ) -> Answer<R> {
         let mut answer = Answer {
             rows: waiting
                 .into_iter()
@@ -1151,31 +1892,42 @@ impl History {
             more: false,
             refused: Vec::new(),
             files_read: 0,
+            files_not_read: 0,
+            groups: 0,
+            groups_read: 0,
         };
         let keep = query.limit.saturating_add(1);
-        for file in files {
+        for (index, file) in files.iter().enumerate() {
             if answer.rows.len() >= keep {
                 // The rows held are the newest `keep` so far. A file whose
                 // latest row is older than the oldest of them adds none to
                 // the answer, and neither does any file after it.
                 let (rows, _) = newest(std::mem::take(&mut answer.rows), keep);
                 answer.rows = rows;
-                let oldest = answer.rows.last().map(|row| row.received_at);
+                let oldest = answer.rows.last().map(Row::received_at);
                 if answer.rows.len() >= keep
                     && oldest.is_some_and(|at| {
-                        i128::from(file.name.last_ms) < i128::from(at.timestamp_millis())
+                        i128::from(file.last_ms) < i128::from(at.timestamp_millis())
                     })
                 {
                     break;
                 }
             }
+            if answer.files_read + answer.refused.len() >= max_files {
+                answer.files_not_read = files.len() - index;
+                break;
+            }
             match self.read_io(&file.rel, query) {
                 Ok(decoded) => {
                     answer.files_read += 1;
+                    answer.groups += decoded.groups;
+                    answer.groups_read += decoded.groups_read;
                     answer.rows.extend(decoded.rows);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => answer.refused.push((file.rel.clone(), e.to_string())),
+                Err(e) => answer
+                    .refused
+                    .push((file.rel.clone(), reason(&file.rel, &e))),
             }
         }
         let (rows, more) = newest(answer.rows, query.limit);
@@ -1183,6 +1935,184 @@ impl History {
         answer.more = more;
         answer
     }
+
+    /// The newest heartbeat the store holds of each member, for a registry
+    /// that `known` describes: the members the store file names, each with
+    /// the receive time of the heartbeat it holds of that member.
+    ///
+    /// The files of the days from `oldest` on are read from the latest
+    /// rows back, each once, whatever the number of members. Reading stops
+    /// at the first file that ends before the newest receive time in
+    /// `known`, since the store file is written before a heartbeat waits
+    /// for a filing; when every member of `known` has a row; when the
+    /// files of the days from `oldest` on are read; or when `max_files`
+    /// files were opened,
+    /// and then the files left are counted in
+    /// [`Restored::files_not_read`]. With no member in `known`, a lost
+    /// store file, every file up to the bound is read.
+    ///
+    /// # Errors
+    ///
+    /// A directory of the store cannot be read.
+    pub fn newest_heartbeats(
+        &self,
+        oldest: NaiveDate,
+        known: &BTreeMap<String, DateTime<Utc>>,
+        max_files: usize,
+    ) -> Result<Restored, String> {
+        let query = Query {
+            from: oldest.and_hms_opt(0, 0, 0).map(|at| at.and_utc()),
+            ..Query::all()
+        };
+        let files = self.list(CLASS_MEMBERS, &query)?;
+        let store_ms = known
+            .values()
+            .max()
+            .map(|at| i128::from(at.timestamp_millis()));
+        let mut newest: BTreeMap<String, MemberRecord> = BTreeMap::new();
+        let mut out = Restored::default();
+        for (index, file) in files.iter().enumerate() {
+            let last_ms = i128::from(file.last_ms);
+            if store_ms.is_some_and(|store_ms| last_ms < store_ms) {
+                break;
+            }
+            let has_all =
+                !known.is_empty() && known.keys().all(|member| newest.contains_key(member));
+            if has_all {
+                break;
+            }
+            if out.files_read + out.refused.len() >= max_files {
+                out.files_not_read = files.len() - index;
+                break;
+            }
+            match self.read_io::<MemberRecord>(&file.rel, &Query::all()) {
+                Ok(decoded) => {
+                    out.files_read += 1;
+                    for row in decoded.rows {
+                        let is_newer = newest.get(&row.member).is_none_or(|held| {
+                            (row.received_at, row.heartbeats) > (held.received_at, held.heartbeats)
+                        });
+                        if is_newer {
+                            newest.insert(row.member.clone(), row);
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => out.refused.push((file.rel.clone(), reason(&file.rel, &e))),
+            }
+        }
+        // A heartbeat that is not later than the one the store file holds
+        // of its member restores nothing.
+        out.members = newest
+            .into_values()
+            .filter(|row| {
+                known
+                    .get(&row.member)
+                    .is_none_or(|at| row.received_at > *at)
+            })
+            .collect();
+        Ok(out)
+    }
+
+    /// The call records the store holds of each member of `since` that the
+    /// center received at that member's instant or later, oldest first.
+    /// Every file is read once, whatever the number of members, from the
+    /// latest rows back, and at most `max_files` files are opened; the
+    /// files left are counted in [`CallsAfter::files_not_read`].
+    ///
+    /// # Errors
+    ///
+    /// A directory of the store cannot be read.
+    pub fn calls_after(
+        &self,
+        since: &BTreeMap<String, DateTime<Utc>>,
+        max_files: usize,
+    ) -> Result<CallsAfter, String> {
+        let mut out = CallsAfter::default();
+        let Some(earliest) = since.values().min().copied() else {
+            return Ok(out);
+        };
+        let query = Query {
+            from: Some(earliest),
+            ..Query::all()
+        };
+        // A file release 0.5.249 wrote for a member that was not asked for
+        // is ruled out by its path.
+        let files: Vec<Listed> = self
+            .list(CLASS_CALLS, &query)?
+            .into_iter()
+            .filter(|file| {
+                file.member
+                    .as_ref()
+                    .is_none_or(|member| since.contains_key(member))
+            })
+            .collect();
+        for (index, file) in files.iter().enumerate() {
+            if out.files_read + out.refused.len() >= max_files {
+                out.files_not_read = files.len() - index;
+                break;
+            }
+            match self.read_io::<IntakeRecord>(&file.rel, &query) {
+                Ok(decoded) => {
+                    out.files_read += 1;
+                    out.rows.extend(decoded.rows.into_iter().filter(|row| {
+                        since
+                            .get(&row.member)
+                            .is_some_and(|at| row.received_at >= *at)
+                    }));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => out.refused.push((file.rel.clone(), reason(&file.rel, &e))),
+            }
+        }
+        out.rows.sort_by(|a, b| {
+            a.received_at
+                .cmp(&b.received_at)
+                .then_with(|| a.member.cmp(&b.member))
+                .then_with(|| a.stream.cmp(&b.stream))
+                .then_with(|| a.seq.cmp(&b.seq))
+        });
+        Ok(out)
+    }
+}
+
+/// What [`History::calls_after`] found.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CallsAfter {
+    /// The call records, oldest first.
+    pub rows: Vec<IntakeRecord>,
+    /// The files that could not be read, each with the reason.
+    pub refused: Unread,
+    /// The files that were opened.
+    pub files_read: usize,
+    /// The files left unread because more than the bound could hold rows.
+    pub files_not_read: usize,
+}
+
+/// The files that could not be read, each with the reason.
+pub type Unread = Vec<(String, String)>;
+
+/// Why the file at `rel` was not read, without the path: a read's error
+/// starts with the path, which an answer holds in a field of its own.
+fn reason(rel: &str, e: &std::io::Error) -> String {
+    let text = e.to_string();
+    text.strip_prefix(rel)
+        .and_then(|rest| rest.strip_prefix(": "))
+        .map_or(text.clone(), str::to_string)
+}
+
+/// What [`History::newest_heartbeats`] found.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Restored {
+    /// The newest heartbeat of each member it read a file for.
+    pub members: Vec<MemberRecord>,
+    /// The files that could not be read, each with the reason.
+    pub refused: Vec<(String, String)>,
+    /// The files that were opened.
+    pub files_read: usize,
+    /// The files left unread because the bound on the files of one
+    /// rebuild was reached before the rebuild had what it looked for.
+    pub files_not_read: usize,
 }
 
 #[cfg(test)]
@@ -1258,7 +2188,11 @@ mod store_tests {
     /// The positions of every row the store answers `query` with, with no
     /// row waiting.
     fn seqs(history: &History, query: &Query) -> Result<Vec<u64>, String> {
-        let answer = history.answer(query, &history.list(query)?, Vec::new());
+        let answer = history.answer(
+            query,
+            &history.list(CLASS_CALLS, query)?,
+            Vec::<IntakeRecord>::new(),
+        );
         if let Some((file, why)) = answer.refused.first() {
             return Err(format!("{file}: {why}"));
         }
@@ -1276,7 +2210,7 @@ mod store_tests {
     #[test]
     fn success_rows_are_filed_at_the_layout_path() -> TestResult {
         let (_dir, history) = store()?;
-        let filed = history.file(&rows("edge-a", 1, 3))?;
+        let filed = history.file_per_member(&rows("edge-a", 1, 3))?;
         assert_eq!(
             filed,
             Filed {
@@ -1302,9 +2236,9 @@ mod store_tests {
         let (_dir, history) = store()?;
         let written = rows("edge-a", 1, 5);
         history.file(&written)?;
-        let listed = history.list(&Query::all())?;
+        let listed = history.list(CLASS_CALLS, &Query::all())?;
         assert_eq!(listed.len(), 1, "success one file is listed");
-        let decoded = history.read(&listed[0].rel, &Query::all())?;
+        let decoded = history.read::<IntakeRecord>(&listed[0].rel, &Query::all())?;
         assert_eq!(
             decoded.rows, written,
             "success a row read from the store is the row that was filed"
@@ -1318,7 +2252,7 @@ mod store_tests {
         let mut all = rows("edge-a", 1, 2);
         all.extend(rows("edge-b", 1, 2));
         all.push(row("edge-a", DAY + 1000, 3));
-        let filed = history.file(&all)?;
+        let filed = history.file_per_member(&all)?;
         assert_eq!(
             (filed.files, filed.rows),
             (3, 5),
@@ -1364,7 +2298,11 @@ mod store_tests {
         let (_dir, history) = store()?;
         history.file(&rows("edge-a", 1, 3))?;
         let query = limit(100);
-        let answer = history.answer(&query, &history.list(&query)?, rows("edge-a", 4, 5));
+        let answer = history.answer(
+            &query,
+            &history.list(CLASS_CALLS, &query)?,
+            rows("edge-a", 4, 5),
+        );
         assert_eq!(
             answer.rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
             vec![5, 4, 3, 2, 1],
@@ -1398,7 +2336,7 @@ mod store_tests {
         all.push(row("edge-a", 3 * DAY + 1000, 5));
         history.file(&all)?;
         let today = at_ms(3 * DAY).date_naive();
-        let expired = history.expire(today, 1)?;
+        let expired = history.expire(CLASS_CALLS, today, 1)?;
         assert_eq!(
             (expired.days, expired.files, expired.left.len()),
             (2, 2, 0),
@@ -1421,7 +2359,7 @@ mod store_tests {
     #[test]
     fn success_the_store_is_private_to_its_owner() -> TestResult {
         let (_dir, history) = store()?;
-        history.file(&rows("edge-a", 1, 2))?;
+        history.file_per_member(&rows("edge-a", 1, 2))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -1481,22 +2419,26 @@ mod store_tests {
     #[test]
     fn failure_a_changed_file_is_refused_by_name_and_the_rest_is_answered() -> TestResult {
         let (_dir, history) = store()?;
-        history.file(&rows("edge-a", 1, 3))?;
-        history.file(&rows("edge-b", 1, 3))?;
+        history.file_per_member(&rows("edge-a", 1, 3))?;
+        history.file_per_member(&rows("edge-b", 1, 3))?;
         let bad = tree(history.dir())?.remove(0);
         let path = history.dir().join(&bad);
         let mut bytes = std::fs::read(&path)?;
         let mid = bytes.len() / 2;
         bytes[mid] ^= 0x01;
         std::fs::write(&path, bytes)?;
-        let read = history.read(&bad, &Query::all());
+        let read = history.read::<IntakeRecord>(&bad, &Query::all());
         assert!(
             read.as_ref()
                 .is_err_and(|e| e.starts_with(&bad) && e.contains("sealed layer")),
             "failure the changed file is refused with its path and the layer: {read:?}"
         );
         let query = limit(100);
-        let answer = history.answer(&query, &history.list(&query)?, Vec::new());
+        let answer = history.answer(
+            &query,
+            &history.list(CLASS_CALLS, &query)?,
+            Vec::<IntakeRecord>::new(),
+        );
         assert_eq!(
             answer
                 .rows
@@ -1528,13 +2470,13 @@ mod store_tests {
     #[test]
     fn failure_a_file_moved_to_another_member_is_refused() -> TestResult {
         let (_dir, history) = store()?;
-        history.file(&rows("edge-a", 1, 3))?;
+        history.file_per_member(&rows("edge-a", 1, 3))?;
         let from = tree(history.dir())?.remove(0);
         let to = from.replace("member=edge-a", "member=edge-b");
         let target = history.dir().join(&to);
         std::fs::create_dir_all(target.parent().ok_or("a parent")?)?;
         std::fs::rename(history.dir().join(&from), &target)?;
-        let got = history.read(&to, &Query::all());
+        let got = history.read::<IntakeRecord>(&to, &Query::all());
         assert!(
             got.as_ref()
                 .is_err_and(|e| e.contains("was written as") && e.contains("member=edge-a")),
@@ -1549,7 +2491,11 @@ mod store_tests {
         history.file(&rows("edge-a", 1, 3))?;
         let other = History::open(&dir.path().join("center.store"), keys(2))?;
         let query = limit(100);
-        let answer = other.answer(&query, &other.list(&query)?, Vec::new());
+        let answer = other.answer(
+            &query,
+            &other.list(CLASS_CALLS, &query)?,
+            Vec::<IntakeRecord>::new(),
+        );
         assert!(answer.rows.is_empty(), "failure no row is read");
         assert!(
             answer
@@ -1589,12 +2535,12 @@ mod store_tests {
     #[test]
     fn failure_a_file_that_is_not_the_stores_is_left_when_its_day_expires() -> TestResult {
         let (_dir, history) = store()?;
-        history.file(&rows("edge-a", 1, 2))?;
+        history.file_per_member(&rows("edge-a", 1, 2))?;
         let notes = history
             .dir()
             .join("calls/date=2026-11-11/member=edge-a/notes.txt");
         std::fs::write(&notes, b"an operator's file")?;
-        let expired = history.expire(at_ms(30 * DAY).date_naive(), 1)?;
+        let expired = history.expire(CLASS_CALLS, at_ms(30 * DAY).date_naive(), 1)?;
         assert_eq!(expired.files, 1, "failure the store's own file is removed");
         assert_eq!(expired.days, 0, "failure the day's directory is not");
         assert!(
@@ -1749,7 +2695,7 @@ mod store_tests {
     #[test]
     fn edge_a_staged_file_from_a_stopped_write_is_removed_at_open() -> TestResult {
         let (dir, history) = store()?;
-        history.file(&rows("edge-a", 1, 2))?;
+        history.file_per_member(&rows("edge-a", 1, 2))?;
         let staged = history.dir().join(
             "calls/date=2026-11-11/member=edge-a/.1794355209000-1794355209000-s-9.sealed.partial",
         );
@@ -1770,13 +2716,13 @@ mod store_tests {
         let mut all = rows("edge-a", 1, 2);
         all.extend(rows("edge-b", 1, 2));
         all.push(row("edge-a", DAY + 1000, 3));
-        history.file(&all)?;
+        history.file_per_member(&all)?;
         let by_member = Query {
             member: Some("edge-b".to_string()),
             ..limit(10)
         };
         assert_eq!(
-            history.list(&by_member)?.len(),
+            history.list(CLASS_CALLS, &by_member)?.len(),
             1,
             "edge one member: one of three files"
         );
@@ -1784,7 +2730,7 @@ mod store_tests {
             from: Some(at_ms(DAY)),
             ..limit(10)
         };
-        let listed = history.list(&by_day)?;
+        let listed = history.list(CLASS_CALLS, &by_day)?;
         assert_eq!(listed.len(), 1, "edge from the second day on: one file");
         assert!(
             listed[0].rel.contains("date=2026-11-12"),
@@ -1796,7 +2742,7 @@ mod store_tests {
             ..limit(10)
         };
         assert!(
-            history.list(&by_time)?.is_empty(),
+            history.list(CLASS_CALLS, &by_time)?.is_empty(),
             "edge a window before every file's first row: no file"
         );
         Ok(())
@@ -1805,7 +2751,7 @@ mod store_tests {
     #[test]
     fn edge_names_the_store_did_not_write_are_not_listed() -> TestResult {
         let (_dir, history) = store()?;
-        history.file(&rows("edge-a", 1, 2))?;
+        history.file_per_member(&rows("edge-a", 1, 2))?;
         let member = history.dir().join("calls/date=2026-11-11/member=edge-a");
         std::fs::write(member.join("notes.txt"), b"x")?;
         std::fs::write(member.join("copy.sealed"), b"x")?;
@@ -1813,7 +2759,7 @@ mod store_tests {
         std::fs::create_dir_all(history.dir().join("calls/date=2026-11-11/other"))?;
         std::fs::write(history.dir().join("calls/readme"), b"x")?;
         assert_eq!(
-            history.list(&Query::all())?.len(),
+            history.list(CLASS_CALLS, &Query::all())?.len(),
             1,
             "edge only the file the store wrote is listed"
         );
@@ -1824,16 +2770,16 @@ mod store_tests {
     fn edge_no_rows_file_nothing_and_an_empty_store_answers_nothing() -> TestResult {
         let (_dir, history) = store()?;
         assert_eq!(
-            history.file(&[])?,
+            history.file::<IntakeRecord>(&[])?,
             Filed::default(),
             "edge no rows: no file"
         );
         assert!(
-            history.list(&Query::all())?.is_empty(),
+            history.list(CLASS_CALLS, &Query::all())?.is_empty(),
             "edge an empty store lists nothing"
         );
         assert_eq!(
-            history.expire(at_ms(0).date_naive(), 1)?,
+            history.expire(CLASS_CALLS, at_ms(0).date_naive(), 1)?,
             Expired::default(),
             "edge and has nothing to expire"
         );
@@ -1849,9 +2795,9 @@ mod store_tests {
         history.file(&rows("edge-a", 1, 3))?;
         history.file(&rows("edge-b", 1, 3))?;
         let query = limit(100);
-        let listed = history.list(&query)?;
+        let listed = history.list(CLASS_CALLS, &query)?;
         std::fs::remove_file(history.dir().join(&listed[0].rel))?;
-        let answer = history.answer(&query, &listed, Vec::new());
+        let answer = history.answer(&query, &listed, Vec::<IntakeRecord>::new());
         assert_eq!(
             answer.rows.len(),
             3,
@@ -1872,9 +2818,9 @@ mod store_tests {
             history.file(&rows("edge-a", start, start + 9))?;
         }
         let query = limit(5);
-        let listed = history.list(&query)?;
+        let listed = history.list(CLASS_CALLS, &query)?;
         assert_eq!(listed.len(), 4, "edge four files can hold an answer");
-        let answer = history.answer(&query, &listed, Vec::new());
+        let answer = history.answer(&query, &listed, Vec::<IntakeRecord>::new());
         assert_eq!(
             answer.rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
             vec![40, 39, 38, 37, 36],
@@ -1929,11 +2875,11 @@ mod store_tests {
     #[test]
     fn edge_expiring_removes_staged_files_and_empty_directories() -> TestResult {
         let (_dir, history) = store()?;
-        history.file(&rows("edge-a", 1, 2))?;
+        history.file_per_member(&rows("edge-a", 1, 2))?;
         let member = history.dir().join("calls/date=2026-11-11/member=edge-a");
         std::fs::write(member.join(".x.sealed.partial"), b"half")?;
         std::fs::create_dir_all(history.dir().join("calls/date=2026-11-11/member=edge-z"))?;
-        let expired = history.expire(at_ms(30 * DAY).date_naive(), 1)?;
+        let expired = history.expire(CLASS_CALLS, at_ms(30 * DAY).date_naive(), 1)?;
         assert_eq!(
             (expired.days, expired.left.len()),
             (1, 0),
@@ -1967,10 +2913,10 @@ mod store_tests {
         let filed = history.file(&many)?;
         let wrote = started.elapsed();
         assert_eq!(filed.rows, 20_000, "edge every row is filed");
-        let listed = history.list(&Query::all())?;
+        let listed = history.list(CLASS_CALLS, &Query::all())?;
         let bytes = std::fs::metadata(history.dir().join(&listed[0].rel))?.len();
         let started = std::time::Instant::now();
-        let all = history.read(&listed[0].rel, &Query::all())?;
+        let all = history.read::<IntakeRecord>(&listed[0].rel, &Query::all())?;
         let read_all = started.elapsed();
         assert_eq!(all.rows.len(), 20_000, "edge every row reads back");
         let one = Query {
@@ -1978,7 +2924,7 @@ mod store_tests {
             ..limit(1)
         };
         let started = std::time::Instant::now();
-        let found = history.read(&listed[0].rel, &one)?;
+        let found = history.read::<IntakeRecord>(&listed[0].rel, &one)?;
         let read_one = started.elapsed();
         assert_eq!(found.rows.len(), 1, "edge the one call is found");
         assert!(
@@ -2004,6 +2950,11 @@ mod tests {
 
     /// What a test returns.
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// [`super::decode`] for a file of call records.
+    fn decode(bytes: Vec<u8>, query: &Query) -> Result<Decoded<IntakeRecord>, String> {
+        super::decode(bytes, query)
+    }
 
     /// A key whose every byte is `b`, alone.
     fn keys(b: u8) -> Keys {
@@ -2071,7 +3022,7 @@ mod tests {
     fn success_a_partition_spells_its_directory() {
         let partition = Partition::of(&row("edge-a", 0, 1));
         assert_eq!(
-            partition.rel_dir(),
+            partition.rel_dir(CLASS_CALLS),
             "calls/date=2026-11-11/member=edge-a",
             "success a partition spells class, day and member"
         );
@@ -2121,7 +3072,7 @@ mod tests {
         let got = groups(&all);
         let shape: Vec<(String, Vec<u64>)> = got
             .iter()
-            .map(|(p, rows)| (p.rel_dir(), rows.iter().map(|r| r.seq).collect()))
+            .map(|(p, rows)| (p.rel_dir(CLASS_CALLS), rows.iter().map(|r| r.seq).collect()))
             .collect();
         assert_eq!(
             shape,
@@ -2183,7 +3134,7 @@ mod tests {
 
     #[test]
     fn failure_no_rows_have_no_file_name() {
-        let got = FileName::of(&[]);
+        let got = FileName::of::<IntakeRecord>(&[]);
         assert!(
             got.as_ref().is_err_and(|e| e.contains("no rows")),
             "failure a file of no rows has no name: {got:?}"
@@ -2255,12 +3206,12 @@ mod tests {
     fn edge_the_last_millisecond_of_a_day_stays_in_that_day() {
         let day = 86_400_000;
         assert_eq!(
-            Partition::of(&row("edge-a", day - 1, 1)).rel_dir(),
+            Partition::of(&row("edge-a", day - 1, 1)).rel_dir(CLASS_CALLS),
             "calls/date=2026-11-11/member=edge-a",
             "edge 23:59:59.999 is the day it is in"
         );
         assert_eq!(
-            Partition::of(&row("edge-a", day, 1)).rel_dir(),
+            Partition::of(&row("edge-a", day, 1)).rel_dir(CLASS_CALLS),
             "calls/date=2026-11-12/member=edge-a",
             "edge 00:00:00.000 is the next day"
         );
@@ -2270,7 +3221,7 @@ mod tests {
     fn edge_a_member_named_with_dots_stays_one_directory() {
         let partition = Partition::of(&row("..", 0, 1));
         assert_eq!(
-            partition.rel_dir(),
+            partition.rel_dir(CLASS_CALLS),
             "calls/date=2026-11-11/member=..",
             "edge the member is one path part that is not the parent directory"
         );
@@ -2332,7 +3283,7 @@ mod tests {
         ])?;
         let got: Vec<u64> = rows(5)
             .iter()
-            .filter(|r| query.wants_row(r))
+            .filter(|r| query.wants_row(*r))
             .map(|r| r.seq)
             .collect();
         assert_eq!(got, vec![2, 3], "success from is included and to is not");
@@ -2348,7 +3299,7 @@ mod tests {
         let query = ask(&[("call_id", "call-4@example.com")])?;
         let got: Vec<u64> = rows(5)
             .iter()
-            .filter(|r| query.wants_row(r))
+            .filter(|r| query.wants_row(*r))
             .map(|r| r.seq)
             .collect();
         assert_eq!(got, vec![4], "success only the call with that Call-ID");
@@ -2569,7 +3520,7 @@ mod tests {
 
     #[test]
     fn failure_no_rows_are_not_encoded() {
-        let got = encode(&[]);
+        let got = encode::<IntakeRecord>(&[]);
         assert!(
             got.as_ref().is_err_and(|e| e.contains("no rows")),
             "failure a file is never empty: {got:?}"
@@ -2764,7 +3715,7 @@ mod tests {
         let parquet = encode(&rows(3))?;
         let sealed = seal(REL, &parquet, 1, CHUNK_BYTES)?;
         assert_eq!(
-            unseal(REL, &sealed, &keys(1))?,
+            unseal(REL, &sealed, &keys(1), Kind::Calls)?,
             parquet,
             "success the Parquet bytes come back"
         );
@@ -2780,7 +3731,7 @@ mod tests {
             "success the file is in many pieces"
         );
         assert_eq!(
-            unseal(REL, &sealed, &keys(1))?,
+            unseal(REL, &sealed, &keys(1), Kind::Calls)?,
             parquet,
             "success and the pieces join to the same bytes"
         );
@@ -2796,7 +3747,7 @@ mod tests {
             vec![MasterKey::from_bytes([1; 32])],
         );
         assert_eq!(
-            unseal(REL, &sealed, &both)?,
+            unseal(REL, &sealed, &both, Kind::Calls)?,
             parquet,
             "success a file written under the earlier key opens after a key change"
         );
@@ -2806,7 +3757,7 @@ mod tests {
     #[test]
     fn failure_a_file_under_a_key_that_is_not_loaded_is_refused() -> TestResult {
         let sealed = seal(REL, &encode(&rows(3))?, 1, CHUNK_BYTES)?;
-        let got = unseal(REL, &sealed, &keys(2));
+        let got = unseal(REL, &sealed, &keys(2), Kind::Calls);
         assert!(
             got.as_ref().is_err_and(|e| e.starts_with(REL)
                 && e.contains("sealed layer")
@@ -2820,7 +3771,7 @@ mod tests {
     fn failure_a_file_moved_to_another_path_is_refused() -> TestResult {
         let sealed = seal(REL, &encode(&rows(3))?, 1, CHUNK_BYTES)?;
         let other = "calls/date=2026-11-11/member=edge-b/x.sealed";
-        let got = unseal(other, &sealed, &keys(1));
+        let got = unseal(other, &sealed, &keys(1), Kind::Calls);
         assert!(
             got.as_ref()
                 .is_err_and(|e| e.starts_with(other) && e.contains("was written as")),
@@ -2841,7 +3792,7 @@ mod tests {
         ] {
             let mut bad = sealed.clone();
             bad[at] ^= 0x01;
-            let got = unseal(REL, &bad, &keys(1));
+            let got = unseal(REL, &bad, &keys(1), Kind::Calls);
             assert!(
                 got.as_ref().is_err_and(|e| e.contains("sealed layer")),
                 "failure byte {at} of {} changed: {got:?}",
@@ -2861,7 +3812,7 @@ mod tests {
             sealed.len() / 2,
             sealed.len() - 1,
         ] {
-            let got = unseal(REL, &sealed[..keep], &keys(1));
+            let got = unseal(REL, &sealed[..keep], &keys(1), Kind::Calls);
             assert!(
                 got.as_ref().is_err_and(|e| e.contains("sealed layer")),
                 "failure the first {keep} of {} bytes: {got:?}",
@@ -2877,7 +3828,7 @@ mod tests {
         for extra in [vec![1u8], vec![1, 0, 0], vec![0u8; 40]] {
             let mut longer = sealed.clone();
             longer.extend(&extra);
-            let got = unseal(REL, &longer, &keys(1));
+            let got = unseal(REL, &longer, &keys(1), Kind::Calls);
             assert!(
                 got.as_ref().is_err_and(|e| e.contains("sealed layer")),
                 "failure {} byte(s) after the file's end: a calls file is written once and \
@@ -2896,7 +3847,7 @@ mod tests {
         intake.extend(sealer.record(REL.as_bytes())?);
         intake.extend(sealer.record(b"PAR1")?);
         intake.extend(sealer.base_end()?);
-        let got = unseal(REL, &intake, &keys(1));
+        let got = unseal(REL, &intake, &keys(1), Kind::Calls);
         assert!(
             got.as_ref()
                 .is_err_and(|e| e.contains("intake") && e.contains("calls")),
@@ -2907,7 +3858,7 @@ mod tests {
 
     #[test]
     fn failure_a_clear_parquet_file_in_the_store_is_refused() -> TestResult {
-        let got = unseal(REL, &encode(&rows(3))?, &keys(1));
+        let got = unseal(REL, &encode(&rows(3))?, &keys(1), Kind::Calls);
         assert!(
             got.as_ref().is_err_and(|e| e.contains("not a sealed file")),
             "failure a Parquet file in clear is not read: {got:?}"
@@ -2921,7 +3872,7 @@ mod tests {
             LogSealer::new(&MasterKey::from_bytes([1; 32]), Kind::Calls, &system_draw)?;
         let mut empty = header.to_vec();
         empty.extend(sealer.base_end()?);
-        let got = unseal(REL, &empty, &keys(1));
+        let got = unseal(REL, &empty, &keys(1), Kind::Calls);
         assert!(
             got.as_ref().is_err_and(|e| e.contains("holds no path")),
             "failure a calls file with nothing in it: {got:?}"
@@ -2940,7 +3891,7 @@ mod tests {
         );
         let sealed = seal(REL, &parquet, 1, 100)?;
         assert_eq!(
-            unseal(REL, &sealed, &keys(1))?,
+            unseal(REL, &sealed, &keys(1), Kind::Calls)?,
             parquet,
             "edge the bytes come back"
         );
@@ -2969,7 +3920,7 @@ mod tests {
         let parquet = vec![9u8; CHUNK_BYTES + 1];
         let sealed = seal(REL, &parquet, 1, CHUNK_BYTES)?;
         assert_eq!(
-            unseal(REL, &sealed, &keys(1))?.len(),
+            unseal(REL, &sealed, &keys(1), Kind::Calls)?.len(),
             CHUNK_BYTES + 1,
             "edge a piece of the size the store writes fits one sealed record"
         );
@@ -3074,7 +4025,7 @@ mod tests {
         let (got, more) = newest(rows(3), 3);
         assert_eq!(got.len(), 3, "edge three rows for a limit of three");
         assert!(!more, "edge and no more");
-        let (none, more) = newest(Vec::new(), 3);
+        let (none, more) = newest(Vec::<IntakeRecord>::new(), 3);
         assert!(none.is_empty() && !more, "edge no rows: none, and no more");
     }
 
@@ -3093,5 +4044,2450 @@ mod tests {
             vec![("edge-a", 2), ("edge-a", 1), ("edge-b", 1)],
             "edge one instant: by member, then the later position first"
         );
+    }
+}
+
+/// The class of heartbeats, the bound on the files of one question, and
+/// what a start reads to rebuild the registry.
+#[cfg(test)]
+mod members_tests {
+    use super::*;
+    use crate::app::fleet_calls::CallCounts;
+    use crate::app::fleet_center::Cursor;
+    use crate::app::fleet_seal::MasterKey;
+
+    /// What a test returns.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A key whose every byte is `b`, alone.
+    fn keys(b: u8) -> Arc<Keys> {
+        Arc::new(Keys::new(MasterKey::from_bytes([b; 32]), Vec::new()))
+    }
+
+    /// 2026-11-11T00:00:00Z plus `ms` milliseconds.
+    fn at_ms(ms: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::UNIX_EPOCH + chrono::TimeDelta::milliseconds(1_794_355_200_000 + ms)
+    }
+
+    /// One day in milliseconds.
+    const DAY: i64 = 86_400_000;
+
+    /// Heartbeat `count` of `member`, received `ms` milliseconds into
+    /// 2026-11-11.
+    fn beat(member: &str, ms: i64, count: u64) -> MemberRecord {
+        MemberRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            peer: "192.0.2.10".to_string(),
+            heartbeats: count,
+            cursor: Cursor {
+                stream: "s".to_string(),
+                seq: count * 2,
+                sent_at: at_ms(ms - 250),
+            },
+            heartbeat_secs: 30,
+            inventory: serde_json::json!({"host": "edge.example.com", "count": count}),
+            call_records: count + 5,
+            calls: Some(CallCounts {
+                selected: count,
+                dropped_by_cap: 1,
+                left_out: 2,
+                spooled: 3,
+            }),
+        }
+    }
+
+    /// Heartbeats `from` to `to` of `member`, one a second.
+    fn beats(member: &str, from: u64, to: u64) -> Vec<MemberRecord> {
+        (from..=to)
+            .map(|n| beat(member, i64::try_from(n).unwrap_or(0) * 1000, n))
+            .collect()
+    }
+
+    /// The call record at `seq` of `member`, received `ms` milliseconds
+    /// into 2026-11-11.
+    fn call(member: &str, ms: i64, seq: u64) -> IntakeRecord {
+        IntakeRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            stream: "s".to_string(),
+            seq,
+            sent_at: at_ms(ms - 250),
+            selected_by: "failed".to_string(),
+            call: serde_json::json!({"call_id": format!("call-{seq}@example.com")}),
+        }
+    }
+
+    /// A history store in a new directory, under key 1.
+    fn store() -> Result<(tempfile::TempDir, History), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let history = History::open(&dir.path().join("center.store"), keys(1))?;
+        Ok((dir, history))
+    }
+
+    /// The question for every heartbeat of `member`.
+    fn of(member: &str) -> Query {
+        Query {
+            member: Some(member.to_string()),
+            ..Query::all()
+        }
+    }
+
+    /// The counts of the heartbeats the store answers `query` with.
+    fn counts(history: &History, query: &Query) -> Result<Vec<u64>, String> {
+        let files = history.list(CLASS_MEMBERS, query)?;
+        let answer = history.answer(query, &files, Vec::<MemberRecord>::new());
+        if let Some((file, why)) = answer.refused.first() {
+            return Err(format!("{file}: {why}"));
+        }
+        Ok(answer.rows.iter().map(|r| r.heartbeats).collect())
+    }
+
+    /// Change one byte in the middle of the file at `rel`.
+    fn change(history: &History, rel: &str) -> std::io::Result<()> {
+        let path = history.dir().join(rel);
+        let mut bytes = std::fs::read(&path)?;
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x01;
+        std::fs::write(&path, bytes)
+    }
+
+    /// The pairs of a query string.
+    fn pairs(text: &[(&str, &str)]) -> Vec<(String, String)> {
+        text.iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn success_heartbeat_rows_read_back_equal() -> TestResult {
+        let written = beats("edge-a", 1, 25);
+        let decoded = decode::<MemberRecord>(encode_grouped(&written, 10)?, &Query::all())?;
+        assert_eq!(
+            decoded.rows, written,
+            "success every field of a heartbeat row reads back as it was written"
+        );
+        assert_eq!(decoded.groups, 3, "success in three row groups of ten");
+        Ok(())
+    }
+
+    #[test]
+    fn success_heartbeats_are_filed_under_class_day_and_member() -> TestResult {
+        let (_dir, history) = store()?;
+        let filed = history.file_per_member(&beats("edge-a", 1, 3))?;
+        assert_eq!(
+            (filed.files, filed.rows, filed.already),
+            (1, 3, 0),
+            "success three heartbeats of one day and member make one file"
+        );
+        let listed = history.list(CLASS_MEMBERS, &Query::all())?;
+        assert_eq!(
+            listed.iter().map(|f| f.rel.as_str()).collect::<Vec<&str>>(),
+            ["members/date=2026-11-11/member=edge-a/1794355201000-1794355203000-s-1.sealed"],
+            "success under class members, the day and the member, named by its times, the \
+             stream and the count of its first heartbeat"
+        );
+        assert!(
+            history.list(CLASS_CALLS, &Query::all())?.is_empty(),
+            "success and the class of call records lists none of it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_answer_joins_waiting_and_filed_heartbeats_newest_first() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&beats("edge-a", 1, 2))?;
+        history.file_per_member(&beats("edge-b", 1, 2))?;
+        let query = of("edge-a");
+        let files = history.list(CLASS_MEMBERS, &query)?;
+        let waiting = [beats("edge-a", 3, 4), beats("edge-b", 3, 3)].concat();
+        let answer = history.answer(&query, &files, waiting);
+        assert_eq!(
+            answer
+                .rows
+                .iter()
+                .map(|r| r.heartbeats)
+                .collect::<Vec<u64>>(),
+            [4, 3, 2, 1],
+            "success the member's waiting and filed heartbeats, newest first, and no other's"
+        );
+        assert_eq!(
+            (answer.files_read, answer.files_not_read, answer.more),
+            (1, 0, false),
+            "success from the member's one file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_window_selects_heartbeats_by_receive_time() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&beats("edge-a", 1, 5))?;
+        let query = Query {
+            from: Some(at_ms(2000)),
+            to: Some(at_ms(4000)),
+            ..of("edge-a")
+        };
+        assert_eq!(
+            counts(&history, &query)?,
+            [3, 2],
+            "success from is included and to is not"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_newest_heartbeat_of_each_member_is_found() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&beats("edge-a", 1, 3))?;
+        history.file(&beats("edge-a", 4, 6))?;
+        history.file(&beats("edge-b", 1, 2))?;
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 4096)?;
+        assert_eq!(
+            found.members,
+            vec![beat("edge-a", 6000, 6), beat("edge-b", 2000, 2)],
+            "success the last heartbeat of each member, whole"
+        );
+        assert_eq!(
+            (found.files_read, found.refused.len()),
+            (3, 0),
+            "success with no member named, from every file of the kept days"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_heartbeat_days_before_the_oldest_kept_are_removed_and_no_other() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 0, 1), beat("edge-a", DAY, 2)])?;
+        history.file(&[call("edge-a", 0, 1)])?;
+        let expired = history.expire_before(CLASS_MEMBERS, at_ms(DAY).date_naive())?;
+        assert_eq!(
+            (expired.days, expired.files, expired.left.len()),
+            (1, 1, 0),
+            "success the one day of heartbeats before the oldest kept is removed"
+        );
+        assert_eq!(
+            counts(&history, &of("edge-a"))?,
+            [2],
+            "success the heartbeat of the kept day stays"
+        );
+        assert_eq!(
+            history.list(CLASS_CALLS, &Query::all())?.len(),
+            1,
+            "success and the call records of the removed day stay: they have their own retention"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_oldest_kept_day_is_the_day_of_the_oldest_kept_instant() {
+        let now = at_ms(3 * DAY + 3_600_000);
+        assert_eq!(
+            oldest_kept_at(now, chrono::Duration::hours(72)),
+            at_ms(0).date_naive(),
+            "success 72 hours before 01:00 on the 14th is on the 11th, so the 11th is kept"
+        );
+        assert_eq!(
+            oldest_kept_at(now, chrono::Duration::hours(1)),
+            at_ms(3 * DAY).date_naive(),
+            "success one hour before 01:00 is the same day"
+        );
+    }
+
+    #[test]
+    fn success_the_question_of_the_history_route_is_read() -> TestResult {
+        let query = Query::parse_heartbeats(
+            "edge-a",
+            &pairs(&[
+                ("from", "2026-11-11T00:00:00Z"),
+                ("to", "2026-11-12T00:00:00Z"),
+                ("limit", "7"),
+            ]),
+        )?;
+        assert_eq!(
+            query,
+            Query {
+                member: Some("edge-a".to_string()),
+                from: Some(at_ms(0)),
+                to: Some(at_ms(DAY)),
+                call_id: None,
+                limit: 7,
+            },
+            "success the member of the path and every parameter"
+        );
+        assert_eq!(
+            Query::parse_heartbeats("edge-a", &[])?.limit,
+            DEFAULT_LIMIT,
+            "success and no parameter asks for the newest rows"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_call_records_since_an_instant_come_oldest_first() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[call("edge-a", 1000, 1), call("edge-a", 2000, 2)])?;
+        history.file(&[call("edge-a", 3000, 3)])?;
+        history.file(&[call("edge-b", 3000, 9)])?;
+        let since = BTreeMap::from([("edge-a".to_string(), at_ms(2000))]);
+        let found = history.calls_after(&since, 4096)?;
+        assert_eq!(
+            found.rows.iter().map(|r| r.seq).collect::<Vec<u64>>(),
+            [2, 3],
+            "success the member's call records received at the instant or later, oldest first"
+        );
+        assert!(found.refused.is_empty(), "success and every file opened");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_heartbeat_file_moved_into_the_class_of_calls_is_refused() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&beats("edge-a", 1, 2))?;
+        let from = history.list(CLASS_MEMBERS, &Query::all())?[0].rel.clone();
+        let to = from.replacen(CLASS_MEMBERS, CLASS_CALLS, 1);
+        let target = history.dir().join(&to);
+        std::fs::create_dir_all(target.parent().ok_or("a parent")?)?;
+        std::fs::rename(history.dir().join(&from), &target)?;
+        let got = history.read::<IntakeRecord>(&to, &Query::all());
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.contains("sealed layer") && e.contains("members")),
+            "failure a heartbeat file under calls is refused by its kind: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_of_call_records_is_not_read_as_heartbeats() -> TestResult {
+        let rel = "members/date=2026-11-11/member=edge-a/x.sealed";
+        let got = decode::<MemberRecord>(encode(&[call("edge-a", 0, 1)])?, &Query::all());
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.contains("not the heartbeat schema")),
+            "failure Parquet of another class is refused by its schema: {got:?}"
+        );
+        let got = decode::<IntakeRecord>(encode(&beats("edge-a", 1, 1))?, &Query::all());
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.contains("not the call record schema")),
+            "failure and so are heartbeats read as call records: {got:?} ({rel})"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_heartbeat_received_before_1970_is_refused_as_a_heartbeat() {
+        let mut early = beat("edge-a", 0, 1);
+        early.received_at = DateTime::<Utc>::UNIX_EPOCH - chrono::TimeDelta::seconds(1);
+        let got = encode(&[early]);
+        assert!(
+            got.as_ref().is_err_and(
+                |e| e.contains("a heartbeat of member 'edge-a'") && e.contains("before 1970")
+            ),
+            "failure the refusal says what the row is and whose: {got:?}"
+        );
+    }
+
+    #[test]
+    fn failure_the_reason_a_heartbeat_file_is_refused_for_does_not_repeat_its_path() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&beats("edge-a", 1, 2))?;
+        let query = of("edge-a");
+        let files = history.list(CLASS_MEMBERS, &query)?;
+        change(&history, &files[0].rel)?;
+        let answer = history.answer(&query, &files, Vec::<MemberRecord>::new());
+        assert_eq!(
+            answer.refused.len(),
+            1,
+            "failure the changed file is refused"
+        );
+        let (file, reason) = &answer.refused[0];
+        assert_eq!(*file, files[0].rel, "failure and named by its path");
+        assert!(
+            reason.starts_with("sealed layer: ") && !reason.contains(file.as_str()),
+            "failure the reason starts at the layer and holds no second copy of the path: \
+             {reason}"
+        );
+        assert_eq!(
+            answer.json_as("heartbeats", |_| serde_json::Value::Null)["complete"],
+            false,
+            "failure and the answer is not whole"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_reason_a_calls_file_is_refused_for_does_not_repeat_its_path() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[call("edge-a", 0, 1)])?;
+        let files = history.list(CLASS_CALLS, &Query::all())?;
+        change(&history, &files[0].rel)?;
+        let answer = history.answer(&Query::all(), &files, Vec::<IntakeRecord>::new());
+        let json = answer.json();
+        assert_eq!(
+            json["refused"][0]["file"], files[0].rel,
+            "failure the file field holds the path"
+        );
+        assert!(
+            json["refused"][0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.starts_with("sealed layer: ") && !r.contains("calls/date=")),
+            "failure and the reason does not hold it again: {json}"
+        );
+        let read = history.read::<IntakeRecord>(&files[0].rel, &Query::all());
+        assert!(
+            read.as_ref().is_err_and(|e| e.starts_with(&files[0].rel)),
+            "failure a read on its own still names the file, for a log line: {read:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_question_past_the_file_bound_is_answered_in_part_and_says_so() -> TestResult {
+        let (_dir, history) = store()?;
+        for n in 1..=5 {
+            history.file(&beats("edge-a", n, n))?;
+        }
+        let query = of("edge-a");
+        let files = history.list(CLASS_MEMBERS, &query)?;
+        assert_eq!(files.len(), 5, "failure five files answer the question");
+        let answer = history.answer_within(&query, &files, Vec::<MemberRecord>::new(), 3);
+        assert_eq!(
+            answer
+                .rows
+                .iter()
+                .map(|r| r.heartbeats)
+                .collect::<Vec<u64>>(),
+            [5, 4, 3],
+            "failure the rows of the three files with the latest rows are answered"
+        );
+        assert_eq!(
+            (answer.files_read, answer.files_not_read),
+            (3, 2),
+            "failure three files were opened and two were not"
+        );
+        let json = answer.json_as("heartbeats", |r| serde_json::json!(r.heartbeats));
+        assert_eq!(
+            (&json["complete"], &json["files_not_read"]),
+            (&serde_json::json!(false), &serde_json::json!(2)),
+            "failure the answer says it is not whole and how many files it left: {json}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_newest_file_that_does_not_open_is_reported_and_restores_nothing() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&beats("edge-a", 1, 2))?;
+        history.file(&beats("edge-b", 1, 2))?;
+        let bad = history.list(CLASS_MEMBERS, &of("edge-a"))?[0].rel.clone();
+        change(&history, &bad)?;
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 4096)?;
+        assert_eq!(
+            found.members,
+            vec![beat("edge-b", 2000, 2)],
+            "failure the member whose file opens is found, the other is not made up"
+        );
+        assert_eq!(
+            found.refused.len(),
+            1,
+            "failure the changed file is reported"
+        );
+        assert!(
+            found.refused[0].0 == bad && found.refused[0].1.starts_with("sealed layer"),
+            "failure by its path, with the layer's reason: {:?}",
+            found.refused
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_history_route_takes_no_call_id_and_no_member_parameter() {
+        for (name, value) in [
+            ("call_id", "a@example.com"),
+            ("member", "edge-b"),
+            ("day", "1"),
+        ] {
+            let got = Query::parse_heartbeats("edge-a", &pairs(&[(name, value)]));
+            assert!(
+                got.as_ref()
+                    .is_err_and(|e| e.contains(name) && e.contains("it takes from, to and limit")),
+                "failure {name} is refused by name with what the route takes: {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_the_history_route_refuses_an_id_no_member_has() {
+        for id in ["", "edge a", "a/b", &"m".repeat(65)] {
+            let got = Query::parse_heartbeats(id, &[]);
+            assert!(
+                got.as_ref()
+                    .is_err_and(|e| e.starts_with("member must be 1 to 64")),
+                "failure the id {id:?} is refused: {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_the_history_route_refuses_values_outside_their_range() {
+        for (name, value, says) in [
+            ("limit", "0", "limit must be a number from 1 to 1000"),
+            ("limit", "1001", "limit must be a number from 1 to 1000"),
+            ("from", "noon", "from must be an RFC 3339 time"),
+            ("to", "", "to must be an RFC 3339 time"),
+        ] {
+            let got = Query::parse_heartbeats("edge-a", &pairs(&[(name, value)]));
+            assert_eq!(
+                got.as_ref().err().map(|e| e.starts_with(says)),
+                Some(true),
+                "failure {name}={value} is refused as the calls route refuses it: {got:?}"
+            );
+        }
+        let twice = Query::parse_heartbeats("edge-a", &pairs(&[("limit", "1"), ("limit", "2")]));
+        assert!(
+            twice.as_ref().is_err_and(|e| e.contains("given twice")),
+            "failure a parameter given twice is refused: {twice:?}"
+        );
+    }
+
+    #[test]
+    fn failure_heartbeats_under_another_key_are_not_restored() -> TestResult {
+        let (dir, history) = store()?;
+        history.file(&beats("edge-a", 1, 1))?;
+        let other = History::reader(&dir.path().join("center.store"), keys(2));
+        let found = other.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 4096)?;
+        assert!(
+            found.members.is_empty() && found.refused.len() == 1,
+            "failure a file whose key is not loaded restores no member and is reported: \
+             {found:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_filing_the_same_heartbeats_again_writes_nothing() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&beats("edge-a", 1, 3))?;
+        let again = history.file(&beats("edge-a", 1, 3))?;
+        assert_eq!(
+            (again.files, again.rows, again.already),
+            (0, 0, 3),
+            "edge every row was in a file already"
+        );
+        let more = history.file(&beats("edge-a", 2, 5))?;
+        assert_eq!(
+            (more.files, more.rows, more.already),
+            (1, 2, 2),
+            "edge and only the rows no file holds are filed"
+        );
+        assert_eq!(
+            counts(&history, &of("edge-a"))?,
+            [5, 4, 3, 2, 1],
+            "edge no heartbeat is answered twice"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_row_given_twice_in_one_filing_is_filed_once() -> TestResult {
+        let (_dir, history) = store()?;
+        let mut moved = beat("edge-a", 2000, 2);
+        moved.cursor.seq = 40;
+        let filed = history.file(&[beat("edge-a", 1000, 1), beat("edge-a", 2000, 2), moved])?;
+        assert_eq!(
+            (filed.rows, filed.already),
+            (2, 1),
+            "edge the second row of one identity is left out and counted"
+        );
+        let query = of("edge-a");
+        let files = history.list(CLASS_MEMBERS, &query)?;
+        let answer = history.answer(&query, &files, Vec::<MemberRecord>::new());
+        assert_eq!(
+            answer
+                .rows
+                .iter()
+                .map(|r| (r.heartbeats, r.cursor.seq))
+                .collect::<Vec<_>>(),
+            vec![(2, 4), (1, 2)],
+            "edge the file holds the first row given of each identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_record_moved_by_a_call_is_the_row_of_its_heartbeat() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&beats("edge-a", 1, 1))?;
+        // What the registry holds once a call record followed the
+        // heartbeat: the same count and receive time, a later position.
+        let mut moved = beat("edge-a", 1000, 1);
+        moved.cursor.seq = 40;
+        moved.cursor.stream = "t".to_string();
+        moved.call_records += 1;
+        let again = history.file(&[moved])?;
+        assert_eq!(
+            (again.files, again.already),
+            (0, 1),
+            "edge a record of the same count and receive time is the heartbeat a file holds"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_heartbeats_of_one_request_are_rows_of_their_own() -> TestResult {
+        let (_dir, history) = store()?;
+        let batch: Vec<MemberRecord> = (1..=3).map(|n| beat("edge-a", 1000, n)).collect();
+        let filed = history.file(&batch)?;
+        assert_eq!(
+            (filed.rows, filed.already),
+            (3, 0),
+            "edge three heartbeats received at one instant are three rows"
+        );
+        assert_eq!(
+            counts(&history, &of("edge-a"))?,
+            [3, 2, 1],
+            "edge answered with the later count first"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_exactly_the_file_bound_is_a_whole_answer() -> TestResult {
+        let (_dir, history) = store()?;
+        for n in 1..=3 {
+            history.file(&beats("edge-a", n, n))?;
+        }
+        let query = of("edge-a");
+        let files = history.list(CLASS_MEMBERS, &query)?;
+        let answer = history.answer_within(&query, &files, Vec::<MemberRecord>::new(), 3);
+        assert_eq!(
+            (answer.rows.len(), answer.files_read, answer.files_not_read),
+            (3, 3, 0),
+            "edge a question that rules in as many files as the bound is read whole"
+        );
+        assert_eq!(
+            answer.json_as("heartbeats", |_| serde_json::Value::Null)["complete"],
+            true,
+            "edge and says so"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_file_that_is_refused_counts_toward_the_bound() -> TestResult {
+        let (_dir, history) = store()?;
+        for n in 1..=3 {
+            history.file(&beats("edge-a", n, n))?;
+        }
+        let query = of("edge-a");
+        let files = history.list(CLASS_MEMBERS, &query)?;
+        change(&history, &files[0].rel)?;
+        let answer = history.answer_within(&query, &files, Vec::<MemberRecord>::new(), 2);
+        assert_eq!(
+            (
+                answer.refused.len(),
+                answer.files_read,
+                answer.files_not_read
+            ),
+            (1, 1, 1),
+            "edge the bound is on the files opened, read or refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_limit_met_before_the_bound_leaves_no_file_unread() -> TestResult {
+        let (_dir, history) = store()?;
+        for n in 1..=6 {
+            history.file(&beats("edge-a", n, n))?;
+        }
+        let query = Query {
+            limit: 1,
+            ..of("edge-a")
+        };
+        let files = history.list(CLASS_MEMBERS, &query)?;
+        let answer = history.answer_within(&query, &files, Vec::<MemberRecord>::new(), 4);
+        assert_eq!(
+            answer
+                .rows
+                .iter()
+                .map(|r| r.heartbeats)
+                .collect::<Vec<u64>>(),
+            [6],
+            "edge the newest row is answered"
+        );
+        assert_eq!(
+            (answer.files_not_read, answer.more),
+            (0, true),
+            "edge files the limit made unneeded are not counted as left unread"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_bound_of_no_files_answers_from_the_waiting_rows_alone() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&beats("edge-a", 1, 1))?;
+        let query = of("edge-a");
+        let files = history.list(CLASS_MEMBERS, &query)?;
+        let answer = history.answer_within(&query, &files, beats("edge-a", 2, 2), 0);
+        assert_eq!(
+            (answer.rows.len(), answer.files_read, answer.files_not_read),
+            (1, 0, 1),
+            "edge the waiting row is answered and the file is counted as not read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_heartbeat_without_call_counts_reads_back_without_them() -> TestResult {
+        let mut bare = beat("edge-a", 0, 1);
+        bare.calls = None;
+        bare.inventory = serde_json::json!({});
+        bare.peer = String::new();
+        bare.heartbeats = u64::MAX;
+        bare.cursor.seq = u64::MAX;
+        bare.call_records = u64::MAX;
+        bare.heartbeat_secs = 3600;
+        let decoded = decode::<MemberRecord>(encode(std::slice::from_ref(&bare))?, &Query::all())?;
+        assert_eq!(
+            decoded.rows,
+            vec![bare],
+            "edge no call counts, an empty inventory and the largest counts read back equal"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_member_the_caller_holds_newer_is_not_read() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&beats("edge-a", 1, 3))?;
+        history.file(&beats("edge-b", 1, 3))?;
+        let known: BTreeMap<String, DateTime<Utc>> = [
+            ("edge-a".to_string(), at_ms(3000)),
+            ("edge-b".to_string(), at_ms(2999)),
+        ]
+        .into();
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &known, 4096)?;
+        assert_eq!(
+            found.members,
+            vec![beat("edge-b", 3000, 3)],
+            "edge only the member of whom a file holds a later heartbeat than the caller has"
+        );
+        assert_eq!(
+            found.files_read, 2,
+            "edge both files end at the newest instant the caller holds and may hold a later row"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_heartbeats_in_days_before_the_oldest_are_not_restored() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 0, 1)])?;
+        history.file(&[beat("edge-b", DAY, 1)])?;
+        let found = history.newest_heartbeats(at_ms(DAY).date_naive(), &BTreeMap::new(), 4096)?;
+        assert_eq!(
+            found
+                .members
+                .iter()
+                .map(|r| r.member.as_str())
+                .collect::<Vec<&str>>(),
+            ["edge-b"],
+            "edge a member last heard in a day before the oldest is left out"
+        );
+        assert_eq!(found.files_read, 1, "edge and its file is not opened");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_newest_heartbeat_is_taken_across_days_and_files() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", DAY + 5, 9)])?;
+        history.file(&[beat("edge-a", 0, 1), beat("edge-a", 10, 2)])?;
+        history.file(&[beat("edge-a", DAY, 7), beat("edge-a", DAY + 1, 8)])?;
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 4096)?;
+        assert_eq!(
+            found
+                .members
+                .iter()
+                .map(|r| r.heartbeats)
+                .collect::<Vec<u64>>(),
+            [9],
+            "edge the heartbeat received last, whatever order the files were written in"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_last_instant_of_a_day_keeps_that_day() {
+        let midnight = at_ms(DAY);
+        assert_eq!(
+            oldest_kept_at(midnight, chrono::Duration::nanoseconds(1)),
+            at_ms(0).date_naive(),
+            "edge one nanosecond before midnight is the day before"
+        );
+        assert_eq!(
+            oldest_kept_at(midnight, chrono::Duration::zero()),
+            at_ms(DAY).date_naive(),
+            "edge and midnight is the new day"
+        );
+    }
+
+    #[test]
+    fn edge_a_retention_past_the_calendar_keeps_every_day() {
+        assert_eq!(
+            oldest_kept_at(at_ms(0), chrono::Duration::MAX),
+            NaiveDate::MIN,
+            "edge a span chrono cannot subtract keeps every day"
+        );
+    }
+
+    #[test]
+    fn edge_no_call_records_since_an_instant_is_nothing() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[call("edge-a", 1000, 1)])?;
+        let after = |ms: i64| {
+            history.calls_after(&BTreeMap::from([("edge-a".to_string(), at_ms(ms))]), 4096)
+        };
+        let found = after(1001)?;
+        assert!(
+            found.rows.is_empty() && found.refused.is_empty(),
+            "edge a call record received before the instant is not returned"
+        );
+        assert_eq!(
+            after(1000)?.rows.len(),
+            1,
+            "edge and one received at the instant is"
+        );
+        Ok(())
+    }
+
+    /// What one filing of a fleet's heartbeats and one rebuild of its
+    /// registry cost, for 300 members with one heartbeat each: one file
+    /// for all of them. A run with 2,000 is in the pull request that
+    /// added the class.
+    #[test]
+    fn edge_filing_and_rebuilding_for_a_fleet_are_measured() -> TestResult {
+        const MEMBERS: usize = 300;
+        let (_dir, history) = store()?;
+        let rows: Vec<MemberRecord> = (0..MEMBERS)
+            .map(|n| beat(&format!("edge-{n:04}"), 1000, 1))
+            .collect();
+        let started = std::time::Instant::now();
+        let filed = history.file(&rows)?;
+        let wrote = started.elapsed();
+        assert_eq!(
+            (filed.files, filed.rows),
+            (1, MEMBERS),
+            "edge one file for the filing, whatever the members"
+        );
+        let mut bytes = 0;
+        for file in history.list(CLASS_MEMBERS, &Query::all())? {
+            bytes += std::fs::metadata(history.dir().join(&file.rel))?.len();
+        }
+        let started = std::time::Instant::now();
+        let again = history.file(&rows)?;
+        let checked = started.elapsed();
+        assert_eq!(
+            (again.files, again.already),
+            (0, MEMBERS),
+            "edge a second filing reads each file and writes none"
+        );
+        let started = std::time::Instant::now();
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 4096)?;
+        let rebuilt = started.elapsed();
+        assert_eq!(
+            (found.members.len(), found.files_read),
+            (MEMBERS, 1),
+            "edge every member is found from the one file"
+        );
+        let known: BTreeMap<String, DateTime<Utc>> = rows
+            .iter()
+            .map(|r| (r.member.clone(), r.received_at))
+            .collect();
+        let started = std::time::Instant::now();
+        let none = history.newest_heartbeats(at_ms(0).date_naive(), &known, 4096)?;
+        let listed = started.elapsed();
+        assert_eq!(
+            (none.members.len(), none.files_read),
+            (0, 1),
+            "edge a registry that holds every member takes nothing; the file that ends in the \
+             millisecond of its newest heartbeat is opened, since a name holds no finer time"
+        );
+        stderr_line!(
+            "fleet heartbeat measurement: {MEMBERS} members, one row each, one file: {bytes} B, \
+             write {wrote:?}, file again (the file read, none written) {checked:?}, rebuild \
+             from history (the file read) {rebuilt:?}, rebuild check by path alone {listed:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_staged_heartbeat_file_from_a_stopped_write_is_removed_at_open() -> TestResult {
+        let (dir, history) = store()?;
+        history.file_per_member(&beats("edge-a", 1, 1))?;
+        let member = history.dir().join("members/date=2026-11-11/member=edge-a");
+        std::fs::write(member.join(".x.sealed.partial"), b"half")?;
+        let again = History::open(&dir.path().join("center.store"), keys(1))?;
+        assert!(
+            !member.join(".x.sealed.partial").exists(),
+            "edge the staged file is removed"
+        );
+        assert_eq!(
+            counts(&again, &of("edge-a"))?,
+            [1],
+            "edge and the filed heartbeat stays"
+        );
+        Ok(())
+    }
+}
+
+/// The layout of one file for each filing and day, whatever the number of
+/// members, and the files release 0.5.249 wrote under `member=<id>`.
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use crate::app::fleet_calls::CallCounts;
+    use crate::app::fleet_center::Cursor;
+    use crate::app::fleet_seal::MasterKey;
+
+    /// What a test returns.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// One day in milliseconds.
+    const DAY: i64 = 86_400_000;
+
+    /// A key whose every byte is `b`, alone.
+    fn keys(b: u8) -> Arc<Keys> {
+        Arc::new(Keys::new(MasterKey::from_bytes([b; 32]), Vec::new()))
+    }
+
+    /// 2026-11-11T00:00:00Z plus `ms` milliseconds.
+    fn at_ms(ms: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::UNIX_EPOCH + chrono::TimeDelta::milliseconds(1_794_355_200_000 + ms)
+    }
+
+    /// The call record at `seq` of `member`, received `ms` milliseconds
+    /// into 2026-11-11.
+    fn call(member: &str, ms: i64, seq: u64) -> IntakeRecord {
+        IntakeRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            stream: "s".to_string(),
+            seq,
+            sent_at: at_ms(ms - 250),
+            selected_by: "failed".to_string(),
+            call: serde_json::json!({"call_id": format!("call-{seq}@example.com")}),
+        }
+    }
+
+    /// Heartbeat `count` of `member`, received `ms` milliseconds into
+    /// 2026-11-11.
+    fn beat(member: &str, ms: i64, count: u64) -> MemberRecord {
+        MemberRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            peer: "192.0.2.10".to_string(),
+            heartbeats: count,
+            cursor: Cursor {
+                stream: "s".to_string(),
+                seq: count,
+                sent_at: at_ms(ms - 250),
+            },
+            heartbeat_secs: 30,
+            inventory: serde_json::json!({"host": "edge.example.com"}),
+            call_records: count,
+            calls: Some(CallCounts {
+                selected: count,
+                dropped_by_cap: 0,
+                left_out: 0,
+                spooled: 0,
+            }),
+        }
+    }
+
+    /// The id of member `n` of a fleet.
+    fn id(n: usize) -> String {
+        format!("edge-{n:04}")
+    }
+
+    /// One call record of each of `members` members, all received within
+    /// one second from `ms` on, at position `seq`.
+    fn fleet_calls(members: usize, ms: i64, seq: u64) -> Vec<IntakeRecord> {
+        (0..members)
+            .map(|n| call(&id(n), ms + i64::try_from(n % 1000).unwrap_or(0), seq))
+            .collect()
+    }
+
+    /// One heartbeat of each of `members` members, as [`fleet_calls`].
+    fn fleet_beats(members: usize, ms: i64, count: u64) -> Vec<MemberRecord> {
+        (0..members)
+            .map(|n| beat(&id(n), ms + i64::try_from(n % 1000).unwrap_or(0), count))
+            .collect()
+    }
+
+    /// A history store in a new directory, under key 1.
+    fn store() -> Result<(tempfile::TempDir, History), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let history = History::open(&dir.path().join("center.store"), keys(1))?;
+        Ok((dir, history))
+    }
+
+    /// Every file under `dir`, as paths relative to it, sorted.
+    fn tree(dir: &Path) -> std::io::Result<Vec<String>> {
+        let mut out = Vec::new();
+        let mut todo = vec![dir.to_path_buf()];
+        while let Some(at) = todo.pop() {
+            for entry in std::fs::read_dir(&at)? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    todo.push(entry.path());
+                } else if let Ok(rel) = entry.path().strip_prefix(dir) {
+                    out.push(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// The question for every row of `member`.
+    fn of(member: &str) -> Query {
+        Query {
+            member: Some(member.to_string()),
+            ..Query::all()
+        }
+    }
+
+    /// The answer of the store to `query` with no row waiting; a file that
+    /// was refused is an error.
+    fn ask<R: Row>(history: &History, query: &Query) -> Result<Answer<R>, String> {
+        let answer = history.answer(query, &history.list(R::CLASS, query)?, Vec::<R>::new());
+        if let Some((file, why)) = answer.refused.first() {
+            return Err(format!("{file}: {why}"));
+        }
+        Ok(answer)
+    }
+
+    /// Whether `rel` is a path of the layout this build writes in `class`
+    /// on 2026-11-11: the class, the day and a name, with no member.
+    fn is_interval_path(rel: &str, class: &str) -> bool {
+        rel.strip_prefix(&format!("{class}/date=2026-11-11/"))
+            .is_some_and(|name| IntervalName::parse(name).is_some())
+    }
+
+    #[test]
+    fn success_an_interval_name_carries_first_and_last_time_and_the_mark() -> TestResult {
+        let rows = [call("edge-a", 1000, 1), call("edge-b", 3000, 1)];
+        let name = IntervalName::of(&rows)?;
+        assert_eq!(
+            (name.first_ms, name.last_ms, name.mark),
+            (1_794_355_201_000, 1_794_355_203_000, rows_mark(&rows)?),
+            "success a name holds the earliest and latest receive time and the rows' mark"
+        );
+        assert_eq!(
+            name.text(),
+            format!("1794355201000-1794355203000-h{:016x}.sealed", name.mark),
+            "success a name is first ms, last ms and the mark in 16 hex digits"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_interval_name_reads_back() -> TestResult {
+        let name = IntervalName::of(&fleet_calls(5, 1000, 1))?;
+        assert_eq!(
+            IntervalName::parse(&name.text()),
+            Some(name),
+            "success a written name parses to itself"
+        );
+        let greatest = IntervalName {
+            first_ms: 0,
+            last_ms: 9_999_999_999_999,
+            mark: u64::MAX,
+        };
+        assert_eq!(
+            IntervalName::parse(&greatest.text()),
+            Some(greatest),
+            "success the least and greatest values read back"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_same_rows_in_any_order_have_one_name() -> TestResult {
+        let rows = fleet_calls(7, 1000, 1);
+        let mut turned = rows.clone();
+        turned.reverse();
+        assert_eq!(
+            IntervalName::of(&rows)?,
+            IntervalName::of(&turned)?,
+            "success a replay that gives the rows in another order spells the same name"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_rows_are_sorted_by_member_then_receive_time() {
+        let rows = vec![
+            call("edge-b", 1000, 1),
+            call("edge-a", 3000, 3),
+            call("edge-a", 1000, 9),
+            call("edge-a", 2000, 2),
+        ];
+        let order: Vec<(String, u64)> = sorted(rows)
+            .into_iter()
+            .map(|r| (r.member, r.seq))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("edge-a".to_string(), 9),
+                ("edge-a".to_string(), 2),
+                ("edge-a".to_string(), 3),
+                ("edge-b".to_string(), 1)
+            ],
+            "success member first, then the receive time, whatever the position says"
+        );
+    }
+
+    #[test]
+    fn success_groups_end_where_the_member_changes() {
+        let members: Vec<&str> = [["a"; 100], ["b"; 100], ["c"; 100]].concat();
+        assert_eq!(
+            group_cuts(&members, 128, 10_000),
+            [200, 100],
+            "success a group that reached 128 rows ends with the member it is in"
+        );
+    }
+
+    #[test]
+    fn success_a_fleet_of_one_row_each_is_cut_every_128_rows() {
+        let ids: Vec<String> = (0..2000).map(id).collect();
+        let members: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let cuts = group_cuts(&members, GROUP_ROWS, ROWS_PER_GROUP);
+        assert_eq!(cuts.len(), 16, "success 2,000 rows are 16 row groups");
+        assert!(
+            cuts[..15].iter().all(|rows| *rows == 128) && cuts[15] == 80,
+            "success 15 groups of 128 rows and one of 80, got {cuts:?}"
+        );
+    }
+
+    #[test]
+    fn success_a_question_wants_the_days_of_its_window() -> TestResult {
+        let query = Query {
+            from: Some(at_ms(1000)),
+            to: Some(at_ms(DAY + 1000)),
+            ..Query::all()
+        };
+        let day = |offset: i64| at_ms(offset * DAY).date_naive();
+        assert!(
+            query.wants_date(day(0)) && query.wants_date(day(1)),
+            "success the days the window touches"
+        );
+        assert!(
+            !query.wants_date(day(-1)) && !query.wants_date(day(2)),
+            "success no day before or after the window"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_rows_are_grouped_by_day_only() {
+        let rows = [
+            call("edge-a", 1000, 1),
+            call("edge-b", 2000, 1),
+            call("edge-a", DAY, 2),
+        ];
+        let got: Vec<(String, usize)> = by_date(&rows)
+            .into_iter()
+            .map(|(date, rows)| (date.to_string(), rows.len()))
+            .collect();
+        assert_eq!(
+            got,
+            [("2026-11-11".to_string(), 2), ("2026-11-12".to_string(), 1)],
+            "success two members of one day are one group"
+        );
+    }
+
+    #[test]
+    fn failure_no_rows_have_no_interval_name() {
+        assert!(
+            IntervalName::of(&Vec::<IntakeRecord>::new())
+                .is_err_and(|e| e.contains("no rows") && e.contains("at least one")),
+            "failure a file of no rows has no name"
+        );
+    }
+
+    #[test]
+    fn failure_names_this_module_does_not_write_are_no_interval_name() {
+        for name in [
+            "",
+            ".sealed",
+            "1794355201000-1794355203000-s-1.sealed",
+            "1794355201000-1794355203000-h0123456789abcdef",
+            "1794355201000-1794355203000-h0123456789ABCDEF.sealed",
+            "1794355201000-1794355203000-h123.sealed",
+            "1794355201000-1794355203000-0123456789abcdef.sealed",
+            "1794355201000-1794355203000-h0123456789abcdeg.sealed",
+            "1794355201000-1794355203000-h0123456789abcdef0.sealed",
+            "1794355203000-1794355201000-h0123456789abcdef.sealed",
+            "794355201000-1794355203000-h0123456789abcdef.sealed",
+            "+794355201000-1794355203000-h0123456789abcdef.sealed",
+            "1794355201000-1794355203000-h0123456789abcdef.sealed.partial",
+            "1794355201000-h0123456789abcdef.sealed",
+            "1794355201000-1794355203000-m2-r2-h0123456789abcdef.sealed",
+        ] {
+            assert_eq!(
+                IntervalName::parse(name),
+                None,
+                "failure {name:?} is not a name this module writes"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_the_names_of_the_two_layouts_are_not_each_others() -> TestResult {
+        let old = FileName::of(&[call("edge-a", 1000, 1)])?.text();
+        let new = IntervalName::of(&[call("edge-a", 1000, 1)])?.text();
+        assert_eq!(
+            IntervalName::parse(&old),
+            None,
+            "failure a name of release 0.5.249 is no name of this layout"
+        );
+        assert_eq!(
+            FileName::parse(&new),
+            None,
+            "failure a name of this layout is no name of release 0.5.249"
+        );
+        let digits = IntervalName {
+            first_ms: 1,
+            last_ms: 2,
+            mark: 0x1234_5678_9012_3456,
+        };
+        assert_eq!(
+            FileName::parse(&digits.text()),
+            None,
+            "failure and neither is one whose mark has only decimal digits"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_row_received_before_1970_has_no_interval_name() {
+        let mut row = call("edge-a", 0, 1);
+        row.received_at = DateTime::<Utc>::UNIX_EPOCH - chrono::TimeDelta::seconds(1);
+        assert!(
+            IntervalName::of(&[row]).is_err_and(|e| e.contains("before 1970")),
+            "failure a row the store keeps none of names no file"
+        );
+    }
+
+    #[test]
+    fn edge_different_rows_of_the_same_times_have_different_names() -> TestResult {
+        let a = IntervalName::of(&[call("edge-a", 1000, 1)])?;
+        let b = IntervalName::of(&[call("edge-b", 1000, 1)])?;
+        let later = IntervalName::of(&[call("edge-a", 1000, 2)])?;
+        assert_eq!(
+            (a.first_ms, a.last_ms),
+            (b.first_ms, b.last_ms),
+            "edge the same times"
+        );
+        assert!(
+            a.mark != b.mark && a.mark != later.mark,
+            "edge another member or another position is another mark"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_mark_does_not_run_fields_together() -> TestResult {
+        let mut left = call("ab", 1000, 1);
+        left.stream = "c".to_string();
+        let mut right = call("a", 1000, 1);
+        right.stream = "bc".to_string();
+        assert_ne!(
+            rows_mark(&[left])?,
+            rows_mark(&[right])?,
+            "edge member 'ab' with stream 'c' is not member 'a' with stream 'bc'"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_name_states_no_member_and_no_count() -> TestResult {
+        let text = IntervalName::of(&fleet_calls(37, 1000, 1))?.text();
+        let stem = text.strip_suffix(".sealed").ok_or("no suffix")?;
+        let parts: Vec<&str> = stem.split('-').collect();
+        assert_eq!(parts.len(), 3, "edge two times and the mark, got {text}");
+        assert!(
+            !text.contains("edge") && parts.iter().all(|part| *part != "37"),
+            "edge neither a member id nor the number of rows is in {text}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_member_with_more_rows_than_the_cap_is_cut_at_the_cap() {
+        let members: Vec<&str> = [vec!["a"; 25], vec!["b"; 3]].concat();
+        assert_eq!(
+            group_cuts(&members, 4, 10),
+            [10, 10, 5, 3],
+            "edge the cap ends a group inside a member; the member's last rows end the next"
+        );
+    }
+
+    #[test]
+    fn edge_no_rows_are_cut_into_no_groups() {
+        assert_eq!(
+            group_cuts(&[], 128, 10_000),
+            Vec::<usize>::new(),
+            "edge nothing to cut"
+        );
+    }
+
+    #[test]
+    fn edge_one_member_under_the_cap_is_one_group() {
+        assert_eq!(
+            group_cuts(&["a"; 9000], 128, 10_000),
+            [9000],
+            "edge a file of one member, as release 0.5.249 wrote, keeps one group"
+        );
+    }
+
+    #[test]
+    fn edge_a_group_ends_inside_a_member_only_at_the_cap() {
+        let members: Vec<&str> = [vec!["a"; 127], vec!["b"; 300], vec!["c"; 1]].concat();
+        assert_eq!(
+            group_cuts(&members, 128, 10_000),
+            [427, 1],
+            "edge 127 rows are under the least, so the group takes all of the next member"
+        );
+    }
+
+    #[test]
+    fn edge_the_cuts_add_up_to_the_rows_and_none_is_empty() {
+        for (members, least, most) in [
+            (vec!["a"; 1], 1, 1),
+            (vec!["a"; 7], 3, 3),
+            ([vec!["a"; 5], vec!["b"; 5]].concat(), 1, 100),
+            ([vec!["a"; 5], vec!["b"; 5]].concat(), 0, 0),
+            ([vec!["a"; 2], vec!["b"; 9], vec!["c"; 2]].concat(), 4, 6),
+        ] {
+            let cuts = group_cuts(&members, least, most);
+            assert_eq!(
+                cuts.iter().sum::<usize>(),
+                members.len(),
+                "edge every row is in one group for least {least}, most {most}"
+            );
+            assert!(
+                cuts.iter().all(|rows| *rows > 0),
+                "edge no group is empty for least {least}, most {most}: {cuts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn success_the_members_of_one_filing_are_one_file() -> TestResult {
+        let (_dir, history) = store()?;
+        let filed = history.file(&fleet_calls(50, 1000, 1))?;
+        assert_eq!(
+            (filed.files, filed.rows, filed.already),
+            (1, 50, 0),
+            "success 50 members with one call record each are one file"
+        );
+        let files = tree(history.dir())?;
+        assert_eq!(files.len(), 1, "success one file on disk, got {files:?}");
+        assert!(
+            is_interval_path(&files[0], CLASS_CALLS),
+            "success at calls/date=/<name>, with no member in the path: {}",
+            files[0]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_files_of_a_day_do_not_grow_with_the_members() -> TestResult {
+        let mut counts = Vec::new();
+        for members in [1, 40] {
+            let (_dir, history) = store()?;
+            for interval in 0..3 {
+                history.file(&fleet_calls(
+                    members,
+                    interval * 60_000,
+                    1 + interval as u64,
+                ))?;
+            }
+            counts.push(tree(history.dir())?.len());
+        }
+        assert_eq!(
+            counts,
+            [3, 3],
+            "success three filings are three files for 1 member and for 40"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_heartbeats_of_one_filing_are_one_file() -> TestResult {
+        let (_dir, history) = store()?;
+        let filed = history.file(&fleet_beats(300, 1000, 1))?;
+        assert_eq!(
+            (filed.files, filed.rows),
+            (1, 300),
+            "success 300 heartbeats are one file"
+        );
+        let files = tree(history.dir())?;
+        assert!(
+            files.len() == 1 && is_interval_path(&files[0], CLASS_MEMBERS),
+            "success at members/date=/<name>: {files:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_one_member_question_decodes_one_row_group_of_calls() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(2000, 1000, 1))?;
+        let answer = ask::<IntakeRecord>(&history, &of(&id(1234)))?;
+        assert_eq!(
+            answer
+                .rows
+                .iter()
+                .map(|r| r.member.clone())
+                .collect::<Vec<String>>(),
+            [id(1234)],
+            "success the member's one call record"
+        );
+        assert_eq!(
+            (answer.files_read, answer.groups, answer.groups_read),
+            (1, 16, 1),
+            "success of the file's 16 row groups, the reader decoded the one that holds the \
+             member"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_one_member_question_decodes_one_row_group_of_heartbeats() -> TestResult {
+        let (_dir, history) = store()?;
+        for interval in 0..3 {
+            history.file(&fleet_beats(2000, interval * 60_000, 1 + interval as u64))?;
+        }
+        let answer = ask::<MemberRecord>(&history, &of(&id(7)))?;
+        assert_eq!(
+            answer
+                .rows
+                .iter()
+                .map(|r| r.heartbeats)
+                .collect::<Vec<u64>>(),
+            [3, 2, 1],
+            "success the member's three heartbeats, newest first"
+        );
+        assert_eq!(
+            (answer.files_read, answer.groups, answer.groups_read),
+            (3, 48, 3),
+            "success one row group of each file's 16 was decoded"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_rows_of_two_days_are_two_files() -> TestResult {
+        let (_dir, history) = store()?;
+        let mut rows = fleet_calls(5, 1000, 1);
+        rows.extend(fleet_calls(5, DAY + 1000, 2));
+        let filed = history.file(&rows)?;
+        assert_eq!((filed.files, filed.rows), (2, 10), "success one file a day");
+        let files = tree(history.dir())?;
+        assert!(
+            files[0].starts_with("calls/date=2026-11-11/")
+                && files[1].starts_with("calls/date=2026-11-12/"),
+            "success each under its day: {files:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_filed_rows_of_many_members_read_back_equal() -> TestResult {
+        let (_dir, history) = store()?;
+        let mut rows = fleet_calls(300, 1000, 1);
+        rows.extend(fleet_calls(300, 2000, 2));
+        history.file(&rows)?;
+        let rel = &history.list(CLASS_CALLS, &Query::all())?[0].rel;
+        let read = history.read::<IntakeRecord>(rel, &Query::all())?;
+        assert_eq!(
+            read.rows,
+            sorted(rows),
+            "success every row, whole, in the file's order: member, then receive time"
+        );
+        assert!(
+            read.groups > 1 && read.groups_read == read.groups,
+            "success a question for every row reads every group"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_file_of_release_0_5_249_is_listed_and_read() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&[call("edge-a", 1000, 1), call("edge-a", 2000, 2)])?;
+        let files = history.list(CLASS_CALLS, &Query::all())?;
+        assert_eq!(files.len(), 1, "success the file is listed");
+        assert_eq!(
+            (files[0].rel.as_str(), files[0].member.as_deref()),
+            (
+                "calls/date=2026-11-11/member=edge-a/1794355201000-1794355203000-s-1.sealed"
+                    .replace("3000-s", "2000-s")
+                    .as_str(),
+                Some("edge-a")
+            ),
+            "success at its path of release 0.5.249, with its member"
+        );
+        let answer = ask::<IntakeRecord>(&history, &Query::all())?;
+        assert_eq!(
+            answer.rows.iter().map(|r| r.seq).collect::<Vec<u64>>(),
+            [2, 1],
+            "success and its rows are answered"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_both_layouts_answer_one_question_newest_first() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&[call("edge-a", 1000, 1), call("edge-b", 1500, 1)])?;
+        history.file(&[call("edge-a", 2000, 2), call("edge-b", 2500, 2)])?;
+        let all = ask::<IntakeRecord>(&history, &Query::all())?;
+        assert_eq!(
+            all.rows
+                .iter()
+                .map(|r| (r.member.as_str(), r.seq))
+                .collect::<Vec<(&str, u64)>>(),
+            [("edge-b", 2), ("edge-a", 2), ("edge-b", 1), ("edge-a", 1)],
+            "success rows of both layouts, newest first"
+        );
+        assert_eq!(all.files_read, 3, "success two old files and one new");
+        let one = ask::<IntakeRecord>(&history, &of("edge-b"))?;
+        assert_eq!(
+            (one.rows.len(), one.files_read),
+            (2, 2),
+            "success one member: its old file and the shared file, not the other member's"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_one_member_question_rules_out_old_files_by_their_path() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&fleet_calls(20, 1000, 1))?;
+        let files = history.list(CLASS_CALLS, &of(&id(3)))?;
+        assert_eq!(files.len(), 1, "success one of the 20 old files is listed");
+        assert_eq!(
+            files[0].member,
+            Some(id(3)),
+            "success the one under the member's directory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_days_of_both_layouts_expire_and_are_counted() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&[call("edge-a", 1000, 1), call("edge-b", 1000, 1)])?;
+        history.file(&fleet_calls(10, 2000, 2))?;
+        history.file(&fleet_calls(10, 5 * DAY, 3))?;
+        let expired = history.expire_before(CLASS_CALLS, at_ms(3 * DAY).date_naive())?;
+        assert_eq!(
+            (expired.days, expired.files, expired.left.len()),
+            (1, 3, 0),
+            "success the day went with its two old files and its one new file"
+        );
+        let files = tree(history.dir())?;
+        assert!(
+            files.len() == 1 && files[0].starts_with("calls/date=2026-11-16/"),
+            "success the kept day stays: {files:?}"
+        );
+        assert!(
+            !history.dir().join("calls/date=2026-11-11").exists(),
+            "success and the old day's directories are gone"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_rebuild_finds_each_members_newest_heartbeat_in_shared_files() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1), beat("edge-b", 1000, 1)])?;
+        history.file(&[beat("edge-a", 2000, 2)])?;
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 100)?;
+        let mut got: Vec<(String, u64)> = found
+            .members
+            .iter()
+            .map(|r| (r.member.clone(), r.heartbeats))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [("edge-a".to_string(), 2), ("edge-b".to_string(), 1)],
+            "success each member once, with its newest heartbeat"
+        );
+        assert_eq!(
+            (found.files_read, found.files_not_read, found.refused.len()),
+            (2, 0, 0),
+            "success with no member named, every file to the retention edge is read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_call_records_after_each_members_instant_come_in_one_pass() -> TestResult {
+        let (_dir, history) = store()?;
+        for (ms, seq) in [(1000, 1), (2000, 2), (3000, 3)] {
+            history.file(&[
+                call("edge-a", ms, seq),
+                call("edge-b", ms, seq),
+                call("edge-c", ms, seq),
+            ])?;
+        }
+        let since = BTreeMap::from([
+            ("edge-a".to_string(), at_ms(2000)),
+            ("edge-b".to_string(), at_ms(3000)),
+        ]);
+        let found = history.calls_after(&since, 100)?;
+        assert_eq!(
+            found
+                .rows
+                .iter()
+                .map(|r| (r.member.as_str(), r.seq))
+                .collect::<Vec<(&str, u64)>>(),
+            [("edge-a", 2), ("edge-a", 3), ("edge-b", 3)],
+            "success each member's records from its own instant on, oldest first, and no \
+             record of a member that was not asked for"
+        );
+        assert_eq!(
+            (found.files_read, found.files_not_read),
+            (2, 0),
+            "success two files for two members: the file before every instant is not opened"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_call_records_after_an_instant_include_old_layout_files() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&[call("edge-a", 1000, 1), call("edge-b", 1000, 9)])?;
+        history.file(&[call("edge-a", 2000, 2)])?;
+        let since = BTreeMap::from([("edge-a".to_string(), at_ms(0))]);
+        let found = history.calls_after(&since, 100)?;
+        assert_eq!(
+            found.rows.iter().map(|r| r.seq).collect::<Vec<u64>>(),
+            [1, 2],
+            "success the member's record of release 0.5.249 and the new one"
+        );
+        assert_eq!(
+            found.files_read, 2,
+            "success the other member's old file is ruled out by its path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_moved_to_another_day_is_refused() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(3, 1000, 1))?;
+        let from = tree(history.dir())?.remove(0);
+        let to = from.replace("date=2026-11-11", "date=2026-11-12");
+        std::fs::create_dir_all(history.dir().join("calls/date=2026-11-12"))?;
+        std::fs::rename(history.dir().join(&from), history.dir().join(&to))?;
+        assert!(
+            history
+                .read::<IntakeRecord>(&to, &Query::all())
+                .is_err_and(|e| e.contains("was written as") && e.contains("date=2026-11-11")),
+            "failure a file does not open at another day's path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_old_file_moved_out_of_its_member_directory_is_not_listed() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&[call("edge-a", 1000, 1)])?;
+        let from = tree(history.dir())?.remove(0);
+        let name = from.rsplit('/').next().ok_or("no name")?;
+        let day = history.dir().join("calls/date=2026-11-11");
+        std::fs::rename(history.dir().join(&from), day.join(name))?;
+        assert_eq!(
+            history.list(CLASS_CALLS, &Query::all())?,
+            Vec::new(),
+            "failure a name of release 0.5.249 beside the shared files is no file of the store"
+        );
+        let expired = history.expire_before(CLASS_CALLS, at_ms(DAY).date_naive())?;
+        assert!(
+            expired.files == 0
+                && expired
+                    .left
+                    .iter()
+                    .any(|left| left.contains(name) && left.contains("not a file of the store")),
+            "failure and a retention pass leaves it and says so: {expired:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_shared_file_under_a_member_directory_is_not_listed() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(3, 1000, 1))?;
+        let from = tree(history.dir())?.remove(0);
+        let name = from.rsplit('/').next().ok_or("no name")?;
+        let member = history.dir().join("calls/date=2026-11-11/member=edge-a");
+        std::fs::create_dir_all(&member)?;
+        std::fs::rename(history.dir().join(&from), member.join(name))?;
+        assert_eq!(
+            history.list(CLASS_CALLS, &Query::all())?,
+            Vec::new(),
+            "failure a name of this layout under member= is no file of the store"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_changed_shared_file_is_refused_and_the_rest_is_answered() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(3, 1000, 1))?;
+        history.file(&fleet_calls(3, 60_000, 2))?;
+        let files = history.list(CLASS_CALLS, &Query::all())?;
+        let broken = history.dir().join(&files[0].rel);
+        let mut bytes = std::fs::read(&broken)?;
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        std::fs::write(&broken, bytes)?;
+        let answer = history.answer(&Query::all(), &files, Vec::<IntakeRecord>::new());
+        assert_eq!(
+            answer
+                .refused
+                .iter()
+                .map(|(file, _)| file.as_str())
+                .collect::<Vec<&str>>(),
+            [files[0].rel.as_str()],
+            "failure the changed file is named"
+        );
+        assert!(
+            answer.refused[0].1.contains("sealed layer") && !answer.refused[0].1.contains("date="),
+            "failure with the sealed layer's reason and no path in it: {}",
+            answer.refused[0].1
+        );
+        assert_eq!(
+            answer.rows.iter().map(|r| r.seq).collect::<Vec<u64>>(),
+            [1, 1, 1],
+            "failure and the other file's rows are answered"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_filing_stops_when_an_old_file_that_may_hold_the_rows_cannot_be_read() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&[call("edge-a", 1000, 1)])?;
+        let old = tree(history.dir())?.remove(0);
+        std::fs::write(history.dir().join(&old), b"not sealed")?;
+        let again = history.file(&[call("edge-a", 1000, 1), call("edge-b", 1000, 1)]);
+        assert!(
+            again.as_ref().is_err_and(|e| e.contains("member=edge-a")),
+            "failure the rows are not filed beside a file that may hold them: {again:?}"
+        );
+        assert_eq!(
+            tree(history.dir())?,
+            [old],
+            "failure and no file was written"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_filing_stops_when_a_shared_file_that_may_hold_the_rows_cannot_be_read() -> TestResult
+    {
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(3, 1000, 1))?;
+        let held = tree(history.dir())?.remove(0);
+        std::fs::write(history.dir().join(&held), b"not sealed")?;
+        let again = history.file(&fleet_calls(3, 1000, 1));
+        assert!(
+            again.as_ref().is_err_and(|e| e.contains("sealed layer")),
+            "failure the rows are not filed twice when the file cannot say: {again:?}"
+        );
+        assert_eq!(
+            tree(history.dir())?.len(),
+            1,
+            "failure and no file was written"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_that_is_not_the_stores_in_a_day_is_left_when_it_expires() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(3, 1000, 1))?;
+        let notes = history.dir().join("calls/date=2026-11-11/notes.txt");
+        std::fs::write(&notes, b"kept")?;
+        let expired = history.expire_before(CLASS_CALLS, at_ms(DAY).date_naive())?;
+        assert_eq!(
+            (expired.days, expired.files),
+            (0, 1),
+            "failure the store's file went and the day stays"
+        );
+        assert_eq!(
+            expired.left,
+            ["calls/date=2026-11-11/notes.txt: not a file of the store"],
+            "failure the other file is named"
+        );
+        assert!(notes.exists(), "failure and is still there");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_shared_file_under_another_key_is_not_read() -> TestResult {
+        let (dir, history) = store()?;
+        history.file(&fleet_beats(3, 1000, 1))?;
+        let other = History::reader(&dir.path().join("center.store"), keys(2));
+        let files = other.list(CLASS_MEMBERS, &Query::all())?;
+        let answer = other.answer(&Query::all(), &files, Vec::<MemberRecord>::new());
+        assert_eq!(
+            (answer.rows.len(), answer.refused.len(), answer.files_read),
+            (0, 1, 0),
+            "failure no row without the key, and the file is reported"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_rebuild_reports_a_file_it_cannot_read_and_goes_on() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1)])?;
+        history.file(&[beat("edge-a", 2000, 2)])?;
+        let newest = &history.list(CLASS_MEMBERS, &Query::all())?[0].rel;
+        std::fs::write(history.dir().join(newest), b"not sealed")?;
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 100)?;
+        assert_eq!(
+            found
+                .refused
+                .iter()
+                .map(|(file, _)| file)
+                .collect::<Vec<&String>>(),
+            [newest],
+            "failure the file is named"
+        );
+        assert_eq!(
+            found
+                .members
+                .iter()
+                .map(|r| r.heartbeats)
+                .collect::<Vec<u64>>(),
+            [1],
+            "failure and the member is taken from the file before it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_day_that_is_a_file_fails_the_filing() -> TestResult {
+        let (_dir, history) = store()?;
+        std::fs::create_dir_all(history.dir().join("calls"))?;
+        std::fs::write(history.dir().join("calls/date=2026-11-11"), b"")?;
+        let filed = history.file(&fleet_calls(3, 1000, 1));
+        assert!(
+            filed
+                .as_ref()
+                .is_err_and(|e| e.contains("the history store: calls/date=2026-11-11")),
+            "failure the day is named: {filed:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_rebuild_bound_of_no_files_reads_none_and_says_how_many() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1)])?;
+        history.file(&[beat("edge-a", 2000, 2)])?;
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 0)?;
+        assert_eq!(
+            (found.members.len(), found.files_read, found.files_not_read),
+            (0, 0, 2),
+            "failure nothing is restored and both files are counted as not read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_filing_the_same_rows_of_many_members_again_writes_nothing() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(200, 1000, 1))?;
+        let again = history.file(&fleet_calls(200, 1000, 1))?;
+        assert_eq!(
+            (again.files, again.rows, again.already),
+            (0, 0, 200),
+            "edge a replay of a filed intake files nothing"
+        );
+        assert_eq!(tree(history.dir())?.len(), 1, "edge one file stays one");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_rows_release_0_5_249_filed_are_not_filed_again() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&[call("edge-a", 1000, 1), call("edge-b", 1000, 1)])?;
+        let again = history.file(&[call("edge-a", 1000, 1), call("edge-b", 1000, 1)])?;
+        assert_eq!(
+            (again.files, again.rows, again.already),
+            (0, 0, 2),
+            "edge an intake that the old release filed and did not empty is not filed twice"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_replay_with_some_rows_in_an_old_file_files_only_the_rest() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&[call("edge-a", 1000, 1), call("edge-a", 2000, 2)])?;
+        let filed = history.file(&[
+            call("edge-a", 1000, 1),
+            call("edge-a", 2000, 2),
+            call("edge-a", 3000, 3),
+            call("edge-b", 1000, 1),
+        ])?;
+        assert_eq!(
+            (filed.files, filed.rows, filed.already),
+            (1, 2, 2),
+            "edge the two rows no file holds go into one shared file"
+        );
+        let answer = ask::<IntakeRecord>(&history, &Query::all())?;
+        assert_eq!(answer.rows.len(), 4, "edge and every row is answered once");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_two_members_with_the_same_stream_and_position_are_two_rows() -> TestResult {
+        let (_dir, history) = store()?;
+        let filed = history.file(&[call("edge-a", 1000, 1), call("edge-b", 1000, 1)])?;
+        assert_eq!(
+            (filed.rows, filed.already),
+            (2, 0),
+            "edge neither is the other's duplicate within a filing"
+        );
+        let later = history.file(&[call("edge-c", 1000, 1), call("edge-b", 1000, 1)])?;
+        assert_eq!(
+            (later.rows, later.already),
+            (1, 1),
+            "edge and against a file, only the same member's row is held already"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_heartbeats_of_two_members_at_one_count_and_time_are_both_kept() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1)])?;
+        let filed = history.file(&[beat("edge-b", 1000, 1), beat("edge-a", 1000, 1)])?;
+        assert_eq!(
+            (filed.rows, filed.already),
+            (1, 1),
+            "edge the other member's heartbeat of the same count and instant is a new row"
+        );
+        let answer = ask::<MemberRecord>(&history, &Query::all())?;
+        assert_eq!(answer.rows.len(), 2, "edge one row for each member");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_two_filings_of_the_same_millisecond_are_two_files() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[call("edge-a", 1000, 1)])?;
+        let second = history.file(&[call("edge-b", 1000, 1)])?;
+        assert_eq!(second.files, 1, "edge the second filing is not refused");
+        let files = tree(history.dir())?;
+        assert_eq!(
+            files.len(),
+            2,
+            "edge two files of the same times: {files:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_staged_file_in_a_day_is_removed_at_open() -> TestResult {
+        let (dir, history) = store()?;
+        history.file(&fleet_calls(3, 1000, 1))?;
+        let staged = history.dir().join(
+            "calls/date=2026-11-11/.1794355209000-1794355209000-h0123456789abcdef.sealed.partial",
+        );
+        std::fs::write(&staged, b"half")?;
+        let again = History::open(&dir.path().join("center.store"), keys(1))?;
+        assert!(
+            !staged.exists(),
+            "edge a stopped write's staged file is gone"
+        );
+        assert_eq!(tree(again.dir())?.len(), 1, "edge and the filed file stays");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_rebuild_stops_at_its_file_bound() -> TestResult {
+        let (_dir, history) = store()?;
+        for n in 0..10 {
+            history.file(&[beat(&id(n), i64::try_from(n)? * 60_000, 1)])?;
+        }
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 3)?;
+        assert_eq!(
+            (found.files_read, found.files_not_read),
+            (3, 7),
+            "edge three files are opened and seven are counted as not read"
+        );
+        let mut got: Vec<String> = found.members.iter().map(|r| r.member.clone()).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [id(7), id(8), id(9)],
+            "edge the members of the three newest files"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_rebuild_reads_nothing_when_the_store_file_is_newer() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1), beat("edge-b", 1000, 1)])?;
+        history.file(&[beat("edge-a", 2000, 2), beat("edge-c", 2000, 1)])?;
+        let known = BTreeMap::from([
+            ("edge-a".to_string(), at_ms(5000)),
+            ("edge-b".to_string(), at_ms(1000)),
+        ]);
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &known, 100)?;
+        assert_eq!(
+            (found.members.len(), found.files_read, found.files_not_read),
+            (0, 0, 0),
+            "edge every file ends before the newest heartbeat the store file names: none is \
+             opened, also for a member that has been silent"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_rebuild_stops_when_every_named_member_has_a_row() -> TestResult {
+        let (_dir, history) = store()?;
+        for (ms, count) in [(1000, 1), (2000, 2), (3000, 3)] {
+            history.file(&[beat("edge-a", ms, count), beat("edge-b", ms, count)])?;
+        }
+        let known = BTreeMap::from([
+            ("edge-a".to_string(), at_ms(500)),
+            ("edge-b".to_string(), at_ms(500)),
+        ]);
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &known, 100)?;
+        assert_eq!(
+            found.files_read, 1,
+            "edge the newest file holds both named members: the two before it stay closed"
+        );
+        assert_eq!(
+            found
+                .members
+                .iter()
+                .map(|r| r.heartbeats)
+                .collect::<Vec<u64>>(),
+            [3, 3],
+            "edge with the newest heartbeat of each"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_rebuild_reads_back_to_a_named_member_that_an_older_file_holds() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1), beat("edge-b", 1000, 1)])?;
+        history.file(&[beat("edge-a", 2000, 2), beat("edge-b", 2000, 2)])?;
+        history.file(&[beat("edge-a", 3000, 3)])?;
+        let known = BTreeMap::from([
+            ("edge-a".to_string(), at_ms(500)),
+            ("edge-b".to_string(), at_ms(500)),
+        ]);
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &known, 100)?;
+        let mut got: Vec<(String, u64)> = found
+            .members
+            .iter()
+            .map(|r| (r.member.clone(), r.heartbeats))
+            .collect();
+        got.sort();
+        assert_eq!(
+            (got, found.files_read),
+            (
+                vec![("edge-a".to_string(), 3), ("edge-b".to_string(), 2)],
+                2
+            ),
+            "edge the second file is opened for the member the newest does not hold, and \
+             the third is not"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_rebuild_does_not_pass_the_retention_edge() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1)])?;
+        history.file(&[beat("edge-b", 2 * DAY, 1)])?;
+        let found = history.newest_heartbeats(at_ms(DAY).date_naive(), &BTreeMap::new(), 100)?;
+        assert_eq!(
+            found
+                .members
+                .iter()
+                .map(|r| r.member.as_str())
+                .collect::<Vec<&str>>(),
+            ["edge-b"],
+            "edge a day before the oldest kept day is not read"
+        );
+        assert_eq!(
+            (found.files_read, found.files_not_read),
+            (1, 0),
+            "edge and its file is not counted as left unread"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_call_records_after_an_instant_stop_at_the_file_bound() -> TestResult {
+        let (_dir, history) = store()?;
+        for (ms, seq) in [(1000, 1), (2000, 2), (3000, 3)] {
+            history.file(&[call("edge-a", ms, seq)])?;
+        }
+        let since = BTreeMap::from([("edge-a".to_string(), at_ms(0))]);
+        let found = history.calls_after(&since, 2)?;
+        assert_eq!(
+            (found.files_read, found.files_not_read),
+            (2, 1),
+            "edge two files are opened and one is counted"
+        );
+        assert_eq!(
+            found.rows.iter().map(|r| r.seq).collect::<Vec<u64>>(),
+            [2, 3],
+            "edge the records of the two newest files, oldest first"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_no_member_asked_for_reads_no_call_record_file() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(3, 1000, 1))?;
+        let found = history.calls_after(&BTreeMap::new(), 100)?;
+        assert_eq!(
+            (found.rows.len(), found.files_read, found.files_not_read),
+            (0, 0, 0),
+            "edge nothing to look for opens nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_bound_of_a_question_counts_files_of_both_layouts() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&[call("edge-a", 1000, 1), call("edge-b", 1000, 1)])?;
+        history.file(&[call("edge-a", 2000, 2)])?;
+        history.file(&[call("edge-a", 3000, 3)])?;
+        let files = history.list(CLASS_CALLS, &Query::all())?;
+        let answer = history.answer_within(&Query::all(), &files, Vec::<IntakeRecord>::new(), 3);
+        assert_eq!(
+            (files.len(), answer.files_read, answer.files_not_read),
+            (4, 3, 1),
+            "edge four files, three opened, one counted as not read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_member_question_with_a_window_lists_only_the_days_of_the_window() -> TestResult {
+        let (_dir, history) = store()?;
+        for day in 0..3 {
+            history.file(&fleet_calls(4, day * DAY + 1000, 1 + day as u64))?;
+        }
+        let query = Query {
+            from: Some(at_ms(DAY)),
+            to: Some(at_ms(DAY + 60_000)),
+            ..of(&id(2))
+        };
+        let files = history.list(CLASS_CALLS, &query)?;
+        assert_eq!(files.len(), 1, "edge one day's file of three");
+        assert!(
+            files[0].rel.starts_with("calls/date=2026-11-12/") && files[0].member.is_none(),
+            "edge the day of the window, a shared file: {files:?}"
+        );
+        Ok(())
+    }
+
+    /// A day the window rules out is not read at all: its directory is
+    /// closed to the test's user, and the listing still answers. A user
+    /// that reads any directory (root) cannot see the difference, and the
+    /// test then asserts nothing.
+    #[cfg(unix)]
+    #[test]
+    fn edge_a_day_outside_the_window_is_not_opened() -> TestResult {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(3, 1000, 1))?;
+        history.file(&fleet_calls(3, DAY + 1000, 2))?;
+        let closed = history.dir().join("calls/date=2026-11-11");
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000))?;
+        let can_read_anyway = std::fs::read_dir(&closed).is_ok();
+        let query = Query {
+            from: Some(at_ms(DAY)),
+            ..Query::all()
+        };
+        let listed = history.list(CLASS_CALLS, &query);
+        let all = history.list(CLASS_CALLS, &Query::all());
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700))?;
+        if can_read_anyway {
+            return Ok(());
+        }
+        assert!(
+            listed.as_ref().is_ok_and(|files| files.len() == 1),
+            "edge the window's day is listed without a look into the day before it: {listed:?}"
+        );
+        assert!(
+            all.is_err(),
+            "edge and a question with no window does need that day"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_member_no_row_group_can_hold_decodes_none() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(500, 1000, 1))?;
+        let answer = ask::<IntakeRecord>(&history, &of("zulu"))?;
+        assert_eq!(
+            (
+                answer.rows.len(),
+                answer.files_read,
+                answer.groups,
+                answer.groups_read
+            ),
+            (0, 1, 4, 0),
+            "edge the file is opened and none of its four row groups is decoded"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_member_inside_a_groups_range_that_has_no_row_answers_nothing() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[call("edge-a", 1000, 1), call("edge-c", 1000, 1)])?;
+        let answer = ask::<IntakeRecord>(&history, &of("edge-b"))?;
+        assert_eq!(
+            (answer.rows.len(), answer.groups_read),
+            (0, 1),
+            "edge the statistics cannot rule the group out; its rows are read and none answers"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_first_and_the_last_member_of_a_file_are_each_in_one_group() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&fleet_calls(1000, 1000, 1))?;
+        for member in [id(0), id(127), id(128), id(999)] {
+            let answer = ask::<IntakeRecord>(&history, &of(&member))?;
+            assert_eq!(
+                (answer.rows.len(), answer.groups, answer.groups_read),
+                (1, 8, 1),
+                "edge member {member} at a group's edge is found in one group of eight"
+            );
+        }
+        Ok(())
+    }
+
+    /// What the layout costs for a fleet: one filing of heartbeats, one
+    /// member's history over many filings, the rebuild at a start, and one
+    /// filing of call records with a one-member question. The sizes here
+    /// are small. The numbers in the pull request that made the layout
+    /// came from this test with 2,000 members, 1,440 filings (24 hours at
+    /// 60 seconds) and 20,000 call records in the line below.
+    #[test]
+    fn edge_the_layout_is_measured_for_a_fleet() -> TestResult {
+        let (members, filings, calls) = (200, 12, 2000);
+        let (_dir, history) = store()?;
+        // A heartbeat whose inventory differs from member to member and
+        // from filing to filing, about 300 bytes of JSON, so the size of a
+        // file is not that of one value repeated.
+        let fleet_beats = |members: usize, ms: i64, count: u64| -> Vec<MemberRecord> {
+            fleet_beats(members, ms, count)
+                .into_iter()
+                .enumerate()
+                .map(|(n, mut row)| {
+                    row.inventory = serde_json::json!({
+                        "host": format!("edge-{n:04}.example.com"),
+                        "version": "0.5.249",
+                        "uptime_secs": count * 60 + n as u64,
+                        "interfaces": [
+                            {"name": "eth0", "addr": format!("192.0.2.{}", n % 250), "packets": count * 7919 + n as u64},
+                            {"name": "eth1", "addr": format!("2001:db8::{n:x}"), "packets": count * 104_729 + n as u64},
+                        ],
+                        "dialogs": n * 3 + count as usize,
+                        "streams": n * 5 + count as usize,
+                    });
+                    row
+                })
+                .collect()
+        };
+        let bytes_of = |class: &str| -> Result<u64, Box<dyn std::error::Error>> {
+            let mut bytes = 0;
+            for file in history.list(class, &Query::all())? {
+                bytes += std::fs::metadata(history.dir().join(&file.rel))?.len();
+            }
+            Ok(bytes)
+        };
+
+        let started = std::time::Instant::now();
+        let filed = history.file(&fleet_beats(members, 0, 1))?;
+        let wrote = started.elapsed();
+        assert_eq!(
+            (filed.files, filed.rows),
+            (1, members),
+            "edge one filing of every member's heartbeat is one file"
+        );
+        let one_file = bytes_of(CLASS_MEMBERS)?;
+        let started = std::time::Instant::now();
+        for filing in 1..filings {
+            let ms = i64::try_from(filing)? * 60_000;
+            history.file(&fleet_beats(members, ms, 1 + filing as u64))?;
+        }
+        let wrote_rest = started.elapsed();
+        let files = history.list(CLASS_MEMBERS, &Query::all())?;
+        assert_eq!(files.len(), filings, "edge one file for each filing");
+
+        let query = Query {
+            limit: MAX_LIMIT,
+            ..of(&id(members / 2))
+        };
+        let started = std::time::Instant::now();
+        let listed = history.list(CLASS_MEMBERS, &query)?;
+        let answer = history.answer(&query, &listed, Vec::<MemberRecord>::new());
+        let asked = started.elapsed();
+        // One answer holds at most `MAX_LIMIT` rows, and the reading stops
+        // one file after the file that gave the last of them.
+        let opened = filings.min(MAX_LIMIT + 1);
+        assert_eq!(
+            (answer.rows.len(), answer.files_read, answer.groups_read),
+            (filings.min(MAX_LIMIT), opened, opened),
+            "edge the member's heartbeats, from one row group of each file opened"
+        );
+
+        let started = std::time::Instant::now();
+        let lost = history.newest_heartbeats(
+            at_ms(0).date_naive(),
+            &BTreeMap::new(),
+            MAX_FILES_PER_QUESTION,
+        )?;
+        let rebuilt_lost = started.elapsed();
+        assert_eq!(
+            (lost.members.len(), lost.files_read),
+            (members, filings),
+            "edge with no store file, every file is read and every member found"
+        );
+        // The store file holds each member's newest heartbeat, and the
+        // newest of them is the last row of the newest file.
+        let last_ms = i64::try_from(filings - 1)? * 60_000 + i64::try_from((members - 1) % 1000)?;
+        let known: BTreeMap<String, DateTime<Utc>> =
+            (0..members).map(|n| (id(n), at_ms(last_ms))).collect();
+        let started = std::time::Instant::now();
+        let kept =
+            history.newest_heartbeats(at_ms(0).date_naive(), &known, MAX_FILES_PER_QUESTION)?;
+        let rebuilt_kept = started.elapsed();
+        assert_eq!(
+            (kept.members.len(), kept.files_read),
+            (0, 1),
+            "edge with the store file, the newest file is read and nothing is taken"
+        );
+        stderr_line!(
+            "fleet layout measurement, heartbeats: {members} members x 1 heartbeat = 1 file, \
+             {one_file} B, write {wrote:?}; {filings} filings = {} files, {} B, write \
+             {wrote_rest:?} for the other {}; one member's history over them: {} files opened, \
+             {} of {} row groups decoded, {asked:?}; rebuild without a store file: {} files \
+             read, {rebuilt_lost:?}; rebuild with the store file: {} file read, {rebuilt_kept:?}",
+            files.len(),
+            bytes_of(CLASS_MEMBERS)?,
+            filings - 1,
+            answer.files_read,
+            answer.groups_read,
+            answer.groups,
+            lost.files_read,
+            kept.files_read
+        );
+
+        let per_member = calls / members;
+        let rows: Vec<IntakeRecord> = (0..calls)
+            .map(|n| {
+                let mut row = call(
+                    &id(n % members),
+                    i64::try_from(n % 60_000).unwrap_or(0),
+                    n as u64,
+                );
+                row.call = serde_json::json!({
+                    "call_id": format!("call-{n}@example.com"),
+                    "from": "sip:+12025550101@example.com",
+                    "to": "sip:+12025550102@example.com",
+                    "detail": "x".repeat(1100),
+                });
+                row
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let filed = history.file(&rows)?;
+        let wrote = started.elapsed();
+        assert_eq!(
+            (filed.files, filed.rows),
+            (1, calls),
+            "edge one filing of call records is one file"
+        );
+        let query = Query {
+            limit: MAX_LIMIT,
+            ..of(&id(members / 2))
+        };
+        let started = std::time::Instant::now();
+        let listed = history.list(CLASS_CALLS, &query)?;
+        let answer = history.answer(&query, &listed, Vec::<IntakeRecord>::new());
+        let asked = started.elapsed();
+        assert_eq!(
+            (answer.rows.len(), answer.files_read, answer.groups_read),
+            (per_member, 1, 1),
+            "edge the member's call records, from one row group"
+        );
+        stderr_line!(
+            "fleet layout measurement, call records: {calls} records of about 1.3 kB over \
+             {members} members = 1 file, {} B, write {wrote:?}; one member's records: 1 file \
+             opened, {} of {} row groups decoded, {asked:?}",
+            bytes_of(CLASS_CALLS)?,
+            answer.groups_read,
+            answer.groups
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_old_layout_file_of_one_member_keeps_its_row_group_pruning() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_per_member(&[call("edge-a", 1000, 1), call("edge-a", 2000, 2)])?;
+        let query = Query {
+            from: Some(at_ms(5000)),
+            ..of("edge-a")
+        };
+        let rel = history.list(CLASS_CALLS, &of("edge-a"))?[0].rel.clone();
+        let read = history.read::<IntakeRecord>(&rel, &query)?;
+        assert_eq!(
+            (read.rows.len(), read.groups, read.groups_read),
+            (0, 1, 0),
+            "edge a window after the file's rows rules its group out by the receive times"
+        );
+        Ok(())
     }
 }

@@ -120,7 +120,8 @@ pub struct ServeFlags {
     /// required. Default: required with `--tls-client-ca`, else off.
     #[arg(long, value_name = "MODE")]
     pub tls_client_auth: Option<crate::config::ClientAuthMode>,
-    /// Hours a member is kept after its last heartbeat.
+    /// Hours a member is kept after its last heartbeat, and heartbeats
+    /// are kept in the history store.
     #[arg(long, value_name = "HOURS", default_value_t = 72,
           value_parser = clap::value_parser!(u64).range(1..=87_600))]
     pub retention_hours: u64,
@@ -141,9 +142,9 @@ pub struct ServeFlags {
     #[arg(long, value_name = "DAYS", default_value_t = 90,
           value_parser = clap::value_parser!(u32).range(1..=548))]
     pub calls_retention_days: u32,
-    /// Seconds between two filings of the acknowledged call records into
-    /// the history store. A build without the history store has no use
-    /// for it.
+    /// Seconds between two filings of the acknowledged call records and
+    /// heartbeats into the history store. A build without the history
+    /// store has no use for it.
     #[arg(long, value_name = "SECS", default_value_t = 60,
           value_parser = clap::value_parser!(u64).range(1..=3600))]
     pub calls_flush_secs: u64,

@@ -6303,7 +6303,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1486 -> 1488 (DOCS-HOWTO-GAP, sixth batch): the table of export
     // failures in docs/vcon.md's "When an export does not work", with its
     // site mirror (+2).
-    const EXPECTED_TABLES: usize = 1488;
+    // 1488 -> 1490 (fleet heartbeat history): the table of the parameters of
+    // `GET /v1/fleet/members/{id}/history` in docs/fleet.md's "Keep heartbeat
+    // history at the center", with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1490;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

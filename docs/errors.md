@@ -5886,11 +5886,13 @@ file or directory and the system's reason.
 **What to do:** Check that the center's user can read the intake and every
 directory under `<store>.parquet`.
 
-### `fleet center: past --calls-retention-days {retention_days} and not removed: {left}`
+### `fleet center: past {past} and not removed: {left}`
 
 A warning. A day of the history store is past its retention, and the center
 left something in it: a file it did not write, or a file or directory the
-system refused to remove. The line names it and the reason.
+system refused to remove. The line names the setting, `--calls-retention-days
+<n>` for call records or `--retention-hours <n>` for heartbeats, then what
+the center left and the reason.
 
 **What to do:** Remove the named file by hand, or fix its permissions. The
 center removes the day's directory once it is empty.
@@ -5898,10 +5900,83 @@ center removes the day's directory once it is empty.
 ### `fleet center: retention of the history store: {e}`
 
 A warning. The center could not list the days of the history store to remove
-the ones past `--calls-retention-days`. It removed nothing.
+the ones past `--calls-retention-days` or `--retention-hours`. It removed
+nothing of that class.
 
 **What to do:** Check that the center's user can read `<store>.parquet` and
-the `calls` directory in it.
+the `calls` and `members` directories in it.
+
+### `fleet center: the heartbeats were not filed and wait in the store file: {e}`
+
+A warning. The center could not write the heartbeats it acknowledged into the
+history store, for the reason at the end of the line. They stay in the store
+file and in the answers of `GET /v1/fleet/members/{id}/history`, and the
+center tries again after `--calls-flush-secs`. `failed_filings` in `GET
+/v1/fleet/members` counts these.
+
+**What to do:** Fix the cause the line ends with: a directory under
+`<store>.parquet/members` that the center cannot write, a full disk, or a
+file it cannot read. At most 64 MiB of heartbeats wait. Past that, and past
+`--retention-hours`, the oldest leave before a filing, and
+`heartbeats_removed` counts them.
+
+### `fleet center: the heartbeats could not be read: {e}`
+
+An error. `GET /v1/fleet/members/{id}/history` could not list the directories
+of the history store, and answered `503`. The line ends with the directory
+and the system's reason.
+
+**What to do:** Check that the center's user can read every directory under
+`<store>.parquet/members`.
+
+### `fleet center: the history store: {file} was not read for the member registry: {why}`
+
+A warning at start. The center compares its store file with the newest
+heartbeat files, and takes a member from the history when the store file
+holds nothing of it or an older heartbeat. The named file did not open, for
+the reason at the end of the line. The center starts, and lists the members
+of that file from its store file and from the files before it.
+
+**What to do:** Act on the reason as for a `refused` entry of `GET
+/v1/fleet/calls`: restore the file from a backup, give an earlier key with
+`--store-old-key-file`, or move the file out of the directory.
+
+### `fleet center: the member registry was rebuilt from the newest {} file(s) of heartbeats; {} older file(s) were not read`
+
+A warning at start. The center had no store file, or one older than the
+heartbeat history, and it read heartbeat files from the newest back to
+rebuild its member list. A rebuild opens at most 4,096 files
+(`MAX_FILES_PER_QUESTION`): about 2.8 days at the default
+`--calls-flush-secs 60`. The center does not list a member whose last
+heartbeat is in an older file until that member sends a heartbeat again.
+
+**What to do:** Nothing for members that still send. For a member that went
+silent before the files the center read, read its last heartbeat with `GET
+/v1/fleet/members/{id}/history`, with `from` and `to` around the time it was
+last seen. Restore the store file from a backup when one exists: a center
+whose store file holds its members reads one heartbeat file at start.
+
+### `fleet center: the positions of {restored} restored member(s) were moved past the call records of the newest {} file(s); {} older file(s) were not read`
+
+A warning at start, after the center took members from the heartbeat
+history. It moves each such member's position past the call records filed
+after that member's last heartbeat, so a record the member sends again is a
+duplicate. More than 4,096 call record files could hold such records, and the
+center read the newest 4,096.
+
+**What to do:** Nothing in most cases: a member sends again only the records
+the center did not acknowledge. When `GET /v1/fleet/calls` shows a call
+record of a restored member twice, both rows hold the same `stream` and
+`seq`. Count such a call once.
+
+### `fleet center: the member registry was not checked against {e}`
+
+A warning at start. The center could not list the directories of heartbeats
+in its history store, so it took no member from them. The line ends with the
+system's reason. The center starts with the members of its store file.
+
+**What to do:** Check that the center's user can read every directory under
+`<store>.parquet/members`.
 
 ### `the history store: {rel} exists and holds other rows; it is not replaced`
 
@@ -5914,15 +5989,27 @@ at another time. The center does not replace a file.
 the next filing write the waiting records. Tell us how the member came to
 send two records at one position of one stream.
 
-### `a call record of member '{}' was received at {at}, before 1970; the history store keeps no such row`
+### `a {} of member '{}' was received at {at}, before 1970; the history store keeps no such row`
 
-Printed after `the call records were not filed and stay in the intake:`. The
-center's clock was before 1970 when it took the record. The history store
-names files and prunes questions by the time of receipt, and keeps no time
-before 1970 or past the year 2262.
+Printed after `the call records were not filed and stay in the intake:` for
+a call record, or after `the heartbeats were not filed and wait in the store
+file:` for a heartbeat. The center's clock was before 1970 when it took the
+record. The history store names files and prunes questions by the time of
+receipt, and keeps no time before 1970 or past the year 2262.
 
-**What to do:** Set the center's clock. The record stays in the intake until
-`--retention-hours` removes it.
+**What to do:** Set the center's clock. A call record stays in the intake,
+and a heartbeat waits in the store file, until `--retention-hours` removes
+it.
+
+### `parquet: the file's schema is not the {} schema this build reads`
+
+A reason in the `refused` list of `GET /v1/fleet/calls` or `GET
+/v1/fleet/members/{id}/history`. The file opened under the store key, and the
+Parquet in it has other columns than this build writes for a call record or
+for a heartbeat. This build did not write it.
+
+**What to do:** Move the file out of the directory. Tell us which release
+wrote it.
 
 ### `{rel}: sealed layer: the file was written as '{written}' and is not at that path`
 
@@ -6006,6 +6093,14 @@ The `detail` of a `400` from `GET /v1/fleet/calls`: the query string holds a
 parameter the route does not take.
 
 **What to do:** Use `member`, `from`, `to`, `call_id` and `limit`.
+
+### `{} is not a parameter of this route; it takes from, to and limit`
+
+The `detail` of a `400` from `GET /v1/fleet/members/{id}/history`: the query
+string holds a parameter the route does not take. The member is the id in
+the path, and a heartbeat has no Call-ID.
+
+**What to do:** Use `from`, `to` and `limit`.
 
 ## Startup, privileges and the process
 
