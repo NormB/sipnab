@@ -151,7 +151,7 @@ Relay mode (`--hep-listen` plus `--hep-send`) stays documented as a fallback wit
 |---|---|
 | [`src/rtpengine/bencode.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/bencode.rs) | Bencode decoder. Borrowed values, depth-limited, hostile-input facing |
 | [`src/rtpengine/ng.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/ng.rs) | Cookie/body split, command classification, field extraction |
-| [`src/rtpengine/control.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/control.rs) | `list` and `query`, their reply parsers, and the client that carries them -- over a datagram by default, over a stream when the answer asked for is bigger than a datagram can return |
+| [`src/rtpengine/control.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/control.rs) | `list`, `statistics` and `query`, their reply parsers, and the client that carries them -- over a datagram by default, over a stream when the answer asked for is bigger than a datagram can return |
 | [`src/relay/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/mod.rs) | The seam's declarations: `ControlDecoder`, `ControlMessage`, `DecodedControl`, and the media-creating tally. Declares only -- it imports no implementation, so a second relay can satisfy it |
 | [`src/relay/types.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/types.rs) | The vocabulary a caller programs against: commands, replies, and the views of a call the relay returns |
 | [`src/relay/reconcile.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/reconcile.rs) | The two moments sipnab asks, the port index, the bounds that keep asking from becoming polling, and the hand-off the capture path offers to |
