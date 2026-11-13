@@ -3399,19 +3399,24 @@ mod tests {
         Ok(())
     }
 
-    /// A relay that answers its list after a delay and records when it did.
+    /// A relay that answers its list only after `after` other relays have
+    /// answered theirs, and records that it did. The order is set by that
+    /// event, not by a delay: delays of 150 ms apart set it before, and a
+    /// loaded host can run them out of order.
     struct LateRelay {
-        delay: std::time::Duration,
+        after: usize,
         name: String,
-        answered: Arc<std::sync::Mutex<Vec<String>>>,
+        answered: Arc<crate::test_engines::FinishOrder<String>>,
     }
 
     impl ReadOnlyRelay for LateRelay {
         fn list(&self, _: &TransmitPermit, _: u32) -> anyhow::Result<ControlReply> {
-            std::thread::sleep(self.delay);
-            if let Ok(mut a) = self.answered.lock() {
-                a.push(self.name.clone());
-            }
+            let in_turn = self.answered.finish_after(
+                self.after,
+                self.name.clone(),
+                std::time::Duration::from_secs(30),
+            );
+            anyhow::ensure!(in_turn, "{} gave up waiting for its turn", self.name);
             Ok(ControlReply::Calls(Enumeration {
                 call_ids: Vec::new(),
                 truncated: false,
@@ -3431,12 +3436,12 @@ mod tests {
     /// Answers that arrive last engine first still print first engine first.
     #[test]
     fn startup_lines_keep_the_configured_order() -> Result<(), TestError> {
-        let answered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let answered = Arc::new(crate::test_engines::FinishOrder::new());
         let mut engines = Reconcilers::new(
-            (0..3_u32)
+            (0..3_usize)
                 .map(|i| {
                     Reconciler::new(LateRelay {
-                        delay: std::time::Duration::from_millis(u64::from(2 - i) * 150),
+                        after: 2 - i,
                         name: format!("engine {i}"),
                         answered: Arc::clone(&answered),
                     })
@@ -3451,9 +3456,13 @@ mod tests {
             "the lines are in the engines' order"
         );
         assert_eq!(
-            answered.lock().map(|a| a.clone()).unwrap_or_default(),
+            answered.order(),
             vec!["engine 2", "engine 1", "engine 0"],
             "they answered in reverse"
+        );
+        assert!(
+            lines.iter().all(|l| l.contains("enumerated")),
+            "no engine gave up waiting for its turn: {lines:?}"
         );
         Ok(())
     }
