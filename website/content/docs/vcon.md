@@ -86,7 +86,7 @@ So sipnab emits **observer** vCons.
 
 - **A sipnab binary that carries the `vcon` feature.**
   - The release packages carry it.
-  - The `-noaudio` packages carry it from 0.5.252.
+  - The `-noaudio` packages carry it from 0.5.253.
     Their recordings are WAV: they have no `opus` feature.
   - The static musl build does not carry it.
   - A default source build does not carry it.
@@ -4554,7 +4554,7 @@ subdomain of it.
 
 | Symptom | Likely cause |
 |---|---|
-| `--export-vcon needs the 'vcon' Cargo feature, which this build does not carry.`, exit 2 | The binary has no `vcon` feature. A `-noaudio` package older than 0.5.252 and the static musl tarball do not have it. Install a current release package, or build from source with the `vcon` feature |
+| `--export-vcon needs the 'vcon' Cargo feature, which this build does not carry.`, exit 2 | The binary has no `vcon` feature. A `-noaudio` package older than 0.5.253 and the static musl tarball do not have it. Install a current release package, or build from source with the `vcon` feature |
 | `Call-ID 'nope@example.com' not found in tracked dialogs, so there is no dialog to export.`, exit 1 | The capture holds no call with that Call-ID. Run with `--report` to list the Call-IDs it holds |
 | `error: the following required arguments were not provided:` and `--export-vcon <CALL-ID>`, exit 2 | `--vcon-out` needs `--export-vcon` with the Call-ID |
 | `error: the following required arguments were not provided:` and `--export-vcon-dir <DIR>`, exit 2 | `--export-vcon-when` needs `--export-vcon-dir` with the directory to write to |

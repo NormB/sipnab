@@ -13,6 +13,16 @@ It puts them together into one call.
 This guide adds sipnab to the Kamailio proxy from
 [Use Kamailio as your voice stack's SIP server](kamailio.md).
 
+## Before you start
+
+- **The Kamailio proxy from
+  [Use Kamailio as your voice stack's SIP server](kamailio.md),** with its
+  test call working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, Kamailio, nothing changes:** no module, no
+  configuration change.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-01, with sipnab
@@ -35,10 +45,11 @@ The examples use `192.0.2.10` as the machine's address.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 
@@ -104,6 +115,19 @@ A call through each proxy then appears in the report, one row per call.
 - So the `RTP Streams:` table lists each call's streams on rows of their own:
   - 236 `PCMA` packets each way for each call,
   - not one stream of 472 across both.
+
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists the call on one row, though sipnab saw it on both sides of
+  Kamailio.
+- The row shows `Completed`, code `200` and 13 messages.
+- An `RTP Streams:` table follows it.
 
 ## When something does not work
 

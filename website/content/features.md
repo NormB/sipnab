@@ -254,7 +254,7 @@ Terms used on this page:
 - **vCon export.**
   - `--export-vcon <call-id>` writes one dialog as a vCon. A vCon is a JSON container for one conversation, defined by IETF drafts.
   - `--export-vcon-when "<filter>"` writes one for every matching dialog into `--export-vcon-dir`.
-  - Available in builds with the `vcon` feature: the gnu and macOS builds carry it, the gnu `-noaudio` packages carry it from 0.5.252, the static musl builds do not.
+  - Available in builds with the `vcon` feature: the gnu and macOS builds carry it, the gnu `-noaudio` packages carry it from 0.5.253, the static musl builds do not.
   - [Export a call as a vCon](/docs/vcon/)
 - **Frame pointers back to the bytes.**
   - Dialog JSON, reports, the REST API and MCP carry a pointer to the frame each fact came from.

@@ -82,7 +82,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.250 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.251 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -105,7 +105,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.250` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.251` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -173,12 +173,12 @@ Substitute the release version for `<version>` throughout.
 |---|---|---|---|
 | `sipnab_<version>_amd64.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
 | `sipnab_<version>_arm64.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | apt-managed, full features |
-| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.252, with WAV recordings |
-| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.252, with WAV recordings |
+| `sipnab_<version>_amd64-noaudio.deb` | x86_64 / amd64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.253, with WAV recordings |
+| `sipnab_<version>_arm64-noaudio.deb` | aarch64 / arm64 | Debian 12+, Ubuntu 23.04+ | no ALSA dependency, for headless servers; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.253, with WAV recordings |
 | `sipnab-<version>-1.x86_64.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
 | `sipnab-<version>-1.aarch64.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | dnf/rpm-managed, full features |
-| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.252, with WAV recordings |
-| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.252, with WAV recordings |
+| `sipnab-<version>-1.x86_64-noaudio.rpm` | x86_64 / amd64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.253, with WAV recordings |
+| `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency; no live audio playback, WASM plugins, Ogg Opus recordings or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center); carries vCon export from 0.5.253, with WAV recordings |
 | `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings, eBPF uprobe backend or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center) |
 | `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no live audio playback, WASM plugins, vCon export, Ogg Opus recordings, eBPF uprobe backend or [fleet history store](@/docs/fleet.md#keep-call-history-at-the-center) |
 | `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
@@ -294,7 +294,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.250) | Plugin | `Recommends` |
+| Artifact (0.5.251) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -334,11 +334,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.250 for the
+it first, in the same shell, to the release you want, e.g. 0.5.251 for the
 latest:
 
 ```bash
-VERSION=0.5.250
+VERSION=0.5.251
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -478,13 +478,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.250, as in
+you want, e.g. 0.5.251, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.250
+   VERSION=0.5.251
    ```
 
 - Download the package:
@@ -541,7 +541,7 @@ Each release publishes a standard package and a **`-noaudio`** package.
   - It also lacks three features of the standard package: WASM plugins,
     Ogg Opus recordings and the fleet history store.
     `sipnab --version` lists the features of a binary.
-  - It carries the vCon export from 0.5.252, with WAV recordings
+  - It carries the vCon export from 0.5.253, with WAV recordings
     ([Export a call as a vCon](@/docs/vcon.md)).
   - WAV export (`--export-audio`) works as in the standard package.
 - From 0.5.233 the standard package ships the plugin and *recommends*
@@ -593,7 +593,7 @@ standard and a `-noaudio` variant.
   - It has no live audio playback in the TUI.
   - It also lacks WASM plugins, Ogg Opus recordings and the
     fleet history store.
-  - It carries the vCon export from 0.5.252, with WAV recordings
+  - It carries the vCon export from 0.5.253, with WAV recordings
     ([Export a call as a vCon](@/docs/vcon.md)).
 - It is for headless servers, mirroring the `.deb` variants.
 
@@ -605,25 +605,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.250-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.251-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.250-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.251-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.250-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.251-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.250-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.251-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -1109,14 +1109,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.250
+docker pull ghcr.io/normb/sipnab:0.5.251
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.250` | That release |
+| `0.5.251` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -1154,7 +1154,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.250 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.251 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -1167,11 +1167,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.250 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.251 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.250` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.250`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.251` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.251`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -1369,7 +1369,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.251 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.252 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -1593,7 +1593,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.250
+docker pull ghcr.io/normb/sipnab:0.5.251
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See

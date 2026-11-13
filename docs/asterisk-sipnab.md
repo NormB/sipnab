@@ -34,6 +34,17 @@ This guide adds sipnab to the Asterisk machine from
   Asterisk module.
   - You can leave it out.
 
+## Before you start
+
+- **The Asterisk machine from
+  [Use Asterisk as your voice stack's PBX](asterisk.md),** with its test call
+  working. The steps here reuse its SIPp files in `~/sipp`.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, Asterisk, nothing changes** for every section up to
+  "Receive Asterisk's HEP". That section writes `hep.conf` and restarts
+  Asterisk. "Remove what this guide added" takes it out again.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-12.
@@ -58,10 +69,11 @@ everywhere it appears.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb jq
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb jq
 sipnab --version
 ```
 
@@ -410,6 +422,20 @@ sudo systemctl restart asterisk
 - `apt-get purge` removes the package and its own configuration.
 - The API key file and the drop-in are yours, so the block removes them.
 - The package leaves the `sipnab` user in place.
+
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+- The report lists two dialogs, one for each leg, each with a Call-ID of its
+  own.
+- Both rows show `Completed` and code `200`.
+- The `RTP Streams:` table below them shows audio to and from Asterisk on
+  both legs.
 
 ## When something does not work
 

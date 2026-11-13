@@ -41,8 +41,10 @@ With Kamailio, this is how a vCon server gets vCons at all.
 - **A capture point that sees the calls:** the SIP port, and the media ports
   when the vCons are to carry audio.
 - **A sipnab release package.** The install
-  step fetches `sipnab_<version>_amd64.deb`, which carries the `vcon` feature.
-  The `-noaudio` packages carry it from 0.5.252.
+  step fetches the package for the machine's architecture,
+  `sipnab_<version>_amd64.deb` or `sipnab_<version>_arm64.deb`. Both carry the
+  `vcon` feature.
+  The `-noaudio` packages carry it from 0.5.253.
   `sipnab --version` lists the features of a binary.
 - **A change on one other system, the vCon server.** The first step adds to
   its `config.yml`:
@@ -145,10 +147,11 @@ docker compose restart conserver api
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 ```
 
 ## Have sipnab write a vCon for every finished call

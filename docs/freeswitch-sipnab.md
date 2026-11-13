@@ -21,6 +21,18 @@ protocol SIP servers use to send Homer their traffic.
 This guide adds sipnab to the FreeSWITCH machine from
 [Use FreeSWITCH in your voice stack](freeswitch.md).
 
+## Before you start
+
+- **The FreeSWITCH machine from
+  [Use FreeSWITCH in your voice stack](freeswitch.md),** with its test call
+  working.
+- **root on that machine.** sipnab captures there, and the steps use `sudo`.
+- **On the other system, FreeSWITCH, nothing changes** for every section up
+  to "Receive FreeSWITCH's own copy of its SIP (HEP)". That section sets
+  `capture-server` and `sip-capture` in FreeSWITCH's configuration and
+  restarts it.
+- **On the phones and carriers,** nothing changes.
+
 ## Tested on
 
 Every block on this page ran as written, in order, on 2026-10-12.
@@ -41,10 +53,11 @@ The examples use `192.0.2.10` as the machine's address.
 # Run all of these, in order.
 V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
-curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+A=$(dpkg --print-architecture)
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_${A}.deb
 curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
-  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
-sudo apt-get install -y ./sipnab_${V}_amd64.deb
+  | grep " sipnab_${V}_${A}.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_${A}.deb
 sipnab --version
 ```
 
@@ -354,6 +367,20 @@ sipnab does not depend on FreeSWITCH.
 - A capture file you take on the FreeSWITCH machine, such as
   `/tmp/freeswitch-call.pcap`, works on any machine with sipnab installed.
   - It works with "Read one call: timing and audio quality" and "See both legs as one call".
+
+## Check that it worked
+
+Place a test call while this runs:
+
+```bash
+sudo sipnab -N -d any --portrange 5060-5080 --duration 30 --report
+```
+
+- The report lists two dialogs, one for each leg, each with a Call-ID of its
+  own.
+- Both rows show `Completed`.
+- The `RTP Streams:` table below them shows audio to and from FreeSWITCH on
+  both legs.
 
 ## When something does not work
 

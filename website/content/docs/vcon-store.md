@@ -22,7 +22,7 @@ sipnab wrote.
 - **A sipnab binary that carries the `vcon` feature.** The exporter, the
   forwarder and the fetcher are part of it. `sipnab --version` lists the
   features of a binary.
-  - The `-noaudio` packages carry it from 0.5.252.
+  - The `-noaudio` packages carry it from 0.5.253.
   - The static musl build does not carry it.
 - **A capture file that holds the calls to send.**
 - **A token from the other system, vcon.store.** The steps call it

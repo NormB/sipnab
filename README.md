@@ -354,7 +354,7 @@ Next:
   - `--vcon-forward`, a separate process, delivers them to a vCon store. Two
     examples are vcon.store and a self-hosted conserver.
     - It needs the `vcon` feature. The gnu and macOS builds carry it.
-    - The gnu `-noaudio` packages carry it from 0.5.252.
+    - The gnu `-noaudio` packages carry it from 0.5.253.
     - The static musl builds do not.
   - `--vcon-forward-kind vcon-store` adds vcon.store's ingest path and header.
     - It changes only the copy it sends.
