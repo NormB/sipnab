@@ -98,6 +98,15 @@ Find your case, and follow the steps it names:
 - **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above, then
   see [With Kamailio](#with-kamailio), which covers both.
 
+What changes on other systems:
+
+- **Your SIP proxy** gets a configuration that sends a HEP copy of every
+  message to Homer, on UDP port 9060.
+- **The phones and carriers** see no change.
+- **With Homer on a machine of its own,** the proxy sends to that machine's
+  address. [Put the parts on different machines](#put-the-parts-on-different-machines)
+  has the steps.
+
 ## Install Docker
 
 Homer runs as containers. Install Docker Engine and the Compose plugin from
@@ -469,6 +478,8 @@ ends, at the addresses and ports their SDP names.
 The web interface at `http://192.0.2.10:9080` searches what heplify-server
 stored. To check from the command line, query the database heplify-server
 writes.
+
+### Check that Homer stored the call
 
 - heplify-server writes in batches, at least every 4 seconds. So the first
   line waits for the last batch.

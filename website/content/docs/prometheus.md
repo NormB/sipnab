@@ -97,6 +97,16 @@ Find your case, and follow the steps it names:
 - **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above.
   Then see [With Kamailio](#with-kamailio), which covers both.
 
+What changes on other systems:
+
+- **Your SIP proxy** gets a configuration that publishes its statistics on a
+  metrics endpoint, `127.0.0.1:8888` for OpenSIPS.
+- **The phones and carriers** see no change.
+- **With Prometheus on a machine of its own,** the proxy publishes on an
+  address Prometheus can reach. The endpoint has no authentication.
+  [Put the parts on different machines](#put-the-parts-on-different-machines)
+  has the steps.
+
 ## Install Docker
 
 Prometheus and Grafana run as containers. Install Docker Engine and the
@@ -430,6 +440,8 @@ sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.
 sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
 sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
 ```
+
+### Check that Prometheus counted the call
 
 Prometheus scrapes every 5 seconds. Wait for one scrape. Then ask it how many
 dialogs OpenSIPS has processed:

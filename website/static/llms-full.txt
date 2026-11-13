@@ -67425,6 +67425,17 @@ Two terms used below:
   - TFPS compiles its XDP program against it during the install.
   - So the kernel needs BTF built in.
 
+## Before you start
+
+- **The machine that receives SIP from the Internet,** and an account on it
+  that can use `sudo`.
+- **Linux 5.15 or newer, built with BTF.** The Check the kernel step has the
+  two commands that show it.
+- **Internet access from that machine,** for the packages and the source the
+  Install TFPS step downloads.
+- **No other system changes.** TFPS needs nothing from your SIP server, and
+  the phones and carriers keep their settings.
+
 ## Tested on
 
 Every block on this page, and every command in the table of the "Operate it"
@@ -67765,6 +67776,20 @@ sipnab runs `tfps_ctl`, TFPS's own command, and reads its answers:
 | `GET /v1/tfps/dropped` | `tfps_dropped` | nothing yet | a TFPS release that reports its kernel drops; none does yet, so this answers `502` |
 
 The [REST API reference](rest-api.md) gives every request and response.
+
+## Before you start
+
+- **TFPS installed and enforcing,** as [Add TFPS to your voice stack](tfps.md)
+  leaves it, from a build at `984577dc` or later. Earlier builds do not answer
+  `--json` in the form sipnab reads.
+- **root on the machine that runs sipnab.** The steps use `sudo`.
+- **On the other system, TFPS:**
+  - sipnab on the same machine changes nothing in TFPS until you turn on
+    `--allow-action`. Then a ban or an unban you ask for changes TFPS's block
+    map.
+  - sipnab on a different machine needs a dedicated account on the TFPS
+    machine, whose SSH key can run `tfps_ctl` and nothing else.
+- **On the SIP server, the phones and the carriers,** nothing changes.
 
 ## Tested on
 
@@ -72619,6 +72644,15 @@ Find your case, and follow the steps it names:
 - **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above, then
   see [With Kamailio](#with-kamailio), which covers both.
 
+What changes on other systems:
+
+- **Your SIP proxy** gets a configuration that sends a HEP copy of every
+  message to Homer, on UDP port 9060.
+- **The phones and carriers** see no change.
+- **With Homer on a machine of its own,** the proxy sends to that machine's
+  address. [Put the parts on different machines](#put-the-parts-on-different-machines)
+  has the steps.
+
 ## Install Docker
 
 Homer runs as containers. Install Docker Engine and the Compose plugin from
@@ -72990,6 +73024,8 @@ ends, at the addresses and ports their SDP names.
 The web interface at `http://192.0.2.10:9080` searches what heplify-server
 stored. To check from the command line, query the database heplify-server
 writes.
+
+### Check that Homer stored the call
 
 - heplify-server writes in batches, at least every 4 seconds. So the first
   line waits for the last batch.
@@ -73632,6 +73668,16 @@ Find your case, and follow the steps it names:
 - **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above.
   Then see [With Kamailio](#with-kamailio), which covers both.
 
+What changes on other systems:
+
+- **Your SIP proxy** gets a configuration that publishes its statistics on a
+  metrics endpoint, `127.0.0.1:8888` for OpenSIPS.
+- **The phones and carriers** see no change.
+- **With Prometheus on a machine of its own,** the proxy publishes on an
+  address Prometheus can reach. The endpoint has no authentication.
+  [Put the parts on different machines](#put-the-parts-on-different-machines)
+  has the steps.
+
 ## Install Docker
 
 Prometheus and Grafana run as containers. Install Docker Engine and the
@@ -73965,6 +74011,8 @@ sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.
 sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
 sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
 ```
+
+### Check that Prometheus counted the call
 
 Prometheus scrapes every 5 seconds. Wait for one scrape. Then ask it how many
 dialogs OpenSIPS has processed:
@@ -77965,6 +78013,10 @@ yours everywhere it appears.
 - The section "Make OpenSIPS log scanners and wrong passwords" below replaces that guide's configuration.
   - The new configuration authenticates phones.
   - It logs what fail2ban needs.
+- No other system changes.
+  - fail2ban bans an address in this machine's own firewall, nftables, which
+    the Install fail2ban step installs.
+  - The scanner and the phone of the tests run on this machine.
 
 ## Make OpenSIPS log scanners and wrong passwords
 

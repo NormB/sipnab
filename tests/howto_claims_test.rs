@@ -67,6 +67,11 @@ const ASTERISK: &str = include_str!("../docs/asterisk.md");
 const ASTERISK_SIPNAB: &str = include_str!("../docs/asterisk-sipnab.md");
 const FREESWITCH: &str = include_str!("../docs/freeswitch.md");
 const FREESWITCH_SIPNAB: &str = include_str!("../docs/freeswitch-sipnab.md");
+const HOMER: &str = include_str!("../docs/homer.md");
+const PROMETHEUS: &str = include_str!("../docs/prometheus.md");
+const FAIL2BAN: &str = include_str!("../docs/fail2ban.md");
+const TFPS: &str = include_str!("../docs/tfps.md");
+const TFPS_SIPNAB: &str = include_str!("../docs/tfps-sipnab.md");
 const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const HARNESS_COMPOSE: &str = include_str!("../harness/docker-compose.yml");
@@ -5539,6 +5544,121 @@ fn a_request_without_a_key_gets_the_401_body_the_asterisk_page_quotes() -> Resul
         got.body.trim(),
         quoted,
         "the body is the one the page quotes"
+    );
+    Ok(())
+}
+
+// ── homer, prometheus, fail2ban, tfps, tfps-sipnab ───────────────────────
+
+/// The Homer and Prometheus guides say what changes on other systems, and
+/// each has a check under its own heading that runs the guide's own query.
+#[test]
+fn the_collector_guides_name_the_other_systems_and_check_with_their_own_query()
+-> Result<(), TestError> {
+    // (page, text, the heading after the prerequisites, check heading, the
+    // heading after the check, what the check queries, the port the guide
+    // opens on a machine of its own)
+    for (page, doc, after_needs, check, next, queries, port) in [
+        (
+            "homer",
+            HOMER,
+            "## Install Docker",
+            "### Check that Homer stored the call",
+            "## Operate it",
+            "hep_proto_1_call",
+            "9060",
+        ),
+        (
+            "prometheus",
+            PROMETHEUS,
+            "## Install Docker",
+            "### Check that Prometheus counted the call",
+            "## Operate it",
+            "opensips_processed_dialogs",
+            "9090",
+        ),
+    ] {
+        let needs = one_line(between(
+            doc,
+            "## Before you start: your SIP server",
+            after_needs,
+        )?);
+        for named in ["other system", "SIP proxy", "phones"] {
+            page_says(&needs, named, page);
+        }
+        let checked = between(doc, check, next)?;
+        page_says(checked, "```", page);
+        page_says(checked, queries, page);
+        page_says(doc, port, page);
+    }
+    Ok(())
+}
+
+/// The fail2ban prerequisites say that no other system changes: the ban is
+/// in this machine's own firewall, which the guide installs.
+#[test]
+fn the_fail2ban_prerequisites_say_no_other_system_changes() -> Result<(), TestError> {
+    let needs = one_line(section(FAIL2BAN, "## Before you start: OpenSIPS")?);
+    for named in ["other system", "nftables", "this machine"] {
+        page_says(&needs, named, "fail2ban");
+    }
+    page_says(
+        FAIL2BAN,
+        "sudo apt-get install -y fail2ban nftables",
+        "fail2ban",
+    );
+    page_says(
+        FAIL2BAN,
+        "## Give this machine a scanner and a phone to test with",
+        "fail2ban",
+    );
+    Ok(())
+}
+
+/// The TFPS prerequisites name the kernel the "Check the kernel" step
+/// checks, and say what changes on other systems.
+#[test]
+fn the_tfps_prerequisites_name_the_kernel_and_the_other_systems() -> Result<(), TestError> {
+    let needs = one_line(section(TFPS, "## Before you start")?);
+    for named in ["other system", "Linux 5.15 or newer", "BTF", "`sudo`"] {
+        page_says(&needs, named, "tfps");
+    }
+    let kernel = one_line(section(TFPS, "## Check the kernel")?);
+    page_says(
+        &kernel,
+        "TFPS needs Linux 5.15 or newer, built with BTF",
+        "tfps",
+    );
+    page_says(
+        &one_line(TFPS),
+        "It needs nothing from your SIP server, OpenSIPS or Kamailio.",
+        "tfps",
+    );
+    Ok(())
+}
+
+/// The tfps-sipnab prerequisites name the TFPS release whose `tfps_ctl`
+/// answers in JSON, as the "Check that TFPS answers in JSON" step does, and
+/// say what changes on the other system.
+#[test]
+fn the_tfps_sipnab_prerequisites_name_the_release_and_the_other_system() -> Result<(), TestError> {
+    let needs = one_line(section(TFPS_SIPNAB, "## Before you start")?);
+    for named in [
+        "other system",
+        "(tfps.md)",
+        "`984577dc`",
+        "`--json`",
+        "root",
+        "SSH",
+    ] {
+        page_says(&needs, named, "tfps-sipnab");
+    }
+    let json = one_line(section(TFPS_SIPNAB, "## Check that TFPS answers in JSON")?);
+    page_says(&json, "Build `984577dc` or later.", "tfps-sipnab");
+    page_says(
+        &one_line(TFPS_SIPNAB),
+        "On the TFPS machine, a dedicated account's key can run `tfps_ctl` and nothing else.",
+        "tfps-sipnab",
     );
     Ok(())
 }
