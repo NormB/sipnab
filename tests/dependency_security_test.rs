@@ -60,7 +60,18 @@ fn read(rel: &str) -> Result<String, TestError> {
 /// Parsed by hand rather than with a JSON crate the test tree does not
 /// otherwise need. The lockfile is machine-generated, so its shape is stable.
 fn lockfile_packages() -> Result<Vec<(String, String)>, TestError> {
-    let text = read("e2e/package-lock.json")?;
+    lockfile_packages_in(E2E_LOCK)
+}
+
+/// The site-test tooling's lockfile. Nothing in it ships to a user.
+const E2E_LOCK: &str = "e2e/package-lock.json";
+
+/// The lockfile of the TypeScript MCP client `docs/mcp-deploy.md` shows.
+const TS_LOCK: &str = "clients/typescript/package-lock.json";
+
+/// Every `(path, version)` pair in the lockfile at `rel`.
+fn lockfile_packages_in(rel: &str) -> Result<Vec<(String, String)>, TestError> {
+    let text = read(rel)?;
     let mut out = Vec::new();
     let mut current: Option<String> = None;
     for line in text.lines() {
@@ -91,7 +102,12 @@ fn versions_of(pkg: &str) -> Result<Vec<String>, TestError> {
 
 /// The `overrides` block of `e2e/package.json`, as `(package, requirement)`.
 fn overrides() -> Result<Vec<(String, String)>, TestError> {
-    let text = read("e2e/package.json")?;
+    overrides_in("e2e/package.json")
+}
+
+/// The `overrides` block of the `package.json` at `rel`.
+fn overrides_in(rel: &str) -> Result<Vec<(String, String)>, TestError> {
+    let text = read(rel)?;
     let Some(start) = text.find("\"overrides\"") else {
         return Ok(Vec::new());
     };
@@ -144,7 +160,23 @@ const MUST_BE_PATCHED: &[(&str, &str)] = &[
     // for `glob` 13, and 11.11.0 for `glob` 14 (which also takes `minimatch`
     // 11, past GHSA-g3hv-75wg-m249; tests/minimatch_advisory_test.rs).
     ("glob", "14.0.2"),
+    // GHSA-5pm8-86m8-9m6r (CVE-2026-126345): a `__proto__` fact name in an
+    // MLSD directory listing makes `Client.list()` throw. Every release
+    // before 6.2.4 is affected.
+    ("basic-ftp", BASIC_FTP_FIXED),
 ];
+
+/// The first `basic-ftp` release past GHSA-5pm8-86m8-9m6r.
+const BASIC_FTP_FIXED: &str = "6.2.4";
+
+/// The first `@hono/node-server` 2.x release past GHSA-jpvv-r467-5p4w
+/// (CVE-2026-126210: a backslash in the request path is read as a path
+/// separator) and GHSA-qv5m-9pm6-hqp3 (CVE-2026-126343: a connection reset
+/// during a WebSocket upgrade ends the process).
+const NODE_SERVER_FIXED_2: &str = "2.1.6";
+
+/// The first `@hono/node-server` 1.x release past GHSA-jpvv-r467-5p4w.
+const NODE_SERVER_FIXED_1: &str = "1.19.18";
 
 /// Compare two dotted versions numerically.
 fn at_least(have: &str, want: &str) -> bool {
@@ -301,6 +333,267 @@ fn no_override_names_a_package_the_tree_no_longer_has() -> Result<(), TestError>
              the entry rather than leaving it to be read as protection"
         );
     }
+    Ok(())
+}
+
+// ── an override stays only while a parent still asks for less ───────
+
+/// Whether the npm requirement `req` admits a release an advisory covers.
+///
+/// `fixed` lists the first fixed release for each major line as
+/// `(Some(major), version)`, and `(None, version)` for every line without an
+/// entry of its own. A line with no entry at all is not affected. `req` is
+/// read as its alternatives (`||`), each by the lowest release it admits:
+/// the version after `^`, `~`, `>=` or `=`. An alternative that is not
+/// written that way counts as admitting one, so that an override stays.
+fn admits_affected(req: &str, fixed: &[(Option<u64>, &str)]) -> bool {
+    req.split("||").any(|alternative| {
+        let floor = alternative
+            .trim()
+            .trim_start_matches(['^', '~', '>', '=', 'v', ' ']);
+        let numbers: Vec<&str> = floor.split('.').collect();
+        let well_formed = numbers
+            .iter()
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if !well_formed {
+            return true;
+        }
+        // Digits only, so the one failure left is a number past `u64`.
+        let Some(major) = numbers.first().and_then(|n| n.parse::<u64>().ok()) else {
+            return true;
+        };
+        let own = fixed.iter().find(|(line, _)| *line == Some(major));
+        let any = fixed.iter().find(|(line, _)| line.is_none());
+        match own.or(any) {
+            Some((_, first_fixed)) => !at_least(floor, first_fixed),
+            None => false,
+        }
+    })
+}
+
+/// The requirements for `pkg` that other packages in the lockfile at `rel`
+/// declare: every `"pkg": "requirement"` line.
+fn requirements_for(rel: &str, pkg: &str) -> Result<Vec<String>, TestError> {
+    let key = format!("\"{pkg}\": \"");
+    Ok(read(rel)?
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(key.as_str()))
+        .filter_map(|rest| rest.split('"').next())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Which releases of each package the advisories of 2026-11-12 cover.
+const BASIC_FTP_LINES: &[(Option<u64>, &str)] = &[(None, BASIC_FTP_FIXED)];
+const NODE_SERVER_LINES: &[(Option<u64>, &str)] = &[
+    (Some(1), NODE_SERVER_FIXED_1),
+    (Some(2), NODE_SERVER_FIXED_2),
+];
+
+/// Requirements that still admit an affected release.
+#[test]
+fn a_requirement_below_the_fix_admits_an_affected_release() {
+    for (req, lines) in [
+        ("^5.0.2", BASIC_FTP_LINES),
+        ("^5.3.1", BASIC_FTP_LINES),
+        ("^6.2.1", BASIC_FTP_LINES),
+        ("^6.2.3", BASIC_FTP_LINES),
+        ("~6.2.0", BASIC_FTP_LINES),
+        ("6.2.1", BASIC_FTP_LINES),
+        (">=4.0.0", BASIC_FTP_LINES),
+        ("^1.19.9 || ^2.0.5", NODE_SERVER_LINES),
+        ("^2.1.3", NODE_SERVER_LINES),
+        ("^2.1.5", NODE_SERVER_LINES),
+        ("^1.19.17", NODE_SERVER_LINES),
+        ("^1.19.18 || ^2.1.5", NODE_SERVER_LINES),
+        ("^1.19.17 || ^2.1.6", NODE_SERVER_LINES),
+        ("~2.0.0", NODE_SERVER_LINES),
+    ] {
+        assert!(
+            admits_affected(req, lines),
+            "{req:?} admits a release before the fix in {lines:?}"
+        );
+    }
+}
+
+/// Requirements whose every alternative starts at or past the fix.
+#[test]
+fn a_requirement_at_or_past_the_fix_admits_no_affected_release() {
+    for (req, lines) in [
+        ("^6.2.4", BASIC_FTP_LINES),
+        ("^6.2.6", BASIC_FTP_LINES),
+        ("^6.3.0", BASIC_FTP_LINES),
+        ("^7.0.0", BASIC_FTP_LINES),
+        ("~6.2.4", BASIC_FTP_LINES),
+        ("6.2.4", BASIC_FTP_LINES),
+        (">=6.2.4", BASIC_FTP_LINES),
+        ("^10.0.0", BASIC_FTP_LINES),
+        ("^2.1.6", NODE_SERVER_LINES),
+        ("^2.1.8", NODE_SERVER_LINES),
+        ("^1.19.18", NODE_SERVER_LINES),
+        ("^1.19.18 || ^2.1.6", NODE_SERVER_LINES),
+        ("^1.20.0 || ^2.2.0", NODE_SERVER_LINES),
+        ("~2.1.6", NODE_SERVER_LINES),
+    ] {
+        assert!(
+            !admits_affected(req, lines),
+            "{req:?} admits no release before the fix in {lines:?}"
+        );
+    }
+}
+
+/// Requirements at the edges of what the reader takes.
+#[test]
+fn a_requirement_the_reader_cannot_place_keeps_the_override() {
+    // Not written as a lowest release: counted as admitting an affected one.
+    for req in [
+        "*",
+        "",
+        "latest",
+        "x",
+        "6.x",
+        "^6",
+        "^6.2",
+        "<7.0.0",
+        "6.2.4 - 7.0.0",
+        "^6.2.4-beta.1",
+        "^6.2.4 || *",
+        "^6.2.4 ||",
+        "^six.2.4",
+        "^99999999999999999999999.0.0",
+        "^7.",
+        "^7..0",
+    ] {
+        assert!(
+            admits_affected(req, BASIC_FTP_LINES),
+            "{req:?} is not a lowest release, so it counts as affected"
+        );
+    }
+    // A major line no advisory entry covers is not affected.
+    assert!(
+        !admits_affected("^3.0.0", NODE_SERVER_LINES),
+        "a 3.x line has no entry"
+    );
+    assert!(
+        !admits_affected("^0.9.0", NODE_SERVER_LINES),
+        "a 0.x line has no entry"
+    );
+    // The number comparison is by number: 6.10.0 is past 6.2.4.
+    assert!(
+        !admits_affected("^6.10.0", BASIC_FTP_LINES),
+        "6.10.0 is past 6.2.4"
+    );
+    assert!(
+        admits_affected("^6.2.04", BASIC_FTP_LINES) == admits_affected("^6.2.4", BASIC_FTP_LINES),
+        "a leading zero does not change the number"
+    );
+    // Spaces around the alternatives do not matter.
+    assert!(
+        !admits_affected("  ^1.19.18  ||  ^2.1.6  ", NODE_SERVER_LINES),
+        "spaces around the alternatives"
+    );
+    assert!(
+        admits_affected("^1.19.18||^2.1.5", NODE_SERVER_LINES),
+        "no spaces around the alternatives"
+    );
+    // With no advisory entry at all nothing is affected.
+    assert!(
+        !admits_affected("^1.0.0", &[]),
+        "no advisory, no affected release"
+    );
+}
+
+/// The `basic-ftp` override in `e2e/package.json` is still needed: the
+/// package that asks for `basic-ftp` (`get-uri`, under `@lhci/cli`) admits
+/// releases before the fix. When this fails, the parent has caught up:
+/// remove the override and this test's reason for it.
+#[test]
+fn the_basic_ftp_override_is_removed_when_its_parent_asks_for_the_fix() -> Result<(), TestError> {
+    let asked = requirements_for(E2E_LOCK, "basic-ftp")?;
+    assert!(
+        !asked.is_empty(),
+        "no package in {E2E_LOCK} asks for basic-ftp; delete its override"
+    );
+    assert!(
+        asked
+            .iter()
+            .any(|req| admits_affected(req, BASIC_FTP_LINES)),
+        "every package that asks for basic-ftp now asks for {BASIC_FTP_FIXED} or later \
+         ({asked:?}); remove the basic-ftp override from e2e/package.json"
+    );
+    let floor = overrides()?
+        .into_iter()
+        .find(|(pkg, _)| pkg == "basic-ftp")
+        .map(|(_, req)| req);
+    assert_eq!(
+        floor
+            .as_deref()
+            .map(|req| admits_affected(req, BASIC_FTP_LINES)),
+        Some(false),
+        "the basic-ftp override in e2e/package.json must start at {BASIC_FTP_FIXED} or later, \
+         found {floor:?}"
+    );
+    Ok(())
+}
+
+/// The TypeScript client's lockfile resolves `@hono/node-server` at or past
+/// the fixed release, wherever it appears.
+#[test]
+fn the_typescript_client_locks_a_fixed_node_server() -> Result<(), TestError> {
+    let found: Vec<String> = lockfile_packages_in(TS_LOCK)?
+        .into_iter()
+        .filter(|(path, _)| path.rsplit("node_modules/").next() == Some("@hono/node-server"))
+        .map(|(_, version)| version)
+        .collect();
+    assert!(
+        !found.is_empty(),
+        "@hono/node-server is not in {TS_LOCK}; delete this test and its override, or the \
+         parser missed it"
+    );
+    for version in &found {
+        let fixed = if version.starts_with("1.") {
+            NODE_SERVER_FIXED_1
+        } else {
+            NODE_SERVER_FIXED_2
+        };
+        assert!(
+            at_least(version, fixed),
+            "{TS_LOCK} resolves @hono/node-server {version}; the advisories are fixed in {fixed}"
+        );
+    }
+    Ok(())
+}
+
+/// The `@hono/node-server` override in `clients/typescript/package.json`
+/// starts at the fixed release, and is still needed: the MCP SDK admits
+/// releases before the fix. When the second assertion fails, the SDK has
+/// caught up: remove the override.
+#[test]
+fn the_node_server_override_is_removed_when_the_sdk_asks_for_the_fix() -> Result<(), TestError> {
+    let floor = overrides_in("clients/typescript/package.json")?
+        .into_iter()
+        .find(|(pkg, _)| pkg == "@hono/node-server")
+        .map(|(_, req)| req);
+    assert_eq!(
+        floor
+            .as_deref()
+            .map(|req| admits_affected(req, NODE_SERVER_LINES)),
+        Some(false),
+        "the @hono/node-server override in clients/typescript/package.json must start at \
+         {NODE_SERVER_FIXED_2} or later, found {floor:?}"
+    );
+    let asked = requirements_for(TS_LOCK, "@hono/node-server")?;
+    assert!(
+        !asked.is_empty(),
+        "no package in {TS_LOCK} asks for @hono/node-server; delete its override"
+    );
+    assert!(
+        asked
+            .iter()
+            .any(|req| admits_affected(req, NODE_SERVER_LINES)),
+        "every package that asks for @hono/node-server now asks for a fixed release \
+         ({asked:?}); remove the override from clients/typescript/package.json"
+    );
     Ok(())
 }
 
