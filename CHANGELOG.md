@@ -10,6 +10,16 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The MCP tool `search_messages` takes `regex: true` and reads its query as a regular expression (MCP-SEARCH-REGEX).** Without the option the query stays a substring that ignores case, and the answer does not change. With it the server compiles the query with the function that `payload =~` uses in a filter expression and matches it against the raw bytes of each message, so an agent can ask for an alternation, an anchor or a value by its shape, and `search_messages` and `list_dialogs` agree about a capture. A regular expression is case-sensitive unless it starts with `(?i)`. Three limits bound a pattern: it is at most 1024 bytes long, it compiles to at most 1000000 bytes, and one call scans for at most 5 s, after which the call fails with `limit_exceeded` and no hits. The page shape, `limit`, `cursor` and `max_response_bytes` are the same in both modes. How-to: [Search messages with a regular expression](docs/mcp.md#search-messages-with-a-regular-expression); reference: [`search_messages`](docs/mcp-tools-core.md#search_messages).
+
+### Fixed
+
+- **The table of tool-list sizes in the MCP tool reference holds measured figures again (MCP-TOOLS-SIZE-TABLE-DRIFT).** The size table in [MCP tools](docs/mcp-tools.md) was written by hand from one run and no test read it. Its `signaling` and `relay` rows were 52 and 121 bytes above the measured sizes, so its `full` row was 173 bytes high, and its "with output schemas" column was low on ten of the eleven rows (`relay` said 31,609 for a measured 39,164). The table now holds the measurement, and a test fails when a row differs from it: the same measurement the byte ceilings of the bundles use.
+
+## [0.5.253] - 2026-11-13
+
 ### Changed
 
 - **Five more voice-stack pages carry every part of a how-to (DOCS-HOWTO-GAP, ninth batch).** [Add Homer to your voice stack](docs/homer.md#before-you-start-your-sip-server) and [Add Prometheus and Grafana to your voice stack](docs/prometheus.md#before-you-start-your-sip-server) say what changes on other systems, and the query each guide ends its test call with is under a heading of its own, "Check that Homer stored the call" and "Check that Prometheus counted the call". [Ban SIP scanners with fail2ban](docs/fail2ban.md#before-you-start-opensips) says that no other system changes. [Add TFPS to your voice stack](docs/tfps.md#before-you-start) and [Let sipnab see and control TFPS](docs/tfps-sipnab.md#before-you-start) gained their prerequisites. `KNOWN_GAPS` went from 8 pages to 3.

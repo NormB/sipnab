@@ -1860,7 +1860,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2662 -> 2668 (DOCS-HOWTO-GAP, last batch, +6): the prerequisites and
     // the check of homer-sipnab.md, prometheus-sipnab.md and
     // fail2ban-sipnab.md, two links each.
-    const EXPECTED_WIKI_LINKS: usize = 2668;
+    // 2668 -> 2673 (MCP-SEARCH-REGEX, +5): mcp-tools-core.md links its own
+    // "Regular expressions" heading and the how-to in mcp.md (+2); the how-to
+    // links the `search_messages` reference, "See it work" and
+    // filter-dsl.md (+3).
+    const EXPECTED_WIKI_LINKS: usize = 2673;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -27,7 +27,7 @@ the other bundles and finds any tool by name.
 | [`list_dialogs`](#list-dialogs) | `filter?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialog summaries, with the total behind it |
 | [`aggregate_dialogs`](#aggregate-dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
 | [`find_problems`](#find-problems) | `kinds?`, `filter?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialogs matching one or more diagnostic alias names |
-| [`search_messages`](#search-messages) | `query`, `limit?`, `cursor?`, `max_response_bytes?` | A page of substring matches across method/From/To/UA/body, with the total behind it |
+| [`search_messages`](#search-messages) | `query`, `regex?`, `limit?`, `cursor?`, `max_response_bytes?` | A page of the messages that hold a substring or match a regular expression, with the total behind it |
 | [`triage_call`](#triage-call) | `call_id` | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
 | [`get_dialog`](#get-dialog) | `call_id`, `max_messages?`, `cursor?`, `max_response_bytes?` | Paginated dialog with full SIP messages |
 | [`rtp_stats`](#rtp-stats) | `call_id?`, `min_mos?`, `max_mos?`, `orphaned?`, `limit?`, `cursor?`, `max_response_bytes?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
@@ -677,12 +677,14 @@ those 127 carry more than five messages, which is what the filter selects.
 
 ### `search_messages`
 
-Case-insensitive substring search over method, status, From, To,
-User-Agent, and body across all dialogs.
+Searches the whole SIP message, every header, the request line and the body,
+across all dialogs: for a substring that ignores case, or, with `regex: true`,
+for a regular expression.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `query` | string | Any substring. Matching ignores case. | Required — the call fails. |
+| `query` | string | Any substring; matching ignores ASCII case. With `regex: true`, a regular expression of at most 1024 bytes. An empty query fails with `query must be non-empty`. | Required — the call fails. |
+| `regex?` | bool? | `true` reads `query` as a regular expression; `false` reads it as a substring. A value that is not a boolean fails with `invalid_arguments`. See [Regular expressions](#regular-expressions-in-search-messages). | `false`: a substring. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 hits. |
 | `cursor?` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>#<zero-padded message index>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest match. |
 | `max_response_bytes?` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](@/docs/mcp-tools.md#rules-every-tool-follows). | The ceiling. |
@@ -749,6 +751,42 @@ the page.
 The message index in the cursor carries leading zeros, because the server
 compares cursors as text. A cursor rebuilt by hand without them can skip
 messages. Pass it back exactly as it arrived.
+
+#### Regular expressions in `search_messages`
+
+With `regex: true` the server compiles `query` with the Rust `regex` crate and
+matches it against the raw bytes of each message. In a filter expression,
+`payload =~` uses the same compile function and scans the same bytes, so
+`search_messages` and `list_dialogs` agree about what a capture holds.
+[Search messages with a regular expression](@/docs/mcp.md#search-messages-with-a-regular-expression)
+is the how-to.
+
+- **Case.** A regular expression is case-sensitive. Start the pattern with
+  `(?i)` to ignore case.
+- **Anchors.** `^` and `$` are the start and the end of the message. `(?m)`
+  makes them the start and the end of a line. A SIP line ends `\r\n`, so write
+  `\r$` under `(?m)`, or use `(?mR)`, which reads `\r\n` as the line end.
+- **Bytes.** `.` matches one UTF-8 character and no newline. `(?s)` lets it
+  match a newline, and `(?-u)` lets it match any byte.
+- **No look-around and no back references.** The engine has neither, and its
+  match time grows in proportion to the message size.
+- **The page is the same.** `limit`, `cursor`, `max_response_bytes`,
+  `total_matched` and the order of the hits do not change.
+
+Three limits bound a pattern. Each refusal is `invalid_params` (-32602) with
+`data.param` `query`:
+
+| Limit | Value | Message | `data.reason` |
+|---|---|---|---|
+| Pattern length | 1024 bytes | `query is <n> bytes; with regex true a query is at most 1024 bytes` | `limit_exceeded` |
+| Compiled size | 1000000 bytes | `query compiles to more than 1000000 bytes; use fewer or smaller repetitions` | `limit_exceeded` |
+| Scan time for one call | 5 s | `the regex search passed its 5 s limit after <n> messages; use a simpler pattern` | `limit_exceeded` |
+
+A pattern that does not parse fails with
+`query is not a valid regular expression: <reason>` and `data.reason`
+`invalid_value`. The server reads the clock before each message. A scan that
+passes the time limit returns no hits, because part of a count would read as
+the whole count. A substring search has none of the three limits.
 
 
 ## Diagnose one call
