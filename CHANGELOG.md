@@ -13,6 +13,13 @@ entry that carries them.
 ### Added
 
 - **The MCP tool `search_messages` takes `regex: true` and reads its query as a regular expression (MCP-SEARCH-REGEX).** Without the option the query stays a substring that ignores case, and the answer does not change. With it the server compiles the query with the function that `payload =~` uses in a filter expression and matches it against the raw bytes of each message, so an agent can ask for an alternation, an anchor or a value by its shape, and `search_messages` and `list_dialogs` agree about a capture. A regular expression is case-sensitive unless it starts with `(?i)`. Three limits bound a pattern: it is at most 1024 bytes long, it compiles to at most 1000000 bytes, and one call scans for at most 5 s, after which the call fails with `limit_exceeded` and no hits. The page shape, `limit`, `cursor` and `max_response_bytes` are the same in both modes. How-to: [Search messages with a regular expression](docs/mcp.md#search-messages-with-a-regular-expression); reference: [`search_messages`](docs/mcp-tools-core.md#search_messages).
+### Changed
+
+- **The `-noaudio` `.deb` and `.rpm` packages carry the vCon export.** The release workflow builds the gnu `-noaudio` packages (x86_64 and aarch64) with the `vcon` feature, so `--export-vcon`, the `[[vcon.rule]]` rules and `--vcon-forward` run from a package that has no ALSA dependency. Before, a `-noaudio` package refused each vCon flag with "needs the 'vcon' Cargo feature", and the pages sent the reader to the standard package.
+  - The recordings in a vCon from a `-noaudio` package are WAV. The packages have no `opus` feature and refuse `audio_format = "opus"`.
+  - The static musl tarballs are built as before, without `vcon`, and their 25 MB size limit is the same.
+  - The `-noaudio` packages still hold no playback plugin and declare no ALSA dependency. A test resolves the packages' feature list and fails when a sound library is in it.
+  - [Export a call as a vCon](docs/vcon.md#before-you-start), [Install with your package manager](docs/install.md#install-with-your-package-manager), the README and the site say which builds carry the export. The troubleshooting row for a binary without the feature names the `-noaudio` packages older than this release.
 
 ### Fixed
 
