@@ -899,6 +899,25 @@ where
     show(&value);
 }
 
+/// What a poll records for `reply`, a reply of `label` that holds no
+/// statistics: the outcome and the line REST and MCP read.
+fn poll_without_statistics(
+    label: &str,
+    reply: &crate::relay::types::ControlReply,
+) -> (crate::stats_vocab::StatisticsOutcome, String) {
+    use crate::relay::types::{ReplyKind, Unanswered};
+    use crate::stats_vocab::StatisticsOutcome;
+    match reply.unanswered(ReplyKind::Statistics) {
+        Some(Unanswered::Refused(reason)) => {
+            (StatisticsOutcome::Refused, format!("{label}: {reason}"))
+        }
+        _ => (
+            StatisticsOutcome::Suspect,
+            format!("{label} {}", ReplyKind::Statistics.wrong_kind_phrase()),
+        ),
+    }
+}
+
 /// One engine a poll asks, with what its previous reading said.
 struct EnginePoll {
     /// Control client for the engine.
@@ -1008,11 +1027,8 @@ impl RelayStatsPoll {
             // Recorded before it is logged, as a reading is recorded before
             // it is printed: see `publish_then_show`.
             Ok(other) => {
-                self.publish_failure(
-                    &label,
-                    crate::stats_vocab::StatisticsOutcome::Suspect,
-                    format!("{label} answered something other than statistics"),
-                );
+                let (outcome, detail) = poll_without_statistics(&label, &other);
+                self.publish_failure(&label, outcome, detail);
                 tracing::error!("{label} answered {other:?}, not statistics");
             }
             Err(e) => {
@@ -10686,6 +10702,41 @@ fn apply_plugins(
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+    /// A poll that got a refusal records `refused` with the relay's words; a
+    /// poll that got a reply of another kind records `suspect` with the
+    /// phrase every surface uses.
+    #[test]
+    fn a_poll_records_a_refusal_as_refused_and_another_kind_as_suspect() {
+        use crate::relay::types::{ControlReply, Enumeration, ReplyKind};
+        use crate::stats_vocab::StatisticsOutcome;
+        let refused = poll_without_statistics(
+            "relay A",
+            &ControlReply::Refused {
+                reason: "busy".to_string(),
+            },
+        );
+        assert_eq!(
+            refused,
+            (StatisticsOutcome::Refused, "relay A: busy".to_string()),
+            "a refusal is the relay's own words"
+        );
+        let wrong = poll_without_statistics(
+            "relay A",
+            &ControlReply::Calls(Enumeration {
+                call_ids: Vec::new(),
+                truncated: false,
+            }),
+        );
+        assert_eq!(
+            wrong,
+            (
+                StatisticsOutcome::Suspect,
+                format!("relay A {}", ReplyKind::Statistics.wrong_kind_phrase())
+            ),
+            "a call list is not statistics"
+        );
+    }
 
     /// Without `--keylog-watch` or `--keylog-fd` the keylog poll reads no
     /// clock: the receive loop asks once per packet, and the clock read cost

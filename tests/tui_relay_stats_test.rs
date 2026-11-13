@@ -178,16 +178,39 @@ fn the_refusal_rule_is_scoped_to_a_per_call_ask() -> Result<(), TestError> {
     Ok(())
 }
 
-/// A reply that is not statistics at all is `suspect`.
+/// A reply of another kind than statistics is `suspect`.
+///
+/// This test sent a refusal reply and expected `suspect`. A refusal is the
+/// relay's own no on every surface and for every question, so it is the test
+/// after this one, and the wrong-kind case sends a call list.
 #[test]
 fn a_non_statistics_reply_is_suspect() -> Result<(), TestError> {
+    let reply = ControlReply::Calls(sipnab::relay::types::Enumeration {
+        call_ids: Vec::new(),
+        truncated: false,
+    });
+    let text =
+        compose_counters_or_names(&reply, "relay X", at()?, false, false, FetchOrigin::Asked);
+    assert!(text.contains("suspect"), "classified suspect: {text}");
+    assert!(text.contains("answer"), "whose problem: the answer: {text}");
+    Ok(())
+}
+
+/// A statistics question the relay refused is `refused`, with the relay named
+/// and its own words.
+#[test]
+fn a_refused_statistics_question_is_refused() -> Result<(), TestError> {
     let reply = ControlReply::Refused {
         reason: "unexpected".to_string(),
     };
     let text =
         compose_counters_or_names(&reply, "relay X", at()?, false, false, FetchOrigin::Asked);
-    assert!(text.contains("suspect"), "classified suspect: {text}");
-    assert!(text.contains("answer"), "whose problem: the answer: {text}");
+    assert!(text.contains("refused"), "classified refused: {text}");
+    assert!(
+        text.contains("relay X: unexpected"),
+        "the relay's words: {text}"
+    );
+    assert!(!text.contains("suspect"), "not suspect: {text}");
     Ok(())
 }
 

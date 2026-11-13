@@ -38,6 +38,7 @@
 
 use crate::mcp::errors::{self, Reason};
 use crate::mcp::server::{SipnabMcp, stream_identity};
+use crate::relay::types::{ReplyKind, Unanswered};
 use rmcp::handler::server::tool::schema_for_output;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -766,9 +767,9 @@ impl SipnabMcp {
             ]));
         }
         let asked = if params.call_id.is_some() {
-            "query"
+            ReplyKind::CallView
         } else {
-            "list"
+            ReplyKind::CallList
         };
         // The one cap rule: only an enumeration takes `max_calls`, so a
         // query about one call is not refused for it.
@@ -814,7 +815,7 @@ impl SipnabMcp {
                 )?;
                 RelayAnswer {
                     engine,
-                    ..RelayAnswer::suspect(asked, relay_addr, detail)
+                    ..RelayAnswer::suspect(RelayAnswer::asked_word(asked), relay_addr, detail)
                 }
             }
         };
@@ -1102,7 +1103,12 @@ impl SipnabMcp {
                     }
                 }
             }
-            Ok(_) => RelayCompareAnswer::suspect(relay_addr, call_id),
+            Ok(other) => match other.unanswered(ReplyKind::Statistics) {
+                Some(Unanswered::Refused(reason)) => {
+                    RelayCompareAnswer::refused(relay_addr, call_id, reason.to_string())
+                }
+                _ => RelayCompareAnswer::suspect(relay_addr, call_id),
+            },
         };
         let payload = RelayCompareAnswer { engine, ..payload };
         Ok(CallToolResult::success(vec![
@@ -1837,11 +1843,18 @@ impl RelayAnswer {
 
     /// Render one control reply for an agent.
     fn from_reply(
-        asked: &str,
+        asked: ReplyKind,
         addr: std::net::SocketAddr,
         reply: &crate::relay::types::ControlReply,
     ) -> Self {
         use crate::relay::types::ControlReply;
+        // A reply of another kind than the one asked for is not the answer,
+        // whatever it carries: `suspect`, for the reason every other surface
+        // gives.
+        if let Some(reason) = reply.wrong_kind_for(asked) {
+            return Self::suspect(Self::asked_word(asked), addr, reason.to_string());
+        }
+        let asked = Self::asked_word(asked);
         let base = |outcome: &str| Self::base(asked, addr, outcome);
         match reply {
             ControlReply::Calls(e) => Self {
@@ -1942,6 +1955,15 @@ impl RelayAnswer {
                 ),
                 None,
             )),
+        }
+    }
+
+    /// The `asked` field's word for a question that asked for `kind`.
+    fn asked_word(kind: ReplyKind) -> &'static str {
+        match kind {
+            ReplyKind::CallList => "list",
+            ReplyKind::CallView => "query",
+            ReplyKind::Statistics => "statistics",
         }
     }
 
@@ -2113,7 +2135,16 @@ impl RelayStatsAnswer {
             NameSource, known_names, relay_reply_refusal, relay_reported, resolve_for_wire,
         };
         let ControlReply::Statistics(pairs) = reply else {
-            return Self::base(addr, "suspect");
+            // A refusal is the relay's own no, as it is for a list or a
+            // query; any other reply is of the wrong kind.
+            if let Some(Unanswered::Refused(reason)) = reply.unanswered(ReplyKind::Statistics) {
+                let mut a = Self::base(addr, "refused");
+                a.refusal = Some(reason.to_string());
+                return a;
+            }
+            let mut a = Self::base(addr, "suspect");
+            a.detail = Some(ReplyKind::Statistics.wrong_kind_reason().to_string());
+            return a;
         };
         // Only a per-call reply can be the relay's "I do not hold that call".
         if call_id.is_some()
@@ -2238,9 +2269,14 @@ impl RelayCompareAnswer {
         a
     }
 
-    /// The relay answered with something other than statistics.
+    /// The relay's reply was not statistics: `suspect`, with the reason
+    /// [`ReplyKind::wrong_kind_reason`] gives. A caller that knows another
+    /// reason replaces `detail`.
     fn suspect(addr: std::net::SocketAddr, call_id: &str) -> Self {
-        Self::base(addr, call_id, "suspect")
+        Self {
+            detail: Some(ReplyKind::Statistics.wrong_kind_reason().to_string()),
+            ..Self::base(addr, call_id, "suspect")
+        }
     }
 
     /// The relay reported a per-call total too large to fit `u64` (ST-S4
@@ -2399,7 +2435,7 @@ mod query_relay_view_tests {
             call_id: "call-1@192.0.2.10".to_string(),
             tags,
         });
-        Ok(RelayAnswer::from_reply("query", addr(), &reply)
+        Ok(RelayAnswer::from_reply(ReplyKind::CallView, addr(), &reply)
             .tags
             .ok_or("a query answer carries tags")?)
     }
@@ -2590,7 +2626,7 @@ mod query_relay_view_tests {
             call_ids: vec!["call-1@192.0.2.10".to_string()],
             truncated: false,
         });
-        let answer = RelayAnswer::from_reply("list", addr(), &reply);
+        let answer = RelayAnswer::from_reply(ReplyKind::CallList, addr(), &reply);
         assert!(answer.tags.is_none(), "a list answer has no tags to carry");
         assert_eq!(answer.outcome, "calls");
         Ok(())
@@ -2605,10 +2641,117 @@ mod query_relay_view_tests {
         let reply = ControlReply::Refused {
             reason: "unknown call-id".to_string(),
         };
-        let answer = RelayAnswer::from_reply("query", addr(), &reply);
+        let answer = RelayAnswer::from_reply(ReplyKind::CallView, addr(), &reply);
         assert!(answer.tags.is_none());
         assert_eq!(answer.outcome, "refused");
         assert_eq!(answer.refusal.as_deref(), Some("unknown call-id"));
+        Ok(())
+    }
+
+    /// A list request answered with statistics is not a call list: the
+    /// agent is told the reply is `suspect`, in the words REST and
+    /// `--relay-holdings` use, not handed counters under `outcome:
+    /// "statistics"` as though that were the answer.
+    #[test]
+    fn a_list_answered_with_statistics_is_suspect() {
+        let reply = ControlReply::Statistics(vec![("total".to_string(), "3".to_string())]);
+        let answer = RelayAnswer::from_reply(ReplyKind::CallList, addr(), &reply);
+        assert_eq!(
+            answer.outcome, "suspect",
+            "statistics do not answer a list request"
+        );
+        assert_eq!(
+            answer.detail.as_deref(),
+            Some(ReplyKind::CallList.wrong_kind_reason()),
+            "the reason is REST's"
+        );
+        assert!(
+            answer.statistics.is_none(),
+            "no counters for a list request"
+        );
+        assert_eq!(answer.asked, "list", "the answer names the question asked");
+    }
+
+    /// A query for one call answered with a call list is not that call.
+    #[test]
+    fn a_query_answered_with_a_call_list_is_suspect() {
+        let reply = ControlReply::Calls(crate::relay::types::Enumeration {
+            call_ids: vec!["call-1@192.0.2.10".to_string()],
+            truncated: false,
+        });
+        let answer = RelayAnswer::from_reply(ReplyKind::CallView, addr(), &reply);
+        assert_eq!(
+            answer.outcome, "suspect",
+            "a call list does not answer a query for one call"
+        );
+        assert!(answer.call_ids.is_none(), "no call list for a query");
+        assert_eq!(answer.asked, "query", "the answer names the question asked");
+        assert_eq!(
+            answer.detail.as_deref(),
+            Some(ReplyKind::CallView.wrong_kind_reason()),
+            "the reason is REST's"
+        );
+    }
+
+    /// A query for one call answered with statistics is not that call, and a
+    /// list request answered with one call's view is not a list.
+    #[test]
+    fn the_other_wrong_kinds_are_suspect_too() {
+        let stats = ControlReply::Statistics(vec![("total".to_string(), "3".to_string())]);
+        let answer = RelayAnswer::from_reply(ReplyKind::CallView, addr(), &stats);
+        assert_eq!(answer.outcome, "suspect", "statistics for a query");
+        assert!(answer.statistics.is_none(), "no counters for a query");
+        let view = ControlReply::Call(CallView {
+            call_id: "call-1@192.0.2.10".to_string(),
+            tags: Vec::new(),
+        });
+        let answer = RelayAnswer::from_reply(ReplyKind::CallList, addr(), &view);
+        assert_eq!(answer.outcome, "suspect", "a call view for a list");
+        assert!(answer.tags.is_none(), "no tags for a list request");
+        assert_eq!(
+            answer.detail.as_deref(),
+            Some(ReplyKind::CallList.wrong_kind_reason()),
+            "the reason names the kind asked for"
+        );
+    }
+
+    /// For a list request, the MCP outcome and the REST holdings outcome
+    /// agree on every kind of reply: one rule for a wrong-kind reply.
+    #[test]
+    fn query_relay_and_rest_holdings_agree_on_every_reply_kind() -> Result<(), TestError> {
+        use crate::output::query::relay_holdings::Holdings;
+        let replies = [
+            ControlReply::Calls(crate::relay::types::Enumeration {
+                call_ids: vec!["call-1@192.0.2.10".to_string()],
+                truncated: false,
+            }),
+            ControlReply::Call(CallView {
+                call_id: "call-1@192.0.2.10".to_string(),
+                tags: Vec::new(),
+            }),
+            ControlReply::Statistics(vec![("total".to_string(), "3".to_string())]),
+            ControlReply::Refused {
+                reason: "busy".to_string(),
+            },
+        ];
+        for reply in replies {
+            let mcp = RelayAnswer::from_reply(ReplyKind::CallList, addr(), &reply);
+            let (rest, rest_detail) = match Holdings::from_list_reply(
+                Ok(reply.clone()),
+                "relay".to_string(),
+                chrono::Utc::now(),
+            ) {
+                Holdings::Held { .. } => ("calls".to_string(), None),
+                Holdings::NotAnswered {
+                    outcome, detail, ..
+                } => (outcome.as_wire_str().to_string(), Some(detail)),
+                other => return Err(format!("one relay gives one answer, not {other:?}").into()),
+            };
+            assert_eq!(mcp.outcome, rest, "{reply:?}");
+            if rest == "suspect" {
+                assert_eq!(mcp.detail, rest_detail, "the same reason for {reply:?}");
+            }
+        }
         Ok(())
     }
 
@@ -2649,7 +2792,7 @@ mod query_relay_view_tests {
         });
 
         let answer = RelayAnswer::from_reply(
-            "query",
+            ReplyKind::CallView,
             "127.0.0.1:22222"
                 .parse()
                 .map_err(|e| format!("a literal address: {e:?}"))?,
@@ -3000,6 +3143,75 @@ mod relay_stats_view_tests {
         Ok(())
     }
 
+    /// A statistics question answered with a call list or one call's view is
+    /// `suspect`, and the answer says why in REST's words: `detail` was
+    /// absent, so an agent saw `suspect` with no reason where
+    /// `GET /relay/statistics` gave one.
+    #[test]
+    fn statistics_answered_with_another_kind_is_suspect_with_the_reason() -> Result<(), TestError> {
+        use crate::relay::types::{CallView, Enumeration};
+        let wrong = [
+            ControlReply::Calls(Enumeration {
+                call_ids: vec!["call-1@192.0.2.10".to_string()],
+                truncated: false,
+            }),
+            ControlReply::Call(CallView {
+                call_id: "call-1@192.0.2.10".to_string(),
+                tags: Vec::new(),
+            }),
+        ];
+        for reply in wrong {
+            for call_id in [None, Some("call-1@192.0.2.10")] {
+                let a = RelayStatsAnswer::from_reply(addr(), &reply, call_id, false);
+                assert_eq!(a.outcome, "suspect", "{reply:?} for {call_id:?}");
+                assert_eq!(
+                    a.detail.as_deref(),
+                    Some(ReplyKind::Statistics.wrong_kind_reason()),
+                    "{reply:?} for {call_id:?}"
+                );
+                assert!(a.statistics.is_none(), "no counters: {reply:?}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A statistics question the relay refused is `refused` with the relay's
+    /// own words, as a list or a query the relay refused is: not `suspect`.
+    #[test]
+    fn statistics_the_relay_refused_are_refused_in_its_own_words() -> Result<(), TestError> {
+        let reply = ControlReply::Refused {
+            reason: "busy".to_string(),
+        };
+        for call_id in [None, Some("call-1@192.0.2.10")] {
+            for names_only in [false, true] {
+                let a = RelayStatsAnswer::from_reply(addr(), &reply, call_id, names_only);
+                assert_eq!(a.outcome, "refused", "{call_id:?}, names_only {names_only}");
+                assert_eq!(a.refusal.as_deref(), Some("busy"), "{call_id:?}");
+                assert!(
+                    a.detail.is_none(),
+                    "a refusal is not suspect: {:?}",
+                    a.detail
+                );
+                assert!(a.statistics.is_none() && a.names.is_none(), "no counters");
+            }
+        }
+        Ok(())
+    }
+
+    /// A compare whose relay answered with something else says why, in the
+    /// words `--relay-compare` and REST use.
+    #[test]
+    fn a_compare_answered_with_another_kind_says_why() -> Result<(), TestError> {
+        let suspect = RelayCompareAnswer::suspect(addr(), "c@h");
+        assert_eq!(suspect.outcome, "suspect", "the outcome");
+        assert_eq!(
+            suspect.detail.as_deref(),
+            Some(ReplyKind::Statistics.wrong_kind_reason()),
+            "the reason"
+        );
+        Ok(())
+    }
+
     /// The refusal check is applied ONLY to a per-call ask, matching REST: a
     /// GLOBAL reply that happens to carry a `result` key is rendered as counters,
     /// not read as a refusal. The `call_id` argument is what draws that line.
@@ -3028,9 +3240,13 @@ mod relay_stats_view_tests {
     /// non-statistics reply off as `ok`.
     #[test]
     fn a_non_statistics_reply_is_suspect() -> Result<(), TestError> {
-        let reply = ControlReply::Refused {
-            reason: "unexpected on the stats path".to_string(),
-        };
+        // A call list. This test sent a `Refused` reply; a refusal now reads
+        // `refused` on the statistics surfaces as it does on the others
+        // (`statistics_the_relay_refused_are_refused_in_its_own_words`).
+        let reply = ControlReply::Calls(crate::relay::types::Enumeration {
+            call_ids: Vec::new(),
+            truncated: false,
+        });
         let a = RelayStatsAnswer::from_reply(addr(), &reply, None, false);
         assert_eq!(a.outcome, "suspect");
         assert!(a.statistics.is_none());
@@ -5098,12 +5314,29 @@ mod relay_handler_tests {
             "the digits travel as received: {overflow}"
         );
 
-        let not_stats = ask(ControlReply::Refused {
+        // A call list where statistics were asked for. This case sent a
+        // `Refused` reply and expected `suspect`; a refusal is the relay's
+        // own no on every surface, so it is the case after this one.
+        let not_stats = ask(ControlReply::Calls(Enumeration {
+            call_ids: Vec::new(),
+            truncated: false,
+        }))
+        .await?;
+        assert_eq!(not_stats["outcome"], "suspect", "{not_stats}");
+        assert_eq!(
+            not_stats["detail"],
+            ReplyKind::Statistics.wrong_kind_reason(),
+            "{not_stats}"
+        );
+        assert!(not_stats.get("note").is_none(), "{not_stats}");
+
+        let declined = ask(ControlReply::Refused {
             reason: "unexpected".to_string(),
         })
         .await?;
-        assert_eq!(not_stats["outcome"], "suspect");
-        assert!(not_stats.get("note").is_none(), "{not_stats}");
+        assert_eq!(declined["outcome"], "refused", "{declined}");
+        assert_eq!(declined["refusal"], "unexpected", "{declined}");
+        assert!(declined.get("detail").is_none(), "{declined}");
         Ok(())
     }
 
@@ -5605,7 +5838,7 @@ mod relay_handler_tests {
     #[test]
     fn a_statistics_reply_is_carried_as_the_relays_own_pairs() -> Result<(), TestError> {
         let answer = RelayAnswer::from_reply(
-            "statistics",
+            ReplyKind::Statistics,
             relay_addr()?,
             &stats(&[("totals.RTP.packets", "9000")]),
         );
