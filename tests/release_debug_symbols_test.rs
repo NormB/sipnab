@@ -571,8 +571,8 @@ fn ci_proves_the_split_on_linux_and_macos_before_a_tag() -> Result<(), TestError
         "the build and the proof must be one job, or the proof reads nothing"
     );
     assert!(
-        job.contains("os: ubuntu-latest") && job.contains("target: x86_64-unknown-linux-gnu"),
-        "the split job must run x86_64 Linux on ubuntu-latest:\n{job}"
+        job.contains("os: ubuntu-24.04") && job.contains("target: x86_64-unknown-linux-gnu"),
+        "the split job must run x86_64 Linux on ubuntu-24.04:\n{job}"
     );
     // The macOS half is its own job, `symbol-split-macos`, which runs these
     // same steps through a YAML alias and which the required `CI success`
@@ -588,11 +588,11 @@ fn ci_proves_the_split_on_linux_and_macos_before_a_tag() -> Result<(), TestError
         .map(|(_, rest)| rest.split("\n\n  ").next().unwrap_or_default())
         .ok_or("ci.yml has no symbol-split-macos job")?;
     assert!(
-        mac.contains("os: macos-latest")
+        mac.contains("os: macos-26")
             && mac.contains("target: aarch64-apple-darwin")
             && mac.contains("\n    steps: *symbol-split-steps"),
         "symbol-split-macos must run the split's steps for aarch64 macOS on \
-         macos-latest:\n{mac}"
+         macos-26:\n{mac}"
     );
     assert!(
         job.contains("components: llvm-tools"),

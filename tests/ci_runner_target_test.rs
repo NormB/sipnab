@@ -327,7 +327,7 @@ fn the_shared_action_is_self_hosted_only_and_caps_first() -> Result<(), TestErro
 /// The labels a `runs-on:` value selects for a job whose matrix `os` is `os`.
 ///
 /// Understands the three shapes the workflows use: a literal label
-/// (`ubuntu-latest`), a literal list (`[self-hosted, jetson]`), and the
+/// (`ubuntu-24.04`), a literal list (`[self-hosted, jetson]`), and the
 /// one-condition expression `${{ matrix.os == 'X' && A || B }}`, where `A`
 /// and `B` are a quoted label or `fromJSON('[...]')`. Anything else is an
 /// error, so a new shape fails here instead of being read as no labels.
@@ -416,16 +416,16 @@ fn the_per_push_jobs_run_on_github_hosted_runners() -> Result<(), TestError> {
     for id in ["check", "test"] {
         let value = runs_on(job(&jobs, "ci.yml", id)?)?;
         assert_eq!(
-            runner_labels(value, "ubuntu-latest")?,
+            runner_labels(value, "ubuntu-24.04")?,
             arm,
             "ci.yml {id}: the Linux leg must run on ubuntu-24.04-arm (runs-on: {value})"
         );
     }
     let mac = runs_on(job(&jobs, "ci.yml", "check-macos")?)?;
     assert_eq!(
-        runner_labels(mac, "macos-latest")?,
-        vec!["macos-latest".to_string()],
-        "ci.yml check-macos: the macOS leg must stay on macos-latest (runs-on: {mac})"
+        runner_labels(mac, "macos-26")?,
+        vec!["macos-26".to_string()],
+        "ci.yml check-macos: the macOS leg must run on macos-26 (runs-on: {mac})"
     );
     // The feature combinations left GitHub's runners on 2026-11-03 for the
     // pooled self-hosted runners;
@@ -459,12 +459,7 @@ fn the_rpm_packaging_job_runs_on_the_x86_64_self_hosted_runner() -> Result<(), T
 }
 
 /// GitHub-hosted images a job may name.
-const HOSTED_IMAGES: &[&str] = &[
-    "ubuntu-latest",
-    "ubuntu-24.04",
-    "ubuntu-24.04-arm",
-    "macos-latest",
-];
+const HOSTED_IMAGES: &[&str] = &["ubuntu-24.04", "ubuntu-24.04-arm", "macos-26"];
 
 /// The self-hosted pools, each by a label that names no machine:
 /// `jetson` is the four aarch64 runners, `overflow` the two of them whose
@@ -878,6 +873,179 @@ fn every_job_runs_on_a_hosted_image_or_a_self_hosted_pool_with_a_reason() -> Res
     Ok(())
 }
 
+/// The floating labels GitHub moves to a newer image on its own schedule.
+const FLOATING_LABELS: &[&str] = &["ubuntu-latest", "macos-latest", "windows-latest"];
+
+/// Lines of a workflow or composite action that name a floating runner
+/// label outside a comment, as `LINE: text`.
+///
+/// The scan is of the text, not of `runs-on:` alone: a matrix value
+/// (`os: [ubuntu-latest]`), an `include` entry, an expression
+/// (`matrix.os == 'ubuntu-latest' && ...`), a job name and an artifact
+/// pattern all carry the label into a check's name or a runner selection.
+fn floating_label_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let code = match line.find(" #") {
+                _ if line.trim_start().starts_with('#') => "",
+                Some(at) => &line[..at],
+                None => line,
+            };
+            FLOATING_LABELS
+                .iter()
+                .any(|label| code.contains(label))
+                .then(|| format!("{}: {}", i + 1, line.trim()))
+        })
+        .collect()
+}
+
+/// Every workflow and every composite action, as `(path, text)`.
+fn workflow_and_action_files() -> Result<Vec<(String, String)>, TestError> {
+    let mut out = Vec::new();
+    let mut dirs = vec![
+        repo().join(".github/workflows"),
+        repo().join(".github/actions"),
+    ];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "yml" || e == "yaml") {
+                let rel = path.strip_prefix(repo())?.to_string_lossy().into_owned();
+                out.push((rel, std::fs::read_to_string(&path)?));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// No workflow and no composite action names a floating runner label.
+///
+/// On 2026-11-13 `ubuntu-latest` resolved to Ubuntu 26.04 for some runs and
+/// to 24.04 for others, minutes apart (vcon-server run 43499382207: "Image:
+/// ubuntu-26.04", where `playwright install --with-deps` then failed on
+/// missing packages). `macos-latest` had already moved: main's CI run
+/// 43490217694 ran `Check (macos-latest)` on "Image: macos-26-arm64". A job
+/// that names a floating label changes its image without a commit, so a
+/// failure it brings cannot be tied to a change. Each job names a fixed
+/// image, and moving to a newer one is a commit that this gate and CI see.
+#[test]
+fn no_workflow_or_action_names_a_floating_runner_label() -> Result<(), TestError> {
+    let files = workflow_and_action_files()?;
+    assert!(
+        files.len() >= 25,
+        "found {} workflow and action file(s); the scan is wrong",
+        files.len()
+    );
+    let mut defects = Vec::new();
+    for (path, text) in &files {
+        for line in floating_label_lines(text) {
+            defects.push(format!("{path}:{line}"));
+        }
+    }
+    assert!(
+        defects.is_empty(),
+        "{} line(s) name a floating runner label; name a fixed image (one of \
+         {HOSTED_IMAGES:?}):\n{}",
+        defects.len(),
+        defects.join("\n")
+    );
+    Ok(())
+}
+
+/// The runner rule refuses each floating label by itself.
+#[test]
+fn the_runner_rule_refuses_a_floating_label() {
+    for label in FLOATING_LABELS {
+        assert!(
+            runner_defect(&[(*label).to_string()]).is_some(),
+            "`{label}` moves to a newer image without a commit and must be refused"
+        );
+        assert!(
+            !HOSTED_IMAGES.contains(label),
+            "`{label}` must not be in HOSTED_IMAGES"
+        );
+    }
+    for image in HOSTED_IMAGES {
+        assert!(
+            !image.ends_with("-latest"),
+            "`{image}` in HOSTED_IMAGES is a floating label"
+        );
+        assert!(
+            runner_defect(&[(*image).to_string()]).is_none(),
+            "the fixed image `{image}` must be admitted"
+        );
+    }
+}
+
+/// The text scan finds the label wherever a workflow can carry it, and
+/// leaves a comment alone.
+#[test]
+fn the_floating_label_scan_reads_code_and_not_comments() {
+    let found = |text: &str| floating_label_lines(text).len();
+    assert_eq!(
+        found("    runs-on: ubuntu-latest\n"),
+        1,
+        "a literal runs-on"
+    );
+    assert_eq!(found("        os: [macos-latest]\n"), 1, "a matrix list");
+    assert_eq!(
+        found("          - os: windows-latest\n"),
+        1,
+        "an include entry"
+    );
+    assert_eq!(
+        found(
+            "    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04-arm' || 'macos-26' }}\n"
+        ),
+        1,
+        "an expression"
+    );
+    assert_eq!(
+        found("    name: Test results (ubuntu-latest)\n"),
+        1,
+        "a job name"
+    );
+    assert_eq!(
+        found("          pattern: test-shard-ubuntu-latest-*\n"),
+        1,
+        "an artifact pattern"
+    );
+    assert_eq!(
+        found("    runs-on: ubuntu-24.04 # was ubuntu-latest until 2026-11-13\n"),
+        0,
+        "a trailing comment is history, not a selection"
+    );
+    assert_eq!(
+        found("# ubuntu-latest moved on 2026-11-13\n"),
+        0,
+        "a comment at the first column"
+    );
+    assert_eq!(
+        found("    # Check (macos-latest) failed on #601\n"),
+        0,
+        "a comment line"
+    );
+    assert_eq!(
+        found("    runs-on: ubuntu-24.04\n    runs-on: macos-26\n"),
+        0,
+        "fixed images"
+    );
+    assert_eq!(
+        found("        image: ghcr.io/example/tool:latest\n"),
+        0,
+        "another tool's `latest` tag is not a runner label"
+    );
+    assert_eq!(
+        floating_label_lines("a: 1\n    runs-on: ubuntu-latest\n"),
+        vec!["2: runs-on: ubuntu-latest".to_string()],
+        "the line number is 1-based"
+    );
+}
+
 /// The runner rule refuses what it exists to refuse, and admits the
 /// selections the workflows use.
 #[test]
@@ -889,8 +1057,8 @@ fn the_runner_rule_refuses_a_bare_or_unknown_self_hosted_label() {
         "a leading grouping parenthesis must be removed"
     );
     assert_eq!(
-        strip_grouping(" 'macos-latest') "),
-        "'macos-latest'",
+        strip_grouping(" 'macos-26') "),
+        "'macos-26'",
         "a trailing grouping parenthesis must be removed"
     );
     assert_eq!(
@@ -931,8 +1099,8 @@ fn the_runner_rule_refuses_a_bare_or_unknown_self_hosted_label() {
         "`ubuntu-24.04-arm` must be admitted"
     );
     assert!(
-        runner_defect(&v(&["macos-latest"])).is_none(),
-        "`macos-latest` must be admitted"
+        runner_defect(&v(&["macos-26"])).is_none(),
+        "`macos-26` must be admitted"
     );
     assert!(
         self_hosted_reason("    # Self-hosted because: valgrind is installed there\n").is_some(),

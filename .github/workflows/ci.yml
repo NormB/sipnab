@@ -43,8 +43,13 @@ jobs:
     timeout-minutes: 45
     name: Check (${{ matrix.os }})
     # GitHub's runners: the Linux leg on ubuntu-24.04-arm, which keeps the
-    # aarch64 build it has had since 2026-08-10, and macOS on macos-latest. The
+    # aarch64 build it has had since 2026-08-10, and macOS on macos-26. The
     # repository is public, so they cost nothing.
+    # Every job names a fixed image: on 2026-11-13 the floating Ubuntu label
+    # resolved to 26.04 for some runs and to 24.04 for others, and the
+    # floating macOS label had already moved to macos-26.
+    # tests/ci_runner_target_test.rs refuses a floating label in any workflow
+    # or composite action. Moving to a newer image is a commit.
     #
     # From 2026-10-18 to 2026-10-27 the Linux leg ran on the four aarch64
     # self-hosted runners, beside the feature matrix and Coverage. Those
@@ -60,16 +65,16 @@ jobs:
     # The macOS leg is the job `check-macos` below, which runs these same
     # steps (the YAML alias `*check-steps`) and which `CI success` does not
     # need: see the comment on `check-macos`. `matrix.os` keeps its
-    # ubuntu-latest / macos-latest value in each, so the job names and the
+    # ubuntu-24.04 / macos-26 value in each, so the job names and the
     # step conditionals below are unchanged.
     #
     # The suite itself runs in the `test` job, split into shards; this job
     # runs everything else.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04-arm' || 'macos-latest' }}
+    runs-on: ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-24.04-arm' || 'macos-26' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
     steps: &check-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -422,11 +427,11 @@ jobs:
     # Slowest run measured on GitHub's runners: 27.7 min
     timeout-minutes: 45
     name: Check (${{ matrix.os }})
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04-arm' || 'macos-latest' }}
+    runs-on: ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-24.04-arm' || 'macos-26' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest]
+        os: [macos-26]
     steps: *check-steps
 
   # The suite: `cargo test --all-features`, split into shards that run at
@@ -446,11 +451,11 @@ jobs:
     # Slowest run measured on GitHub's runners: 27.7 min
     timeout-minutes: 45
     name: Test (${{ matrix.os }}, shard ${{ matrix.shard }})
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04-arm' || 'macos-latest' }}
+    runs-on: ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-24.04-arm' || 'macos-26' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -574,7 +579,7 @@ jobs:
   # The Linux shards' outputs, put back together and checked as one run.
   test-results:
     timeout-minutes: 15
-    name: Test results (ubuntu-latest)
+    name: Test results (ubuntu-24.04)
     needs: [test]
     runs-on: ubuntu-24.04-arm
     steps:
@@ -588,7 +593,7 @@ jobs:
       - name: Fetch the shards' outputs
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          pattern: test-shard-ubuntu-latest-*
+          pattern: test-shard-ubuntu-24.04-*
           path: ${{ runner.temp }}/shards
 
       # One output from all the shards, in shard order, refused unless every
@@ -702,7 +707,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
     steps: &symbol-split-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -843,7 +848,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-26
             target: aarch64-apple-darwin
     steps: *symbol-split-steps
 
@@ -852,7 +857,7 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Installer (install.sh)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # GitHub-hosted on purpose: pure POSIX sh, no Rust toolchain.
     # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
@@ -876,7 +881,7 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Deb packaging (build-deb.sh)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # GitHub-hosted on purpose: packaging script, arch-independent.
     # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
@@ -929,7 +934,7 @@ jobs:
         run: bash scripts/ci-disk-floor.sh 25
       - name: Install rpmbuild and patchelf
         # rpm and patchelf are what the release workflow installs before
-        # calling the builder; ubuntu-latest ships neither. gcc builds the
+        # calling the builder; ubuntu-24.04 ships neither. gcc builds the
         # harness's ELF fixtures — the runner has it, but naming it keeps the
         # job from depending on an image detail nothing here controls.
         uses: ./.github/actions/system-deps
@@ -956,7 +961,7 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Homebrew formula (update-formula.sh)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # GitHub-hosted on purpose: formula text, arch-independent.
     # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
@@ -996,7 +1001,7 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Ops scripts (verdict.sh, platform-table.sh)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # GitHub-hosted on purpose: shell scripts, arch-independent.
     # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
@@ -1077,7 +1082,7 @@ jobs:
     # group, which never supersedes. Observed: 0.1 min.
     timeout-minutes: 15
     name: Bench scripts (live-capture.sh)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # GitHub-hosted on purpose: shell script, arch-independent.
     # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
@@ -1101,7 +1106,7 @@ jobs:
     # fails here. Observed: under 0.1 min.
     timeout-minutes: 15
     name: Shellcheck (git hooks)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # GitHub-hosted on purpose: shell scripts, arch-independent, and the
     # image ships shellcheck, as the bench-scripts job above relies on.
     steps:
@@ -1222,7 +1227,7 @@ jobs:
     # group, which never supersedes. A cold default-feature build.
     timeout-minutes: 40
     name: Crate package (cargo package, verified)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -1247,7 +1252,7 @@ jobs:
     # group, which never supersedes. Observed: 0.6 min.
     timeout-minutes: 15
     name: Security audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # GitHub-hosted on purpose: cargo audit reads Cargo.lock; also gets a FRESH advisory-db each run rather than this box's cache, which went stale and broke every audit on 2026-08-09.
     # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
@@ -1333,7 +1338,7 @@ jobs:
     # wait and prints its reason; a job GitHub cancels at its timeout prints
     # none. test_the_ci_job_outlives_its_own_upper_bound holds it.
     timeout-minutes: 100
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       # The state of the CodeQL workflow run of this commit.
       actions: read
@@ -1385,7 +1390,7 @@ jobs:
             homebrew-formula, tsan-verdict, bench-scripts, features,
             crate-package, audit, fuzz-check,
             code-scanning-clean, symbol-split, pre-push-scenarios]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Verify all required jobs succeeded
         run: |

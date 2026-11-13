@@ -48,7 +48,7 @@ concurrency:
 jobs:
   scan:
     name: OSV (all lockfiles)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Observed: well under a minute. This bounds a hang, not the work.
     timeout-minutes: 15
     permissions:

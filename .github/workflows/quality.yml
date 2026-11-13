@@ -71,7 +71,7 @@ jobs:
     # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
     timeout-minutes: 40
     name: Benchmarks (execute)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -186,7 +186,7 @@ jobs:
           # seconds of clone are worth not guessing at checkout semantics.
           fetch-tags: true
           fetch-depth: 0
-      # ubuntu-latest ships ~25-30 GB of preinstalled SDKs (dotnet, Android,
+      # The hosted Ubuntu image ships ~25-30 GB of preinstalled SDKs (dotnet, Android,
       # GHC, Swift, CodeQL bundle) we never use. A full --all-features
       # --all-targets build plus the cargo cache and llvm-cov instrumentation
       # can exhaust the runner disk ("No space left on device"); reclaim it up
@@ -319,7 +319,7 @@ jobs:
     # observed run was 12.9 min, and branch instrumentation adds to it.
     timeout-minutes: 60
     name: Branch coverage (nightly)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     env:
@@ -404,7 +404,7 @@ jobs:
     # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
     timeout-minutes: 40
     name: Clippy → Code Scanning
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write
@@ -415,7 +415,7 @@ jobs:
           # third-party actions to read. Nothing here pushes with it:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
-      # ubuntu-latest ships ~25-30 GB of preinstalled SDKs (dotnet, Android,
+      # The hosted Ubuntu image ships ~25-30 GB of preinstalled SDKs (dotnet, Android,
       # GHC, Swift, CodeQL bundle) we never use. A full --all-features
       # --all-targets build plus the cargo cache and llvm-cov instrumentation
       # can exhaust the runner disk ("No space left on device"); reclaim it up
@@ -507,7 +507,7 @@ jobs:
     # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
     timeout-minutes: 40
     name: Docs (prose, spelling, links)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     env:
@@ -833,7 +833,7 @@ jobs:
     # bounding a hang rather than the work.
     timeout-minutes: 20
     name: Accessibility (axe-core, WCAG 2 A/AA)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     # Job-level, because the Zola fetch step uses
@@ -993,7 +993,7 @@ jobs:
     # 20-25s each, so ~6 min of work.
     timeout-minutes: 25
     name: Lighthouse budgets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     # Job-level, because the Zola fetch step uses
