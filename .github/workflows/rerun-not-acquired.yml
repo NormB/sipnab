@@ -1,0 +1,89 @@
+name: Re-run jobs no runner took
+
+# Re-runs the failed jobs of a CI or Release run that failed only because
+# jobs never started.
+#
+# GitHub cancels a job when no hosted runner takes it. The job ends with the
+# conclusion GitHub gives a canceled job, no steps, and the annotation "The job was not
+# acquired by Runner of type hosted even after multiple attempts", and its
+# run ends as failed although no test ran red. On 2026-11-12 that happened
+# six times on the hosted macOS runners: main's CI turned red three times and
+# a release waited 43 minutes for a person to re-run one build job.
+#
+# scripts/rerun-not-acquired.py holds the whole decision and its limit of
+# attempts; scripts/tests/test_rerun_not_acquired.py tests it against
+# captured answers of GitHub's API. This file only says when to ask. The
+# `if:` below keeps a run that passed from starting a job here, and names no
+# other conclusion: which conclusions are looked into is the script's rule.
+#
+# What it does not cover, and leaves to a person:
+#
+#   - a job canceled after its first step began (a runner lost mid-job);
+#   - a run or a job canceled by a person (no such annotation);
+#   - a run in which any job failed, timed out, or was canceled after it
+#     started, even when another job of the same run never started;
+#   - a run on its third attempt: no fourth attempt is started;
+#   - a self-hosted runner that did not take a job (another message);
+#   - a workflow other than the two named under `workflows:`.
+#
+# `workflow_run` runs the workflow file of the default branch, with
+# GITHUB_SHA the last commit on the default branch, whatever started the run
+# that completed. The checkout names no ref, so the script that runs is
+# main's, never a pull request's. A change to this file or to the script
+# takes effect when it is on main.
+#
+# The values the event carries reach the shell through `env:` only.
+#
+# `workflow_dispatch` prints the decision for one run and changes nothing:
+# only the `workflow_run` event passes --apply. It is the way to see what
+# the script answers for a run of the past.
+
+on:
+  workflow_run:
+    workflows: [CI, Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run to print the decision for (nothing is re-run)'
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  rerun:
+    name: Re-run jobs that never started
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event.workflow_run.conclusion != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Decide, and re-run the failed jobs when none of them started
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          EVENT_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          EVENT_WORKFLOW: ${{ github.event.workflow_run.name }}
+          EVENT_TRIGGER: ${{ github.event.workflow_run.event }}
+          EVENT_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = workflow_run ]; then
+            printf 'completed: %s, started by %s on %s\n' \
+              "$EVENT_WORKFLOW" "$EVENT_TRIGGER" "$EVENT_BRANCH"
+            python3 scripts/rerun-not-acquired.py --repo "$GITHUB_REPOSITORY" \
+              --run-id "$EVENT_RUN_ID" --attempt "$EVENT_RUN_ATTEMPT" --apply
+          else
+            python3 scripts/rerun-not-acquired.py --repo "$GITHUB_REPOSITORY" \
+              --run-id "$INPUT_RUN_ID"
+          fi

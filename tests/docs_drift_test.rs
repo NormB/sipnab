@@ -48,6 +48,22 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // "A job no runner took" names `scripts/rerun-not-acquired.py --run-id`
+    // and `--apply`.
+    (
+        "run-id",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "apply",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "The release train" names `scripts/release-train.py --retry-post`.
     (
         "retry-post",
@@ -314,6 +330,47 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    // `scripts/pin-gates.py --allow-untracked`, and `heavy-run --quick`, the
+    // shared build host's queue the testing page says to run it through.
+    // Flags of a repository script and of a host tool, not sipnab's.
+    (
+        "allow-untracked",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "quick",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    // `scripts/hook-steps.py --runs N`, `--mean N` and `--log FILE`, in the
+    // testing page's "Where a hook run spent its time". Flags of a
+    // repository script, not sipnab's.
+    (
+        "runs",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "mean",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "log",
+        &[
             "docs/internals/testing.md",
             "website/content/docs/internals/testing.md",
         ],

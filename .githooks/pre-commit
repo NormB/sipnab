@@ -110,6 +110,49 @@ trap gate_flush EXIT
 if gate_hit hook --line hook; then
 	exit 0
 fi
+
+# ── The step log: where a run spent its time ───────────────────────────────
+# One line per step in <git-dir>/sipnab-pre-commit-steps.log: the run, the
+# step as its heading prints it, whole seconds, exit status, tab-separated;
+# the last line of a run is the step `total`, counted from the start of this
+# shell. `python3 scripts/hook-steps.py` prints the table. On 2026-11-13 the
+# table of one 1,191 s run was made by hand from the hook's output.
+#
+# `step` closes the step that is open with status 0 and opens the next, so a
+# step is everything up to the next heading. The exit trap closes the last one
+# with the hook's exit status: a step that fails ends the hook. A run a pass
+# stamp skipped (above) writes nothing, and a killed run has no `total` line.
+# The log is a record, never a gate: a line that cannot be written is dropped.
+STEP_LOG="$(git rev-parse --git-dir 2>/dev/null || echo .)/sipnab-pre-commit-steps.log"
+STEP_RUN="$(date -u +%Y-%m-%dT%H:%M:%SZ).$$"
+STEP_NAME=""
+STEP_T0=0
+step_line() { # step_line <step> <seconds> <status>
+	{ printf '%s\t%s\t%s\t%s\n' "$STEP_RUN" "$1" "$2" "$3" >> "$STEP_LOG"; } 2>/dev/null || true
+}
+step_close() { # step_close <status>: write the line of the step that is open
+	[ -n "$STEP_NAME" ] || return 0
+	step_line "$STEP_NAME" "$((SECONDS - STEP_T0))" "$1"
+	STEP_NAME=""
+}
+step() { # step <name>: close the open step as passed, open this one, print its heading
+	step_close 0
+	STEP_NAME=$1
+	STEP_T0=$SECONDS
+	printf '  %s... ' "$1"
+}
+hook_exit() {
+	local rc=$?
+	step_close "$rc"
+	step_line total "$SECONDS" "$rc"
+	gate_flush
+}
+trap hook_exit EXIT
+# The log keeps its newest 2,000 lines once it has passed 4,000 (about 180 and
+# 90 full runs).
+if [ -f "$STEP_LOG" ] && [ "$(wc -l < "$STEP_LOG" 2>/dev/null || echo 0)" -gt 4000 ]; then
+	tail -n 2000 "$STEP_LOG" > "$STEP_LOG.cut" 2>/dev/null && mv -f "$STEP_LOG.cut" "$STEP_LOG"
+fi
 printf '%s\n' "$GATE_KEYS" | sed -n 's/^info //p'
 
 echo -e "${YELLOW}Running pre-commit checks...${NC}"
@@ -187,7 +230,7 @@ emit_capped() { # emit_capped <max-lines> <log-path>   (reads stdin)
 # commits, re-run pre-commit on both, push again -- for a defect this gate
 # finds in under two seconds. Formatting is now checked where it is cheap to
 # fix, and re-checked where it matters that it is true.
-echo -n "  Formatting... "
+step "Formatting"
 set +e
 # scripts/check-rustfmt.sh formats every tracked `.rs` file with the dated
 # nightly rustfmt in .rustfmt-toolchain, the one rustfmt that applies all of
@@ -265,7 +308,7 @@ else
 # shellcheck source=scripts/prose-gates.sh
 . "$PROSE_LIB"
 
-echo -n "  Vale... "
+step "Vale"
 # `set -e` is on, and a bare `prose_vale_run` is a simple command: a return of 1
 # -- the CONTRACT's "the tool ran and found something" -- killed the hook right
 # here, BEFORE the `case` that renders it. The operator saw `Vale... ` and exit
@@ -290,7 +333,7 @@ case $prose_rc in
 esac
 rm -f "$PROSE_OUTPUT"
 
-echo -n "  Codespell... "
+step "Codespell"
 # Same shape as vale above, and it failed the same way.
 prose_codespell_run && prose_rc=0 || prose_rc=$?
 case $prose_rc in
@@ -404,7 +447,7 @@ record_suite_failures() { # record_suite_failures <output-file>
 # scripts/parallel-tests.py --rerun builds the command; a test renamed since
 # selects nothing and is not a failure.
 if [ "$RELEASE_ONLY" = 0 ] && [ -s "$FAILED_RECORD" ] && ! gate_hit tests --quiet; then
-	echo -n "  Tests that failed last run, first... "
+	step "Tests that failed last run, first"
 	REPLAY_LIVE="$LOG_DIR/sipnab-pre-commit-replay.live"
 	set +e
 	env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/parallel-tests.py --rerun "$FAILED_RECORD" \
@@ -447,7 +490,7 @@ fi
 # Run the gate, do not approximate it. The approximation was not merely
 # weaker; a different one would have been slower too.
 # `tests/clippy_scope_parity_test.rs` holds the three scopes equal.
-echo -n "  Clippy (CI's exact scope)... "
+step "Clippy (CI's exact scope)"
 # Its stamp's key covers the build inputs only (gate-cache.py's path_class), so
 # a change of documentation alone reuses it. The body is not re-indented.
 if [ "$RELEASE_ONLY" = 1 ]; then
@@ -483,7 +526,7 @@ fi
 # `test result:` line, and silently undercount. Gate on the exit code so
 # a partial/aborted run fails HERE (honestly, "retry") instead of passing
 # and feeding step 5 a truncated sum.
-echo -n "  Tests... "
+step "Tests"
 # Its stamp's key covers every file: the suite reads every tracked file. The
 # body is not re-indented.
 TEST_CACHED=0
@@ -724,7 +767,7 @@ fi
 # that assert how a perf sample is read. Nothing ran them before this step, so
 # a broken example would have reached crates.io unnoticed. Kept out of step 2's
 # log on purpose: the homepage count is sipnab's suite, and CI counts the same.
-echo -n "  sipnab-bpf-types tests and doctests... "
+step "sipnab-bpf-types tests and doctests"
 # A build-only key: the crate reads nothing at run time outside crates/, and
 # its README, which its doctests come from, is an include_str! input.
 if [ "$RELEASE_ONLY" = 1 ]; then
@@ -742,7 +785,7 @@ else
 fi
 
 # ── 3. No unwrap()/expect()/panic!/unreachable! in production code ─
-echo -n "  No unwrap/expect/panic in production... "
+step "No unwrap/expect/panic in production"
 # The script's EXIT STATUS is the signal; it prints offenders to stderr.
 if ! UNWRAP_OUT=$(python3 scripts/check-unwrap.py 2>&1); then
     echo -e "${RED}FAIL${NC}"
@@ -766,7 +809,7 @@ echo -e "${GREEN}OK${NC}"
 # No later gate can catch it. They all read the worktree, where the tree is
 # self-consistent -- coverage_matrix_test passed locally both times it was
 # wrong. Only the index knows what is actually being committed.
-echo -n "  Generated files staged with their inputs... "
+step "Generated files staged with their inputs"
 if ! STAGED_OUT=$(python3 scripts/check-generated-inputs-staged.py 2>&1); then
     echo -e "${RED}FAIL${NC}"
     echo "$STAGED_OUT"
@@ -787,7 +830,7 @@ echo -e "${GREEN}OK${NC}"
 # commit did not. This reads the source, so it answers about what is written
 # rather than about what happens to be checked out, in milliseconds rather
 # than eleven compilations.
-echo -n "  Features declare their modules' imports... "
+step "Features declare their modules' imports"
 if ! FEATDEP_OUT=$(python3 scripts/check-feature-deps.py 2>&1); then
     echo -e "${RED}FAIL${NC}"
     echo "$FEATDEP_OUT"
@@ -808,7 +851,7 @@ echo -e "${GREEN}OK${NC}"
 # capabilities. A text scan is the only check that also answers when the tree
 # does not build, which is exactly when a half-restored mutation hides behind an
 # unrelated compile error.
-echo -n "  Privilege drop intact... "
+step "Privilege drop intact"
 if ! PRIV_OUT=$(python3 scripts/check-privilege-drop.py 2>&1); then
     echo -e "${RED}FAIL${NC}"
     echo "$PRIV_OUT"
@@ -825,7 +868,7 @@ echo -e "${GREEN}OK${NC}"
 # targets fuzzed dependency code the binary does not ship, and no gate said
 # so. Reads the two lockfiles, in milliseconds. CI's Security audit job runs
 # the same script.
-echo -n "  Fuzz lockfile matches Cargo.lock... "
+step "Fuzz lockfile matches Cargo.lock"
 if ! DRIFT_OUT=$(python3 scripts/check-lockfile-drift.py 2>&1); then
     echo -e "${RED}FAIL${NC}"
     echo "$DRIFT_OUT" | tail -12 | sed 's/^/    /'
@@ -838,7 +881,7 @@ fi
 echo -e "${GREEN}OK${NC}"
 
 # ── 4. WASM module in sync with source ────────────────────────────
-echo -n "  WASM exports in sync... "
+step "WASM exports in sync"
 if [ -f "website/static/wasm/sipnab.js" ]; then
     # The export list is DERIVED from src/wasm.rs by the script, not restated
     # here. This gate used to carry a hand-kept list of twelve names, duplicated
@@ -865,7 +908,7 @@ fi
 # The local backlog is gitignored, so it never appears in the index: trigger on
 # the file existing instead of on it being staged.
 if [ -f "docs/design/backlog.local.md" ]; then
-    echo -n "  Backlog status... "
+    step "Backlog status"
     if python3 scripts/backlog-status.py >/dev/null 2>&1; then
         echo -e "${GREEN}OK${NC}"
     else
@@ -886,7 +929,7 @@ fi
 # was enforced only by the script tests, which run here when `scripts/` is
 # staged, so a docs-only commit with an unlinked `RFC N` passed this hook and
 # failed CI. Check mode exits 1 when `--apply` would change anything.
-echo -n "  RFC citations linked... "
+step "RFC citations linked"
 if command -v python3 >/dev/null 2>&1; then
     if RFC_OUT=$(python3 scripts/rfc-links.py 2>&1); then
         echo -e "${GREEN}OK${NC}"
@@ -912,7 +955,7 @@ fi
 # keys this step on the whole tree, so a second run on an unchanged tree is a
 # hit. Measured 2026-11-11: 2040 tests, 268 s at a load average near 25.
 # scripts/test-pre-commit.sh's Scenario S drives this step.
-echo -n "  Script tests... "
+step "Script tests"
 if [ ! -d scripts/tests ]; then
     echo -e "${YELLOW}NOT RUN (this tree has no scripts/tests)${NC}"
 elif [ "$RELEASE_ONLY" = 1 ]; then
@@ -938,7 +981,7 @@ else
 fi
 
 if git diff --cached --name-only | grep -q "^clients/python/"; then
-    echo -n "  Python clients... "
+    step "Python clients"
     if command -v python3 >/dev/null 2>&1 && python3 -c "import pytest" 2>/dev/null; then
         if PYTEST_OUT=$(python3 -m pytest clients/python/tests/ -q 2>&1); then
             echo -e "${GREEN}OK${NC} ($(echo "$PYTEST_OUT" | tail -1))"
@@ -967,7 +1010,7 @@ fi
 # step-2 run is `--features full`, CI's is `--all-features`;
 # no_test_hides_behind_a_feature_outside_full in tests/site_journey_test.rs
 # keeps them the same suite.
-echo -n "  Homepage test count generated... "
+step "Homepage test count generated"
 if [ -f "website/templates/index.html" ]; then
     # COUNT_OUT and COUNT_RC are step 2's reading of its own run. A suite
     # skipped by its stamp was counted by the run that wrote the stamp: the
@@ -1005,7 +1048,7 @@ fi
 # website/config.toml [extra] version. Keep it equal to the Cargo.toml crate
 # version so the site never advertises a stale release. (CI's Pages build also
 # re-derives it from Cargo.toml; this gate catches drift before it ships.)
-echo -n "  Site version matches crate... "
+step "Site version matches crate"
 if [ -f "website/config.toml" ]; then
     CRATE_V=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
     SITE_V=$(grep -m1 '^version = ' website/config.toml | sed -E 's/version = "(.*)"/\1/')
@@ -1044,7 +1087,7 @@ fi
 # the implementation that also runs in CI.
 
 # ── 6. No TODO stubs in production code ────────────────────────────
-echo -n "  No TODO stubs... "
+step "No TODO stubs"
 # `--include` not `-g`: `-g` is a ripgrep/ugrep flag. Under GNU grep it is an
 # invalid option, the error was swallowed by 2>/dev/null, and the count came
 # back 0 unconditionally — so this gate silently passed on any machine where
@@ -1077,7 +1120,7 @@ fi
 # export guard below reads it — see `scripts/check-wasm-exports.py`.
 
 # ── 8. Developer docs cite code — flag edits to cited files ────────
-echo -n "  Developer-docs coupling... "
+step "Developer-docs coupling"
 staged=$(git diff --cached --name-only)
 if ! echo "$staged" | grep -q '^docs/internals/'; then
     cited=$(grep -rhoE '\]\((\.\./)+[a-zA-Z0-9_./-]+\)' docs/internals/*.md 2>/dev/null \

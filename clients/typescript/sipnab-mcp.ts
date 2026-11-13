@@ -2,9 +2,9 @@
 // SPDX-FileCopyrightText: The sipnab contributors
 
 // snippet:start sipnab-mcp
-// npm i @modelcontextprotocol/sdk
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+// npm i @modelcontextprotocol/client
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const transport = new StdioClientTransport({
   command: "sipnab",

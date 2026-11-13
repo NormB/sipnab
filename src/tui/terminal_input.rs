@@ -45,9 +45,24 @@ pub(crate) enum Wait {
 pub(crate) enum Interest {
     /// Input or a hang-up, whichever comes first.
     Input,
-    /// A hang-up only, for the full timeout. Only one `poll(2)` reports
-    /// (`POLLHUP` on Linux); macOS's shows at the next [`TerminalInput::gone`].
+    /// A hang-up only: input that is queued does not end the wait.
     HangupOnly,
+}
+
+/// The events a wait for `interest` asks `poll(2)` for. Pure.
+///
+/// The hang-up-only wait asks for POLLHUP, not for nothing. Linux reports
+/// POLLHUP, POLLERR and POLLNVAL whatever is asked. macOS reports a hang-up
+/// only to a wait that asked for an event: for a pty whose other side had
+/// closed it answered nothing when no event was asked and POLLHUP when
+/// POLLHUP was (CI's macOS run of 2026-11-13), so a wait that asked nothing
+/// ran to its timeout on a terminal that had gone. On both, a wait that asks
+/// POLLHUP is not ended by input that is queued.
+pub(crate) fn requested(interest: Interest) -> libc::c_short {
+    match interest {
+        Interest::Input => libc::POLLIN,
+        Interest::HangupOnly => libc::POLLHUP,
+    }
 }
 
 /// The [`Wait`] that `poll(2)`'s `revents` for the terminal mean, with
@@ -56,10 +71,12 @@ pub(crate) enum Interest {
 ///
 /// A hang-up wins over input: a hung-up terminal reports `POLLIN` as well
 /// (its reads return end-of-file at once), and reading it is what spins.
-/// Linux reports the hang-up as `POLLHUP`. macOS does not: its hung-up
-/// terminal is only readable, with nothing to read. A raw-mode terminal is
+/// Linux reports the hang-up as `POLLHUP` and `POLLERR`, and macOS as
+/// `POLLHUP` with `POLLIN` when input was asked for (CI's macOS run of
+/// 2026-11-13, a pty whose other side had closed). A terminal that is only
+/// readable with nothing to read has gone too: a raw-mode terminal is
 /// readable only once a byte is queued, so readable with none queued, or
-/// with a queue that cannot be read, is end-of-file: the terminal has gone.
+/// with a queue that cannot be read, is end-of-file.
 pub(crate) fn classify(revents: libc::c_short, queued: Option<libc::c_int>) -> Wait {
     if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
         Wait::Gone
@@ -200,17 +217,9 @@ impl TerminalInput {
     ///
     /// `poll(2)` failed for a reason other than a signal.
     pub(crate) fn wait(&self, timeout: Duration, interest: Interest) -> io::Result<Wait> {
-        let events = match interest {
-            Interest::Input => libc::POLLIN,
-            // Linux reports POLLHUP, POLLERR and POLLNVAL whatever `events`
-            // asks. macOS may not (see `output_gone`): there this wait can
-            // run to its timeout, and the `Input` wait after it sees the
-            // hang-up.
-            Interest::HangupOnly => 0,
-        };
         // A signal reads as nothing happened (0, so `Idle`): the caller
         // checks the stop flag before waiting again.
-        let revents = crate::input_wait::poll_one(self.fd, events, timeout)?;
+        let revents = crate::input_wait::poll_one(self.fd, requested(interest), timeout)?;
         let queued = (revents & libc::POLLIN != 0)
             .then(|| self.queued())
             .flatten();
@@ -233,8 +242,8 @@ impl TerminalInput {
     ///
     /// `poll(2)` failed for a reason other than a signal.
     pub(crate) fn gone(&self) -> io::Result<bool> {
-        // Interest in input too: macOS reports a hang-up only as readable
-        // with nothing queued.
+        // Interest in input too: a terminal that is readable with nothing
+        // queued has gone, and only a wait that asks for input sees that.
         Ok(self.wait(Duration::ZERO, Interest::Input)? == Wait::Gone)
     }
 }
@@ -242,6 +251,30 @@ impl TerminalInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each wait asks `poll(2)` for an event. macOS reports a hang-up only
+    /// to a wait that asked for one: its pty with a closed master answered
+    /// nothing when no event was asked and POLLHUP when POLLHUP was (CI's
+    /// macOS run of 2026-11-13). A wait that asks POLLHUP does not end on
+    /// queued input on either platform, which the pty tests below measure.
+    #[test]
+    fn every_wait_asks_poll_for_an_event() {
+        assert_eq!(
+            requested(Interest::HangupOnly),
+            libc::POLLHUP,
+            "the hang-up-only wait asks for the hang-up"
+        );
+        assert_eq!(
+            requested(Interest::Input),
+            libc::POLLIN,
+            "the wait for input asks for input"
+        );
+        assert_eq!(
+            requested(Interest::HangupOnly) & libc::POLLIN,
+            0,
+            "the hang-up-only wait does not ask for input, which would end it at once"
+        );
+    }
 
     /// A hang-up, an error and a closed descriptor each mean the terminal has
     /// gone, also when input is reported with them.
@@ -258,9 +291,8 @@ mod tests {
     }
 
     /// Readable with nothing queued is end-of-file: the terminal has gone.
-    /// macOS reports a hung-up terminal this way, with no POLLHUP. A queue
-    /// that cannot be read (Linux answers EIO on a hung-up terminal) is the
-    /// same.
+    /// A queue that cannot be read (Linux answers EIO on a hung-up terminal)
+    /// is the same.
     #[test]
     fn readable_with_nothing_queued_is_a_hang_up() {
         assert_eq!(classify(libc::POLLIN, Some(0)), Wait::Gone, "end-of-file");
@@ -604,7 +636,6 @@ mod tests {
     /// `Idle`. `wait` reports a signal that interrupts `poll(2)` as `Idle`,
     /// so one wait can end early with nothing seen; a pre-commit run of the
     /// whole library test binary on 2026-11-05 saw one such `Idle` here.
-    #[cfg(target_os = "linux")]
     fn wait_past_idle(input: &TerminalInput, interest: Interest) -> io::Result<Wait> {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -616,13 +647,10 @@ mod tests {
         }
     }
 
-    /// The real descriptor: a pty whose master side closes reads as gone,
-    /// and one that is open and quiet reads as idle; written input reads as
-    /// input.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_pty_reports_input_and_its_hang_up() -> io::Result<()> {
-        use std::io::Write as _;
+    /// A new pty: its master side and its slave side. The one `openpty` call
+    /// of these tests. The null pointers are `null_mut` because macOS
+    /// declares the last two parameters `*mut` and Linux `*const`.
+    fn open_pty() -> io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
         use std::os::fd::{FromRawFd as _, OwnedFd};
         let mut master: libc::c_int = -1;
         let mut slave: libc::c_int = -1;
@@ -633,20 +661,264 @@ mod tests {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         };
         if rc != 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: openpty succeeded; this test owns both descriptors.
-        let (master, slave) =
-            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        let input = TerminalInput {
+        // SAFETY: openpty succeeded; the caller owns both descriptors.
+        Ok(unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) })
+    }
+
+    /// The slave side of a pty as the terminal the TUI reads.
+    fn input_on(slave: &std::os::fd::OwnedFd) -> TerminalInput {
+        TerminalInput {
             fd: slave.as_raw_fd(),
             _tty: None,
-        };
+        }
+    }
+
+    /// A pty whose slave side has `b"x\n"` waiting to be read.
+    fn pty_with_input() -> io::Result<(File, std::os::fd::OwnedFd)> {
+        use std::io::Write as _;
+        let (master, slave) = open_pty()?;
+        let mut master = File::from(master);
+        master.write_all(b"x\n")?;
+        let found = wait_past_idle(&input_on(&slave), Interest::Input)?;
+        if found != Wait::Input {
+            return Err(io::Error::other(format!(
+                "bytes written to the master read as {found:?} on the slave"
+            )));
+        }
+        Ok((master, slave))
+    }
+
+    /// What `poll(2)` reports at once for the slave side asked each of no
+    /// event, POLLHUP, POLLIN and POLLOUT, then the bytes `FIONREAD` reports
+    /// queued: one line for a failure message.
+    fn poll_answers(slave: &std::os::fd::OwnedFd) -> io::Result<String> {
+        let mut line = String::new();
+        for (name, events) in [
+            ("0", 0),
+            ("POLLHUP", libc::POLLHUP),
+            ("POLLIN", libc::POLLIN),
+            ("POLLOUT", libc::POLLOUT),
+        ] {
+            let revents = crate::input_wait::poll_one(slave.as_raw_fd(), events, Duration::ZERO)?;
+            line.push_str(&format!("asked {name}: {revents:#06x}; "));
+        }
+        line.push_str(&format!("queued: {:?}", input_on(slave).queued()));
+        Ok(line)
+    }
+
+    /// Whether a wait of `LONG` on `slave` for `events` (a raw `poll(2)`
+    /// request, or the product's hang-up-only wait when `None`) ended early
+    /// with nothing reported, in each of three tries: a request that input
+    /// already queued ends at once would make the event loop spin. One early
+    /// end can be a signal, so one full wait answers `false`.
+    fn ends_early(slave: &std::os::fd::OwnedFd, events: Option<libc::c_short>) -> io::Result<bool> {
+        const LONG: Duration = Duration::from_millis(300);
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            let nothing = match events {
+                Some(events) => crate::input_wait::poll_one(slave.as_raw_fd(), events, LONG)? == 0,
+                None => input_on(slave).wait(LONG, Interest::HangupOnly)? == Wait::Idle,
+            };
+            if !nothing || started.elapsed() >= LONG / 2 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// What `poll(2)` and the product's waits report for the slave side of a
+    /// pty in four states, measured before anything is asserted, so that a
+    /// failure on a platform this was not written on (CI's macOS job) prints
+    /// every fact a fix needs in one run (MACOS-HANGUP-ONLY-WAIT).
+    struct PtyFacts {
+        /// Master open, nothing written.
+        quiet_poll: String,
+        quiet_hangup_only: Wait,
+        quiet_gone: bool,
+        /// Master open, `b"x\n"` queued on the slave.
+        input_poll: String,
+        input_hangup_only: Wait,
+        input_hangup_only_ends_early: bool,
+        input_asked_pollhup_ends_early: bool,
+        /// Master closed, nothing queued.
+        hung_up_poll: String,
+        hung_up_hangup_only: Wait,
+        hung_up_input: Wait,
+        hung_up_output_gone: bool,
+        /// Master closed with `b"x\n"` queued and unread.
+        hung_up_unread_poll: String,
+        hung_up_unread_hangup_only: Wait,
+        hung_up_unread_input: Wait,
+    }
+
+    impl std::fmt::Display for PtyFacts {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let PtyFacts {
+                quiet_poll,
+                quiet_hangup_only,
+                quiet_gone,
+                input_poll,
+                input_hangup_only,
+                input_hangup_only_ends_early,
+                input_asked_pollhup_ends_early,
+                hung_up_poll,
+                hung_up_hangup_only,
+                hung_up_input,
+                hung_up_output_gone,
+                hung_up_unread_poll,
+                hung_up_unread_hangup_only,
+                hung_up_unread_input,
+            } = self;
+            write!(
+                f,
+                "measured on {os}\n\
+                 master open, quiet: {quiet_poll}; hang-up-only wait {quiet_hangup_only:?}; \
+                 gone {quiet_gone}\n\
+                 master open, input queued: {input_poll}; hang-up-only wait \
+                 {input_hangup_only:?}, ends early {input_hangup_only_ends_early}; a wait \
+                 asked POLLHUP ends early {input_asked_pollhup_ends_early}\n\
+                 master closed: {hung_up_poll}; hang-up-only wait {hung_up_hangup_only:?}; \
+                 wait for input {hung_up_input:?}; output gone {hung_up_output_gone}\n\
+                 master closed, input unread: {hung_up_unread_poll}; hang-up-only wait \
+                 {hung_up_unread_hangup_only:?}; wait for input {hung_up_unread_input:?}",
+                os = std::env::consts::OS,
+            )
+        }
+    }
+
+    fn pty_facts() -> io::Result<PtyFacts> {
+        const SHORT: Duration = Duration::from_millis(300);
+        let (master, slave) = open_pty()?;
+        let quiet_poll = poll_answers(&slave)?;
+        let quiet_hangup_only = input_on(&slave).wait(Duration::ZERO, Interest::HangupOnly)?;
+        let quiet_gone = input_on(&slave).gone()?;
+        drop(master);
+        let hung_up_poll = poll_answers(&slave)?;
+        let hung_up_hangup_only = input_on(&slave).wait(SHORT, Interest::HangupOnly)?;
+        let hung_up_input = input_on(&slave).wait(SHORT, Interest::Input)?;
+        let hung_up_output_gone = output_gone(slave.as_raw_fd())?;
+
+        let (master, with_input) = pty_with_input()?;
+        let input_poll = poll_answers(&with_input)?;
+        let input_hangup_only = input_on(&with_input).wait(Duration::ZERO, Interest::HangupOnly)?;
+        let input_hangup_only_ends_early = ends_early(&with_input, None)?;
+        let input_asked_pollhup_ends_early = ends_early(&with_input, Some(libc::POLLHUP))?;
+        drop(master);
+        let hung_up_unread_poll = poll_answers(&with_input)?;
+        let hung_up_unread_hangup_only = input_on(&with_input).wait(SHORT, Interest::HangupOnly)?;
+        let hung_up_unread_input = input_on(&with_input).wait(SHORT, Interest::Input)?;
+        Ok(PtyFacts {
+            quiet_poll,
+            quiet_hangup_only,
+            quiet_gone,
+            input_poll,
+            input_hangup_only,
+            input_hangup_only_ends_early,
+            input_asked_pollhup_ends_early,
+            hung_up_poll,
+            hung_up_hangup_only,
+            hung_up_input,
+            hung_up_output_gone,
+            hung_up_unread_poll,
+            hung_up_unread_hangup_only,
+            hung_up_unread_input,
+        })
+    }
+
+    /// An open pty is not gone to a hang-up-only wait, with or without input
+    /// queued, and the wait does not end early on that input. Runs on every
+    /// platform; a failure prints every measured fact.
+    #[test]
+    fn a_hangup_only_wait_on_an_open_pty_reports_nothing() -> io::Result<()> {
+        let facts = pty_facts()?;
+        assert_eq!(
+            facts.quiet_hangup_only,
+            Wait::Idle,
+            "an open, quiet pty is idle to a hang-up-only wait: {facts}"
+        );
+        assert!(
+            !facts.quiet_gone,
+            "an open, quiet pty has not gone: {facts}"
+        );
+        assert_eq!(
+            facts.input_hangup_only,
+            Wait::Idle,
+            "queued input is nothing to a hang-up-only wait: {facts}"
+        );
+        assert!(
+            !facts.input_hangup_only_ends_early,
+            "queued input does not end a hang-up-only wait early: {facts}"
+        );
+        Ok(())
+    }
+
+    /// A pty whose master side has closed is gone to a hang-up-only wait
+    /// within that wait, not at the wait after it (MACOS-HANGUP-ONLY-WAIT).
+    /// Runs on every platform; a failure prints every measured fact.
+    #[test]
+    fn a_hangup_only_wait_reports_a_closed_master() -> io::Result<()> {
+        let facts = pty_facts()?;
+        assert_eq!(
+            facts.hung_up_hangup_only,
+            Wait::Gone,
+            "a closed master ends a hang-up-only wait as gone: {facts}"
+        );
+        assert_eq!(
+            facts.hung_up_input,
+            Wait::Gone,
+            "a closed master ends a wait for input as gone: {facts}"
+        );
+        Ok(())
+    }
+
+    /// A pty whose master side has closed is gone for the side that writes
+    /// to it as well. Runs on every platform; a failure prints every
+    /// measured fact.
+    #[test]
+    fn a_closed_master_is_gone_for_the_writer() -> io::Result<()> {
+        let facts = pty_facts()?;
+        assert!(
+            facts.hung_up_output_gone,
+            "a closed master is a hang-up for the writer: {facts}"
+        );
+        Ok(())
+    }
+
+    /// A pty whose master side closed with input still unread is gone, to
+    /// both waits: read as input, crossterm's read loop would never return.
+    /// Runs on every platform; a failure prints every measured fact.
+    #[test]
+    fn a_closed_master_with_unread_input_is_gone_not_input() -> io::Result<()> {
+        let facts = pty_facts()?;
+        assert_eq!(
+            facts.hung_up_unread_input,
+            Wait::Gone,
+            "a closed master with unread input is gone to a wait for input: {facts}"
+        );
+        assert_eq!(
+            facts.hung_up_unread_hangup_only,
+            Wait::Gone,
+            "a closed master with unread input is gone to a hang-up-only wait: {facts}"
+        );
+        Ok(())
+    }
+
+    /// The real descriptor: a pty whose master side closes reads as gone,
+    /// and one that is open and quiet reads as idle; written input reads as
+    /// input.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pty_reports_input_and_its_hang_up() -> io::Result<()> {
+        use std::io::Write as _;
+        let (master, slave) = open_pty()?;
+        let input = input_on(&slave);
         assert_eq!(
             input.wait(Duration::ZERO, Interest::Input)?,
             Wait::Idle,

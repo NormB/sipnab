@@ -476,16 +476,30 @@ def land(cfg: Config, run, f: Facts) -> None:
     only if it passes, both under the landing lock. The train waits for the
     check rollup, but what may land is that script's rule alone.
 
-    Its output is printed when the landing passes too: it is the record that
-    the script ran, and a `warning:` line in it names a check an outside
-    service has not completed."""
+    A landing that passed is recorded by `landing_record`."""
     script = (f"{tool(cfg, 'required-checks')} {cfg.repo} {f.head} && "
               f"gh pr merge {f.pr_number} --repo {cfg.repo} --merge --match-head-commit {f.head}")
     r = run([tool(cfg, "land-queue"), "sipnab", "--", "bash", "-c", script], 1800)
     if r.rc != 0:
         raise Stopped(f"landing pull request {f.pr_number} failed: {r.out.strip()}")
-    if r.out.strip():
-        print(r.out.rstrip())
+    for line in landing_record(cfg.repo, f.pr_number, f.head, r.out):
+        print(line)
+
+
+def landing_record(repo: str, pr_number, head: str, out: str) -> list:
+    """The lines the train prints for a landing that ended 0.
+
+    The two tools write nothing for a pass: `required-checks` names only a
+    check that is not a success, and `gh pr merge` prints nothing when its
+    output is not a terminal. On 0.5.250 the train's output therefore held no
+    line of the landing. The exit status 0 of `required-checks ... && gh pr
+    merge ...` says that both ran and passed, so the train writes the two
+    lines itself. What the landing did print sits between them: a `warning:`
+    line of `required-checks` names a check an outside service has not
+    completed."""
+    said = [line for line in out.splitlines() if line.strip()]
+    return [f"land: required-checks {repo} {head} passed (exit status 0)", *said,
+            f"land: pull request {pr_number} merged with --match-head-commit {head}"]
 
 
 def checkout_at_merge(run, f: Facts) -> None:
@@ -573,11 +587,17 @@ def post_checks(cfg: Config, run) -> int:
     return r.rc
 
 
-def tick(cfg: Config, run, clock, sleep=time.sleep) -> str:
-    """Read the facts, set the window, and take the one local step that is due."""
+def tick(cfg: Config, run, clock, sleep=time.sleep, announce=None) -> str:
+    """Read the facts, set the window, and take the one local step that is due.
+
+    `announce` is called with the stage before its step runs, so the lines a
+    step prints, and the message of a step that stops the train, come after
+    the line that names the stage."""
     now = clock()
     f = read_facts(cfg, run, now)
     stage = stage_of(f)
+    if announce is not None:
+        announce(stage)
     sync_window(cfg, run, window_wanted(stage, f.pending, ci_remaining(f, cfg, now), cfg, f.stuck,
                                         f.long_remaining), now)
     if stage in ("ci-wait", "land"):
@@ -599,10 +619,17 @@ def tick(cfg: Config, run, clock, sleep=time.sleep) -> str:
 def train(cfg: Config, run, sleep=time.sleep, clock=time.time) -> int:
     errors = 0
     last = None
+
+    def announce(stage: str) -> None:
+        nonlocal last
+        if stage != last:
+            print(f"stage: {stage}")
+            last = stage
+
     try:
         while True:
             try:
-                stage = tick(cfg, run, clock, sleep)
+                stage = tick(cfg, run, clock, sleep, announce)
             except ReadError as e:
                 errors += 1
                 print(f"read failed ({errors} of {READ_ATTEMPTS}): {e}")
@@ -612,9 +639,7 @@ def train(cfg: Config, run, sleep=time.sleep, clock=time.time) -> int:
                 sleep(cfg.poll)
                 continue
             errors = 0
-            if stage != last:
-                print(f"stage: {stage}")
-                last = stage
+            announce(stage)  # the post step ends in a stage of its own
             if stage == "done":
                 return 0
             if stage == "post-withdrawn":

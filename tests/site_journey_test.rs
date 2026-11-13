@@ -6678,7 +6678,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `scripts/check-feature-matrix.py` and
     // `scripts/tests/test_feature_matrix_runner.py`. Measurement: the scan
     // read 276 on main c327e86ad and 278 with that comment.
-    const EXPECTED_REFERENCES: usize = 278;
+    // 278 -> 282: rerun-not-acquired.yml names `scripts/rerun-not-acquired.py`
+    // (three times) and `scripts/tests/test_rerun_not_acquired.py`.
+    // Measurement: the scan read 282 with that file staged.
+    const EXPECTED_REFERENCES: usize = 282;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
