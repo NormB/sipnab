@@ -23,7 +23,7 @@ use std::sync::mpsc::Receiver;
 use super::state::RelayStatsMode;
 use crate::output::relay_statistics as fmt;
 use crate::relay::reconcile::ReadOnlyRelay;
-use crate::relay::types::ControlReply;
+use crate::relay::types::{ControlReply, ReplyKind};
 use crate::security::transmit_guard::TransmitPermit;
 use crate::stats_vocab::{
     self, NameSource, RelayCompareValue, StatisticsOutcome, known_names, ready_comparison,
@@ -146,6 +146,14 @@ pub fn compose_outcome_text(outcome: StatisticsOutcome, detail: &str) -> String 
     )
 }
 
+/// Compose the text for a reply of `label` that holds no answer to what was
+/// asked: the relay's refusal in its own words, or `suspect` for a reply of
+/// another kind. The decision is [`ControlReply::unanswered`]'s.
+fn compose_unanswered(reply: &ControlReply, asked: ReplyKind, label: &str) -> String {
+    let (outcome, detail) = asked.unanswered_by(reply, label);
+    compose_outcome_text(outcome, &detail)
+}
+
 /// Compose the text for a relay `statistics`/`call_statistics` reply in the
 /// counters or names mode (C1/C2/C3), pure so it is tested without a relay or a
 /// thread -- the same reason `query_relay`'s conversion is tested directly.
@@ -162,10 +170,7 @@ pub fn compose_counters_or_names(
     origin: fmt::FetchOrigin,
 ) -> String {
     let ControlReply::Statistics(pairs) = reply else {
-        return compose_outcome_text(
-            StatisticsOutcome::Suspect,
-            crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
-        );
+        return compose_unanswered(reply, ReplyKind::Statistics, label);
     };
     if per_call && let Some(reason) = relay_reply_refusal(pairs) {
         return compose_outcome_text(StatisticsOutcome::Refused, &reason);
@@ -197,15 +202,7 @@ pub fn compose_holdings(
     use std::fmt::Write as _;
 
     let ControlReply::Calls(e) = reply else {
-        return match reply {
-            ControlReply::Refused { reason } => {
-                compose_outcome_text(StatisticsOutcome::Refused, &format!("{label}: {reason}"))
-            }
-            _ => compose_outcome_text(
-                StatisticsOutcome::Suspect,
-                crate::relay::types::ReplyKind::CallList.wrong_kind_reason(),
-            ),
-        };
+        return compose_unanswered(reply, ReplyKind::CallList, label);
     };
 
     let mut out = String::new();
@@ -274,10 +271,7 @@ pub fn compose_compare(
 ) -> String {
     use stats_vocab::CompareOutcome;
     let ControlReply::Statistics(pairs) = reply else {
-        return compose_outcome_text(
-            StatisticsOutcome::Suspect,
-            crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
-        );
+        return compose_unanswered(reply, ReplyKind::Statistics, label);
     };
     if let Some(reason) = relay_reply_refusal(pairs) {
         return compose_outcome_text(StatisticsOutcome::Refused, &reason);
@@ -701,6 +695,48 @@ mod tests {
         Ok(())
     }
 
+    /// Counters and names read a refusal as the relay's own no, and a reply
+    /// of another kind as suspect, for the wide ask and the per-call ask.
+    #[test]
+    fn counters_read_a_refusal_as_refused_and_another_kind_as_suspect() -> Result<(), TestError> {
+        for (per_call, names_only) in [(false, false), (false, true), (true, false)] {
+            let declined = compose_counters_or_names(
+                &ControlReply::Refused {
+                    reason: "busy".to_string(),
+                },
+                "relay X",
+                at()?,
+                per_call,
+                names_only,
+                fmt::FetchOrigin::Asked,
+            );
+            assert!(
+                declined.contains(StatisticsOutcome::Refused.as_wire_str())
+                    && declined.contains("relay X: busy")
+                    && !declined.contains(StatisticsOutcome::Suspect.as_wire_str()),
+                "per_call {per_call}, names_only {names_only}: {declined}"
+            );
+            let wrong = compose_counters_or_names(
+                &ControlReply::Calls(Enumeration {
+                    call_ids: Vec::new(),
+                    truncated: false,
+                }),
+                "relay X",
+                at()?,
+                per_call,
+                names_only,
+                fmt::FetchOrigin::Asked,
+            );
+            assert!(
+                wrong.contains(StatisticsOutcome::Suspect.as_wire_str())
+                    && wrong
+                        .contains(crate::relay::types::ReplyKind::Statistics.wrong_kind_reason()),
+                "per_call {per_call}, names_only {names_only}: {wrong}"
+            );
+        }
+        Ok(())
+    }
+
     /// A comparison keeps every way a side can be missing apart: a reply that
     /// is not statistics is suspect; the relay's own no is refused with its
     /// reason; a relay count beside no capture count asks for the media; and
@@ -708,10 +744,14 @@ mod tests {
     #[test]
     fn a_comparison_keeps_every_missing_side_distinct() -> Result<(), TestError> {
         let label = "relay X, call c@h";
+        // A call list where statistics were asked for. This case used a
+        // `Refused` reply and expected `suspect`: a refusal is the relay's
+        // own no on every surface, so it has its own case below.
         let wrong = compose_compare(
-            &ControlReply::Refused {
-                reason: "no".to_string(),
-            },
+            &ControlReply::Calls(Enumeration {
+                call_ids: Vec::new(),
+                truncated: false,
+            }),
             "c@h",
             Some(1),
             label,
@@ -721,6 +761,21 @@ mod tests {
             wrong.contains(StatisticsOutcome::Suspect.as_wire_str())
                 && wrong.contains(crate::relay::types::ReplyKind::Statistics.wrong_kind_reason()),
             "{wrong}"
+        );
+        let declined = compose_compare(
+            &ControlReply::Refused {
+                reason: "no".to_string(),
+            },
+            "c@h",
+            Some(1),
+            label,
+            at()?,
+        );
+        assert!(
+            declined.contains(StatisticsOutcome::Refused.as_wire_str())
+                && declined.contains("relay X, call c@h: no")
+                && !declined.contains(StatisticsOutcome::Suspect.as_wire_str()),
+            "a refusal is refused, with the relay's words: {declined}"
         );
 
         let refused = compose_compare(

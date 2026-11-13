@@ -151,6 +151,63 @@ impl ControlReply {
         };
         (kind != asked).then(|| asked.wrong_kind_reason())
     }
+
+    /// Why this reply holds no answer to a question that asked for `asked`.
+    ///
+    /// `None` when the reply is of the kind asked for. A refusal is
+    /// [`Unanswered::Refused`] whatever was asked: the relay's own words, and
+    /// the outcome `refused`. A reply of another kind is
+    /// [`Unanswered::WrongKind`]: the outcome `suspect`, for the reason
+    /// [`wrong_kind_for`](Self::wrong_kind_for) gives.
+    ///
+    /// Every surface reads a reply through this, so a list, a query and a
+    /// statistics question classify a refusal and a wrong kind the same way.
+    #[must_use]
+    pub fn unanswered(&self, asked: ReplyKind) -> Option<Unanswered<'_>> {
+        if let Self::Refused { reason } = self {
+            return Some(Unanswered::Refused(reason));
+        }
+        self.wrong_kind_for(asked).map(Unanswered::WrongKind)
+    }
+}
+
+impl ReplyKind {
+    /// The outcome and the detail every surface reports for `reply`, a reply
+    /// of `subject` that holds no answer to a question for this kind:
+    /// `refused` with `<subject>: <the relay's words>`, or `suspect` with
+    /// [`wrong_kind_reason`](Self::wrong_kind_reason).
+    ///
+    /// `subject` names the relay, and the call when one call was asked about.
+    /// A reply of this kind is the caller's to read, not to pass here; for one
+    /// the answer is the `suspect` of a wrong kind, so nothing reads as `ok`.
+    #[must_use]
+    pub fn unanswered_by(
+        self,
+        reply: &ControlReply,
+        subject: &str,
+    ) -> (crate::stats_vocab::StatisticsOutcome, String) {
+        use crate::stats_vocab::StatisticsOutcome;
+        match reply.unanswered(self) {
+            Some(Unanswered::Refused(reason)) => {
+                (StatisticsOutcome::Refused, format!("{subject}: {reason}"))
+            }
+            Some(Unanswered::WrongKind(why)) => (StatisticsOutcome::Suspect, why.to_string()),
+            None => (
+                StatisticsOutcome::Suspect,
+                self.wrong_kind_reason().to_string(),
+            ),
+        }
+    }
+}
+
+/// Why a reply holds no answer: see [`ControlReply::unanswered`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unanswered<'a> {
+    /// The relay declined, in its own words: the outcome `refused`.
+    Refused(&'a str),
+    /// The reply is of another kind than the one asked for: the outcome
+    /// `suspect`, with the reason.
+    WrongKind(&'static str),
 }
 
 /// A relay reply arrived but cannot be trusted -- ST-S4 `suspect` (the answer's
@@ -384,6 +441,50 @@ mod tests {
             "the relay answered with something other than statistics",
             "the statistics reason"
         );
+    }
+
+    /// What every surface reports for a reply that holds no answer: a
+    /// refusal is `refused` with the relay's words after the subject, and any
+    /// other reply is `suspect` with the reason of the kind asked for.
+    #[test]
+    fn the_report_for_an_unanswered_question_is_refused_or_suspect() {
+        use crate::stats_vocab::StatisticsOutcome;
+        for (reply, kind) in one_of_each() {
+            for asked in ReplyKind::ALL {
+                let expected = match kind {
+                    None => (StatisticsOutcome::Refused, "relay A: busy".to_string()),
+                    Some(_) => (
+                        StatisticsOutcome::Suspect,
+                        asked.wrong_kind_reason().to_string(),
+                    ),
+                };
+                assert_eq!(
+                    asked.unanswered_by(&reply, "relay A"),
+                    expected,
+                    "{reply:?} asked for {asked:?}"
+                );
+            }
+        }
+    }
+
+    /// Every question reads a refusal as the relay's own words, a reply of
+    /// its own kind as the answer, and any other reply as the wrong kind.
+    #[test]
+    fn a_refusal_is_refused_whatever_was_asked() {
+        for (reply, kind) in one_of_each() {
+            for asked in ReplyKind::ALL {
+                let expected = match kind {
+                    None => Some(Unanswered::Refused("busy")),
+                    Some(k) if k == asked => None,
+                    Some(_) => Some(Unanswered::WrongKind(asked.wrong_kind_reason())),
+                };
+                assert_eq!(
+                    reply.unanswered(asked),
+                    expected,
+                    "{reply:?} asked for {asked:?}"
+                );
+            }
+        }
     }
 
     /// The suspect pairings exist: of the twelve reply/question pairs, the

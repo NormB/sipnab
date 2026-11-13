@@ -663,20 +663,11 @@ fn ask_call(
 ) -> SessionCall {
     match relay.query(permit, call_id) {
         Ok(ControlReply::Call(view)) => judge_call(&view, sip),
-        Ok(ControlReply::Refused { reason }) => unanswered_call(
-            call_id,
-            StatisticsOutcome::Refused,
-            format!("{label} for call {call_id}: {reason}"),
-            sip,
-        ),
-        Ok(_) => unanswered_call(
-            call_id,
-            StatisticsOutcome::Suspect,
-            crate::relay::types::ReplyKind::CallView
-                .wrong_kind_reason()
-                .to_string(),
-            sip,
-        ),
+        Ok(other) => {
+            let (outcome, detail) = crate::relay::types::ReplyKind::CallView
+                .unanswered_by(&other, &format!("{label} for call {call_id}"));
+            unanswered_call(call_id, outcome, detail, sip)
+        }
         Err(e) => {
             let (outcome, detail) = super::relay_holdings::fetch_failure(label, &e);
             unanswered_call(call_id, outcome, detail, sip)
@@ -728,23 +719,10 @@ pub fn relay_sessions(
             out.truncated = Some(e.truncated);
             e.call_ids
         }
-        Ok(ControlReply::Refused { reason }) => {
-            unanswered(
-                &mut out,
-                StatisticsOutcome::Refused,
-                format!("{label}: {reason}"),
-            );
-            out.obtained_at = clock().to_rfc3339();
-            return out;
-        }
-        Ok(_) => {
-            unanswered(
-                &mut out,
-                StatisticsOutcome::Suspect,
-                crate::relay::types::ReplyKind::CallList
-                    .wrong_kind_reason()
-                    .to_string(),
-            );
+        Ok(other) => {
+            let (outcome, detail) =
+                crate::relay::types::ReplyKind::CallList.unanswered_by(&other, &label);
+            unanswered(&mut out, outcome, detail);
             out.obtained_at = clock().to_rfc3339();
             return out;
         }
@@ -856,17 +834,11 @@ pub fn relay_sessions_routed(
                     }
                 }
             }
-            Ok(ControlReply::Refused { reason }) => {
-                listing.reach = StatisticsOutcome::Refused.as_wire_str().to_string();
-                listing.detail = Some(format!("{label}: {reason}"));
-            }
-            Ok(_) => {
-                listing.reach = StatisticsOutcome::Suspect.as_wire_str().to_string();
-                listing.detail = Some(
-                    crate::relay::types::ReplyKind::CallList
-                        .wrong_kind_reason()
-                        .to_string(),
-                );
+            Ok(other) => {
+                let (outcome, detail) =
+                    crate::relay::types::ReplyKind::CallList.unanswered_by(&other, label);
+                listing.reach = outcome.as_wire_str().to_string();
+                listing.detail = Some(detail);
             }
             Err(e) => {
                 let (outcome, detail) = super::relay_holdings::fetch_failure(label, &e);
@@ -1103,17 +1075,11 @@ fn ask_previous(
     };
     match relay.query(permit, call_id) {
         Ok(ControlReply::Call(_)) => out.holds = true,
-        Ok(ControlReply::Refused { reason }) => {
-            out.outcome = StatisticsOutcome::Refused.as_wire_str().to_string();
-            out.detail = Some(format!("{label} for call {call_id}: {reason}"));
-        }
-        Ok(_) => {
-            out.outcome = StatisticsOutcome::Suspect.as_wire_str().to_string();
-            out.detail = Some(
-                crate::relay::types::ReplyKind::CallView
-                    .wrong_kind_reason()
-                    .to_string(),
-            );
+        Ok(other) => {
+            let (outcome, detail) = crate::relay::types::ReplyKind::CallView
+                .unanswered_by(&other, &format!("{label} for call {call_id}"));
+            out.outcome = outcome.as_wire_str().to_string();
+            out.detail = Some(detail);
         }
         Err(e) => {
             let (outcome, detail) = super::relay_holdings::fetch_failure(label, &e);

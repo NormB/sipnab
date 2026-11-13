@@ -198,7 +198,7 @@ Elsewhere, contention is **asserted but never measured**. The oldest claim,
 [`implementation-plan-v6.md:368`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/docs/design/implementation-plan-v6.md#L368), says the store
 lock is *"read-heavy, write-rare, so RwLock contention is minimal"* — which is
 simply stale: the batch loop takes `dialog_store.write()` **once per packet**
-([`batch.rs:4865`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4865)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
+([`batch.rs:4878`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4878)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
 most frequent operation in the process, not a rare one. No benchmark in
 `benches/` acquires a lock; no metric reports contention. *We do not know what
 it costs, and neither does anyone else.*
@@ -211,7 +211,7 @@ Specific to this codebase, not in general.
 
 **The stores are the product, and four surfaces read them in-process.** The
 same `Arc<RwLock<DialogStore>>` / `Arc<RwLock<StreamStore>>` is held by the
-capture loop ([`batch.rs:4016-4021`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4016-L4021)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
+capture loop ([`batch.rs:4029-4034`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4029-L4034)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
 every MCP tool ([`mcp/server.rs`](../../src/mcp/server.rs)), the Prometheus
 exporter and the TUI. Forking the capture away from the servers turns every one
 of those reads into IPC. That is not a refactor; it is a new wire protocol,

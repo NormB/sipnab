@@ -6022,7 +6022,7 @@ fn relay_wide_answer(
 ) -> Value {
     use crate::output::relay_statistics as fmt;
     use crate::relay::types::ControlReply;
-    use crate::stats_vocab::{StatisticsOutcome as O, relay_reported, resolve_for_wire};
+    use crate::stats_vocab::{relay_reported, resolve_for_wire};
     let text = match relay.statistics(permit) {
         Ok(ControlReply::Statistics(pairs)) => {
             let wire = resolve_for_wire(&relay_reported(&pairs));
@@ -6033,10 +6033,9 @@ fn relay_wide_answer(
                 fmt::FetchOrigin::Asked,
             ))
         }
-        Ok(_) => fmt::relay_rest_outcome(
-            O::Suspect,
-            crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
-        ),
+        Ok(other) => {
+            fmt::relay_rest_unanswered(&other, crate::relay::types::ReplyKind::Statistics, label)
+        }
         Err(e) => {
             let (outcome, detail) = crate::output::query::relay_holdings::fetch_failure(label, &e);
             fmt::relay_rest_outcome(outcome, &detail)
@@ -6182,9 +6181,10 @@ fn relay_rest_answer_with(
                     now,
                 )))
             }
-            Ok(_) => to_value(fmt::relay_rest_outcome(
-                O::Suspect,
-                crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
+            Ok(other) => to_value(fmt::relay_rest_unanswered(
+                &other,
+                crate::relay::types::ReplyKind::Statistics,
+                &label,
             )),
             Err(e) => fetch_failure(&e),
         },
@@ -6204,9 +6204,10 @@ fn relay_rest_answer_with(
                     fmt::FetchOrigin::Asked,
                 )))
             }
-            Ok(_) => to_value(fmt::relay_rest_outcome(
-                O::Suspect,
-                crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
+            Ok(other) => to_value(fmt::relay_rest_unanswered(
+                &other,
+                crate::relay::types::ReplyKind::Statistics,
+                &format!("{label} for call {call_id}"),
             )),
             Err(e) => fetch_failure(&e),
         },
@@ -6276,9 +6277,10 @@ fn relay_rest_answer_with(
                         )),
                     }
                 }
-                Ok(_) => to_value(fmt::relay_rest_outcome(
-                    O::Suspect,
-                    crate::relay::types::ReplyKind::Statistics.wrong_kind_reason(),
+                Ok(other) => to_value(fmt::relay_rest_unanswered(
+                    &other,
+                    crate::relay::types::ReplyKind::Statistics,
+                    &format!("{label} for call {call_id}"),
                 )),
                 Err(e) => fetch_failure(&e),
             }
@@ -6357,13 +6359,10 @@ fn relay_rest_answer_with(
                 })
                 .to_string(),
             )),
-            Ok(ControlReply::Refused { reason }) => to_value(fmt::relay_rest_outcome(
-                O::Refused,
-                &format!("{label} for call {call_id}: {reason}"),
-            )),
-            Ok(_) => to_value(fmt::relay_rest_outcome(
-                O::Suspect,
-                crate::relay::types::ReplyKind::CallView.wrong_kind_reason(),
+            Ok(other) => to_value(fmt::relay_rest_unanswered(
+                &other,
+                crate::relay::types::ReplyKind::CallView,
+                &format!("{label} for call {call_id}"),
             )),
             Err(e) => fetch_failure(&e),
         },
@@ -10796,6 +10795,8 @@ mod tests {
         /// A well-formed reply that is NOT statistics (a `list` answer), so a
         /// route sees a shape it did not ask for -- ST-S4 `suspect`.
         WrongShape,
+        /// The relay declined, in its own words -- ST-S4 `refused`.
+        Refuses,
         /// The fetch failed and nothing came back -- ST-S4 `unreachable`.
         Timeout,
         /// A reply arrived that cannot be trusted (a cookie mismatch) -- ST-S4
@@ -10816,6 +10817,9 @@ mod tests {
                     call_ids: Vec::new(),
                     truncated: false,
                 })),
+                Self::Refuses => Ok(ControlReply::Refused {
+                    reason: "busy".to_owned(),
+                }),
                 Self::Timeout => anyhow::bail!("no route to host"),
                 Self::Untrusted => Err(anyhow::Error::new(UntrustedReply {
                     reason: "reply cookie did not match the request".to_owned(),
@@ -11012,6 +11016,35 @@ mod tests {
                 "a reply that is not statistics is suspect, not ok"
             );
             assert!(v.get("statistics").is_none());
+        }
+        Ok(())
+    }
+
+    /// A statistics question the relay refused is `refused` with the relay's
+    /// own words on every statistics route, as `GET /relay/holdings` reports
+    /// a refused list: it is not `suspect`.
+    #[test]
+    fn relay_rest_refused_statistics_are_refused_not_suspect() -> Result<(), TestError> {
+        for ask in [
+            RelayAsk::Wide,
+            RelayAsk::Names,
+            RelayAsk::Call("c".into()),
+            RelayAsk::Compare("c".into()),
+        ] {
+            let rq = transmitting(Scripted::Refuses, Scripted::Refuses)?;
+            let v = relay_rest_answer(&rq, &ask, &empty_streams());
+            assert_eq!(v["outcome"], "refused", "{v}");
+            assert_eq!(v["responsibility"], "request", "{v}");
+            let per_call = matches!(ask, RelayAsk::Call(_) | RelayAsk::Compare(_));
+            let detail = v["detail"].as_str().unwrap_or_default();
+            assert!(detail.ends_with(": busy"), "the relay's own words: {v}");
+            assert!(detail.starts_with("relay "), "the relay is named: {v}");
+            assert_eq!(
+                detail.ends_with(" for call c: busy"),
+                per_call,
+                "a per-call route names the call: {v}"
+            );
+            assert!(v.get("statistics").is_none(), "no counters: {v}");
         }
         Ok(())
     }

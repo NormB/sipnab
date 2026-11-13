@@ -136,9 +136,11 @@ the same ones `--relay-holdings` and `GET /v1/relay/holdings` report:
 | suspect | a reply of another kind than the one asked for: statistics or one call's view in answer to a list request, or a call list or statistics in answer to a query for one call | a success with `outcome: "suspect"`, a `detail` that reads `the relay answered with something other than a call list` (`a call view` for a query for one call), and none of the reply's fields |
 
 `relay_stats` and `relay_compare` report the same three classes the same way.
-For a reply that holds no statistics their `detail` reads
+For a reply of another kind than statistics their `detail` reads
 `the relay answered with something other than statistics`. REST, the TUI,
-`--relay-holdings` and `--relay-sessions` give the same three reasons.
+`--relay-holdings` and `--relay-sessions` give the same three reasons. A
+refusal is `refused` on every surface and for every question, a statistics
+question included.
 
 With `sessions: true` the answer is `asked: "sessions"`, `outcome: "sessions"`,
 and a `sessions` field holding the snapshot `GET /v1/relay/sessions` returns,

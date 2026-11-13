@@ -38,7 +38,7 @@
 
 use crate::mcp::errors::{self, Reason};
 use crate::mcp::server::{SipnabMcp, stream_identity};
-use crate::relay::types::ReplyKind;
+use crate::relay::types::{ReplyKind, Unanswered};
 use rmcp::handler::server::tool::schema_for_output;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -1103,7 +1103,12 @@ impl SipnabMcp {
                     }
                 }
             }
-            Ok(_) => RelayCompareAnswer::suspect(relay_addr, call_id),
+            Ok(other) => match other.unanswered(ReplyKind::Statistics) {
+                Some(Unanswered::Refused(reason)) => {
+                    RelayCompareAnswer::refused(relay_addr, call_id, reason.to_string())
+                }
+                _ => RelayCompareAnswer::suspect(relay_addr, call_id),
+            },
         };
         let payload = RelayCompareAnswer { engine, ..payload };
         Ok(CallToolResult::success(vec![
@@ -2130,6 +2135,13 @@ impl RelayStatsAnswer {
             NameSource, known_names, relay_reply_refusal, relay_reported, resolve_for_wire,
         };
         let ControlReply::Statistics(pairs) = reply else {
+            // A refusal is the relay's own no, as it is for a list or a
+            // query; any other reply is of the wrong kind.
+            if let Some(Unanswered::Refused(reason)) = reply.unanswered(ReplyKind::Statistics) {
+                let mut a = Self::base(addr, "refused");
+                a.refusal = Some(reason.to_string());
+                return a;
+            }
             let mut a = Self::base(addr, "suspect");
             a.detail = Some(ReplyKind::Statistics.wrong_kind_reason().to_string());
             return a;
@@ -3163,6 +3175,29 @@ mod relay_stats_view_tests {
         Ok(())
     }
 
+    /// A statistics question the relay refused is `refused` with the relay's
+    /// own words, as a list or a query the relay refused is: not `suspect`.
+    #[test]
+    fn statistics_the_relay_refused_are_refused_in_its_own_words() -> Result<(), TestError> {
+        let reply = ControlReply::Refused {
+            reason: "busy".to_string(),
+        };
+        for call_id in [None, Some("call-1@192.0.2.10")] {
+            for names_only in [false, true] {
+                let a = RelayStatsAnswer::from_reply(addr(), &reply, call_id, names_only);
+                assert_eq!(a.outcome, "refused", "{call_id:?}, names_only {names_only}");
+                assert_eq!(a.refusal.as_deref(), Some("busy"), "{call_id:?}");
+                assert!(
+                    a.detail.is_none(),
+                    "a refusal is not suspect: {:?}",
+                    a.detail
+                );
+                assert!(a.statistics.is_none() && a.names.is_none(), "no counters");
+            }
+        }
+        Ok(())
+    }
+
     /// A compare whose relay answered with something else says why, in the
     /// words `--relay-compare` and REST use.
     #[test]
@@ -3205,9 +3240,13 @@ mod relay_stats_view_tests {
     /// non-statistics reply off as `ok`.
     #[test]
     fn a_non_statistics_reply_is_suspect() -> Result<(), TestError> {
-        let reply = ControlReply::Refused {
-            reason: "unexpected on the stats path".to_string(),
-        };
+        // A call list. This test sent a `Refused` reply; a refusal now reads
+        // `refused` on the statistics surfaces as it does on the others
+        // (`statistics_the_relay_refused_are_refused_in_its_own_words`).
+        let reply = ControlReply::Calls(crate::relay::types::Enumeration {
+            call_ids: Vec::new(),
+            truncated: false,
+        });
         let a = RelayStatsAnswer::from_reply(addr(), &reply, None, false);
         assert_eq!(a.outcome, "suspect");
         assert!(a.statistics.is_none());
@@ -5275,12 +5314,29 @@ mod relay_handler_tests {
             "the digits travel as received: {overflow}"
         );
 
-        let not_stats = ask(ControlReply::Refused {
+        // A call list where statistics were asked for. This case sent a
+        // `Refused` reply and expected `suspect`; a refusal is the relay's
+        // own no on every surface, so it is the case after this one.
+        let not_stats = ask(ControlReply::Calls(Enumeration {
+            call_ids: Vec::new(),
+            truncated: false,
+        }))
+        .await?;
+        assert_eq!(not_stats["outcome"], "suspect", "{not_stats}");
+        assert_eq!(
+            not_stats["detail"],
+            ReplyKind::Statistics.wrong_kind_reason(),
+            "{not_stats}"
+        );
+        assert!(not_stats.get("note").is_none(), "{not_stats}");
+
+        let declined = ask(ControlReply::Refused {
             reason: "unexpected".to_string(),
         })
         .await?;
-        assert_eq!(not_stats["outcome"], "suspect");
-        assert!(not_stats.get("note").is_none(), "{not_stats}");
+        assert_eq!(declined["outcome"], "refused", "{declined}");
+        assert_eq!(declined["refusal"], "unexpected", "{declined}");
+        assert!(declined.get("detail").is_none(), "{declined}");
         Ok(())
     }
 

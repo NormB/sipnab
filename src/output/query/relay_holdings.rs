@@ -108,18 +108,15 @@ impl Holdings {
                 relay: label,
                 obtained_at: now,
             },
-            Ok(ControlReply::Refused { reason }) => Holdings::NotAnswered {
-                relay: label.clone(),
-                outcome: StatisticsOutcome::Refused,
-                detail: format!("{label}: {reason}"),
-            },
-            Ok(_) => Holdings::NotAnswered {
-                relay: label,
-                outcome: StatisticsOutcome::Suspect,
-                detail: crate::relay::types::ReplyKind::CallList
-                    .wrong_kind_reason()
-                    .to_string(),
-            },
+            Ok(other) => {
+                let (outcome, detail) =
+                    crate::relay::types::ReplyKind::CallList.unanswered_by(&other, &label);
+                Holdings::NotAnswered {
+                    relay: label,
+                    outcome,
+                    detail,
+                }
+            }
             Err(e) => {
                 let (outcome, detail) = fetch_failure(&label, &e);
                 Holdings::NotAnswered {
