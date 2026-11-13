@@ -70,7 +70,24 @@ const MAX_NESTING_DEPTH: usize = 50;
 const MAX_EXPRESSION_NODES: usize = 1024;
 
 /// Maximum regex size in bytes (D17).
-const REGEX_SIZE_LIMIT: usize = 1_000_000;
+pub(crate) const REGEX_SIZE_LIMIT: usize = 1_000_000;
+
+/// Compiles `pattern` for a scan of raw message bytes.
+///
+/// The one compile rule for the two surfaces that search a whole message with
+/// a regex: `payload =~` in a filter expression and the MCP `search_messages`
+/// tool with `regex: true`. Both match the same bytes with the same engine and
+/// the same size limit, so they cannot disagree about what a capture holds.
+///
+/// # Errors
+///
+/// The regex crate's error when `pattern` does not parse, or when its
+/// compiled program is larger than [`REGEX_SIZE_LIMIT`] bytes.
+pub(crate) fn compile_payload_regex(pattern: &str) -> Result<regex::bytes::Regex, regex::Error> {
+    regex::bytes::RegexBuilder::new(pattern)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .build()
+}
 
 /// Longest header name a `header.<name>` field accepts, in bytes.
 ///
@@ -2135,10 +2152,7 @@ fn parse_value<'a>(
         // `payload` greps the raw message bytes, so its regex is compiled
         // with the byte engine to match without a lossy UTF-8 copy.
         if *field == Field::Payload {
-            let re = regex::bytes::RegexBuilder::new(&text)
-                .size_limit(REGEX_SIZE_LIMIT)
-                .build()
-                .map_err(|_| fail(input, REGEX_INVALID))?;
+            let re = compile_payload_regex(&text).map_err(|_| fail(input, REGEX_INVALID))?;
             return Ok((rest, Value::ReBytes(re)));
         }
         let re = regex::RegexBuilder::new(&text)
