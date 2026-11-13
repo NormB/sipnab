@@ -74,7 +74,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.251 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.252 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -97,7 +97,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.251` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.252` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -286,7 +286,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.251) | Plugin | `Recommends` |
+| Artifact (0.5.252) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -326,11 +326,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.251 for the
+it first, in the same shell, to the release you want, e.g. 0.5.252 for the
 latest:
 
 ```bash
-VERSION=0.5.251
+VERSION=0.5.252
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -470,13 +470,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.251, as in
+you want, e.g. 0.5.252, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.251
+   VERSION=0.5.252
    ```
 
 - Download the package:
@@ -597,25 +597,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.251-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.252-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.251-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.252-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.251-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.252-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.251-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.252-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -1101,14 +1101,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.251
+docker pull ghcr.io/normb/sipnab:0.5.252
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.251` | That release |
+| `0.5.252` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -1146,7 +1146,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.251 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.252 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -1159,11 +1159,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.251 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.252 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.251` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.251`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.252` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.252`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -1585,7 +1585,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.251
+docker pull ghcr.io/normb/sipnab:0.5.252
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
