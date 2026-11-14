@@ -1482,16 +1482,49 @@ row group of 16.
 What follows from that layout:
 
 - A question for one member opens every file of its window, and the center
-  unseals each of those files whole before it picks the row group. In a
-  release build of 0.5.251, which wrote the files without compression, one
-  member's newest 1,000 heartbeats among 2,000 members came from 1,001
-  files in 2.8 s.
+  unseals each of those files whole before it picks the row group. In the
+  row group it reads the receive time, the member and, for a question that
+  names a call, the Call-ID of every row, and it builds only the rows the
+  question selects: it does not parse the JSON of the other rows.
 - One answer holds at most 1,000 rows (`limit`). A member's 24 hours at one
   heartbeat a minute are 1,440 rows: ask twice, with `from` and `to`.
 - A center that starts without its store file reads the heartbeat files
-  from the newest back, up to 4,096 of them, to rebuild its member list: 25.7
-  s in a release build of 0.5.251, without compression, for 1,440 files of
-  2,000 members. A center that starts with its store file reads one.
+  from the newest back, up to 4,096 of them, to rebuild its member list. A
+  center that starts with its store file reads one.
+
+**What the reads cost.** Measured on 2026-11-14 in a release build (Cargo
+feature set `full`, aarch64, 14 cores, load average about 10) on synthetic
+rows: 1,440 heartbeat files, each with one heartbeat of about 300 bytes of
+inventory for each of 2,000 members, compressed, 78,860,456 sealed bytes in
+the 1,001 files of the first question. Each figure is the range of three
+runs.
+
+| What the center did | Time |
+|---|---|
+| One member's newest 1,000 heartbeats, from 1,001 files (`GET /v1/fleet/members/{id}/history`) | 226 to 230 ms |
+| Of that: reading the 1,001 files from disk | 28 to 43 ms |
+| Of that: unsealing them | 41 to 42 ms |
+| Of that: decoding the one row group of each file that holds the member | 158 to 162 ms |
+| The same decoding as releases 0.5.249 to 0.5.254 did it, building all 128 rows of the row group | 586 to 656 ms |
+| Rebuilding the member list at a start without the store file, from all 1,440 files | 10.1 to 11.4 s |
+
+The rebuild builds every row of every file it opens, 2,880,000 rows here.
+
+**Which reads build every row, and what a damaged row does.** The center
+seals each file, so a changed file does not open at all. A row whose JSON,
+send time or text does not parse can only come from a defect in the release
+that wrote the file. A question refuses such a file, and names it under
+`refused`, only when it selects that row: a question for another member, for
+another call or for a window that does not hold the row gets its answer
+from the same file. Releases 0.5.249 to 0.5.254 refused the file for every
+question that read the row's row group. Two reads still build every row of
+each file they open and refuse the file for one such row anywhere in it: the
+rebuild of the member list at a start without the store file, and the check
+a filing makes of the files of the same day that can already hold its rows.
+Neither opens every file of the store, and sipnab has no command that
+checks every row of every file. A member id that is not text, or a column
+that the center cannot read, refuses the file for every question that reads
+its row group, as before.
 
 **Reading the files with other tools.** No other tool reads a file as it is
 on disk: the center seals every file under the store key, and the first
@@ -1736,12 +1769,13 @@ would.
   30), 2,000 members with one heartbeat of about 300 bytes each made one
   file of 79,189 bytes in 202 ms, and 1,440 such filings, 24 hours, made
   113,491,120 bytes. Releases 0.5.251 to 0.5.253 wrote the same rows
-  without compression as 887,745,307 bytes. In that debug build, one
-  member's newest 1,000 heartbeats came from 1,001 files in 4.6 s, and the
-  member list was rebuilt without a store file from all 1,440 files in 76.7
-  s. A release build of 0.5.251, without compression, read the 1,001 files
-  in 2.8 s and rebuilt the member list in 25.7 s; a release build with
-  compression is not measured yet. The center answers members while it
+  without compression as 887,745,307 bytes. In a release build on
+  2026-11-14 (aarch64, 14 cores, load average about 10), one member's
+  newest 1,000 heartbeats came from 1,001 such files in 226 to 230 ms, and
+  the center rebuilt the member list without a store file from all 1,440
+  files in 10.1 to 11.4 s
+  ([The files of the history store](#the-files-of-the-history-store) has
+  the parts of those times). The center answers members while it
   writes a file.
   Heartbeats that wait for a filing are in the store file, and at most
   64 MiB of them wait (`MAX_WAITING_BYTES`).

@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **The fleet center builds only the rows a history question selects (FLEET-HISTORY-FOLLOW-UPS).** In each row group it reads, `sipnab fleet serve` now reads the receive time, the member and, for a question that names a call, the Call-ID of every row first, and parses the JSON of a row only when the question selects it. Releases 0.5.249 to 0.5.254 built all rows of the row group, 128 for a fleet with one row for each member, and then dropped the rows the question did not want. The files do not change, and the center reads the files of every release from 0.5.249 on as before. `GET /v1/fleet/calls` and `GET /v1/fleet/members/{id}/history` return the same rows in the same order under the same `limit`.
+  - Measured in a release build (Cargo feature set `full`, aarch64, 14 cores, load average about 10) on synthetic rows, 1,440 compressed heartbeat files of 2,000 members with about 300 bytes of inventory in each row: one member's newest 1,000 heartbeats come from 1,001 files (78,860,456 sealed bytes) in 226 to 230 ms. In the same binary, decoding the member's row group in each of those files took 158 to 162 ms, and 586 to 656 ms with the reader of 0.5.254. Of the 226 to 230 ms, 28 to 43 ms read the files and 41 to 42 ms unsealed them. Each figure is the range of three runs.
+  - **A row that does not parse now refuses a file only for a question that selects the row.** The center seals each file, so such a row can only come from a defect in the release that wrote it. Before, it refused the file for every question that read its row group. Now a question for another member, another call or a window that does not hold the row gets its answer from the same file, and a question that selects the row names the file under `refused` as before. The rebuild of the member list at a start without the store file, and the check a filing makes of the files that can already hold its rows, still build every row of each file they open and refuse it for one such row. A member id that is not text, or a column that cannot be read, still refuses the file for every question that reads its row group. [The files of the history store](docs/fleet.md#the-files-of-the-history-store) has the table of times and says which reads build every row.
+  - The same run measured the rebuild of the member list at a start without the store file: 10.1 to 11.4 s for all 1,440 files. This change does not alter that read.
+
 ## [0.5.254] - 2026-11-14
 
 ### Added
