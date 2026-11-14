@@ -49,7 +49,14 @@ prints makes that run visible.
 Exit status of `verify`: 0 the site is this run's artifact (and names the
 expected release); 1 it is stale after the second deploy, or the second
 deploy failed; 2 the site could not be read, so nothing is known; 3 it is
-this run's artifact and does not name the expected release. Without
+this run's artifact and the download page, read and healthy, does not name
+the expected release; 4 it is this run's artifact and the edge refused the
+read of the download page (403 or 429), so nothing is known about the
+release. Every release check is printed as it ends, with its number, the
+seconds since the first and the verifier's exit status. A page that does not
+name the release yet is read again every `--every` seconds; after a refused
+read the wait doubles (15, 30, 60, 120 s), so a refused client sends five
+requests in 300 s and not 21. Without
 `--enforce` each verdict is printed as an error annotation and the exit
 status is 0: pages.yml enforces on workflow_dispatch, which is how a release
 advertises itself, and not on a push, because the pre-push tag gate refuses a
@@ -65,6 +72,7 @@ from __future__ import annotations
 import argparse
 import collections
 import dataclasses
+import functools
 import json
 import os
 import pathlib
@@ -83,7 +91,15 @@ UA = "sipnab-release-check/1.0 (+https://github.com/NormB/sipnab)"
 ARTIFACT = "github-pages"
 SITE_CHECK = pathlib.Path(__file__).resolve().parent / "verify-site-advertises.sh"
 # Exit status of `verify`, one per verdict.
-LIVE, STALE, UNREADABLE, NOT_ADVERTISED = 0, 1, 2, 3
+LIVE, STALE, UNREADABLE, NOT_ADVERTISED, BLOCKED = 0, 1, 2, 3, 4
+# scripts/verify-site-advertises.sh's exit statuses for a healthy page that
+# names another release and for a read the edge refused.
+PAGE_STALE, PAGE_BLOCKED = 1, 6
+
+# A job log dates a line when it arrives. Block-buffered output arrived when
+# the script ended, so the stamp line and a verdict five minutes later
+# carried the same second (2026-11-14, job 132416129137).
+print = functools.partial(print, flush=True)  # noqa: A001 - every line is written as it happens
 # The statuses actions/deploy-pages treats as final errors (its
 # src/internal/deployment.js at 368f8252, v5).
 # One of them is GitHub's doubled-l spelling of the US word; it is joined
@@ -210,14 +226,26 @@ def redeploy(cfg: Config, env: dict, run, http_get, sleep, clock) -> tuple[bool,
             return False, f"the deployment {version} did not succeed in {STATUS_WITHIN:.0f} s; last status: {status}"
 
 
-def await_release(cfg: Config, run, sleep, clock) -> tuple[bool, str]:
-    """scripts/verify-site-advertises.sh for `cfg.expect`, inside the bound."""
+def await_release(cfg: Config, run, sleep, clock) -> tuple[int, str]:
+    """scripts/verify-site-advertises.sh for `cfg.expect`, inside the bound.
+
+    Returns the last check's exit status and output. Each check is printed
+    when it ends: its number, the seconds since the first, the exit status
+    and the verifier's unindented lines (the edge's answer and the verdict).
+    After a refused read the wait is `cfg.every` and doubles with each
+    refusal in a row; any other answer puts it back to `cfg.every`."""
     start = clock()
+    n = refused = 0
     while True:
+        n += 1
         r = run(["sh", str(SITE_CHECK), cfg.expect], 120)
-        if r.rc == 0 or clock() - start + cfg.every > cfg.within:
-            return r.rc == 0, r.out.strip()
-        sleep(cfg.every)
+        said = " | ".join(line for line in r.out.splitlines() if line and not line.startswith(" "))
+        print(f"release check {n} (+{clock() - start:.0f} s): exit {r.rc}: {said or '(no output)'}")
+        refused = refused + 1 if r.rc == PAGE_BLOCKED else 0
+        wait = cfg.every * 2 ** max(refused - 1, 0)
+        if r.rc == 0 or clock() - start + wait > cfg.within:
+            return r.rc, r.out.strip()
+        sleep(wait)
 
 
 def _judge(cfg: Config, env: dict, run, http_get, sleep, clock) -> int:
@@ -247,11 +275,22 @@ def _judge(cfg: Config, env: dict, run, http_get, sleep, clock) -> int:
         return UNREADABLE
     print(f"live: {cfg.url} carries this run's stamp {cfg.stamp!r}")
     if cfg.expect:
-        ok, what = await_release(cfg, run, sleep, clock)
+        rc, what = await_release(cfg, run, sleep, clock)
         print(what)
-        if not ok:
+        if rc == PAGE_STALE:
             print(f"::error::The live site is this run's artifact and the download page does not name {cfg.expect}.")
             return NOT_ADVERTISED
+        if rc == PAGE_BLOCKED:
+            print("::error::The live site is this run's artifact; the edge refused the read of the download page, "
+                  f"so nothing is known about whether it names {cfg.expect}. The page may be right for every "
+                  "other reader: read it from another address, and find the refusal in the CDN's log by the "
+                  "cf-ray printed above.")
+            return BLOCKED
+        if rc != 0:
+            print(f"::error::The live site is this run's artifact; the download page could not be read "
+                  f"(scripts/verify-site-advertises.sh exit {rc}), so nothing is known about whether it names "
+                  f"{cfg.expect}.")
+            return UNREADABLE
     return LIVE
 
 
