@@ -12,6 +12,7 @@ run, alternating with the candidate, and judges the ratio. Load slows both;
 a regression slows only the candidate.
 """
 
+import json
 import os
 import pathlib
 import subprocess
@@ -148,8 +149,30 @@ def test_the_gate_fails_a_candidate_slower_than_its_reference(tmp_path):
     assert "FAIL" in r.stdout
 
 
+# What the gate's packet count and the committed baseline make of a stand-in's
+# sleep: the gate reports 535000 / seconds as pkts/s (bench/regression-gate.sh
+# PACKETS) and reads the baseline from bench/baseline.json.
+GATE_PACKETS = 535_000
+GATE_BASELINE = json.loads((REPO / "bench" / "baseline.json").read_text())["cores_4_pkts_per_s"]
+REFUSAL_SECONDS = GATE_PACKETS / (0.8 * GATE_BASELINE)
+REF_SLOW = 0.4
+
+
+def test_the_stand_in_arithmetic_reads_the_gates_own_packet_count():
+    assert f"PACKETS={GATE_PACKETS}\n" in GATE.read_text()
+
+
 def test_the_gate_refuses_to_judge_when_the_reference_is_slow(tmp_path):
-    r = gate(tmp_path, fake(tmp_path, "ref", 1.0), fake(tmp_path, "cand", 1.0),
+    # The refusal reads the reference alone. With an 80% floor the reference
+    # is refused when it measures under 0.8 x the baseline, that is when one
+    # run of the 535,000-packet corpus takes longer than
+    # REFUSAL_SECONDS = 535000 / (0.8 x baseline): 0.19 s at the baseline of
+    # 3,520,000 pkts/s. The reference stand-in takes 0.4 s a run, 2.1 times
+    # that, and load on the test host only makes it slower. The candidate is
+    # fast (0.05 s): nothing about it can cause the refusal, and a gate that
+    # judged the ratio here would report a pass, not exit status 3.
+    assert REF_SLOW > 2 * REFUSAL_SECONDS, (REF_SLOW, REFUSAL_SECONDS)
+    r = gate(tmp_path, fake(tmp_path, "ref", REF_SLOW), fake(tmp_path, "cand", 0.05),
              floor_pct=80, rounds=1)
     assert r.returncode == 3, r.stdout + r.stderr
     assert "host too loaded to judge" in r.stdout
