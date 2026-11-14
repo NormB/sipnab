@@ -61,7 +61,7 @@ const ALLOWED: &[(&str, &str, &str)] = &[
     ),
     (
         "CHANGELOG.md",
-        r#"  - A line 3 wider than the terminal now ends in `…` instead of stopping at"#,
+        r#"  - Limit: a filter applied as an expression is always shown in full; a line 3 wider than the terminal ends in `…`."#,
         r#"sipnab's own cut marker: a status line wider than the terminal ends in U+2026 (`fit_spans_to_cols` in src/tui/render/status.rs)"#,
     ),
     (
