@@ -1047,7 +1047,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // "Threads that exist at the privilege drop" links the two files that
     // drop, the five whose threads exist then, privilege.rs, and the test
     // that holds the section (+9).
-    const EXPECTED_CODE_LINKS: usize = 873;
+    // 873 -> 874 (changelog outline format, +1): build-ci-release.md's "The
+    // format of an entry" links tests/changelog_format_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 874;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
