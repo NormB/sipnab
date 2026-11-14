@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Changed
 
+- **Changelog entries are outlines: one lead line and up to five labeled lines.**
+  - Effect: the sections 0.5.255 down to 0.5.240 are rewritten in this form; each entry says what changed, what to do and where the detail is.
+  - Limit: older sections keep their paragraphs until they are rewritten; entries about hooks, CI and tests, which no user of a release sees, are removed.
+  - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
+
+## [0.5.255] - 2026-11-14
+
+### Changed
+
 - **The fleet center builds only the rows a history question selects.**
   - Effect: `GET /v1/fleet/calls` and `GET /v1/fleet/members/{id}/history` return the same rows in the same order under the same `limit`; the files do not change.
   - Effect: decoding one member's row group in each of 1,001 files took 158 to 162 ms, against 586 to 656 ms with the reader of 0.5.254.
