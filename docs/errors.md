@@ -6011,6 +6011,20 @@ for a heartbeat. This build did not write it.
 **What to do:** Move the file out of the directory. Tell us which release
 wrote it.
 
+### `parquet: column {column} is compressed with {codec}; this build reads zstd and uncompressed files`
+
+A reason in the `refused` list of `GET /v1/fleet/calls` or `GET
+/v1/fleet/members/{id}/history`. The file opened under the store key, and
+its Parquet names a compression codec for that column that this build does
+not link: `snappy`, `gzip`, `lzo`, `brotli`, `lz4` or `lz4_raw`. This build
+writes zstd, and reads zstd and the uncompressed files of releases 0.5.249
+to 0.5.253. The center reads no row of the file and answers from the other
+files.
+
+**What to do:** A release newer than this one wrote the file. Install that
+release on the center: the file is intact. See [Upgrade a center to
+compressed history files](fleet.md#upgrade-a-center-to-compressed-history-files).
+
 ### `{rel}: sealed layer: the file was written as '{written}' and is not at that path`
 
 A reason in the `refused` list of `GET /v1/fleet/calls`, or after `the call
