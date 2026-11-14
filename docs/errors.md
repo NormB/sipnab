@@ -6197,6 +6197,41 @@ Running as root, sipnab switches to an unprivileged account after opening the ca
 
 **Exit code:** 1.
 
+### `{command}: started as root, this command runs as user '{target}', and '{target}' cannot {access} '{path}' ({what}). Nothing was created. Choose one: chown {target} '{path}'; {user_way}; or pass --no-priv-drop to keep root`
+
+Root started a command that opens no capture: `sipnab fleet serve`, `sipnab fleet inventory`, `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch`, `--relay-holdings` or `--relay-sessions`. Since 0.5.256 such a command reads its key files as root and then runs as another user. That user cannot use a path the command needs.
+
+- `{command}` is the command, and `{target}` the user it runs as: `--user`, else `[privilege] user`, else `nobody`.
+- `{path}` is the file or directory, `{what}` the flag that named it, and `{access}` what the user cannot do: `read`, `read and write`, or `write in`.
+- `{user_way}` names the user who called `sudo`, when that user can use the path. Otherwise it reads `--user USER`.
+- The command created no file and made no connection.
+
+**What to do:** Use one of the three ways the message lists.
+
+- Give the path to the user: `chown {target} '{path}'`. For a center's store or a forwarder's spool, give it the whole directory with `chown -R`.
+- Name a user who can use the path, with `--user`.
+- Pass `--no-priv-drop` to keep root, as before 0.5.256.
+
+[Commands that do not capture](least-privilege.md#commands-that-do-not-capture) lists what each command needs.
+
+**Exit code:** 2.
+
+### `{name}: failed to drop privileges: {e}`
+
+Root started a command that opens no capture, and the switch to another user failed. `{name}` is the command. `{e}` gives the reason, for example an account that does not exist.
+
+**What to do:** Name an existing account with `--user <USER>`, or pass `--no-priv-drop` to keep root.
+
+**Exit code:** 2.
+
+### `{command}: running as root because --no-priv-drop was given; without it this command runs as --user, or as '{nobody}'`
+
+A warning. Root started a command that opens no capture, with `--no-priv-drop`, so the command keeps root. `{command}` is the command.
+
+**What to do:** Nothing, when root is what you want. Otherwise remove `--no-priv-drop` and give the paths the command writes to the user it runs as.
+
+**Exit code:** None. This is a warning, and the run continues.
+
 ### `Failed to spawn processing thread: {e}`
 
 In the TUI, the operating system refused to create the thread that reads packets into the call and stream lists. `{e}` is the operating system error.

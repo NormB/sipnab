@@ -1156,6 +1156,9 @@ pub struct ServeArgs {
     /// `--calls-flush-secs`: how often the intake is filed into the
     /// history store.
     pub calls_flush_secs: u64,
+    /// `--user` and `--no-priv-drop`: the user a center started as root
+    /// serves as.
+    pub run_as: crate::cli::fleet_args::RunAs,
 }
 
 /// What a build without the `fleet-store` feature says where a build with
@@ -1440,7 +1443,9 @@ const MAX_TRACKED_PEERS: usize = 4096;
 /// serves until stopped, and logs.
 pub fn serve(args: ServeArgs) -> i32 {
     match prepare(&args) {
-        Ok((addr, state, server_config)) => {
+        Ok((listener, state, server_config)) => {
+            // The runtime's threads start here, after the drop in `prepare`:
+            // no thread of the center exists when the process changes user.
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -1451,7 +1456,7 @@ pub fn serve(args: ServeArgs) -> i32 {
                     return 2;
                 }
             };
-            runtime.block_on(run(addr, state, server_config))
+            runtime.block_on(run(listener, state, server_config))
         }
         Err(e) => {
             stderr_line!("sipnab fleet serve: {e}");
@@ -1460,12 +1465,60 @@ pub fn serve(args: ServeArgs) -> i32 {
     }
 }
 
-/// Check the arguments, read the key, open the store and apply retention.
+/// What the center reads and writes once it serves: the store file, its
+/// intake and its history beside it, the directory they are rewritten in,
+/// and the revocation list. A center started as root must hold these as
+/// the user it drops to, and [`crate::early_exit::confine`] refuses the
+/// start when it does not.
+fn needs_after_the_drop(args: &ServeArgs) -> Vec<crate::early_exit::Need> {
+    use crate::early_exit::{Access, Need};
+    let dir = match args.store.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let mut needs = vec![
+        Need {
+            path: dir,
+            what: "the directory of --store",
+            access: Access::WriteDir,
+        },
+        Need {
+            path: args.store.clone(),
+            what: "--store",
+            access: Access::ReadWrite,
+        },
+        Need {
+            path: super::fleet_intake::path_for(&args.store),
+            what: "the intake of --store",
+            access: Access::ReadWrite,
+        },
+    ];
+    #[cfg(feature = "fleet-store")]
+    needs.extend(crate::early_exit::tree_needs(
+        &super::fleet_history::dir_for(&args.store),
+        "the history store of --store",
+    ));
+    if let Some(revoked) = &args.revoked_file {
+        needs.push(Need {
+            path: revoked.clone(),
+            what: "--revoked-file",
+            access: Access::Read,
+        });
+    }
+    needs
+}
+
+/// Check the arguments, read the keys and bind as the user the center was
+/// started as; drop when that user is root; then open the store and apply
+/// retention as the user the center serves as.
+///
+/// Nothing is created before the drop, so a start refused there leaves no
+/// file of root behind.
 fn prepare(
     args: &ServeArgs,
 ) -> Result<
     (
-        std::net::SocketAddr,
+        (std::net::SocketAddr, crate::output::api::ApiListener),
         CenterState,
         crate::output::api::ApiServerConfig,
     ),
@@ -1506,6 +1559,25 @@ fn prepare(
         audience: crate::auth::AUDIENCE_API.to_string(),
     });
     let keys = store_keys(args)?;
+    let server_config = crate::output::api::ApiServerConfig {
+        max_conn: 0,
+        tls_cert: args.tls_cert.clone(),
+        tls_key: args.tls_key.clone(),
+        client_auth: args.client_auth.clone(),
+        allowed_hosts: args.allowed_hosts.clone(),
+        // The fleet center serves its own routes, not the capture API's.
+        console: false,
+    };
+    // The last step as the starting user: the TLS files are read and the
+    // port is bound, which a port below 1024 needs root for.
+    let listener = crate::output::api::prepare_listener(addr, &verifier, &server_config)
+        .map_err(|e| e.to_string())?;
+    crate::early_exit::confine(
+        "fleet serve",
+        args.run_as.asked(),
+        &needs_after_the_drop(args),
+    )
+    .map_err(|e| e.strip_prefix("fleet serve: ").unwrap_or(&e).to_string())?;
     let (center, gone) = Center::open(
         &args.store,
         keys,
@@ -1540,16 +1612,7 @@ fn prepare(
         #[cfg(feature = "fleet-store")]
         filing: Arc::new(parking_lot::Mutex::new(())),
     };
-    let server_config = crate::output::api::ApiServerConfig {
-        max_conn: 0,
-        tls_cert: args.tls_cert.clone(),
-        tls_key: args.tls_key.clone(),
-        client_auth: args.client_auth.clone(),
-        allowed_hosts: args.allowed_hosts.clone(),
-        // The fleet center serves its own routes, not the capture API's.
-        console: false,
-    };
-    Ok((addr, state, server_config))
+    Ok(((addr, listener), state, server_config))
 }
 
 /// As the center starts: file what the intake and the store file held
@@ -1806,46 +1869,46 @@ fn retention(hours: u64) -> chrono::Duration {
     chrono::Duration::hours(i64::try_from(hours).unwrap_or(i64::MAX / 3600))
 }
 
-/// Bind, serve, keep the store, and stop on SIGINT or SIGTERM.
+/// Serve on the bound `listener`, keep the store, and stop on SIGINT or
+/// SIGTERM.
 async fn run(
-    addr: std::net::SocketAddr,
+    (addr, listener): (std::net::SocketAddr, crate::output::api::ApiListener),
     state: CenterState,
     server_config: crate::output::api::ApiServerConfig,
 ) -> i32 {
-    let (listener, router) = match bind(addr, &state, &server_config) {
-        Ok(bound) => bound,
-        Err(e) => {
-            stderr_line!("sipnab fleet serve: {e}");
-            return 2;
-        }
-    };
+    // Before the line that says the center serves: a supervisor that reads
+    // that line and sends SIGTERM at once must reach the handler, not the
+    // default action, which ends the process without the last rewrite of the
+    // store (FLEET-SERVE-STOP-BEFORE-HANDLER).
+    let stop = StopSignals::register();
+    let router = routes_behind_the_allowlist(addr, &listener, &state, &server_config);
     tokio::spawn(upkeep(state.clone()));
-    let code = serve_until_stopped(listener, router).await;
+    let code = serve_until_stopped(listener, router, stop).await;
     rewrite_on_exit(&state);
     code
 }
 
-/// Bind the listener and build the router behind the `Host` allowlist.
-fn bind(
+/// The router for the bound `listener`, behind the `Host` allowlist.
+fn routes_behind_the_allowlist(
     addr: std::net::SocketAddr,
+    listener: &crate::output::api::ApiListener,
     state: &CenterState,
     server_config: &crate::output::api::ApiServerConfig,
-) -> Result<(crate::output::api::ApiListener, axum::Router), crate::Error> {
-    let listener = crate::output::api::prepare_listener(addr, &state.verifier, server_config)?;
+) -> axum::Router {
     let bound = listener.local_addr().unwrap_or(addr);
     let hosts = crate::host_allowlist::HostAllowlist::new(bound, &server_config.allowed_hosts);
-    let router = crate::output::api::with_host_allowlist(router(state.clone()), hosts);
     tracing::info!(
         "fleet center serving {} on {bound}",
         if listener.is_tls() { "HTTPS" } else { "HTTP" }
     );
-    Ok((listener, router))
+    crate::output::api::with_host_allowlist(router(state.clone()), hosts)
 }
 
 /// Serve until the server fails (2) or a stop is asked for (0).
 async fn serve_until_stopped(
     listener: crate::output::api::ApiListener,
     router: axum::Router,
+    stop: StopSignals,
 ) -> i32 {
     tokio::select! {
         served = crate::output::api::serve_router(listener, router) => match served {
@@ -1855,31 +1918,58 @@ async fn serve_until_stopped(
                 2
             }
         },
-        () = stop_requested() => {
+        () = stop.requested() => {
             tracing::info!("fleet center stopping: a stop was asked for");
             0
         }
     }
 }
 
-/// Resolves on SIGINT, or SIGTERM where there is one.
-async fn stop_requested() {
+/// The handlers of the signals that stop the center, installed when this is
+/// made and not when it is first waited on.
+struct StopSignals {
+    /// SIGTERM, where its handler could be installed.
     #[cfg(unix)]
-    {
-        let Ok(mut term) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        else {
-            let _ = tokio::signal::ctrl_c().await;
-            return;
-        };
-        tokio::select! {
-            _ = term.recv() => {}
-            _ = tokio::signal::ctrl_c() => {}
+    term: Option<tokio::signal::unix::Signal>,
+    /// SIGINT, where its handler could be installed.
+    #[cfg(unix)]
+    int: Option<tokio::signal::unix::Signal>,
+}
+
+impl StopSignals {
+    /// Install the handlers of SIGTERM and SIGINT now. Call inside the
+    /// runtime.
+    fn register() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Self {
+                term: signal(SignalKind::terminate()).ok(),
+                int: signal(SignalKind::interrupt()).ok(),
+            }
         }
+        #[cfg(not(unix))]
+        Self {}
     }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+
+    /// Resolves on SIGINT, or SIGTERM where there is one.
+    async fn requested(self) {
+        #[cfg(unix)]
+        {
+            let Self { term, int } = self;
+            let (Some(mut term), Some(mut int)) = (term, int) else {
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            };
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = int.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
 }
 
