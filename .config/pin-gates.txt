@@ -44,6 +44,7 @@ source_file_headers_test
 staged_inputs_gate_test
 startup_refusal_stderr_test
 support_selftest
+threads_at_privilege_drop_test
 two_part_reference_test
 unwrap_ratchet_test
 vcon_draft_citation_test

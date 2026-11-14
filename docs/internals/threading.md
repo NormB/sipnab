@@ -187,6 +187,65 @@ One consequence applies to callers that cannot reach the handle.
 - So a regression fails there, rather than waiting for the weekly sanitizer run.
 - Before this rule, `sipnab -I /nonexistent.pcap` (a mistyped filename) leaked a thread.
 
+## Threads that exist at the privilege drop
+
+The privilege drop signals every other thread of the process.
+
+- glibc carries out `setgroups`, `setgid` and `setuid` for the whole process.
+  - The calling thread sends each other thread signal 33, and each one makes the same call.
+- A thread that waits in a call with a time limit at that moment gets `EINTR`.
+  - Examples: `poll`, and a socket read with a receive timeout.
+  - Measured on a development host: a `poll` with a 3 s limit returned `EINTR` after 0.30 s,
+    when another thread called `setgid`.
+- A read with no time limit starts again.
+  - In the same measurement a `read` on an empty pipe returned its byte, not an error.
+
+Three calls make a drop.
+
+- `confine_after_capture_start` in [`app/bootstrap.rs`](../../src/app/bootstrap.rs), for a run that starts a capture thread.
+- `prepare_cores_inputs` in the same file, for `--cores`.
+- `harden` in [`process_isolation/worker_process.rs`](../../src/process_isolation/worker_process.rs), for the scanner-kill worker process.
+
+The table lists, for each way a run starts, the threads that exist at its drop and what an
+interrupted wait does there.
+No row ends a run, logs an error or reports a timeout that did not happen.
+
+| Start path | Threads at the drop | What each waits in | An interrupted wait |
+|---|---|---|---|
+| Live capture (`-d`) | `capture-<device>`; one `capture-<device>-<n>` per extra capture socket on that device; `capture-multi` for several devices ([`src/capture/native.rs`](../../src/capture/native.rs), [`src/capture/live.rs`](../../src/capture/live.rs)) | `poll` on the capture descriptor for at most 100 ms. The pcap handle is non-blocking, so the read itself never waits. `capture-multi` waits in a channel receive and a join. | `poll_outcome` returns the same answer as for an elapsed wait, and the loop reads again. The loop reports nothing for either. |
+| Live capture, stop watcher | `capture-stop:<device>` ([`src/capture/breaker.rs`](../../src/capture/breaker.rs)) | `park_timeout` in a loop. | The loop checks its two flags and parks again. |
+| File (`-I`) | `capture-file` | Reads of regular files (the reader refuses a pipe, a FIFO, a device and a socket), and a send on the packet channel. | Neither has a time limit. |
+| HEP listener, `udp` | `capture-hep` ([`src/capture/hep.rs`](../../src/capture/hep.rs)) | `recv_from` with a 100 ms receive timeout. | `recv_datagram` returns no datagram and the loop goes round. |
+| HEP listener, `tcp` and `tls` | `capture-hep`, and a reader for each connection a peer made before the drop | A non-blocking `accept` with a 20 ms sleep; reads with a 100 ms timeout; the TLS handshake's reads and writes. | `is_transient_recv_error` counts `Interrupted` with the two timeout kinds: the accept loop, the reader and the handshake step each continue. |
+| uprobe capture | `capture-uprobe` | A 20 ms `thread::sleep` between reads of its rings. | The standard library sleeps again for the remaining time. |
+| `--kill-scanner` | `scanner-kill-fwd`, `scanner-kill-rx` ([`src/process_isolation.rs`](../../src/process_isolation.rs)) | A channel receive; a pipe read with no time limit. | `read_exact_or_eof` reads again after `Interrupted`. |
+| `--cores` | none | `run_cores_file` opens the set and drops before it starts a reader. | Does not apply. |
+| Scanner-kill worker process | none | `start` calls `harden` before `serve` starts `kill-worker-in` and `kill-worker-out`. | Does not apply. |
+
+Everything else starts after `bootstrap::launch` returns, so after the drop.
+
+- `batch::run` and `run_tui_mode` start these, or start what starts them:
+  - The `servers` runtime with the REST API and MCP listeners.
+  - `metrics-server`, `fleet-member`, `rtpengine-poll` and `rtpengine-reconcile`.
+  - The `hep-send` delivery thread of `--hep-send`.
+  - The vCon fetcher that `--api-allow-vcon-fetch` and `--mcp-allow-vcon-fetch` build.
+  - `sipnab-dns`, `tui-processor` and the `--cores` workers.
+- `sipnab fleet` and `--vcon-fetch` are commands of their own. They make no drop.
+- The archive password command's reader and the relay snapshot's fan-out end before the capture starts.
+
+**How a gate holds this.**
+
+- [`tests/threads_at_privilege_drop_test.rs`](../../tests/threads_at_privilege_drop_test.rs) lists every source file that starts a thread.
+  - Each file is in one of three lists: at the drop, not at the drop, test code.
+  - A file in none of them fails the test, and its message says what to read.
+- The same file fails when a fourth call drops privileges, and when a start path changes its order.
+- Each wait's own test holds its answer:
+  - `an_interrupted_poll_is_a_timeout_not_a_failure`.
+  - `eintr_and_read_timeouts_are_transient_not_fatal`.
+  - `an_interrupted_read_is_retried_rather_than_reported`.
+- Tests that call `setgid` run in a process of their own, so they do not signal the other tests' threads.
+  - `no_test_changes_credentials_in_the_shared_process` in [`privilege.rs`](../../src/privilege.rs) holds that.
+
 ## The second writer: `pcap-load`
 
 Opening a pcap from inside the TUI spawns a second writer.
