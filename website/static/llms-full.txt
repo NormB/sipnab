@@ -13519,7 +13519,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.253 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.254 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13542,7 +13542,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.253` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.254` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13731,7 +13731,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.253) | Plugin | `Recommends` |
+| Artifact (0.5.254) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13771,11 +13771,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.253 for the
+it first, in the same shell, to the release you want, e.g. 0.5.254 for the
 latest:
 
 ```bash
-VERSION=0.5.253
+VERSION=0.5.254
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13915,13 +13915,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.253, as in
+you want, e.g. 0.5.254, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.253
+   VERSION=0.5.254
    ```
 
 - Download the package:
@@ -14042,25 +14042,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.253-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.254-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.253-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.254-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.253-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.254-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.253-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.254-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14546,14 +14546,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.253
+docker pull ghcr.io/normb/sipnab:0.5.254
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.253` | That release |
+| `0.5.254` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14591,7 +14591,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.253 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.254 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14604,11 +14604,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.253 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.254 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.253` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.253`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.254` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.254`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14806,7 +14806,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.254 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.255 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -15030,7 +15030,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.253
+docker pull ghcr.io/normb/sipnab:0.5.254
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -37586,7 +37586,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.254 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   sipnab 0.5.255 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -38288,7 +38288,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.254"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.255"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -38973,7 +38973,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.254",
+  "version": "0.5.255",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -39916,7 +39916,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.254"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.255"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -42643,16 +42643,49 @@ row group of 16.
 What follows from that layout:
 
 - A question for one member opens every file of its window, and the center
-  unseals each of those files whole before it picks the row group. In a
-  release build of 0.5.251, which wrote the files without compression, one
-  member's newest 1,000 heartbeats among 2,000 members came from 1,001
-  files in 2.8 s.
+  unseals each of those files whole before it picks the row group. In the
+  row group it reads the receive time, the member and, for a question that
+  names a call, the Call-ID of every row, and it builds only the rows the
+  question selects: it does not parse the JSON of the other rows.
 - One answer holds at most 1,000 rows (`limit`). A member's 24 hours at one
   heartbeat a minute are 1,440 rows: ask twice, with `from` and `to`.
 - A center that starts without its store file reads the heartbeat files
-  from the newest back, up to 4,096 of them, to rebuild its member list: 25.7
-  s in a release build of 0.5.251, without compression, for 1,440 files of
-  2,000 members. A center that starts with its store file reads one.
+  from the newest back, up to 4,096 of them, to rebuild its member list. A
+  center that starts with its store file reads one.
+
+**What the reads cost.** Measured on 2026-11-14 in a release build (Cargo
+feature set `full`, aarch64, 14 cores, load average about 10) on synthetic
+rows: 1,440 heartbeat files, each with one heartbeat of about 300 bytes of
+inventory for each of 2,000 members, compressed, 78,860,456 sealed bytes in
+the 1,001 files of the first question. Each figure is the range of three
+runs.
+
+| What the center did | Time |
+|---|---|
+| One member's newest 1,000 heartbeats, from 1,001 files (`GET /v1/fleet/members/{id}/history`) | 226 to 230 ms |
+| Of that: reading the 1,001 files from disk | 28 to 43 ms |
+| Of that: unsealing them | 41 to 42 ms |
+| Of that: decoding the one row group of each file that holds the member | 158 to 162 ms |
+| The same decoding as releases 0.5.249 to 0.5.254 did it, building all 128 rows of the row group | 586 to 656 ms |
+| Rebuilding the member list at a start without the store file, from all 1,440 files | 10.1 to 11.4 s |
+
+The rebuild builds every row of every file it opens, 2,880,000 rows here.
+
+**Which reads build every row, and what a damaged row does.** The center
+seals each file, so a changed file does not open at all. A row whose JSON,
+send time or text does not parse can only come from a defect in the release
+that wrote the file. A question refuses such a file, and names it under
+`refused`, only when it selects that row: a question for another member, for
+another call or for a window that does not hold the row gets its answer
+from the same file. Releases 0.5.249 to 0.5.254 refused the file for every
+question that read the row's row group. Two reads still build every row of
+each file they open and refuse the file for one such row anywhere in it: the
+rebuild of the member list at a start without the store file, and the check
+a filing makes of the files of the same day that can already hold its rows.
+Neither opens every file of the store, and sipnab has no command that
+checks every row of every file. A member id that is not text, or a column
+that the center cannot read, refuses the file for every question that reads
+its row group, as before.
 
 **Reading the files with other tools.** No other tool reads a file as it is
 on disk: the center seals every file under the store key, and the first
@@ -42775,8 +42808,27 @@ record file 10.7%. Text that does not repeat does not shrink.
 The cost is time in each filing and each read. In that second measurement,
 in a release build on aarch64, encoding 2,000 heartbeats took 9.8 ms with
 zstd and 3.7 ms without, and encoding 20,000 call records took 98 ms and 59
-ms. Decoding the 20,000 call records took 17.7 ms and 7.6 ms. The binary is
-655,456 bytes larger (aarch64 gnu, 27,103,168 bytes).
+ms. Decoding the 20,000 call records took 17.7 ms and 7.6 ms.
+
+The codec also makes the binary larger. These are the sizes of the stripped
+binary that each build job of the release workflow printed for 0.5.253 and
+for 0.5.254, the first release with the codec:
+
+| Release build | 0.5.253, bytes | 0.5.254, bytes | Change |
+|---|---|---|---|
+| aarch64 gnu | 27,103,912 | 27,693,832 | +589,920 |
+| x86_64 gnu | 31,853,960 | 32,532,744 | +678,784 |
+| aarch64 musl (static) | 20,944,840 | 20,944,840 | 0 |
+| x86_64 musl (static) | 25,385,600 | 25,389,696 | +4,096 |
+| aarch64 gnu `-noaudio` | 23,433,392 | 23,433,392 | 0 |
+| x86_64 gnu `-noaudio` | 27,588,816 | 27,596,304 | +7,488 |
+
+The static musl builds and the `-noaudio` packages do not link the history
+store, so they do not link the codec. Release 0.5.254 also added regular
+expressions to the MCP tool `search_messages`, and all six builds hold that
+change. No build measured the two changes apart: the 4,096 and 7,488 bytes
+of the x86_64 builds without the store are not the codec's, and the growth
+of the two gnu builds holds both changes.
 
 **Before you start.**
 
@@ -42897,12 +42949,13 @@ would.
   30), 2,000 members with one heartbeat of about 300 bytes each made one
   file of 79,189 bytes in 202 ms, and 1,440 such filings, 24 hours, made
   113,491,120 bytes. Releases 0.5.251 to 0.5.253 wrote the same rows
-  without compression as 887,745,307 bytes. In that debug build, one
-  member's newest 1,000 heartbeats came from 1,001 files in 4.6 s, and the
-  member list was rebuilt without a store file from all 1,440 files in 76.7
-  s. A release build of 0.5.251, without compression, read the 1,001 files
-  in 2.8 s and rebuilt the member list in 25.7 s; a release build with
-  compression is not measured yet. The center answers members while it
+  without compression as 887,745,307 bytes. In a release build on
+  2026-11-14 (aarch64, 14 cores, load average about 10), one member's
+  newest 1,000 heartbeats came from 1,001 such files in 226 to 230 ms, and
+  the center rebuilt the member list without a store file from all 1,440
+  files in 10.1 to 11.4 s
+  ([The files of the history store](#the-files-of-the-history-store) has
+  the parts of those times). The center answers members while it
   writes a file.
   Heartbeats that wait for a filing are in the store file, and at most
   64 MiB of them wait (`MAX_WAITING_BYTES`).
@@ -51049,7 +51102,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.254",
+  "version": "0.5.255",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -87921,26 +87974,76 @@ Steps, all inside the workflow:
 3. When the stamp is not this run's, the script prints a warning and deploys the same artifact again through the Pages API,
    under the build version `<commit>-<run ID>-<attempt>`, which GitHub has not seen.
    It waits for GitHub's status of that deployment, then reads the stamp again.
-4. With `expect`, it then runs [`verify-site-advertises.sh`](../../scripts/verify-site-advertises.sh) for that release.
+4. The script then judges the release from the artifact of the run, not from a read of the live download page.
+   The CDN answers a hosted runner's read of an HTML page with a browser challenge on some runner images.
+   On 0.5.254 that challenge ended release run 43581489173 red twice while the site was right.
+   The CDN answers static `.txt` files from every runner.
+   - The build writes `advertised-release.txt` into the site as its last step before the upload (`pages-live.py advertised`).
+     The file holds three lines: `stamp <the stamp>`, `release <x.y.z>` and `sha256 <the sha256 of download/index.html>`.
+     The step judges the built download page with `verify-site-advertises.sh --classify` for the `published_version` of the site.
+     A built page that does not name that release fails the build.
+   - The `live` job downloads the `github-pages` artifact of its own run with `actions/download-artifact`, as the `csp` job does.
+   - `pages-live.py verify --artifact site-artifact/artifact.tar` reads three files from that tar in memory:
+     `deploy-stamp.txt`, `download/index.html` and `advertised-release.txt`.
+     It refuses a tar that holds a member name outside the site, and a file of the three that is a link or larger than 4 MiB.
+   - The artifact passes when its stamp and its `advertised-release.txt` carry the stamp of this run,
+     its download page names the release by the same `--classify`, and the file names that release and the sha256 of that page.
+   - The script then reads `https://sipnab.com/advertised-release.txt` every 15 seconds for at most 300 seconds, until it carries the stamp of this run.
+5. With `expect`, the script then reads the live download page with [`verify-site-advertises.sh`](../../scripts/verify-site-advertises.sh), as evidence.
    Each check is one request. The verifier prints the edge's answer first, as a line that starts with `edge:`
    (the status and the `server`, `cf-ray`, `cf-mitigated` and `content-type` headers), and the first 200 bytes of an answer that is not a success.
-5. The script prints every check when it ends: `release check <n> (+<seconds> s): exit <status>: <the verifier's lines>`.
-   It reads a page that does not name the release yet again every 15 seconds.
-   After a read that the edge refused it waits 15 seconds, then 30, 60 and 120, so a refused client sends five requests in 300 seconds.
+   The script prints every check when it ends: `release check <n> (+<seconds> s): exit <status>: <the verifier's lines>`.
+   - It reads a page that does not name the release yet again every 15 seconds. A page that answers and still does not name it after 300 seconds fails the run.
+   - A read that the edge refused prints one warning that carries the `edge:` line, and the script sends no second request. The verdict of the artifact stands.
 
-Verify: the job's log holds the line `live: https://sipnab.com/deploy-stamp.txt carries this run's stamp`.
+Verify: the job's log holds the line `live: https://sipnab.com/deploy-stamp.txt carries this run's stamp`, and a line that starts with `artifact:`.
 The exit status of `pages-live.py verify` says how the check ended:
 
 | Exit | Meaning |
 |---|---|
-| 0 | The site is this run's artifact, and it names the release that `expect` gives. |
-| 1 | The site is stale after the second deploy, or the second deploy failed. |
-| 2 | The script could not read the site, so the run knows nothing about the deploy. It also means that the stamp is this run's and the download page gave no answer to judge: no connection, an error status or an empty body. |
-| 3 | The site is this run's artifact, and the download page answered and does not name the expected release. |
-| 4 | The site is this run's artifact, and the edge refused the read of the download page with 403 or 429. The run knows nothing about the release. |
+| 0 | The site is this run's artifact, and the artifact names the release that `expect` gives. |
+| 1 | The site is stale after the second deploy, or the second deploy failed, or the live `advertised-release.txt` is not the one in the artifact after 300 seconds. |
+| 2 | The script could not read the site, so the run knows nothing about the deploy. It also means that the artifact names the release and the live download page gave no answer to judge: no connection, an error status or an empty body. |
+| 3 | The site is this run's artifact, and its download page does not name the expected release. It also means that the live page answered and does not name it, or that `advertised-release.txt` in the artifact disagrees with the page. |
+| 4 | The run knows nothing about the release: the script could not read the artifact, or the artifact carries the stamp of another run. Without `--artifact` it means that the edge refused the read of the download page with 403 or 429. |
 
-Troubleshoot an exit of 4: the page can be right for every other reader.
+Troubleshoot an exit of 4: read the log of the step `Download this run's site artifact`. The step continues after a failed download, and the script then ends 4.
+Troubleshoot a warning about a refused read: the page can be right for every other reader.
 Read it from another address with `sh scripts/verify-site-advertises.sh <version>`, and search the log of the CDN for the `cf-ray` value of the `edge:` line.
+
+#### The daily advertisement check
+
+Purpose: [`cert-expiry.yml`](../../.github/workflows/cert-expiry.yml) asks every day whether the site advertises the newest release,
+and says so when it could not find out.
+Until 2026-11-14 its step turned a refused read of the download page into a warning and a green step that had verified nothing.
+
+Prerequisites:
+
+- The live site comes from a build that wrote `advertised-release.txt`. An older deploy answers 404 for that file.
+- The `github-pages` artifact expires after one day, so the daily check cannot read it. It reads the two static files instead.
+
+Steps, all inside the workflow:
+
+1. The step resolves the release to expect with `advertise-release.py resolve`.
+2. `pages-live.py daily --expect <version>` reads `deploy-stamp.txt` and `advertised-release.txt` from the site, each with a new query string.
+   When the two files carry different stamps it reads both again after 15 seconds, three times at most: a deploy can land between two reads.
+3. It reads the live download page once with `verify-site-advertises.sh`.
+4. It prints the verdict, and appends one line to the job summary.
+
+What the two files prove: the download page of the build that is live named that release, by the rule that judges a live page.
+What they do not prove: that the edge serves that page to a visitor. Only the read of the live page shows that.
+
+Verify: the job summary holds one of these lines.
+
+| Line starts with | Exit | Meaning |
+|---|---|---|
+| `Advertisement VERIFIED:` | 0 | The live page names the release, or the edge refused the page and the two files of one deploy name the release. The second case also prints a warning with the `edge:` line. |
+| `NOT VERIFIED:` | 0 | The edge refused the page and the two files say nothing. The step also prints a warning with the title `Advertisement not verified`. The check knows nothing about the release. |
+| `Advertisement FAILED:` | 1 | The live page answered and does not name the release, or the two files of one deploy name another release. |
+| `Advertisement FAILED:` | 2 to 5 | The live page gave no answer to judge. The exit status is the verifier's: no connection, a certificate error, an error status or an empty body. |
+
+Troubleshoot `NOT VERIFIED`: read the two files and the page from another address.
+`sh scripts/verify-site-advertises.sh <version>` reads the page, and the line gives the HTTP status of each file.
 
 - A `workflow_dispatch` run enforces the verdict (`--enforce`). A release advertises itself through such a run, and a withdrawal redeploys through one.
   The `advertise` job of `release.yml` waits for that run, so a stale site makes the release run red.
@@ -87954,7 +88057,8 @@ Troubleshooting:
 - `The live site could not be read`: read the stamp URL by hand and compare it with the stamp in the message.
   A 403 means the CDN refused the client.
 - A warning `the second deploy is live` on a green run means the first deploy did not go live. Record the run in the backlog entry.
-- [`test_pages_live.py`](../../scripts/tests/test_pages_live.py) holds the script, and
+- [`test_pages_live.py`](../../scripts/tests/test_pages_live.py) and
+  [`test_pages_live_artifact.py`](../../scripts/tests/test_pages_live_artifact.py) hold the script, and
   [`test_pages_live_workflow.py`](../../scripts/tests/test_pages_live_workflow.py) holds the workflow text.
 
 **The records are artifacts, and the next release pull request commits them.**
@@ -88666,6 +88770,24 @@ and says so in its header.
   `Fixed` / `Removed`.
 - The project uses a few extra headings where those four
   do not fit what a release actually did.
+
+**A size statement carries its numbers.**
+An entry that compares binary sizes names the two sizes it compared, or the release workflow run that printed them.
+The 0.5.254 entry on compressed history files said that the static builds "are the same size" and gave one figure for the aarch64 gnu build.
+The release builds printed other numbers.
+
+- The numbers come from the build jobs of `release.yml`.
+  The step `Verify the binary is stripped` prints `<binary>: no .symtab, <N> bytes` for each Linux target.
+- A tag push runs those jobs for a release.
+  A manual run of the workflow on a branch builds the same targets and publishes nothing, so a pull request can measure its own change before it lands.
+- Compare two runs target by target.
+  The 0.5.254 tag build and a manual run on the commit before the release commits, which changed only the version in `Cargo.toml` and `Cargo.lock`, differed by 8,184 bytes on `aarch64-unknown-linux-musl`. A difference of that order is not a finding.
+- [`scripts/check-changelog-size-claims.py`](../../scripts/check-changelog-size-claims.py) reads the `[Unreleased]` section.
+  It fails on a bullet that says `same size`, `no larger`, `bytes larger` or `bytes smaller` and holds neither two byte counts of seven digits or more nor a run number such as `run 43581489173`.
+  The script checks the form of the claim and not its numbers.
+  [`scripts/tests/test_check_changelog_size_claims.py`](../../scripts/tests/test_check_changelog_size_claims.py) runs it over `CHANGELOG.md` with the other script tests.
+- A released section stays as released.
+  A correction is a new entry under `[Unreleased]`.
 
 sipnab is pre-1.0.
 So the header states the versioning policy rather than claiming strict Semantic Versioning.
@@ -91290,6 +91412,7 @@ Each successful run gets a row here.
 | 0.5.251 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-13 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.252 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-13 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.253 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-13 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.254 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-14 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it
