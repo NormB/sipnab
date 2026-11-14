@@ -1051,10 +1051,13 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // build-ci-release.md links scripts/tests/test_pages_live_artifact.py
     // beside the other test file of the script, and
     // .github/workflows/cert-expiry.yml in "The daily advertisement check".
-    // 875 -> 877 (CHANGELOG merge gate, +2): build-ci-release.md's "After a
+    // 875 -> 877 (size claims in the changelog, +2): build-ci-release.md's
+    // "The changelog" links scripts/check-changelog-size-claims.py and its
+    // test file.
+    // 877 -> 879 (CHANGELOG merge gate, +2): build-ci-release.md's "After a
     // merge of main" links scripts/check-changelog-merge.py and
     // .config/changelog-released.sha256.
-    const EXPECTED_CODE_LINKS: usize = 877;
+    const EXPECTED_CODE_LINKS: usize = 879;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
