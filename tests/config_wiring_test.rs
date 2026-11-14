@@ -475,6 +475,32 @@ fn cargo_toml_dev_profile_optimizes_sha2() -> Result<(), TestError> {
     Ok(())
 }
 
+/// Verify `parquet` links zstd and no other codec.
+///
+/// The fleet center writes every history file with zstd
+/// (`fleet_history::codec`). The writer of the pinned `parquet` panics, not
+/// errs, when it is asked for a codec whose cargo feature is off
+/// (`Disabled feature at compile time`), so a `parquet` line without `zstd`
+/// would end the center's filing task on its first filing. A second codec
+/// would add code no file is written with: `snap`, `lz4`, `flate2` and
+/// `brotli` stay off. Read from the dependency line itself.
+#[test]
+fn cargo_toml_parquet_links_zstd_and_no_other_codec() -> Result<(), TestError> {
+    let cargo = std::fs::read_to_string("Cargo.toml")?;
+    let line = cargo
+        .lines()
+        .find(|l| l.starts_with("parquet = "))
+        .ok_or("Cargo.toml has a parquet dependency line")?;
+    assert!(
+        line.contains("version = \"=60.1.0\"")
+            && line.contains("default-features = false")
+            && line.contains("features = [\"zstd\"]"),
+        "parquet must be the pinned release with its default features off and zstd alone on: \
+         {line}"
+    );
+    Ok(())
+}
+
 /// Verify the release profile unwinds on panic, and is optimized and stripped.
 ///
 /// `unwind`, not `abort`: `crash::contain` catches a panic in a parser of

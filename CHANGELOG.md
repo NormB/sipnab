@@ -10,9 +10,25 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A HEP listener on `tcp` or `tls` no longer drops a connection's last packets when a signal arrives while it stops (HEP-STREAM-DRAIN-ENDS-ON-A-SIGNAL).** When the listener stops, each connection forwards what its peer had already sent, for at most one second. That read took any failure for an empty socket. A read that a signal interrupted therefore ended it, and the listener dropped the packets the socket still held, without a message. A second Ctrl-C, a SIGHUP or the exit of an event hook's command inside that second was enough. An interrupted read now reads again, inside the same one-second limit. A read that fails for another reason still ends the forwarding, and a debug line now says so.
+
+## [0.5.254] - 2026-11-14
+
 ### Added
 
 - **The MCP tool `search_messages` takes `regex: true` and reads its query as a regular expression (MCP-SEARCH-REGEX).** Without the option the query stays a substring that ignores case, and the answer does not change. With it the server compiles the query with the function that `payload =~` uses in a filter expression and matches it against the raw bytes of each message, so an agent can ask for an alternation, an anchor or a value by its shape, and `search_messages` and `list_dialogs` agree about a capture. A regular expression is case-sensitive unless it starts with `(?i)`. Three limits bound a pattern: it is at most 1024 bytes long, it compiles to at most 1000000 bytes, and one call scans for at most 5 s, after which the call fails with `limit_exceeded` and no hits. The page shape, `limit`, `cursor` and `max_response_bytes` are the same in both modes. How-to: [Search messages with a regular expression](docs/mcp.md#search-messages-with-a-regular-expression); reference: [`search_messages`](docs/mcp-tools-core.md#search_messages).
+
+### Changed
+
+- **The fleet center compresses its history files with zstd (FLEET-HISTORY-FOLLOW-UPS).** `sipnab fleet serve` writes every call record file and every heartbeat file under `<store>.parquet` with zstd at level 1. Releases 0.5.249 to 0.5.253 wrote them without compression.
+  - In the tests' measurement, one heartbeat of each of 2,000 members is a sealed file of 62,048 bytes (887,305 before), and 20,000 call records are 660,654 bytes (16,493,345 before). On rows that each hold digests, addresses and counters of their own, a heartbeat file was 11.7% and a call record file 10.7% of its uncompressed size.
+  - The cost, in a release build on aarch64: encoding 2,000 heartbeats took 9.8 ms against 3.7 ms, encoding 20,000 call records 98 ms against 59 ms, and decoding them 17.7 ms against 7.6 ms. The aarch64 gnu binary is 655,456 bytes larger. The static musl builds and the `-noaudio` packages do not carry the history store and are the same size.
+  - The center reads the uncompressed files of the earlier releases in place and answers from them and from the new files together. It does not rewrite them.
+  - **A downgrade does not read the new files.** A center of release 0.5.249 to 0.5.253 has no zstd reader: it leaves the compressed files on disk, answers no row from them and names them under `refused`. The rows are back after an upgrade.
+  - A file in a codec this build does not link is refused whole with `parquet: column {column} is compressed with {codec}; this build reads zstd and uncompressed files` ([error reference](docs/errors.md#parquet-column-column-is-compressed-with-codec-this-build-reads-zstd-and-uncompressed-files)).
+  - No flag and no setting is new, and `GET /v1/fleet/calls` and `GET /v1/fleet/members/{id}/history` answer the same JSON. [Upgrade a center to compressed history files](docs/fleet.md#upgrade-a-center-to-compressed-history-files) has the steps, the check and the troubleshooting.
 
 ### Fixed
 
@@ -23,7 +39,6 @@ entry that carries them.
 - **The script tests no longer rewrite pages of the checkout they run in (SCRIPT-TEST-REWRITES-REAL-TREE).** Two tests ran the path linker with `--apply` in the real checkout. A full `pytest scripts/tests` then changed a page that was already staged, and the pre-commit hook failed on a tree the pin gates had passed. The two tests now run the linker in a clone, and the test suite fails any test file that changes a tracked file or the index of its checkout.
 - **The site tests' lockfile installs under npm 10 and npm 11 (E2E-LOCKFILE-NEEDS-NPM-11).** `e2e/package-lock.json` resolved the peer `proxy-agent >=8.0.1` of `@puppeteer/browsers` to `proxy-agent` 6.5.0. npm 11 accepts that, and npm 10 ends `npm ci` with "Missing: proxy-agent@8.0.2 from lock file". The Accessibility and Lighthouse jobs passed only on the Ubuntu 26.04 image, which the floating runner label had given them. The lockfile now holds the 13 packages npm 10 asks for, no locked version changed, and a test fails when a lockfile resolves a peer outside the range its package asks for.
 - **The table of tool-list sizes in the MCP tool reference holds measured figures again (MCP-TOOLS-SIZE-TABLE-DRIFT).** The size table in [MCP tools](docs/mcp-tools.md) was written by hand from one run and no test read it. Its `signaling` and `relay` rows were 52 and 121 bytes above the measured sizes, so its `full` row was 173 bytes high, and its "with output schemas" column was low on ten of the eleven rows (`relay` said 31,609 for a measured 39,164). The table now holds the measurement, and a test fails when a row differs from it: the same measurement the byte ceilings of the bundles use.
-- **A HEP listener on `tcp` or `tls` no longer drops a connection's last packets when a signal arrives while it stops (HEP-STREAM-DRAIN-ENDS-ON-A-SIGNAL).** When the listener stops, each connection forwards what its peer had already sent, for at most one second. That read took any failure for an empty socket. A read that a signal interrupted therefore ended it, and the listener dropped the packets the socket still held, without a message. A second Ctrl-C, a SIGHUP or the exit of an event hook's command inside that second was enough. An interrupted read now reads again, inside the same one-second limit. A read that fails for another reason still ends the forwarding, and a debug line now says so.
 
 ## [0.5.253] - 2026-11-13
 

@@ -50,7 +50,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.253"
+version = "0.5.254"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Norm Brandinger"]
@@ -201,8 +201,12 @@ ring = { version = "0.17", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"], optional = true }
 aes = { version = "0.9", optional = true }
 # The fleet center's history store (feature `fleet-store`): the column writer
-# and reader only. No Arrow, no compression codec, no async reader.
-parquet = { version = "=60.1.0", default-features = false, optional = true }
+# and reader, and one compression codec, zstd, which every history file is
+# written with (`fleet_history::codec`). No Arrow, no async reader. The
+# writer of this `parquet` panics when it is asked for a codec whose feature
+# is off, so the `zstd` feature here and that function change together;
+# tests/config_wiring_test.rs holds the feature.
+parquet = { version = "=60.1.0", default-features = false, features = ["zstd"], optional = true }
 cbc = { version = "0.2", features = ["alloc"], optional = true }
 # RSA private-key (`--tls-key`) decryption of the TLS 1.2 RSA-kx pre-master
 # secret. PKCS#1 v1.5; PEM parsing for PKCS#1/#8 private keys.
