@@ -150,6 +150,16 @@ jobs:
         # installs it too, but only after this test has run.
         run: rustup toolchain install "$(cat .rustfmt-toolchain)" --profile minimal --component rustfmt
 
+      # git merges CHANGELOG.md line by line: five merges of main on
+      # 2026-11-13 and 2026-11-14 put entries under another heading or inside
+      # a released section without a conflict. The script compares the file
+      # with the one of the merge base with origin/main, which on a pull
+      # request is its base (this job checks out the whole history). The
+      # pre-commit hook runs the same script.
+      - name: The CHANGELOG is as the base has it
+        if: runner.os == 'Linux'
+        run: python3 scripts/check-changelog-merge.py
+
       - name: Test Python examples and documentation tooling
         if: runner.os == 'Linux'
         run: |

@@ -86467,6 +86467,8 @@ starting at 0, in order:
 - every feature declaring what its own modules import
 - the privilege-drop path still dropping privileges
 - WASM exports in sync with the site's JS
+- `CHANGELOG.md` as the base has it, after a merge
+  ([After a merge of main](#after-a-merge-of-main))
 - the homepage test count still generated, not written into the template,
   plus the site version matching `Cargo.toml`
 - no TODO stubs
@@ -88575,6 +88577,48 @@ Two checks read it all the same.
   - It requires the notes to name each addition in its release's section or a later one.
   - Whatever the working tree adds over the last tag, the notes must name above that tag's section.
     Before a release, that means under `[Unreleased]`.
+
+#### After a merge of main
+
+Purpose: git merges `CHANGELOG.md` line by line and does not read its headings.
+Five times on 2026-11-13 and 2026-11-14 a merge of `main` put entries in the wrong place without a conflict:
+inside a released section, under another heading, and joined to a heading with no blank line.
+[`scripts/check-changelog-merge.py`](../../scripts/check-changelog-merge.py) refuses such a file.
+
+Prerequisites:
+
+- The clone has `origin/main`. Run `git fetch origin` when the script says that it finds no merge base.
+- The script reads the staged file, so stage `CHANGELOG.md` first.
+
+Steps:
+
+1. Merge `main`, and stage the result.
+2. Run `python3 scripts/check-changelog-merge.py`. The pre-commit hook runs it in the step `CHANGELOG as the base has it`, and CI runs it in the `Check` job.
+3. The script compares the staged file with the file of the base.
+   The base is the commit that the merge brings in while a merge is open, and otherwise the merge base of `HEAD` and `origin/main`.
+   `--base <ref>` names another one.
+
+The script holds four rules:
+
+- An entry of the base's `[Unreleased]` that the staged file also holds sits under the same `###` heading.
+  An entry is one top-level bullet with every indented line under it, and the script knows it by its first line.
+- `[Unreleased]` holds each heading once and each entry once.
+- A blank line comes before `## [Unreleased]`, before each of its headings and before the first released heading.
+- The released part of the base, from the first `## [x.y.z]` heading to the end, is the end of the staged file, byte for byte.
+
+Verify: the script prints `the CHANGELOG is as the base <commit> has it` and exits 0.
+Exit 1 lists each problem with the first line of the entry and the two headings.
+Exit 2 means that the script could not read the base or one of the two files.
+
+Troubleshooting:
+
+- `is under '### Fixed' here and under '### Changed' on the base`: move the entry, with its sub-bullets, under the heading that the message names.
+- A message that starts with `the released part`: it lists the lines that differ.
+  - When a merge moved an entry into a released section, move it back to `[Unreleased]`.
+  - When the commit rewrites released sections on purpose, write the sha256 that the message prints to
+    [`.config/changelog-released.sha256`](../../.config/changelog-released.sha256) in the same commit.
+    The rule passes when that file holds the sha256 of the released part and the base holds another value.
+- The script does not judge the form of an entry. That is the subject of the format gate of the changelog.
 
 ### Re-measuring the benchmarks
 
