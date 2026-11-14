@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::fleet_seal::{Keys, Kind, LogFile, LogSealer};
+use super::fleet_seal::{HEADER_BYTES, Keys, Kind, LogFile, LogSealer};
 
 /// Opens the file at a path for one append.
 pub(super) type OpenFile = Box<dyn Fn(&Path) -> std::io::Result<Box<dyn LogFile>> + Send + Sync>;
@@ -145,13 +145,36 @@ impl AppendLog {
     /// The file cannot be read, the sealed layer refuses it, or it holds
     /// fewer records than were written to it.
     pub(super) fn held_lines(&self) -> std::io::Result<Vec<Vec<u8>>> {
-        let bytes = std::fs::read(&self.path)?;
-        let log = super::fleet_seal::open_log(&bytes, &self.keys, self.kind)
-            .map_err(|e| std::io::Error::other(format!("sealed layer: the file {e}")))?;
-        let mut lines = log.records;
-        holds_what_was_written(lines.len(), self.held).map_err(std::io::Error::other)?;
-        lines.truncate(self.held);
-        Ok(lines)
+        // One reader: the prefix that is the whole of what the file holds.
+        self.prefix()?.lines()
+    }
+
+    /// The records the file holds now, to be read later
+    /// ([`Prefix::lines`]): the file is opened, and its header and its
+    /// length are read, here; the records are not. A caller that holds a
+    /// lock around this log takes the prefix under the lock and reads it
+    /// after the lock is released.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be opened, or its length or its header cannot be
+    /// read.
+    pub(super) fn prefix(&self) -> std::io::Result<Prefix> {
+        use std::io::Read as _;
+        let file = std::fs::File::open(&self.path)?;
+        let len = file.metadata()?.len();
+        let mut head = Vec::with_capacity(HEADER_BYTES);
+        (&file).take(HEADER_BYTES as u64).read_to_end(&mut head)?;
+        Ok(Prefix {
+            file,
+            head,
+            len,
+            keys: Arc::clone(&self.keys),
+            kind: self.kind,
+            count: self.held,
+            #[cfg(test)]
+            through: None,
+        })
     }
 
     /// How many records the file holds, for the tests of that count.
@@ -170,6 +193,114 @@ impl AppendLog {
     #[cfg(test)]
     pub(super) fn open_with(&mut self, open: OpenFile) {
         self.open = open;
+    }
+}
+
+/// A reader a test puts between a [`Prefix`] and its file.
+#[cfg(test)]
+pub(super) type Through = Box<dyn FnOnce(std::fs::File) -> Box<dyn std::io::Read + Send> + Send>;
+
+/// The records a log held at one moment ([`AppendLog::prefix`]), not yet
+/// read: the open file, its header, its length and the count of records,
+/// all as they were at that moment.
+///
+/// What the log does after that moment does not change what
+/// [`Prefix::lines`] returns:
+///
+/// - An append writes its records after the length taken here, which this
+///   reader does not pass, and then a count slot in the header, which this
+///   reader does not read again. The header was read while no append ran
+///   ([`AppendLog::append`] needs the log exclusively), so both count slots
+///   in it are whole. That matters because of what
+///   [`super::fleet_seal::open_log`] does with a count slot that does not
+///   authenticate: it accepts the file only when one whole append follows
+///   the entries the other slot counts and nothing follows that append, and
+///   refuses any other file. A reader that read the slots while an append
+///   wrote one could so be refused for a file that is whole. This reader
+///   cannot, and it is not tried again: a refusal from it is a real one.
+/// - A rewrite ([`AppendLog::rewrite`], and the repair after a failed
+///   append) writes a new file and renames it into place. This reader holds
+///   the file it opened, which no rewrite writes to.
+pub(super) struct Prefix {
+    /// The file as it was opened.
+    file: std::fs::File,
+    /// The file's header, or all of a file shorter than one.
+    head: Vec<u8>,
+    /// The file's length.
+    len: u64,
+    /// The keys to read under.
+    keys: Arc<Keys>,
+    /// What the file is.
+    kind: Kind,
+    /// The records the log held.
+    count: usize,
+    /// The reader a test put between this and the file.
+    #[cfg(test)]
+    through: Option<Through>,
+}
+
+impl std::fmt::Debug for Prefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Prefix")
+            .field("len", &self.len)
+            .field("count", &self.count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Prefix {
+    /// How many records [`Prefix::lines`] returns.
+    pub(super) fn count(&self) -> usize {
+        self.count
+    }
+
+    /// The records, oldest first: exactly those the log held when this
+    /// prefix was taken, each whole.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be read, the sealed layer refuses it, or it holds
+    /// fewer records than the log had written to it.
+    pub(super) fn lines(self) -> std::io::Result<Vec<Vec<u8>>> {
+        use std::io::Read as _;
+        let rest = self.len.saturating_sub(self.head.len() as u64);
+        let mut bytes = self.head;
+        bytes.reserve(usize::try_from(rest).unwrap_or(0));
+        #[cfg(not(test))]
+        let file = self.file;
+        #[cfg(test)]
+        let file: Box<dyn std::io::Read + Send> = match self.through {
+            Some(through) => through(self.file),
+            None => Box::new(self.file),
+        };
+        // No byte past the length taken with the header: what an append
+        // wrote since is not this prefix's.
+        file.take(rest).read_to_end(&mut bytes)?;
+        let log = super::fleet_seal::open_log(&bytes, &self.keys, self.kind)
+            .map_err(|e| std::io::Error::other(format!("sealed layer: the file {e}")))?;
+        let mut lines = log.records;
+        holds_what_was_written(lines.len(), self.count).map_err(std::io::Error::other)?;
+        lines.truncate(self.count);
+        Ok(lines)
+    }
+
+    /// The bytes [`Prefix::lines`] reads from the file after the header.
+    #[cfg(test)]
+    pub(super) fn rest(&self) -> u64 {
+        self.len.saturating_sub(self.head.len() as u64)
+    }
+
+    /// The inode of the file this prefix holds open.
+    #[cfg(all(test, unix))]
+    pub(super) fn inode(&self) -> std::io::Result<u64> {
+        use std::os::unix::fs::MetadataExt as _;
+        Ok(self.file.metadata()?.ino())
+    }
+
+    /// Read the file through the reader `through` makes of it.
+    #[cfg(test)]
+    pub(super) fn read_through(&mut self, through: Through) {
+        self.through = Some(through);
     }
 }
 
@@ -1155,6 +1286,734 @@ mod tests {
                 "edge a repaired file is private"
             );
         }
+        Ok(())
+    }
+}
+
+/// A prefix of a log is read while the log goes on: the tests of
+/// [`AppendLog::prefix`] and [`Prefix::lines`]. An append, a rewrite and a
+/// failed append are each driven between two `read` calls of the reader,
+/// through a reader the test puts between the prefix and its file.
+#[cfg(test)]
+mod prefix_tests {
+    use super::faults::{real, stop_at};
+    use super::*;
+    use crate::app::fleet_seal::{COUNT_SLOT_BYTES, KEY_HEADER_BYTES, MasterKey, open_log};
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// What a test returns.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// The bytes one record of [`line`] takes in the file.
+    const FRAME: usize = 4 + 1 + 10 + 16;
+
+    /// The bytes the end of an append takes in the file.
+    const END: usize = 4 + 1 + 16;
+
+    /// The test key.
+    fn keys() -> Arc<Keys> {
+        Arc::new(Keys::new(MasterKey::from_bytes([1; 32]), Vec::new()))
+    }
+
+    /// Record `n`, ten bytes.
+    fn line(n: u8) -> Vec<u8> {
+        format!("record-{n:03}").into_bytes()
+    }
+
+    /// The records `ns`.
+    fn lines(ns: &[u8]) -> Vec<Vec<u8>> {
+        ns.iter().map(|n| line(*n)).collect()
+    }
+
+    /// A log other threads and readers can reach.
+    type Shared = Arc<parking_lot::Mutex<AppendLog>>;
+
+    /// An intake log in a directory of its own, written with the records
+    /// `ns`: the directory, the file and the log.
+    fn log_of(
+        ns: &[u8],
+    ) -> Result<(tempfile::TempDir, PathBuf, Shared), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store.intake");
+        let log = AppendLog::create(&path, keys(), Kind::Intake, lines(ns).into_iter().map(Ok))?;
+        Ok((dir, path, Arc::new(parking_lot::Mutex::new(log))))
+    }
+
+    /// What the file at `path` holds when a center opens it at start.
+    fn on_disk(path: &Path) -> Result<Vec<Vec<u8>>, String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        open_log(&bytes, &keys(), Kind::Intake)
+            .map(|log| log.records)
+            .map_err(|e| e.to_string())
+    }
+
+    /// What a [`Stepped`] reader did.
+    #[derive(Clone, Default)]
+    struct Seen {
+        /// The bytes it returned.
+        bytes: Arc<AtomicUsize>,
+        /// The `read` calls it took.
+        reads: Arc<AtomicUsize>,
+    }
+
+    /// A reader of a file that returns at most `most` bytes for one `read`
+    /// and calls `before` with the number of the call before each.
+    struct Stepped {
+        /// The file.
+        file: std::fs::File,
+        /// The most bytes one `read` returns.
+        most: usize,
+        /// Called before each `read`, with how many came before it.
+        before: Box<dyn FnMut(usize) + Send>,
+        /// What this reader did.
+        seen: Seen,
+    }
+
+    impl Read for Stepped {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            (self.before)(self.seen.reads.fetch_add(1, Ordering::SeqCst));
+            let most = buf.len().min(self.most);
+            let n = self.file.read(&mut buf[..most])?;
+            self.seen.bytes.fetch_add(n, Ordering::SeqCst);
+            Ok(n)
+        }
+    }
+
+    /// Read `prefix` at most `most` bytes for one `read`, with `before`
+    /// called before each. Returns what the reader did.
+    fn stepped(
+        prefix: &mut Prefix,
+        most: usize,
+        before: impl FnMut(usize) + Send + 'static,
+    ) -> Seen {
+        let seen = Seen::default();
+        let mine = seen.clone();
+        prefix.read_through(Box::new(move |file| {
+            Box::new(Stepped {
+                file,
+                most,
+                before: Box::new(before),
+                seen: mine,
+            })
+        }));
+        seen
+    }
+
+    /// Write `bytes` at `at` in the file at `path`, in place.
+    fn write_at(path: &Path, at: u64, bytes: &[u8]) -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+        file.seek(SeekFrom::Start(at))?;
+        file.write_all(bytes)?;
+        file.sync_data()
+    }
+
+    /// Put zeros in both count slots of the file at `path`, in place.
+    fn damage_counts(path: &Path) -> std::io::Result<()> {
+        write_at(path, KEY_HEADER_BYTES as u64, &[0u8; 2 * COUNT_SLOT_BYTES])
+    }
+
+    /// The inode of the file at `path`.
+    #[cfg(unix)]
+    fn inode_at(path: &Path) -> std::io::Result<u64> {
+        use std::os::unix::fs::MetadataExt as _;
+        Ok(std::fs::metadata(path)?.ino())
+    }
+
+    #[test]
+    fn success_a_prefix_reads_the_records_the_log_held() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        let prefix = log.lock().prefix()?;
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "success a prefix reads the records the log held"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_prefix_counts_the_records_it_returns() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        log.lock().append(&lines(&[3]))?;
+        let prefix = log.lock().prefix()?;
+        assert_eq!(prefix.count(), 3, "success the count is the records held");
+        assert_eq!(prefix.lines()?.len(), 3, "success and so many are returned");
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_prefix_leaves_out_records_appended_after_it() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        let prefix = log.lock().prefix()?;
+        log.lock().append(&lines(&[3, 4]))?;
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "success a prefix leaves out records appended after it"
+        );
+        assert_eq!(
+            on_disk(&path)?,
+            lines(&[1, 2, 3, 4]),
+            "success the file holds all four"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_append_between_two_reads_leaves_the_prefix_whole() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        let mut prefix = log.lock().prefix()?;
+        let writer = Arc::clone(&log);
+        let seen = stepped(&mut prefix, 16, move |read| {
+            if read == 1 {
+                let _ = writer.lock().append(&lines(&[3, 4]));
+            }
+        });
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "success an append between two reads leaves the prefix whole"
+        );
+        assert!(
+            seen.reads.load(Ordering::SeqCst) > 2,
+            "success the read took several calls"
+        );
+        assert_eq!(
+            on_disk(&path)?,
+            lines(&[1, 2, 3, 4]),
+            "success the append is in the file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_prefix_reads_no_byte_past_the_length_it_took() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        let mut prefix = log.lock().prefix()?;
+        let rest = prefix.rest();
+        let writer = Arc::clone(&log);
+        let seen = stepped(&mut prefix, 4096, move |read| {
+            if read == 0 {
+                let _ = writer.lock().append(&lines(&[3, 4]));
+            }
+        });
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "success the two records are read"
+        );
+        assert_eq!(
+            rest,
+            (2 * FRAME + 4 + 1 + 8 + 16) as u64,
+            "success two records and the end"
+        );
+        assert_eq!(
+            seen.bytes.load(Ordering::SeqCst) as u64,
+            rest,
+            "success a prefix reads no byte past the length it took"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_prefix_does_not_read_the_count_slots_again() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        let prefix = log.lock().prefix()?;
+        damage_counts(&path)?;
+        assert!(
+            on_disk(&path).is_err(),
+            "success the file on disk is now refused"
+        );
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "success a prefix does not read the count slots again"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn success_a_prefix_keeps_the_file_it_opened_through_a_rewrite() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        let prefix = log.lock().prefix()?;
+        let before = inode_at(&path)?;
+        assert_eq!(
+            prefix.inode()?,
+            before,
+            "success the prefix opened the log's file"
+        );
+        log.lock().rewrite(lines(&[9]).into_iter().map(Ok))?;
+        assert_ne!(
+            inode_at(&path)?,
+            before,
+            "success a rewrite puts another file in place"
+        );
+        assert_eq!(
+            prefix.inode()?,
+            before,
+            "success the prefix still holds the first file"
+        );
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "success a prefix keeps the file it opened through a rewrite"
+        );
+        assert_eq!(
+            on_disk(&path)?,
+            lines(&[9]),
+            "success the path holds the rewrite"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_rewrite_between_two_reads_leaves_the_prefix_whole() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2, 3])?;
+        let mut prefix = log.lock().prefix()?;
+        let writer = Arc::clone(&log);
+        stepped(&mut prefix, 16, move |read| {
+            if read == 2 {
+                let _ = writer.lock().rewrite(std::iter::empty());
+            }
+        });
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2, 3]),
+            "success a rewrite between two reads leaves the prefix whole"
+        );
+        assert!(
+            on_disk(&path)?.is_empty(),
+            "success the path holds the empty rewrite"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_held_lines_are_the_lines_of_a_prefix() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        log.lock().append(&lines(&[3]))?;
+        let log = log.lock();
+        assert_eq!(
+            log.held_lines()?,
+            log.prefix()?.lines()?,
+            "success held lines are the lines of a prefix"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_prefix_after_a_failed_append_leaves_out_what_it_wrote() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        log.lock().open_with(stop_at(FRAME + 5, libc::ENOSPC));
+        assert!(
+            log.lock().append(&lines(&[3, 4])).is_err(),
+            "success the append failed"
+        );
+        let prefix = log.lock().prefix()?;
+        assert!(
+            prefix.rest() > (2 * FRAME + 29) as u64,
+            "success the file holds a part of it"
+        );
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "success a prefix after a failed append leaves out what it wrote"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_two_prefixes_of_one_log_each_read_their_own_records() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        let first = log.lock().prefix()?;
+        log.lock().append(&lines(&[3]))?;
+        let second = log.lock().prefix()?;
+        log.lock().append(&lines(&[4]))?;
+        assert_eq!(
+            second.lines()?,
+            lines(&[1, 2, 3]),
+            "success the second holds three"
+        );
+        assert_eq!(
+            first.lines()?,
+            lines(&[1, 2]),
+            "success the first holds two"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_prefix_is_read_on_one_thread_while_another_appends() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        let mut prefix = log.lock().prefix()?;
+        let (at_read, reached) = std::sync::mpsc::channel::<()>();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        stepped(&mut prefix, 16, move |read| {
+            if read == 1 {
+                let _ = at_read.send(());
+                let _ = gone.recv();
+            }
+        });
+        let reader = std::thread::spawn(move || prefix.lines());
+        reached.recv_timeout(std::time::Duration::from_secs(60))?;
+        log.lock().append(&lines(&[3]))?;
+        log.lock().append(&lines(&[4]))?;
+        go.send(())?;
+        let got = reader.join().map_err(|_| "the reader panicked")??;
+        assert_eq!(
+            got,
+            lines(&[1, 2]),
+            "success a prefix is read on one thread while another appends"
+        );
+        assert_eq!(
+            on_disk(&path)?,
+            lines(&[1, 2, 3, 4]),
+            "success both appends are in the file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_prefix_of_a_file_that_is_away_is_an_error() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        std::fs::remove_file(&path)?;
+        let got = log.lock().prefix();
+        assert_eq!(
+            got.err().map(|e| e.kind()),
+            Some(std::io::ErrorKind::NotFound),
+            "failure a prefix of a file that is away is an error"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_prefix_whose_file_was_cut_after_it_was_taken_is_refused() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        let prefix = log.lock().prefix()?;
+        let len = std::fs::metadata(&path)?.len();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_len(len.saturating_sub(5))?;
+        let got = prefix.lines();
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.to_string().contains("sealed layer")),
+            "failure a prefix whose file was cut after it was taken is refused: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_prefix_of_an_earlier_copy_put_in_place_is_refused() -> TestResult {
+        let (dir, path, log) = log_of(&[1, 2])?;
+        let saved = dir.path().join("saved");
+        std::fs::copy(&path, &saved)?;
+        log.lock().append(&lines(&[3]))?;
+        std::fs::copy(&saved, &path)?;
+        let got = log.lock().prefix()?.lines();
+        assert!(
+            got.as_ref().is_err_and(|e| e
+                .to_string()
+                .contains("holds 2 record(s) where 3 were written")),
+            "failure a prefix of an earlier copy put in place is refused: {got:?}"
+        );
+        Ok(())
+    }
+
+    /// A reader that fails with the error `0`.
+    struct Broken(i32);
+
+    impl Read for Broken {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from_raw_os_error(self.0))
+        }
+    }
+
+    #[test]
+    fn failure_a_prefix_whose_read_fails_returns_the_error_of_the_disk() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        let mut prefix = log.lock().prefix()?;
+        prefix.read_through(Box::new(|_| Box::new(Broken(libc::EIO))));
+        let got = prefix.lines();
+        assert_eq!(
+            got.err().and_then(|e| e.raw_os_error()),
+            Some(libc::EIO),
+            "failure a prefix whose read fails returns the error of the disk"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_record_modified_after_the_prefix_was_taken_is_refused() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        let prefix = log.lock().prefix()?;
+        let at = (HEADER_BYTES + 10) as u64;
+        let byte = std::fs::read(&path)?[HEADER_BYTES + 10];
+        write_at(&path, at, &[byte ^ 0x01])?;
+        let got = prefix.lines();
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.to_string().contains("sealed layer")),
+            "failure a record modified after the prefix was taken is refused: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_prefix_of_a_file_shorter_than_a_header_is_refused() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_len(10)?;
+        let got = log.lock().prefix()?.lines();
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.to_string().contains("sealed layer")),
+            "failure a prefix of a file shorter than a header is refused: {got:?}"
+        );
+        Ok(())
+    }
+
+    /// A reader of a file that ends after `0` bytes.
+    struct Short(std::fs::File, usize);
+
+    impl Read for Short {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let most = buf.len().min(self.1);
+            let n = self.0.read(&mut buf[..most])?;
+            self.1 = self.1.saturating_sub(n);
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn failure_a_prefix_whose_reader_ends_early_is_refused() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        let mut prefix = log.lock().prefix()?;
+        prefix.read_through(Box::new(|file| Box::new(Short(file, FRAME + 3))));
+        let got = prefix.lines();
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.to_string().contains("sealed layer")),
+            "failure a prefix whose reader ends early is refused: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_counts_damaged_before_the_prefix_was_taken_are_refused() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        damage_counts(&path)?;
+        let got = log.lock().prefix()?.lines();
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.to_string().contains("sealed layer")),
+            "failure counts damaged before the prefix was taken are refused: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_of_another_kind_in_the_logs_place_is_refused() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        AppendLog::create(
+            &path,
+            keys(),
+            Kind::Registry,
+            lines(&[1, 2]).into_iter().map(Ok),
+        )?;
+        let got = log.lock().prefix()?.lines();
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.to_string().contains("sealed layer")),
+            "failure a file of another kind in the log's place is refused: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_prefix_of_a_log_with_no_records_reads_none() -> TestResult {
+        let (_dir, _path, log) = log_of(&[])?;
+        let prefix = log.lock().prefix()?;
+        log.lock().append(&lines(&[1]))?;
+        assert_eq!(prefix.count(), 0, "edge the count is zero");
+        assert!(
+            prefix.lines()?.is_empty(),
+            "edge a prefix of a log with no records reads none"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_prefix_read_one_byte_at_a_time_is_whole() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2, 3])?;
+        let mut prefix = log.lock().prefix()?;
+        let rest = prefix.rest();
+        let seen = stepped(&mut prefix, 1, |_| {});
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2, 3]),
+            "edge a prefix read one byte at a time is whole"
+        );
+        assert_eq!(
+            seen.reads.load(Ordering::SeqCst) as u64,
+            rest,
+            "edge one read for each byte"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_append_before_every_read_changes_nothing() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        let mut prefix = log.lock().prefix()?;
+        let writer = Arc::clone(&log);
+        let seen = stepped(&mut prefix, 16, move |read| {
+            let n = u8::try_from(read).unwrap_or(u8::MAX).saturating_add(3);
+            let _ = writer.lock().append(&lines(&[n]));
+        });
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "edge an append before every read changes nothing"
+        );
+        let reads = seen.reads.load(Ordering::SeqCst);
+        assert_eq!(
+            on_disk(&path)?.len(),
+            2 + reads,
+            "edge every one of the appends is in the file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_failed_append_between_two_reads_changes_nothing() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        let mut prefix = log.lock().prefix()?;
+        let writer = Arc::clone(&log);
+        stepped(&mut prefix, 16, move |read| {
+            if read == 1 {
+                let mut log = writer.lock();
+                log.open_with(stop_at(FRAME + END + COUNT_SLOT_BYTES / 2, libc::ENOSPC));
+                let _ = log.append(&lines(&[3]));
+                log.open_with(real());
+            }
+        });
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "edge a failed append between two reads changes nothing"
+        );
+        assert_eq!(log.lock().held(), 2, "edge the failed append is not held");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_repair_between_two_reads_changes_nothing() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        let mut prefix = log.lock().prefix()?;
+        let writer = Arc::clone(&log);
+        stepped(&mut prefix, 16, move |read| {
+            if read == 1 {
+                let mut log = writer.lock();
+                log.open_with(stop_at(5, libc::ENOSPC));
+                let _ = log.append(&lines(&[3]));
+                log.open_with(real());
+                let _ = log.append(&lines(&[4]));
+            }
+        });
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "edge a repair between two reads changes nothing"
+        );
+        assert_eq!(
+            on_disk(&path)?,
+            lines(&[1, 2, 4]),
+            "edge the repaired file holds the append"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_prefix_is_read_after_its_log_and_its_path_are_gone() -> TestResult {
+        let (_dir, path, log) = log_of(&[1, 2])?;
+        let prefix = log.lock().prefix()?;
+        drop(log);
+        std::fs::remove_file(&path)?;
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "edge a prefix is read after its log and its path are gone"
+        );
+        Ok(())
+    }
+
+    /// A reader of a file whose first `read` is interrupted.
+    struct Interrupted(std::fs::File, bool);
+
+    impl Read for Interrupted {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.1 {
+                self.1 = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            self.0.read(buf)
+        }
+    }
+
+    #[test]
+    fn edge_an_interrupted_read_of_a_prefix_is_taken_up_again() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        let mut prefix = log.lock().prefix()?;
+        prefix.read_through(Box::new(|file| Box::new(Interrupted(file, false))));
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "edge an interrupted read of a prefix is taken up again"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_prefix_of_a_log_whose_count_was_written_part_way_is_whole() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        {
+            let mut log = log.lock();
+            log.open_with(stop_at(FRAME + END + COUNT_SLOT_BYTES / 2, libc::ENOSPC));
+            assert!(
+                log.append(&lines(&[3])).is_err(),
+                "edge the append failed at its count"
+            );
+            log.open_with(real());
+        }
+        let prefix = log.lock().prefix()?;
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "edge a prefix of a log whose count was written part way is whole"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_largest_read_buffer_changes_nothing() -> TestResult {
+        let (_dir, _path, log) = log_of(&[1, 2])?;
+        let mut prefix = log.lock().prefix()?;
+        let seen = stepped(&mut prefix, usize::MAX, |_| {});
+        assert_eq!(
+            prefix.lines()?,
+            lines(&[1, 2]),
+            "edge the two records are read"
+        );
+        assert!(
+            seen.reads.load(Ordering::SeqCst) >= 1,
+            "edge the largest read buffer changes nothing"
+        );
         Ok(())
     }
 }
