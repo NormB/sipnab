@@ -384,8 +384,32 @@ pub fn render_table(report: &FleetReport) -> String {
 /// `Authorization` header: no error this returns quotes it.
 #[must_use]
 pub fn fetch(entry: &HostEntry, timeout: std::time::Duration) -> HostResult {
+    fetch_with(entry, read_files(entry), timeout)
+}
+
+/// [`fetch`], with the files of `entry` already read by [`read_files`].
+/// Reads no file: this is the part that uses the network.
+#[must_use]
+pub fn fetch_with(
+    entry: &HostEntry,
+    files: Result<HostFiles, String>,
+    timeout: std::time::Duration,
+) -> HostResult {
     let mut addresses = Vec::new();
-    let answer = ask(entry, timeout, &mut addresses).unwrap_or_else(Answer::Unreachable);
+    let answer = match files {
+        Ok(files) => ask(&files, timeout, &mut addresses),
+        Err(e) => {
+            // The report names what the host resolved to even when a file
+            // of the entry was refused.
+            if let Ok(base) =
+                super::https_client::Endpoint::parse(&entry.url, super::https_client::UrlUse::FLEET)
+            {
+                resolve_into(&base, &mut addresses);
+            }
+            Err(e)
+        }
+    }
+    .unwrap_or_else(Answer::Unreachable);
     HostResult {
         name: entry.name.clone(),
         url: entry.url.clone(),
@@ -394,22 +418,30 @@ pub fn fetch(entry: &HostEntry, timeout: std::time::Duration) -> HostResult {
     }
 }
 
-/// [`fetch`]'s work, with every failure as the message for
-/// [`Answer::Unreachable`]. `addresses` receives what the URL's host
-/// resolved to, even when the request then fails.
-fn ask(
-    entry: &HostEntry,
-    timeout: std::time::Duration,
-    addresses: &mut Vec<IpAddr>,
-) -> Result<Answer, String> {
+/// What a request to one instance takes from files: read before the first
+/// connection, so a run started as root reads them as root and asks as the
+/// user it dropped to.
+pub struct HostFiles {
+    /// The instance's URL, parsed.
+    base: super::https_client::Endpoint,
+    /// The bearer token, checked to be one token on one line.
+    token: String,
+    /// The TLS client configuration, for an `https` URL.
+    tls: Option<std::sync::Arc<rustls::ClientConfig>>,
+}
+
+/// Read the token file and the CA file of `entry`. Makes no connection and
+/// resolves no name.
+///
+/// # Errors
+///
+/// The URL, the token file or the CA file is refused; the text is the
+/// instance's [`Answer::Unreachable`] message, and never quotes the token.
+pub fn read_files(entry: &HostEntry) -> Result<HostFiles, String> {
     use super::https_client::{Endpoint, UrlUse};
     use std::io::Read as _;
-    use std::net::ToSocketAddrs as _;
 
     let base = Endpoint::parse(&entry.url, UrlUse::FLEET)?;
-    if let Ok(found) = (base.host.as_str(), base.port).to_socket_addrs() {
-        addresses.extend(found.map(|a| a.ip()));
-    }
     let mut token = String::new();
     crate::privilege::open_private_file(&entry.token_file, "token_file")?
         .read_to_string(&mut token)
@@ -434,13 +466,38 @@ fn ask(
     } else {
         None
     };
+    Ok(HostFiles {
+        base,
+        token: token.to_string(),
+        tls,
+    })
+}
+
+/// Add what the host of `base` resolves to, if it resolves.
+fn resolve_into(base: &super::https_client::Endpoint, addresses: &mut Vec<IpAddr>) {
+    use std::net::ToSocketAddrs as _;
+    if let Ok(found) = (base.host.as_str(), base.port).to_socket_addrs() {
+        addresses.extend(found.map(|a| a.ip()));
+    }
+}
+
+/// [`fetch_with`]'s work, with every failure as the message for
+/// [`Answer::Unreachable`]. `addresses` receives what the URL's host
+/// resolved to, even when the request then fails.
+fn ask(
+    files: &HostFiles,
+    timeout: std::time::Duration,
+    addresses: &mut Vec<IpAddr>,
+) -> Result<Answer, String> {
+    let HostFiles { base, token, tls } = files;
+    resolve_into(base, addresses);
     let path = format!("{}/v1/inventory", base.target.trim_end_matches('/'));
     let request = format!(
         "GET {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
          Accept: application/json\r\nConnection: close\r\n\r\n",
         base.host_header()
     );
-    super::https_client::exchange(&base, timeout, tls.as_ref(), request.as_bytes(), |reader| {
+    super::https_client::exchange(base, timeout, tls.as_ref(), request.as_bytes(), |reader| {
         let head = super::https_client::read_head(reader, MAX_HEAD_BYTES, "the answer's headers")?;
         let status = super::https_client::status_of(&head)?;
         if status != 200 {
@@ -470,12 +527,13 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
             return if e.use_stderr() { 2 } else { 0 };
         }
     };
-    let (hosts, json, timeout) = match cli.command {
+    let (hosts, json, timeout, run_as) = match cli.command {
         crate::cli::fleet_args::FleetCommand::Inventory {
             hosts,
             json,
             timeout,
-        } => (hosts, json, timeout),
+            run_as,
+        } => (hosts, json, timeout, run_as),
         crate::cli::fleet_args::FleetCommand::Keygen { out } => {
             return match super::fleet_seal::write_new_key_file(
                 &out,
@@ -510,6 +568,7 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
                 rate_limit_per_peer,
                 calls_retention_days,
                 calls_flush_secs,
+                run_as,
             } = *flags;
             crate::app::bootstrap::init_logging_at("info");
             return super::fleet_center::serve(super::fleet_center::ServeArgs {
@@ -532,6 +591,7 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
                 rate_limit_per_peer,
                 calls_retention_days,
                 calls_flush_secs,
+                run_as,
             });
         }
     };
@@ -547,12 +607,26 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
         }
     };
     let timeout = std::time::Duration::from_secs(timeout);
+    // Every file first, then the drop, then the network: a run started as
+    // root reads its token files as root and asks each host as the user it
+    // dropped to (COMMANDS-KEEP-ROOT).
+    let files: Vec<_> = entries.iter().map(read_files).collect();
+    if crate::privilege::is_root() {
+        // For the one line `--no-priv-drop` or the macOS rule logs. A run
+        // that is not root logs nothing new.
+        crate::app::bootstrap::init_logging_at("warn");
+    }
+    if let Err(e) = crate::early_exit::confine("fleet inventory", run_as.asked(), &[]) {
+        let _ = writeln!(err, "sipnab {e}");
+        return 2;
+    }
     // One thread per instance, so one slow host costs one timeout, not one
     // per host after it. The order of the report is the file's order.
     let results: Vec<HostResult> = std::thread::scope(|scope| {
         let handles: Vec<_> = entries
             .iter()
-            .map(|e| scope.spawn(move || fetch(e, timeout)))
+            .zip(files)
+            .map(|(e, files)| scope.spawn(move || fetch_with(e, files, timeout)))
             .collect();
         handles
             .into_iter()

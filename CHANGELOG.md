@@ -10,17 +10,36 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **Commands that listen or connect no longer stay root when root starts them.**
+  - Effect: `sipnab fleet serve`, `--vcon-forward` and `--vcon-fetch` started as root now run as `--user`, else `nobody`, and may refuse to start.
+  - Do: Give the store directory, the spool or the output directory to that user with `chown`, name its owner with `--user`, or keep root with `--no-priv-drop`.
+  - Limit: Files a command writes must belong to that user; the refusal names the path and, under `sudo`, the `--user` value to use.
+  - Docs: [Commands that do not capture](docs/least-privilege.md#commands-that-do-not-capture) and [Run the center as a service](docs/fleet.md#run-the-center-as-a-service).
+
 ### Fixed
 
+- **A fleet center that receives SIGTERM right after it starts exits cleanly.**
+  - Was: A SIGTERM that arrived just after the line `fleet center serving` ended the center with status 143, without its last store rewrite.
+  - Effect: The center installs its stop handlers before it logs that line, so a stop at any time exits 0.
 - **The fleet center answers pushes and status requests during a filing of call records.**
-  - Was: every push and status request waited until the whole filing ended, 607 to 633 ms for a full intake in a release build.
-  - Effect: a request now waits only for the start and the end of a filing; the read and the write run without the center's lock.
+  - Was: Every push and status request waited until the whole filing ended, 607 to 633 ms for a full intake in a release build.
+  - Effect: A request now waits only for the start and the end of a filing; the read and the write run without the center's lock.
   - Docs: [What waits during a filing](docs/fleet.md#what-waits-during-a-filing).
 - **The key rotation how-to no longer tells you to destroy a key history files need.**
-  - Was: the how-to said to destroy the old store key after the next start, and history files written before the rotation stay under that key.
-  - Effect: the how-to now says to keep the old key loaded until retention has removed every history file written under it.
-  - Do: if you rotated the store key since 0.5.249 and still have the old key file, keep passing it with `--store-old-key-file`.
+  - Was: The how-to said to destroy the old store key after the next start, and history files written before the rotation stay under that key.
+  - Effect: The how-to now says to keep the old key loaded until retention has removed every history file written under it.
+  - Do: If you rotated the store key since 0.5.249 and still have the old key file, keep passing it with `--store-old-key-file`.
   - Docs: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
+
+### Security
+
+- **Commands that listen or connect drop root before they accept or connect.**
+  - Was: Started as root, `sipnab fleet serve`, `sipnab fleet inventory`, `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch`, `--relay-holdings` and `--relay-sessions` stayed root for the whole run.
+  - Effect: Each reads its key files as root, then runs as `--user`, else `[privilege] user`, else `nobody`.
+  - Do: Start these commands as an ordinary user where you can; `--no-priv-drop` keeps root and logs one warning line.
+  - Docs: [Commands that do not capture](docs/least-privilege.md#commands-that-do-not-capture).
 
 ## [0.5.255] - 2026-11-14
 
