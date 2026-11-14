@@ -1821,6 +1821,188 @@ mod tests {
         );
     }
 
+    /// Names the one test a child process of this binary is to run; see
+    /// [`in_own_process`].
+    const OWN_PROCESS: &str = "SIPNAB_PRIVILEGE_TEST_IN_OWN_PROCESS";
+
+    /// What [`in_own_process`] does in this process.
+    #[derive(Debug, PartialEq, Eq)]
+    enum OwnProcess {
+        /// The process every test shares: start a child for the test.
+        Start,
+        /// The child started for this test: run the body.
+        RunBody,
+        /// A child started for another test: fail, and start nothing.
+        Refuse,
+    }
+
+    /// The role of this process for the test named `test`, given the value
+    /// of [`OWN_PROCESS`] in its environment.
+    fn own_process_role(named: Option<&std::ffi::OsStr>, test: &str) -> OwnProcess {
+        match named {
+            None => OwnProcess::Start,
+            Some(named) if named == test => OwnProcess::RunBody,
+            Some(_) => OwnProcess::Refuse,
+        }
+    }
+
+    /// A child never starts a child: a process started for one test that
+    /// reaches another fails there, so a wrong name cannot start a chain of
+    /// processes.
+    #[test]
+    fn a_process_started_for_one_test_starts_no_other() {
+        use std::ffi::OsStr;
+        assert_eq!(
+            own_process_role(None, "a"),
+            OwnProcess::Start,
+            "the shared process starts a child"
+        );
+        assert_eq!(
+            own_process_role(Some(OsStr::new("a")), "a"),
+            OwnProcess::RunBody,
+            "the child named for the test runs its body"
+        );
+        assert_eq!(
+            own_process_role(Some(OsStr::new("b")), "a"),
+            OwnProcess::Refuse,
+            "a child named for another test starts nothing"
+        );
+        assert_eq!(
+            own_process_role(Some(OsStr::new("")), "a"),
+            OwnProcess::Refuse,
+            "an empty name is still a child"
+        );
+    }
+
+    /// Run `body`, the body of the test named `test`, in a process of its
+    /// own: this test binary, started again to run that one test.
+    ///
+    /// For a body that calls `setgroups`, `setgid` or `setuid`, which glibc
+    /// carries out by signaling every other thread of the process; see
+    /// `no_test_changes_credentials_in_the_shared_process`. The child runs
+    /// the same test function, finds its own name in the environment and
+    /// runs `body`; this process passes when the child ran exactly that test
+    /// and it passed. The child's output goes to the real standard error, so
+    /// a skip it announces is seen.
+    fn in_own_process(
+        test: &str,
+        body: impl FnOnce() -> Result<(), TestError>,
+    ) -> Result<(), TestError> {
+        use std::io::Write as _;
+        match own_process_role(std::env::var_os(OWN_PROCESS).as_deref(), test) {
+            OwnProcess::Start => {}
+            OwnProcess::RunBody => return body(),
+            OwnProcess::Refuse => {
+                return Err(format!(
+                    "`{test}` ran in a process started for another test; it starts no third process"
+                )
+                .into());
+            }
+        }
+        let module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, module)| module);
+        let child = std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", &format!("{module}::{test}")])
+            .args(["--nocapture", "--test-threads=1"])
+            .env(OWN_PROCESS, test)
+            .output()?;
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        for notice in said.lines().filter(|l| l.starts_with("NOTICE:")) {
+            let _ = writeln!(std::io::stderr(), "{notice}");
+        }
+        assert!(
+            child.status.success(),
+            "`{test}` failed in its own process ({}): {said}",
+            child.status
+        );
+        assert!(
+            said.contains("test result: ok. 1 passed;"),
+            "the child process must run exactly the test `{test}`: {said}"
+        );
+        Ok(())
+    }
+
+    /// The functions of this module that call `setgroups`, `setgid` or
+    /// `setuid`.
+    const CREDENTIAL_CALLS: [&str; 4] = [
+        "drop_supplementary_groups",
+        "set_gid",
+        "set_uid",
+        "drop_group_credentials",
+    ];
+
+    /// The name of each test of this module whose body calls one of
+    /// [`CREDENTIAL_CALLS`] and does not hand that body to `in_own_process`.
+    ///
+    /// `source` is this file's text. A test is the text from one `#[test]`
+    /// line to the next; comment lines are not read.
+    fn credential_tests_run_in_the_shared_process(source: &str) -> Vec<String> {
+        let tests = source
+            .split_once("\nmod tests {")
+            .map_or("", |(_, tests)| tests);
+        let mut found = Vec::new();
+        for test in tests.split("\n    #[test]\n").skip(1) {
+            let code: Vec<&str> = test
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect();
+            let name = code
+                .iter()
+                .find_map(|l| l.trim_start().strip_prefix("fn "))
+                .and_then(|l| l.split('(').next())
+                .unwrap_or("a test with no name");
+            let calls = CREDENTIAL_CALLS
+                .iter()
+                .any(|f| code.iter().any(|l| l.contains(&format!("{f}("))));
+            let own_process = code.iter().any(|l| l.contains("in_own_process("));
+            if calls && !own_process {
+                found.push(name.to_string());
+            }
+        }
+        found
+    }
+
+    /// **No test changes the credentials of the process the other tests
+    /// share.**
+    ///
+    /// glibc carries out `setgroups`, `setgid` and `setuid` by sending a
+    /// signal to every other thread of the process, so that each thread makes
+    /// the call. A thread that is in a blocking call with a timeout at that
+    /// moment gets `EINTR`: on 2026-11-13 a read with a 3 s timeout in one
+    /// test ended after 501 ms, with `Interrupted system call`, when another
+    /// test called `set_gid`. A test that makes such a call hands its body to
+    /// `in_own_process`.
+    #[test]
+    fn no_test_changes_credentials_in_the_shared_process() {
+        let found = credential_tests_run_in_the_shared_process(include_str!("privilege.rs"));
+        assert!(
+            found.is_empty(),
+            "these tests call setgroups, setgid or setuid in the process every \
+             other test runs in; hand their bodies to `in_own_process`: {found:?}"
+        );
+    }
+
+    /// The rule reads a test's code and not its comments, and names the test.
+    #[test]
+    fn the_credential_rule_names_a_test_that_calls_in_the_shared_process() {
+        let call = format!("        {}(0)?;\n", CREDENTIAL_CALLS[1]);
+        let source = format!(
+            "\nmod tests {{\n    #[test]\n    fn calls_here() {{\n{call}    }}\n\
+             \n    #[test]\n    fn only_a_comment() {{\n        // {call}    }}\n\
+             \n    #[test]\n    fn calls_in_a_child() {{\n        in_own_process(\"x\", || {{\n{call}        }})\n    }}\n}}\n"
+        );
+        assert_eq!(
+            credential_tests_run_in_the_shared_process(&source),
+            vec!["calls_here".to_string()],
+            "one test calls in the shared process: {source}"
+        );
+    }
+
     /// A non-root process cannot clear its supplementary groups, and
     /// `drop_supplementary_groups` must say so rather than return `Ok`.
     ///
@@ -1832,22 +2014,27 @@ mod tests {
     #[test]
     fn drop_supplementary_groups_reports_failure_instead_of_returning_ok() -> Result<(), TestError>
     {
-        if is_root() {
-            skip_loudly(
-                "drop_supplementary_groups_reports_failure_instead_of_returning_ok",
-                "the process IS root, so setgroups(2) succeeds; this gate asserts the failure path",
-            );
-            return Ok(());
-        }
-        let msg = drop_supplementary_groups()
-            .err()
-            .ok_or("setgroups(0, NULL) needs CAP_SETGID and must fail here")?
-            .to_string();
-        assert!(
-            msg.contains("setgroups"),
-            "the failure must name the syscall that refused, got: {msg}"
-        );
-        Ok(())
+        in_own_process(
+            "drop_supplementary_groups_reports_failure_instead_of_returning_ok",
+            || -> Result<(), TestError> {
+                if is_root() {
+                    skip_loudly(
+                        "drop_supplementary_groups_reports_failure_instead_of_returning_ok",
+                        "the process IS root, so setgroups(2) succeeds; this gate asserts the failure path",
+                    );
+                    return Ok(());
+                }
+                let msg = drop_supplementary_groups()
+                    .err()
+                    .ok_or("setgroups(0, NULL) needs CAP_SETGID and must fail here")?
+                    .to_string();
+                assert!(
+                    msg.contains("setgroups"),
+                    "the failure must name the syscall that refused, got: {msg}"
+                );
+                Ok(())
+            },
+        )
     }
 
     /// `set_gid` reports a refused `setgid` rather than returning `Ok`.
@@ -1857,43 +2044,53 @@ mod tests {
     /// started in while the caller believed it had shed them.
     #[test]
     fn set_gid_reports_a_refused_setgid_rather_than_returning_ok() -> Result<(), TestError> {
-        if is_root() {
-            skip_loudly(
-                "set_gid_reports_a_refused_setgid_rather_than_returning_ok",
-                "the process IS root, so setgid(0) succeeds; this gate asserts the failure path",
-            );
-            return Ok(());
-        }
-        let msg = set_gid(0)
-            .err()
-            .ok_or("an unprivileged process cannot setgid(0)")?
-            .to_string();
-        assert!(
-            msg.contains("setgid"),
-            "the failure must name the syscall that refused, got: {msg}"
-        );
-        Ok(())
+        in_own_process(
+            "set_gid_reports_a_refused_setgid_rather_than_returning_ok",
+            || -> Result<(), TestError> {
+                if is_root() {
+                    skip_loudly(
+                        "set_gid_reports_a_refused_setgid_rather_than_returning_ok",
+                        "the process IS root, so setgid(0) succeeds; this gate asserts the failure path",
+                    );
+                    return Ok(());
+                }
+                let msg = set_gid(0)
+                    .err()
+                    .ok_or("an unprivileged process cannot setgid(0)")?
+                    .to_string();
+                assert!(
+                    msg.contains("setgid"),
+                    "the failure must name the syscall that refused, got: {msg}"
+                );
+                Ok(())
+            },
+        )
     }
 
     /// `set_uid` reports a refused `setuid` rather than returning `Ok`.
     #[test]
     fn set_uid_reports_a_refused_setuid_rather_than_returning_ok() -> Result<(), TestError> {
-        if is_root() {
-            skip_loudly(
-                "set_uid_reports_a_refused_setuid_rather_than_returning_ok",
-                "the process IS root, so setuid(0) succeeds; this gate asserts the failure path",
-            );
-            return Ok(());
-        }
-        let msg = set_uid(0)
-            .err()
-            .ok_or("an unprivileged process cannot setuid(0)")?
-            .to_string();
-        assert!(
-            msg.contains("setuid"),
-            "the failure must name the syscall that refused, got: {msg}"
-        );
-        Ok(())
+        in_own_process(
+            "set_uid_reports_a_refused_setuid_rather_than_returning_ok",
+            || -> Result<(), TestError> {
+                if is_root() {
+                    skip_loudly(
+                        "set_uid_reports_a_refused_setuid_rather_than_returning_ok",
+                        "the process IS root, so setuid(0) succeeds; this gate asserts the failure path",
+                    );
+                    return Ok(());
+                }
+                let msg = set_uid(0)
+                    .err()
+                    .ok_or("an unprivileged process cannot setuid(0)")?
+                    .to_string();
+                assert!(
+                    msg.contains("setuid"),
+                    "the failure must name the syscall that refused, got: {msg}"
+                );
+                Ok(())
+            },
+        )
     }
 
     /// The post-drop verification rejects ids that are not the ones asked for.
@@ -2039,22 +2236,27 @@ mod tests {
     /// unprivileged caller would see `setgid` refuse first instead.
     #[test]
     fn group_credentials_are_surrendered_supplementary_list_first() -> Result<(), TestError> {
-        if is_root() {
-            skip_loudly(
-                "group_credentials_are_surrendered_supplementary_list_first",
-                "the process IS root, so setgroups(2) succeeds; this gate asserts which step refuses first",
-            );
-            return Ok(());
-        }
-        let msg = drop_group_credentials(0)
-            .err()
-            .ok_or("an unprivileged process cannot shed its groups")?
-            .to_string();
-        assert!(
-            msg.starts_with("setgroups failed"),
-            "the supplementary list is the FIRST step to refuse: {msg}"
-        );
-        Ok(())
+        in_own_process(
+            "group_credentials_are_surrendered_supplementary_list_first",
+            || -> Result<(), TestError> {
+                if is_root() {
+                    skip_loudly(
+                        "group_credentials_are_surrendered_supplementary_list_first",
+                        "the process IS root, so setgroups(2) succeeds; this gate asserts which step refuses first",
+                    );
+                    return Ok(());
+                }
+                let msg = drop_group_credentials(0)
+                    .err()
+                    .ok_or("an unprivileged process cannot shed its groups")?
+                    .to_string();
+                assert!(
+                    msg.starts_with("setgroups failed"),
+                    "the supplementary list is the FIRST step to refuse: {msg}"
+                );
+                Ok(())
+            },
+        )
     }
 
     /// Setting the ids a process already holds is permitted at any privilege
@@ -2067,24 +2269,31 @@ mod tests {
     #[test]
     fn setting_the_ids_the_process_already_holds_succeeds_and_changes_nothing()
     -> Result<(), TestError> {
-        let status = std::fs::read_to_string("/proc/self/status")
-            .map_err(|e| format!("procfs is mounted: {e:?}"))?;
-        let real = |key: &str| -> Result<u32, String> {
-            status
-                .lines()
-                .find(|l| l.starts_with(key))
-                .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|v| v.parse().ok())
-                .ok_or_else(|| format!("no {key} line in /proc/self/status"))
-        };
-        let (uid, gid) = (real("Uid:")?, real("Gid:")?);
-        set_gid(gid).map_err(|e| format!("setgid to the real gid is always permitted: {e:?}"))?;
-        set_uid(uid).map_err(|e| format!("setuid to the real uid is always permitted: {e:?}"))?;
-        assert!(
-            verify_dropped(uid, gid).is_ok(),
-            "and the process holds exactly the ids it held before"
-        );
-        Ok(())
+        in_own_process(
+            "setting_the_ids_the_process_already_holds_succeeds_and_changes_nothing",
+            || -> Result<(), TestError> {
+                let status = std::fs::read_to_string("/proc/self/status")
+                    .map_err(|e| format!("procfs is mounted: {e:?}"))?;
+                let real = |key: &str| -> Result<u32, String> {
+                    status
+                        .lines()
+                        .find(|l| l.starts_with(key))
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .and_then(|v| v.parse().ok())
+                        .ok_or_else(|| format!("no {key} line in /proc/self/status"))
+                };
+                let (uid, gid) = (real("Uid:")?, real("Gid:")?);
+                set_gid(gid)
+                    .map_err(|e| format!("setgid to the real gid is always permitted: {e:?}"))?;
+                set_uid(uid)
+                    .map_err(|e| format!("setuid to the real uid is always permitted: {e:?}"))?;
+                assert!(
+                    verify_dropped(uid, gid).is_ok(),
+                    "and the process holds exactly the ids it held before"
+                );
+                Ok(())
+            },
+        )
     }
 
     /// `getpwnam_r` answers ERANGE when the scratch buffer cannot hold the

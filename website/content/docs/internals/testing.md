@@ -464,6 +464,7 @@ The last line of a run is the step `total`, counted from the start of the hook.
   A step that printed `CACHED` is in the log with the seconds its stamp read took.
 
 The step `Tests` holds the build of the test binaries, the nextest run and the doctests together. The hook cuts the log to its newest 2,000 lines once it passes 4,000, and a line that it cannot write does not fail the hook.
+A run whose suite passed also leaves a note in the log, a line of three fields: the run, the word `nextest`, and the `Summary` line nextest printed (the tests run, passed and skipped). `hook-steps.py` prints it under the table of its run, so two passing runs compare by their totals. Before, the hook kept a summary only for a failed run.
 [`scripts/tests/test_hook_steps.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_hook_steps.py) runs the hook in its sandbox and reads the log. [`scripts/tests/test_hook_steps_table.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_hook_steps_table.py) holds the table.
 
 **nextest.** The suite runs under cargo-nextest, in the pre-commit hook and in CI, through [`scripts/parallel-tests.py`](https://github.com/NormB/sipnab/blob/main/scripts/parallel-tests.py).

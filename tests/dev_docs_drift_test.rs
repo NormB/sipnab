@@ -1043,10 +1043,18 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 863 -> 864 (RUNNER-IMAGE-FLOATS, +1): build-ci-release.md links
     // tests/ci_runner_target_test.rs where it says every job names a fixed
     // image.
-    // 864 -> 866 (size claims in the changelog, +2): build-ci-release.md's
+    // 864 -> 873 (threads at the privilege drop): threading.md's section
+    // "Threads that exist at the privilege drop" links the two files that
+    // drop, the five whose threads exist then, privilege.rs, and the test
+    // that holds the section (+9).
+    // 873 -> 875 (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER, +2):
+    // build-ci-release.md links scripts/tests/test_pages_live_artifact.py
+    // beside the other test file of the script, and
+    // .github/workflows/cert-expiry.yml in "The daily advertisement check".
+    // 875 -> 877 (size claims in the changelog, +2): build-ci-release.md's
     // "The changelog" links scripts/check-changelog-size-claims.py and its
     // test file.
-    const EXPECTED_CODE_LINKS: usize = 866;
+    const EXPECTED_CODE_LINKS: usize = 877;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

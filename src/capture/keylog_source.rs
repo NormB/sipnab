@@ -633,9 +633,13 @@ mod tests {
         let mut src = KeylogSource::open_auto(&path)?;
         let out = src.poll()?;
         assert!(out.lines.is_empty());
+        // A blocking open never returns here (no writer ever appears), so the
+        // bound only has to tell a return from a hang; one second was inside
+        // what a loaded host adds to any call (seen: 1.5 s at load 36).
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "opening and polling a writerless FIFO must not block the packet loop"
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "opening and polling a writerless FIFO must not block the packet loop: {:?}",
+            started.elapsed()
         );
         Ok(())
     }

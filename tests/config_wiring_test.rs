@@ -1001,63 +1001,376 @@ fn cli_max_reassembly_overrides_config() -> Result<(), TestError> {
 // two DIFFERENT observations. A registered probe that changes nothing fails
 // as loudly as a missing one, so a parsing assertion cannot satisfy this.
 
-/// Fail loudly when a burst probe's PREMISE did not hold.
+/// One request of a burst, timed from the start of the burst.
 ///
-/// The rate-limit probes send a burst and read the refusals. That reading only
-/// means something if the whole burst landed inside ONE limiter window: if it
-/// spilled over, the window reset mid-burst, the limiter allowed its quota
-/// again, and `refused == 0` describes the machine rather than the key.
+/// `left` is read before the request is written and `answered` after its
+/// reply is read, so the moment the limiter counted it lies between the two.
+/// A datagram has no reply: both are read around the send.
+#[derive(Debug, Clone, Copy)]
+struct Sent {
+    /// When the test began to send it.
+    left: std::time::Duration,
+    /// When the test had its answer.
+    answered: std::time::Duration,
+}
+
+/// What a burst showed about a per-window ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BurstReading {
+    /// At least one request was refused: a ceiling was applied.
+    Refused,
+    /// Nothing was refused, and the burst was one the reading can be trusted
+    /// for (see [`read_burst`]).
+    Served,
+    /// Nothing was refused, and the burst never put enough requests inside
+    /// one window for that to say anything about the ceiling.
+    Unobservable,
+}
+
+/// How many consecutive served requests inside one window's length show that
+/// `ceiling` was not applied: twice the ceiling, plus one.
 ///
-/// The bound is [`sipnab::rate_limit::WINDOW`], read from the limiter itself
-/// rather than restated here — a second copy of `1s` would agree today and
-/// drift the moment the limiter changes.
+/// [`sipnab::rate_limit::FixedWindowLimiter`] restarts its window at the first
+/// check that arrives a full window after the last restart. A span shorter
+/// than the window therefore crosses at most one restart, and a working
+/// ceiling serves at most `ceiling` requests on each side of it. `None` when
+/// the count does not fit in a `usize`: no burst is that long.
+fn run_that_shows_a_dead_ceiling(ceiling: u64) -> Option<usize> {
+    usize::try_from(ceiling)
+        .ok()?
+        .checked_mul(2)?
+        .checked_add(1)
+}
+
+/// Read a burst against the `ceiling` that was in force for it.
 ///
-/// Measured on this tree, this has ~70x of headroom and has never fired: the
-/// 40-request API burst takes 13.7 ms idle and 14.8 ms at three times CPU
-/// oversubscription (load average 19), against a 1 s window. It exists because
-/// of what the failure would SAY, not because it is likely — without it, a
-/// machine slow enough to spill the burst makes both observations agree, and
-/// the gate below then tells the reader to delete a key that works perfectly.
-/// A gate must not give advice it cannot support.
+/// The rate-limit probes send a burst twice, once under the default
+/// configuration and once under a low ceiling, and compare the two readings.
+/// "Nothing was refused" is only a reading when the burst could have been
+/// refused, or could not have been at any speed. The rules, in order:
 ///
-/// Gated where `sipnab::rate_limit` is compiled (`hep` or `mcp`), because that
-/// is where the bound lives and reading it from anywhere else would mean
-/// copying the value. `api` implies neither, so an api-only build gets the
-/// no-op placeholder below and simply goes unguarded — the guard is insurance
-/// against a machine slow enough to spill a 14 ms burst past 1 s, not something
-/// the probe depends on.
+/// 1. A refusal is [`BurstReading::Refused`]. The clock is not consulted.
+/// 2. A `ceiling` of 0 (the cap is disabled) or a burst of at most `ceiling`
+///    requests is [`BurstReading::Served`]: no window can hold more than the
+///    whole burst, so nothing could be refused however long it took. This is
+///    the default-configuration burst, 40 requests under a ceiling of 100 or
+///    of 50,000.
+/// 3. Some [`run_that_shows_a_dead_ceiling`] consecutive requests, from the
+///    first one's send to the last one's answer, lie inside a span shorter
+///    than `window`: [`BurstReading::Served`], and that is evidence the
+///    ceiling was not applied.
+/// 4. Otherwise [`BurstReading::Unobservable`]: the machine never put enough
+///    requests inside one window, and the reading describes the machine.
 ///
-/// `allow(dead_code)`: whether anything CALLS this depends on the feature
-/// combination, not on whether it can compile. Its two callers are the `api`
-/// burst probe and the unix-only `hep` one, so the matrix builds combinations
-/// -- `tls`, `native`, `metrics`, `mcp` alone -- where the function is
-/// perfectly valid and simply unused. CI denies warnings, so that is an error
-/// there and not here; spelling the caller set out as a `cfg` expression would
-/// be longer than this comment and wrong the next time a probe moves.
-#[allow(dead_code)]
-#[cfg(any(feature = "hep", feature = "mcp"))]
-fn assert_premise_inside_window(which: &str, elapsed: std::time::Duration, refused: usize) {
+/// Until 2026-11-13 one rule stood in place of 2 to 4: "the whole burst took
+/// less than the window". It ran on the default burst too, where it has no
+/// meaning, and a loaded CI runner that took 1.047 s for those 40 requests
+/// failed the gate (`the_default_burst_that_failed_in_ci_is_read_as_served`).
+///
+/// `requests` is in the order sent. `window` is an argument so the rules can
+/// be tested without a clock; the probes pass [`sipnab::rate_limit::WINDOW`],
+/// read from the limiter rather than restated here.
+fn read_burst(
+    ceiling: u64,
+    requests: &[Sent],
+    refused: usize,
+    window: std::time::Duration,
+) -> BurstReading {
     if refused > 0 {
-        return; // the limiter did refuse, so the window plainly held
+        return BurstReading::Refused;
     }
-    assert!(
-        elapsed < sipnab::rate_limit::WINDOW,
-        "the {which} burst took {elapsed:?}, which is not inside the \
-         {:?} rate-limit window, so `refused == 0` is not evidence about the \
-         key -- the window reset mid-burst and the limiter allowed its quota \
-         again. This machine was too slow to OBSERVE the key; that is not the \
-         same as the key being dead, and the {which} limit must not be deleted \
-         on the strength of it.",
-        sipnab::rate_limit::WINDOW
+    let sent = u64::try_from(requests.len()).unwrap_or(u64::MAX);
+    if ceiling == 0 || sent <= ceiling {
+        return BurstReading::Served;
+    }
+    let inside_one_window = run_that_shows_a_dead_ceiling(ceiling).is_some_and(|run| {
+        requests.windows(run).any(
+            |consecutive| match (consecutive.first(), consecutive.last()) {
+                (Some(first), Some(last)) => last.answered.saturating_sub(first.left) < window,
+                _ => false,
+            },
+        )
+    });
+    if inside_one_window {
+        BurstReading::Served
+    } else {
+        BurstReading::Unobservable
+    }
+}
+
+/// The error a probe returns for a burst [`read_burst`] could not read.
+///
+/// It exists because of what the gate would otherwise SAY: two equal readings
+/// make it tell the reader the key may be dead, and a machine too slow to
+/// observe the key is not a reason to delete it.
+fn too_slow_to_observe(
+    which: &str,
+    ceiling: u64,
+    requests: &[Sent],
+    window: std::time::Duration,
+) -> String {
+    let run = run_that_shows_a_dead_ceiling(ceiling)
+        .map_or_else(|| "more".to_string(), |run| run.to_string());
+    let took = match (requests.first(), requests.last()) {
+        (Some(first), Some(last)) => last.answered.saturating_sub(first.left),
+        _ => std::time::Duration::ZERO,
+    };
+    format!(
+        "the {which} burst of {} requests took {took:?} and nothing was \
+         refused, but no {run} consecutive requests of it lie inside one \
+         {window:?} rate-limit window, so a working ceiling of {ceiling} \
+         would have served every one of them as well. This machine was too \
+         slow to OBSERVE the key; that is not the same as the key being \
+         dead, and the {which} limit must not be deleted on the strength of \
+         it.",
+        requests.len()
+    )
+}
+
+/// `count` requests, one every `every`, each answered `took` after it left.
+fn evenly_spaced(count: u32, every: std::time::Duration, took: std::time::Duration) -> Vec<Sent> {
+    (0..count)
+        .map(|i| Sent {
+            left: every * i,
+            answered: every * i + took,
+        })
+        .collect()
+}
+
+/// The window the judge tests pass in. It is an argument of [`read_burst`],
+/// so these tests hold for whatever the limiter's own window is.
+const JUDGE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[test]
+fn a_refusal_is_read_as_refused_whatever_the_clock_says() {
+    let slow = evenly_spaced(40, std::time::Duration::from_secs(5), JUDGE_WINDOW);
+    assert_eq!(
+        read_burst(3, &slow, 1, JUDGE_WINDOW),
+        BurstReading::Refused,
+        "one refusal is evidence of a ceiling at any speed"
     );
 }
 
-/// Placeholder for builds without `sipnab::rate_limit` (neither `hep` nor
-/// `mcp`). The bound it would check lives in that module, so there is nothing
-/// to check against; the probes still run, they just go unguarded.
-#[allow(dead_code)]
-#[cfg(not(any(feature = "hep", feature = "mcp")))]
-fn assert_premise_inside_window(_which: &str, _elapsed: std::time::Duration, _refused: usize) {}
+#[test]
+fn the_default_burst_that_failed_in_ci_is_read_as_served() {
+    // 40 requests in 1.047179585 s against the default ceiling of 100: the
+    // run that failed `Features (group 0, aarch64)` on 2026-11-13.
+    let gap = std::time::Duration::from_nanos(1_047_179_585 / 40);
+    let burst = evenly_spaced(40, gap, gap);
+    assert_eq!(
+        read_burst(100, &burst, 0, JUDGE_WINDOW),
+        BurstReading::Served,
+        "40 requests cannot pass a ceiling of 100 in any window, so no \
+         refusal is the expected reading however long the burst took"
+    );
+}
+
+#[test]
+fn a_burst_no_larger_than_its_ceiling_is_served_at_any_speed() {
+    let hour = evenly_spaced(40, std::time::Duration::from_secs(90), JUDGE_WINDOW);
+    assert_eq!(
+        read_burst(40, &hour, 0, JUDGE_WINDOW),
+        BurstReading::Served,
+        "a burst of exactly the ceiling can never be refused"
+    );
+}
+
+#[test]
+fn seven_requests_inside_one_window_show_a_ceiling_of_three_was_not_applied() {
+    let fast = evenly_spaced(
+        7,
+        std::time::Duration::from_millis(1),
+        std::time::Duration::from_millis(1),
+    );
+    assert_eq!(
+        read_burst(3, &fast, 0, JUDGE_WINDOW),
+        BurstReading::Served,
+        "two windows of three hold six, so a seventh served request inside \
+         one window's length is evidence the ceiling was not applied"
+    );
+}
+
+#[test]
+fn a_fast_run_inside_a_slow_burst_is_enough_to_read_it() {
+    // Ten slow requests, seven fast ones, then slow again: far longer than a
+    // window in total, yet seven of them sit inside 14 ms.
+    let mut burst = evenly_spaced(10, std::time::Duration::from_millis(700), JUDGE_WINDOW / 2);
+    let base = std::time::Duration::from_secs(8);
+    for i in 0..7u32 {
+        burst.push(Sent {
+            left: base + std::time::Duration::from_millis(2) * i,
+            answered: base + std::time::Duration::from_millis(2) * (i + 1),
+        });
+    }
+    burst.push(Sent {
+        left: std::time::Duration::from_secs(12),
+        answered: std::time::Duration::from_secs(13),
+    });
+    assert_eq!(
+        read_burst(3, &burst, 0, JUDGE_WINDOW),
+        BurstReading::Served,
+        "the reading needs seven consecutive requests inside one window, \
+         not the whole burst"
+    );
+}
+
+#[test]
+fn three_datagrams_inside_one_window_show_a_ceiling_of_one_was_not_applied() {
+    let sends = evenly_spaced(
+        3,
+        std::time::Duration::from_micros(40),
+        std::time::Duration::from_micros(30),
+    );
+    assert_eq!(
+        read_burst(1, &sends, 0, JUDGE_WINDOW),
+        BurstReading::Served,
+        "the hep probe's ceiling of one needs three sends inside a window"
+    );
+}
+
+#[test]
+fn a_limited_burst_spread_over_many_windows_cannot_be_read() {
+    let slow = evenly_spaced(
+        40,
+        std::time::Duration::from_millis(400),
+        std::time::Duration::from_millis(390),
+    );
+    assert_eq!(
+        read_burst(3, &slow, 0, JUDGE_WINDOW),
+        BurstReading::Unobservable,
+        "at most three requests share any window here, which a working \
+         ceiling of three serves in full"
+    );
+}
+
+#[test]
+fn six_fast_requests_do_not_show_anything_about_a_ceiling_of_three() {
+    let fast = evenly_spaced(
+        6,
+        std::time::Duration::from_millis(1),
+        std::time::Duration::from_millis(1),
+    );
+    assert_eq!(
+        read_burst(3, &fast, 0, JUDGE_WINDOW),
+        BurstReading::Unobservable,
+        "the limiter's window can restart between the third and the fourth, \
+         and a working ceiling then serves all six"
+    );
+}
+
+#[test]
+fn a_run_that_lasts_exactly_the_window_is_not_inside_it() {
+    let gap = JUDGE_WINDOW / 7;
+    let mut burst = evenly_spaced(7, gap, gap);
+    if let Some(last) = burst.last_mut() {
+        last.answered = JUDGE_WINDOW;
+    }
+    assert_eq!(
+        read_burst(3, &burst, 0, JUDGE_WINDOW),
+        BurstReading::Unobservable,
+        "the limiter restarts its window at exactly the window's length"
+    );
+}
+
+#[test]
+fn a_run_one_nanosecond_short_of_the_window_is_inside_it() {
+    let gap = JUDGE_WINDOW / 7;
+    let mut burst = evenly_spaced(7, gap, gap);
+    if let Some(last) = burst.last_mut() {
+        last.answered = JUDGE_WINDOW - std::time::Duration::from_nanos(1);
+    }
+    assert_eq!(
+        read_burst(3, &burst, 0, JUDGE_WINDOW),
+        BurstReading::Served,
+        "seven requests in less than one window cross at most one restart"
+    );
+}
+
+#[test]
+fn a_run_is_measured_to_the_last_answer_not_the_last_send() {
+    // All seven leave inside 6 ms; the last answer arrives after two seconds.
+    let burst = evenly_spaced(
+        7,
+        std::time::Duration::from_millis(1),
+        std::time::Duration::from_secs(2),
+    );
+    assert_eq!(
+        read_burst(3, &burst, 0, JUDGE_WINDOW),
+        BurstReading::Unobservable,
+        "the server may have counted the last request any time before its \
+         answer, so the sends alone do not place seven inside one window"
+    );
+}
+
+#[test]
+fn a_disabled_ceiling_is_served_whatever_the_count_and_speed() {
+    let slow = evenly_spaced(40, std::time::Duration::from_secs(3), JUDGE_WINDOW);
+    assert_eq!(
+        read_burst(0, &slow, 0, JUDGE_WINDOW),
+        BurstReading::Served,
+        "0 disables the cap, so nothing can be refused"
+    );
+    assert_eq!(
+        read_burst(0, &[], 0, JUDGE_WINDOW),
+        BurstReading::Served,
+        "an empty burst under a disabled cap has nothing to refuse either"
+    );
+}
+
+#[test]
+fn a_ceiling_too_large_to_double_does_not_overflow() {
+    let fast = evenly_spaced(
+        40,
+        std::time::Duration::from_millis(1),
+        std::time::Duration::from_millis(1),
+    );
+    assert_eq!(
+        read_burst(u64::MAX, &fast, 0, JUDGE_WINDOW),
+        BurstReading::Served,
+        "40 requests are below the largest ceiling"
+    );
+}
+
+#[test]
+fn a_fast_burst_shorter_than_twice_the_ceiling_plus_one_cannot_be_read() {
+    let fast = evenly_spaced(
+        40,
+        std::time::Duration::from_millis(1),
+        std::time::Duration::from_millis(1),
+    );
+    assert_eq!(
+        read_burst(20, &fast, 0, JUDGE_WINDOW),
+        BurstReading::Unobservable,
+        "a ceiling of 20 serves 40 across one restart; 41 are needed"
+    );
+    assert_eq!(
+        read_burst(19, &fast, 0, JUDGE_WINDOW),
+        BurstReading::Served,
+        "a ceiling of 19 serves at most 38 across one restart"
+    );
+}
+
+#[test]
+fn the_too_slow_error_names_the_burst_and_forbids_deleting_the_key() {
+    let slow = evenly_spaced(
+        40,
+        std::time::Duration::from_millis(400),
+        std::time::Duration::from_millis(390),
+    );
+    let text = too_slow_to_observe("api", 3, &slow, JUDGE_WINDOW);
+    for needle in [
+        "the api burst",
+        "40 requests",
+        "7 consecutive",
+        "ceiling of 3",
+        "must not be deleted",
+    ] {
+        assert!(
+            text.contains(needle),
+            "the error must contain {needle:?}: {text}"
+        );
+    }
+}
 
 /// One documented `[limits]` key and the pair of runs that proves it bites.
 struct LimitProbe {
@@ -3133,34 +3446,56 @@ fn probe_api_max_rows() -> Result<(String, String), TestError> {
 /// against a three-per-second ceiling.
 ///
 /// The observation is whether any request was refused, so it does not depend
-/// on exactly where the window boundary falls inside the burst.
+/// on exactly where the window boundary falls inside the burst. Each burst is
+/// read by [`read_burst`] against the ceiling in force for it: the default
+/// one, read from `Cli`, for the first, and the configured one for the second.
 #[cfg(feature = "api")]
 fn probe_api_rate_limit_per_peer() -> Result<(String, String), TestError> {
-    fn burst_verdict(extra: &[&str]) -> Result<String, TestError> {
+    /// The ceiling the second burst runs under.
+    const CONFIGURED: u64 = 3;
+
+    fn burst_verdict(ceiling: u64, extra: &[&str]) -> Result<String, TestError> {
         let srv = server::ApiServer::spawn(extra)?;
         let started = std::time::Instant::now();
         let mut refused = 0usize;
+        let mut requests = Vec::new();
         for _ in 0..40 {
+            let left = started.elapsed();
             // 503, not 429: the limiter runs BEFORE auth, so a refusal here
             // says nothing about the credential — see `guard_scoped`.
             if srv.get("/v1/stats")?.status == 503 {
                 refused += 1;
             }
+            requests.push(Sent {
+                left,
+                answered: started.elapsed(),
+            });
         }
 
-        assert_premise_inside_window("api", started.elapsed(), refused);
-        if refused > 0 {
-            Ok("burst-refused".into())
-        } else {
-            Ok("burst-served".into())
+        let window = sipnab::rate_limit::WINDOW;
+        match read_burst(ceiling, &requests, refused, window) {
+            BurstReading::Refused => Ok("burst-refused".into()),
+            BurstReading::Served => Ok("burst-served".into()),
+            BurstReading::Unobservable => {
+                Err(too_slow_to_observe("api", ceiling, &requests, window).into())
+            }
         }
     }
 
     let dir = tempfile::tempdir()?;
-    let cfg = write_config(&dir, "[limits]\napi_rate_limit_per_peer = 3\n")?;
+    let cfg = write_config(
+        &dir,
+        &format!("[limits]\napi_rate_limit_per_peer = {CONFIGURED}\n"),
+    )?;
     Ok((
-        burst_verdict(&["--no-config"])?,
-        burst_verdict(&["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
+        burst_verdict(
+            u64::from(sipnab::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER),
+            &["--no-config"],
+        )?,
+        burst_verdict(
+            CONFIGURED,
+            &["--config", cfg.to_str().ok_or("non-UTF-8 path")?],
+        )?,
     ))
 }
 
@@ -3415,11 +3750,17 @@ fn probe_metrics_max_conn() -> Result<(String, String), TestError> {
 /// `hep_rate_limit`: a burst well above a one-packet-per-second ceiling.
 #[cfg(all(unix, feature = "hep"))]
 fn probe_hep_rate_limit() -> Result<(String, String), TestError> {
+    /// The ceiling the second burst runs under.
+    const CONFIGURED: u64 = 1;
+
     let dir = tempfile::tempdir()?;
-    let cfg = write_config(&dir, "[limits]\nhep_rate_limit = 1\n")?;
+    let cfg = write_config(&dir, &format!("[limits]\nhep_rate_limit = {CONFIGURED}\n"))?;
     Ok((
-        hep_burst_verdict(&["--no-config"])?,
-        hep_burst_verdict(&["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
+        hep_burst_verdict(sipnab::cli::Cli::DEFAULT_HEP_RATE_LIMIT, &["--no-config"])?,
+        hep_burst_verdict(
+            CONFIGURED,
+            &["--config", cfg.to_str().ok_or("non-UTF-8 path")?],
+        )?,
     ))
 }
 
@@ -3586,23 +3927,36 @@ fn send_hep_invite(src: &str, port: u16, tag: &str) -> Result<(), TestError> {
 }
 
 /// Fire 40 HEP3 INVITEs from one source at a freshly spawned listener and
-/// report whether it logged a rate-limit drop.
+/// report whether it logged a rate-limit drop, read by [`read_burst`] against
+/// `ceiling`, the packets-per-second ceiling in force for this listener.
+///
+/// A datagram has no answer, so each one is timed around its send. That
+/// times the SENDS, not the listener's reads of them, which the test cannot
+/// see: datagrams sent inside one window wait in the socket buffer and the
+/// listener reads them one after another.
 #[cfg(all(unix, feature = "hep"))]
-fn hep_burst_verdict(extra_args: &[&str]) -> Result<String, TestError> {
+fn hep_burst_verdict(ceiling: u64, extra_args: &[&str]) -> Result<String, TestError> {
     let mut args = vec!["--hep-allow", "127.0.0.1/32"];
     args.extend_from_slice(extra_args);
     let listener = HepProbeListener::spawn(&args)?;
     let started = std::time::Instant::now();
+    let mut sends = Vec::new();
     for _ in 0..40 {
+        let left = started.elapsed();
         send_hep_invite("127.0.0.1", listener.port, "hep1")?;
+        sends.push(Sent {
+            left,
+            answered: started.elapsed(),
+        });
     }
-    let sent_in = started.elapsed();
     let dropped = listener.saw("rate limit exceeded");
-    assert_premise_inside_window("hep", sent_in, usize::from(dropped));
-    if dropped {
-        Ok("burst-dropped".into())
-    } else {
-        Ok("burst-accepted".into())
+    let window = sipnab::rate_limit::WINDOW;
+    match read_burst(ceiling, &sends, usize::from(dropped), window) {
+        BurstReading::Refused => Ok("burst-dropped".into()),
+        BurstReading::Served => Ok("burst-accepted".into()),
+        BurstReading::Unobservable => {
+            Err(too_slow_to_observe("hep", ceiling, &sends, window).into())
+        }
     }
 }
 
@@ -3742,8 +4096,8 @@ fn every_documented_limits_key_changes_observable_behavior() -> Result<(), TestE
              effect it is looking for, in which case the key may be perfectly \
              sound and the PROBE is what needs fixing. Establish which before \
              deleting anything: the probes that spawn a server and time a burst \
-             have a premise about the machine, and `assert_premise_inside_window` \
-             guards the one that is checkable.",
+             have a premise about the machine, and `read_burst` returns an error \
+             of its own when that premise did not hold.",
             probe.key
         );
     }
