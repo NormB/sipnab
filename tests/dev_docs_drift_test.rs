@@ -1047,7 +1047,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // "Threads that exist at the privilege drop" links the two files that
     // drop, the five whose threads exist then, privilege.rs, and the test
     // that holds the section (+9).
-    const EXPECTED_CODE_LINKS: usize = 873;
+    // 873 -> 875 (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER, +2):
+    // build-ci-release.md links scripts/tests/test_pages_live_artifact.py
+    // beside the other test file of the script, and
+    // .github/workflows/cert-expiry.yml in "The daily advertisement check".
+    const EXPECTED_CODE_LINKS: usize = 875;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

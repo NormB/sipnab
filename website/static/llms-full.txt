@@ -87672,26 +87672,76 @@ Steps, all inside the workflow:
 3. When the stamp is not this run's, the script prints a warning and deploys the same artifact again through the Pages API,
    under the build version `<commit>-<run ID>-<attempt>`, which GitHub has not seen.
    It waits for GitHub's status of that deployment, then reads the stamp again.
-4. With `expect`, it then runs [`verify-site-advertises.sh`](../../scripts/verify-site-advertises.sh) for that release.
+4. The script then judges the release from the artifact of the run, not from a read of the live download page.
+   The CDN answers a hosted runner's read of an HTML page with a browser challenge on some runner images.
+   On 0.5.254 that challenge ended release run 43581489173 red twice while the site was right.
+   The CDN answers static `.txt` files from every runner.
+   - The build writes `advertised-release.txt` into the site as its last step before the upload (`pages-live.py advertised`).
+     The file holds three lines: `stamp <the stamp>`, `release <x.y.z>` and `sha256 <the sha256 of download/index.html>`.
+     The step judges the built download page with `verify-site-advertises.sh --classify` for the `published_version` of the site.
+     A built page that does not name that release fails the build.
+   - The `live` job downloads the `github-pages` artifact of its own run with `actions/download-artifact`, as the `csp` job does.
+   - `pages-live.py verify --artifact site-artifact/artifact.tar` reads three files from that tar in memory:
+     `deploy-stamp.txt`, `download/index.html` and `advertised-release.txt`.
+     It refuses a tar that holds a member name outside the site, and a file of the three that is a link or larger than 4 MiB.
+   - The artifact passes when its stamp and its `advertised-release.txt` carry the stamp of this run,
+     its download page names the release by the same `--classify`, and the file names that release and the sha256 of that page.
+   - The script then reads `https://sipnab.com/advertised-release.txt` every 15 seconds for at most 300 seconds, until it carries the stamp of this run.
+5. With `expect`, the script then reads the live download page with [`verify-site-advertises.sh`](../../scripts/verify-site-advertises.sh), as evidence.
    Each check is one request. The verifier prints the edge's answer first, as a line that starts with `edge:`
    (the status and the `server`, `cf-ray`, `cf-mitigated` and `content-type` headers), and the first 200 bytes of an answer that is not a success.
-5. The script prints every check when it ends: `release check <n> (+<seconds> s): exit <status>: <the verifier's lines>`.
-   It reads a page that does not name the release yet again every 15 seconds.
-   After a read that the edge refused it waits 15 seconds, then 30, 60 and 120, so a refused client sends five requests in 300 seconds.
+   The script prints every check when it ends: `release check <n> (+<seconds> s): exit <status>: <the verifier's lines>`.
+   - It reads a page that does not name the release yet again every 15 seconds. A page that answers and still does not name it after 300 seconds fails the run.
+   - A read that the edge refused prints one warning that carries the `edge:` line, and the script sends no second request. The verdict of the artifact stands.
 
-Verify: the job's log holds the line `live: https://sipnab.com/deploy-stamp.txt carries this run's stamp`.
+Verify: the job's log holds the line `live: https://sipnab.com/deploy-stamp.txt carries this run's stamp`, and a line that starts with `artifact:`.
 The exit status of `pages-live.py verify` says how the check ended:
 
 | Exit | Meaning |
 |---|---|
-| 0 | The site is this run's artifact, and it names the release that `expect` gives. |
-| 1 | The site is stale after the second deploy, or the second deploy failed. |
-| 2 | The script could not read the site, so the run knows nothing about the deploy. It also means that the stamp is this run's and the download page gave no answer to judge: no connection, an error status or an empty body. |
-| 3 | The site is this run's artifact, and the download page answered and does not name the expected release. |
-| 4 | The site is this run's artifact, and the edge refused the read of the download page with 403 or 429. The run knows nothing about the release. |
+| 0 | The site is this run's artifact, and the artifact names the release that `expect` gives. |
+| 1 | The site is stale after the second deploy, or the second deploy failed, or the live `advertised-release.txt` is not the one in the artifact after 300 seconds. |
+| 2 | The script could not read the site, so the run knows nothing about the deploy. It also means that the artifact names the release and the live download page gave no answer to judge: no connection, an error status or an empty body. |
+| 3 | The site is this run's artifact, and its download page does not name the expected release. It also means that the live page answered and does not name it, or that `advertised-release.txt` in the artifact disagrees with the page. |
+| 4 | The run knows nothing about the release: the script could not read the artifact, or the artifact carries the stamp of another run. Without `--artifact` it means that the edge refused the read of the download page with 403 or 429. |
 
-Troubleshoot an exit of 4: the page can be right for every other reader.
+Troubleshoot an exit of 4: read the log of the step `Download this run's site artifact`. The step continues after a failed download, and the script then ends 4.
+Troubleshoot a warning about a refused read: the page can be right for every other reader.
 Read it from another address with `sh scripts/verify-site-advertises.sh <version>`, and search the log of the CDN for the `cf-ray` value of the `edge:` line.
+
+#### The daily advertisement check
+
+Purpose: [`cert-expiry.yml`](../../.github/workflows/cert-expiry.yml) asks every day whether the site advertises the newest release,
+and says so when it could not find out.
+Until 2026-11-14 its step turned a refused read of the download page into a warning and a green step that had verified nothing.
+
+Prerequisites:
+
+- The live site comes from a build that wrote `advertised-release.txt`. An older deploy answers 404 for that file.
+- The `github-pages` artifact expires after one day, so the daily check cannot read it. It reads the two static files instead.
+
+Steps, all inside the workflow:
+
+1. The step resolves the release to expect with `advertise-release.py resolve`.
+2. `pages-live.py daily --expect <version>` reads `deploy-stamp.txt` and `advertised-release.txt` from the site, each with a new query string.
+   When the two files carry different stamps it reads both again after 15 seconds, three times at most: a deploy can land between two reads.
+3. It reads the live download page once with `verify-site-advertises.sh`.
+4. It prints the verdict, and appends one line to the job summary.
+
+What the two files prove: the download page of the build that is live named that release, by the rule that judges a live page.
+What they do not prove: that the edge serves that page to a visitor. Only the read of the live page shows that.
+
+Verify: the job summary holds one of these lines.
+
+| Line starts with | Exit | Meaning |
+|---|---|---|
+| `Advertisement VERIFIED:` | 0 | The live page names the release, or the edge refused the page and the two files of one deploy name the release. The second case also prints a warning with the `edge:` line. |
+| `NOT VERIFIED:` | 0 | The edge refused the page and the two files say nothing. The step also prints a warning with the title `Advertisement not verified`. The check knows nothing about the release. |
+| `Advertisement FAILED:` | 1 | The live page answered and does not name the release, or the two files of one deploy name another release. |
+| `Advertisement FAILED:` | 2 to 5 | The live page gave no answer to judge. The exit status is the verifier's: no connection, a certificate error, an error status or an empty body. |
+
+Troubleshoot `NOT VERIFIED`: read the two files and the page from another address.
+`sh scripts/verify-site-advertises.sh <version>` reads the page, and the line gives the HTTP status of each file.
 
 - A `workflow_dispatch` run enforces the verdict (`--enforce`). A release advertises itself through such a run, and a withdrawal redeploys through one.
   The `advertise` job of `release.yml` waits for that run, so a stale site makes the release run red.
@@ -87705,7 +87755,8 @@ Troubleshooting:
 - `The live site could not be read`: read the stamp URL by hand and compare it with the stamp in the message.
   A 403 means the CDN refused the client.
 - A warning `the second deploy is live` on a green run means the first deploy did not go live. Record the run in the backlog entry.
-- [`test_pages_live.py`](../../scripts/tests/test_pages_live.py) holds the script, and
+- [`test_pages_live.py`](../../scripts/tests/test_pages_live.py) and
+  [`test_pages_live_artifact.py`](../../scripts/tests/test_pages_live_artifact.py) hold the script, and
   [`test_pages_live_workflow.py`](../../scripts/tests/test_pages_live_workflow.py) holds the workflow text.
 
 **The records are artifacts, and the next release pull request commits them.**
