@@ -10,13 +10,18 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **The pre-commit hook's step log keeps the test total of a suite that passed.** After a passing suite the hook writes nextest's `Summary` line (the tests run, passed and skipped) to `sipnab-pre-commit-steps.log` as a note of that run, and `python3 scripts/hook-steps.py` prints it under the run's table. Before, a summary was kept only for a failed run, so two passing runs could not be compared by their totals. This is a change for contributors: the shipped program is the same. [Where a hook run spent its time](docs/internals/testing.md#the-development-loop) describes the note.
+
+## [0.5.254] - 2026-11-14
+
 ### Added
 
 - **The MCP tool `search_messages` takes `regex: true` and reads its query as a regular expression (MCP-SEARCH-REGEX).** Without the option the query stays a substring that ignores case, and the answer does not change. With it the server compiles the query with the function that `payload =~` uses in a filter expression and matches it against the raw bytes of each message, so an agent can ask for an alternation, an anchor or a value by its shape, and `search_messages` and `list_dialogs` agree about a capture. A regular expression is case-sensitive unless it starts with `(?i)`. Three limits bound a pattern: it is at most 1024 bytes long, it compiles to at most 1000000 bytes, and one call scans for at most 5 s, after which the call fails with `limit_exceeded` and no hits. The page shape, `limit`, `cursor` and `max_response_bytes` are the same in both modes. How-to: [Search messages with a regular expression](docs/mcp.md#search-messages-with-a-regular-expression); reference: [`search_messages`](docs/mcp-tools-core.md#search_messages).
 
 ### Changed
 
-- **The pre-commit hook's step log keeps the test total of a suite that passed.** After a passing suite the hook writes nextest's `Summary` line (the tests run, passed and skipped) to `sipnab-pre-commit-steps.log` as a note of that run, and `python3 scripts/hook-steps.py` prints it under the run's table. Before, a summary was kept only for a failed run, so two passing runs could not be compared by their totals. This is a change for contributors: the shipped program is the same. [Where a hook run spent its time](docs/internals/testing.md#the-development-loop) describes the note.
 - **The fleet center compresses its history files with zstd (FLEET-HISTORY-FOLLOW-UPS).** `sipnab fleet serve` writes every call record file and every heartbeat file under `<store>.parquet` with zstd at level 1. Releases 0.5.249 to 0.5.253 wrote them without compression.
   - In the tests' measurement, one heartbeat of each of 2,000 members is a sealed file of 62,048 bytes (887,305 before), and 20,000 call records are 660,654 bytes (16,493,345 before). On rows that each hold digests, addresses and counters of their own, a heartbeat file was 11.7% and a call record file 10.7% of its uncompressed size.
   - The cost, in a release build on aarch64: encoding 2,000 heartbeats took 9.8 ms against 3.7 ms, encoding 20,000 call records 98 ms against 59 ms, and decoding them 17.7 ms against 7.6 ms. The aarch64 gnu binary is 655,456 bytes larger. The static musl builds and the `-noaudio` packages do not carry the history store and are the same size.
