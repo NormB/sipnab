@@ -1023,7 +1023,10 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // 664 -> 665 (fleet history compression): +1 in src/app/fleet_history.rs,
 // the refusal of a history file whose Parquet names a codec this build
 // does not read.
-const EXPECTED_TEMPLATES: usize = 665;
+// 665 -> 666 (a calls filing outside the center's lock): +1 in
+// src/app/fleet_center.rs, the error of an upkeep pass that ended in a
+// panic.
+const EXPECTED_TEMPLATES: usize = 666;
 
 // ---------------------------------------------------------------------------
 // The page gates

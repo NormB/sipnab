@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The fleet center answers pushes and status requests during a filing of call records.**
+  - Was: every push and status request waited until the whole filing ended, 607 to 633 ms for a full intake in a release build.
+  - Effect: a request now waits only for the start and the end of a filing; the read and the write run without the center's lock.
+  - Docs: [What waits during a filing](docs/fleet.md#what-waits-during-a-filing).
+
 ## [0.5.255] - 2026-11-14
 
 ### Changed

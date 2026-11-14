@@ -5914,6 +5914,17 @@ nothing of that class.
 **What to do:** Check that the center's user can read `<store>.parquet` and
 the `calls` and `members` directories in it.
 
+### `fleet center: an upkeep pass did not finish: {e}`
+
+An error. The pass that checks for silent members, files what waits and
+applies retention ended in a panic. `{e}` is what the runtime said. The
+center goes on: the next pass runs at its time, and that pass logs each
+silent member as silent again.
+
+**What to do:** Report it with the lines the log holds before this one. If
+the line repeats, restart the center: it files what its intake and its store
+file hold when it starts.
+
 ### `fleet center: the heartbeats were not filed and wait in the store file: {e}`
 
 A warning. The center could not write the heartbeats it acknowledged into the

@@ -1209,6 +1209,9 @@ struct Center {
     /// The heartbeat rows the history store has not yet filed. A build
     /// without the history store holds none.
     waiting: Waiting,
+    /// Called at each step of a filing of call records, by a test.
+    #[cfg(all(test, feature = "fleet-store"))]
+    hook: Option<FilingHook>,
 }
 
 impl Center {
@@ -1272,6 +1275,8 @@ impl Center {
                 history,
                 filing,
                 waiting,
+                #[cfg(all(test, feature = "fleet-store"))]
+                hook: None,
             },
             gone,
         ))
@@ -1315,37 +1320,92 @@ impl Center {
         filed
     }
 
-    /// File every call record the intake holds into the history store,
-    /// and then empty the intake. Returns what was filed.
+    /// File every call record the intake of the center behind `center`
+    /// holds into the history store, and then take those records out of
+    /// the intake. Returns what was filed.
     ///
-    /// A stop between the two leaves the records in both; the next filing
-    /// leaves out the rows a file already holds
+    /// The lock is held to open the intake ([`Center::take_calls`]) and to
+    /// take the filed records out of it ([`Center::calls_written`]), not
+    /// while the intake is read and the files are written
+    /// ([`CallsTaken::write`]), so requests are answered during a filing;
+    /// records that arrive meanwhile stay in the intake. `gate` is held
+    /// throughout: one filing runs at a time.
+    ///
+    /// A stop between the write and the end leaves the records in both;
+    /// the next filing leaves out the rows a file already holds
     /// ([`super::fleet_history::History::file`]).
     ///
     /// # Errors
     ///
-    /// The intake cannot be read or emptied, or the history store cannot
-    /// be written. The records then stay in the intake, and the failure is
-    /// counted.
+    /// The intake cannot be read or written again, or the history store
+    /// cannot be written. The records then stay in the intake, and the
+    /// failure is counted.
     #[cfg(feature = "fleet-store")]
-    fn file_calls(&mut self) -> Result<super::fleet_history::Filed, String> {
-        if self.intake.records() == 0 {
+    fn file_calls(
+        center: &parking_lot::Mutex<Self>,
+        gate: &parking_lot::Mutex<()>,
+    ) -> Result<super::fleet_history::Filed, String> {
+        let _one_at_a_time = gate.lock();
+        let Some(taken) = center.lock().take_calls() else {
             return Ok(super::fleet_history::Filed::default());
+        };
+        let written = taken.write();
+        center.lock().calls_written(written)
+    }
+
+    /// The first step of a filing of call records, under the center's
+    /// lock: what the intake holds now, to be read and filed without the
+    /// lock ([`CallsTaken::write`]). None when the intake holds no record.
+    #[cfg(feature = "fleet-store")]
+    fn take_calls(&mut self) -> Option<CallsTaken> {
+        if self.intake.records() == 0 {
+            return None;
         }
-        let filed = self
-            .intake
-            .rows()
-            .and_then(|rows| self.history.file(&rows))
-            .and_then(|filed| self.intake.clear().map(|_| filed));
+        Some(CallsTaken {
+            history: self.history.clone(),
+            snapshot: self.intake.filing(),
+            #[cfg(test)]
+            hook: self.hook.clone(),
+        })
+    }
+
+    /// The last step of a filing of call records, under the center's lock
+    /// again: the records `written` names leave the intake, and the filing
+    /// is counted.
+    #[cfg(feature = "fleet-store")]
+    fn calls_written(
+        &mut self,
+        written: Result<CallsWritten, String>,
+    ) -> Result<super::fleet_history::Filed, String> {
+        let filed = written.and_then(|written| {
+            self.intake
+                .filed(written.first, written.count)
+                .map(|_| written.filed)
+        });
         match &filed {
             Ok(filed) => {
                 self.filing.files_written =
                     self.filing.files_written.saturating_add(filed.files as u64);
                 self.filing.rows_filed = self.filing.rows_filed.saturating_add(filed.rows as u64);
             }
-            Err(_) => self.filing.failed = self.filing.failed.saturating_add(1),
+            Err(_) => {
+                self.intake.not_filed();
+                self.filing.failed = self.filing.failed.saturating_add(1);
+            }
         }
         filed
+    }
+
+    /// A whole filing of call records by a test that holds the center
+    /// itself: the three steps of [`Center::file_calls`], one after the
+    /// other.
+    #[cfg(all(test, feature = "fleet-store"))]
+    fn file_calls_here(&mut self) -> Result<super::fleet_history::Filed, String> {
+        let Some(taken) = self.take_calls() else {
+            return Ok(super::fleet_history::Filed::default());
+        };
+        let written = taken.write();
+        self.calls_written(written)
     }
 
     /// Take `batch` from `member` at `peer`, received at `now`: the new
@@ -1398,6 +1458,76 @@ impl Center {
         }
         self.registry.commit(plan);
         Ok(counts)
+    }
+}
+
+/// A point in a filing of call records at which a test is called.
+#[cfg(all(test, feature = "fleet-store"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilingStep {
+    /// The intake's records were taken and are not yet read.
+    Taken,
+    /// The history store's files are written and the intake still holds
+    /// the records.
+    Written,
+}
+
+/// What a test has a filing of call records call at each [`FilingStep`].
+#[cfg(all(test, feature = "fleet-store"))]
+type FilingHook = Arc<dyn Fn(FilingStep) + Send + Sync>;
+
+/// What a filing of call records took from the center under its lock
+/// ([`Center::take_calls`]).
+#[cfg(feature = "fleet-store")]
+struct CallsTaken {
+    /// The history store.
+    history: super::fleet_history::History,
+    /// What the intake held, not yet read.
+    snapshot: Result<super::fleet_intake::Snapshot, String>,
+    /// Called at each step, by a test.
+    #[cfg(test)]
+    hook: Option<FilingHook>,
+}
+
+/// What a filing of call records wrote ([`CallsTaken::write`]).
+#[cfg(feature = "fleet-store")]
+struct CallsWritten {
+    /// What the history store filed.
+    filed: super::fleet_history::Filed,
+    /// The number of the first record filed, in the intake.
+    first: u64,
+    /// How many records were filed.
+    count: usize,
+}
+
+#[cfg(feature = "fleet-store")]
+impl CallsTaken {
+    /// Read the records the intake held and file them into the history
+    /// store. The center's lock is not needed and is not held: this is the
+    /// part of a filing that takes time.
+    ///
+    /// # Errors
+    ///
+    /// The intake cannot be read, or the history store cannot be written.
+    fn write(self) -> Result<CallsWritten, String> {
+        #[cfg(test)]
+        let step = |step| {
+            if let Some(hook) = &self.hook {
+                hook(step);
+            }
+        };
+        #[cfg(test)]
+        step(FilingStep::Taken);
+        let snapshot = self.snapshot?;
+        let (first, count) = (snapshot.first(), snapshot.count());
+        let filed = self.history.file(&snapshot.rows()?)?;
+        #[cfg(test)]
+        step(FilingStep::Written);
+        Ok(CallsWritten {
+            filed,
+            first,
+            count,
+        })
     }
 }
 
@@ -1559,17 +1689,16 @@ fn prepare(
 fn start_history(center: &parking_lot::Mutex<Center>, retention_days: u32, retention_hours: u64) {
     #[cfg(feature = "fleet-store")]
     {
-        {
-            let mut center = center.lock();
-            tracing::info!(
-                "fleet center history store '{}': call records are kept {retention_days} \
-                 day(s), heartbeats {retention_hours} hour(s)",
-                center.history.dir().display()
-            );
-            file_and_log(&mut center);
-            expire_history(&center, Utc::now(), retention_days, retention_hours);
-        }
-        file_heartbeats_and_log(center, &parking_lot::Mutex::new(()));
+        tracing::info!(
+            "fleet center history store '{}': call records are kept {retention_days} day(s), \
+             heartbeats {retention_hours} hour(s)",
+            center.lock().history.dir().display()
+        );
+        // Nothing else files yet: the gate is this function's own.
+        let gate = parking_lot::Mutex::new(());
+        file_and_log(center, &gate);
+        expire_history(center, &gate, Utc::now(), retention_days, retention_hours);
+        file_heartbeats_and_log(center, &gate);
     }
     #[cfg(not(feature = "fleet-store"))]
     {
@@ -1715,8 +1844,8 @@ fn move_past_filed_calls(
 /// File the intake into the history store and log what was filed, or why
 /// it was not.
 #[cfg(feature = "fleet-store")]
-fn file_and_log(center: &mut Center) {
-    match center.file_calls() {
+fn file_and_log(center: &parking_lot::Mutex<Center>, gate: &parking_lot::Mutex<()>) {
+    match Center::file_calls(center, gate) {
         Ok(filed) if filed.rows > 0 || filed.already > 0 => tracing::info!(
             "fleet center: filed {} call record(s) in {} file(s) of the history store; {} \
              were in it already",
@@ -1732,18 +1861,28 @@ fn file_and_log(center: &mut Center) {
 }
 
 /// Remove the days of call records past `retention_days` and the days of
-/// heartbeats past `retention_hours` at `now` from the history store, and
-/// log what went and what was left.
+/// heartbeats past `retention_hours` at `now` from the history store of
+/// the center behind `center`, and log what went and what was left.
+///
+/// The center's lock is held only to take the history store, not while
+/// the days are removed. `gate` is held throughout, so no filing writes a
+/// file while the days are removed.
 #[cfg(feature = "fleet-store")]
-fn expire_history(center: &Center, now: DateTime<Utc>, retention_days: u32, retention_hours: u64) {
+fn expire_history(
+    center: &parking_lot::Mutex<Center>,
+    gate: &parking_lot::Mutex<()>,
+    now: DateTime<Utc>,
+    retention_days: u32,
+    retention_hours: u64,
+) {
     use super::fleet_history::{CLASS_CALLS, CLASS_MEMBERS, oldest_kept_at};
-    let calls = center
-        .history
-        .expire(CLASS_CALLS, now.date_naive(), retention_days);
+    let _no_filing = gate.lock();
+    let history = center.lock().history.clone();
+    let calls = history.expire(CLASS_CALLS, now.date_naive(), retention_days);
     let past = format!("--calls-retention-days {retention_days}");
     log_expired(calls, "call records", &past);
     let oldest = oldest_kept_at(now, retention(retention_hours));
-    let heartbeats = center.history.expire_before(CLASS_MEMBERS, oldest);
+    let heartbeats = history.expire_before(CLASS_MEMBERS, oldest);
     let past = format!("--retention-hours {retention_hours}");
     log_expired(heartbeats, "heartbeats", &past);
 }
@@ -1887,7 +2026,7 @@ async fn stop_requested() {
 fn rewrite_on_exit(state: &CenterState) {
     #[cfg(feature = "fleet-store")]
     {
-        file_and_log(&mut state.center.lock());
+        file_and_log(&state.center, &state.filing);
         file_heartbeats_and_log(&state.center, &state.filing);
     }
     let mut center = state.center.lock();
@@ -2120,12 +2259,13 @@ async fn calls(
             .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e.to_string()))?;
         let query =
             Query::parse(&pairs).map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
-        // The rows that wait and the list of files are taken as one step,
-        // so a filing between the two cannot hide a row; the files are
-        // read after, without the lock.
+        // What the intake holds and the list of files are taken as one
+        // step, so a filing between the two cannot hide a row. The intake
+        // is only opened under the lock: its records, and the files, are
+        // read after, without the lock, on a thread that may block.
         let (history, files, waiting) = {
             let center = state.center.lock();
-            let waiting = center.intake.rows();
+            let waiting = center.intake.snapshot();
             let files = center
                 .history
                 .list(super::fleet_history::CLASS_CALLS, &query);
@@ -2140,10 +2280,14 @@ async fn calls(
         };
         let files = files.map_err(unreadable)?;
         let waiting = waiting.map_err(unreadable)?;
-        let answer =
-            tokio::task::spawn_blocking(move || history.answer(&query, &files, waiting).json())
-                .await
-                .map_err(|_| Problem::new(StatusCode::INTERNAL_SERVER_ERROR))?;
+        let answer = tokio::task::spawn_blocking(move || {
+            waiting
+                .rows()
+                .map(|waiting| history.answer(&query, &files, waiting).json())
+        })
+        .await
+        .map_err(|_| Problem::new(StatusCode::INTERNAL_SERVER_ERROR))?
+        .map_err(unreadable)?;
         Ok(axum::Json(answer))
     }
 }
@@ -2161,35 +2305,79 @@ async fn upkeep(state: CenterState) {
         let now = Utc::now();
         #[cfg(feature = "fleet-store")]
         let filing_is_due = last_filing.elapsed() >= state.calls_flush;
-        {
-            let mut center = state.center.lock();
-            silent = log_silence_changes(&center.registry, now, state.missed, &silent);
-            #[cfg(feature = "fleet-store")]
-            if filing_is_due {
-                last_filing = tokio::time::Instant::now();
-                file_and_log(&mut center);
-            }
-            if last_upkeep.elapsed() >= UPKEEP_EVERY {
-                last_upkeep = tokio::time::Instant::now();
-                #[cfg(feature = "fleet-store")]
-                expire_history(
-                    &center,
-                    now,
-                    state.calls_retention_days,
-                    state.retention_hours,
-                );
-                for member in apply_retention(&mut center, now, state.retention_hours) {
-                    silent.remove(&member);
-                }
-            }
-        }
-        // The heartbeat rows are filed with the lock released, so requests
-        // are answered while their files are written.
+        #[cfg(not(feature = "fleet-store"))]
+        let filing_is_due = false;
+        let retention_is_due = last_upkeep.elapsed() >= UPKEEP_EVERY;
         #[cfg(feature = "fleet-store")]
         if filing_is_due {
-            file_heartbeats_and_log(&state.center, &state.filing);
+            last_filing = tokio::time::Instant::now();
+        }
+        if retention_is_due {
+            last_upkeep = tokio::time::Instant::now();
+        }
+        // The pass reads and writes files, so it runs on a thread that may
+        // block: the threads that answer requests are not held by it.
+        let due = Due {
+            filing: filing_is_due,
+            retention: retention_is_due,
+        };
+        let pass = state.clone();
+        let before = std::mem::take(&mut silent);
+        silent = tokio::task::spawn_blocking(move || upkeep_pass(&pass, now, before, due))
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!("fleet center: an upkeep pass did not finish: {e}");
+                BTreeSet::new()
+            });
+    }
+}
+
+/// What one upkeep pass has to do besides the silence check.
+#[derive(Debug, Clone, Copy, Default)]
+struct Due {
+    /// Whether the call records and the heartbeats are filed.
+    filing: bool,
+    /// Whether retention is applied.
+    retention: bool,
+}
+
+/// One upkeep pass at `now`: log the members that went silent or came
+/// back since `silent`, file what waits when `due` says so, and apply
+/// retention when it says so. Returns the members silent now.
+///
+/// The center's lock is held for each step that reads or changes what the
+/// center holds in memory, and for the rewrite of the store file and of
+/// the intake that retention does. It is not held while the history store
+/// is written or its days are removed.
+fn upkeep_pass(
+    state: &CenterState,
+    now: DateTime<Utc>,
+    silent: BTreeSet<String>,
+    due: Due,
+) -> BTreeSet<String> {
+    let mut silent = log_silence_changes(&state.center.lock().registry, now, state.missed, &silent);
+    #[cfg(not(feature = "fleet-store"))]
+    let _ = due.filing;
+    #[cfg(feature = "fleet-store")]
+    if due.filing {
+        file_and_log(&state.center, &state.filing);
+        file_heartbeats_and_log(&state.center, &state.filing);
+    }
+    if due.retention {
+        #[cfg(feature = "fleet-store")]
+        expire_history(
+            &state.center,
+            &state.filing,
+            now,
+            state.calls_retention_days,
+            state.retention_hours,
+        );
+        let mut center = state.center.lock();
+        for member in apply_retention(&mut center, now, state.retention_hours) {
+            silent.remove(&member);
         }
     }
+    silent
 }
 
 /// Log each member that went silent or came back since `before`, the set
@@ -3172,7 +3360,7 @@ mod behavior_tests {
     use super::*;
     use tower::ServiceExt as _;
 
-    type TestError = Box<dyn std::error::Error>;
+    pub(super) type TestError = Box<dyn std::error::Error>;
 
     /// The key tokens are minted with in these tests, derived at run time
     /// (a literal here is a hard-coded cryptographic value to CodeQL).
@@ -3232,7 +3420,7 @@ mod behavior_tests {
         )
     }
 
-    fn member(id: &str) -> String {
+    pub(super) fn member(id: &str) -> String {
         token(
             id,
             crate::auth::SCOPE_FLEET_REPORT,
@@ -3242,7 +3430,7 @@ mod behavior_tests {
     }
 
     /// A center state over a store in `dir`, `rate` requests per second.
-    fn state(dir: &Path, rate: u32) -> Result<CenterState, TestError> {
+    pub(super) fn state(dir: &Path, rate: u32) -> Result<CenterState, TestError> {
         let (center, _) = Center::open(
             &dir.join("center.store"),
             test_keys(1),
@@ -3273,7 +3461,7 @@ mod behavior_tests {
     }
 
     /// One request through the center's router: status and body.
-    async fn call(
+    pub(super) async fn call(
         st: &CenterState,
         method: &str,
         path: &str,
@@ -3296,7 +3484,7 @@ mod behavior_tests {
         Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
     }
 
-    fn bearer(tok: &str) -> String {
+    pub(super) fn bearer(tok: &str) -> String {
         format!("Bearer {tok}")
     }
 
@@ -4398,7 +4586,7 @@ mod behavior_tests {
     }
 
     /// A call line as a member writes it, for the call `call_id`.
-    fn call_line(
+    pub(super) fn call_line(
         stream: &str,
         seq: u64,
         sent_at: &str,
@@ -4806,7 +4994,7 @@ mod behavior_tests {
     }
 
     /// The Call-IDs in the intake of the center in `dir`.
-    fn intake_ids(dir: &Path) -> Result<Vec<String>, TestError> {
+    pub(super) fn intake_ids(dir: &Path) -> Result<Vec<String>, TestError> {
         let path = crate::app::fleet_intake::path_for(&dir.join("center.store"));
         let bytes = std::fs::read(path)?;
         let log = crate::app::fleet_seal::open_log(
@@ -5270,7 +5458,7 @@ mod behavior_tests {
     // ── THE HISTORY STORE ───────────────────────────────────────────────
 
     /// A token of `scope` for an operator.
-    fn operator(scope: &str) -> String {
+    pub(super) fn operator(scope: &str) -> String {
         bearer(&token("ops", scope, 3600, crate::auth::AUDIENCE_API))
     }
 
@@ -5343,7 +5531,7 @@ mod behavior_tests {
     /// Every row the history store of `center` holds, as positions, newest
     /// first.
     #[cfg(feature = "fleet-store")]
-    fn filed_positions(center: &Center) -> Result<Vec<u64>, TestError> {
+    pub(super) fn filed_positions(center: &Center) -> Result<Vec<u64>, TestError> {
         let query = crate::app::fleet_history::Query {
             limit: 1000,
             ..crate::app::fleet_history::Query::all()
@@ -5389,7 +5577,7 @@ mod behavior_tests {
     fn success_a_filing_moves_the_intake_into_the_history_store() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let mut center = center_with_three_calls(dir.path())?;
-        let filed = center.file_calls()?;
+        let filed = center.file_calls_here()?;
         assert_eq!(
             (filed.files, filed.rows, filed.already),
             (1, 3, 0),
@@ -5446,7 +5634,7 @@ mod behavior_tests {
             200,
             "success pushed"
         );
-        st.center.lock().file_calls()?;
+        st.center.lock().file_calls_here()?;
         assert_eq!(
             push_calls(&st, "edge-a", 4, 5).await?,
             200,
@@ -5481,7 +5669,7 @@ mod behavior_tests {
         let st = state(dir.path(), 0)?;
         push_calls(&st, "edge-a", 1, 4).await?;
         push_calls(&st, "edge-b", 1, 2).await?;
-        st.center.lock().file_calls()?;
+        st.center.lock().file_calls_here()?;
         let (_, by_member) = get_json(&st, "/v1/fleet/calls?member=edge-b").await?;
         assert_eq!(
             positions(&by_member),
@@ -5510,7 +5698,7 @@ mod behavior_tests {
         let st = state(dir.path(), 0)?;
         push_calls(&st, "edge-a", 1, 3).await?;
         #[cfg(feature = "fleet-store")]
-        st.center.lock().file_calls()?;
+        st.center.lock().file_calls_here()?;
         let (status, body) = call(
             &st,
             "GET",
@@ -5623,7 +5811,7 @@ mod behavior_tests {
         // A file where the class directory goes.
         let class = center.history.dir().join("calls");
         std::fs::write(&class, b"in the way")?;
-        let got = center.file_calls();
+        let got = center.file_calls_here();
         assert!(got.is_err(), "failure the filing fails: {got:?}");
         assert_eq!(
             center.intake.records(),
@@ -5632,7 +5820,7 @@ mod behavior_tests {
         );
         assert_eq!(center.filing.failed, 1, "failure the failure is counted");
         std::fs::remove_file(&class)?;
-        let filed = center.file_calls()?;
+        let filed = center.file_calls_here()?;
         assert_eq!(filed.rows, 3, "failure the next filing files them");
         assert_eq!(center.intake.records(), 0, "failure and empties the intake");
         Ok(())
@@ -5645,7 +5833,7 @@ mod behavior_tests {
         let dir = tempfile::tempdir()?;
         let st = state(dir.path(), 0)?;
         push_calls(&st, "edge-a", 1, 3).await?;
-        st.center.lock().file_calls()?;
+        st.center.lock().file_calls_here()?;
         push_calls(&st, "edge-a", 4, 4).await?;
         let (_, before) = get_json(&st, "/v1/fleet/calls").await?;
         assert_eq!(before["complete"], true, "failure whole before the change");
@@ -5691,7 +5879,7 @@ mod behavior_tests {
             3,
             "edge the intake still holds them"
         );
-        let filed = again.file_calls()?;
+        let filed = again.file_calls_here()?;
         assert_eq!(
             (filed.files, filed.rows, filed.already),
             (0, 0, 3),
@@ -5714,7 +5902,7 @@ mod behavior_tests {
         let intake = crate::app::fleet_intake::path_for(&dir.path().join("center.store"));
         let before = std::fs::read(&intake)?;
         assert_eq!(
-            center.file_calls()?,
+            center.file_calls_here()?,
             crate::app::fleet_history::Filed::default(),
             "edge nothing to file"
         );
@@ -5776,7 +5964,7 @@ mod behavior_tests {
         let dir = tempfile::tempdir()?;
         let st = state(dir.path(), 0)?;
         push_calls(&st, "edge-a", 1, 3).await?;
-        st.center.lock().file_calls()?;
+        st.center.lock().file_calls_here()?;
         let (status, answer) = get_json(&st, "/v1/fleet/calls?member=edge-z").await?;
         assert_eq!(status, 200, "edge a member with no rows is not an error");
         assert_eq!(answer["count"], 0, "edge no rows");
@@ -6506,7 +6694,7 @@ mod heartbeat_rows_tests {
             let mut center = open(dir.path(), 0)?;
             take(&mut center, 1, &[beat(1)?])?;
             take(&mut center, 2, &[call(2)?, call(3)?])?;
-            center.file_calls()?;
+            center.file_calls_here()?;
             let (center, filed) = file(center);
             filed?;
             drop(center);
@@ -6572,17 +6760,19 @@ mod heartbeat_rows_tests {
             let dir = tempfile::tempdir()?;
             let mut center = open(dir.path(), 0)?;
             take(&mut center, 1, &[beat(1)?, call(2)?])?;
-            center.file_calls()?;
+            center.file_calls_here()?;
             let (center, filed) = file(center);
             filed?;
             let now = t("2026-11-11T12:00:00Z")?;
-            expire_history(&center, now + chrono::Duration::hours(83), 90, 72);
+            let (shared, gate) = (parking_lot::Mutex::new(center), parking_lot::Mutex::new(()));
+            expire_history(&shared, &gate, now + chrono::Duration::hours(83), 90, 72);
             assert_eq!(
-                filed_counts(&center)?,
+                filed_counts(&shared.lock())?,
                 [1],
                 "success 83 hours later the 11th still holds an hour within 72: the day stays"
             );
-            expire_history(&center, now + chrono::Duration::hours(84), 90, 72);
+            expire_history(&shared, &gate, now + chrono::Duration::hours(84), 90, 72);
+            let center = shared.into_inner();
             assert_eq!(
                 filed_counts(&center)?,
                 Vec::<u64>::new(),
@@ -6651,5 +6841,1011 @@ mod heartbeat_rows_tests {
             assert_eq!(filed_counts(&center)?, [2, 1], "edge each once");
             Ok(())
         }
+    }
+}
+
+/// A filing of call records does not hold the center's lock while it
+/// reads the intake and writes the history store: pushes, status
+/// requests and questions are answered while a filing is stopped at a
+/// [`FilingStep`] by the test.
+#[cfg(all(test, feature = "fleet-store"))]
+mod filing_lock_tests {
+    use super::behavior_tests::{
+        TestError, bearer, call, call_line, filed_positions, intake_ids, member, operator, state,
+    };
+    use super::*;
+    use std::sync::mpsc;
+
+    /// How long a request may take to be answered before a test says
+    /// it was not: a bound on a failing run, not a wait of a passing
+    /// one.
+    const ANSWER: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// A filing stopped by a test. Dropped, it lets the filing go on.
+    struct Stopped {
+        /// Says which step the filing reached.
+        reached: mpsc::Receiver<FilingStep>,
+        /// Lets the filing go on from the step it reached.
+        go_on: mpsc::Sender<()>,
+    }
+
+    impl Stopped {
+        /// Wait until the filing is stopped at a step, and return it.
+        fn wait(&self) -> Result<FilingStep, TestError> {
+            Ok(self.reached.recv_timeout(ANSWER)?)
+        }
+
+        /// Let the filing go on from the step it is stopped at.
+        fn go_on(&self) -> Result<(), TestError> {
+            Ok(self.go_on.send(())?)
+        }
+    }
+
+    /// Have each filing of call records of `st` stop at every step in
+    /// `at` until the test lets it go on.
+    fn stop_filings(st: &CenterState, at: &'static [FilingStep]) -> Stopped {
+        let (reach, reached) = mpsc::channel();
+        let (go_on, gone_on) = mpsc::channel::<()>();
+        let gone_on = parking_lot::Mutex::new(gone_on);
+        st.center.lock().hook = Some(Arc::new(move |step| {
+            if at.contains(&step) {
+                let _ = reach.send(step);
+                let _ = gone_on.lock().recv();
+            }
+        }));
+        Stopped { reached, go_on }
+    }
+
+    /// A filing of the call records of `st` on a thread of its own.
+    fn filing(
+        st: &CenterState,
+    ) -> std::thread::JoinHandle<Result<crate::app::fleet_history::Filed, String>> {
+        let st = st.clone();
+        std::thread::spawn(move || Center::file_calls(&st.center, &st.filing))
+    }
+
+    /// What `filing` returned.
+    fn ended(
+        filing: std::thread::JoinHandle<Result<crate::app::fleet_history::Filed, String>>,
+    ) -> Result<crate::app::fleet_history::Filed, TestError> {
+        Ok(filing.join().map_err(|_| "the filing panicked")??)
+    }
+
+    /// A runtime of `workers` threads that answer requests.
+    fn runtime(workers: usize) -> std::io::Result<tokio::runtime::Runtime> {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(workers)
+            .enable_all()
+            .build()
+    }
+
+    /// The answer to a request, when it comes.
+    type Answered = mpsc::Receiver<Result<(u16, String), String>>;
+
+    /// Send one request to the center of `st` on `rt`.
+    fn ask(
+        rt: &tokio::runtime::Runtime,
+        st: &CenterState,
+        method: &'static str,
+        path: &'static str,
+        auth: String,
+        body: Vec<u8>,
+    ) -> Answered {
+        let (answer, answered) = mpsc::channel();
+        let st = st.clone();
+        rt.spawn(async move {
+            let got = call(&st, method, path, Some(&auth), body)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = answer.send(got);
+        });
+        answered
+    }
+
+    /// The answer to a request, or an error when none came in time.
+    fn answer(answered: &Answered, what: &str) -> Result<(u16, String), TestError> {
+        match answered.recv_timeout(ANSWER) {
+            Ok(got) => Ok(got?),
+            Err(_) => Err(format!("{what} was not answered while the filing was stopped").into()),
+        }
+    }
+
+    /// The body of a push of the call records `from` to `to`.
+    fn calls_body(from: u64, to: u64) -> Result<Vec<u8>, TestError> {
+        let mut body = String::new();
+        for seq in from..=to {
+            body.push_str(&call_line(
+                "s",
+                seq,
+                &Utc::now().to_rfc3339(),
+                &format!("call-{seq}@example.com"),
+            )?);
+            body.push('\n');
+        }
+        Ok(body.into_bytes())
+    }
+
+    /// Push the call records `from` to `to` of member `edge-a` to the
+    /// center of `st` on `rt`.
+    fn push(
+        rt: &tokio::runtime::Runtime,
+        st: &CenterState,
+        from: u64,
+        to: u64,
+    ) -> Result<Answered, TestError> {
+        Ok(ask(
+            rt,
+            st,
+            "POST",
+            "/v1/fleet/ingest",
+            bearer(&member("edge-a")),
+            calls_body(from, to)?,
+        ))
+    }
+
+    /// A center in `dir/sub` that took the call records 1 to 3, on a
+    /// runtime of two threads.
+    fn with_three(dir: &Path) -> Result<(tokio::runtime::Runtime, CenterState), TestError> {
+        let sub = dir.join("sub");
+        std::fs::create_dir(&sub)?;
+        let rt = runtime(2)?;
+        let st = state(&sub, 0)?;
+        let pushed = answer(&push(&rt, &st, 1, 3)?, "the first push")?;
+        assert_eq!(pushed.0, 200, "the first push is taken: {}", pushed.1);
+        Ok((rt, st))
+    }
+
+    /// The positions of every call record the history store of `st`
+    /// holds, oldest first.
+    fn filed(st: &CenterState) -> Result<Vec<u64>, TestError> {
+        let mut positions = filed_positions(&st.center.lock())?;
+        positions.reverse();
+        Ok(positions)
+    }
+
+    #[test]
+    fn success_a_push_is_answered_while_a_filing_is_stopped() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken]);
+        let filing = filing(&st);
+        assert_eq!(
+            stopped.wait()?,
+            FilingStep::Taken,
+            "success the filing is stopped"
+        );
+        let pushed = answer(&push(&rt, &st, 4, 5)?, "a push")?;
+        assert_eq!(
+            pushed.0, 200,
+            "success a push is answered while a filing is stopped: {}",
+            pushed.1
+        );
+        assert_eq!(
+            st.center.lock().intake.records(),
+            5,
+            "success the intake holds five"
+        );
+        stopped.go_on()?;
+        assert_eq!(
+            ended(filing)?.rows,
+            3,
+            "success the filing files its three records"
+        );
+        assert_eq!(
+            st.center.lock().intake.records(),
+            2,
+            "success the later two stay"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_status_request_is_answered_while_a_filing_is_stopped() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken]);
+        let filing = filing(&st);
+        stopped.wait()?;
+        let asked = ask(
+            &rt,
+            &st,
+            "GET",
+            "/v1/fleet/members",
+            operator(crate::auth::SCOPE_INVENTORY),
+            Vec::new(),
+        );
+        let (status, body) = answer(&asked, "a status request")?;
+        assert_eq!(status, 200, "success a status request is answered: {body}");
+        let report: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            report["intake"]["call_records"], 3,
+            "success a status request is answered while a filing is stopped: {body}"
+        );
+        stopped.go_on()?;
+        ended(filing)?;
+        Ok(())
+    }
+
+    #[test]
+    fn success_more_status_requests_than_workers_are_answered_during_a_filing()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken]);
+        let filing = filing(&st);
+        stopped.wait()?;
+        // Sixteen requests on a runtime of two threads.
+        let asked: Vec<Answered> = (0..16)
+            .map(|_| {
+                ask(
+                    &rt,
+                    &st,
+                    "GET",
+                    "/v1/fleet/members",
+                    operator(crate::auth::SCOPE_INVENTORY),
+                    Vec::new(),
+                )
+            })
+            .collect();
+        for (n, asked) in asked.iter().enumerate() {
+            let (status, body) = answer(asked, "a status request")?;
+            assert_eq!(
+                status, 200,
+                "success status request {n} of 16 is answered during a filing: {body}"
+            );
+        }
+        stopped.go_on()?;
+        ended(filing)?;
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_question_is_answered_while_a_filing_is_stopped() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken]);
+        let filing = filing(&st);
+        stopped.wait()?;
+        let asked = ask(
+            &rt,
+            &st,
+            "GET",
+            "/v1/fleet/calls",
+            operator(crate::auth::SCOPE_FULL),
+            Vec::new(),
+        );
+        let (status, body) = answer(&asked, "a question")?;
+        let got: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            (status, &got["count"]),
+            (200, &serde_json::json!(3)),
+            "success a question is answered while a filing is stopped: {body}"
+        );
+        stopped.go_on()?;
+        ended(filing)?;
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_centers_lock_is_free_at_each_step_of_a_filing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken, FilingStep::Written]);
+        let filing = filing(&st);
+        for step in [FilingStep::Taken, FilingStep::Written] {
+            assert_eq!(stopped.wait()?, step, "success the filing reaches {step:?}");
+            assert!(
+                st.center.try_lock().is_some(),
+                "success the center's lock is free at {step:?}"
+            );
+            assert!(
+                st.filing.try_lock().is_none(),
+                "success the filing gate is held at {step:?}"
+            );
+            stopped.go_on()?;
+        }
+        ended(filing)?;
+        assert!(
+            st.filing.try_lock().is_some(),
+            "success the gate is free after the filing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_records_pushed_during_a_filing_are_filed_by_the_next() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken]);
+        let first = filing(&st);
+        stopped.wait()?;
+        assert_eq!(
+            answer(&push(&rt, &st, 4, 5)?, "a push")?.0,
+            200,
+            "success pushed"
+        );
+        stopped.go_on()?;
+        assert_eq!(
+            ended(first)?.rows,
+            3,
+            "success the first filing files three"
+        );
+        st.center.lock().hook = None;
+        let next = Center::file_calls(&st.center, &st.filing)?;
+        assert_eq!(
+            (next.rows, next.already),
+            (2, 0),
+            "success the next files the two"
+        );
+        assert_eq!(
+            filed(&st)?,
+            vec![1, 2, 3, 4, 5],
+            "success records pushed during a filing are filed by the next"
+        );
+        assert_eq!(
+            st.center.lock().intake.records(),
+            0,
+            "success the intake is empty"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_push_after_the_files_are_written_stays_in_the_intake() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Written]);
+        let filing = filing(&st);
+        assert_eq!(
+            stopped.wait()?,
+            FilingStep::Written,
+            "success the files are written"
+        );
+        assert_eq!(
+            answer(&push(&rt, &st, 4, 4)?, "a push")?.0,
+            200,
+            "success pushed"
+        );
+        stopped.go_on()?;
+        assert_eq!(ended(filing)?.rows, 3, "success three were filed");
+        assert_eq!(
+            intake_ids(&dir.path().join("sub"))?,
+            vec!["call-4@example.com"],
+            "success a push after the files are written stays in the intake"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_filing_counts_what_it_filed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let filed = Center::file_calls(&st.center, &st.filing)?;
+        assert_eq!(
+            (filed.files, filed.rows, filed.already),
+            (1, 3, 0),
+            "success three rows"
+        );
+        let center = st.center.lock();
+        assert_eq!(
+            (
+                center.filing.files_written,
+                center.filing.rows_filed,
+                center.filing.failed
+            ),
+            (1, 3, 0),
+            "success a filing counts what it filed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_upkeep_pass_files_the_call_records() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let due = Due {
+            filing: true,
+            retention: true,
+        };
+        let silent = upkeep_pass(&st, Utc::now(), BTreeSet::new(), due);
+        assert!(silent.is_empty(), "success no member is silent");
+        assert_eq!(
+            filed(&st)?,
+            vec![1, 2, 3],
+            "success an upkeep pass files the call records"
+        );
+        assert_eq!(
+            st.center.lock().intake.records(),
+            0,
+            "success the intake is empty"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_upkeep_pass_is_stopped_with_the_centers_lock_free() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken]);
+        let pass = {
+            let st = st.clone();
+            std::thread::spawn(move || {
+                let due = Due {
+                    filing: true,
+                    retention: true,
+                };
+                upkeep_pass(&st, Utc::now(), BTreeSet::new(), due)
+            })
+        };
+        stopped.wait()?;
+        assert_eq!(
+            answer(&push(&rt, &st, 4, 4)?, "a push")?.0,
+            200,
+            "success a push is answered while an upkeep pass files"
+        );
+        stopped.go_on()?;
+        pass.join().map_err(|_| "the pass panicked")?;
+        assert_eq!(
+            filed(&st)?,
+            vec![1, 2, 3],
+            "success the pass filed the three"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_question_between_the_write_and_the_end_shows_each_record_once()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Written]);
+        let filing = filing(&st);
+        stopped.wait()?;
+        let asked = ask(
+            &rt,
+            &st,
+            "GET",
+            "/v1/fleet/calls",
+            operator(crate::auth::SCOPE_FULL),
+            Vec::new(),
+        );
+        let (status, body) = answer(&asked, "a question")?;
+        let got: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            (status, &got["count"]),
+            (200, &serde_json::json!(3)),
+            "success a question between the write and the end shows each record once: {body}"
+        );
+        stopped.go_on()?;
+        ended(filing)?;
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_stop_of_the_center_files_what_a_filing_left() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        Center::file_calls(&st.center, &st.filing)?;
+        assert_eq!(
+            answer(&push(&rt, &st, 4, 4)?, "a push")?.0,
+            200,
+            "success pushed"
+        );
+        rewrite_on_exit(&st);
+        assert_eq!(
+            filed(&st)?,
+            vec![1, 2, 3, 4],
+            "success a stop of the center files what a filing left"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_filing_that_cannot_write_counts_and_leaves_the_records() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let class = st.center.lock().history.dir().join("calls");
+        std::fs::write(&class, b"in the way")?;
+        let got = Center::file_calls(&st.center, &st.filing);
+        assert!(got.is_err(), "failure the filing fails: {got:?}");
+        let held = st.center.lock().intake.records();
+        assert_eq!(
+            (held, st.center.lock().filing.failed),
+            (3, 1),
+            "failure a filing that cannot write counts and leaves the records"
+        );
+        std::fs::remove_file(&class)?;
+        assert_eq!(
+            Center::file_calls(&st.center, &st.filing)?.rows,
+            3,
+            "failure the next filing files them"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_intake_that_cannot_be_written_again_keeps_its_records() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let (sub, moved) = (dir.path().join("sub"), dir.path().join("moved"));
+        {
+            let (sub, moved) = (sub.clone(), moved.clone());
+            st.center.lock().hook = Some(Arc::new(move |step| {
+                if step == FilingStep::Written {
+                    // The files are written; the intake's directory
+                    // goes away before the intake is written again.
+                    let _ = std::fs::rename(&sub, &moved);
+                }
+            }));
+        }
+        let got = Center::file_calls(&st.center, &st.filing);
+        assert!(
+            got.as_ref().is_err_and(|e| e.starts_with("the intake '")),
+            "failure the filing fails at the intake: {got:?}"
+        );
+        let held = st.center.lock().intake.records();
+        assert_eq!(
+            (held, st.center.lock().filing.failed),
+            (3, 1),
+            "failure an intake that cannot be written again keeps its records"
+        );
+        std::fs::rename(&moved, &sub)?;
+        st.center.lock().hook = None;
+        let next = Center::file_calls(&st.center, &st.filing)?;
+        assert_eq!(
+            (next.rows, next.already),
+            (0, 3),
+            "failure the next filing files nothing twice"
+        );
+        assert_eq!(
+            filed(&st)?,
+            vec![1, 2, 3],
+            "failure the store holds each record once"
+        );
+        assert_eq!(
+            st.center.lock().intake.records(),
+            0,
+            "failure and the intake is empty"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_stop_between_the_write_and_the_end_files_nothing_twice() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let taken = st
+            .center
+            .lock()
+            .take_calls()
+            .ok_or("no records were taken")?;
+        let written = taken.write()?;
+        assert_eq!(written.filed.rows, 3, "failure the files are written");
+        // The center stops here: the intake was not told.
+        drop(st);
+        drop(rt);
+        let st = state(&dir.path().join("sub"), 0)?;
+        assert_eq!(
+            st.center.lock().intake.records(),
+            3,
+            "failure the intake holds them"
+        );
+        let next = Center::file_calls(&st.center, &st.filing)?;
+        assert_eq!(
+            (next.rows, next.already),
+            (0, 3),
+            "failure a stop between the write and the end files nothing twice"
+        );
+        assert_eq!(
+            filed(&st)?,
+            vec![1, 2, 3],
+            "failure the store holds each record once"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_records_pushed_during_a_filing_that_fails_are_kept() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken]);
+        let filing = filing(&st);
+        stopped.wait()?;
+        assert_eq!(
+            answer(&push(&rt, &st, 4, 5)?, "a push")?.0,
+            200,
+            "failure pushed"
+        );
+        let class = st.center.lock().history.dir().join("calls");
+        std::fs::write(&class, b"in the way")?;
+        stopped.go_on()?;
+        assert!(ended(filing).is_err(), "failure the filing fails");
+        assert_eq!(
+            st.center.lock().intake.records(),
+            5,
+            "failure all five are held"
+        );
+        std::fs::remove_file(&class)?;
+        st.center.lock().hook = None;
+        assert_eq!(
+            Center::file_calls(&st.center, &st.filing)?.rows,
+            5,
+            "failure records pushed during a filing that fails are kept"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_filing_whose_intake_is_away_is_counted() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let intake = crate::app::fleet_intake::path_for(&dir.path().join("sub/center.store"));
+        std::fs::remove_file(&intake)?;
+        let got = Center::file_calls(&st.center, &st.filing);
+        assert!(
+            got.as_ref().is_err_and(|e| e.starts_with("the intake '")),
+            "failure the filing names the intake: {got:?}"
+        );
+        assert_eq!(
+            st.center.lock().filing.failed,
+            1,
+            "failure a filing whose intake is away is counted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_question_says_503_when_the_intake_is_away() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let intake = crate::app::fleet_intake::path_for(&dir.path().join("sub/center.store"));
+        std::fs::remove_file(&intake)?;
+        let asked = ask(
+            &rt,
+            &st,
+            "GET",
+            "/v1/fleet/calls",
+            operator(crate::auth::SCOPE_FULL),
+            Vec::new(),
+        );
+        let (status, body) = answer(&asked, "a question")?;
+        assert_eq!(
+            status, 503,
+            "failure a question says 503 when the intake is away: {body}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_question_says_503_when_a_waiting_record_was_changed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let intake = crate::app::fleet_intake::path_for(&dir.path().join("sub/center.store"));
+        let mut bytes = std::fs::read(&intake)?;
+        let at = bytes.len().saturating_sub(40);
+        bytes[at] ^= 0x01;
+        std::fs::write(&intake, bytes)?;
+        let asked = ask(
+            &rt,
+            &st,
+            "GET",
+            "/v1/fleet/calls",
+            operator(crate::auth::SCOPE_FULL),
+            Vec::new(),
+        );
+        let (status, body) = answer(&asked, "a question")?;
+        assert_eq!(
+            status, 503,
+            "failure a question says 503 when a waiting record was changed: {body}"
+        );
+        assert!(
+            !body.contains("center.store"),
+            "failure the answer names no file: {body}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_changed_intake_fails_the_filing_and_is_left() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let intake = crate::app::fleet_intake::path_for(&dir.path().join("sub/center.store"));
+        let mut bytes = std::fs::read(&intake)?;
+        let at = bytes.len().saturating_sub(40);
+        bytes[at] ^= 0x01;
+        std::fs::write(&intake, &bytes)?;
+        let got = Center::file_calls(&st.center, &st.filing);
+        assert!(
+            got.as_ref().is_err_and(|e| e.contains("sealed layer")),
+            "failure a changed intake fails the filing: {got:?}"
+        );
+        assert_eq!(
+            std::fs::read(&intake)?,
+            bytes,
+            "failure and is left as it was"
+        );
+        assert!(filed(&st)?.is_empty(), "failure nothing was filed");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_filing_of_an_empty_intake_takes_no_step() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let steps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&steps);
+        st.center.lock().hook = Some(Arc::new(move |_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let filed = Center::file_calls(&st.center, &st.filing)?;
+        assert_eq!((filed.files, filed.rows), (0, 0), "edge nothing is filed");
+        assert_eq!(
+            steps.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "edge a filing of an empty intake takes no step"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_filing_takes_each_step_once_in_order() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let steps = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&steps);
+        st.center.lock().hook = Some(Arc::new(move |step| seen.lock().push(step)));
+        Center::file_calls(&st.center, &st.filing)?;
+        assert_eq!(
+            *steps.lock(),
+            vec![FilingStep::Taken, FilingStep::Written],
+            "edge a filing takes each step once in order"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_upkeep_pass_with_nothing_due_files_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        upkeep_pass(&st, Utc::now(), BTreeSet::new(), Due::default());
+        assert_eq!(
+            st.center.lock().intake.records(),
+            3,
+            "edge an upkeep pass with nothing due files nothing"
+        );
+        assert!(
+            filed(&st)?.is_empty(),
+            "edge the history store holds no record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_pushes_at_both_steps_of_a_filing_are_each_filed_once() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken, FilingStep::Written]);
+        let first = filing(&st);
+        stopped.wait()?;
+        assert_eq!(
+            answer(&push(&rt, &st, 4, 5)?, "a push")?.0,
+            200,
+            "edge pushed at taken"
+        );
+        stopped.go_on()?;
+        stopped.wait()?;
+        assert_eq!(
+            answer(&push(&rt, &st, 6, 7)?, "a push")?.0,
+            200,
+            "edge pushed at written"
+        );
+        stopped.go_on()?;
+        assert_eq!(ended(first)?.rows, 3, "edge the first filing files three");
+        st.center.lock().hook = None;
+        let next = Center::file_calls(&st.center, &st.filing)?;
+        assert_eq!(
+            (next.rows, next.already),
+            (4, 0),
+            "edge the next files the four"
+        );
+        assert_eq!(
+            filed(&st)?,
+            vec![1, 2, 3, 4, 5, 6, 7],
+            "edge pushes at both steps of a filing are each filed once"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_replayed_push_during_a_filing_is_a_duplicate() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken]);
+        let filing = filing(&st);
+        stopped.wait()?;
+        let (status, body) = answer(&push(&rt, &st, 1, 3)?, "a replayed push")?;
+        let got: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            (status, &got["duplicate"], &got["calls"]),
+            (200, &serde_json::json!(3), &serde_json::json!(0)),
+            "edge a replayed push during a filing is a duplicate: {body}"
+        );
+        stopped.go_on()?;
+        ended(filing)?;
+        assert_eq!(
+            st.center.lock().intake.records(),
+            0,
+            "edge the intake is empty"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_filing_started_while_another_is_stopped_runs_after_it() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Taken]);
+        let first = filing(&st);
+        stopped.wait()?;
+        assert_eq!(
+            answer(&push(&rt, &st, 4, 4)?, "a push")?.0,
+            200,
+            "edge pushed"
+        );
+        let second = filing(&st);
+        stopped.go_on()?;
+        // The second filing stops at the same step, after the first
+        // ended: the gate lets one run at a time.
+        stopped.wait()?;
+        assert!(
+            first.is_finished() || st.filing.try_lock().is_none(),
+            "edge one at a time"
+        );
+        stopped.go_on()?;
+        let (first, second) = (ended(first)?, ended(second)?);
+        assert_eq!(
+            (first.rows, second.rows, second.already),
+            (3, 1, 0),
+            "edge a filing started while another is stopped runs after it"
+        );
+        assert_eq!(
+            filed(&st)?,
+            vec![1, 2, 3, 4],
+            "edge each record is filed once"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_status_request_between_the_write_and_the_end_counts_the_intake()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Written]);
+        let filing = filing(&st);
+        stopped.wait()?;
+        let asked = ask(
+            &rt,
+            &st,
+            "GET",
+            "/v1/fleet/members",
+            operator(crate::auth::SCOPE_INVENTORY),
+            Vec::new(),
+        );
+        let (_, body) = answer(&asked, "a status request")?;
+        let report: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            (
+                &report["intake"]["call_records"],
+                &report["history"]["rows_filed"]
+            ),
+            (&serde_json::json!(3), &serde_json::json!(0)),
+            "edge a status request between the write and the end counts the intake: {body}"
+        );
+        stopped.go_on()?;
+        ended(filing)?;
+        Ok(())
+    }
+
+    #[test]
+    fn edge_retention_waits_for_a_filing_and_the_lock_stays_free() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let stopped = stop_filings(&st, &[FilingStep::Written]);
+        let filing = filing(&st);
+        stopped.wait()?;
+        let retention = {
+            let st = st.clone();
+            std::thread::spawn(move || {
+                expire_history(&st.center, &st.filing, Utc::now(), 90, 72);
+            })
+        };
+        assert!(
+            st.center.try_lock().is_some(),
+            "edge the center's lock is free while retention waits for a filing"
+        );
+        stopped.go_on()?;
+        ended(filing)?;
+        retention.join().map_err(|_| "retention panicked")?;
+        assert_eq!(
+            filed(&st)?,
+            vec![1, 2, 3],
+            "edge retention removed no new record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_retention_does_not_run_while_the_filing_gate_is_held() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let (done, was_done) = mpsc::channel();
+        let gate = st.filing.lock();
+        let retention = {
+            let st = st.clone();
+            std::thread::spawn(move || {
+                expire_history(&st.center, &st.filing, Utc::now(), 90, 72);
+                let _ = done.send(());
+            })
+        };
+        // A pass that took no gate ends at once and says so here. A pass
+        // that waits for the gate says nothing, however long this waits.
+        assert!(
+            was_done
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "edge retention does not run while the filing gate is held"
+        );
+        drop(gate);
+        retention.join().map_err(|_| "retention panicked")?;
+        assert!(
+            was_done.try_recv().is_ok(),
+            "edge it runs once the gate is free"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_end_of_a_filing_does_not_read_the_intake_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let intake = crate::app::fleet_intake::path_for(&dir.path().join("sub/center.store"));
+        let (reach, reached) = mpsc::channel();
+        let (go_on, gone_on) = mpsc::channel::<()>();
+        let gone_on = parking_lot::Mutex::new(gone_on);
+        let file = intake.clone();
+        st.center.lock().hook = Some(Arc::new(move |step| match step {
+            FilingStep::Taken => {
+                let _ = reach.send(());
+                let _ = gone_on.lock().recv();
+            }
+            FilingStep::Written => {
+                // The intake file can no longer be read whole.
+                if let Ok(mut bytes) = std::fs::read(&file) {
+                    let at = bytes.len().saturating_sub(40);
+                    bytes[at] ^= 0x01;
+                    let _ = std::fs::write(&file, bytes);
+                }
+            }
+        }));
+        let filing = filing(&st);
+        reached.recv_timeout(ANSWER)?;
+        assert_eq!(
+            answer(&push(&rt, &st, 4, 4)?, "a push")?.0,
+            200,
+            "edge pushed"
+        );
+        go_on.send(())?;
+        assert_eq!(
+            ended(filing)?.rows,
+            3,
+            "edge the end of a filing does not read the intake file"
+        );
+        assert_eq!(
+            intake_ids(&dir.path().join("sub"))?,
+            vec!["call-4@example.com"],
+            "edge the intake is written again with the record that arrived"
+        );
+        Ok(())
     }
 }
