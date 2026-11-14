@@ -1201,9 +1201,12 @@ answer with this page.
 - **A token that reads calls.** `GET /v1/fleet/calls` needs scope `full`. A
   call record holds the numbers and addresses of a call, so an `inventory`
   token does not read it.
-- **Room on the center's disk.** In the run of the tests, 20,000 records of
-  about 1.3 kB each made one file of 25,477,354 bytes. The files are not
-  compressed.
+- **Room on the center's disk.** The center compresses the files with zstd.
+  In a run of the tests, 20,000 call records of about 0.8 kB each made one
+  file of 660,654 bytes; releases 0.5.249 to 0.5.253 wrote the same records
+  without compression as 16,493,345 bytes. See [Upgrade a center to
+  compressed history files](#upgrade-a-center-to-compressed-history-files)
+  for what the compression gives on other rows.
 - **Other systems.** Nothing changes on OpenSIPS, Kamailio, Homer or any HEP
   collector. A backup of the center now includes the directory
   `<store>.parquet`.
@@ -1456,8 +1459,11 @@ store key, and what to do with the files release 0.5.249 wrote.
   (the heartbeat retention removes whole days, so up to four days are on
   disk).
 
-**What a file holds.** Inside the seal, each file is one Parquet file
-without compression. The column `member` is the member's id. The rows are in
+**What a file holds.** Inside the seal, each file is one Parquet file, and
+zstd at level 1 compresses each of its columns. Releases 0.5.249 to 0.5.253
+wrote the files without compression, and this release reads those in place:
+see [Upgrade a center to compressed history files](#upgrade-a-center-to-compressed-history-files).
+The column `member` is the member's id. The rows are in
 order of member and then of receive time. A row group ends where the member
 changes once it holds 128 rows, and at 10,000 rows at the latest, and each
 row group records its least and its greatest member. A question for one
@@ -1469,14 +1475,15 @@ What follows from that layout:
 
 - A question for one member opens every file of its window, and the center
   unseals each of those files whole before it picks the row group. In a
-  release build, one member's newest 1,000 heartbeats among 2,000 members
-  came from 1,001 files in 2.8 s.
+  release build of 0.5.251, which wrote the files without compression, one
+  member's newest 1,000 heartbeats among 2,000 members came from 1,001
+  files in 2.8 s.
 - One answer holds at most 1,000 rows (`limit`). A member's 24 hours at one
   heartbeat a minute are 1,440 rows: ask twice, with `from` and `to`.
 - A center that starts without its store file reads the heartbeat files
   from the newest back, up to 4,096 of them, to rebuild its member list: 25.7
-  s in a release build for 1,440 files of 2,000 members. A center that
-  starts with its store file reads one.
+  s in a release build of 0.5.251, without compression, for 1,440 files of
+  2,000 members. A center that starts with its store file reads one.
 
 **Reading the files with other tools.** No other tool reads a file as it is
 on disk: the center seals every file under the store key, and the first
@@ -1572,6 +1579,109 @@ center that runs out of them cannot file.
   are the files of release 0.5.249. The center reads them and removes them
   when their day passes the retention.
 
+### Upgrade a center to compressed history files
+
+**Purpose.** From this release the center compresses every history file it
+writes, call records and heartbeats, with zstd at level 1. Releases 0.5.249
+to 0.5.253 wrote the same rows without compression. This section says what
+an upgrade changes on disk, how to see it, and what a downgrade does.
+
+What the compression gives, measured on synthetic rows (the test
+`edge_a_filing_is_measured_with_and_without_the_codec`, with 2,000 members
+and 10 call records for each):
+
+| One sealed file | 0.5.253, bytes | This release, bytes | Share |
+|---|---|---|---|
+| One heartbeat of each of 2,000 members | 887,305 | 62,048 | 7.0% |
+| 20,000 call records | 16,493,345 | 660,654 | 4.0% |
+
+The share depends on the rows. An inventory or a call record repeats most of
+its field names and many of its values from row to row, and that is what the
+codec removes. The rows of that test repeat more than the rows of a
+fleet do. In a second measurement, each row held digests, addresses and
+counters of its own, as `GET /v1/inventory` and `GET /v1/dialogs/:call_id`
+answer them: a heartbeat file was 11.7% of its uncompressed size and a call
+record file 10.7%. Text that does not repeat does not shrink.
+
+The cost is time in each filing and each read. In that second measurement,
+in a release build on aarch64, encoding 2,000 heartbeats took 9.8 ms with
+zstd and 3.7 ms without, and encoding 20,000 call records took 98 ms and 59
+ms. Decoding the 20,000 call records took 17.7 ms and 7.6 ms. The binary is
+655,456 bytes larger (aarch64 gnu, 27,103,168 bytes).
+
+**Before you start.**
+
+- **A center with the history store.** The compression is part of the
+  history store and has no flag and no setting. See [Keep call history at
+  the center](#keep-call-history-at-the-center) for the builds that carry
+  the store.
+- **Other systems.** Nothing changes on a member, and a member of any
+  release that pushes to the center needs no upgrade. Nothing changes on
+  OpenSIPS, Kamailio, Homer or any HEP collector. `GET /v1/fleet/calls` and
+  `GET /v1/fleet/members/{id}/history` answer the same JSON as before, so a
+  script that reads them needs no change. A backup of `<store>.parquet`
+  copies smaller files from the day of the upgrade on.
+- **The files on disk stay as they are.** The center does not rewrite a file
+  an earlier release wrote. Those files stay uncompressed until the
+  retention removes their day, and the center answers from them and from
+  the new files together.
+- **A downgrade does not read the new files.** Releases 0.5.249 to 0.5.253
+  have no zstd reader. A center of one of those releases leaves the
+  compressed files on disk, answers no row from them, and names each of
+  them under `refused` in the answer. Upgrade again and the rows are back.
+  Keep this in mind before you move a center back to an earlier release.
+
+**Steps.**
+
+1. **[center]** Read the size of the history directory before the upgrade:
+
+   ```bash
+   du -sb /var/lib/sipnab/center.store.parquet
+   ```
+
+2. **[center]** Install this release and start the center with the command
+   line it had. No flag is new.
+
+3. **[center]** Wait for one filing. The center files the heartbeats and the
+   call records it received every `--calls-flush-secs` (60 seconds by
+   default), and writes no file when it received no new row.
+
+**Verify.**
+
+1. **[center]** List the heartbeat files of today with their sizes. The
+   files written after the upgrade are smaller than the files of the same
+   fleet written before it:
+
+   ```bash
+   ls -l /var/lib/sipnab/center.store.parquet/members/date=$(date -u +%F)
+   ```
+
+2. **[controller]** Ask for the call records of a window that spans the
+   upgrade. The answer holds rows from before and from after it, and
+   `refused` is empty:
+
+   ```bash
+   curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $OPS_TOKEN" \
+     'https://127.0.0.1:8444/v1/fleet/calls?from=2026-11-14T00:00:00Z&to=2026-11-15T00:00:00Z&limit=1000' \
+     | jq '{rows: (.calls | length), refused}'
+   ```
+
+**Troubleshoot.**
+
+- **The files written after the upgrade are as large as the files before
+  it.** The center that wrote them is not this release. Run `sipnab
+  --version` on the center's host and check which binary the service
+  starts.
+- **After a downgrade, an answer lacks the newest rows and `refused` names
+  files with a reason that ends `Disabled feature at compile time: zstd`.**
+  The center is a release from 0.5.249 to 0.5.253 and the files are
+  compressed. The files are intact. Install this release or a later one.
+- **A reason reads `parquet: column received_at is compressed with snappy;
+  this build reads zstd and uncompressed files`**, or names another codec.
+  A release newer than this one wrote the file with a codec this release
+  does not link. Install the release that wrote it. See [the error
+  reference](errors.md#parquet-column-column-is-compressed-with-codec-this-build-reads-zstd-and-uncompressed-files).
+
 ### Keep heartbeat history at the center
 
 **Purpose.** A center with the history store keeps every heartbeat it
@@ -1614,13 +1724,17 @@ would.
   each filing, which holds the heartbeats of every member: at the default
   `--calls-flush-secs 60` that is 1,440 files a day for 1 member and for
   2,000 ([The files of the history store](#the-files-of-the-history-store)).
-  In a run of the tests on 2026-11-12 (a debug build, load average 14 to
-  25), 2,000 members with one heartbeat of about 300 bytes each made one
-  file of 602,454 bytes in 137 ms, and 1,440 such filings, 24 hours, made
-  887,745,307 bytes. A release build on the same host wrote the one file
-  in 127 ms, read one member's newest 1,000 heartbeats from 1,001 files in
-  2.8 s, and rebuilt the member list without a store file from all 1,440
-  files in 25.7 s. The center answers members while it writes a file.
+  In a run of the tests on 2026-11-13 (a debug build, load average about
+  30), 2,000 members with one heartbeat of about 300 bytes each made one
+  file of 79,189 bytes in 202 ms, and 1,440 such filings, 24 hours, made
+  113,491,120 bytes. Releases 0.5.251 to 0.5.253 wrote the same rows
+  without compression as 887,745,307 bytes. In that debug build, one
+  member's newest 1,000 heartbeats came from 1,001 files in 4.6 s, and the
+  member list was rebuilt without a store file from all 1,440 files in 76.7
+  s. A release build of 0.5.251, without compression, read the 1,001 files
+  in 2.8 s and rebuilt the member list in 25.7 s; a release build with
+  compression is not measured yet. The center answers members while it
+  writes a file.
   Heartbeats that wait for a filing are in the store file, and at most
   64 MiB of them wait (`MAX_WAITING_BYTES`).
 - **Other systems.** Nothing changes on a member, on OpenSIPS, Kamailio,

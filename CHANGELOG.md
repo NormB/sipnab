@@ -17,6 +17,13 @@ entry that carries them.
 ### Changed
 
 - **The pre-commit hook's step log keeps the test total of a suite that passed.** After a passing suite the hook writes nextest's `Summary` line (the tests run, passed and skipped) to `sipnab-pre-commit-steps.log` as a note of that run, and `python3 scripts/hook-steps.py` prints it under the run's table. Before, a summary was kept only for a failed run, so two passing runs could not be compared by their totals. This is a change for contributors: the shipped program is the same. [Where a hook run spent its time](docs/internals/testing.md#the-development-loop) describes the note.
+- **The fleet center compresses its history files with zstd (FLEET-HISTORY-FOLLOW-UPS).** `sipnab fleet serve` writes every call record file and every heartbeat file under `<store>.parquet` with zstd at level 1. Releases 0.5.249 to 0.5.253 wrote them without compression.
+  - In the tests' measurement, one heartbeat of each of 2,000 members is a sealed file of 62,048 bytes (887,305 before), and 20,000 call records are 660,654 bytes (16,493,345 before). On rows that each hold digests, addresses and counters of their own, a heartbeat file was 11.7% and a call record file 10.7% of its uncompressed size.
+  - The cost, in a release build on aarch64: encoding 2,000 heartbeats took 9.8 ms against 3.7 ms, encoding 20,000 call records 98 ms against 59 ms, and decoding them 17.7 ms against 7.6 ms. The aarch64 gnu binary is 655,456 bytes larger. The static musl builds and the `-noaudio` packages do not carry the history store and are the same size.
+  - The center reads the uncompressed files of the earlier releases in place and answers from them and from the new files together. It does not rewrite them.
+  - **A downgrade does not read the new files.** A center of release 0.5.249 to 0.5.253 has no zstd reader: it leaves the compressed files on disk, answers no row from them and names them under `refused`. The rows are back after an upgrade.
+  - A file in a codec this build does not link is refused whole with `parquet: column {column} is compressed with {codec}; this build reads zstd and uncompressed files` ([error reference](docs/errors.md#parquet-column-column-is-compressed-with-codec-this-build-reads-zstd-and-uncompressed-files)).
+  - No flag and no setting is new, and `GET /v1/fleet/calls` and `GET /v1/fleet/members/{id}/history` answer the same JSON. [Upgrade a center to compressed history files](docs/fleet.md#upgrade-a-center-to-compressed-history-files) has the steps, the check and the troubleshooting.
 
 ### Fixed
 

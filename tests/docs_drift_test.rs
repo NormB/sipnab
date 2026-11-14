@@ -6367,7 +6367,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // expressions in `search_messages`" in docs/mcp-tools-core.md and the
     // refusals table of "When a regex search does not work" in docs/mcp.md,
     // each with its site mirror (+4).
-    const EXPECTED_TABLES: usize = 1494;
+    // 1494 -> 1496 (fleet history compression): the table of file sizes
+    // with and without zstd in docs/fleet.md's "Upgrade a center to
+    // compressed history files", with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1496;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

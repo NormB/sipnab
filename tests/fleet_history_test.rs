@@ -660,31 +660,150 @@ mod with_the_store {
     }
 
     /// Write `rows`, all of one member and one day, as release 0.5.249
-    /// filed them: one sealed Parquet file under `member=<id>`, named by
-    /// its times and its first row. No build writes that layout any more,
-    /// so the test builds the file from the pieces that release used.
+    /// filed them: one sealed Parquet file without a codec under
+    /// `member=<id>`, named by its times and its first row. No build writes
+    /// that layout any more, so the test builds the file from the pieces
+    /// that release used.
     fn file_as_0_5_249(dir: &Path, rows: &[IntakeRecord]) -> Result<PathBuf, TestError> {
-        use sipnab::app::fleet_history::{
-            CHUNK_BYTES, FileName, Partition, dir_for, encode, sealed_lines,
-        };
-        use sipnab::app::fleet_seal::{Kind, LogSealer, system_draw};
+        use sipnab::app::fleet_history::{FileName, Partition};
         let first = rows.first().ok_or("a file holds at least one row")?;
         let rel = format!(
             "{}/{}",
             Partition::of(first).rel_dir("calls"),
             FileName::of(rows)?.text()
         );
+        write_uncompressed(dir, &rel, rows)
+    }
+
+    /// Write `rows`, all of one day, as releases 0.5.251 to 0.5.253 filed
+    /// them: one sealed Parquet file without a codec under the day, named
+    /// by its times and its rows.
+    fn file_as_0_5_251(dir: &Path, rows: &[IntakeRecord]) -> Result<PathBuf, TestError> {
+        use sipnab::app::fleet_history::IntervalName;
+        let first = rows.first().ok_or("a file holds at least one row")?;
+        let rel = format!(
+            "calls/date={}/{}",
+            first.received_at.format("%Y-%m-%d"),
+            IntervalName::of(rows)?.text()
+        );
+        write_uncompressed(dir, &rel, rows)
+    }
+
+    /// Seal the Parquet of `rows`, without a codec, at `rel` under the
+    /// history directory of the center in `dir`.
+    fn write_uncompressed(
+        dir: &Path,
+        rel: &str,
+        rows: &[IntakeRecord],
+    ) -> Result<PathBuf, TestError> {
+        use sipnab::app::fleet_history::{
+            CHUNK_BYTES, dir_for, encode_uncompressed, sealed_lines, sorted,
+        };
+        use sipnab::app::fleet_seal::{Kind, LogSealer, system_draw};
         let (mut sealer, header) =
             LogSealer::new(&MasterKey::parse(STORE_KEY)?, Kind::Calls, &system_draw)?;
         let mut bytes = header.to_vec();
-        for line in sealed_lines(&rel, &encode(rows)?, CHUNK_BYTES) {
+        let parquet = encode_uncompressed(&sorted(rows.to_vec()))?;
+        for line in sealed_lines(rel, &parquet, CHUNK_BYTES) {
             bytes.extend(sealer.record(&line)?);
         }
         bytes.extend(sealer.base_end()?);
-        let path = dir_for(&dir.join("center.store")).join(&rel);
+        let path = dir_for(&dir.join("center.store")).join(rel);
         std::fs::create_dir_all(path.parent().ok_or("a file has a directory")?)?;
         std::fs::write(&path, bytes)?;
         Ok(path)
+    }
+
+    /// The codec of every column chunk of the sealed history file at
+    /// `path`, a file of call records of the center in `dir`.
+    fn codecs_of(dir: &Path, path: &Path) -> Result<Vec<parquet::basic::Compression>, TestError> {
+        use parquet::file::reader::FileReader as _;
+        use parquet::file::serialized_reader::SerializedFileReader;
+        use sipnab::app::fleet_history::{dir_for, unseal};
+        use sipnab::app::fleet_seal::Kind;
+        let rel = path
+            .strip_prefix(dir_for(&dir.join("center.store")))?
+            .to_string_lossy()
+            .into_owned();
+        let keys = Keys::new(MasterKey::parse(STORE_KEY)?, Vec::new());
+        let parquet = unseal(&rel, &std::fs::read(path)?, &keys, Kind::Calls)?;
+        let reader = SerializedFileReader::new(bytes::Bytes::from(parquet))?;
+        Ok(reader
+            .metadata()
+            .row_groups()
+            .iter()
+            .flat_map(|group| group.columns().iter().map(|column| column.compression()))
+            .collect())
+    }
+
+    #[test]
+    fn the_center_files_zstd_beside_an_earlier_releases_file_and_answers_from_both()
+    -> Result<(), TestError> {
+        use parquet::basic::Compression;
+        let dir = tempfile::tempdir()?;
+        let hour_ago = chrono::Utc::now() - chrono::TimeDelta::hours(1);
+        let old = file_as_0_5_251(
+            dir.path(),
+            &[
+                row_at("edge-a", hour_ago, 101),
+                row_at("edge-b", hour_ago, 102),
+            ],
+        )?;
+        let old_bytes = std::fs::read(&old)?;
+        assert_eq!(
+            codecs_of(dir.path(), &old)?,
+            vec![Compression::UNCOMPRESSED; 8],
+            "success the file of the earlier release has no codec"
+        );
+        let c = center(dir.path(), &["--calls-flush-secs", "3600"])?;
+        push(&c.addr, "edge-a", 1, 3)?;
+        drop(c);
+        // The start files what the intake held.
+        let c = center(dir.path(), &["--calls-flush-secs", "3600"])?;
+        assert!(
+            c.early
+                .iter()
+                .any(|l| l.contains("filed 3 call record(s) in 1 file(s)")),
+            "success the start files the three pushed records: {:?}",
+            c.early
+        );
+        let files = files_under(&dir.path().join("center.store.parquet"))?;
+        let new: Vec<&PathBuf> = files
+            .iter()
+            .map(|(p, _)| p)
+            .filter(|p| **p != old)
+            .collect();
+        let [new] = new.as_slice() else {
+            return Err(format!("one new file beside the old one, got {new:?}").into());
+        };
+        let codecs = codecs_of(dir.path(), new)?;
+        assert!(
+            codecs.len() == 8 && codecs.iter().all(|c| matches!(c, Compression::ZSTD(_))),
+            "success every column of the file the center wrote is zstd: {codecs:?}"
+        );
+        assert_eq!(
+            std::fs::read(&old)?,
+            old_bytes,
+            "success the center does not rewrite the file of the earlier release"
+        );
+        let (status, all) = calls(&c.addr, "")?;
+        assert_eq!(
+            (status, &all["count"], &all["files_read"], &all["complete"]),
+            (
+                200,
+                &serde_json::json!(5),
+                &serde_json::json!(2),
+                &serde_json::json!(true)
+            ),
+            "success one answer holds the rows of the uncompressed file and of the zstd file: \
+             {all}"
+        );
+        assert_eq!(
+            all["refused"].as_array().map(Vec::len),
+            Some(0),
+            "success no file is refused: {all}"
+        );
+        Ok(())
     }
 
     #[test]

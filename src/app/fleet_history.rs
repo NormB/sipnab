@@ -46,6 +46,13 @@
 //! ([`unseal`]). The staged file a write goes through holds sealed bytes
 //! only.
 //!
+//! # Compression
+//!
+//! Every column of a file this build writes is compressed with zstd at
+//! [`ZSTD_LEVEL`] ([`codec`]). Releases 0.5.249 to 0.5.253 wrote the files
+//! without a codec; they are read in place, and no file is rewritten. A
+//! file in any other codec is refused whole, with the codec named.
+//!
 //! # Files are written once
 //!
 //! [`History::file`] writes a new file for each day that has rows; it
@@ -959,18 +966,129 @@ fn instant(name: &str, value: &str) -> Result<DateTime<Utc>, String> {
 /// `rows` is empty, a row's receive time is refused ([`received_ns`]), or
 /// the Parquet writer fails.
 pub fn encode<R: Row>(rows: &[R]) -> Result<Vec<u8>, String> {
-    encode_cut(rows, GROUP_ROWS, ROWS_PER_GROUP)
+    encode_cut(rows, GROUP_ROWS, ROWS_PER_GROUP, codec()?)
 }
 
 /// [`encode`] with `per_group` rows to a row group, wherever a member's
 /// rows end.
 #[cfg(test)]
 fn encode_grouped<R: Row>(rows: &[R], per_group: usize) -> Result<Vec<u8>, String> {
-    encode_cut(rows, per_group, per_group)
+    encode_cut(rows, per_group, per_group, codec()?)
 }
 
-/// [`encode`] with row groups of `least` to `most` rows ([`group_cuts`]).
-fn encode_cut<R: Row>(rows: &[R], least: usize, most: usize) -> Result<Vec<u8>, String> {
+/// [`encode`] without a codec: the file releases 0.5.249 to 0.5.253 wrote
+/// for `rows`. Tests build the files of those releases with it; no build
+/// writes them.
+///
+/// Public and hidden, as the test helpers of `tui/test_api.rs` are: the
+/// integration suite (`tests/fleet_history_test.rs`) is another crate and
+/// builds the files of those releases through the one schema and the one
+/// row-group rule of this module. It is not part of the library's API.
+///
+/// # Errors
+///
+/// As [`encode`].
+#[doc(hidden)]
+pub fn encode_uncompressed<R: Row>(rows: &[R]) -> Result<Vec<u8>, String> {
+    encode_cut(
+        rows,
+        GROUP_ROWS,
+        ROWS_PER_GROUP,
+        parquet::basic::Compression::UNCOMPRESSED,
+    )
+}
+
+/// The zstd level of every file this build writes. Measured on synthetic
+/// heartbeats and call records at this module's row groups: level 1 gave
+/// files of 11 to 13% of the uncompressed size; level 3 gave no smaller
+/// files and level 9 took three times as long to write for 7% fewer bytes.
+pub const ZSTD_LEVEL: i32 = 1;
+
+/// zstd at `level`.
+///
+/// # Errors
+///
+/// zstd has no such level.
+fn zstd(level: i32) -> Result<parquet::basic::Compression, String> {
+    parquet::basic::ZstdLevel::try_new(level)
+        .map(parquet::basic::Compression::ZSTD)
+        .map_err(parquet_error)
+}
+
+/// The codec of every column of a file this build writes: zstd at
+/// [`ZSTD_LEVEL`]. `Cargo.toml` links this one codec into `parquet`
+/// (feature `zstd`), and the writer panics when it is asked for a codec
+/// that is not linked, so the two change together.
+///
+/// # Errors
+///
+/// [`ZSTD_LEVEL`] is not a level of zstd.
+pub fn codec() -> Result<parquet::basic::Compression, String> {
+    zstd(ZSTD_LEVEL)
+}
+
+/// The name of `codec` in a message.
+const fn codec_name(codec: parquet::basic::Compression) -> &'static str {
+    use parquet::basic::Compression;
+    match codec {
+        Compression::UNCOMPRESSED => "uncompressed",
+        Compression::SNAPPY => "snappy",
+        Compression::GZIP(_) => "gzip",
+        Compression::LZO => "lzo",
+        Compression::BROTLI(_) => "brotli",
+        Compression::LZ4 => "lz4",
+        Compression::ZSTD(_) => "zstd",
+        Compression::LZ4_RAW => "lz4_raw",
+    }
+}
+
+/// Whether this build reads a column named `column` that is compressed
+/// with `codec`: the files it writes are zstd, and the files releases
+/// 0.5.249 to 0.5.253 wrote have no codec.
+///
+/// # Errors
+///
+/// `codec` is another codec; the message names the column and the codec.
+fn codec_read(column: &str, codec: parquet::basic::Compression) -> Result<(), String> {
+    use parquet::basic::Compression;
+    match codec {
+        Compression::UNCOMPRESSED | Compression::ZSTD(_) => Ok(()),
+        other => {
+            let codec = codec_name(other);
+            Err(format!(
+                "parquet: column {column} is compressed with {codec}; this build reads zstd and \
+                 uncompressed files"
+            ))
+        }
+    }
+}
+
+/// Whether this build reads every column of every row group `metadata`
+/// lists ([`codec_read`]). A file is refused whole: a reader that met the
+/// codec at the first page of a row group would answer for the row groups
+/// before it and say nothing of the rest.
+///
+/// # Errors
+///
+/// The first column, in file order, in a codec this build does not read.
+fn codecs_read(metadata: &parquet::file::metadata::ParquetMetaData) -> Result<(), String> {
+    metadata
+        .row_groups()
+        .iter()
+        .flat_map(|group| group.columns())
+        .try_for_each(|column| {
+            codec_read(column.column_path().string().as_str(), column.compression())
+        })
+}
+
+/// [`encode`] with row groups of `least` to `most` rows ([`group_cuts`]),
+/// every column compressed with `codec`.
+fn encode_cut<R: Row>(
+    rows: &[R],
+    least: usize,
+    most: usize,
+    codec: parquet::basic::Compression,
+) -> Result<Vec<u8>, String> {
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use parquet::file::writer::SerializedFileWriter;
     use parquet::schema::types::ColumnPath;
@@ -980,7 +1098,8 @@ fn encode_cut<R: Row>(rows: &[R], least: usize, most: usize) -> Result<Vec<u8>, 
     let schema = parquet::schema::parser::parse_message_type(R::SCHEMA).map_err(parquet_error)?;
     let mut properties = WriterProperties::builder()
         .set_created_by("sipnab".to_string())
-        .set_statistics_enabled(EnabledStatistics::Chunk);
+        .set_statistics_enabled(EnabledStatistics::Chunk)
+        .set_compression(codec);
     if let Some(column) = R::FILTER_COLUMN {
         properties = properties.set_column_bloom_filter_enabled(ColumnPath::from(column), true);
     }
@@ -1016,6 +1135,10 @@ fn sent_text(at: DateTime<Utc>) -> String {
 fn parquet_error(e: parquet::errors::ParquetError) -> String {
     format!("parquet: {e}")
 }
+
+/// What gives the Parquet bytes of the rows of one file: [`encode`], or in
+/// tests the encoding of an earlier release.
+type Encoder<'a, R> = dyn Fn(&[R]) -> Result<Vec<u8>, String> + 'a;
 
 /// The row group being written.
 type GroupWriter<'a> = parquet::file::writer::SerializedRowGroupWriter<'a, Vec<u8>>;
@@ -1091,6 +1214,7 @@ pub fn decode<R: Row>(bytes: Vec<u8>, query: &Query) -> Result<Decoded<R>, Strin
             R::NOUN
         ));
     }
+    codecs_read(reader.metadata())?;
     let filter = R::FILTER_COLUMN.and_then(|name| {
         expected
             .get_fields()
@@ -1613,6 +1737,24 @@ impl History {
     /// read. Files written before the error stay; filing the same records
     /// again leaves their rows out.
     pub fn file<R: Row>(&self, records: &[R]) -> Result<Filed, String> {
+        self.file_as(records, &encode)
+    }
+
+    /// [`History::file`] as releases 0.5.251 to 0.5.253 did: the same
+    /// layout, without a codec. Tests build the files of those releases
+    /// with it; no build writes them.
+    ///
+    /// # Errors
+    ///
+    /// As [`History::file`].
+    #[cfg(test)]
+    pub(crate) fn file_plain<R: Row>(&self, records: &[R]) -> Result<Filed, String> {
+        self.file_as(records, &encode_uncompressed)
+    }
+
+    /// [`History::file`] with `encoder` giving the Parquet bytes of the
+    /// rows of one file.
+    fn file_as<R: Row>(&self, records: &[R], encoder: &Encoder<'_, R>) -> Result<Filed, String> {
         let mut filed = Filed::default();
         for (date, rows) in by_date(records) {
             let date_dir = format!("{DATE_PREFIX}{}", date.format(DATE_FORMAT));
@@ -1663,7 +1805,7 @@ impl History {
                     "the history store: {rel} exists and holds other rows; it is not replaced"
                 ));
             }
-            let lines = sealed_lines(&rel, &encode(&rows)?, CHUNK_BYTES);
+            let lines = sealed_lines(&rel, &encoder(&rows)?, CHUNK_BYTES);
             super::fleet_center::write_sealed_reading(
                 &path,
                 &self.keys,
@@ -1728,7 +1870,7 @@ impl History {
                     "the history store: {rel} exists and holds other rows; it is not replaced"
                 ));
             }
-            let lines = sealed_lines(&rel, &encode(&rows)?, CHUNK_BYTES);
+            let lines = sealed_lines(&rel, &encode_uncompressed(&rows)?, CHUNK_BYTES);
             super::fleet_center::write_sealed_reading(
                 &path,
                 &self.keys,
@@ -4942,6 +5084,1262 @@ mod members_tests {
             counts(&again, &of("edge-a"))?,
             [1],
             "edge and the filed heartbeat stays"
+        );
+        Ok(())
+    }
+}
+
+/// The codec of the history files: every file this build writes is
+/// compressed with zstd, the files that releases 0.5.249 to 0.5.253 wrote
+/// without a codec are read in place, and a file in any other codec is
+/// refused with the codec named.
+#[cfg(test)]
+mod codec_tests {
+    use super::*;
+    use crate::app::fleet_calls::CallCounts;
+    use crate::app::fleet_center::Cursor;
+    use crate::app::fleet_seal::MasterKey;
+    use parquet::basic::Compression;
+
+    /// What a test returns.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A key whose every byte is `b`, alone.
+    fn keys(b: u8) -> Arc<Keys> {
+        Arc::new(Keys::new(MasterKey::from_bytes([b; 32]), Vec::new()))
+    }
+
+    /// 2026-11-11T00:00:00Z plus `ms` milliseconds.
+    fn at_ms(ms: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::UNIX_EPOCH + chrono::TimeDelta::milliseconds(1_794_355_200_000 + ms)
+    }
+
+    /// One day in milliseconds.
+    const DAY: i64 = 86_400_000;
+
+    /// The id of member `n` of a fleet.
+    fn id(n: usize) -> String {
+        format!("edge-{n:04}")
+    }
+
+    /// The call record at `seq` of `member`, received `ms` milliseconds into
+    /// 2026-11-11, with the fields of a call a member pushes.
+    fn call(member: &str, ms: i64, seq: u64) -> IntakeRecord {
+        IntakeRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            stream: "s".to_string(),
+            seq,
+            sent_at: at_ms(ms - 250),
+            selected_by: "failed".to_string(),
+            call: serde_json::json!({
+                "schema_version": 1,
+                "call_id": format!("call-{member}-{seq}@example.com"),
+                "from": "sip:+12025550101@example.com",
+                "to": "sip:+12025550102@example.com",
+                "state": "Failed",
+                "final_status_code": 486,
+                "final_status_reason": "Busy Here",
+                "method": "INVITE",
+                "msg_count": 4 + seq % 9,
+                "timing": {"pdd_ms": 800 + seq % 1000, "setup_ms": null, "retransmits": seq % 3},
+                "sdp_timeline": [{
+                    "timestamp": "2026-11-11T00:00:00Z",
+                    "direction": "offer",
+                    "codecs": ["PCMU", "PCMA", "telephone-event"],
+                    "media_addr": "192.0.2.1",
+                    "media_port": 10_000 + seq % 5000,
+                    "mode": "sendrecv",
+                }],
+                "diagnosis": {
+                    "one_way_audio": false,
+                    "nat_mismatch": false,
+                    "no_media": false,
+                    "private_media_address": false,
+                    "hints": [],
+                },
+                "streams": [],
+                "capture_identity": {
+                    "node": member,
+                    "instance": "117b0818df1033d4fd2a28-2",
+                    "dialog_generation": seq,
+                    "stream_generation": 2,
+                },
+            }),
+        }
+    }
+
+    /// `each` call records of each of `members` members, a second apart.
+    fn calls(members: usize, each: u64) -> Vec<IntakeRecord> {
+        let mut out = Vec::new();
+        for n in 0..members {
+            for seq in 1..=each {
+                let ms =
+                    i64::try_from(seq).unwrap_or(0) * 1000 + i64::try_from(n % 1000).unwrap_or(0);
+                out.push(call(&id(n), ms, seq));
+            }
+        }
+        out
+    }
+
+    /// Heartbeat `count` of `member`, received `ms` milliseconds into
+    /// 2026-11-11, with an inventory of a few of the fields a member sends.
+    fn beat(member: &str, ms: i64, count: u64) -> MemberRecord {
+        MemberRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            peer: "192.0.2.10".to_string(),
+            heartbeats: count,
+            cursor: Cursor {
+                stream: "s".to_string(),
+                seq: count,
+                sent_at: at_ms(ms - 250),
+            },
+            heartbeat_secs: 60,
+            inventory: serde_json::json!({
+                "schema_version": 1,
+                "node_name": member,
+                "build": {
+                    "version": "0.5.253",
+                    "target": "x86_64-unknown-linux-gnu",
+                    "features": ["api", "archive", "audio", "hep", "metrics", "native", "tls"],
+                },
+                "config": {"recorded": true, "source": "/etc/sipnab/sipnab.toml"},
+                "process": {"pid": 4000 + count, "uptime_seconds": count * 60},
+                "counters": {"capture_packets_total": count * 7919, "capture_sources_refused_total": 0},
+            }),
+            call_records: count,
+            calls: Some(CallCounts {
+                selected: count,
+                dropped_by_cap: 0,
+                left_out: 0,
+                spooled: 0,
+            }),
+        }
+    }
+
+    /// One heartbeat of each of `members` members, heartbeat `count`.
+    fn beats(members: usize, ms: i64, count: u64) -> Vec<MemberRecord> {
+        (0..members)
+            .map(|n| beat(&id(n), ms + i64::try_from(n % 1000).unwrap_or(0), count))
+            .collect()
+    }
+
+    /// `len` characters that no codec makes much smaller: 64 symbols drawn by
+    /// a fixed generator from `seed`.
+    fn noise(seed: u64, len: usize) -> String {
+        const SYMBOLS: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                char::from(SYMBOLS[usize::try_from(state >> 58).unwrap_or(0)])
+            })
+            .collect()
+    }
+
+    /// `count` call records of `edge-a` whose call holds `len` characters of
+    /// noise.
+    fn noisy(count: u64, len: usize) -> Vec<IntakeRecord> {
+        (1..=count)
+            .map(|seq| {
+                let mut row = call("edge-a", i64::try_from(seq).unwrap_or(0), seq);
+                row.call = serde_json::json!({
+                    "call_id": format!("call-{seq}@example.com"),
+                    "noise": noise(seq, len),
+                });
+                row
+            })
+            .collect()
+    }
+
+    /// A history store in a new directory, under key 1.
+    fn store() -> Result<(tempfile::TempDir, History), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let history = History::open(&dir.path().join("center.store"), keys(1))?;
+        Ok((dir, history))
+    }
+
+    /// The question for every row of `member`.
+    fn of(member: &str) -> Query {
+        Query {
+            member: Some(member.to_string()),
+            ..Query::all()
+        }
+    }
+
+    /// The question for every row there is, up to the most one answer holds.
+    fn every() -> Query {
+        Query {
+            limit: MAX_LIMIT,
+            ..Query::all()
+        }
+    }
+
+    /// The answer of the store to `query` with no row waiting; a file that
+    /// was refused is an error.
+    fn ask<R: Row>(history: &History, query: &Query) -> Result<Answer<R>, String> {
+        let answer = history.answer(query, &history.list(R::CLASS, query)?, Vec::<R>::new());
+        if let Some((file, why)) = answer.refused.first() {
+            return Err(format!("{file}: {why}"));
+        }
+        Ok(answer)
+    }
+
+    /// The codec of every column chunk of the Parquet file `bytes`, row group
+    /// by row group.
+    fn codecs_of(bytes: &[u8]) -> Result<Vec<Compression>, Box<dyn std::error::Error>> {
+        use parquet::file::reader::FileReader as _;
+        use parquet::file::serialized_reader::SerializedFileReader;
+        let reader = SerializedFileReader::new(bytes::Bytes::from(bytes.to_vec()))?;
+        Ok(reader
+            .metadata()
+            .row_groups()
+            .iter()
+            .flat_map(|group| group.columns().iter().map(|column| column.compression()))
+            .collect())
+    }
+
+    /// The rows each row group of the Parquet file `bytes` holds.
+    fn group_rows_of(bytes: &[u8]) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
+        use parquet::file::reader::FileReader as _;
+        use parquet::file::serialized_reader::SerializedFileReader;
+        let reader = SerializedFileReader::new(bytes::Bytes::from(bytes.to_vec()))?;
+        Ok(reader
+            .metadata()
+            .row_groups()
+            .iter()
+            .map(parquet::file::metadata::RowGroupMetaData::num_rows)
+            .collect())
+    }
+
+    /// The Parquet file `file` with a footer that names `codec` for every
+    /// column chunk: the pages stay as they are. A file another writer made in
+    /// `codec` has such a footer; this build links one codec and cannot write
+    /// the others.
+    fn marked(file: &[u8], codec: Compression) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        marked_from(file, 0, codec)
+    }
+
+    /// [`marked`] for the row groups from `first` on; the footer names the
+    /// file's own codec for the row groups before it.
+    fn marked_from(
+        file: &[u8],
+        first: usize,
+        codec: Compression,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        use parquet::file::metadata::ParquetMetaDataWriter;
+        use parquet::file::reader::FileReader as _;
+        use parquet::file::serialized_reader::SerializedFileReader;
+        let reader = SerializedFileReader::new(bytes::Bytes::from(file.to_vec()))?;
+        let metadata = reader.metadata().clone();
+        let tail = file
+            .len()
+            .checked_sub(8)
+            .ok_or("a file shorter than its trailer")?;
+        let footer = usize::try_from(u32::from_le_bytes(file[tail..tail + 4].try_into()?))?;
+        let body = tail
+            .checked_sub(footer)
+            .ok_or("a footer longer than the file")?;
+        let mut groups = Vec::new();
+        for (index, group) in metadata.row_groups().iter().enumerate() {
+            let mut columns = Vec::new();
+            for column in group.columns() {
+                let named = if index < first {
+                    column.compression()
+                } else {
+                    codec
+                };
+                columns.push(
+                    column
+                        .clone()
+                        .into_builder()
+                        .set_compression(named)
+                        .build()?,
+                );
+            }
+            groups.push(
+                group
+                    .clone()
+                    .into_builder()
+                    .set_column_metadata(columns)
+                    .build()?,
+            );
+        }
+        let metadata = metadata.into_builder().set_row_groups(groups).build();
+        let mut out = file[..body].to_vec();
+        ParquetMetaDataWriter::new(&mut out, &metadata).finish()?;
+        Ok(out)
+    }
+
+    /// The Parquet bytes of the one file of class `R` in `history`.
+    fn only_file<R: Row>(history: &History) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let listed = history.list(R::CLASS, &Query::all())?;
+        let [file] = listed.as_slice() else {
+            return Err(format!("{} files, not one", listed.len()).into());
+        };
+        let sealed = std::fs::read(history.dir().join(&file.rel))?;
+        Ok(unseal(&file.rel, &sealed, &history.keys, R::KIND)?)
+    }
+
+    /// The bytes of every file of `class` in `history`, as the disk holds them.
+    fn disk_bytes(history: &History, class: &str) -> Result<u64, Box<dyn std::error::Error>> {
+        let mut bytes = 0;
+        for file in history.list(class, &Query::all())? {
+            bytes += std::fs::metadata(history.dir().join(&file.rel))?.len();
+        }
+        Ok(bytes)
+    }
+
+    /// `rows` in file order, for a comparison with what a file gave.
+    fn in_order<R: Row>(rows: &[R]) -> Vec<R> {
+        sorted(rows.to_vec())
+    }
+
+    /// The refusal of the file `bytes` of call records, or an error when it
+    /// was read.
+    fn refusal(bytes: Vec<u8>) -> Result<String, Box<dyn std::error::Error>> {
+        match decode::<IntakeRecord>(bytes, &Query::all()) {
+            Ok(read) => {
+                Err(format!("read {} rows of a file that is refused", read.rows.len()).into())
+            }
+            Err(why) => Ok(why),
+        }
+    }
+
+    /// A file of five call records without a codec, with a footer that names
+    /// `codec`, and what the reader says of it.
+    fn refusal_in(codec: Compression) -> Result<String, Box<dyn std::error::Error>> {
+        refusal(marked(&encode_uncompressed(&calls(1, 5))?, codec)?)
+    }
+
+    // ----- success -----
+
+    #[test]
+    fn success_the_codec_is_zstd_at_level_1() -> TestResult {
+        let level = parquet::basic::ZstdLevel::try_new(1)?;
+        assert_eq!(
+            (codec()?, ZSTD_LEVEL),
+            (Compression::ZSTD(level), 1),
+            "success a history file is written with zstd at level 1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_every_column_of_a_calls_file_is_zstd() -> TestResult {
+        let codecs = codecs_of(&encode(&calls(1, 5))?)?;
+        assert_eq!(
+            codecs,
+            vec![codec()?; 8],
+            "success the eight columns of a call record file are zstd"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_every_column_of_a_heartbeat_file_is_zstd() -> TestResult {
+        let codecs = codecs_of(&encode(&beats(5, 0, 1))?)?;
+        assert_eq!(
+            codecs,
+            vec![codec()?; 11],
+            "success the eleven columns of a heartbeat file are zstd"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_every_row_group_of_a_file_is_zstd() -> TestResult {
+        let file = encode_grouped(&calls(1, 10), 3)?;
+        assert_eq!(
+            (group_rows_of(&file)?, codecs_of(&file)?),
+            (vec![3, 3, 3, 1], vec![codec()?; 32]),
+            "success each of four row groups has its eight columns in zstd"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_call_records_read_back_from_a_compressed_file() -> TestResult {
+        let rows = in_order(&calls(3, 40));
+        let read = decode::<IntakeRecord>(encode(&rows)?, &every())?;
+        assert_eq!(
+            read.rows, rows,
+            "success every call record reads back as it was filed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_heartbeats_read_back_from_a_compressed_file() -> TestResult {
+        let rows = in_order(&beats(300, 0, 7));
+        let read = decode::<MemberRecord>(encode(&rows)?, &every())?;
+        assert_eq!(
+            read.rows, rows,
+            "success every heartbeat reads back as it was filed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_compressed_calls_file_is_under_a_third_of_a_plain_one() -> TestResult {
+        let rows = in_order(&calls(200, 10));
+        let (zstd, plain) = (encode(&rows)?.len(), encode_uncompressed(&rows)?.len());
+        assert!(
+            zstd * 3 < plain,
+            "success 2,000 call records are {zstd} B with zstd, under a third of {plain} B"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_compressed_heartbeat_file_is_under_a_third_of_a_plain_one() -> TestResult {
+        let rows = in_order(&beats(2000, 0, 9));
+        let (zstd, plain) = (encode(&rows)?.len(), encode_uncompressed(&rows)?.len());
+        assert!(
+            zstd * 3 < plain,
+            "success 2,000 heartbeats are {zstd} B with zstd, under a third of {plain} B"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_one_member_question_decodes_one_row_group_of_a_compressed_file() -> TestResult {
+        let rows = in_order(&beats(600, 0, 1));
+        let read = decode::<MemberRecord>(encode(&rows)?, &of(&id(300)))?;
+        assert_eq!(
+            (read.rows.len(), read.groups, read.groups_read),
+            (1, 5, 1),
+            "success the member's heartbeat comes from one of five row groups"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_call_id_question_decodes_one_row_group_of_a_compressed_file() -> TestResult {
+        let rows = in_order(&calls(1, 40));
+        let query = Query {
+            call_id: Some("call-edge-0000-17@example.com".to_string()),
+            ..Query::all()
+        };
+        let read = decode::<IntakeRecord>(encode_grouped(&rows, 10)?, &query)?;
+        assert_eq!(
+            (read.rows.len(), read.groups, read.groups_read),
+            (1, 4, 1),
+            "success the Call-ID filters rule out three of four compressed row groups"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_window_decodes_the_row_groups_it_overlaps_in_a_compressed_file() -> TestResult {
+        let rows = in_order(&calls(1, 40));
+        let query = Query {
+            from: Some(at_ms(11_000)),
+            to: Some(at_ms(21_000)),
+            ..Query::all()
+        };
+        let read = decode::<IntakeRecord>(encode_grouped(&rows, 10)?, &query)?;
+        assert_eq!(
+            (read.rows.len(), read.groups, read.groups_read),
+            (10, 4, 1),
+            "success ten seconds of rows come from the one row group that holds them"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_filing_of_call_records_writes_a_zstd_file() -> TestResult {
+        let (_dir, history) = store()?;
+        let rows = calls(20, 10);
+        history.file(&rows)?;
+        let codecs = codecs_of(&only_file::<IntakeRecord>(&history)?)?;
+        assert_eq!(
+            codecs,
+            vec![codec()?; 16],
+            "success the eight columns of both row groups of the file a filing wrote are zstd"
+        );
+        let answer = ask::<IntakeRecord>(&history, &every())?;
+        assert_eq!(
+            in_order(&answer.rows),
+            in_order(&rows),
+            "success the store answers with every record of the filing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_filing_of_heartbeats_writes_a_zstd_file() -> TestResult {
+        let (_dir, history) = store()?;
+        let rows = beats(300, 0, 1);
+        history.file(&rows)?;
+        let codecs = codecs_of(&only_file::<MemberRecord>(&history)?)?;
+        assert_eq!(
+            codecs,
+            vec![codec()?; 33],
+            "success the eleven columns of the three row groups of the heartbeat file are zstd"
+        );
+        let answer = ask::<MemberRecord>(&history, &every())?;
+        assert_eq!(
+            in_order(&answer.rows),
+            in_order(&rows),
+            "success the store answers with every heartbeat of the filing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_filing_takes_under_a_third_of_the_disk_of_an_earlier_release() -> TestResult {
+        let rows = calls(200, 10);
+        let (_old_dir, old) = store()?;
+        old.file_plain(&rows)?;
+        let (_new_dir, new) = store()?;
+        new.file(&rows)?;
+        let (plain, zstd) = (
+            disk_bytes(&old, CLASS_CALLS)?,
+            disk_bytes(&new, CLASS_CALLS)?,
+        );
+        assert!(
+            zstd * 3 < plain,
+            "success the sealed file of 2,000 call records is {zstd} B, under a third of the \
+         {plain} B an earlier release wrote"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_calls_file_of_an_earlier_release_reads_back() -> TestResult {
+        let rows = in_order(&calls(3, 40));
+        let file = encode_uncompressed(&rows)?;
+        assert_eq!(
+            codecs_of(&file)?,
+            vec![Compression::UNCOMPRESSED; 8],
+            "success the file of an earlier release has no codec"
+        );
+        let read = decode::<IntakeRecord>(file, &every())?;
+        assert_eq!(read.rows, rows, "success its call records read back");
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_heartbeat_file_of_an_earlier_release_reads_back() -> TestResult {
+        let rows = in_order(&beats(300, 0, 3));
+        let read = decode::<MemberRecord>(encode_uncompressed(&rows)?, &every())?;
+        assert_eq!(
+            read.rows, rows,
+            "success the heartbeats of a file without a codec read back"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_day_answers_from_an_earlier_releases_file_and_a_new_one() -> TestResult {
+        let (_dir, history) = store()?;
+        let early: Vec<IntakeRecord> = (1..=5)
+            .map(|seq| call("edge-a", seq * 1000, seq.unsigned_abs()))
+            .collect();
+        let late: Vec<IntakeRecord> = (6..=9)
+            .map(|seq| call("edge-a", seq * 1000, seq.unsigned_abs()))
+            .collect();
+        history.file_plain(&early)?;
+        history.file(&late)?;
+        let answer = ask::<IntakeRecord>(&history, &every())?;
+        let mut all = early;
+        all.extend(late);
+        assert_eq!(
+            (answer.files_read, in_order(&answer.rows)),
+            (2, in_order(&all)),
+            "success one answer holds the rows of the plain file and of the zstd file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_filing_leaves_out_rows_an_earlier_releases_file_holds() -> TestResult {
+        let (_dir, history) = store()?;
+        let rows = calls(4, 5);
+        history.file_plain(&rows)?;
+        let again = history.file(&rows)?;
+        assert_eq!(
+            (again.files, again.rows, again.already),
+            (0, 0, 20),
+            "success rows a plain file holds are not filed a second time"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_member_list_is_rebuilt_from_files_of_both_kinds() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_plain(&beats(50, 0, 1))?;
+        let newest = beats(50, 60_000, 2);
+        history.file(&newest)?;
+        let rebuilt = history.newest_heartbeats(
+            at_ms(0).date_naive(),
+            &BTreeMap::new(),
+            MAX_FILES_PER_QUESTION,
+        )?;
+        assert_eq!(
+            (rebuilt.refused.len(), in_order(&rebuilt.members)),
+            (0, in_order(&newest)),
+            "success each member's newest heartbeat is found with a plain file in the day"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_old_layout_file_is_as_release_0_5_249_wrote_it() -> TestResult {
+        let (_dir, history) = store()?;
+        let rows = vec![call("edge-a", 1000, 1), call("edge-a", 2000, 2)];
+        history.file_per_member(&rows)?;
+        let codecs = codecs_of(&only_file::<IntakeRecord>(&history)?)?;
+        let answer = ask::<IntakeRecord>(&history, &of("edge-a"))?;
+        assert_eq!(
+            (codecs, in_order(&answer.rows)),
+            (vec![Compression::UNCOMPRESSED; 8], rows),
+            "success a file under member=<id> has no codec and answers"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_same_rows_are_the_same_bytes() -> TestResult {
+        let rows = in_order(&calls(5, 30));
+        assert_eq!(
+            encode(&rows)?,
+            encode(&rows)?,
+            "success two encodings of the same rows are byte-equal"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_text_outside_ascii_reads_back_from_a_compressed_file() -> TestResult {
+        let mut row = call("edge-a", 1000, 1);
+        row.call = serde_json::json!({
+            "call_id": "call-1@example.com",
+            "from_display": "Zo\u{eb} \u{4e2d}\u{6587} \u{1f4de}",
+            "reason": "line one\nline two\ttab \u{0} nul",
+        });
+        let read = decode::<IntakeRecord>(encode(std::slice::from_ref(&row))?, &every())?;
+        assert_eq!(
+            read.rows,
+            vec![row],
+            "success text of several scripts and control characters reads back"
+        );
+        Ok(())
+    }
+
+    // ----- failure -----
+
+    #[test]
+    fn failure_a_file_in_snappy_is_refused_with_the_codec_named() -> TestResult {
+        let why = refusal_in(Compression::SNAPPY)?;
+        assert_eq!(
+            why,
+            "parquet: column received_at is compressed with snappy; this build reads zstd and \
+         uncompressed files",
+            "failure a snappy file is refused before a page is read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_in_gzip_is_refused_with_the_codec_named() -> TestResult {
+        let why = refusal_in(Compression::GZIP(parquet::basic::GzipLevel::default()))?;
+        assert!(
+            why.contains("is compressed with gzip; this build reads zstd and uncompressed files"),
+            "failure a gzip file is refused with the codec named, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_in_brotli_is_refused_with_the_codec_named() -> TestResult {
+        let why = refusal_in(Compression::BROTLI(parquet::basic::BrotliLevel::default()))?;
+        assert!(
+            why.contains("is compressed with brotli; this build reads zstd and uncompressed files"),
+            "failure a brotli file is refused with the codec named, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_in_lz4_is_refused_with_the_codec_named() -> TestResult {
+        let why = refusal_in(Compression::LZ4)?;
+        assert!(
+            why.contains("is compressed with lz4; this build reads zstd and uncompressed files"),
+            "failure an lz4 file is refused with the codec named, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_in_lz4_raw_is_refused_with_the_codec_named() -> TestResult {
+        let why = refusal_in(Compression::LZ4_RAW)?;
+        assert!(
+            why.contains(
+                "is compressed with lz4_raw; this build reads zstd and uncompressed files"
+            ),
+            "failure an lz4_raw file is refused with the codec named, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_in_lzo_is_refused_with_the_codec_named() -> TestResult {
+        let why = refusal_in(Compression::LZO)?;
+        assert!(
+            why.contains("is compressed with lzo; this build reads zstd and uncompressed files"),
+            "failure an lzo file is refused with the codec named, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_heartbeat_file_in_another_codec_is_refused() -> TestResult {
+        let file = marked(&encode_uncompressed(&beats(5, 0, 1))?, Compression::SNAPPY)?;
+        let why = decode::<MemberRecord>(file, &Query::all())
+            .err()
+            .ok_or("a snappy heartbeat file was read")?;
+        assert_eq!(
+            why,
+            "parquet: column received_at is compressed with snappy; this build reads zstd and \
+         uncompressed files",
+            "failure a heartbeat file in another codec is refused as a call record file is"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_in_another_codec_is_refused_for_a_question_no_row_answers() -> TestResult {
+        let file = marked(&encode_uncompressed(&calls(1, 5))?, Compression::SNAPPY)?;
+        let why = decode::<IntakeRecord>(file, &of("edge-zzzz"))
+            .err()
+            .ok_or("a snappy file was read for a member it does not hold")?;
+        assert!(
+            why.contains("is compressed with snappy"),
+            "failure the codec is refused whatever the question rules out, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_whose_last_row_group_is_in_another_codec_is_refused_whole() -> TestResult {
+        let rows = in_order(&calls(1, 40));
+        let file = marked_from(&encode_grouped(&rows, 10)?, 3, Compression::SNAPPY)?;
+        // The question's window ends before the last row group begins.
+        let query = Query {
+            to: Some(at_ms(5000)),
+            ..Query::all()
+        };
+        let why = decode::<IntakeRecord>(file, &query)
+            .err()
+            .ok_or("rows were read from a file with a row group in snappy")?;
+        assert_eq!(
+            why,
+            "parquet: column received_at is compressed with snappy; this build reads zstd and \
+         uncompressed files",
+            "failure no row of the three zstd row groups is answered from a file with a fourth in \
+         snappy"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_store_refuses_a_file_in_another_codec_and_names_it() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_as(&calls(1, 5), &|rows| {
+            marked(&encode_uncompressed(rows)?, Compression::SNAPPY).map_err(|e| e.to_string())
+        })?;
+        let query = every();
+        let listed = history.list(CLASS_CALLS, &query)?;
+        let answer = history.answer(&query, &listed, Vec::<IntakeRecord>::new());
+        let reasons: Vec<&str> = answer.refused.iter().map(|(_, why)| why.as_str()).collect();
+        assert_eq!(
+            (answer.rows.len(), reasons),
+            (
+                0,
+                vec![
+                    "parquet: column received_at is compressed with snappy; this build reads zstd \
+                 and uncompressed files"
+                ]
+            ),
+            "failure the answer holds no row of the file and the reason names the codec"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_store_answers_from_the_other_files_of_a_day_with_a_refused_one() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_as(&[call("edge-a", 1000, 1)], &|rows| {
+            marked(&encode_uncompressed(rows)?, Compression::LZ4_RAW).map_err(|e| e.to_string())
+        })?;
+        let kept = [call("edge-b", 5000, 1), call("edge-b", 6000, 2)];
+        history.file(&kept)?;
+        let query = every();
+        let listed = history.list(CLASS_CALLS, &query)?;
+        let answer = history.answer(&query, &listed, Vec::<IntakeRecord>::new());
+        assert_eq!(
+            (answer.refused.len(), in_order(&answer.rows)),
+            (1, kept.to_vec()),
+            "failure one file in another codec is refused and the zstd file answers"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_half_of_a_compressed_file_is_refused() -> TestResult {
+        let file = encode(&calls(3, 40))?;
+        let why = refusal(file[..file.len() / 2].to_vec())?;
+        assert!(
+            why.starts_with("parquet: "),
+            "failure half a file is refused by the Parquet reader, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_compressed_file_without_its_last_byte_is_refused() -> TestResult {
+        let file = encode(&calls(3, 40))?;
+        let why = refusal(file[..file.len() - 1].to_vec())?;
+        assert!(
+            why.starts_with("parquet: "),
+            "failure a file one byte short is refused by the Parquet reader, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_damaged_zstd_frame_is_refused() -> TestResult {
+        const MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+        let mut file = encode(&calls(3, 40))?;
+        let at = file
+            .windows(4)
+            .position(|window| window == MAGIC)
+            .ok_or("the file holds no zstd frame")?;
+        file[at] ^= 0xff;
+        let why = refusal(file)?;
+        assert!(
+            why.starts_with("parquet: "),
+            "failure a page whose zstd frame does not start as one is refused, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_plain_file_whose_footer_says_zstd_is_refused() -> TestResult {
+        let why = refusal_in(codec()?)?;
+        assert!(
+            why.starts_with("parquet: "),
+            "failure pages that are not zstd frames are refused, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_rows_are_not_filed_over_a_file_in_another_codec_that_may_hold_them() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_as(
+            &[call("edge-a", 1000, 1), call("edge-a", 5000, 2)],
+            &|rows| {
+                marked(&encode_uncompressed(rows)?, Compression::SNAPPY).map_err(|e| e.to_string())
+            },
+        )?;
+        let before = disk_bytes(&history, CLASS_CALLS)?;
+        // A row of the same seconds: the file may hold it, so a filing reads
+        // the file first.
+        let refused = history
+            .file(&[call("edge-a", 3000, 3)])
+            .err()
+            .ok_or("rows were filed over a file that could not be read")?;
+        assert!(
+            refused.starts_with("calls/date=2026-11-11/")
+                && refused.ends_with(
+                    ".sealed: parquet: column received_at is compressed with snappy; this build \
+                 reads zstd and uncompressed files"
+                ),
+            "failure a filing that cannot read a file that may hold its rows names the file and \
+         the codec, got: {refused}"
+        );
+        assert_eq!(
+            (
+                history.list(CLASS_CALLS, &Query::all())?.len(),
+                disk_bytes(&history, CLASS_CALLS)?
+            ),
+            (1, before),
+            "failure the directory holds the one file it held"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_level_past_the_codecs_greatest_is_refused() {
+        let refused = zstd(23);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.starts_with("parquet: ")),
+            "failure zstd has no level 23, got: {refused:?}"
+        );
+    }
+
+    // ----- edge -----
+
+    #[test]
+    fn edge_one_row_is_a_compressed_file_that_reads_back() -> TestResult {
+        let row = call("edge-a", 1000, 1);
+        let file = encode(std::slice::from_ref(&row))?;
+        assert_eq!(
+            codecs_of(&file)?,
+            vec![codec()?; 8],
+            "edge a file of one row is zstd"
+        );
+        let read = decode::<IntakeRecord>(file, &every())?;
+        assert_eq!(read.rows, vec![row], "edge its one row reads back");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_empty_texts_read_back_from_a_compressed_file() -> TestResult {
+        let mut row = call("edge-a", 1000, 1);
+        row.stream = String::new();
+        row.selected_by = String::new();
+        row.call = serde_json::json!({});
+        let read = decode::<IntakeRecord>(encode(std::slice::from_ref(&row))?, &every())?;
+        assert_eq!(
+            read.rows,
+            vec![row],
+            "edge empty texts and an empty call read back"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_row_group_of_the_most_rows_and_one_more_read_back() -> TestResult {
+        let rows: Vec<IntakeRecord> = (1..=u64::try_from(ROWS_PER_GROUP)? + 1)
+            .map(|seq| {
+                let mut row = call("edge-a", i64::try_from(seq).unwrap_or(0), seq);
+                row.call = serde_json::json!({"call_id": format!("call-{seq}@example.com")});
+                row
+            })
+            .collect();
+        let file = encode(&rows)?;
+        assert_eq!(
+            (group_rows_of(&file)?, codecs_of(&file)?),
+            (vec![10_000, 1], vec![codec()?; 16]),
+            "edge 10,001 rows of one member are a full row group and a group of one, both zstd"
+        );
+        let read = decode::<IntakeRecord>(file, &Query::all())?;
+        assert_eq!(
+            (read.groups_read, read.rows.len()),
+            (2, 10_001),
+            "edge both row groups are decoded and every row is read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_noise_is_no_larger_compressed_than_plain() -> TestResult {
+        let rows = noisy(200, 1000);
+        let (zstd, plain) = (encode(&rows)?.len(), encode_uncompressed(&rows)?.len());
+        assert!(
+            zstd <= plain,
+            "edge 200 kB of noise is {zstd} B with zstd, no more than the {plain} B without"
+        );
+        let read = decode::<IntakeRecord>(encode(&rows)?, &every())?;
+        assert_eq!(read.rows, rows, "edge the noise reads back");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_value_of_one_mebibyte_reads_back() -> TestResult {
+        let mut row = call("edge-a", 1000, 1);
+        row.call = serde_json::json!({"call_id": "call-1@example.com", "noise": noise(7, 1 << 20)});
+        let read = decode::<IntakeRecord>(encode(std::slice::from_ref(&row))?, &every())?;
+        assert_eq!(read.rows, vec![row], "edge a call of 1 MiB reads back");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_rows_past_one_sealed_piece_plain_are_one_piece_compressed() -> TestResult {
+        let rows = in_order(&calls(100, 90));
+        let (plain, zstd) = (encode_uncompressed(&rows)?, encode(&rows)?);
+        let pieces =
+            |parquet: &[u8]| sealed_lines("calls/x.sealed", parquet, CHUNK_BYTES).len() - 1;
+        assert!(
+            pieces(&plain) >= 2 && pieces(&zstd) == 1,
+            "edge 9,000 call records are {} B in {} sealed pieces plain and {} B in {} compressed",
+            plain.len(),
+            pieces(&plain),
+            zstd.len(),
+            pieces(&zstd)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_compressed_file_of_several_sealed_pieces_reads_back_from_the_store() -> TestResult {
+        let (_dir, history) = store()?;
+        let rows = noisy(8000, 1000);
+        history.file(&rows)?;
+        let parquet = only_file::<IntakeRecord>(&history)?;
+        assert!(
+            parquet.len() > CHUNK_BYTES,
+            "edge 8 MB of noise is {} B compressed, more than one sealed piece of {CHUNK_BYTES} B",
+            parquet.len()
+        );
+        let query = Query {
+            call_id: Some("call-7999@example.com".to_string()),
+            ..Query::all()
+        };
+        let answer = ask::<IntakeRecord>(&history, &query)?;
+        assert_eq!(
+            answer.rows,
+            vec![rows[7998].clone()],
+            "edge a record near the end of a file of several pieces is found"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_compressed_file_has_the_row_groups_of_a_plain_one() -> TestResult {
+        let rows = in_order(&calls(600, 2));
+        let (zstd, plain) = (encode(&rows)?, encode_uncompressed(&rows)?);
+        assert_eq!(
+            group_rows_of(&zstd)?,
+            group_rows_of(&plain)?,
+            "edge the codec does not move a row group's end"
+        );
+        assert_eq!(
+            group_rows_of(&zstd)?.len(),
+            10,
+            "edge 1,200 rows of 600 members are ten row groups"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_call_id_no_row_has_decodes_no_group_of_a_compressed_file() -> TestResult {
+        let query = Query {
+            call_id: Some("call-none@example.com".to_string()),
+            ..Query::all()
+        };
+        let read = decode::<IntakeRecord>(encode_grouped(&in_order(&calls(1, 40)), 10)?, &query)?;
+        assert_eq!(
+            (read.rows.len(), read.groups, read.groups_read),
+            (0, 4, 0),
+            "edge the Call-ID filters of a compressed file rule every row group out"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_answer_of_a_few_rows_spans_a_plain_file_and_a_zstd_file() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_plain(&[call("edge-a", 1000, 1), call("edge-a", 2000, 2)])?;
+        history.file(&[call("edge-a", 3000, 3), call("edge-a", 4000, 4)])?;
+        let query = Query {
+            limit: 3,
+            ..of("edge-a")
+        };
+        let answer = ask::<IntakeRecord>(&history, &query)?;
+        assert_eq!(
+            (answer.rows.len(), answer.more, answer.files_read),
+            (3, true, 2),
+            "edge three of four rows come from both files, and the answer says there are more"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_footer_written_again_with_the_files_own_codec_reads_back() -> TestResult {
+        let rows = in_order(&calls(3, 40));
+        let read = decode::<IntakeRecord>(marked(&encode(&rows)?, codec()?)?, &every())?;
+        assert_eq!(
+            read.rows, rows,
+            "edge a zstd file whose footer was written again reads back: the refusals above come \
+         from the codec the footer names"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_zstd_file_of_another_level_reads_back() -> TestResult {
+        let rows = in_order(&calls(3, 40));
+        let file = encode_cut(&rows, GROUP_ROWS, ROWS_PER_GROUP, zstd(19)?)?;
+        assert_ne!(
+            file,
+            encode(&rows)?,
+            "edge level 19 gives other bytes than level 1"
+        );
+        let read = decode::<IntakeRecord>(file, &every())?;
+        assert_eq!(read.rows, rows, "edge a file of level 19 reads back");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_least_and_the_greatest_level_are_codecs() -> TestResult {
+        let rows = in_order(&calls(1, 5));
+        for level in [-131_072, 22] {
+            let file = encode_cut(&rows, GROUP_ROWS, ROWS_PER_GROUP, zstd(level)?)?;
+            let read = decode::<IntakeRecord>(file, &every())?;
+            assert_eq!(read.rows, rows, "edge a file of level {level} reads back");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_two_codecs_this_build_reads_and_the_six_it_does_not() -> TestResult {
+        let read = [Compression::UNCOMPRESSED, zstd(1)?, zstd(19)?];
+        for codec in read {
+            assert_eq!(
+                codec_read("call", codec),
+                Ok(()),
+                "edge a column in {} is read",
+                codec_name(codec)
+            );
+        }
+        let refused = [
+            (Compression::SNAPPY, "snappy"),
+            (
+                Compression::GZIP(parquet::basic::GzipLevel::default()),
+                "gzip",
+            ),
+            (Compression::LZO, "lzo"),
+            (
+                Compression::BROTLI(parquet::basic::BrotliLevel::default()),
+                "brotli",
+            ),
+            (Compression::LZ4, "lz4"),
+            (Compression::LZ4_RAW, "lz4_raw"),
+        ];
+        for (codec, name) in refused {
+            assert_eq!(
+                codec_read("call", codec),
+                Err(format!(
+                    "parquet: column call is compressed with {name}; this build reads zstd and \
+                 uncompressed files"
+                )),
+                "edge a column in {name} is refused with the column and the codec named"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_one_member_question_decodes_one_group_of_each_kind_of_file() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file_plain(&beats(600, 0, 1))?;
+        history.file(&beats(600, 60_000, 2))?;
+        let answer = ask::<MemberRecord>(&history, &of(&id(300)))?;
+        assert_eq!(
+            (
+                answer.rows.len(),
+                answer.files_read,
+                answer.groups,
+                answer.groups_read
+            ),
+            (2, 2, 10, 2),
+            "edge the member's two heartbeats come from one row group of each file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_rows_of_two_days_are_two_zstd_files() -> TestResult {
+        let (_dir, history) = store()?;
+        let rows = [call("edge-a", 1000, 1), call("edge-a", DAY + 1000, 2)];
+        let filed = history.file(&rows)?;
+        assert_eq!(
+            (filed.files, filed.rows),
+            (2, 2),
+            "edge one file for each day"
+        );
+        for file in history.list(CLASS_CALLS, &Query::all())? {
+            let sealed = std::fs::read(history.dir().join(&file.rel))?;
+            let parquet = unseal(&file.rel, &sealed, &history.keys, Kind::Calls)?;
+            assert_eq!(
+                codecs_of(&parquet)?,
+                vec![codec()?; 8],
+                "edge {} is zstd",
+                file.rel
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn edge_filing_the_same_rows_again_writes_no_second_compressed_file() -> TestResult {
+        let (_dir, history) = store()?;
+        let rows = calls(4, 5);
+        history.file(&rows)?;
+        let before = disk_bytes(&history, CLASS_CALLS)?;
+        let again = history.file(&rows)?;
+        assert_eq!(
+            (
+                again.files,
+                again.already,
+                disk_bytes(&history, CLASS_CALLS)?
+            ),
+            (0, 20, before),
+            "edge rows a zstd file holds are read back and not filed again"
+        );
+        Ok(())
+    }
+
+    /// What the codec saves on disk for one filing of a fleet's heartbeats and
+    /// one of its call records, on rows of this module's shape: the sealed
+    /// file this build writes against the one releases 0.5.249 to 0.5.253
+    /// wrote. The sizes here are small. The numbers in docs/fleet.md came from
+    /// this test with 2,000 members and 10 call records each in the line
+    /// below.
+    #[test]
+    fn edge_a_filing_is_measured_with_and_without_the_codec() -> TestResult {
+        let (members, each) = (200, 4);
+        let (heartbeats, records) = (beats(members, 0, 720), calls(members, each));
+        let (_old_dir, old) = store()?;
+        old.file_plain(&heartbeats)?;
+        old.file_plain(&records)?;
+        let (_new_dir, new) = store()?;
+        let started = std::time::Instant::now();
+        new.file(&heartbeats)?;
+        let beats_filed = started.elapsed();
+        let started = std::time::Instant::now();
+        new.file(&records)?;
+        let calls_filed = started.elapsed();
+        let started = std::time::Instant::now();
+        let answer = ask::<IntakeRecord>(&new, &of(&id(members / 2)))?;
+        let asked = started.elapsed();
+        assert_eq!(
+            (answer.rows.len(), answer.groups_read),
+            (usize::try_from(each)?, 1),
+            "edge one member's call records come from one row group"
+        );
+        let sizes = [
+            disk_bytes(&old, CLASS_MEMBERS)?,
+            disk_bytes(&new, CLASS_MEMBERS)?,
+            disk_bytes(&old, CLASS_CALLS)?,
+            disk_bytes(&new, CLASS_CALLS)?,
+        ];
+        stderr_line!(
+            "fleet codec measurement: {members} heartbeats in one sealed file: {} B without a \
+         codec, {} B with zstd, filed in {beats_filed:?}; {} call records in one sealed file: \
+         {} B without a codec, {} B with zstd, filed in {calls_filed:?}; one member's records \
+         read in {asked:?}",
+            sizes[0],
+            sizes[1],
+            records.len(),
+            sizes[2],
+            sizes[3]
+        );
+        assert!(
+            sizes[1] * 3 < sizes[0] && sizes[3] * 3 < sizes[2],
+            "edge both classes are under a third of their size without a codec: {sizes:?}"
         );
         Ok(())
     }
