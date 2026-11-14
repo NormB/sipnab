@@ -3055,6 +3055,160 @@ fn a_captured_version_line_is_not_a_crate_version_sample() -> Result<(), TestErr
     Ok(())
 }
 
+/// The Cargo features a gnu release build is compiled with, and so prints
+/// in its `--version` line: the `full` set of `Cargo.toml` and `bpf`, which
+/// `release.yml` adds to `full` for the gnu targets.
+fn gnu_release_features() -> Result<BTreeSet<String>, TestError> {
+    let full = include_str!("../Cargo.toml")
+        .lines()
+        .find(|line| line.starts_with("full = ["))
+        .ok_or("Cargo.toml has no `full = [` line")?;
+    let mut features: BTreeSet<String> = regex::Regex::new(r#""([a-z0-9-]+)""#)?
+        .captures_iter(full)
+        .map(|cap| cap[1].to_string())
+        .collect();
+    let release = include_str!("../.github/workflows/release.yml");
+    assert!(
+        release.contains(r#"features="full""#) && release.contains(r#"features="${features},bpf""#),
+        "release.yml no longer builds the gnu targets with `full` and adds `bpf`: \
+         gnu_release_features must follow it"
+    );
+    features.insert("bpf".to_string());
+    Ok(features)
+}
+
+/// What is wrong with `listed`, the feature list of a `--version` sample,
+/// for a build compiled with `built`, when a build prints the features in
+/// `printed` in that order. `None` when nothing is.
+///
+/// `printed` is what the binary under test prints. It need not hold every
+/// feature of `built`: the order is checked for the features both name.
+fn version_sample_fault(
+    listed: &str,
+    built: &BTreeSet<String>,
+    printed: &[&str],
+) -> Option<String> {
+    let names: Vec<&str> = listed.split(',').collect();
+    let named: BTreeSet<&str> = names.iter().copied().collect();
+    if named.len() != names.len() {
+        return Some("names a feature twice".to_string());
+    }
+    if let Some(missing) = built
+        .iter()
+        .find(|feature| !named.contains(feature.as_str()))
+    {
+        return Some(format!(
+            "lacks `{missing}`, which the gnu release build prints"
+        ));
+    }
+    if let Some(extra) = names.iter().find(|name| !built.contains(**name)) {
+        return Some(format!(
+            "names `{extra}`, which the gnu release build does not hold"
+        ));
+    }
+    let shown: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| printed.contains(name))
+        .collect();
+    let order: Vec<&str> = printed
+        .iter()
+        .copied()
+        .filter(|name| named.contains(name))
+        .collect();
+    (shown != order).then(|| format!("has {shown:?} where a build prints {order:?}"))
+}
+
+/// A `--version` sample with `<hash>` is the line a gnu release build of
+/// this tree prints, so it lists that build's features, each once, in the
+/// order `sipnab --version` prints them.
+///
+/// The samples in `docs/install.md` and `docs/mcp-deploy.md` ended with
+/// `g729` from 0.5.249, when `fleet-store` joined `full`, to 0.5.254: the
+/// release cut moved their version and nothing read the list after it.
+/// This reads `Cargo.toml` and the feature list of the binary under test,
+/// not a release build.
+#[test]
+fn a_version_sample_lists_the_features_of_the_gnu_release_build() -> Result<(), TestError> {
+    let re = regex::Regex::new(&format!(r"{VERSION_LINE_SAMPLE} (\S+)"))?;
+    let built = gnu_release_features()?;
+    let printed = sipnab::cli::compiled_features();
+    let mut samples = 0;
+    let mut faults = Vec::new();
+    for path in scanned_markdown()? {
+        let text = std::fs::read_to_string(&path)?;
+        for (number, line) in text.lines().enumerate() {
+            let Some(cap) = re.captures(line) else {
+                continue;
+            };
+            samples += 1;
+            if let Some(fault) = version_sample_fault(&cap[2], &built, &printed) {
+                faults.push(format!("{}:{}: {fault}", path.display(), number + 1));
+            }
+        }
+    }
+    assert!(
+        samples >= 2,
+        "{samples} `--version` sample(s) with <hash> were found; docs/install.md and \
+         docs/mcp-deploy.md each show one"
+    );
+    assert!(
+        faults.is_empty(),
+        "a `--version` sample does not list the features of the gnu release build (`full` in \
+         Cargo.toml and `bpf`):\n{}",
+        faults.join("\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn a_version_sample_fault_names_what_is_wrong_with_the_list() -> Result<(), TestError> {
+    let built: BTreeSet<String> = ["native", "api", "g729", "fleet-store"]
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let printed = ["native", "api", "g729", "fleet-store"];
+    let fault = |listed: &str| version_sample_fault(listed, &built, &printed);
+    assert_eq!(
+        fault("native,api,g729,fleet-store"),
+        None,
+        "the list a build prints has no fault"
+    );
+    assert_eq!(
+        fault("native,api,g729"),
+        Some("lacks `fleet-store`, which the gnu release build prints".to_string()),
+        "the list of 0.5.248, shown for a later release, lacks the store"
+    );
+    assert_eq!(
+        fault("native,api,g729,fleet-store,wasm"),
+        Some("names `wasm`, which the gnu release build does not hold".to_string()),
+        "a feature the release build is not compiled with"
+    );
+    assert_eq!(
+        fault("native,api,g729,g729,fleet-store"),
+        Some("names a feature twice".to_string()),
+        "a feature named twice"
+    );
+    let fault = fault("native,g729,api,fleet-store").ok_or("a list out of order has a fault")?;
+    assert!(
+        fault.starts_with("has [\"native\", \"g729\", \"api\", \"fleet-store\"] where a build"),
+        "a list in another order than a build prints: {fault}"
+    );
+    // A test binary without `fleet-store` still demands it of the sample,
+    // and checks the order of the features it does print.
+    assert_eq!(
+        version_sample_fault("native,api,g729,fleet-store", &built, &["native", "api"]),
+        None,
+        "the order is checked for the features the binary under test prints"
+    );
+    assert_eq!(
+        version_sample_fault("native,api,g729", &built, &["native", "api"]),
+        Some("lacks `fleet-store`, which the gnu release build prints".to_string()),
+        "a binary without the store still demands it of the sample"
+    );
+    Ok(())
+}
+
 #[test]
 fn docs_current_version_markers_match_cargo() -> Result<(), TestError> {
     let version = env!("CARGO_PKG_VERSION");
@@ -6392,7 +6546,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1498 -> 1500 (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER): the table of
     // job summary lines in build-ci-release.md's "The daily advertisement
     // check", with its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1500;
+    // 1500 -> 1502 (fleet history reads the selected rows): the table of
+    // read times under "What the reads cost" in docs/fleet.md's "The files
+    // of the history store", with its site mirror (+2).
+    // 1502 -> 1504 (binary sizes of 0.5.254): the table of release build
+    // sizes in docs/fleet.md's "Upgrade a center to compressed history
+    // files", with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1504;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

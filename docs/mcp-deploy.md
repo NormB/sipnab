@@ -172,7 +172,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.254 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   sipnab 0.5.254 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
