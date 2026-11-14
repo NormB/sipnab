@@ -6692,7 +6692,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // step's comment and in its command (+3; that comment names the
     // verifier once, as the command it replaces did). Measurement: the scan
     // read 283 on main 79dee8c47 and 289 with both files staged.
-    const EXPECTED_REFERENCES: usize = 289;
+    // 289 -> 290 (CHANGELOG merge gate): ci.yml's step "The CHANGELOG is as
+    // the base has it" names `scripts/check-changelog-merge.py`.
+    // Measurement: the scan read 289 on main 45087124b and 290 with that
+    // step staged.
+    const EXPECTED_REFERENCES: usize = 290;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
