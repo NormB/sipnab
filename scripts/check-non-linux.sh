@@ -261,7 +261,7 @@ fi
 
 # -- Compile the inverted tree ------------------------------------------------
 #
-# The same invocation CI runs on macos-latest, so a lint that fails there fails
+# The same invocation CI runs on macos-26, so a lint that fails there fails
 # here first: `cargo clippy --all-features --all-targets -- -D warnings`.
 # `--all-targets` is not optional -- the first of the two breaks lived in a
 # `#[cfg(test)]` module, which no `--lib` check ever builds.

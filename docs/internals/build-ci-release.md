@@ -1057,7 +1057,13 @@ The Linux leg of the Check job, the `test` shards and the `Quality` workflow's C
     and `cmake`, which builds libopus for the `opus` feature.
   - Its toolchain step asks for each `rustup` component a step runs: `clippy`, `rustfmt` and `llvm-tools-preview`.
     The minimal profile has none of them, and the self-hosted machine has all three.
-- The macOS leg of Check stays on GitHub's `macos-latest`.
+- The macOS leg of Check runs on GitHub's `macos-26`.
+- Every job names a fixed image: `ubuntu-24.04`, `ubuntu-24.04-arm` or `macos-26`. No workflow and no composite action names `ubuntu-latest`, `macos-latest` or `windows-latest`.
+  - GitHub moves a floating label to a newer image on its own schedule. On 2026-11-13 `ubuntu-latest` resolved to Ubuntu 26.04 for some runs and to 24.04 for others, minutes apart, and `macos-latest` had already moved to the macOS 26 image.
+  - A job on a floating label changes its image without a commit, so a failure the new image brings has no change to point at.
+  - `no_workflow_or_action_names_a_floating_runner_label` in [`tests/ci_runner_target_test.rs`](../../tests/ci_runner_target_test.rs) reads every workflow and composite action and fails on such a label outside a comment: in `runs-on:`, in a matrix, in an expression or in a job name. The test runs in the pre-commit hook's suite and in CI.
+  - The value of `matrix.os` is part of a check's name, so the checks are `Check (ubuntu-24.04)` and `Check (macos-26)`. Before 2026-11-13 they were `Check (ubuntu-latest)` and `Check (macos-latest)`, and the dated records on this page keep those names.
+  - To move to a newer image, change the label in the workflows and `HOSTED_IMAGES` in that test in one commit, and read the first CI run on the new image before the change lands.
 
 System packages come from `.github/actions/system-deps`.
 
@@ -2702,7 +2708,7 @@ Checked and not a cause:
     So rebuilding an older aarch64 gnu release needs the cross compiler version its release log shows.
   - The musl legs build in the `cross` images pinned by digest in `docker/cross/`.
     The release installs `cross` itself from git, unpinned.
-  - The macOS legs build on `macos-latest`, whose Xcode moves.
+  - The macOS legs build on `macos-26`, whose Xcode moves.
 
 **What the check proves, and does not.**
 

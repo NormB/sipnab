@@ -5930,8 +5930,8 @@ fn workflow_jobs(yaml: &str) -> Result<Vec<(String, String)>, TestError> {
 }
 
 /// The runner images a job can select: the values of its matrix `os:`, in
-/// the list form (`os: [macos-latest]`) or as `include` entries
-/// (`- os: macos-latest`), and a literal `runs-on:`.
+/// the list form (`os: [macos-26]`) or as `include` entries
+/// (`- os: macos-26`), and a literal `runs-on:`.
 fn job_runners(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in body.lines() {
@@ -6075,7 +6075,7 @@ fn the_macos_leg_blocks_main_and_no_pull_request() -> Result<(), TestError> {
                 field.trim()
             );
         }
-        assert_eq!(job_runners(body), vec!["macos-latest".to_string()], "{id}");
+        assert_eq!(job_runners(body), vec!["macos-26".to_string()], "{id}");
     }
 
     // The same steps as a gated Linux job, and on macOS Check runs the suite.
@@ -6681,7 +6681,9 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 278 -> 282: rerun-not-acquired.yml names `scripts/rerun-not-acquired.py`
     // (three times) and `scripts/tests/test_rerun_not_acquired.py`.
     // Measurement: the scan read 282 with that file staged.
-    const EXPECTED_REFERENCES: usize = 282;
+    // 282 -> 283 (RUNNER-IMAGE-FLOATS): ci.yml's comment on the fixed runner
+    // images names `tests/ci_runner_target_test.rs`.
+    const EXPECTED_REFERENCES: usize = 283;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

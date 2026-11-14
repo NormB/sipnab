@@ -1040,11 +1040,14 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // stood at 856 before they met).
     // 860 -> 863 (hook step log): testing.md's "Where a hook run spent its
     // time" links scripts/hook-steps.py and its two test files (+3).
-    // 863 -> 872 (threads at the privilege drop): threading.md's section
+    // 863 -> 864 (RUNNER-IMAGE-FLOATS, +1): build-ci-release.md links
+    // tests/ci_runner_target_test.rs where it says every job names a fixed
+    // image.
+    // 864 -> 873 (threads at the privilege drop): threading.md's section
     // "Threads that exist at the privilege drop" links the two files that
     // drop, the five whose threads exist then, privilege.rs, and the test
     // that holds the section (+9).
-    const EXPECTED_CODE_LINKS: usize = 872;
+    const EXPECTED_CODE_LINKS: usize = 873;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

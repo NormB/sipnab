@@ -54,7 +54,7 @@ jobs:
   batch:
     name: Batch fuzzing
     if: github.event.schedule == '23 2 * * *' || inputs.mode == 'batch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The ClusterFuzzLite actions are Docker actions built for amd64; the
     # arm64 runners this repository uses elsewhere cannot run them.
     #
@@ -83,7 +83,7 @@ jobs:
   prune:
     name: Corpus pruning
     if: github.event.schedule == '23 5 * * *' || inputs.mode == 'prune'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Pruning replays the corpus rather than searching, so it is bounded by
     # the corpus size and the build, not by a fuzzing budget.
     timeout-minutes: 90
@@ -104,7 +104,7 @@ jobs:
   coverage:
     name: Coverage report
     if: github.event.schedule == '23 6 * * 0' || inputs.mode == 'coverage'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - name: Build fuzzers

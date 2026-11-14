@@ -42,7 +42,7 @@ env:
 jobs:
   tsan:
     name: ThreadSanitizer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The whole point is to see failures, so no continue-on-error: a race that
     # is detected and discarded is worse than one never looked for.
     timeout-minutes: 60
