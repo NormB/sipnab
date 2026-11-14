@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" -->), `capture_files`
-([`src/capture/file.rs:586`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L586)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->), `capture_hep` ([`src/capture/hep.rs:3536`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3536)<!-- "/// backpressure);" -->), the
+([`src/capture/file.rs:586`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L586)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->), `capture_hep` ([`src/capture/hep.rs:3570`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3570)<!-- "/// backpressure);" -->), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)<!-- "pub struct Packet" -->) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L216)<!-- "pub struct PacketTx" -->), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -385,7 +385,7 @@ nothing.
 
 **`--count N` is enforced twice, and the run-level copy is the one that holds.**
 Each reader keeps a thread-local counter and stops at `config.count`
-([`src/capture/hep.rs:3830`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3830)<!-- "let mut count: u64" --> and its check; [`src/capture/live.rs:950`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L950)<!-- "count_limit_reached(self.config.count, self.count)" -->), and the
+([`src/capture/hep.rs:3864`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3864)<!-- "let mut count: u64" --> and its check; [`src/capture/live.rs:950`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L950)<!-- "count_limit_reached(self.config.count, self.count)" -->), and the
 consumer independently breaks at `total_count >= max_count`
 ([`src/app/batch.rs:4955`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4955)<!-- "if let Some(max_count) = capture_config.count && lp.total_count >= max_count" -->). Because each reader gets a clone of the same
 `CaptureConfig`, the per-reader copies are per source, so a member can stop

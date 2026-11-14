@@ -60,7 +60,7 @@ AssertWithoutMessage	src/capture/hep_rtcp.rs	9
 AssertWithoutMessage	src/capture/input_set.rs	36
 AssertWithoutMessage	src/capture/keylog_source.rs	6
 AssertWithoutMessage	src/capture/libpcap.rs	15
-AssertWithoutMessage	src/capture/live.rs	53
+AssertWithoutMessage	src/capture/live.rs	52
 AssertWithoutMessage	src/capture/mapped.rs	20
 AssertWithoutMessage	src/capture/merged.rs	2
 AssertWithoutMessage	src/capture/mod.rs	78

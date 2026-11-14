@@ -6524,13 +6524,16 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1494 -> 1496 (fleet history compression): the table of file sizes
     // with and without zstd in docs/fleet.md's "Upgrade a center to
     // compressed history files", with its site mirror (+2).
-    // 1496 -> 1498 (fleet history reads the selected rows): the table of
+    // 1496 -> 1498 (threads at the privilege drop): the start-path table of
+    // "Threads that exist at the privilege drop" in
+    // docs/internals/threading.md, with its site mirror (+2).
+    // 1498 -> 1500 (fleet history reads the selected rows): the table of
     // read times under "What the reads cost" in docs/fleet.md's "The files
     // of the history store", with its site mirror (+2).
-    // 1498 -> 1500 (binary sizes of 0.5.254): the table of release build
+    // 1500 -> 1502 (binary sizes of 0.5.254): the table of release build
     // sizes in docs/fleet.md's "Upgrade a center to compressed history
     // files", with its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1500;
+    const EXPECTED_TABLES: usize = 1502;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

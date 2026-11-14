@@ -15,6 +15,9 @@ error_reference_test
 # meets: both failed the first hook run of the change that added this file.
 doc_ellipsis_quote_test
 howto_sections_test
+# A repo path a page shows as a bare code span: it failed a hook run after
+# this script had passed, for a section that named a new test file.
+doc_link_hygiene_test
 closed_stderr_test
 commit_subject_gate_test
 committed_capture_provenance_test
@@ -44,6 +47,7 @@ source_file_headers_test
 staged_inputs_gate_test
 startup_refusal_stderr_test
 support_selftest
+threads_at_privilege_drop_test
 two_part_reference_test
 unwrap_ratchet_test
 vcon_draft_citation_test

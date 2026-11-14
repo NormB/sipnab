@@ -2029,16 +2029,25 @@ Steps, all inside the workflow:
    under the build version `<commit>-<run ID>-<attempt>`, which GitHub has not seen.
    It waits for GitHub's status of that deployment, then reads the stamp again.
 4. With `expect`, it then runs [`verify-site-advertises.sh`](https://github.com/NormB/sipnab/blob/main/scripts/verify-site-advertises.sh) for that release.
+   Each check is one request. The verifier prints the edge's answer first, as a line that starts with `edge:`
+   (the status and the `server`, `cf-ray`, `cf-mitigated` and `content-type` headers), and the first 200 bytes of an answer that is not a success.
+5. The script prints every check when it ends: `release check <n> (+<seconds> s): exit <status>: <the verifier's lines>`.
+   It reads a page that does not name the release yet again every 15 seconds.
+   After a read that the edge refused it waits 15 seconds, then 30, 60 and 120, so a refused client sends five requests in 300 seconds.
 
-Verify: the job's log ends with `live: https://sipnab.com/deploy-stamp.txt carries this run's stamp`.
+Verify: the job's log holds the line `live: https://sipnab.com/deploy-stamp.txt carries this run's stamp`.
 The exit status of `pages-live.py verify` says how the check ended:
 
 | Exit | Meaning |
 |---|---|
 | 0 | The site is this run's artifact, and it names the release that `expect` gives. |
 | 1 | The site is stale after the second deploy, or the second deploy failed. |
-| 2 | The script could not read the site, so the run knows nothing about the deploy. |
-| 3 | The site is this run's artifact, and the download page does not name the expected release. |
+| 2 | The script could not read the site, so the run knows nothing about the deploy. It also means that the stamp is this run's and the download page gave no answer to judge: no connection, an error status or an empty body. |
+| 3 | The site is this run's artifact, and the download page answered and does not name the expected release. |
+| 4 | The site is this run's artifact, and the edge refused the read of the download page with 403 or 429. The run knows nothing about the release. |
+
+Troubleshoot an exit of 4: the page can be right for every other reader.
+Read it from another address with `sh scripts/verify-site-advertises.sh <version>`, and search the log of the CDN for the `cf-ray` value of the `edge:` line.
 
 - A `workflow_dispatch` run enforces the verdict (`--enforce`). A release advertises itself through such a run, and a withdrawal redeploys through one.
   The `advertise` job of `release.yml` waits for that run, so a stale site makes the release run red.
