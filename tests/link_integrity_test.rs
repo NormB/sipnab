@@ -2029,7 +2029,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // CONTRIBUTING.md's line on accepted advisories.
     // 149 -> 150 (fleet history store): README.md's `fleet-store` feature row
     // links docs/fleet.md#keep-call-history-at-the-center.
-    const EXPECTED_COMMUNITY_LINKS: usize = 150;
+    // 150 -> 151 (changelog outline format): CONTRIBUTING.md's changelog
+    // item links docs/internals/build-ci-release.md#the-format-of-an-entry.
+    const EXPECTED_COMMUNITY_LINKS: usize = 151;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

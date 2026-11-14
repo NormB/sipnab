@@ -1054,7 +1054,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 875 -> 877 (size claims in the changelog, +2): build-ci-release.md's
     // "The changelog" links scripts/check-changelog-size-claims.py and its
     // test file.
-    const EXPECTED_CODE_LINKS: usize = 877;
+    // 877 -> 878 (changelog outline format, +1): build-ci-release.md's "The
+    // format of an entry" links tests/changelog_format_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 878;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

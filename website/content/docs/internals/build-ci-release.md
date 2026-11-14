@@ -2820,10 +2820,49 @@ is the user's side.
 `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and says so in its header.
 
-- Entries sit under `Added` / `Changed` /
-  `Fixed` / `Removed`.
-- The project uses a few extra headings where those four
-  do not fit what a release actually did.
+- Entries sit under `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` and `Security`.
+- The older sections use a few extra headings, and hold entries written as paragraphs.
+
+#### The format of an entry
+
+The reader of the changelog decides whether to upgrade, and what to do after.
+An entry is an outline of at most six lines:
+
+```markdown
+- **The lead: what changed, in the user's terms.**
+  - Was: for a fix, what went wrong before.
+  - Effect: what the user sees or can now do.
+  - Do: what the user must do, with the command or the setting.
+  - Limit: one limit or caveat.
+  - Docs: [the page title](https://github.com/NormB/sipnab/blob/main/docs/internals/docs/page.md#the-heading).
+```
+
+- The lead is one bold line of at most 15 words, with nothing after it.
+  It states the effect, not the mechanism.
+- One to five sub-bullets follow, each one line of at most 25 words after its label.
+  The labels are `Effect:`, `Do:`, `Limit:`, `Docs:` and `Was:`.
+- Every entry has an `Effect:` or a `Was:` line. The other labels appear only when they apply.
+- A `Docs:` line holds a link. A link counts the words of its title, not its address.
+- An entry about sizes or limits can hold one table of at most six rows in place of its `Effect:` line.
+- A credit that an old entry already carries, such as "Requested by", stays word for word as a last sub-bullet labeled `Credit:`.
+  It does not count toward the five, and no entry gains or loses one.
+- Nothing else stands under a bullet: no paragraph, no continuation line and no third level.
+
+What goes into an entry:
+
+- A command, a flag, a setting, a file path, an error text or a number that the user meets, in code font.
+- No internal names: no function, type, test or backlog names, and no account of the tests of the change.
+- The detail goes into the docs page that the `Docs:` line links.
+- A change that no user of a released artifact can see has no entry.
+  Hooks, CI, tests, gates and refactors are such changes.
+- Related changes of one release share one entry.
+
+[`changelog_format_test`](https://github.com/NormB/sipnab/blob/main/tests/changelog_format_test.rs) holds the format.
+
+- It reads `[Unreleased]` and every release section down to the one that its `CONVERTED_DOWN_TO` names.
+- The sections below that one keep the old form until a later change rewrites them and lowers the constant.
+- It prints the section, the lead and the rule for each entry that departs from the format.
+- A `Not released.` paragraph and a `**Held:**` line are the only text it allows outside an entry.
 
 **A size statement carries its numbers.**
 An entry that compares binary sizes names the two sizes it compared, or the release workflow run that printed them.
@@ -2866,9 +2905,7 @@ It exists because an edit whose anchor included the heading destroyed it.
 - The sibling gate searches for the heading naming the *current site version*.
   That heading was still present further down.
 
-Nothing gates the changelog's prose, which is deliberate.
-Prose would satisfy a gate on prose.
-Two checks read it all the same.
+Two more checks read the changelog.
 
 - The release date must match [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml).
   `site_release_date_matches_changelog` asserts it.
