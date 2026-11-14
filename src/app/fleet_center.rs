@@ -7774,4 +7774,78 @@ mod filing_lock_tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn edge_retention_does_not_run_while_the_filing_gate_is_held() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_rt, st) = with_three(dir.path())?;
+        let (done, was_done) = mpsc::channel();
+        let gate = st.filing.lock();
+        let retention = {
+            let st = st.clone();
+            std::thread::spawn(move || {
+                expire_history(&st.center, &st.filing, Utc::now(), 90, 72);
+                let _ = done.send(());
+            })
+        };
+        // A pass that took no gate ends at once and says so here. A pass
+        // that waits for the gate says nothing, however long this waits.
+        assert!(
+            was_done
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "edge retention does not run while the filing gate is held"
+        );
+        drop(gate);
+        retention.join().map_err(|_| "retention panicked")?;
+        assert!(
+            was_done.try_recv().is_ok(),
+            "edge it runs once the gate is free"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_end_of_a_filing_does_not_read_the_intake_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (rt, st) = with_three(dir.path())?;
+        let intake = crate::app::fleet_intake::path_for(&dir.path().join("sub/center.store"));
+        let (reach, reached) = mpsc::channel();
+        let (go_on, gone_on) = mpsc::channel::<()>();
+        let gone_on = parking_lot::Mutex::new(gone_on);
+        let file = intake.clone();
+        st.center.lock().hook = Some(Arc::new(move |step| match step {
+            FilingStep::Taken => {
+                let _ = reach.send(());
+                let _ = gone_on.lock().recv();
+            }
+            FilingStep::Written => {
+                // The intake file can no longer be read whole.
+                if let Ok(mut bytes) = std::fs::read(&file) {
+                    let at = bytes.len().saturating_sub(40);
+                    bytes[at] ^= 0x01;
+                    let _ = std::fs::write(&file, bytes);
+                }
+            }
+        }));
+        let filing = filing(&st);
+        reached.recv_timeout(ANSWER)?;
+        assert_eq!(
+            answer(&push(&rt, &st, 4, 4)?, "a push")?.0,
+            200,
+            "edge pushed"
+        );
+        go_on.send(())?;
+        assert_eq!(
+            ended(filing)?.rows,
+            3,
+            "edge the end of a filing does not read the intake file"
+        );
+        assert_eq!(
+            intake_ids(&dir.path().join("sub"))?,
+            vec!["call-4@example.com"],
+            "edge the intake is written again with the record that arrived"
+        );
+        Ok(())
+    }
 }

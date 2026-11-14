@@ -42565,6 +42565,74 @@ answer with this page.
   leaves no trace in the store, as for the store file itself. An answer does
   not include records the intake dropped at its size limit before a filing.
 
+### What waits during a filing
+
+**Purpose.** Know which requests the center answers while it files, and
+which steps of a filing make a request wait.
+
+The center keeps its members, its store file and its intake behind one lock.
+A push, `GET /v1/fleet/members` and the first step of a question each take
+that lock for a short time.
+
+A filing of call records has three steps:
+
+1. **Take.** Under the lock, the center opens the intake file and reads its
+   header and its length. It reads no record.
+2. **Read and write.** Without the lock, the center reads the records up to
+   that length, parses them and writes the files of the history store. This
+   is the step that takes time. The center answers pushes, status requests
+   and questions during it. A record that arrives now goes to the intake and
+   waits for the next filing.
+3. **End.** Under the lock, the center writes the intake again with only the
+   records that arrived during step 2. It kept their lines in memory, so it
+   does not read the intake file for this.
+
+A filing of heartbeats has the same three steps over the rows that wait in
+memory. The releases 0.5.249 to 0.5.255 held the lock for all three steps of
+a filing of call records, so nothing got an answer until the filing ended.
+
+Measured in a release build (Cargo feature set `full`, aarch64, load average
+13 to 22, three runs) with a full intake of 54,000 synthetic call records
+(67,412,988 bytes before sealing): steps 1 and 3 together held the lock 19
+to 22 ms when no record arrived during the filing, and 28 to 30 ms when
+2,000 records arrived during it. Step 1 alone took 23 to 30 microseconds.
+Step 2 took 495 to 511 ms without the lock. In the same binary, the three
+steps as one under the lock took 607 to 633 ms.
+
+What still waits:
+
+- **One filing at a time.** A second filing, of either class, and the
+  retention pass on the history store wait until the running filing ends.
+  They hold no lock that a request needs while they wait.
+- **A push waits for another push.** The center writes each push to disk
+  under the lock before it answers.
+- **Steps 1 and 3 of a filing, and the rewrite of the store file and of the
+  intake by retention,** hold the lock while they run.
+
+`GET /v1/fleet/calls` opens the intake under the lock in the same way and
+reads the waiting records without it. A question asked between step 2 and
+step 3 finds a record both in a file and in the intake, and the answer
+shows it once.
+
+**A stop during a filing.** A center that stops between step 2 and step 3
+leaves the records in the files and in the intake. The next filing, at the
+next start, finds them in the files and files none of them twice. The line
+`filed 0 call record(s) in 0 file(s) of the history store; N were in it
+already` reports that.
+
+**Why a filing reads the intake safely while pushes arrive.** A push adds
+its records after the length that step 1 took, and step 2 reads no byte
+past that length. A push also writes one of the two count slots in the
+file's header, and step 2 does not read the header again: step 1 read it
+while no push was writing. That matters because the center accepts a file
+with one count slot that does not check only when exactly one whole
+addition follows the counted records. A reader that saw a count slot half
+written, with a second push already started, would refuse a file that is
+whole. The filing's reader cannot see that state, so the center does not
+try a refused read again: a refusal is a real one. When retention or a
+repair writes the intake file again, it writes a new file and renames it
+into place. Step 2 keeps the file it opened, which nothing writes to.
+
 ### The files of the history store
 
 **Purpose.** Know what the center writes under `<store>.parquet`, how many

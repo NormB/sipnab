@@ -377,9 +377,11 @@ impl Intake {
         // The records that stay are those taken since the filing started.
         // Their lines were kept, so the file, which may hold as much as
         // the intake's bound, is not read under the center's lock. Without
-        // kept lines for exactly those records, the file is the source.
+        // kept lines for exactly those records, the file is the source,
+        // and it is not read either when no record stays.
         let stay = match since {
             Some(lines) if lines.len() == rest => lines,
+            _ if rest == 0 => Vec::new(),
             _ => {
                 let mut lines = self
                     .log
@@ -2198,6 +2200,46 @@ mod filing_tests {
             seqs_at(&path)?,
             vec![5],
             "edge a second filing before filed starts the kept lines again"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_filed_for_every_record_held_does_not_read_the_file() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.snapshot()?;
+        damage(&path)?;
+        assert!(
+            intake.rows().is_err(),
+            "edge the file can no longer be read"
+        );
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            3,
+            "edge filed for every record held does not read the file"
+        );
+        drop(intake);
+        assert!(
+            seqs_at(&path)?.is_empty(),
+            "edge the new file holds no record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_after_a_filing_that_did_not_file_no_kept_line_is_used() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let _abandoned = intake.filing()?;
+        intake.not_filed();
+        let snapshot = intake.snapshot()?;
+        intake.append(&recs(4..=4))?;
+        damage(&path)?;
+        // One record stays. Its line is read from the file, which is
+        // refused: no line kept for the filing that did not file is used.
+        let got = intake.filed(snapshot.first(), snapshot.count());
+        assert!(
+            got.as_ref().is_err_and(|e| e.contains("sealed layer")),
+            "failure after a filing that did not file no kept line is used: {got:?}"
         );
         Ok(())
     }
