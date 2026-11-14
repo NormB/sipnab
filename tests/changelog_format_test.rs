@@ -44,6 +44,12 @@ const KINDS: [&str; 6] = [
 /// The labels a sub-bullet may start with.
 const LABELS: [&str; 5] = ["Effect", "Do", "Limit", "Docs", "Was"];
 
+/// The label of a credit ("Requested by", "Reported by") that an old entry
+/// already carries. A rewrite keeps it word for word, as the last
+/// sub-bullet; it does not count toward [`SUB_BULLETS`] and has no word
+/// limit. No entry gains or loses one.
+const CREDIT_LABEL: &str = "Credit";
+
 /// The most words a lead may hold.
 const LEAD_WORDS: usize = 15;
 
@@ -124,11 +130,20 @@ fn close(section: &str, entry: Option<Entry>, out: &mut Vec<String>) {
     if entry.tables == 0 && entry.labels.is_empty() {
         fail("the entry has no sub-bullets (1 to 5, or one table)".into());
     }
-    if entry.labels.len() > SUB_BULLETS {
+    let counted = entry.labels.iter().filter(|l| *l != CREDIT_LABEL).count();
+    if counted > SUB_BULLETS {
         fail(format!(
-            "the entry has {} sub-bullets (at most {SUB_BULLETS})",
-            entry.labels.len()
+            "the entry has {counted} sub-bullets (at most {SUB_BULLETS})"
         ));
+    }
+    let last = entry.labels.len().saturating_sub(1);
+    if entry
+        .labels
+        .iter()
+        .enumerate()
+        .any(|(at, l)| l == CREDIT_LABEL && at != last)
+    {
+        fail("a `Credit:` sub-bullet is not the last sub-bullet of its entry".into());
     }
     if entry.tables > 1 {
         fail(format!(
@@ -169,6 +184,7 @@ fn lead_rules(rest: &str) -> Vec<String> {
 fn sub_rules(rest: &str) -> (Option<String>, Vec<String>) {
     let label = LABELS
         .iter()
+        .chain(std::iter::once(&CREDIT_LABEL))
         .find(|label| rest.starts_with(&format!("{label}: ")));
     let Some(label) = label else {
         return (
@@ -185,7 +201,7 @@ fn sub_rules(rest: &str) -> (Option<String>, Vec<String>) {
     if count == 0 {
         rules.push(format!("the `{label}:` sub-bullet is empty"));
     }
-    if count > SUB_WORDS {
+    if count > SUB_WORDS && *label != CREDIT_LABEL {
         rules.push(format!(
             "the `{label}:` sub-bullet has {count} words (at most {SUB_WORDS})"
         ));
@@ -801,6 +817,70 @@ fn edge_the_last_entry_of_the_file_is_closed() {
         found.len(),
         1,
         "the entry at the end of the file has no sub-bullets: {found:?}"
+    );
+}
+
+// ── A credit an old entry carries ───────────────────────────────────────────
+
+/// A credit line as an old entry carries one.
+const CREDIT: &str =
+    "  - Credit: Requested by A. Person ([@handle](https://example.com/handle)).\n";
+
+#[test]
+fn success_a_credit_as_the_last_sub_bullet_passes() {
+    accepted(&format!(
+        "### Added\n\n- **A lead.**\n  - Effect: yes.\n{CREDIT}"
+    ));
+}
+
+#[test]
+fn success_five_sub_bullets_and_a_credit_pass() {
+    accepted(&format!(
+        "### Fixed\n\n- **A lead.**\n  - Was: a.\n  - Effect: b.\n  - Do: c.\n  - Limit: d.\n  \
+         - Docs: [e](docs/e.md).\n{CREDIT}"
+    ));
+}
+
+#[test]
+fn edge_a_credit_is_kept_word_for_word_past_the_word_limit() {
+    accepted(&format!(
+        "### Added\n\n- **A lead.**\n  - Effect: yes.\n  - Credit: {}.\n",
+        text_of(SUB_WORDS + 10)
+    ));
+}
+
+#[test]
+fn failure_a_credit_before_another_sub_bullet_is_refused() {
+    refused(
+        &format!("### Added\n\n- **A lead.**\n{CREDIT}  - Effect: yes.\n"),
+        "a `Credit:` sub-bullet is not the last",
+    );
+}
+
+#[test]
+fn failure_two_credits_are_refused() {
+    refused(
+        &format!("### Added\n\n- **A lead.**\n  - Effect: yes.\n{CREDIT}{CREDIT}"),
+        "a `Credit:` sub-bullet is not the last",
+    );
+}
+
+#[test]
+fn failure_a_credit_alone_is_refused() {
+    refused(
+        &format!("### Added\n\n- **A lead.**\n{CREDIT}"),
+        "neither an `Effect:` nor a `Was:`",
+    );
+}
+
+#[test]
+fn failure_six_sub_bullets_and_a_credit_are_refused() {
+    refused(
+        &format!(
+            "### Added\n\n- **A lead.**\n  - Effect: a.\n  - Do: b.\n  - Limit: c.\n  - Limit: d.\n  \
+             - Limit: e.\n  - Docs: [f](docs/f.md).\n{CREDIT}"
+        ),
+        "the entry has 6 sub-bullets (at most 5)",
     );
 }
 

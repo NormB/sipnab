@@ -2784,6 +2784,8 @@ An entry is an outline of at most six lines:
 - Every entry has an `Effect:` or a `Was:` line. The other labels appear only when they apply.
 - A `Docs:` line holds a link. A link counts the words of its title, not its address.
 - An entry about sizes or limits can hold one table of at most six rows in place of its `Effect:` line.
+- A credit that an old entry already carries, such as "Requested by", stays word for word as a last sub-bullet labeled `Credit:`.
+  It does not count toward the five, and no entry gains or loses one.
 - Nothing else stands under a bullet: no paragraph, no continuation line and no third level.
 
 What goes into an entry:
