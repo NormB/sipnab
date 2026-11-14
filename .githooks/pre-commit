@@ -123,12 +123,18 @@ fi
 # with the hook's exit status: a step that fails ends the hook. A run a pass
 # stamp skipped (above) writes nothing, and a killed run has no `total` line.
 # The log is a record, never a gate: a line that cannot be written is dropped.
+# A passing suite adds a note, a line of three fields: the run, `nextest`, and
+# nextest's Summary line (the tests run, passed and skipped).
 STEP_LOG="$(git rev-parse --git-dir 2>/dev/null || echo .)/sipnab-pre-commit-steps.log"
 STEP_RUN="$(date -u +%Y-%m-%dT%H:%M:%SZ).$$"
 STEP_NAME=""
 STEP_T0=0
 step_line() { # step_line <step> <seconds> <status>
 	{ printf '%s\t%s\t%s\t%s\n' "$STEP_RUN" "$1" "$2" "$3" >> "$STEP_LOG"; } 2>/dev/null || true
+}
+step_note() { # step_note <name> <text>: a note of this run, three fields, not a step
+	[ -n "$2" ] || return 0
+	{ printf '%s\t%s\t%s\n' "$STEP_RUN" "$1" "$(printf '%s' "$2" | tr '\t' ' ')" >> "$STEP_LOG"; } 2>/dev/null || true
 }
 step_close() { # step_close <status>: write the line of the step that is open
 	[ -n "$STEP_NAME" ] || return 0
@@ -750,6 +756,10 @@ if [ "$TEST_RC" -ne 0 ] || echo "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
     exit 1
 fi
 echo -e "${GREEN}OK${NC}"
+# nextest's Summary line of this passing run, as a note in the step log: the
+# suite's total was kept only for a failed run (in sipnab-pre-commit-tests.log),
+# so two passing runs could not be compared by their totals.
+step_note nextest "$(printf '%s\n' "$TEST_OUTPUT" | sed -n 's/^[[:space:]]*\(Summary \[.*\)$/\1/p' | tail -n 1)"
 # Passed: nothing is left to replay. The count step (5) needs this run's
 # output; it is read here, so the stamp vouches for both, and step 5 reports it.
 rm -f "$FAILED_RECORD"
