@@ -237,7 +237,7 @@ configuration**. Enumerated from the code, everything below runs after
 | Audio playback plugin | `Library::new`, [`src/rtp/playback.rs:548`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs#L548)<!-- "match unsafe { Library::new(cand)" --> | `dlopen` of `libsipnab_audio.so`: openat, mmap, **mprotect with PROT_EXEC** |
 | Event exec hooks | `Command::new("sh").spawn()`, [`src/output/event_exec.rs:586-592`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L586-L592)<!-- "let mut command =" --> | **clone + execve + wait4** |
 | Crash report write | [`src/crash.rs:137-138`](https://github.com/NormB/sipnab/blob/main/src/crash.rs#L137-L138)<!-- "fn open_new_report_file(path: &Path)" --> | file create with `O_EXCL` |
-| HEP listener / sender | [`src/capture/hep.rs:3777`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3777)<!-- "HepSocketSource::Address => UdpSocket::bind(bind_addr)" --> | UDP bind |
+| HEP listener / sender | [`src/capture/hep.rs:3811`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3811)<!-- "HepSocketSource::Address => UdpSocket::bind(bind_addr)" --> | UDP bind |
 
 Two rows deserve to be read twice.
 
@@ -550,7 +550,7 @@ Proposed ruleset, derived from what actually runs post-drop:
 
 **Landlock does not bound the network in the way an operator might assume.**
 Network rules arrived at ABI 4 and cover TCP bind/connect only. They do not cover
-the HEP UDP listener ([`src/capture/hep.rs:3777`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3777)<!-- "HepSocketSource::Address => UdpSocket::bind(bind_addr)" -->) and they do not
+the HEP UDP listener ([`src/capture/hep.rs:3811`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3811)<!-- "HepSocketSource::Address => UdpSocket::bind(bind_addr)" -->) and they do not
 cover the pre-drop `CAP_NET_RAW` socket, which is not a Landlock-governed object
 at all. Saying so plainly is better than letting "sandboxed" imply a guarantee it
 does not make — the same rule

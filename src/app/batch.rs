@@ -22000,12 +22000,12 @@ mod polled_publish_order_tests {
 
     /// A poll of the fake engines, labeled by address.
     fn fake_poll(fakes: &[crate::test_engines::FakeEngine]) -> Result<RelayStatsPoll, TestError> {
-        use crate::test_engines::{TIMEOUT, live_permit};
+        use crate::test_engines::live_permit;
         Ok(RelayStatsPoll {
             engines: fakes
                 .iter()
                 .map(|f| EnginePoll {
-                    client: crate::rtpengine::control::ControlClient::new(f.addr, TIMEOUT),
+                    client: f.control_client(),
                     label: format!("rtpengine at {}", f.addr),
                     previous: None,
                 })
@@ -22022,7 +22022,16 @@ mod polled_publish_order_tests {
     /// each engine's reading is in its configured place.
     #[test]
     fn one_poll_of_dead_engines_costs_one_timeout() -> Result<(), TestError> {
-        use crate::test_engines::{FakeEngine, one_timeout};
+        use crate::test_engines::{FakeEngine, all_answered, waited_a_timeout};
+        // Asked at once, not in turn: three engines that answer only when
+        // all three hold a request. No wall time is read for it.
+        let asked = FakeEngine::together_beside_a_live_one(4, 3)?;
+        let got = fake_poll(&asked)?.fetch_all();
+        assert!(
+            all_answered(&asked),
+            "the engines were asked one after another: {} of 4 answered",
+            got.iter().filter(|r| r.is_ok()).count()
+        );
         let fakes = [
             FakeEngine::dead()?,
             FakeEngine::dead()?,
@@ -22033,7 +22042,10 @@ mod polled_publish_order_tests {
         let started = std::time::Instant::now();
         let got = poll.fetch_all();
         let took = started.elapsed();
-        assert!(one_timeout(took), "one timeout, not three: {took:?}");
+        assert!(
+            waited_a_timeout(took),
+            "the dead engines were waited for: {took:?}"
+        );
         let ok: Vec<bool> = got.iter().map(Result::is_ok).collect();
         assert_eq!(
             ok,

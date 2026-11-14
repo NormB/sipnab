@@ -3471,7 +3471,21 @@ mod tests {
     /// every engine still gets its line, in order.
     #[test]
     fn startup_with_dead_engines_costs_one_timeout() -> Result<(), TestError> {
-        use crate::test_engines::{FakeEngine, one_timeout};
+        use crate::test_engines::{FakeEngine, all_answered, waited_a_timeout};
+        // Asked at once, not in turn: three engines that answer only when
+        // all three hold a request. No wall time is read for it.
+        let asked = FakeEngine::together_beside_a_live_one(4, 1)?;
+        let lines = Reconcilers::new(
+            asked
+                .iter()
+                .map(|f| Reconciler::new(f.control_client()))
+                .collect(),
+        )
+        .at_startup(&permit()?);
+        assert!(
+            all_answered(&asked),
+            "the engines were asked one after another: {lines:?}"
+        );
         let fakes = [
             FakeEngine::dead()?,
             FakeEngine::live()?,
@@ -3487,7 +3501,10 @@ mod tests {
         let started = std::time::Instant::now();
         let lines = engines.at_startup(&permit()?);
         let took = started.elapsed();
-        assert!(one_timeout(took), "one timeout, not three: {took:?}");
+        assert!(
+            waited_a_timeout(took),
+            "the dead engines were waited for: {took:?}"
+        );
         for (i, (line, fake)) in lines.iter().zip(&fakes).enumerate() {
             assert!(
                 line.starts_with(&fake.describe()),
@@ -3504,7 +3521,7 @@ mod tests {
     /// With every engine dead, each says so, in order, after one timeout.
     #[test]
     fn startup_with_every_engine_dead_says_so_for_each() -> Result<(), TestError> {
-        use crate::test_engines::{FakeEngine, one_timeout};
+        use crate::test_engines::{FakeEngine, waited_a_timeout};
         let fakes = [
             FakeEngine::dead()?,
             FakeEngine::dead()?,
@@ -3519,7 +3536,10 @@ mod tests {
         let started = std::time::Instant::now();
         let lines = engines.at_startup(&permit()?);
         let took = started.elapsed();
-        assert!(one_timeout(took), "{took:?}");
+        assert!(
+            waited_a_timeout(took),
+            "the dead engines were waited for: {took:?}"
+        );
         let want: Vec<String> = fakes
             .iter()
             .map(|f| format!("{} could not be asked", f.describe()))
