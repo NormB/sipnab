@@ -286,15 +286,15 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:8580`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8580)<!-- "pub async fn export_capture(" -->) writes a pcap, `export_audio`
-([`server.rs:8636`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8636)<!-- "pub async fn export_audio(" -->) writes a WAV, `list_captures`
-([`server.rs:8355`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8355)<!-- "pub async fn list_captures(&self)" -->) reads a directory, and
-`shutdown_server` ([`server.rs:9128`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9128)<!-- "pub async fn shutdown_server(" -->) ends the process.
+([`server.rs:8546`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8546)<!-- "pub async fn export_capture(" -->) writes a pcap, `export_audio`
+([`server.rs:8602`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8602)<!-- "pub async fn export_audio(" -->) writes a WAV, `list_captures`
+([`server.rs:8321`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8321)<!-- "pub async fn list_captures(&self)" -->) reads a directory, and
+`shutdown_server` ([`server.rs:9094`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9094)<!-- "pub async fn shutdown_server(" -->) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
 `crate::signals::request_shutdown()`
-([`server.rs:9239`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9239)<!-- "None => crate::signals::request_shutdown()," -->) — the same flag SIGTERM sets. The
+([`server.rs:9205`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9205)<!-- "None => crate::signals::request_shutdown()," -->) — the same flag SIGTERM sets. The
 rule as written is intact, unqualified, across every tool. It does not need an
 exception because nothing has taken one.
 
@@ -340,13 +340,13 @@ guards, each visible in the code:
    ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut" -->), which `servers.rs` calls only
    when `cli.mcp_allow_shutdown` is set
    ([`servers.rs:956-960`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L956-L960)<!-- "let s = if cli.mcp_args.mcp_allow_shutdown" -->). Refusal is the first
-   statement of the handler ([`server.rs:9134`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9134)<!-- "if !self.allow_shutdown {" -->).
+   statement of the handler ([`server.rs:9100`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9100)<!-- "if !self.allow_shutdown {" -->).
 2. **Dry run by default.** `params.dry_run.unwrap_or(true)`
-   ([`server.rs:9145`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9145)<!-- "let dry_run = params.dry_run.unwrap_or(true);" -->) — an agent that omits the
+   ([`server.rs:9111`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9111)<!-- "let dry_run = params.dry_run.unwrap_or(true);" -->) — an agent that omits the
    argument gets a report.
 3. **The destructive path must be named.** An unsaved live capture is refused
    unless `save_to` or `discard_unsaved=true`
-   ([`server.rs:9175-9183`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9175-L9183)<!-- "if !dry_run && unsaved && saved_to.is_none()" -->).
+   ([`server.rs:9141-9149`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9141-L9149)<!-- "if !dry_run && unsaved && saved_to.is_none()" -->).
 4. **The blast radius is bounded and legible.** The process either exists or it
    does not; there is no partially-shut-down state to misread. And a live
    capture is the only thing that can be lost, which is exactly what guard 3
@@ -369,7 +369,7 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:54-58`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L58)<!-- "/// User portion of the From" -->) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:5901`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5901)<!-- "pub async fn get_message(" -->) returns the parsed
+- `get_message` ([`server.rs:5871`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5871)<!-- "pub async fn get_message(" -->) returns the parsed
   message through `message_to_json_value`. Until 0.5.159 the phrasing here was
   *"headers and body included"*, and measured against 0.5.130 that was false:
   the projection had a closed field list and no headers map, so a `Diversion`
@@ -698,7 +698,7 @@ state — needs the same opt-in treatment as shutdown."*
 a flag ([`cli.rs:4254-4267`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L4254-L4267)<!-- "/// Allow the `shutdown_server`" -->), an off-by-default field
 ([`server.rs:187`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L187)<!-- "allow_shutdown: bool, /// Where" -->), a builder
 ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut self) -> Self {" -->) and a first-statement refusal
-([`server.rs:9134`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9134)<!-- "if !self.allow_shutdown {" -->). Copying that shape costs almost
+([`server.rs:9100`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9100)<!-- "if !self.allow_shutdown {" -->). Copying that shape costs almost
 nothing.
 
 **The path-confinement problem is solved.** The roadmap's other Tier 3 entry,
@@ -845,7 +845,7 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:9128-9134`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9128-L9134)<!-- "pub async fn shutdown_server(" -->), and `--mcp-file-root` with
+([`server.rs:9094-9100`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9094-L9100)<!-- "pub async fn shutdown_server(" -->), and `--mcp-file-root` with
 `resolve_in_root` ([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->).
 
 **What shipped**, against those three:

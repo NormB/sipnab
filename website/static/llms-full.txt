@@ -13088,6 +13088,100 @@ What differs from a headless MCP server:
   `sipnab.log` then holds `MCP HTTP server listening on 127.0.0.1:8735` and
   the rest of the run's log lines.
 
+## Search messages with a regular expression
+
+Use this when a substring cannot say what you are looking for: one of several
+values, a value at the start of a line, or a number by its shape.
+`search_messages` reads its `query` as a regular expression when the call
+carries `"regex":true`. Without it, `query` stays a substring that ignores
+case, as before.
+
+### Before you start a regex search
+
+- **A sipnab build that has the option.** The
+  [`search_messages` reference](mcp-tools-core.md#search_messages) lists
+  `regex?` for such a build. An earlier server ignores the argument and
+  searches for the pattern as a substring.
+- **The sample capture** from [See it work](#see-it-work), for the examples
+  here.
+- **No change on any other system.** The option needs no flag and no
+  configuration on the server. An MCP client that keeps a copy of the tool
+  list reads the new schema when it next connects.
+
+### Run a regex search
+
+Ask for the final responses of the failed calls: a status line of class 4, 5
+or 6 at the start of a message. In JSON a backslash of the pattern takes a
+second backslash:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_messages","arguments":{"query":"^SIP/2\\.0 [456]\\d\\d ","regex":true}}}' \
+  | sipnab --mcp -N -I sip-problem-call.pcap --quiet \
+  | jq -c 'select(.id == 2) | .result.content[0].text | fromjson | {total_matched, hits: [.hits[] | "\(.call_id)#\(.message_index)"]}'
+```
+
+```json
+{"total_matched":4,"hits":["busy-3a2b1c@192.0.2.30#2","decline-7c6d5e@198.51.100.30#2","notfound-1b2c3d@203.0.113.30#2","unavail-4e5f60@192.0.2.50#2"]}
+```
+
+The page has the shape a substring search returns: `total_matched` counts the
+whole capture, and `limit`, `cursor` and `max_response_bytes` work as they do
+without `regex`.
+
+What to know when you write a pattern:
+
+- **Case counts.** `^sip/2\.0 ` matches nothing here. Start the pattern with
+  `(?i)` to ignore case.
+- **`^` and `$` are the start and the end of the message.** With `(?m)` they
+  are the start and the end of a line. A SIP line ends `\r\n`:
+  `(?m)^CSeq: \d+ INVITE\r$` matches all 16 messages of the sample capture,
+  and the same pattern without `\r` matches none. `(?mR)` reads `\r\n` as the
+  line end.
+- **The pattern sees the bytes of the message,** the bytes `payload =~` scans
+  in a [filter expression](filter-dsl.md).
+- **Three limits bound a pattern:** it is at most 1024 bytes long, it compiles
+  to at most 1000000 bytes, and one call scans for at most 5 s. The syntax has
+  no look-around and no back references.
+
+### Check that the regex search worked
+
+Run the same search with an alternation that names two of the four codes. A
+server that has the option answers with the two messages whose status line is
+486 or 603:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"shell","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_messages","arguments":{"query":"^SIP/2\\.0 (486|603) ","regex":true}}}' \
+  | sipnab --mcp -N -I sip-problem-call.pcap --quiet \
+  | jq -c 'select(.id == 2) | .result.content[0].text | fromjson | .total_matched'
+```
+
+```text
+2
+```
+
+`0` means the server read the pattern as a substring: no message holds the
+text `^SIP/2\.0 (486|603) `.
+
+### When a regex search does not work
+
+Each refusal is `invalid_params` (-32602). `data.reason` carries the code in
+the second column:
+
+| Message | `data.reason` | What to do |
+|---|---|---|
+| `query is not a valid regular expression: <reason>` | `invalid_value` | Correct the pattern. The reason names the fault, for example `unclosed group`. Look-around and back references are not in the syntax. |
+| `query is <n> bytes; with regex true a query is at most 1024 bytes` | `limit_exceeded` | Shorten the pattern, or split the search into several calls. |
+| `query compiles to more than 1000000 bytes; use fewer or smaller repetitions` | `limit_exceeded` | Lower the counts in `{n}` and `{n,m}`. `\w` and `\d` cover all of Unicode: `(?-u:\w)` and `(?-u:\d)` are the ASCII classes and compile to less. |
+| `the regex search passed its 5 s limit after <n> messages; use a simpler pattern` | `limit_exceeded` | Use a simpler pattern, or find the dialogs with `payload =~` in a `list_dialogs` filter. The answer holds no hits, because part of a count would read as the whole count. |
+| `failed to deserialize parameters: invalid type: string "true", expected a boolean` | `invalid_arguments` | Send `"regex":true`, not `"regex":"true"`. |
+| `total_matched` is `0` for a pattern that should match | none | Check the case and the line ends above. A server from before this option searches for the pattern as a substring. |
+
 ## Tools that write or act
 
 Most tools only read what sipnab holds. Thirteen write a file or act on the
@@ -43068,22 +43162,22 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,316 | 59,983 |
-| signaling | 21 | 23,576 | 76,040 |
-| captures | 11 | 12,723 | 30,211 |
+| core | 9 | 12,648 | 62,047 |
+| signaling | 21 | 23,524 | 78,739 |
+| captures | 11 | 12,723 | 30,259 |
 | security | 6 | 9,954 | 9,954 |
-| media | 4 | 3,480 | 16,048 |
-| relay | 5 | 5,109 | 31,609 |
-| tfps | 7 | 5,717 | 16,101 |
-| server | 6 | 5,976 | 35,136 |
-| vcon | 7 | 10,714 | 34,446 |
-| tls | 3 | 2,903 | 4,996 |
-| full | 79 | 92,468 | 314,524 |
+| media | 4 | 3,480 | 16,122 |
+| relay | 5 | 4,988 | 39,164 |
+| tfps | 7 | 5,717 | 16,267 |
+| server | 6 | 5,976 | 38,359 |
+| vcon | 7 | 10,714 | 34,582 |
+| tls | 3 | 2,903 | 5,009 |
+| full | 79 | 92,627 | 330,502 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.232 with `fleet_inventory`, `th_mappings` and `relay_stats_polled` added** on a build with every feature.
+> **Measured by the test suite on each build with every feature.** A test fails when a row of this table differs from the measurement.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -43151,7 +43245,7 @@ links to its section on the bundle's page.
 | [`runtime_stats`](mcp-tools-server.md#runtime_stats) | [server](mcp-tools-server.md) | What sipnab is doing and what it costs the host: its own memory, threads, descriptors and CPU; the host's totals and the basis they came from; its share of them and whether that share is load-bearing; per-interface counters; store occupancy against the caps |
 | [`save_findings`](mcp-tools-captures.md#save_findings) | [captures](mcp-tools-captures.md) | **Write.** Records the agent's conclusion to sipnab's log. Needs `--mcp-allow-save-findings`; no tool reads it back |
 | [`search_by_time`](mcp-tools-signaling.md#search_by_time) | [signaling](mcp-tools-signaling.md) | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) window |
-| [`search_messages`](mcp-tools-core.md#search_messages) | [core](mcp-tools-core.md) | A page of substring matches across method/From/To/UA/body, with the total behind it |
+| [`search_messages`](mcp-tools-core.md#search_messages) | [core](mcp-tools-core.md) | A page of the messages that hold a substring or match a regular expression, with the total behind it |
 | [`security_findings`](mcp-tools-security.md#security_findings) | [security](mcp-tools-security.md) | Recent `scanner` / `fraud` / `digest` / `reg_flood` findings, plus the detectors this server runs |
 | [`server_capabilities`](mcp-tools-server.md#server_capabilities) | [server](mcp-tools-server.md) | sipnab version, the optional features this binary carries, and the libpcap it runs |
 | [`show_evidence`](mcp-tools-captures.md#show_evidence) | [captures](mcp-tools-captures.md) | Follows frame pointers back to the captured bytes: verified, unverified, or unresolvable with a reason |
@@ -43780,7 +43874,7 @@ the other bundles and finds any tool by name.
 | [`list_dialogs`](#list_dialogs) | `filter?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialog summaries, with the total behind it |
 | [`aggregate_dialogs`](#aggregate_dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
 | [`find_problems`](#find_problems) | `kinds?`, `filter?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialogs matching one or more diagnostic alias names |
-| [`search_messages`](#search_messages) | `query`, `limit?`, `cursor?`, `max_response_bytes?` | A page of substring matches across method/From/To/UA/body, with the total behind it |
+| [`search_messages`](#search_messages) | `query`, `regex?`, `limit?`, `cursor?`, `max_response_bytes?` | A page of the messages that hold a substring or match a regular expression, with the total behind it |
 | [`triage_call`](#triage_call) | `call_id` | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
 | [`get_dialog`](#get_dialog) | `call_id`, `max_messages?`, `cursor?`, `max_response_bytes?` | Paginated dialog with full SIP messages |
 | [`rtp_stats`](#rtp_stats) | `call_id?`, `min_mos?`, `max_mos?`, `orphaned?`, `limit?`, `cursor?`, `max_response_bytes?` | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
@@ -44430,12 +44524,14 @@ those 127 carry more than five messages, which is what the filter selects.
 
 ### `search_messages`
 
-Case-insensitive substring search over method, status, From, To,
-User-Agent, and body across all dialogs.
+Searches the whole SIP message, every header, the request line and the body,
+across all dialogs: for a substring that ignores case, or, with `regex: true`,
+for a regular expression.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `query` | string | Any substring. Matching ignores case. | Required — the call fails. |
+| `query` | string | Any substring; matching ignores ASCII case. With `regex: true`, a regular expression of at most 1024 bytes. An empty query fails with `query must be non-empty`. | Required — the call fails. |
+| `regex?` | bool? | `true` reads `query` as a regular expression; `false` reads it as a substring. A value that is not a boolean fails with `invalid_arguments`. See [Regular expressions](#regular-expressions-in-search_messages). | `false`: a substring. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 hits. |
 | `cursor?` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>#<zero-padded message index>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest match. |
 | `max_response_bytes?` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](mcp-tools.md#rules-every-tool-follows). | The ceiling. |
@@ -44502,6 +44598,42 @@ the page.
 The message index in the cursor carries leading zeros, because the server
 compares cursors as text. A cursor rebuilt by hand without them can skip
 messages. Pass it back exactly as it arrived.
+
+#### Regular expressions in `search_messages`
+
+With `regex: true` the server compiles `query` with the Rust `regex` crate and
+matches it against the raw bytes of each message. In a filter expression,
+`payload =~` uses the same compile function and scans the same bytes, so
+`search_messages` and `list_dialogs` agree about what a capture holds.
+[Search messages with a regular expression](mcp.md#search-messages-with-a-regular-expression)
+is the how-to.
+
+- **Case.** A regular expression is case-sensitive. Start the pattern with
+  `(?i)` to ignore case.
+- **Anchors.** `^` and `$` are the start and the end of the message. `(?m)`
+  makes them the start and the end of a line. A SIP line ends `\r\n`, so write
+  `\r$` under `(?m)`, or use `(?mR)`, which reads `\r\n` as the line end.
+- **Bytes.** `.` matches one UTF-8 character and no newline. `(?s)` lets it
+  match a newline, and `(?-u)` lets it match any byte.
+- **No look-around and no back references.** The engine has neither, and its
+  match time grows in proportion to the message size.
+- **The page is the same.** `limit`, `cursor`, `max_response_bytes`,
+  `total_matched` and the order of the hits do not change.
+
+Three limits bound a pattern. Each refusal is `invalid_params` (-32602) with
+`data.param` `query`:
+
+| Limit | Value | Message | `data.reason` |
+|---|---|---|---|
+| Pattern length | 1024 bytes | `query is <n> bytes; with regex true a query is at most 1024 bytes` | `limit_exceeded` |
+| Compiled size | 1000000 bytes | `query compiles to more than 1000000 bytes; use fewer or smaller repetitions` | `limit_exceeded` |
+| Scan time for one call | 5 s | `the regex search passed its 5 s limit after <n> messages; use a simpler pattern` | `limit_exceeded` |
+
+A pattern that does not parse fails with
+`query is not a valid regular expression: <reason>` and `data.reason`
+`invalid_value`. The server reads the clock before each message. A scan that
+passes the time limit returns no hits, because part of a count would read as
+the whole count. A substring search has none of the three limits.
 
 
 ## Diagnose one call

@@ -65,6 +65,7 @@ pub mod prompts;
 pub mod reference;
 pub mod sampling;
 pub mod schema;
+pub(crate) mod search;
 pub mod server;
 pub mod shape;
 pub mod since;
