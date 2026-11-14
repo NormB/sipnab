@@ -91,7 +91,7 @@ jobs:
     # minutes; CI's test jobs are bounded at 45 and test-results at 15, and
     # the run can queue first).
     timeout-minutes: 90
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A job-level block replaces the workflow-level one, so contents:read is
     # restated. actions:read lets the job list CI's run for this commit and
     # download its suite-output artifact.
@@ -417,7 +417,7 @@ jobs:
     # indefinitely. Two 10-minute attempts plus overhead fit inside 25.
     timeout-minutes: 25
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Deploy to Pages and prove the deployment origin with an OIDC token.
     permissions:
       contents: read
@@ -478,7 +478,7 @@ jobs:
     timeout-minutes: 30
     name: The live site is this deploy
     needs: deploy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # What a second deploy needs, as the deploy job has it: the Pages API
     # takes an OIDC token from a job in the github-pages environment.
     # actions:read lists this run's artifact.
@@ -520,7 +520,7 @@ jobs:
     # concurrency group indefinitely. Observed: 0.2 min, but it holds the non-superseding `pages` group.
     timeout-minutes: 20
     needs: deploy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Downloads the deployed pages artifact.
     permissions:
       contents: read

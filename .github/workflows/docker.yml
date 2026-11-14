@@ -94,7 +94,7 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            os: ubuntu-latest
+            os: ubuntu-24.04
             arch: amd64
             # The category the single amd64 build always uploaded under, so
             # its alert history in the Security tab continues.
@@ -399,7 +399,7 @@ jobs:
     needs: docker
     # Seconds of registry calls; bounds a wedged one.
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write

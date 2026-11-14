@@ -1040,7 +1040,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // stood at 856 before they met).
     // 860 -> 863 (hook step log): testing.md's "Where a hook run spent its
     // time" links scripts/hook-steps.py and its two test files (+3).
-    const EXPECTED_CODE_LINKS: usize = 863;
+    // 863 -> 864 (RUNNER-IMAGE-FLOATS, +1): build-ci-release.md links
+    // tests/ci_runner_target_test.rs where it says every job names a fixed
+    // image.
+    const EXPECTED_CODE_LINKS: usize = 864;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

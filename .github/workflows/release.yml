@@ -42,7 +42,7 @@ jobs:
     # concurrency group indefinitely. Observed: 16.7 min slowest (aarch64-apple-darwin build).
     timeout-minutes: 45
     name: Tag matches crate version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -74,7 +74,7 @@ jobs:
     timeout-minutes: 45
     # gnu Linux targets build inside rust:1-bookworm so the binaries (and the
     # .debs made from them) need only glibc >= 2.36 — Debian 12+, Ubuntu 23.04+.
-    # ubuntu-latest is 24.04 (glibc 2.39), and the cross-rs :main images are
+    # The runner image ubuntu-24.04 has glibc 2.39, and the cross-rs :main images are
     # also 24.04-based, so neither can produce a 2.36-floor binary. The
     # "Enforce glibc floor" step below fails the build if the floor regresses.
     # The image is pinned by digest in the matrix below. `rust:1-bookworm` is a
@@ -94,7 +94,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
           # noaudio variants: binary built without the `audio` feature. Both
@@ -104,33 +104,33 @@ jobs:
           # only, no tarball; static musl tarballs already cover the no-audio
           # tarball case.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
             variant: noaudio
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             cross: true
           # aarch64 gnu cross-compiles inside bookworm via Debian multiarch
           # (gcc-aarch64-linux-gnu + :arm64 dev packages) instead of cross-rs,
           # for the same glibc-2.36 floor as x86_64.
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             container: mirror.gcr.io/library/rust:1-bookworm@sha256:fbc3a359627c6b5d9c8b20aae5c413a87392954f020006d7a9f7d95938964b23
             cross: false
             variant: noaudio
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             cross: true
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-26
             cross: false
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-26
             cross: false
 
     steps:
@@ -383,7 +383,7 @@ jobs:
       # ~11 s once the linker is on PATH, and comes out at 126,248 bytes.
       #
       # x86_64 only, and that is not an assumption: BOTH gnu matrix entries run
-      # on ubuntu-latest, with the aarch64 binary cross-compiled inside
+      # on ubuntu-24.04, with the aarch64 binary cross-compiled inside
       # rust:1-bookworm, so the host executing bpf-linker is x86_64 either way.
       # The check below fails loudly if that ever stops being true rather than
       # installing a binary for the wrong architecture.
@@ -583,7 +583,7 @@ jobs:
               elif command -v apt-get >/dev/null 2>&1; then
                 # sudo when not root. The gnu targets build inside a container
                 # and are root, so a bare apt-get worked there; the musl targets
-                # run straight on ubuntu-latest as a normal user, where it fails
+                # run straight on ubuntu-24.04 as a normal user, where it fails
                 # and this fell through to SKIP:no-qemu — so aarch64 musl shipped
                 # completely un-executed while its job showed green, and I read
                 # that tick as proof it had run.
@@ -603,7 +603,7 @@ jobs:
               [ "$runner_arch" = "arm64" ] && run="" || run="SKIP:arch"
               ;;
             x86_64-apple-darwin)
-              # macos-latest is arm64; Rosetta is not guaranteed on runners.
+              # macos-26 is arm64; Rosetta is not guaranteed on runners.
               if [ "$runner_arch" = "x86_64" ]; then run=""; else run="SKIP:rosetta"; fi
               ;;
           esac
@@ -900,7 +900,7 @@ jobs:
     name: Create Release
     needs: build
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # id-token + attestations power the sigstore provenance and signing
     # steps below; contents must be restated because a job-level block
     # replaces the workflow-level grant.
@@ -1183,7 +1183,7 @@ jobs:
     needs: release
     # workflow_dispatch builds without releasing, and must not publish either.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # crates.io trusted publishing matches this workflow's file name and this
     # environment against the config recorded in
     # docs/internals/build-ci-release.md. It refuses a token from a
@@ -1248,7 +1248,7 @@ jobs:
     name: Advertise the release on the site
     needs: release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # actions:write dispatches pages.yml and reads its run; nothing else.
     permissions:
       contents: read
@@ -1292,7 +1292,7 @@ jobs:
     name: Record the binary size
     needs: release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
