@@ -2765,6 +2765,24 @@ and says so in its header.
 - The project uses a few extra headings where those four
   do not fit what a release actually did.
 
+**A size statement carries its numbers.**
+An entry that compares binary sizes names the two sizes it compared, or the release workflow run that printed them.
+The 0.5.254 entry on compressed history files said that the static builds "are the same size" and gave one figure for the aarch64 gnu build.
+The release builds printed other numbers.
+
+- The numbers come from the build jobs of `release.yml`.
+  The step `Verify the binary is stripped` prints `<binary>: no .symtab, <N> bytes` for each Linux target.
+- A tag push runs those jobs for a release.
+  A manual run of the workflow on a branch builds the same targets and publishes nothing, so a pull request can measure its own change before it lands.
+- Compare two runs target by target.
+  The 0.5.254 tag build and a manual run on the commit before the release commits, which changed only the version in `Cargo.toml` and `Cargo.lock`, differed by 8,184 bytes on `aarch64-unknown-linux-musl`. A difference of that order is not a finding.
+- [`scripts/check-changelog-size-claims.py`](https://github.com/NormB/sipnab/blob/main/scripts/check-changelog-size-claims.py) reads the `[Unreleased]` section.
+  It fails on a bullet that says `same size`, `no larger`, `bytes larger` or `bytes smaller` and holds neither two byte counts of seven digits or more nor a run number such as `run 43581489173`.
+  The script checks the form of the claim and not its numbers.
+  [`scripts/tests/test_check_changelog_size_claims.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_check_changelog_size_claims.py) runs it over `CHANGELOG.md` with the other script tests.
+- A released section stays as released.
+  A correction is a new entry under `[Unreleased]`.
+
 sipnab is pre-1.0.
 So the header states the versioning policy rather than claiming strict Semantic Versioning.
 

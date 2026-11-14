@@ -1043,7 +1043,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 863 -> 864 (RUNNER-IMAGE-FLOATS, +1): build-ci-release.md links
     // tests/ci_runner_target_test.rs where it says every job names a fixed
     // image.
-    const EXPECTED_CODE_LINKS: usize = 864;
+    // 864 -> 866 (size claims in the changelog, +2): build-ci-release.md's
+    // "The changelog" links scripts/check-changelog-size-claims.py and its
+    // test file.
+    const EXPECTED_CODE_LINKS: usize = 866;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
