@@ -479,12 +479,28 @@ mod tests {
 
     /// Ask `engine` once from a socket of its own and wait up to `wait` for
     /// its answer.
+    ///
+    /// A read that a signal interrupts goes on for the time that remains: a
+    /// read with a timeout ends with `EINTR` whatever `SA_RESTART` says, and
+    /// a caller that took that for "no answer" would stop waiting early and
+    /// ask the next engine while this one still holds.
     fn ask(engine: &FakeEngine, wait: Duration) -> std::io::Result<bool> {
         let sock = UdpSocket::bind("127.0.0.1:0")?;
-        sock.set_read_timeout(Some(wait))?;
         sock.send_to(b"1 d7:command4:liste", engine.addr)?;
+        let until = std::time::Instant::now() + wait;
         let mut buf = [0u8; 256];
-        Ok(sock.recv_from(&mut buf).is_ok())
+        loop {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Ok(false);
+            }
+            sock.set_read_timeout(Some(left))?;
+            match sock.recv_from(&mut buf) {
+                Ok(_) => return Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return Ok(false),
+            }
+        }
     }
 
     /// A hold short enough for a test that waits it out.
