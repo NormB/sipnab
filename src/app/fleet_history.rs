@@ -980,9 +980,15 @@ fn encode_grouped<R: Row>(rows: &[R], per_group: usize) -> Result<Vec<u8>, Strin
 /// for `rows`. Tests build the files of those releases with it; no build
 /// writes them.
 ///
+/// Public and hidden, as the test helpers of `tui/test_api.rs` are: the
+/// integration suite (`tests/fleet_history_test.rs`) is another crate and
+/// builds the files of those releases through the one schema and the one
+/// row-group rule of this module. It is not part of the library's API.
+///
 /// # Errors
 ///
 /// As [`encode`].
+#[doc(hidden)]
 pub fn encode_uncompressed<R: Row>(rows: &[R]) -> Result<Vec<u8>, String> {
     encode_cut(
         rows,
