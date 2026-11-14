@@ -10,11 +10,27 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **The fleet center builds only the rows a history question selects.**
+  - Effect: `GET /v1/fleet/calls` and `GET /v1/fleet/members/{id}/history` return the same rows in the same order under the same `limit`; the files do not change.
+  - Effect: decoding one member's row group in each of 1,001 files took 158 to 162 ms, against 586 to 656 ms with the reader of 0.5.254.
+  - Limit: a row that does not parse refuses its file only for a question that selects the row; the member-list rebuild at start still refuses it.
+  - Docs: [The files of the history store](docs/fleet.md#the-files-of-the-history-store).
+
 ### Fixed
 
 - **A stopping HEP listener on `tcp` or `tls` no longer drops a connection's last packets.**
   - Was: a signal during the one-second stop ended the forwarding, and the packets the socket still held were dropped without a message.
   - Effect: an interrupted read reads again inside the same one-second limit; a read that fails for another reason ends the forwarding with a debug line.
+- **The binary sizes of 0.5.254 are stated as the release builds measured them.**
+  - Was: the 0.5.254 entry gave 655,456 bytes of growth for the aarch64 gnu binary and none for the musl and `-noaudio` builds.
+  - Effect: from 0.5.253 to 0.5.254, aarch64 gnu went from 27,103,912 to 27,693,832 bytes (+589,920) and x86_64 gnu from 31,853,960 to 32,532,744 (+678,784).
+  - Effect: x86_64 musl went from 25,385,600 to 25,389,696 (+4,096) and x86_64 gnu `-noaudio` from 27,588,816 to 27,596,304 (+7,488); the two other builds did not change.
+  - Docs: [Upgrade a center to compressed history files](docs/fleet.md#upgrade-a-center-to-compressed-history-files).
+- **The `--version` samples in the install guide and the MCP deployment guide list `fleet-store`.**
+  - Was: a gnu release build has printed `fleet-store` at the end of its feature list since 0.5.249, and the two samples still ended with `g729`.
+  - Docs: [install guide](docs/install.md), [MCP deployment guide](docs/mcp-deploy.md).
 
 ## [0.5.254] - 2026-11-14
 
@@ -81,8 +97,8 @@ entry that carries them.
   - Effect: the block reads the server's `releases` directory, which keeps every release.
   - Docs: [Install Asterisk](docs/asterisk.md#install-asterisk).
 - **The rtpengine, OpenSIPS and rtpproxy guides say which machine architectures their packages cover.**
-  - Was: on arm64 the rtpengine install step answered `Unsupported file`, and the OpenSIPS and rtpproxy pages did not say their packages are x86 only.
-  - Effect: the rtpengine step names the package with `$(dpkg --print-architecture)`; the OpenSIPS page sends another machine to the source build.
+  - Was: on arm64 the rtpengine install step installed `ngcp-rtpengine-daemon_<version>_amd64.deb`, and `apt-get` answered `Unsupported file`.
+  - Effect: the rtpengine step names the file with `$(dpkg --print-architecture)`; the OpenSIPS and rtpproxy pages say that their packages are for x86 machines only.
   - Docs: [Build rtpengine](docs/rtpengine-relay.md#build-rtpengine), [Install the 4.0 packages](docs/opensips.md#install-the-40-packages), [Add rtpproxy to your voice stack](docs/rtpproxy-relay.md#before-you-start-your-sip-server).
 - **The eleven `*-sipnab` pages install the package for the machine's architecture.**
   - Was: each "Install sipnab" step fetched `sipnab_<version>_amd64.deb` on any machine.

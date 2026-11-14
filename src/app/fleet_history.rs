@@ -91,13 +91,24 @@ pub const CLASS_MEMBERS: &str = "members";
 /// the answer says how many files were not read.
 pub const MAX_FILES_PER_QUESTION: usize = 4096;
 
-/// One column of a row group, as a class writes and reads it.
+/// One column of a row group, as a class writes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Column {
     /// 64-bit numbers.
     Longs(Vec<i64>),
     /// Byte texts.
     Texts(Vec<Vec<u8>>),
+}
+
+/// One column of a row group, as it was read: a value for every row of the
+/// group. A byte text is a view of the bytes of its page, so a row that is
+/// not built costs no copy.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GroupColumn {
+    /// 64-bit numbers.
+    Longs(Vec<i64>),
+    /// Byte texts.
+    Texts(Vec<parquet::data_type::ByteArray>),
 }
 
 /// A row of one data class of the history store.
@@ -138,13 +149,16 @@ pub trait Row: Clone + Sized {
     ///
     /// A row holds a value the schema cannot carry.
     fn columns(rows: &[Self]) -> Result<Vec<Column>, String>;
-    /// The `rows` rows the columns of one row group hold.
+    /// The rows at the positions `rows` of one row group, in that order,
+    /// from the group's `columns`. No value of another row is parsed or
+    /// copied.
     ///
     /// # Errors
     ///
-    /// The columns are not those of [`Self::SCHEMA`], or a value in them
-    /// does not parse.
-    fn from_columns(columns: Vec<Column>, rows: usize) -> Result<Vec<Self>, String>;
+    /// The columns are not those of [`Self::SCHEMA`], or a value of one of
+    /// the rows `rows` does not parse. The message counts the row from 1
+    /// within its row group.
+    fn from_columns(columns: &[GroupColumn], rows: &[usize]) -> Result<Vec<Self>, String>;
 }
 
 /// The most rows of one Parquet row group. A question reads only the row
@@ -213,32 +227,58 @@ const fn count(value: i64) -> u64 {
 }
 
 /// The column at `column` of `columns` as numbers.
-fn longs(columns: &[Column], column: usize) -> Result<&[i64], String> {
+fn longs(columns: &[GroupColumn], column: usize) -> Result<&[i64], String> {
     match columns.get(column) {
-        Some(Column::Longs(values)) => Ok(values),
+        Some(GroupColumn::Longs(values)) => Ok(values),
         _ => Err(format!("parquet: column {column} is not a 64-bit number")),
     }
 }
 
 /// The column at `column` of `columns` as byte texts.
-fn texts(columns: &[Column], column: usize) -> Result<&[Vec<u8>], String> {
+fn texts(columns: &[GroupColumn], column: usize) -> Result<&[ByteText], String> {
     match columns.get(column) {
-        Some(Column::Texts(values)) => Ok(values),
+        Some(GroupColumn::Texts(values)) => Ok(values),
         _ => Err(format!("parquet: column {column} is not a byte text")),
     }
 }
 
-/// The text of row `row` of `column`.
-fn text(column: &[Vec<u8>], row: usize) -> Result<String, String> {
+/// A byte text as a row group's column holds it.
+type ByteText = parquet::data_type::ByteArray;
+
+/// What a row group that holds no row `row` is refused with.
+fn no_row(row: usize) -> String {
+    format!("parquet: a column holds no row {}", row + 1)
+}
+
+/// The number of row `row` of `column`.
+fn long_at(column: &[i64], row: usize) -> Result<i64, String> {
+    column.get(row).copied().ok_or_else(|| no_row(row))
+}
+
+/// The bytes of row `row` of `column`.
+fn bytes_at(column: &[ByteText], row: usize) -> Result<&[u8], String> {
     column
         .get(row)
-        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .map(ByteText::data)
+        .ok_or_else(|| no_row(row))
+}
+
+/// The text of row `row` of `column`.
+fn text(column: &[ByteText], row: usize) -> Result<String, String> {
+    column
+        .get(row)
+        .and_then(|bytes| std::str::from_utf8(bytes.data()).ok())
         .map(str::to_string)
-        .ok_or_else(|| format!("parquet: row {} holds text that is not UTF-8", row + 1))
+        .ok_or_else(|| not_text(row))
+}
+
+/// What a row whose text is not UTF-8 is refused with.
+fn not_text(row: usize) -> String {
+    format!("parquet: row {} holds text that is not UTF-8", row + 1)
 }
 
 /// The send time row `row` of `column` spells.
-fn sent_time(column: &[Vec<u8>], row: usize) -> Result<DateTime<Utc>, String> {
+fn sent_time(column: &[ByteText], row: usize) -> Result<DateTime<Utc>, String> {
     DateTime::parse_from_rfc3339(&text(column, row)?)
         .map(|at| at.with_timezone(&Utc))
         .map_err(|_| format!("parquet: row {} has a send time that is no time", row + 1))
@@ -308,24 +348,24 @@ impl Row for IntakeRecord {
         ])
     }
 
-    fn from_columns(columns: Vec<Column>, rows: usize) -> Result<Vec<Self>, String> {
-        let received = longs(&columns, 0)?;
-        let members = texts(&columns, 1)?;
-        let streams = texts(&columns, 2)?;
-        let positions = longs(&columns, 3)?;
-        let sent = texts(&columns, 4)?;
-        let selected = texts(&columns, 5)?;
-        let calls = texts(&columns, 7)?;
-        (0..rows)
-            .map(|row| {
-                let call = serde_json::from_slice(&calls[row]).map_err(|e| {
+    fn from_columns(columns: &[GroupColumn], rows: &[usize]) -> Result<Vec<Self>, String> {
+        let received = longs(columns, 0)?;
+        let members = texts(columns, 1)?;
+        let streams = texts(columns, 2)?;
+        let positions = longs(columns, 3)?;
+        let sent = texts(columns, 4)?;
+        let selected = texts(columns, 5)?;
+        let calls = texts(columns, 7)?;
+        rows.iter()
+            .map(|&row| {
+                let call = serde_json::from_slice(bytes_at(calls, row)?).map_err(|e| {
                     format!("parquet: row {} has a call that is not JSON: {e}", row + 1)
                 })?;
                 Ok(Self {
                     member: text(members, row)?,
-                    received_at: DateTime::from_timestamp_nanos(received[row]),
+                    received_at: DateTime::from_timestamp_nanos(long_at(received, row)?),
                     stream: text(streams, row)?,
-                    seq: count(positions[row]),
+                    seq: count(long_at(positions, row)?),
                     sent_at: sent_time(sent, row)?,
                     selected_by: text(selected, row)?,
                     call,
@@ -393,45 +433,46 @@ impl Row for MemberRecord {
         ])
     }
 
-    fn from_columns(columns: Vec<Column>, rows: usize) -> Result<Vec<Self>, String> {
-        let received = longs(&columns, 0)?;
-        let members = texts(&columns, 1)?;
-        let peers = texts(&columns, 2)?;
-        let heartbeats = longs(&columns, 3)?;
-        let streams = texts(&columns, 4)?;
-        let positions = longs(&columns, 5)?;
-        let sent = texts(&columns, 6)?;
-        let intervals = longs(&columns, 7)?;
-        let call_records = longs(&columns, 8)?;
-        let calls = texts(&columns, 9)?;
-        let inventories = texts(&columns, 10)?;
-        (0..rows)
-            .map(|row| {
-                let calls = serde_json::from_slice(&calls[row]).map_err(|e| {
+    fn from_columns(columns: &[GroupColumn], rows: &[usize]) -> Result<Vec<Self>, String> {
+        let received = longs(columns, 0)?;
+        let members = texts(columns, 1)?;
+        let peers = texts(columns, 2)?;
+        let heartbeats = longs(columns, 3)?;
+        let streams = texts(columns, 4)?;
+        let positions = longs(columns, 5)?;
+        let sent = texts(columns, 6)?;
+        let intervals = longs(columns, 7)?;
+        let call_records = longs(columns, 8)?;
+        let calls = texts(columns, 9)?;
+        let inventories = texts(columns, 10)?;
+        rows.iter()
+            .map(|&row| {
+                let calls = serde_json::from_slice(bytes_at(calls, row)?).map_err(|e| {
                     format!(
                         "parquet: row {} has call counts that do not parse: {e}",
                         row + 1
                     )
                 })?;
-                let inventory = serde_json::from_slice(&inventories[row]).map_err(|e| {
-                    format!(
-                        "parquet: row {} has an inventory that is not JSON: {e}",
-                        row + 1
-                    )
-                })?;
+                let inventory =
+                    serde_json::from_slice(bytes_at(inventories, row)?).map_err(|e| {
+                        format!(
+                            "parquet: row {} has an inventory that is not JSON: {e}",
+                            row + 1
+                        )
+                    })?;
                 Ok(Self {
                     member: text(members, row)?,
-                    received_at: DateTime::from_timestamp_nanos(received[row]),
+                    received_at: DateTime::from_timestamp_nanos(long_at(received, row)?),
                     peer: text(peers, row)?,
-                    heartbeats: count(heartbeats[row]),
+                    heartbeats: count(long_at(heartbeats, row)?),
                     cursor: super::fleet_center::Cursor {
                         stream: text(streams, row)?,
-                        seq: count(positions[row]),
+                        seq: count(long_at(positions, row)?),
                         sent_at: sent_time(sent, row)?,
                     },
-                    heartbeat_secs: count(intervals[row]),
+                    heartbeat_secs: count(long_at(intervals, row)?),
                     inventory,
-                    call_records: count(call_records[row]),
+                    call_records: count(long_at(call_records, row)?),
                     calls,
                 })
             })
@@ -1089,6 +1130,20 @@ fn encode_cut<R: Row>(
     most: usize,
     codec: parquet::basic::Compression,
 ) -> Result<Vec<u8>, String> {
+    encode_with(rows, least, most, codec, &|_, _| {})
+}
+
+/// [`encode_cut`], where `edit` may change the columns of each row group,
+/// counted from 0, before they are written. Every file a build writes
+/// goes through [`encode_cut`], which changes nothing; tests write the
+/// file a defective writer would have written.
+fn encode_with<R: Row>(
+    rows: &[R],
+    least: usize,
+    most: usize,
+    codec: parquet::basic::Compression,
+    edit: &dyn Fn(usize, &mut Vec<Column>),
+) -> Result<Vec<u8>, String> {
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use parquet::file::writer::SerializedFileWriter;
     use parquet::schema::types::ColumnPath;
@@ -1108,11 +1163,13 @@ fn encode_cut<R: Row>(
             .map_err(parquet_error)?;
     let members: Vec<&str> = rows.iter().map(Row::member).collect();
     let mut rest = rows;
-    for cut in group_cuts(&members, least, most) {
+    for (index, cut) in group_cuts(&members, least, most).into_iter().enumerate() {
         let (chunk, after) = rest.split_at(cut.min(rest.len()));
         rest = after;
         let mut group = writer.next_row_group().map_err(parquet_error)?;
-        for column in R::columns(chunk)? {
+        let mut columns = R::columns(chunk)?;
+        edit(index, &mut columns);
+        for column in columns {
             match column {
                 Column::Longs(values) => write_longs(&mut group, &values)?,
                 Column::Texts(values) => {
@@ -1194,6 +1251,26 @@ pub struct Decoded<R> {
 /// `bytes` is not a Parquet file of [`encode`]'s schema, or a row in it
 /// does not parse.
 pub fn decode<R: Row>(bytes: Vec<u8>, query: &Query) -> Result<Decoded<R>, String> {
+    decode_by(bytes, query, group_answers::<R>)
+}
+
+/// What gives the rows of one row group that answer a question: the row
+/// group, the rows it holds, the question and the place of the class's
+/// filter column.
+type GroupRows<R> = fn(
+    &dyn parquet::file::reader::RowGroupReader,
+    usize,
+    &Query,
+    Option<usize>,
+) -> Result<Vec<R>, String>;
+
+/// [`decode`], with the rows of each row group that is read from
+/// `group_rows`.
+fn decode_by<R: Row>(
+    bytes: Vec<u8>,
+    query: &Query,
+    group_rows: GroupRows<R>,
+) -> Result<Decoded<R>, String> {
     use parquet::file::properties::ReaderProperties;
     use parquet::file::reader::FileReader as _;
     use parquet::file::serialized_reader::{ReadOptionsBuilder, SerializedFileReader};
@@ -1234,11 +1311,9 @@ pub fn decode<R: Row>(bytes: Vec<u8>, query: &Query) -> Result<Decoded<R>, Strin
         decoded.groups_read += 1;
         let rows = usize::try_from(group.metadata().num_rows())
             .map_err(|_| "parquet: a row group has a negative row count".to_string())?;
-        for row in group_rows::<R>(&*group, rows)? {
-            if query.wants_row(&row) {
-                decoded.rows.push(row);
-            }
-        }
+        decoded
+            .rows
+            .extend(group_rows(&*group, rows, query, filter)?);
     }
     Ok(decoded)
 }
@@ -1288,22 +1363,107 @@ fn may_answer(
     true
 }
 
-/// The `rows` rows of the row group `group`.
-fn group_rows<R: Row>(
+/// Column `column` of the row group `group`, which holds `rows` rows.
+fn read_column(
+    group: &dyn parquet::file::reader::RowGroupReader,
+    column: usize,
+    rows: usize,
+) -> Result<GroupColumn, String> {
+    match group.metadata().column(column).column_type() {
+        parquet::basic::Type::INT64 => read_longs(group, column, rows).map(GroupColumn::Longs),
+        _ => read_texts(group, column, rows).map(GroupColumn::Texts),
+    }
+}
+
+/// The rows of the row group `group`, which holds `rows` rows, that answer
+/// `query`, in the group's order: every row is built, and the question is
+/// asked of each. This is how releases 0.5.249 to 0.5.254 read a row
+/// group; the tests compare [`group_answers`] with it.
+#[cfg(test)]
+fn group_every_row<R: Row>(
     group: &dyn parquet::file::reader::RowGroupReader,
     rows: usize,
+    query: &Query,
+    _filter: Option<usize>,
 ) -> Result<Vec<R>, String> {
     let columns = (0..group.num_columns())
-        .map(
-            |column| match group.metadata().column(column).column_type() {
-                parquet::basic::Type::INT64 => read_longs(group, column, rows).map(Column::Longs),
-                _ => read_texts(group, column, rows).map(|values| {
-                    Column::Texts(values.iter().map(|value| value.data().to_vec()).collect())
-                }),
-            },
-        )
-        .collect::<Result<Vec<Column>, String>>()?;
-    R::from_columns(columns, rows)
+        .map(|column| read_column(group, column, rows))
+        .collect::<Result<Vec<GroupColumn>, String>>()?;
+    let every: Vec<usize> = (0..rows).collect();
+    let mut built = R::from_columns(&columns, &every)?;
+    built.retain(|row| query.wants_row(row));
+    Ok(built)
+}
+
+/// Whether a row received at `received_ns` nanoseconds since 1970 from
+/// the member `member`, of the call `call_id` when the question names a
+/// call and the class has a Call-ID column, can answer `query`. It reads
+/// the three selecting columns only, so a row it rules out is never
+/// built; [`Query::wants_row`] still decides for each row that is built.
+fn selects(query: &Query, received_ns: i64, member: &[u8], call_id: Option<&[u8]>) -> bool {
+    let received = DateTime::from_timestamp_nanos(received_ns);
+    query
+        .member
+        .as_ref()
+        .is_none_or(|asked| asked.as_bytes() == member)
+        && query.from.is_none_or(|from| received >= from)
+        && query.to.is_none_or(|to| received < to)
+        && match (query.call_id.as_ref(), call_id) {
+            (Some(asked), Some(held)) => asked.as_bytes() == held,
+            _ => true,
+        }
+}
+
+/// The rows of the row group `group`, which holds `rows` rows, that answer
+/// `query`, in the group's order. The selecting columns are read first
+/// (receive time, member, and the column at `filter` when the question
+/// names a call), and only the rows they do not rule out are built
+/// ([`selects`]): the JSON of another row is not parsed and its texts are
+/// not copied.
+///
+/// Every column of the group is still read, so a column that is cut short
+/// or does not decompress refuses the file whatever the question, and
+/// every member in the group is checked to be text. A value that does not
+/// parse refuses the file when its row is one the question selects.
+fn group_answers<R: Row>(
+    group: &dyn parquet::file::reader::RowGroupReader,
+    rows: usize,
+    query: &Query,
+    filter: Option<usize>,
+) -> Result<Vec<R>, String> {
+    let columns = (0..group.num_columns())
+        .map(|column| read_column(group, column, rows))
+        .collect::<Result<Vec<GroupColumn>, String>>()?;
+    let received = longs(&columns, COL_RECEIVED_AT)?;
+    let members = texts(&columns, COL_MEMBER)?;
+    if let Some(row) = members
+        .iter()
+        .position(|member| std::str::from_utf8(member.data()).is_err())
+    {
+        return Err(not_text(row));
+    }
+    let call_ids = match (query.call_id.as_ref(), filter) {
+        (Some(_), Some(column)) => Some(texts(&columns, column)?),
+        _ => None,
+    };
+    let mut picked = Vec::new();
+    for row in 0..rows {
+        let call_id = match call_ids {
+            Some(column) => Some(bytes_at(column, row)?),
+            None => None,
+        };
+        if selects(
+            query,
+            long_at(received, row)?,
+            bytes_at(members, row)?,
+            call_id,
+        ) {
+            picked.push(row);
+        }
+    }
+    let mut built = R::from_columns(&columns, &picked)?;
+    built.retain(|row| query.wants_row(row));
+    Ok(built)
 }
 
 /// The `rows` values of column `column` of `group`, a column of 64-bit
@@ -6340,6 +6500,1437 @@ mod codec_tests {
         assert!(
             sizes[1] * 3 < sizes[0] && sizes[3] * 3 < sizes[2],
             "edge both classes are under a third of their size without a codec: {sizes:?}"
+        );
+        Ok(())
+    }
+}
+
+/// Reading a row group by its selecting columns first: the answers are
+/// those of a reader that builds every row, and a value that does not
+/// parse refuses the file when its row is one the question selects.
+#[cfg(test)]
+mod wanted_tests {
+    use super::*;
+    use crate::app::fleet_calls::CallCounts;
+    use crate::app::fleet_center::Cursor;
+    use crate::app::fleet_seal::MasterKey;
+    use std::fmt::Debug;
+
+    /// What a test returns.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// What a helper that can fail returns.
+    type Tested<T> = Result<T, Box<dyn std::error::Error>>;
+
+    /// A change of the columns of a row group before they are written.
+    type Edit = dyn Fn(usize, &mut Vec<Column>);
+
+    /// The columns of a call record file that hold a text or a JSON value.
+    const CALL_STREAM: usize = 2;
+    const CALL_SENT: usize = 4;
+    const CALL_SELECTED: usize = 5;
+    const CALL_ID: usize = 6;
+    const CALL_JSON: usize = 7;
+
+    /// The columns of a heartbeat file that hold a text or a JSON value.
+    const BEAT_PEER: usize = 2;
+    const BEAT_SENT: usize = 6;
+    const BEAT_CALLS: usize = 9;
+    const BEAT_INVENTORY: usize = 10;
+
+    /// 2026-11-11T00:00:00Z plus `ms` milliseconds.
+    fn at_ms(ms: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::UNIX_EPOCH + chrono::TimeDelta::milliseconds(1_794_355_200_000 + ms)
+    }
+
+    /// [`at_ms`] in nanoseconds since 1970.
+    fn ns(ms: i64) -> i64 {
+        (1_794_355_200_000 + ms) * 1_000_000
+    }
+
+    /// The id of member `n` of a fleet.
+    fn id(n: usize) -> String {
+        format!("edge-{n:04}")
+    }
+
+    /// The Call-ID of call record `seq` of `member`.
+    fn call_id(member: &str, seq: u64) -> String {
+        format!("call-{member}-{seq}@example.com")
+    }
+
+    /// The call record at `seq` of `member`, received `ms` milliseconds
+    /// into 2026-11-11.
+    fn call(member: &str, ms: i64, seq: u64) -> IntakeRecord {
+        IntakeRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            stream: "s".to_string(),
+            seq,
+            sent_at: at_ms(ms - 250),
+            selected_by: "failed".to_string(),
+            call: serde_json::json!({
+                "call_id": call_id(member, seq),
+                "from": "sip:+12025550101@example.com",
+                "to": "sip:+12025550102@example.com",
+                "state": "Failed",
+                "final_status_code": 486,
+            }),
+        }
+    }
+
+    /// Call records `first` to `last` of each of 6 members, in a file's
+    /// order: record `seq` of member `n` was received at `seq` seconds
+    /// and `n` milliseconds.
+    fn calls_from(first: u64, last: u64) -> Vec<IntakeRecord> {
+        let mut out = Vec::new();
+        for n in 0..6_usize {
+            for seq in first..=last {
+                let ms = i64::try_from(seq).unwrap_or(0) * 1000 + i64::try_from(n).unwrap_or(0);
+                out.push(call(&id(n), ms, seq));
+            }
+        }
+        sorted(out)
+    }
+
+    /// 20 call records of each of 6 members: row `20 * n + seq - 1` of the
+    /// file is record `seq` of member `n`.
+    fn calls() -> Vec<IntakeRecord> {
+        calls_from(1, 20)
+    }
+
+    /// Heartbeat `count` of `member`, received `ms` milliseconds into
+    /// 2026-11-11.
+    fn beat(member: &str, ms: i64, count: u64) -> MemberRecord {
+        MemberRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            peer: "192.0.2.10".to_string(),
+            heartbeats: count,
+            cursor: Cursor {
+                stream: "s".to_string(),
+                seq: count,
+                sent_at: at_ms(ms - 250),
+            },
+            heartbeat_secs: 60,
+            inventory: serde_json::json!({"schema_version": 1, "node_name": member}),
+            call_records: count,
+            calls: Some(CallCounts {
+                selected: count,
+                dropped_by_cap: 0,
+                left_out: 0,
+                spooled: 0,
+            }),
+        }
+    }
+
+    /// Heartbeat `count` of each of 300 members, in a file's order: member
+    /// `n` is row `n`, received `shift + n` milliseconds into the day.
+    fn beats_at(shift: i64, count: u64) -> Vec<MemberRecord> {
+        (0..300_usize)
+            .map(|n| beat(&id(n), shift + i64::try_from(n).unwrap_or(0), count))
+            .collect()
+    }
+
+    /// One heartbeat of each of 300 members.
+    fn beats() -> Vec<MemberRecord> {
+        beats_at(0, 7)
+    }
+
+    /// The change that changes nothing.
+    fn whole(_: usize, _: &mut Vec<Column>) {}
+
+    /// The change that writes `value` as the text of row `row` of column
+    /// `column` of row group `group`: what a defective writer would have
+    /// put in a file before it sealed it.
+    fn spoil(
+        group: usize,
+        column: usize,
+        row: usize,
+        value: &'static [u8],
+    ) -> impl Fn(usize, &mut Vec<Column>) {
+        move |index, columns| {
+            if index == group
+                && let Some(Column::Texts(values)) = columns.get_mut(column)
+                && let Some(slot) = values.get_mut(row)
+            {
+                *slot = value.to_vec();
+            }
+        }
+    }
+
+    /// [`calls`] as a file with two members, 40 rows, to a row group.
+    fn calls_file(edit: &Edit) -> Result<Vec<u8>, String> {
+        encode_with(&calls(), 40, 40, codec()?, edit)
+    }
+
+    /// [`beats`] as a file of this build: row groups of 128, 128 and 44.
+    fn beats_file(edit: &Edit) -> Result<Vec<u8>, String> {
+        encode_with(&beats(), GROUP_ROWS, ROWS_PER_GROUP, codec()?, edit)
+    }
+
+    /// `file` with the bytes of column `column` of row group `group`
+    /// overwritten: a column that does not read.
+    fn wiped(file: &[u8], group: usize, column: usize) -> Tested<Vec<u8>> {
+        use parquet::file::reader::FileReader as _;
+        use parquet::file::serialized_reader::SerializedFileReader;
+        let reader = SerializedFileReader::new(bytes::Bytes::from(file.to_vec()))?;
+        let (start, len) = reader
+            .metadata()
+            .row_group(group)
+            .column(column)
+            .byte_range();
+        let (start, len) = (usize::try_from(start)?, usize::try_from(len)?);
+        let mut out = file.to_vec();
+        out.get_mut(start..start + len)
+            .ok_or("the column is outside the file")?
+            .fill(0xff);
+        Ok(out)
+    }
+
+    /// The columns of row group `group` of `file`, as they are read.
+    fn columns_of(file: &[u8], group: usize) -> Tested<Vec<GroupColumn>> {
+        use parquet::file::reader::FileReader as _;
+        use parquet::file::serialized_reader::SerializedFileReader;
+        let reader = SerializedFileReader::new(bytes::Bytes::from(file.to_vec()))?;
+        let group = reader.get_row_group(group)?;
+        let rows = usize::try_from(group.metadata().num_rows())?;
+        Ok((0..group.num_columns())
+            .map(|column| read_column(&*group, column, rows))
+            .collect::<Result<Vec<GroupColumn>, String>>()?)
+    }
+
+    /// The question for every row of `member`.
+    fn of(member: &str) -> Query {
+        Query {
+            member: Some(member.to_string()),
+            ..Query::all()
+        }
+    }
+
+    /// The question for the rows received from `from` to before `to`,
+    /// each in milliseconds into the day.
+    fn window(from: Option<i64>, to: Option<i64>) -> Query {
+        Query {
+            from: from.map(at_ms),
+            to: to.map(at_ms),
+            ..Query::all()
+        }
+    }
+
+    /// The question for call record `seq` of `member` by its Call-ID.
+    fn call_of(member: &str, seq: u64) -> Query {
+        Query {
+            call_id: Some(call_id(member, seq)),
+            ..Query::all()
+        }
+    }
+
+    /// What this build reads from `file` for `query`.
+    fn read<R: Row>(file: &[u8], query: &Query) -> Result<Decoded<R>, String> {
+        decode(file.to_vec(), query)
+    }
+
+    /// What a reader that builds every row of a row group reads from
+    /// `file` for `query`: the reader of releases 0.5.249 to 0.5.254.
+    fn every_row<R: Row>(file: &[u8], query: &Query) -> Result<Decoded<R>, String> {
+        decode_by(file.to_vec(), query, group_every_row::<R>)
+    }
+
+    /// A reading in a few words.
+    fn shown<R>(reading: &Result<Decoded<R>, String>) -> String {
+        match reading {
+            Ok(read) => format!(
+                "{} row(s) from {} of {} row group(s)",
+                read.rows.len(),
+                read.groups_read,
+                read.groups
+            ),
+            Err(why) => format!("refused: {why}"),
+        }
+    }
+
+    /// What both readers read from `file` for `query`, which must be the
+    /// same rows from the same row groups, or the same refusal.
+    fn agreed<R: Row + PartialEq + Debug>(
+        file: &[u8],
+        query: &Query,
+    ) -> Tested<Result<Decoded<R>, String>> {
+        let (now, before) = (read::<R>(file, query), every_row::<R>(file, query));
+        if now != before {
+            return Err(format!(
+                "this build: {}; a reader of every row: {}; question {query:?}",
+                shown(&now),
+                shown(&before)
+            )
+            .into());
+        }
+        Ok(now)
+    }
+
+    /// The rows both readers give for `query`.
+    fn answer<R: Row + PartialEq + Debug>(file: &[u8], query: &Query) -> Tested<Decoded<R>> {
+        Ok(agreed::<R>(file, query)?.map_err(|why| format!("{query:?} was refused: {why}"))?)
+    }
+
+    /// The refusal both readers give for `query`.
+    fn refusal<R: Row + PartialEq + Debug>(file: &[u8], query: &Query) -> Tested<String> {
+        match agreed::<R>(file, query)? {
+            Err(why) => Ok(why),
+            Ok(read) => Err(format!("{} row(s) were read for {query:?}", read.rows.len()).into()),
+        }
+    }
+
+    /// The rows this build gives for `query` from a file that a reader of
+    /// every row refuses, with that refusal. An error when the reader of
+    /// every row reads the file: then the damage was not written.
+    fn answered_now<R: Row>(file: &[u8], query: &Query) -> Tested<(Vec<R>, String)> {
+        let before = every_row::<R>(file, query)
+            .err()
+            .ok_or("a reader of every row read the file: the damage is not in it")?;
+        let now = read::<R>(file, query).map_err(|why| format!("this build refused: {why}"))?;
+        Ok((now.rows, before))
+    }
+
+    /// The members and positions of `rows`.
+    fn seqs(rows: &[IntakeRecord]) -> Vec<(&str, u64)> {
+        rows.iter()
+            .map(|row| (row.member.as_str(), row.seq))
+            .collect()
+    }
+
+    /// Every pairing of the members, starts, ends and calls a question
+    /// may name, from `members`, `times` (milliseconds into the day) and
+    /// `calls`, each also left out.
+    fn questions(members: &[&str], times: &[i64], calls: &[String]) -> Vec<Query> {
+        let mut out = Vec::new();
+        let some = |times: &[i64]| -> Vec<Option<i64>> {
+            std::iter::once(None)
+                .chain(times.iter().copied().map(Some))
+                .collect()
+        };
+        for member in std::iter::once(None).chain(members.iter().map(Some)) {
+            for from in some(times) {
+                for to in some(times) {
+                    for call in std::iter::once(None).chain(calls.iter().map(Some)) {
+                        out.push(Query {
+                            member: member.map(|member| (*member).to_string()),
+                            call_id: call.cloned(),
+                            ..window(from, to)
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The questions asked of a call record file: 6 members by 6 starts
+    /// by 6 ends by 4 calls.
+    fn call_questions() -> Vec<Query> {
+        questions(
+            &[
+                "edge-0000",
+                "edge-0003",
+                "edge-0005",
+                "edge-0002a",
+                "edge-9999",
+            ],
+            &[0, 5000, 5001, 10_003, 20_006],
+            &[
+                call_id("edge-0003", 7),
+                call_id("edge-0000", 1),
+                "nobody@example.com".to_string(),
+            ],
+        )
+    }
+
+    /// Ask both readers every one of `questions` of `file`, which holds
+    /// `written`: they must agree, and give the written rows the question
+    /// wants, in the file's order. The count of questions that had an
+    /// answer of at least one row.
+    fn asked<R: Row + PartialEq + Debug>(
+        file: &[u8],
+        written: &[R],
+        questions: &[Query],
+    ) -> Tested<usize> {
+        let mut with_rows = 0;
+        for query in questions {
+            let read = answer::<R>(file, query)?;
+            let wanted: Vec<R> = written
+                .iter()
+                .filter(|row| query.wants_row(*row))
+                .cloned()
+                .collect();
+            if read.rows != wanted {
+                return Err(format!(
+                    "{query:?}: {} row(s) read, {} written row(s) answer it",
+                    read.rows.len(),
+                    wanted.len()
+                )
+                .into());
+            }
+            with_rows += usize::from(!wanted.is_empty());
+        }
+        Ok(with_rows)
+    }
+
+    /// A history store in a new directory, under key 1.
+    fn store() -> Tested<(tempfile::TempDir, History)> {
+        let dir = tempfile::tempdir()?;
+        let keys = Arc::new(Keys::new(MasterKey::from_bytes([1; 32]), Vec::new()));
+        let history = History::open(&dir.path().join("center.store"), keys)?;
+        Ok((dir, history))
+    }
+
+    /// A store that holds [`calls`] in one file whose row 26 of the first
+    /// row group, record 6 of `edge-0001`, has a call that is no JSON.
+    fn store_of_damaged_calls() -> Tested<(tempfile::TempDir, History)> {
+        let (dir, history) = store()?;
+        let filed = history.file_as(&calls(), &|rows: &[IntakeRecord]| {
+            encode_with(rows, 40, 40, codec()?, &spoil(0, CALL_JSON, 25, b"{"))
+        })?;
+        assert_eq!(filed.files, 1, "the damaged call records are one file");
+        Ok((dir, history))
+    }
+
+    /// A store that holds [`beats`] in one file whose row 6 of the second
+    /// row group, the heartbeat of `edge-0133`, has an inventory that is
+    /// no JSON.
+    fn store_of_damaged_beats() -> Tested<(tempfile::TempDir, History)> {
+        let (dir, history) = store()?;
+        let filed = history.file_as(&beats(), &|rows: &[MemberRecord]| {
+            encode_with(
+                rows,
+                GROUP_ROWS,
+                ROWS_PER_GROUP,
+                codec()?,
+                &spoil(1, BEAT_INVENTORY, 5, b"{"),
+            )
+        })?;
+        assert_eq!(filed.files, 1, "the damaged heartbeats are one file");
+        Ok((dir, history))
+    }
+
+    /// The store's answer to `query` with no row waiting.
+    fn ask<R: Row>(history: &History, query: &Query) -> Result<Answer<R>, String> {
+        Ok(history.answer(query, &history.list(R::CLASS, query)?, Vec::<R>::new()))
+    }
+
+    #[test]
+    fn success_every_question_shape_of_call_records_is_answered_as_before() -> TestResult {
+        let questions = call_questions();
+        let with_rows = asked(&calls_file(&whole)?, &calls(), &questions)?;
+        assert_eq!(questions.len(), 864, "success the questions asked");
+        assert!(
+            with_rows > 50 && with_rows < questions.len(),
+            "success questions with rows and questions without are both asked: {with_rows}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_every_question_shape_is_answered_as_before_in_this_builds_row_groups() -> TestResult
+    {
+        let with_rows = asked(&encode(&calls())?, &calls(), &call_questions())?;
+        assert!(
+            with_rows > 50,
+            "success a file of one row group answers as before: {with_rows}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_every_question_shape_is_answered_as_before_from_a_file_without_a_codec() -> TestResult
+    {
+        let file = encode_uncompressed(&calls())?;
+        let with_rows = asked(&file, &calls(), &call_questions())?;
+        assert!(
+            with_rows > 50,
+            "success a file of releases 0.5.249 to 0.5.253 answers as before: {with_rows}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_every_question_shape_of_heartbeats_is_answered_as_before() -> TestResult {
+        let questions = questions(
+            &[
+                "edge-0000",
+                "edge-0127",
+                "edge-0128",
+                "edge-0299",
+                "edge-0128a",
+                "edge-9999",
+            ],
+            &[0, 1, 127, 128, 299, 300],
+            &["nobody@example.com".to_string()],
+        );
+        let with_rows = asked(&beats_file(&whole)?, &beats(), &questions)?;
+        assert!(
+            with_rows > 50 && with_rows < questions.len(),
+            "success heartbeat questions with rows and without are both asked: {with_rows}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_every_row_of_a_file_reads_back_as_written() -> TestResult {
+        let read = answer::<IntakeRecord>(&calls_file(&whole)?, &Query::all())?;
+        assert_eq!(
+            read.rows,
+            calls(),
+            "success every call record, in the file's order"
+        );
+        assert_eq!(
+            (read.groups, read.groups_read),
+            (3, 3),
+            "success the 120 rows are three row groups of two members"
+        );
+        let read = answer::<MemberRecord>(&beats_file(&whole)?, &Query::all())?;
+        assert_eq!(
+            read.rows,
+            beats(),
+            "success every heartbeat, in the file's order"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_one_member_question_gives_that_members_rows_in_the_files_order() -> TestResult {
+        let read = answer::<IntakeRecord>(&calls_file(&whole)?, &of("edge-0003"))?;
+        let expected: Vec<(&str, u64)> = (1..=20).map(|seq| ("edge-0003", seq)).collect();
+        assert_eq!(
+            seqs(&read.rows),
+            expected,
+            "success the member's 20 rows, oldest first"
+        );
+        assert_eq!(
+            read.groups_read, 1,
+            "success the one row group of three that holds the member is read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_window_gives_the_rows_from_its_start_to_before_its_end() -> TestResult {
+        let read = answer::<IntakeRecord>(&calls_file(&whole)?, &window(Some(5003), Some(7002)))?;
+        assert_eq!(
+            seqs(&read.rows),
+            [
+                ("edge-0000", 6),
+                ("edge-0000", 7),
+                ("edge-0001", 6),
+                ("edge-0001", 7),
+                ("edge-0002", 6),
+                ("edge-0003", 5),
+                ("edge-0003", 6),
+                ("edge-0004", 5),
+                ("edge-0004", 6),
+                ("edge-0005", 5),
+                ("edge-0005", 6),
+            ],
+            "success the row at the start is in, the row at the end is out"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_call_question_gives_the_one_row_of_the_call() -> TestResult {
+        let read = answer::<IntakeRecord>(&calls_file(&whole)?, &call_of("edge-0004", 13))?;
+        assert_eq!(
+            seqs(&read.rows),
+            [("edge-0004", 13)],
+            "success the call's row"
+        );
+        assert_eq!(
+            read.rows.first(),
+            Some(&call("edge-0004", 13_004, 13)),
+            "success the row is the one that was written, with its call"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_member_window_and_call_together_give_the_row_all_three_want() -> TestResult {
+        let file = calls_file(&whole)?;
+        let query = Query {
+            member: Some("edge-0002".to_string()),
+            ..Query {
+                call_id: Some(call_id("edge-0002", 9)),
+                ..window(Some(9002), Some(9003))
+            }
+        };
+        let read = answer::<IntakeRecord>(&file, &query)?;
+        assert_eq!(seqs(&read.rows), [("edge-0002", 9)], "success the one row");
+        let other = Query {
+            member: Some("edge-0003".to_string()),
+            ..query
+        };
+        let read = answer::<IntakeRecord>(&file, &other)?;
+        assert!(
+            read.rows.is_empty(),
+            "success another member has no such call"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_one_member_heartbeat_question_gives_one_row_from_one_row_group() -> TestResult {
+        let read = answer::<MemberRecord>(&beats_file(&whole)?, &of("edge-0200"))?;
+        assert_eq!(
+            read.rows,
+            [beat("edge-0200", 200, 7)],
+            "success the member's heartbeat"
+        );
+        assert_eq!(
+            (read.groups, read.groups_read),
+            (3, 1),
+            "success one row group of three is read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_damaged_call_refuses_its_members_question_and_not_another_members() -> TestResult {
+        let file = calls_file(&spoil(0, CALL_JSON, 25, b"{"))?;
+        let why = refusal::<IntakeRecord>(&file, &of("edge-0001"))?;
+        assert!(
+            why.starts_with("parquet: row 26 has a call that is not JSON: "),
+            "success the member whose row is damaged is refused, got: {why}"
+        );
+        let (rows, before) = answered_now::<IntakeRecord>(&file, &of("edge-0000"))?;
+        let expected: Vec<(&str, u64)> = (1..=20).map(|seq| ("edge-0000", seq)).collect();
+        assert_eq!(
+            seqs(&rows),
+            expected,
+            "success the other member of the same row group is answered in full"
+        );
+        assert_eq!(
+            before, why,
+            "success a reader of every row refused both questions"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_damaged_inventory_refuses_its_members_question_and_not_another_members()
+    -> TestResult {
+        let file = beats_file(&spoil(1, BEAT_INVENTORY, 5, b"{"))?;
+        let why = refusal::<MemberRecord>(&file, &of("edge-0133"))?;
+        assert!(
+            why.starts_with("parquet: row 6 has an inventory that is not JSON: "),
+            "success the member whose heartbeat is damaged is refused, got: {why}"
+        );
+        let (rows, _) = answered_now::<MemberRecord>(&file, &of("edge-0200"))?;
+        assert_eq!(
+            rows,
+            [beat("edge-0200", 200, 7)],
+            "success a member of the same row group is answered"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_damaged_call_counts_of_another_member_do_not_refuse_the_answer() -> TestResult {
+        let file = beats_file(&spoil(0, BEAT_CALLS, 0, b"[1"))?;
+        let (rows, before) = answered_now::<MemberRecord>(&file, &of("edge-0001"))?;
+        assert_eq!(
+            rows,
+            [beat("edge-0001", 1, 7)],
+            "success the member's heartbeat"
+        );
+        assert!(
+            before.starts_with("parquet: row 1 has call counts that do not parse: "),
+            "success the damage is the first row's call counts, got: {before}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_damaged_send_time_outside_the_window_does_not_refuse_the_answer() -> TestResult {
+        let file = calls_file(&spoil(0, CALL_SENT, 25, b"yesterday"))?;
+        let (rows, before) =
+            answered_now::<IntakeRecord>(&file, &window(Some(10_000), Some(10_002)))?;
+        assert_eq!(
+            seqs(&rows),
+            [("edge-0000", 10), ("edge-0001", 10)],
+            "success the rows of the window, from the row group that holds the damaged row"
+        );
+        assert_eq!(
+            before, "parquet: row 26 has a send time that is no time",
+            "success the damage is the send time of a row received at 6.001 s"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_damaged_stream_of_another_call_does_not_refuse_a_call_question() -> TestResult {
+        let file = calls_file(&spoil(0, CALL_STREAM, 25, &[0xff, 0xfe]))?;
+        let (rows, before) = answered_now::<IntakeRecord>(&file, &call_of("edge-0001", 5))?;
+        assert_eq!(seqs(&rows), [("edge-0001", 5)], "success the call's row");
+        assert_eq!(
+            before, "parquet: row 26 holds text that is not UTF-8",
+            "success the damage is the stream of the row after it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_damaged_peer_of_another_member_does_not_refuse_the_answer() -> TestResult {
+        let file = beats_file(&spoil(2, BEAT_PEER, 43, &[0xc0]))?;
+        let (rows, before) = answered_now::<MemberRecord>(&file, &of("edge-0256"))?;
+        assert_eq!(
+            rows,
+            [beat("edge-0256", 256, 7)],
+            "success the member's heartbeat"
+        );
+        assert_eq!(
+            before, "parquet: row 44 holds text that is not UTF-8",
+            "success the damage is the peer of the file's last row"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_damaged_selection_reason_of_another_member_does_not_refuse_the_answer()
+    -> TestResult {
+        let file = calls_file(&spoil(2, CALL_SELECTED, 0, &[0x80]))?;
+        let (rows, _) = answered_now::<IntakeRecord>(&file, &of("edge-0005"))?;
+        assert_eq!(
+            rows.len(),
+            20,
+            "success the 20 rows of the other member of the group"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_store_answers_one_member_and_refuses_the_member_of_the_damaged_row() -> TestResult
+    {
+        let (_dir, history) = store_of_damaged_calls()?;
+        let answer = ask::<IntakeRecord>(&history, &of("edge-0000"))?;
+        assert_eq!(
+            answer.refused,
+            [],
+            "success no file is refused for the other member"
+        );
+        assert_eq!(answer.rows.len(), 20, "success the other member's 20 rows");
+        let answer = ask::<IntakeRecord>(&history, &of("edge-0001"))?;
+        assert_eq!(
+            answer.rows,
+            [],
+            "success no row of the refused file is answered"
+        );
+        assert_eq!(answer.refused.len(), 1, "success the file is refused");
+        assert!(
+            answer.refused[0]
+                .1
+                .contains("parquet: row 26 has a call that is not JSON"),
+            "success the refusal names the row, got: {:?}",
+            answer.refused
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_store_gives_the_newest_rows_first_up_to_the_limit() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&calls())?;
+        history.file(&calls_from(21, 25))?;
+        let query = Query {
+            limit: 7,
+            ..of("edge-0001")
+        };
+        let answer = ask::<IntakeRecord>(&history, &query)?;
+        let expected: Vec<(&str, u64)> = (19..=25).rev().map(|seq| ("edge-0001", seq)).collect();
+        assert_eq!(
+            seqs(&answer.rows),
+            expected,
+            "success the newest 7 rows, newest first"
+        );
+        assert!(
+            answer.more,
+            "success the answer says the member has more rows"
+        );
+        let mut written = calls();
+        written.extend(calls_from(21, 25));
+        written.retain(|row| query.wants_row(row));
+        assert_eq!(
+            (answer.rows, answer.more),
+            newest(written, 7),
+            "success the answer is the limit rule applied to the written rows"
+        );
+        assert_eq!(answer.files_read, 2, "success both files are opened");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_call_that_is_not_json_refuses_the_question_for_every_row() -> TestResult {
+        let file = calls_file(&spoil(1, CALL_JSON, 39, b"not json"))?;
+        let why = refusal::<IntakeRecord>(&file, &Query::all())?;
+        assert!(
+            why.starts_with("parquet: row 40 has a call that is not JSON: "),
+            "failure the last row of the second row group is named, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_call_that_is_not_json_refuses_a_window_that_holds_its_row() -> TestResult {
+        let file = calls_file(&spoil(0, CALL_JSON, 25, b""))?;
+        let why = refusal::<IntakeRecord>(&file, &window(Some(6001), Some(6002)))?;
+        assert!(
+            why.starts_with("parquet: row 26 has a call that is not JSON: "),
+            "failure the window of one millisecond that holds the row is refused, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_inventory_that_is_not_json_refuses_the_question_for_every_row() -> TestResult {
+        let file = beats_file(&spoil(2, BEAT_INVENTORY, 43, b"{\"a\":"))?;
+        let why = refusal::<MemberRecord>(&file, &Query::all())?;
+        assert!(
+            why.starts_with("parquet: row 44 has an inventory that is not JSON: "),
+            "failure the file's last row is named, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_call_counts_that_do_not_parse_refuse_their_members_question() -> TestResult {
+        let file = beats_file(&spoil(0, BEAT_CALLS, 127, b"\"many\""))?;
+        let why = refusal::<MemberRecord>(&file, &of("edge-0127"))?;
+        assert!(
+            why.starts_with("parquet: row 128 has call counts that do not parse: "),
+            "failure call counts that are JSON of another shape are refused, got: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_send_time_that_is_no_time_refuses_its_call_question() -> TestResult {
+        let file = calls_file(&spoil(0, CALL_SENT, 25, b"2026-11-11"))?;
+        let why = refusal::<IntakeRecord>(&file, &call_of("edge-0001", 6))?;
+        assert_eq!(
+            why, "parquet: row 26 has a send time that is no time",
+            "failure the question for the call of the damaged row is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_heartbeat_send_time_that_is_no_time_refuses_its_members_question() -> TestResult {
+        let file = beats_file(&spoil(1, BEAT_SENT, 5, b""))?;
+        let why = refusal::<MemberRecord>(&file, &of("edge-0133"))?;
+        assert_eq!(
+            why, "parquet: row 6 has a send time that is no time",
+            "failure an empty send time is refused for its member"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_stream_that_is_not_text_refuses_its_members_question() -> TestResult {
+        let file = calls_file(&spoil(0, CALL_STREAM, 25, &[0xff]))?;
+        let why = refusal::<IntakeRecord>(&file, &of("edge-0001"))?;
+        assert_eq!(
+            why, "parquet: row 26 holds text that is not UTF-8",
+            "failure a stream that is not text is refused for its member"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_selection_reason_that_is_not_text_refuses_a_window_with_its_row() -> TestResult {
+        let file = calls_file(&spoil(2, CALL_SELECTED, 0, &[0x80]))?;
+        let why = refusal::<IntakeRecord>(&file, &window(None, Some(1005)))?;
+        assert_eq!(
+            why, "parquet: row 1 holds text that is not UTF-8",
+            "failure the first row of the third row group is in the window"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_peer_that_is_not_text_refuses_its_members_question() -> TestResult {
+        let file = beats_file(&spoil(2, BEAT_PEER, 43, &[0xc0]))?;
+        let why = refusal::<MemberRecord>(&file, &of("edge-0299"))?;
+        assert_eq!(
+            why, "parquet: row 44 holds text that is not UTF-8",
+            "failure a peer that is not text is refused for its member"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_member_that_is_not_text_refuses_every_question_that_reads_its_row_group()
+    -> TestResult {
+        let file = calls_file(&spoil(0, COL_MEMBER, 25, &[0xff, 0xfe]))?;
+        for query in [
+            of("edge-0000"),
+            of("edge-0001"),
+            Query::all(),
+            window(Some(1000), Some(1001)),
+            call_of("edge-0000", 3),
+        ] {
+            let why = refusal::<IntakeRecord>(&file, &query)?;
+            assert_eq!(
+                why, "parquet: row 26 holds text that is not UTF-8",
+                "failure the selecting column is checked whatever is asked: {query:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_heartbeat_member_that_is_not_text_refuses_another_members_question() -> TestResult
+    {
+        let file = beats_file(&spoil(1, COL_MEMBER, 127, &[0xf8]))?;
+        let why = refusal::<MemberRecord>(&file, &of("edge-0200"))?;
+        assert_eq!(
+            why, "parquet: row 128 holds text that is not UTF-8",
+            "failure a member of the row group that is not text refuses the group"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_member_column_that_does_not_read_refuses_the_file() -> TestResult {
+        let file = wiped(&calls_file(&whole)?, 0, COL_MEMBER)?;
+        for query in [of("edge-0000"), Query::all()] {
+            let why = refusal::<IntakeRecord>(&file, &query)?;
+            assert!(
+                why.starts_with("parquet: "),
+                "failure the selecting column cannot be read: {why}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_receive_time_column_that_does_not_read_refuses_the_file() -> TestResult {
+        let file = wiped(&beats_file(&whole)?, 1, COL_RECEIVED_AT)?;
+        let why = refusal::<MemberRecord>(&file, &of("edge-0200"))?;
+        assert!(
+            why.starts_with("parquet: "),
+            "failure the receive times cannot be read: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_call_id_column_that_does_not_read_refuses_a_member_question() -> TestResult {
+        let file = wiped(&calls_file(&whole)?, 1, CALL_ID)?;
+        let why = refusal::<IntakeRecord>(&file, &of("edge-0002"))?;
+        assert!(
+            why.starts_with("parquet: "),
+            "failure a column the question does not select by is read all the same: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_payload_column_that_does_not_read_refuses_every_question_of_its_group()
+    -> TestResult {
+        let calls = wiped(&calls_file(&whole)?, 0, CALL_JSON)?;
+        for query in [of("edge-0000"), of("edge-0000a"), call_of("edge-0001", 2)] {
+            let why = refusal::<IntakeRecord>(&calls, &query)?;
+            assert!(
+                why.starts_with("parquet: "),
+                "failure the calls cannot be read for {query:?}: {why}"
+            );
+        }
+        let beats = wiped(&beats_file(&whole)?, 1, BEAT_INVENTORY)?;
+        let why = refusal::<MemberRecord>(&beats, &of("edge-0200"))?;
+        assert!(
+            why.starts_with("parquet: "),
+            "failure the inventories cannot be read: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_rebuild_refuses_a_file_with_one_row_that_does_not_parse() -> TestResult {
+        let (_dir, history) = store_of_damaged_beats()?;
+        history.file(&beats_at(86_400_000, 8))?;
+        let restored =
+            history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), usize::MAX)?;
+        assert_eq!(
+            (restored.files_read, restored.refused.len()),
+            (1, 1),
+            "failure the rebuild reads the whole file and refuses the damaged one"
+        );
+        assert!(
+            restored.refused[0]
+                .1
+                .contains("parquet: row 6 has an inventory that is not JSON"),
+            "failure the rebuild names the row, got: {:?}",
+            restored.refused
+        );
+        assert!(
+            restored.members.iter().all(|row| row.heartbeats == 8),
+            "failure no member is restored from the refused file"
+        );
+        assert_eq!(
+            restored.members.len(),
+            300,
+            "failure the next day's file restores all"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_filing_stops_at_a_file_with_one_row_that_does_not_parse() -> TestResult {
+        let (_dir, history) = store_of_damaged_beats()?;
+        let got = history.file(&beats_at(100, 8));
+        assert!(
+            got.as_ref()
+                .is_err_and(|why| why.contains("parquet: row 6 has an inventory that is not JSON")),
+            "failure a file that may hold the rows is read whole before a filing: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_calls_after_an_instant_before_a_damaged_row_refuse_the_file() -> TestResult {
+        let (_dir, history) = store_of_damaged_calls()?;
+        let since = BTreeMap::from([("edge-0000".to_string(), at_ms(0))]);
+        let after = history.calls_after(&since, usize::MAX)?;
+        assert_eq!(after.refused.len(), 1, "failure the file is refused");
+        assert!(
+            after.refused[0]
+                .1
+                .contains("parquet: row 26 has a call that is not JSON"),
+            "failure the row is named, got: {:?}",
+            after.refused
+        );
+        assert_eq!(after.rows, [], "failure no row comes from the refused file");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_columns_with_fewer_rows_than_were_asked_for_build_nothing() -> TestResult {
+        let columns = columns_of(&calls_file(&whole)?, 0)?;
+        let got = IntakeRecord::from_columns(&columns, &[0, 40]);
+        assert_eq!(
+            got,
+            Err("parquet: a column holds no row 41".to_string()),
+            "failure the row group holds 40 rows"
+        );
+        let got = MemberRecord::from_columns(&columns_of(&beats_file(&whole)?, 2)?, &[44]);
+        assert_eq!(
+            got,
+            Err("parquet: a column holds no row 45".to_string()),
+            "failure the last row group holds 44 heartbeats"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_columns_of_another_class_build_no_row() -> TestResult {
+        let got = IntakeRecord::from_columns(&columns_of(&beats_file(&whole)?, 0)?, &[0]);
+        assert_eq!(
+            got,
+            Err("parquet: column 5 is not a byte text".to_string()),
+            "failure heartbeat columns are no call record"
+        );
+        let got = MemberRecord::from_columns(&columns_of(&calls_file(&whole)?, 0)?, &[0]);
+        assert_eq!(
+            got,
+            Err("parquet: column 5 is not a 64-bit number".to_string()),
+            "failure call record columns are no heartbeat"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_question_for_every_row_rules_out_no_row() {
+        for (received, member, call) in [
+            (ns(0), &b"edge-0000"[..], None),
+            (i64::MIN, &b""[..], None),
+            (i64::MAX, &[0xff, 0xfe][..], Some(&b""[..])),
+            (-1, &b"edge-0000"[..], Some(&b"a@example.com"[..])),
+        ] {
+            assert!(
+                selects(&Query::all(), received, member, call),
+                "edge every row answers the question for every row: {received} {member:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_a_member_is_selected_by_its_whole_id() {
+        let query = of("edge-0001");
+        assert!(
+            selects(&query, ns(0), b"edge-0001", None),
+            "edge the member that is asked for"
+        );
+        for other in [
+            &b"edge-000"[..],
+            b"edge-00010",
+            b"EDGE-0001",
+            b"",
+            b"edge-0002",
+            b" edge-0001",
+        ] {
+            assert!(
+                !selects(&query, ns(0), other, None),
+                "edge {:?} is another member",
+                String::from_utf8_lossy(other)
+            );
+        }
+    }
+
+    #[test]
+    fn edge_a_member_that_is_not_text_is_no_member_a_question_names() {
+        assert!(
+            !selects(&of("edge-0001"), ns(0), &[0xff, 0xfe], None),
+            "edge bytes that are no text are no member id"
+        );
+        assert!(
+            !selects(&of("edge-0001"), ns(0), b"edge-0001\xff", None),
+            "edge the id with a byte after it is another member"
+        );
+    }
+
+    #[test]
+    fn edge_the_window_starts_at_from_and_ends_before_to_to_the_nanosecond() {
+        let query = window(Some(5000), Some(6000));
+        for (received, wanted) in [
+            (ns(5000) - 1, false),
+            (ns(5000), true),
+            (ns(5000) + 1, true),
+            (ns(6000) - 1, true),
+            (ns(6000), false),
+            (ns(6000) + 1, false),
+        ] {
+            assert_eq!(
+                selects(&query, received, b"edge-0000", None),
+                wanted,
+                "edge a row received {} ns after the window's start",
+                received - ns(5000)
+            );
+        }
+    }
+
+    #[test]
+    fn edge_a_window_with_one_end_is_open_at_the_other() {
+        let from = window(Some(5000), None);
+        assert!(
+            selects(&from, i64::MAX, b"m", None) && !selects(&from, ns(4999), b"m", None),
+            "edge a start alone rules out the rows before it"
+        );
+        let to = window(None, Some(5000));
+        assert!(
+            selects(&to, i64::MIN, b"m", None) && !selects(&to, ns(5000), b"m", None),
+            "edge an end alone rules out the rows at it and after"
+        );
+    }
+
+    #[test]
+    fn edge_a_time_before_1970_is_compared_as_any_other() {
+        let query = Query {
+            from: Some(DateTime::<Utc>::UNIX_EPOCH - chrono::TimeDelta::seconds(2)),
+            to: Some(DateTime::<Utc>::UNIX_EPOCH - chrono::TimeDelta::seconds(1)),
+            ..Query::all()
+        };
+        for (received, wanted) in [
+            (-2_000_000_001, false),
+            (-2_000_000_000, true),
+            (-1_000_000_001, true),
+            (-1_000_000_000, false),
+            (0, false),
+        ] {
+            assert_eq!(
+                selects(&query, received, b"m", None),
+                wanted,
+                "edge a row received {received} ns after 1970"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_a_call_is_selected_by_its_whole_call_id() {
+        let query = call_of("edge-0001", 6);
+        let asked = call_id("edge-0001", 6);
+        assert!(
+            selects(&query, ns(0), b"m", Some(asked.as_bytes())),
+            "edge the call that is asked for"
+        );
+        for other in [
+            call_id("edge-0001", 60),
+            call_id("edge-0001", 5),
+            asked.to_uppercase(),
+            String::new(),
+            format!("{asked}.invalid"),
+            asked.trim_end_matches(".com").to_string(),
+        ] {
+            assert!(
+                !selects(&query, ns(0), b"m", Some(other.as_bytes())),
+                "edge {other:?} is another call"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_a_class_without_a_call_id_column_is_not_ruled_out_by_a_call() {
+        assert!(
+            selects(&call_of("edge-0001", 6), ns(0), b"m", None),
+            "edge no column to rule the row out by: the built row decides"
+        );
+    }
+
+    #[test]
+    fn edge_a_call_question_of_heartbeats_is_answered_as_before() -> TestResult {
+        let query = Query {
+            call_id: Some("nobody@example.com".to_string()),
+            ..of("edge-0003")
+        };
+        let read = answer::<MemberRecord>(&beats_file(&whole)?, &query)?;
+        assert_eq!(
+            read.rows,
+            [beat("edge-0003", 3, 7)],
+            "edge a heartbeat has no call: the call in the question rules out nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_member_between_two_others_reads_the_row_group_and_gives_nothing() -> TestResult {
+        let read = answer::<IntakeRecord>(&calls_file(&whole)?, &of("edge-0000a"))?;
+        assert_eq!(read.rows, [], "edge the member has no row");
+        assert_eq!(
+            read.groups_read, 1,
+            "edge the row group whose members are on both sides of it is read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_row_group_with_a_damaged_row_and_no_selected_row_gives_nothing() -> TestResult {
+        let file = calls_file(&spoil(0, CALL_JSON, 25, b"{"))?;
+        let (rows, before) = answered_now::<IntakeRecord>(&file, &of("edge-0000a"))?;
+        assert_eq!(rows, [], "edge no row is selected, so none is built");
+        assert!(
+            before.starts_with("parquet: row 26 has a call that is not JSON: "),
+            "edge a reader of every row built the damaged row, got: {before}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_damage_in_a_row_group_the_question_rules_out_is_not_read_as_before() -> TestResult {
+        let file = calls_file(&spoil(2, CALL_JSON, 39, b"{"))?;
+        let read = answer::<IntakeRecord>(&file, &of("edge-0000"))?;
+        assert_eq!(read.rows.len(), 20, "edge the first member's rows");
+        assert_eq!(
+            (read.groups, read.groups_read),
+            (3, 1),
+            "edge the last row group, which holds the damage, is not read by either reader"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_file_of_one_row_is_answered_or_not() -> TestResult {
+        let row = call("edge-0000", 1000, 1);
+        let file = encode(std::slice::from_ref(&row))?;
+        let read = answer::<IntakeRecord>(&file, &of("edge-0000"))?;
+        assert_eq!(read.rows, [row], "edge the one row for its member");
+        let read = answer::<IntakeRecord>(&file, &window(Some(1001), None))?;
+        assert_eq!(read.rows, [], "edge no row a millisecond later");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_member_whose_rows_are_in_three_row_groups_is_answered_in_order() -> TestResult {
+        let file = encode_with(&calls(), 8, 8, codec()?, &whole)?;
+        let read = answer::<IntakeRecord>(&file, &of("edge-0002"))?;
+        let expected: Vec<(&str, u64)> = (1..=20).map(|seq| ("edge-0002", seq)).collect();
+        assert_eq!(
+            seqs(&read.rows),
+            expected,
+            "edge the member's rows, oldest first"
+        );
+        assert_eq!(
+            (read.groups, read.groups_read),
+            (15, 3),
+            "edge rows 41 to 60 of the file are in the row groups 6, 7 and 8 of 15"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_row_is_selected_to_the_nanosecond_of_its_receive_time() -> TestResult {
+        let mut row = call("edge-0000", 1000, 1);
+        row.received_at += chrono::TimeDelta::nanoseconds(1);
+        let file = encode(std::slice::from_ref(&row))?;
+        let at = |query: Query| answer::<IntakeRecord>(&file, &query).map(|read| read.rows.len());
+        let exact = Query {
+            from: Some(row.received_at),
+            ..Query::all()
+        };
+        assert_eq!(
+            at(exact)?,
+            1,
+            "edge a window that starts at the row's nanosecond"
+        );
+        let ends = Query {
+            to: Some(row.received_at),
+            ..Query::all()
+        };
+        assert_eq!(
+            at(ends)?,
+            0,
+            "edge a window that ends at the row's nanosecond"
+        );
+        assert_eq!(
+            at(window(None, Some(1000)))?,
+            0,
+            "edge a window that ends a nanosecond before the row"
+        );
+        assert_eq!(
+            at(window(Some(1001), None))?,
+            0,
+            "edge a window that starts after the row"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_call_id_column_that_disagrees_with_its_call_gives_the_row_to_neither_question()
+    -> TestResult {
+        let file = calls_file(&spoil(0, CALL_ID, 25, b"other@example.com"))?;
+        let by_column = Query {
+            call_id: Some("other@example.com".to_string()),
+            ..Query::all()
+        };
+        let got = answer::<IntakeRecord>(&file, &by_column)?;
+        assert!(
+            got.rows.is_empty(),
+            "edge the built row decides: its call has another Call-ID, as before"
+        );
+        let got = read::<IntakeRecord>(&file, &call_of("edge-0001", 6))?;
+        assert!(
+            got.rows.is_empty(),
+            "edge the column rules the row out before it is built"
+        );
+        let got = answer::<IntakeRecord>(&file, &of("edge-0001"))?;
+        assert_eq!(
+            got.rows.len(),
+            20,
+            "edge a question without a call does not read the column's values"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_damaged_row_in_a_file_without_a_codec_refuses_only_its_own_questions() -> TestResult {
+        use parquet::basic::Compression;
+        let file = encode_with(
+            &calls(),
+            40,
+            40,
+            Compression::UNCOMPRESSED,
+            &spoil(1, CALL_JSON, 0, b"]"),
+        )?;
+        let why = refusal::<IntakeRecord>(&file, &of("edge-0002"))?;
+        assert!(
+            why.starts_with("parquet: row 1 has a call that is not JSON: "),
+            "edge a file of an earlier release is refused for the member, got: {why}"
+        );
+        let (rows, _) = answered_now::<IntakeRecord>(&file, &of("edge-0003"))?;
+        assert_eq!(
+            rows.len(),
+            20,
+            "edge and answered for the other member of the group"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_no_rows_asked_for_build_nothing_from_damaged_columns() -> TestResult {
+        let file = calls_file(&spoil(0, CALL_JSON, 25, b"{"))?;
+        let columns = columns_of(&file, 0)?;
+        assert_eq!(
+            IntakeRecord::from_columns(&columns, &[]),
+            Ok(Vec::new()),
+            "edge no row is asked for"
+        );
+        let got = IntakeRecord::from_columns(&columns, &[24, 26])?;
+        assert_eq!(
+            seqs(&got),
+            [("edge-0001", 5), ("edge-0001", 7)],
+            "edge the rows on both sides of the damaged one are built"
+        );
+        assert!(
+            IntakeRecord::from_columns(&columns, &[24, 25, 26]).is_err(),
+            "edge the damaged row is refused when it is asked for"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_rows_are_built_in_the_order_they_are_asked_for() -> TestResult {
+        let columns = columns_of(&beats_file(&whole)?, 1)?;
+        let got = MemberRecord::from_columns(&columns, &[127, 0, 5])?;
+        assert_eq!(
+            got,
+            [
+                beat("edge-0255", 255, 7),
+                beat("edge-0128", 128, 7),
+                beat("edge-0133", 133, 7)
+            ],
+            "edge rows 128, 1 and 6 of the second row group, in that order"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_one_damaged_file_answers_or_refuses_by_where_the_window_ends() -> TestResult {
+        let file = calls_file(&spoil(0, CALL_SENT, 25, b"yesterday"))?;
+        let (rows, _) = answered_now::<IntakeRecord>(&file, &window(None, Some(6001)))?;
+        assert_eq!(
+            rows.len(),
+            31,
+            "edge a window that ends at the damaged row's time leaves it out: 6 rows of \
+             edge-0000 and 5 of each of the other five members"
+        );
+        let why = refusal::<IntakeRecord>(&file, &window(None, Some(6002)))?;
+        assert_eq!(
+            why, "parquet: row 26 has a send time that is no time",
+            "edge a window that ends a millisecond later holds the row"
+        );
+        let why = refusal::<IntakeRecord>(&file, &window(Some(6001), None))?;
+        assert_eq!(
+            why, "parquet: row 26 has a send time that is no time",
+            "edge a window that starts at the row's time holds the row"
+        );
+        let (rows, _) = answered_now::<IntakeRecord>(&file, &window(Some(6002), Some(7000)))?;
+        assert_eq!(
+            rows.len(),
+            4,
+            "edge the rows of edge-0002 to edge-0005 at 6 s"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_calls_after_an_instant_past_a_damaged_row_are_answered() -> TestResult {
+        let (_dir, history) = store_of_damaged_calls()?;
+        let since = BTreeMap::from([("edge-0001".to_string(), at_ms(6002))]);
+        let after = history.calls_after(&since, usize::MAX)?;
+        assert_eq!(
+            after.refused,
+            [],
+            "edge the damaged row is before the instant"
+        );
+        let expected: Vec<(&str, u64)> = (7..=20).map(|seq| ("edge-0001", seq)).collect();
+        assert_eq!(
+            seqs(&after.rows),
+            expected,
+            "edge the member's records after the instant, oldest first"
         );
         Ok(())
     }
