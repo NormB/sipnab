@@ -1647,8 +1647,27 @@ record file 10.7%. Text that does not repeat does not shrink.
 The cost is time in each filing and each read. In that second measurement,
 in a release build on aarch64, encoding 2,000 heartbeats took 9.8 ms with
 zstd and 3.7 ms without, and encoding 20,000 call records took 98 ms and 59
-ms. Decoding the 20,000 call records took 17.7 ms and 7.6 ms. The binary is
-655,456 bytes larger (aarch64 gnu, 27,103,168 bytes).
+ms. Decoding the 20,000 call records took 17.7 ms and 7.6 ms.
+
+The codec also makes the binary larger. These are the sizes of the stripped
+binary that each build job of the release workflow printed for 0.5.253 and
+for 0.5.254, the first release with the codec:
+
+| Release build | 0.5.253, bytes | 0.5.254, bytes | Change |
+|---|---|---|---|
+| aarch64 gnu | 27,103,912 | 27,693,832 | +589,920 |
+| x86_64 gnu | 31,853,960 | 32,532,744 | +678,784 |
+| aarch64 musl (static) | 20,944,840 | 20,944,840 | 0 |
+| x86_64 musl (static) | 25,385,600 | 25,389,696 | +4,096 |
+| aarch64 gnu `-noaudio` | 23,433,392 | 23,433,392 | 0 |
+| x86_64 gnu `-noaudio` | 27,588,816 | 27,596,304 | +7,488 |
+
+The static musl builds and the `-noaudio` packages do not link the history
+store, so they do not link the codec. Release 0.5.254 also added regular
+expressions to the MCP tool `search_messages`, and all six builds hold that
+change. No build measured the two changes apart: the 4,096 and 7,488 bytes
+of the x86_64 builds without the store are not the codec's, and the growth
+of the two gnu builds holds both changes.
 
 **Before you start.**
 
