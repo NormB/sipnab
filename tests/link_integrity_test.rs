@@ -1860,12 +1860,16 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2662 -> 2668 (DOCS-HOWTO-GAP, last batch, +6): the prerequisites and
     // the check of homer-sipnab.md, prometheus-sipnab.md and
     // fail2ban-sipnab.md, two links each.
-    // 2668 -> 2673 (fleet history compression, +5): four links in
+    // 2668 -> 2673 (MCP-SEARCH-REGEX, +5): mcp-tools-core.md links its own
+    // "Regular expressions" heading and the how-to in mcp.md (+2); the how-to
+    // links the `search_messages` reference, "See it work" and
+    // filter-dsl.md (+3).
+    // 2673 -> 2678 (fleet history compression, +5): four links in
     // docs/fleet.md to and from "Upgrade a center to compressed history
     // files" (two to the section, one to "Keep call history at the center",
     // one to the error reference) and the error reference's link to the
     // section.
-    const EXPECTED_WIKI_LINKS: usize = 2673;
+    const EXPECTED_WIKI_LINKS: usize = 2678;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

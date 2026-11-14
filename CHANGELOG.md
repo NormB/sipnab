@@ -10,6 +10,10 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The MCP tool `search_messages` takes `regex: true` and reads its query as a regular expression (MCP-SEARCH-REGEX).** Without the option the query stays a substring that ignores case, and the answer does not change. With it the server compiles the query with the function that `payload =~` uses in a filter expression and matches it against the raw bytes of each message, so an agent can ask for an alternation, an anchor or a value by its shape, and `search_messages` and `list_dialogs` agree about a capture. A regular expression is case-sensitive unless it starts with `(?i)`. Three limits bound a pattern: it is at most 1024 bytes long, it compiles to at most 1000000 bytes, and one call scans for at most 5 s, after which the call fails with `limit_exceeded` and no hits. The page shape, `limit`, `cursor` and `max_response_bytes` are the same in both modes. How-to: [Search messages with a regular expression](docs/mcp.md#search-messages-with-a-regular-expression); reference: [`search_messages`](docs/mcp-tools-core.md#search_messages).
+
 ### Changed
 
 - **The fleet center compresses its history files with zstd (FLEET-HISTORY-FOLLOW-UPS).** `sipnab fleet serve` writes every call record file and every heartbeat file under `<store>.parquet` with zstd at level 1. Releases 0.5.249 to 0.5.253 wrote them without compression.
@@ -19,6 +23,15 @@ entry that carries them.
   - **A downgrade does not read the new files.** A center of release 0.5.249 to 0.5.253 has no zstd reader: it leaves the compressed files on disk, answers no row from them and names them under `refused`. The rows are back after an upgrade.
   - A file in a codec this build does not link is refused whole with `parquet: column {column} is compressed with {codec}; this build reads zstd and uncompressed files` ([error reference](docs/errors.md#parquet-column-column-is-compressed-with-codec-this-build-reads-zstd-and-uncompressed-files)).
   - No flag and no setting is new, and `GET /v1/fleet/calls` and `GET /v1/fleet/members/{id}/history` answer the same JSON. [Upgrade a center to compressed history files](docs/fleet.md#upgrade-a-center-to-compressed-history-files) has the steps, the check and the troubleshooting.
+
+### Fixed
+
+- **The table of tool-list sizes in the MCP tool reference holds measured figures again (MCP-TOOLS-SIZE-TABLE-DRIFT).** The size table in [MCP tools](docs/mcp-tools.md) was written by hand from one run and no test read it. Its `signaling` and `relay` rows were 52 and 121 bytes above the measured sizes, so its `full` row was 173 bytes high, and its "with output schemas" column was low on ten of the eleven rows (`relay` said 31,609 for a measured 39,164). The table now holds the measurement, and a test fails when a row differs from it: the same measurement the byte ceilings of the bundles use.
+
+## [0.5.253] - 2026-11-13
+
+### Changed
+
 - **Five more voice-stack pages carry every part of a how-to (DOCS-HOWTO-GAP, ninth batch).** [Add Homer to your voice stack](docs/homer.md#before-you-start-your-sip-server) and [Add Prometheus and Grafana to your voice stack](docs/prometheus.md#before-you-start-your-sip-server) say what changes on other systems, and the query each guide ends its test call with is under a heading of its own, "Check that Homer stored the call" and "Check that Prometheus counted the call". [Ban SIP scanners with fail2ban](docs/fail2ban.md#before-you-start-opensips) says that no other system changes. [Add TFPS to your voice stack](docs/tfps.md#before-you-start) and [Let sipnab see and control TFPS](docs/tfps-sipnab.md#before-you-start) gained their prerequisites. `KNOWN_GAPS` went from 8 pages to 3.
 - **Every task page now carries every part of a how-to (DOCS-HOWTO-GAP, last batch).** [Connect sipnab to Homer](docs/homer-sipnab.md#before-you-start), [Add sipnab's metrics to Prometheus](docs/prometheus-sipnab.md#before-you-start) and [Feed fail2ban from sipnab](docs/fail2ban-sipnab.md#before-you-start) gained prerequisites that say what changes on the SIP server, on Homer and on Prometheus, and each has a "Check that it worked" section with commands of its own steps. `tests/howto_claims_test.rs` runs the binary for the name a HEP listener gives what `-H` with `--hep-id 2002` sends, the line and the bind failure of `--metrics`, the `scanner_detected` line, and the warning of `--fail2ban` without a detector. `KNOWN_GAPS` in `tests/howto_sections_test.rs` is empty.
 - **The `-noaudio` `.deb` and `.rpm` packages carry the vCon export.** The release workflow builds the gnu `-noaudio` packages (x86_64 and aarch64) with the `vcon` feature, so `--export-vcon`, the `[[vcon.rule]]` rules and `--vcon-forward` run from a package that has no ALSA dependency. Before, a `-noaudio` package refused each vCon flag with "needs the 'vcon' Cargo feature", and the pages sent the reader to the standard package.
