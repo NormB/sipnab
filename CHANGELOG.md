@@ -10,6 +10,10 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **The pre-commit hook's step log keeps the test total of a suite that passed.** After a passing suite the hook writes nextest's `Summary` line (the tests run, passed and skipped) to `sipnab-pre-commit-steps.log` as a note of that run, and `python3 scripts/hook-steps.py` prints it under the run's table. Before, a summary was kept only for a failed run, so two passing runs could not be compared by their totals. This is a change for contributors: the shipped program is the same. [Where a hook run spent its time](docs/internals/testing.md#the-development-loop) describes the note.
+
 ### Fixed
 
 - **A HEP listener on `tcp` or `tls` no longer drops a connection's last packets when a signal arrives while it stops (HEP-STREAM-DRAIN-ENDS-ON-A-SIGNAL).** When the listener stops, each connection forwards what its peer had already sent, for at most one second. That read took any failure for an empty socket. A read that a signal interrupted therefore ended it, and the listener dropped the packets the socket still held, without a message. A second Ctrl-C, a SIGHUP or the exit of an event hook's command inside that second was enough. An interrupted read now reads again, inside the same one-second limit. A read that fails for another reason still ends the forwarding, and a debug line now says so.
