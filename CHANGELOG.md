@@ -13,9 +13,10 @@ entry that carries them.
 ### Changed
 
 - **Commands that listen or connect no longer stay root when root starts them.**
-  - Effect: `sipnab fleet serve`, `--vcon-forward` and `--vcon-fetch` started as root now run as `--user`, else `nobody`, and may refuse to start.
-  - Do: Give the store directory, the spool or the output directory to that user with `chown`, name its owner with `--user`, or keep root with `--no-priv-drop`.
-  - Limit: Files a command writes must belong to that user; the refusal names the path and, under `sudo`, the `--user` value to use.
+  - Effect: `sipnab fleet serve`, `sipnab fleet inventory`, `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch`, `--relay-holdings` and `--relay-sessions`, started as root, run as `--user`, else `[privilege] user`, else `nobody`.
+  - Limit: The command exits 2 when that user cannot write the store directory, the spool or the output directory; the message names the path.
+  - Limit: A fleet center that ran as root left its store owned by root, so its first start after the upgrade refuses.
+  - Do: Give the path to that user (`chown -R nobody /var/lib/sipnab`), name a user who can write it (`--user sipnab`), or keep root (`--no-priv-drop`).
   - Docs: [Commands that do not capture](docs/least-privilege.md#commands-that-do-not-capture) and [Run the center as a service](docs/fleet.md#run-the-center-as-a-service).
 
 ### Fixed
