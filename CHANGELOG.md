@@ -1772,422 +1772,171 @@ entry that carries them.
 ### Added
 
 - **`--vcon-fetch` decrypts encrypted vCons.**
-  - Give it `--vcon-fetch-decrypt-key` (or `[vcon_fetch] decrypt_key`).
-  - A container in the encrypted form is then:
-    - decrypted;
-    - checked: the fetcher verifies the signature of the signed form inside
-      against its `x5c` certificate;
-    - written as the unsigned vCon, after the same uuid and schema checks as
-      any other.
-  - The log names the SHA-256 fingerprint of the signing certificate.
-  - These write nothing:
-    - a key the container was not encrypted to;
-    - a signature that does not verify.
-  - The key file must be readable by its owner only.
-  - Without the key, the fetcher now writes an encrypted container as the
-    store holds it.
-    - It used to refuse one, because it read the uuid only from the top level.
+  - Do: give it `--vcon-fetch-decrypt-key` (or `[vcon_fetch] decrypt_key`); the key file must be readable by its owner only.
+  - Effect: an encrypted container is decrypted, its signature is verified against its `x5c` certificate, and it is written as the unsigned vCon.
+  - Effect: the log names the SHA-256 fingerprint of the signing certificate.
+  - Limit: a key the container was not encrypted to, or a signature that does not verify, writes nothing.
+  - Was: without the key the fetcher refused an encrypted container; it now writes it as the store holds it.
 
 ### Changed
 
 - **The homepage groups what sipnab supports into six cards.**
-  - The "Check what sipnab supports" section was one 16-row table.
-  - That table named no vCon capability.
-  - It is now six themed cards in two columns (one on a phone):
-    - capture and inputs
-    - analysis and diagnosis
-    - call records (vCon)
-    - security
-    - the terminal UI
-    - integrations and output
-  - It adds these items:
-    - archives, tunnels and multi-leg calls
-    - the conformance linter and ranked analysis
-    - the vCon features
-    - STIR/SHAKEN and TFPS
-    - pseudonymized exports and process hardening
-  - It corrects two rows:
-    - Prometheus metrics include call, MOS and security series.
-    - The gnu no-audio packages carry no WASM plugins.
+  - Was: the "Check what sipnab supports" section was one 16-row table that named no vCon capability.
+  - Effect: the cards are capture and inputs, analysis and diagnosis, call records (vCon), security, the terminal UI, and integrations and output.
+  - Effect: two rows are corrected: Prometheus metrics include call, MOS and security series, and the gnu no-audio packages carry no WASM plugins.
 
 ### Fixed
 
 - **Every homepage link lands on the section that answers it.**
-  - Several capability cards linked to a page top, or to a section that did not cover the card.
-    - For example, "Audio, notes and names" landed on RTP Streams.
-  - Each link now goes to the section that answers it.
-  - The docs gained what the cards promised and the pages lacked:
-    - SIP over WebSocket and reassembly
-    - the HEP senders
-    - the linter's exit code
-    - plugin availability per release build
-    - a table of the MCP tools that write or act, with the flag that allows each
-- **The uprobe TLS capture card and the README described the wrong build
-  requirement.**
-  - They said two things:
-    - The capability is not in the static musl builds.
-    - It needs a kernel with BTF.
-  - `--uprobe-tls` is in every Linux build.
-  - Its default tracefs backend needs no BTF.
-  - Only the eBPF backend needs BTF and the gnu builds.
-
+  - Was: several capability cards linked to a page top, or to a section that did not cover the card.
+  - Effect: the docs gained SIP over WebSocket and reassembly, the HEP senders, the linter's exit code and plugin availability per release build.
+  - Effect: the docs gained a table of the MCP tools that write or act, with the flag that allows each.
+- **The uprobe TLS capture card and the README described the wrong build requirement.**
+  - Was: they said the capability is not in the static musl builds and needs a kernel with BTF.
+  - Effect: `--uprobe-tls` is in every Linux build, and its default tracefs backend needs no BTF.
+  - Limit: only the eBPF backend needs BTF and the gnu builds.
 - **RFC links keep their section anchor.**
-  - `rfc-editor.org/rfc/rfcN` redirects to a metadata page and drops the `#section-` anchor.
-  - So a link to "[RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3)" landed on a page without that section.
-  - Every RFC link now uses the `.html` page, which holds the anchor.
-    - This covers the docs, the site, lint findings and MCP tool descriptions.
-
-### Internal
-
-- **The `mcp_max_body_bytes` wiring probe waits for the capture to load.**
-  - It searched straight after the MCP handshake.
-  - On a loaded macOS runner, the search could run before sipnab read the capture's INVITE.
-    - Both runs then reported no snippet.
-    - The key looked unwired.
-  - The probe now asks again, within 20 seconds, until the search finds the INVITE.
+  - Was: `rfc-editor.org/rfc/rfcN` redirects to a metadata page and drops the `#section-` anchor.
+  - Effect: every RFC link uses the `.html` page, as in [RFC 3261 section 17.1.1.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.3).
+  - Effect: this covers the docs, the site, lint findings and MCP tool descriptions.
 
 ## [0.5.217] - 2026-10-13
 
 ### Added
 
 - **Encrypted vCons.**
-  - A `[[vcon.rule]]` with `encrypt_to` (a PEM certificate), `sign_key` and `sign_cert` writes each container in encrypted form.
-    - This is the form of draft-ietf-vcon-vcon-core-04 section 5.3.
-    - It is signed with JWS (`RS256`, the chain in `x5c`).
-    - It is then encrypted with JWE (`RSA-OAEP`, `A256CBC-HS512`) to the certificate's key.
-  - The `uuid` travels in the unprotected header.
-  - Each file is named `<uuid>.vcon.json` rather than after the Call-ID.
-  - In its tests, sipnab decrypts the draft's own encrypted example and verifies its signature.
-  - The forwarder reads the uuid of a signed or encrypted container from its header.
-  - sipnab refuses these rules at startup:
-    - a rule with missing or mismatched keys
-    - a rule with a signing key other users can read
-    - a rule with `audio = "url"`
-- **Copying from the call flow, and starting with the mouse released**
-  ([#484](https://github.com/NormB/sipnab/issues/484)).
-  - The TUI captures the mouse for wheel scrolling.
-    - So the terminal's own text selection did not work.
-    - The screen did not show the two ways around it: `F12`, or `Shift` while dragging.
-  - `y` in the call flow now copies the selected message.
-    - `y` already did this in the raw message view.
-  - The raw message view's key bar shows `F12 Select`.
-  - `[display] mouse_capture = false` starts the TUI with capture off.
-  - Reported by Ihor Olkhovskyi
-    ([@igorolhovskiy](https://github.com/igorolhovskiy)) in
-    [#484](https://github.com/NormB/sipnab/issues/484), which this closes.
+  - Do: give a `[[vcon.rule]]` `encrypt_to` (a PEM certificate), `sign_key` and `sign_cert` to write each container in encrypted form.
+  - Effect: the container is signed with JWS (`RS256`, the chain in `x5c`), then encrypted with JWE (`RSA-OAEP`, `A256CBC-HS512`) to the certificate's key.
+  - Effect: the `uuid` travels in the unprotected header, and each file is named `<uuid>.vcon.json` rather than after the Call-ID.
+  - Effect: the forwarder reads the uuid of a signed or encrypted container from its header.
+  - Limit: refused at startup: missing or mismatched keys, a signing key other users can read, and a rule with `audio = "url"`.
+- **Copying from the call flow, and starting with the mouse released.**
+  - Was: the TUI captures the mouse for wheel scrolling, so the terminal's own text selection did not work without `F12` or `Shift` while dragging.
+  - Effect: `y` in the call flow copies the selected message, and the raw message view's key bar shows `F12 Select`.
+  - Do: set `[display] mouse_capture = false` to start the TUI with capture off.
+  - Credit: Reported by Ihor Olkhovskyi ([@igorolhovskiy](https://github.com/igorolhovskiy)) in [#484](https://github.com/NormB/sipnab/issues/484), which this closes.
 
 ### Changed
 
-- **RTP Streams opened from a call flow lists that call's streams, and `Esc`
-  goes back to the flow** ([#482](https://github.com/NormB/sipnab/issues/482)).
-  - Before:
-    - `r` in a call flow listed every captured stream.
-    - `Esc` from there went to the Call List, past the flow.
-  - Now:
-    - `r` lists the streams sipnab linked to the dialogs the flow shows.
-    - `a` switches between those and every stream.
-    - Status line 3 says which streams the list shows.
-    - It also counts the streams linked to no call.
-    - `Esc` returns to the flow and keeps its selected message and scroll.
-  - A call with no linked stream says why a stream can stay unlinked.
-  - RTP Streams opened with `Tab` from the Call List is unchanged.
-  - Reported by liwangob ([@WangKLi](https://github.com/WangKLi)) in
-    [#482](https://github.com/NormB/sipnab/issues/482), which this closes.
+- **RTP Streams opened from a call flow lists that call's streams, and `Esc` returns.**
+  - Was: `r` in a call flow listed every captured stream, and `Esc` from there went to the Call List, past the flow.
+  - Effect: `r` lists the streams sipnab linked to the dialogs the flow shows, and `a` switches between those and every stream.
+  - Effect: status line 3 says which streams the list shows and counts the streams linked to no call.
+  - Effect: `Esc` returns to the flow and keeps its selected message and scroll.
+  - Limit: RTP Streams opened with `Tab` from the Call List is unchanged.
+  - Credit: Reported by liwangob ([@WangKLi](https://github.com/WangKLi)) in [#482](https://github.com/NormB/sipnab/issues/482), which this closes.
 
 ### Fixed
 
 - **Enter on a call flow's RTP bar no longer opens another call's stream.**
-  - With no stream linked to the call, it opened the first stream in the store.
-
-    - That stream could belong to any call.
-  - It now opens the call's streams in RTP Streams.
-
-    - RTP Streams says why there are none.
-- **`-e` narrows the TUI** ([#483](https://github.com/NormB/sipnab/issues/483)).
-  - These options narrowed only the `-N` printout:
-    - the match expression
-    - the header patterns `--from`, `--to`, `--contact` and `--ua`
-  - So the TUI showed every dialog.
-  - The TUI now keeps a dialog once one of its messages matches.
-    - It also keeps every later message of that dialog.
-    - `-N` already did this.
-  - The REST API and MCP server that a TUI run starts read the same dialogs.
-  - Reported by Ihor Olkhovskyi ([@igorolhovskiy](https://github.com/igorolhovskiy)) in
-    [#483](https://github.com/NormB/sipnab/issues/483), which this closes.
+  - Was: with no stream linked to the call, it opened the first stream in the store, which could belong to any call.
+  - Effect: it opens the call's streams in RTP Streams, which says why there are none.
+- **`-e` narrows the TUI.**
+  - Was: the match expression and the header patterns `--from`, `--to`, `--contact` and `--ua` narrowed only the `-N` printout.
+  - Effect: the TUI keeps a dialog once one of its messages matches, with every later message of that dialog.
+  - Effect: the REST API and MCP server that a TUI run starts read the same dialogs.
+  - Credit: Reported by Ihor Olkhovskyi ([@igorolhovskiy](https://github.com/igorolhovskiy)) in [#483](https://github.com/NormB/sipnab/issues/483), which this closes.
 
 ## [0.5.216] - 2026-10-13
 
 ### Added
 
 - **Named filters: a `[filters]` table, used as `@name` everywhere.**
-  - Define a filter once in the config file (`sales = "@carrier-a AND to.user =~ '^8'"`).
-  - Use it wherever sipnab takes a filter expression:
-    - `--filter`
-    - `--export-vcon-when`
-    - `[filter] expression`
-    - the REST `filter` parameter
-    - an MCP tool's `filter` argument
-    - a new Named filter field in the TUI filter dialog
-      - This field lists the names the config defines.
-  - A name can be part of a larger expression.
-  - A name can reference other names.
-  - The built-in aliases work the same way (`@problems`).
-  - sipnab resolves every name when it starts.
-  - It refuses to start, naming the entry, on any of these:
-    - a malformed name
-    - a built-in name
-    - an unknown reference
-    - a loop
-    - an expansion that does not parse
-  - sipnab refuses a filter given at run time that names something undefined.
-    - The refusal lists the names that are defined.
+  - Do: define a filter once in the config file (`sales = "@carrier-a AND to.user =~ '^8'"`).
+  - Effect: use it in `--filter`, `--export-vcon-when`, `[filter] expression`, the REST `filter` parameter, an MCP tool's `filter` argument and the TUI filter dialog.
+  - Effect: a name can be part of a larger expression and can reference other names; the built-in aliases work the same way (`@problems`).
+  - Limit: sipnab refuses to start on a malformed name, a built-in name, an unknown reference, a loop, or an expansion that does not parse.
+  - Limit: a filter given at run time that names something undefined is refused, and the refusal lists the names that are defined.
 - **Filter fields for calls through a PBX.**
-  - `from.host` and `to.host`: the URI host without its port.
-  - `from.uri`, `to.uri` and `ruri`: the URIs as written.
-  - `pai.user`: the P-Asserted-Identity user.
-  - `rtp.codecs`: every codec a call used.
-  - `side`: `inbound`, `outbound` or `internal`, relative to a new `[pbx] addresses` list.
-  - `endpoint`: the name that the run's hosts file, `--names` files and `[names.manual]` give either end.
-  - sipnab captures the URI fields when a dialog opens.
-    - So idle compaction cannot change what they select.
+  - Effect: `from.host` and `to.host` are the URI host without its port; `from.uri`, `to.uri` and `ruri` are the URIs as written.
+  - Effect: `pai.user` is the P-Asserted-Identity user, and `rtp.codecs` is every codec a call used.
+  - Effect: `side` is `inbound`, `outbound` or `internal`, relative to a new `[pbx] addresses` list.
+  - Effect: `endpoint` is the name that the run's hosts file, `--names` files and `[names.manual]` give either end.
 - **Export rules: `[[vcon.rule]]`.**
-  - Each rule pairs three things:
-    - a filter (`when`, which takes `@name` filters)
-    - a directory (`dir`)
-    - an audio setting (`audio = "inline"` or `"omit"`, the default)
-  - Each rule has its own inline-media budget (`max_inline_media_mib`).
-  - `audio = "url"` is for calls too long to carry inline.
-    - It writes the call's audio to a WAV beside the container.
-    - It names the WAV by an HTTPS `audio_url_base` with the WAV's `content_hash`.
-    - sipnab writes the file and serves nothing.
-    - The container's `media` is `referenced`.
-  - A run can hold several rules.
-    - sipnab writes a call that matches several rules once per rule, into each rule's directory.
-    - The end of the run reports each rule on its own line.
-  - `--export-vcon-when` with `--export-vcon-dir` is one more rule.
-  - A rule with `audio = "inline"` turns audio retention on for the run.
-  - On a live capture:
-    - Each rule keeps its own record of what it wrote.
-    - sipnab gives back a call's retained audio only once every inline rule that matches it has written it.
-  - REST `GET /v1/vcon/spool` and MCP `vcon_spool_status` take a `rule` naming the spool to read.
-    - Their answer says which rule it is.
-  - sipnab refuses to start on a rule with any of these:
-    - an unusable or repeated name
-    - no `dir`
-    - an unknown `audio` value or key
-    - a `when` that does not resolve
-  - A live capture with a rule refuses `--redact`, `--redact-map` and
-    `--content-deny-tombstone`, as it does with `--export-vcon-when`.
-- **A vCon names the call's other legs, and a rule can write one container
-  per call.**
-  - A leg of a call through a PBX or a B2BUA carries a `sipnab-related-legs` attachment.
-    - It lists the container uuid of each other leg, strongest first.
-    - For each leg it gives the correlation strategy that tied them.
-    - It says whether that strategy compared an identifier.
-    - It gives the score.
-
-  - Every export adds it:
-    - rules
-    - `--export-vcon-when`
-    - `--export-vcon`
-    - REST `/v1/dialogs/{call_id}/vcon`
-    - MCP `export_vcon`
-  - A `[[vcon.rule]]` with `grouping = "call"` writes one container per call instead.
-    - It holds every leg the rule selects.
-    - A `sipnab-call-legs` attachment states each tie.
-    - It has a uuid of its own.
-    - On a live capture, it waits until every leg has ended or gone idle.
-  - `leg`, one container per dialog, stays the default, because a timing tie can be wrong.
+  - Effect: each rule pairs a filter (`when`, which takes `@name` filters), a directory (`dir`) and an audio setting (`audio = "inline"` or `"omit"`, the default).
+  - Effect: `audio = "url"` writes the audio to a WAV beside the container, named by an HTTPS `audio_url_base` with the WAV's `content_hash`.
+  - Effect: a call that matches several rules is written once per rule; each rule has its own `max_inline_media_mib` and its own end-of-run line.
+  - Effect: REST `GET /v1/vcon/spool` and MCP `vcon_spool_status` take a `rule` naming the spool to read.
+  - Limit: a live capture with a rule refuses `--redact`, `--redact-map` and `--content-deny-tombstone`; a rule with no `dir` or an unknown key is refused.
+- **A vCon names the call's other legs; a rule can write one container per call.**
+  - Effect: a leg of a call through a PBX or a B2BUA carries a `sipnab-related-legs` attachment listing each other leg's container uuid, strategy and score.
+  - Effect: every export adds it: rules, `--export-vcon-when`, `--export-vcon`, REST `/v1/dialogs/{call_id}/vcon` and MCP `export_vcon`.
+  - Do: set `grouping = "call"` on a `[[vcon.rule]]` for one container per call, with a `sipnab-call-legs` attachment that states each tie.
+  - Limit: `leg`, one container per dialog, stays the default, because a timing tie can be wrong.
 - **Enrichment before a container is written: `[[vcon.enrich]]`.**
-  - Name a service of your own, a URL or a program.
-  - Name the rules whose calls go to it.
-  - sipnab sends each call to it before it writes the call's container.
-    - It sends each leg's audio and the container.
-  - The service answers with one or more core-04 Analysis Objects, such as a transcript or a summary.
-    - sipnab appends the answer to the container's `analysis`.
-  - Services run in order, so a summarizer can read the transcript.
-  - A `sipnab-enrichment` attachment records three things:
-    - every service a call was sent to
-    - what was sent
-    - how it ended
-  - sipnab never loses the call when a service fails, times out, or answers with something that is not an analysis.
-  - On a live capture, calls wait in a queue of at most 64.
-    - So a slow service never holds up the capture.
-    - sipnab writes a call that finds the queue full at once, and says so.
-  - sipnab accepts `http://` only to a loopback address.
-  - sipnab refuses a run with `--redact` and an enrichment.
+  - Do: name a service of your own, a URL or a program, and the rules whose calls go to it.
+  - Effect: sipnab sends each leg's audio and the container, and appends the Analysis Objects the service answers with to the container's `analysis`.
+  - Effect: services run in order; a `sipnab-enrichment` attachment records every service a call was sent to, what was sent and how it ended.
+  - Limit: on a live capture, calls wait in a queue of at most 64; a call that finds the queue full is written at once.
+  - Limit: `http://` is accepted only to a loopback address, and a run with `--redact` and an enrichment is refused.
 - **A call's audio while it is in progress, over a WebSocket.**
-  - A `[[vcon.rule]]` with `live_audio = true` serves the calls it matches on the REST API:
-    - `GET /v1/calls/live` lists the calls in progress.
-    - `GET /v1/calls/live/events` announces each as a server-sent event.
-    - `GET /v1/calls/{call_id}/audio` is a WebSocket.
-      - It sends the call's audio as 16-bit PCM.
-      - It sends one message per RTP packet, stream by stream.
-      - It closes when the call ends.
-  - The routes need a token with the new `audio` scope (`--token-scope audio`).
-    - No other scope satisfies it.
-  - Off a loopback address, a `live_audio` rule refuses to start without API TLS and a signing key.
-  - sipnab does not serve a call that `--content-deny-header` withholds.
+  - Do: set `live_audio = true` on a `[[vcon.rule]]`, and mint a token with the new `audio` scope (`--token-scope audio`).
+  - Effect: `GET /v1/calls/live` lists the calls in progress, and `GET /v1/calls/live/events` announces each as a server-sent event.
+  - Effect: `GET /v1/calls/{call_id}/audio` is a WebSocket that sends the call's audio as 16-bit PCM, one message per RTP packet.
+  - Limit: off a loopback address, a `live_audio` rule refuses to start without API TLS and a signing key.
+  - Limit: no other scope satisfies `audio`, and a call that `--content-deny-header` withholds is not served.
 - **A vCon written as the call starts and rewritten as it changes.**
-  - A `[[vcon.rule]]` with `live = true` works on a live capture.
-    - It writes each matching call's container as soon as the call starts.
-    - It rewrites it in place, under the same `uuid`, each time the call changes.
-  - Each write carries `updated_at`.
-  - `created_at` stays the time of the first write.
-  - Audio and enrichment come with the write after the call ends.
-  - With `-I` the key has no effect.
+  - Do: set `live = true` on a `[[vcon.rule]]`; it works on a live capture, and with `-I` the key has no effect.
+  - Effect: each matching call's container is written as soon as the call starts and rewritten in place, under the same `uuid`.
+  - Effect: each write carries `updated_at`, and `created_at` stays the time of the first write.
+  - Limit: audio and enrichment come with the write after the call ends.
 - **G.722 audio is decoded.**
-  - sipnab retains a stream carrying G.722 (static payload type 9, common on PBX extensions).
-  - It writes it to a WAV or a vCon as 16 kHz audio.
-    - This is the rate of its samples.
-    - It is not the 8 kHz RTP clock that
-      [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html) gives the payload type.
-
-  - The decoder follows ITU-T G.722's fixed-point arithmetic.
-  - It matches FFmpeg's decode sample for sample on a tone and on full-scale noise.
+  - Effect: a stream carrying G.722 (static payload type 9) is retained and written to a WAV or a vCon as 16 kHz audio.
+  - Limit: 16 kHz is the rate of its samples, not the 8 kHz RTP clock that [RFC 3551](https://www.rfc-editor.org/rfc/rfc3551.html) gives the payload type.
 - **A live vCon export warns when idle compaction can reach a call first.**
-  - The export waits 120 seconds before writing a call that has not ended.
-  - `[limits] idle_compact_after_secs` can be below that.
-    - Then compaction could drop the call's middle messages before sipnab writes its container.
-  - The run says so at startup.
+  - Effect: the run says so at startup when `[limits] idle_compact_after_secs` is below the 120 seconds the export waits for a call that has not ended.
 
 ### Changed
 
 - **The `Redaction:` line follows the export counts.**
-  - A run can now export through several rules.
-    - Each rule reports its own `Wrote N vCon container(s)` line.
-
-  - The one redaction (one key, one `--redact-map`) covers them all.
-  - So its line comes after every count.
-    - It used to come before the single count.
+  - Effect: each rule reports its own `Wrote N vCon container(s)` line, and the one redaction line comes after every count.
+  - Was: it came before the single count.
 
 ### Fixed
 
 - **The TUI filter dialog resolves filters the way every other surface does.**
-  - It parsed its expression directly.
-    - So it did not expand a built-in alias referenced from it.
-  - It now goes through the same resolver as `--filter`, REST and MCP.
-    - It uses the run's alias thresholds.
+  - Was: it parsed its expression directly, so it did not expand a built-in alias referenced from it.
+  - Effect: it goes through the same resolver as `--filter`, REST and MCP, with the run's alias thresholds.
 - **`--redact` works with export rules alone.**
-  - sipnab refused a batch run as exporting nothing in this case:
-    - The run had a `[[vcon.rule]]` and `--redact`.
-    - It had no `--export-vcon` or `--export-vcon-when`.
-  - The cause: the check ran before sipnab read the config file.
-  - The check now runs when the run is planned, and counts the rules.
-    - So sipnab writes the rules' containers redacted.
-  - sipnab still refuses a run with `--redact` and no export of any kind, exit code 2.
+  - Was: a batch run with a `[[vcon.rule]]`, `--redact` and no `--export-vcon` or `--export-vcon-when` was refused as exporting nothing.
+  - Effect: sipnab writes the rules' containers redacted.
+  - Limit: a run with `--redact` and no export of any kind is still refused, exit code 2.
 - **The `--export-vcon` help names every media outcome.**
-  - It listed five outcomes.
-  - It said no container points at media held elsewhere.
-    - A rule with `audio = "url"` does.
-  - The help now lists that outcome, `referenced`.
-
-### Internal
-
-- **Links whose text holds a bracketed code span are now checked.**
-  - The documentation link gates found a link with the pattern `\[[^\]]*\]\(`.
-    - That pattern stops at the `]` inside a code span such as `` `[actions]` ``.
-    - So the gates never counted six such links or checked them for a valid target.
-    - They resolve.
-  - `scripts/rfc-links.py` had the same pattern.
-    - It also split each line at its backticks.
-    - So it would have linked an RFC mention inside such a link's text again, nesting a link in a link.
-    - It keeps the link whole now.
+  - Was: it listed five outcomes and said no container points at media held elsewhere.
+  - Effect: the help lists the outcome `referenced`, which a rule with `audio = "url"` gives.
 
 ## [0.5.215] - 2026-10-13
 
 ### Changed
 
-- **`HepOrigin` has a `sniffed_on_port` field** (library).
-  - It is `Some` with the outer UDP destination port when `--hep-parse` unwrapped the datagram off the wire.
-  - It is `None` when a `--hep-listen` socket delivered it.
-  - Code that builds a `HepOrigin` must set it.
+- **Library: `HepOrigin` has a `sniffed_on_port` field.**
+  - Effect: it is `Some` with the outer UDP destination port when `--hep-parse` unwrapped the datagram off the wire, and `None` from a `--hep-listen` socket.
+  - Do: set it in code that builds a `HepOrigin`.
 
 ### Fixed
 
-- **REST and MCP no longer hand out a vCon the run's `--content-deny-header`
-  withholds.**
-  - The flag kept a denied dialog out of the batch export.
-  - These never received it:
-    - `GET /v1/dialogs/{call_id}/vcon`
-    - MCP `export_vcon`
-    - the `sipnab://vcon/{call_id}` resource
-  - So the same call came back through the server started beside the export.
-  - REST now answers `403` and names the header.
-  - MCP refuses the dialog by `call_id` with `not_enabled`.
-    - MCP leaves it out of a filtered export.
-    - It counts it in the new `withheld_by_deny` field.
-  - All three doors decide through one rule, `output::vcon::denied_by_header`.
-- **A live vCon export now writes a call whose BYE it never saw.**
-  - The live export wrote a call only once it had ended.
-  - So it never wrote a call whose BYE was lost.
-    - Examples: a phone that lost power, or a capture point that missed one packet.
-  - sipnab now writes a call that has not ended once it has carried no SIP and no RTP for 120 seconds.
-  - sipnab writes it again under the same name if the BYE or any other message arrives later.
-  - The container's new `capture_completeness.call_ended` field is `false`.
-  - Its completeness note says the call had not ended when sipnab wrote it.
-  - A `-I` export of a call still running at the end of the capture says the same.
-
+- **REST and MCP no longer hand out a vCon the run's `--content-deny-header` withholds.**
+  - Was: `GET /v1/dialogs/{call_id}/vcon`, MCP `export_vcon` and the `sipnab://vcon/{call_id}` resource returned a call the batch export had denied.
+  - Effect: REST answers `403` and names the header; MCP refuses the dialog by `call_id` with `not_enabled`.
+  - Effect: MCP leaves the dialog out of a filtered export and counts it in the new `withheld_by_deny` field.
+- **A live vCon export writes a call whose BYE it never saw.**
+  - Was: the live export wrote a call only once it had ended, so a call whose BYE was lost was never written.
+  - Effect: a call that has not ended is written once it has carried no SIP and no RTP for 120 seconds.
+  - Effect: it is written again under the same name if the BYE or any other message arrives later.
+  - Effect: the container's new `capture_completeness.call_ended` field is `false`; a `-I` export of a call still running says the same.
 - **SRTP media sipnab could not decrypt is no longer exported as audio.**
-  - An SRTP payload with no key that decrypts it is ciphertext.
-  - A stream whose payload type named G.711 kept that ciphertext.
-    - The WAV export and a vCon `recording` decoded it as noise.
-    - They presented that noise as the call's audio.
-  - This rule now applies to a stream whose SDP declares `RTP/SAVP`, `RTP/SAVPF`, `UDP/TLS/RTP/SAVP` or `UDP/TLS/RTP/SAVPF`:
-    - It keeps only payload sipnab decrypted.
-    - It releases what it kept before the SDP arrived, when none of it was decrypted.
-    - The same rule applies after a `--cores` merge.
-
-  - With nothing decrypted:
-    - The export carries no audio.
-    - It says how many packets were not decrypted.
-    - It says how to supply a key.
-  - With some decrypted, the audio is marked PARTIAL with the count of the others.
+  - Was: a stream whose payload type named G.711 kept the ciphertext, and the WAV export and a vCon `recording` decoded it as noise.
+  - Effect: a stream whose SDP declares `RTP/SAVP`, `RTP/SAVPF`, `UDP/TLS/RTP/SAVP` or `UDP/TLS/RTP/SAVPF` keeps only payload sipnab decrypted.
+  - Effect: with nothing decrypted the export carries no audio and says how many packets were not decrypted and how to supply a key.
+  - Limit: with some decrypted, the audio is marked PARTIAL with the count of the others.
 - **`--hep-parse` no longer opens the sniffed rtpengine port gate.**
-  - sipnab believes a sniffed `ng` mirror only on the HEP port, 9060.
-    - Nothing authenticates it.
-    - A believed one names a call and binds media.
-  - With `--hep-parse` on, the unwrapped mirror took the path meant for a `--hep-listen` socket.
-    - That path has no port gate.
-    - So a datagram to any UDP port could name a call.
-  - It now passes the same gate.
-    - sipnab counts and warns about it the same way.
+  - Was: with `--hep-parse` on, an unwrapped `ng` mirror in a datagram to any UDP port could name a call and bind media.
+  - Effect: it passes the same gate as a sniffed mirror: sipnab believes it only on the HEP port, 9060, and counts and warns the same way.
 - **Six documentation statements that disagreed with sipnab.**
-  - `docs/mcp-tools-vcon.md` said `--export-vcon-when` rejects a filter alias.
-    - It accepts one.
-  - `docs/vcon.md` said `-I` does not read a vCon file.
-    - It does.
-  - `docs/vcon-harness.md` told operators not to use `--hep-parse` on a relay.
-    - It said the flag hid mirrored `ng`.
-    - Its own relay command used the flag.
-    - The flag hides nothing.
-  - `docs/filter-dsl.md` counted 32 fields where the parser has 33.
-    - Its field list described `header.<name>` nowhere.
-
-  - The Dialog Object in the `docs/rest-api.md` vCon sample had no `type`.
-  - The 0.5.186 entry below showed a `~` operator the DSL does not have.
-    - It is `=~`.
-
-### Internal
-
-- **The concurrent-load refusal test no longer races the load it tests.**
-  - `a_second_load_is_refused_while_one_is_running` checked that the real load was still running.
-  - It then called `open_capture` again.
-  - On the macOS runner, the load finished in between.
-    - The second call was correctly accepted.
-    - The test failed on main.
-  - On a faster machine, it skipped its assertion.
-  - It now holds a load that never reports done.
-    - It asserts the refusal names that file.
-    - It asserts that a new call is accepted once the load finishes.
-- **A test runs retained audio and reused SSRCs together.**
-  - Two calls reuse one SSRC and socket pair.
-    - Each is exported with `--retain-audio`.
-  - Each must carry exactly its own second of audio per direction (8000 samples).
-  - With the per-call stream split disabled, the first call's container carries 16000, and the test fails.
-  - Two code comments still described the old per-stream cap of 1500 frames.
-    - They now describe the whole-stream default.
-    - They now describe the 1 GiB `[limits] max_audio_bytes` budget.
+  - Was: `docs/mcp-tools-vcon.md` said `--export-vcon-when` rejects a filter alias, and `docs/vcon.md` said `-I` does not read a vCon file.
+  - Was: `docs/vcon-harness.md` told operators not to use `--hep-parse` on a relay; the flag hides nothing.
+  - Was: `docs/filter-dsl.md` counted 32 fields where the parser has 33, and described `header.<name>` nowhere.
+  - Was: the Dialog Object in the `docs/rest-api.md` vCon sample had no `type`.
 
 ## [0.5.214] - 2026-10-12
 
