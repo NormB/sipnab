@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **The pre-commit hook's step log keeps the test total of a suite that passed.** After a passing suite the hook writes nextest's `Summary` line (the tests run, passed and skipped) to `sipnab-pre-commit-steps.log` as a note of that run, and `python3 scripts/hook-steps.py` prints it under the run's table. Before, a summary was kept only for a failed run, so two passing runs could not be compared by their totals. This is a change for contributors: the shipped program is the same. [Where a hook run spent its time](docs/internals/testing.md#the-development-loop) describes the note.
+
 ## [0.5.254] - 2026-11-14
 
 ### Added

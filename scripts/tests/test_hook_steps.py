@@ -44,8 +44,21 @@ def log_of(sb) -> pathlib.Path:
     return sb.tree / ".git" / LOG_NAME
 
 
-def rows_of(sb):
+def lines_of(sb):
     return [line.split("\t") for line in log_of(sb).read_text().splitlines()]
+
+
+def rows_of(sb):
+    """The step lines: every line of the log that is not a note."""
+    return [fields for fields in lines_of(sb) if not is_note(fields)]
+
+
+def is_note(fields) -> bool:
+    return len(fields) == 3 and fields[1] == "nextest"
+
+
+def notes_of(sb):
+    return [fields for fields in lines_of(sb) if is_note(fields)]
 
 
 def ran(sb, **extra):
@@ -225,3 +238,90 @@ def test_edge_the_table_script_reads_what_the_hook_wrote(pc):  # noqa: F811
     rows, bad = hs.parse(log_of(pc).read_text())
     assert bad == 0
     assert [r.step for r in rows][:-1] == printed(out)
+
+
+# ── the nextest Summary line of a passing suite ───────────────────────────
+#
+# Two passing runs could not be compared by their totals: the hook kept a
+# summary only for a failed run. A passing suite now leaves a note, a line of
+# three fields: the run, `nextest`, nextest's Summary line.
+
+SUMMARY = "Summary [ 337.143s] 16257 tests run: 16257 passed (5 slow, 3 leaky), 48 skipped"
+
+
+def summary(sb, text):
+    (sb.harness / "nextest-summary").write_text(text)
+
+
+def test_success_a_passing_run_notes_the_nextest_summary_line(pc):  # noqa: F811
+    summary(pc, f"------------\n     {SUMMARY}\n")
+    rc, out = pc.run()
+    assert rc == 0, out
+    assert [n[2] for n in notes_of(pc)] == [SUMMARY], lines_of(pc)
+
+
+def test_success_the_note_carries_the_name_of_its_run(pc):  # noqa: F811
+    rc, out, rows = ran(pc)
+    assert rc == 0, out
+    assert [n[0] for n in notes_of(pc)] == [rows[0][0]], lines_of(pc)
+
+
+def test_success_the_note_is_written_inside_the_tests_step(pc):  # noqa: F811
+    ran(pc)
+    names = [fields[1] for fields in lines_of(pc)]
+    assert names.index("nextest") + 1 == names.index("Tests"), names
+
+
+def test_success_the_default_sandbox_summary_counts_its_tests(pc):  # noqa: F811
+    ran(pc)
+    assert re.fullmatch(r"Summary \[ +0\.004s\] (\d+) tests run: \1 passed, 0 skipped", notes_of(pc)[0][2]), notes_of(pc)
+
+
+def test_failure_a_failed_suite_leaves_no_note(pc):  # noqa: F811
+    (pc.harness / "canned-junit.xml").write_text(junit(("sipnab::bin1", "t1", False)))
+    rc, out = pc.run()
+    assert rc == 1, out
+    assert notes_of(pc) == [], lines_of(pc)
+
+
+def test_failure_a_run_that_fails_before_the_suite_leaves_no_note(pc):  # noqa: F811
+    pc.switch("fail-clippy")
+    rc, out = pc.run()
+    assert rc == 1, out
+    assert notes_of(pc) == [], lines_of(pc)
+
+
+def test_edge_a_run_without_a_summary_line_passes_and_leaves_no_note(pc):  # noqa: F811
+    (pc.harness / "nextest-summary").unlink()
+    rc, out = pc.run()
+    assert rc == 0, out
+    assert notes_of(pc) == [] and rows_of(pc)[-1][1] == "total", lines_of(pc)
+
+
+def test_edge_a_tab_in_the_summary_does_not_add_a_field(pc):  # noqa: F811
+    summary(pc, "     Summary [ 1.0s] 2 tests\trun: 2 passed, 0 skipped\n")
+    ran(pc)
+    assert [n[2] for n in notes_of(pc)] == ["Summary [ 1.0s] 2 tests run: 2 passed, 0 skipped"], lines_of(pc)
+
+
+def test_edge_the_last_summary_line_is_the_one_noted(pc):  # noqa: F811
+    summary(pc, "     Summary [ 1.0s] 1 test run: 1 passed, 0 skipped\n     Summary [ 2.0s] 2 tests run: 2 passed, 0 skipped\n")
+    ran(pc)
+    assert [n[2] for n in notes_of(pc)] == ["Summary [ 2.0s] 2 tests run: 2 passed, 0 skipped"], lines_of(pc)
+
+
+def test_edge_the_table_script_does_not_count_the_note_as_a_bad_line(pc):  # noqa: F811
+    ran(pc)
+    text = log_of(pc).read_text()
+    assert "\tnextest\t" in text, text
+    _, bad = hs.parse(text)
+    assert bad == 0
+
+
+def test_edge_the_table_prints_the_note_under_the_run(pc):  # noqa: F811
+    summary(pc, f"     {SUMMARY}\n")
+    ran(pc)
+    out = subprocess.run(["python3", str(REPO / "scripts/hook-steps.py"), "--log", str(log_of(pc))],
+                         capture_output=True, text=True, check=False)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.rstrip().endswith(f"nextest: {SUMMARY}"), out.stdout
