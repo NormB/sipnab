@@ -978,9 +978,26 @@ development build after 0.5.243 and the files in one working directory.
    INFO sipnab::app::fleet_center: fleet center store encryption sealed, key id dd70bddbd340fae5, 1 old key(s)
    ```
 
-   The center rewrites the store under the new key as it starts. From the
-   next start on, leave `--store-old-key-file` out, back up the new key file
-   and destroy the old one.
+   The center rewrites the store file under the new key as it starts. It
+   does not rewrite the files of the history store: each history file stays
+   under the key that wrote it until retention removes it. That is
+   `--calls-retention-days` (default 90) for call records and
+   `--retention-hours` (default 72) for heartbeats. Back up the new key
+   file.
+
+   - **A center without the history store** (its `--version` does not list
+     `fleet-store`): from the next start on, leave `--store-old-key-file`
+     out and destroy the old key.
+   - **A center with the history store:** keep the old key file and
+     `--store-old-key-file` on every start until retention has removed
+     every history file written under the old key. That is the longer of
+     the two periods after the rotation, 90 days with the defaults. Only
+     then destroy the old key. A center that starts without the old key
+     runs, and refuses each of those files with `was written under key id
+     <id>, which is not loaded`
+     ([Keep call history at the center](#keep-call-history-at-the-center)
+     has the entry). Nothing reads a history file after you destroy its
+     key.
 
 #### Upgrade a center that stored in clear
 

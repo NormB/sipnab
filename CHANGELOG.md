@@ -16,6 +16,11 @@ entry that carries them.
   - Was: every push and status request waited until the whole filing ended, 607 to 633 ms for a full intake in a release build.
   - Effect: a request now waits only for the start and the end of a filing; the read and the write run without the center's lock.
   - Docs: [What waits during a filing](docs/fleet.md#what-waits-during-a-filing).
+- **The key rotation how-to no longer tells you to destroy a key history files need.**
+  - Was: the how-to said to destroy the old store key after the next start, and history files written before the rotation stay under that key.
+  - Effect: the how-to now says to keep the old key loaded until retention has removed every history file written under it.
+  - Do: if you rotated the store key since 0.5.249 and still have the old key file, keep passing it with `--store-old-key-file`.
+  - Docs: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
 
 ## [0.5.255] - 2026-11-14
 
