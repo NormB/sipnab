@@ -2290,480 +2290,186 @@ entry that carries them.
 ### Added
 
 - **MCP over HTTP serves beside the TUI.**
-  - `sipnab -I capture.pcap --mcp --mcp-transport http` opens the TUI and serves MCP from the same process.
-    - An operator watches the capture while an agent queries it.
-    - Both read the same dialogs and streams.
-  - The status line shows the address MCP listens on.
-    - This includes the port the kernel picked for `--mcp-bind 127.0.0.1:0`.
-  - Quitting the TUI stops the server.
-  - The HTTP rules are unchanged.
-    - A non-loopback bind still needs a token.
-  - sipnab refuses these flags with the TUI up:
-    - `--mcp-allow-shutdown`
-    - `--mcp-allow-open-capture`
-    - `--mcp-allow-tls-capture`
-    - `--mcp-allow-save-findings`
-    - `--mcp-allow-relay-query`
-  - The refusal names each flag and `-N`.
-    - Each flag acts on the process or the relay that the operator at the
-      terminal owns.
-  - MCP `security_findings` beside the TUI reports the detectors the TUI armed.
-  - `source_exhausted` turns `true` once the file is read.
-  - See [Query a capture over MCP while the TUI is open](docs/mcp.md#query-a-capture-over-mcp-while-the-tui-is-open).
+  - Do: `sipnab -I capture.pcap --mcp --mcp-transport http` opens the TUI and serves MCP from the same process; both read the same dialogs and streams.
+  - Effect: the status line shows the address MCP listens on, including the port the kernel picked for `--mcp-bind 127.0.0.1:0`.
+  - Effect: quitting the TUI stops the server; the HTTP rules are unchanged, and a non-loopback bind still needs a token.
+  - Effect: `security_findings` beside the TUI reports the detectors the TUI armed, and `source_exhausted` turns `true` once the file is read.
+  - Docs: [Query a capture over MCP while the TUI is open](docs/mcp.md#query-a-capture-over-mcp-while-the-tui-is-open).
+- **With the TUI up, sipnab refuses five MCP opt-in flags.**
+  - Effect: it refuses `--mcp-allow-shutdown`, `--mcp-allow-open-capture`, `--mcp-allow-tls-capture`, `--mcp-allow-save-findings` and `--mcp-allow-relay-query`.
+  - Effect: the refusal names each flag and `-N`; each flag acts on the process or the relay that the operator at the terminal owns.
 - **`--vcon-fetch` reads stored vCons back by uuid.**
-  - It is a separate process, like the forwarder.
-    - It captures nothing.
-    - sipnab refuses it beside any capture flag.
-  - `--vcon-fetch <UUID>...` reads each container from the store at `--vcon-fetch-url`.
-    - Use `-` for uuids on standard input.
-    - It writes each one to `<uuid>.vcon.json` in `--vcon-fetch-out`, mode `0600`.
-    - It never replaces a file without `--vcon-fetch-overwrite`.
-  - `--vcon-fetch-kind` names the store:
-    - `vcon-store`: `GET /v1/vcons/{uuid}`, `Authorization: Bearer`, the `_meta`
-      member removed.
-    - `conserver`: `GET /vcon/{uuid}`, `x-conserver-api-token`.
-    - `vcon-mcp`: `GET /api/v1/vcons/{uuid}`, `Authorization: Bearer`, the `vcon`
-      member of the answer kept.
-    - `generic`: a URL template holding `{uuid}`.
-  - sipnab checks each container against the vendored schema.
-    - It writes and reports one the schema refuses.
-    - The run then exits `1`.
-  - Exit codes follow the forwarder's:
-    - `0`
-    - `1`
-    - `2` for refused settings.
-    - `3` for a refused credential, after which nothing more is fetched.
-  - Each of these flags has a `[vcon_fetch]` key:
-    - `--vcon-fetch-auth-file`
-    - `--vcon-fetch-ca`
-    - `--vcon-fetch-timeout`
-    - `--vcon-fetch-max-size`
-    - `--vcon-fetch-max-response-head`
-  - See [Fetch a stored vCon](docs/vcon.md#fetch-a-stored-vcon).
+  - Do: `--vcon-fetch <UUID>...` reads each container from the store at `--vcon-fetch-url`; use `-` for uuids on standard input.
+  - Effect: it writes each one to `<uuid>.vcon.json` in `--vcon-fetch-out`, mode `0600`, and never replaces a file without `--vcon-fetch-overwrite`.
+  - Effect: `--vcon-fetch-kind` names the store: `vcon-store`, `conserver`, `vcon-mcp`, or `generic`, a URL template holding `{uuid}`.
+  - Limit: it is a separate process, like the forwarder; it captures nothing, and sipnab refuses it beside any capture flag.
+  - Docs: [Fetch a stored vCon](docs/vcon.md#fetch-a-stored-vcon).
+- **`--vcon-fetch` checks each container against the schema and exits as the forwarder does.**
+  - Effect: sipnab checks each container against the vendored schema; it writes and reports one the schema refuses, and the run then exits `1`.
+  - Effect: exit codes follow the forwarder's: `0`, `1`, `2` for refused settings, and `3` for a refused credential, after which nothing more is fetched.
+  - Effect: `--vcon-fetch-auth-file`, `--vcon-fetch-ca`, `--vcon-fetch-timeout`, `--vcon-fetch-max-size` and `--vcon-fetch-max-response-head` each have a `[vcon_fetch]` key.
 
 ### Changed
 
 - **Breaking: `--mcp --mcp-transport http` without `-N` opens the TUI.**
-  - It used to imply `-N`.
-  - A unit or script that relied on that runs without a terminal.
-    - It now exits 1 saying the TUI could not start.
-    - Add `-N`.
-  - Every invocation in the shipped documentation, unit files and scripts already
-    carries it.
-  - `--mcp` with the stdio transport still implies `-N`.
+  - Was: it used to imply `-N`.
+  - Do: add `-N` to a unit or script that runs without a terminal; without it the run exits 1 saying the TUI could not start.
+  - Effect: every invocation in the shipped documentation, unit files and scripts already carries it; `--mcp` with the stdio transport still implies `-N`.
 - **A refused or busy `--mcp-bind` stops the run at startup, exit 2.**
-  - The listener used to be bound on the servers thread.
-    - There, a port in use or a non-loopback bind with no token was only logged.
-    - That happened after the run had started.
-  - It is now bound on the calling thread before the servers thread starts.
-    - `--api` already worked this way.
+  - Was: a port in use, or a non-loopback bind with no token, was only logged, after the run had started.
+  - Effect: the listener is bound before the servers thread starts, as `--api` already worked.
 
 ### Fixed
 
-- **A stdio MCP client receives the reply to a `shutdown_server` that stops
-  the process.**
-  - The tool set the shutdown flag before its reply was written.
-  - The keep-alive loop could exit the process first.
-    - The client then read end of file in place of `would_stop: true`.
-  - Over stdio, sipnab now sets the flag after the reply has been written to stdout.
-  - The HTTP transport stops as it did before.
-  - Affected: `--mcp` over stdio with `--mcp-allow-shutdown`.
-    - This applies on a confirmed or unconfirmed real stop (`dry_run=false`).
-
-- **A `--redact` export no longer names its files after the original
-  Call-ID.**
-  - `--export-vcon-dir` built each file name from the Call-ID on the wire.
-  - So a redacted container whose `sip_call_id` was a pseudonym got a name such as
-    `1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json`.
-  - The original Call-ID and the host address inside it appeared in these places:
-    - The spool.
-    - The `--vcon-digest` lines.
-    - The forwarder's `delivered/` and `failed/` directories.
-    - The forwarder's `error.json` records and its log lines.
-  - Under `--redact`, the name now comes from the pseudonymized Call-ID the container carries.
-    - It keeps the same SHA-256 suffix that keeps names unique.
-  - An export without `--redact` keeps its existing names.
+- **A stdio MCP client receives the reply to a `shutdown_server` that stops the process.**
+  - Was: the process could exit before the reply was written, and the client read end of file in place of `would_stop: true`.
+  - Effect: over stdio, sipnab sets the shutdown flag after the reply has been written to stdout; the HTTP transport stops as it did before.
+  - Effect: this reaches `--mcp` over stdio with `--mcp-allow-shutdown`, on a confirmed or unconfirmed real stop (`dry_run=false`).
+- **A `--redact` export no longer names its files after the original Call-ID.**
+  - Was: a redacted container whose `sip_call_id` was a pseudonym got a name such as `1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json`, built from the Call-ID on the wire.
+  - Was: the original Call-ID and its host address appeared in the spool, the `--vcon-digest` lines, and the forwarder's `delivered/`, `failed/`, `error.json` records and log lines.
+  - Effect: under `--redact`, the name comes from the pseudonymized Call-ID the container carries, with the same SHA-256 suffix that keeps names unique.
+  - Limit: an export without `--redact` keeps its existing names.
 - **The vCon documentation describes what the exporter does.**
-  - `docs/vcon.md` said two Call-IDs that differ only in replaced characters share one file
-    name.
-
-    - The SHA-256 suffix gives them two.
-  - The exporter's module documentation and the vCon design page said a party never carries a
-    `name`.
-    - It carries the `From` or `To` display name when the wire had one.
-    - `validation: "none"` is beside it.
-- **A call challenged for credentials keeps its parties on the vCon
-  recording.**
-  - A dialog took its remote tag from the first `To` tag it saw.
-    - For a challenged call, that is the tag of the `401` or `407`.
-    - That response creates no dialog ([RFC 3261 section 12.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1)).
-    - The re-sent INVITE is answered under another tag.
-  - The vCon exporter attributes an audio channel to one party.
-    - That party's own SDP advertised the stream's sending address.
-    - The exporter identifies the callee's SDP by that tag.
-  - So it found no callee endpoint.
-    - `--retain-audio` exported the call audio with no `parties`.
-    - It put the challenge's tag in `sip_to_tag`.
-    - vcon.store refuses that Dialog Object.
-  - The remote tag now comes from the strongest evidence seen, in this order:
-    - A 2xx answer to the opening request.
-    - A 101-199 response to it.
-    - Any other tag.
-  - `tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap` now exports `parties: [1, 0]`
-    and `sip_to_tag: as0b1a917b`.
-  - Affected: these surfaces, for a call whose first response carried a `To` tag that the answer did not:
-    - `--export-vcon`
-    - `--export-vcon-dir`
-    - The MCP `export_vcon` tool.
-    - `GET /v1/dialogs/{call_id}/vcon`
+  - Was: `docs/vcon.md` said two Call-IDs that differ only in replaced characters share one file name; the SHA-256 suffix gives them two.
+  - Was: the exporter's module documentation and the vCon design page said a party never carries a `name`.
+  - Effect: a party carries the `From` or `To` display name when the wire had one, with `validation: "none"` beside it.
+- **A call challenged for credentials keeps its parties on the vCon recording.**
+  - Was: a dialog took its remote tag from the first `To` tag it saw, for a challenged call the tag of the `401` or `407`.
+  - Was: `--retain-audio` exported the call audio with no `parties` and the challenge's tag in `sip_to_tag`, a Dialog Object vcon.store refuses.
+  - Effect: the remote tag comes from the strongest evidence: a 2xx answer to the opening request, then a 101-199 response to it, then any other tag.
+  - Effect: `tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap` now exports `parties: [1, 0]` and `sip_to_tag: as0b1a917b`.
+  - Effect: this reaches `--export-vcon`, `--export-vcon-dir`, MCP `export_vcon` and `GET /v1/dialogs/{call_id}/vcon` when the first response carried a `To` tag the answer lacked.
 
 ## [0.5.208] - 2026-10-09
 
 ### Added
 
 - **The MCP `find_in_captures` job bounds are operator settings.**
-  - `--mcp-sweep-max-running` / `[limits] mcp_sweep_max_running` sets how many sweeps one server runs at once.
-    - Default 4, accepted 1 to 64.
-  - `--mcp-sweep-max-held-results` / `[limits] mcp_sweep_max_held_results` sets how many finished results wait for a
-    poll.
-    - Default 16, accepted 1 to 256.
-  - `--mcp-sweep-result-retention-secs` /
-    `[limits] mcp_sweep_result_retention_secs` sets how long a finished result waits.
-    - Default 600, accepted 1 to 43200 (twelve hours).
-  - Before this, the source fixed the three at those defaults.
-  - The flag overrides the key.
-  - The refusal of a sweep past the running bound reports the configured bound.
-    - It names its setting.
-  - The refusal of an unknown job id reports the configured retention and held bound.
-    - It names both flags.
+  - Effect: `--mcp-sweep-max-running` / `[limits] mcp_sweep_max_running` sets how many sweeps one server runs at once: default 4, accepted 1 to 64.
+  - Effect: `--mcp-sweep-max-held-results` / `[limits] mcp_sweep_max_held_results` sets how many finished results wait for a poll: default 16, accepted 1 to 256.
+  - Effect: `--mcp-sweep-result-retention-secs` / `[limits] mcp_sweep_result_retention_secs` sets how long a finished result waits: default 600, accepted 1 to 43200 (twelve hours).
+  - Was: the source fixed the three at those defaults.
+  - Effect: the flag overrides the key; a refusal for the running bound or an unknown job id reports the configured values and names the settings.
 
 ### Changed
 
-- **vCon export and validation follow
-  [draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04) (7 September 2026) instead of `-03`.**
-  - The syntax version stays `"0.4.0"`.
-    - `-04` also requires it.
-  - What changes for a consumer:
-    - Every Dialog Object now names its `type`.
-      - A call with no media and no observed failure was a Dialog Object with no `type`.
-      - `-03` allowed that, and `-04` does not.
-      - It is now the `recording` placeholder of
-        [section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3).
-      - It has no `body`, `url` or `mediatype`.
-      - The unseen consultative call of an attended transfer was `{}`.
-      - It is now `{"type": "recording"}`.
-      - A consumer that selects `type == "recording"` and reads the content has to check that `body` or `url` is present.
-    - The vendored schema, `tests/schemas/vcon.schema.json`, is the working
-      group's `-04` file unchanged.
-      - It is byte for byte the same as `tests/schemas/publisher/vcon_json_schema.json`.
-      - That file moves to the `draft-ietf-vcon-vcon-core-04` tag (commit `99589dd0`).
-      - The local deviation that removed `type` from the Dialog Object's `required` list is
-        gone.
-
-    - Three surfaces enforce the rules `-04` added:
-      - The MCP `validate_vcon` tool.
-      - The REST `POST /v1/vcon/validate` route.
-      - `clients/python/vcon_validate.py`.
-    - The rules are:
-      - Per-type prohibitions on Dialog Objects (for example `parties` or `session_id` on a
-        `transfer`).
-      - `disposition` on `incomplete`.
-      - `recordings` on `recording-set`.
-      - `encoding` and `mediatype` beside a non-empty `body`.
-      - `content_hash` beside a `url`.
-      - `button` on `keydown` and `keyup` events.
-      - Single-integer transfer indices.
-      - `redacted` and `amended` never together.
-      - `uuid` on an `amended` object with no `url`.
-    - `start` is no longer required on a Dialog Object.
-    - sipnab's validator gained the `allOf`, `if`,
-      `then`, `else` and `not` keywords to read that schema.
-    - **Breaking for clients of the validator:**
-      - The `validate_vcon` and `POST /v1/vcon/validate` responses move to `schema_version` 2.
-      - The `deviations` and `explanations` members are removed.
-      - The `valid-except-documented-deviation` verdict is removed.
-      - `verdict` is `valid` or `invalid`.
-      - Every finding is in `errors`.
-      - A container written by an earlier sipnab with a type-free or empty Dialog Object is now
-        `invalid`.
-    - THIRD-PARTY-NOTICES.md records `tests/schemas/vcon.schema.json` as the working group's file.
-
-      - The binary compiles that file in.
-    - Section 7 of `docs/design/vcon.md` inventories three things:
-      - The `-03` to `-04` changes.
-      - Where the new Appendix C CDDL contradicts the prose.
-      - The questions `-04` leaves open.
+- **vCon export and validation follow [draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04) (7 September 2026) instead of `-03`.**
+  - Effect: the syntax version stays `"0.4.0"`, which `-04` also requires; `start` is no longer required on a Dialog Object.
+  - Effect: every Dialog Object now names its `type`; `-03` allowed one without, and `-04` does not.
+  - Effect: a call with no media and no observed failure is the `recording` placeholder of [section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), with no `body`, `url` or `mediatype`.
+  - Effect: the unseen consultative call of an attended transfer was `{}` and is now `{"type": "recording"}`.
+  - Do: a consumer that selects `type == "recording"` and reads the content has to check that `body` or `url` is present.
+- **`validate_vcon`, `POST /v1/vcon/validate` and `clients/python/vcon_validate.py` enforce the rules `-04` added.**
+  - Effect: per-type prohibitions on Dialog Objects (for example `parties` or `session_id` on a `transfer`), `disposition` on `incomplete`, and `recordings` on `recording-set`.
+  - Effect: `encoding` and `mediatype` beside a non-empty `body`, `content_hash` beside a `url`, and `button` on `keydown` and `keyup` events.
+  - Effect: single-integer transfer indices, `redacted` and `amended` never together, and `uuid` on an `amended` object with no `url`.
+  - Effect: the vendored schema is the working group's `-04` file unchanged; THIRD-PARTY-NOTICES.md records it, and the binary compiles it in.
+  - Effect: section 7 of `docs/design/vcon.md` inventories the `-03` to `-04` changes, where the Appendix C CDDL contradicts the prose, and the questions `-04` leaves open.
+- **Breaking for clients of the validator: the responses move to `schema_version` 2.**
+  - Effect: the `validate_vcon` and `POST /v1/vcon/validate` responses lose the `deviations` and `explanations` members and the `valid-except-documented-deviation` verdict.
+  - Effect: `verdict` is `valid` or `invalid`, and every finding is in `errors`.
+  - Limit: a container written by an earlier sipnab with a type-free or empty Dialog Object is now `invalid`.
 
 ### Fixed
 
-- **A run with `--report` on a capture that holds RTP and no SIP told the
-  operator to pass `--report`.**
-  - The run summary ended with `No SIP signaling found, but N RTP packets across M stream(s) were parsed. Use --report to see stream details.`
-  - It did so even when the same run had printed the stream report.
-  - When the run prints the report, the summary now states the counts.
-    - It leaves out the second sentence.
-
-  - Without `--report`, the message is unchanged.
-- **A `tcp` or `tls` `--hep-send` connect no longer waits for the operating
-  system's limit.**
-  - The sender dialed the collector with no time limit.
-    - It did so at startup and on every reconnect.
-  - Some collectors' hosts or firewalls drop the connection request instead of refusing it.
-    - Such a collector held the connect for the operating system's own limit.
-    - That is about 127 seconds on Linux with the default six SYN retries.
-  - The dial runs on the thread that forwards packets.
-    - So for that time nothing was sent, counted or stopped.
-  - On the macOS CI runner, the test of a refused reconnect took 79 to 82 seconds for this reason.
-  - Every connect now gives up after 3 seconds.
-    - It counts as a `connect` failure, as a refused one does.
-  - Three seconds covers the first connection request and one retransmission.
-    - A TCP sender sends the retransmission one second after the first
-      ([RFC 6298](https://www.rfc-editor.org/rfc/rfc6298.html)).
-    - The next packet dials again.
-  - The limit is a fixed value with no flag or key.
-    - The 10-second TLS handshake limit is the same.
-  - Affected: `--hep-send` with `--hep-send-transport tcp` or `tls`.
-
-- **sipnab read HEP v1 and v2 packets at the wrong offsets, and refused HEP
-  v1.**
-  - The version 2 reader took the ports from bytes 2 to 5.
-  - It took two IPv4 addresses from bytes 6 to 13.
-  - Those bytes belong to the `struct hep_hdr` of `captagent`, sipcapture's capture agent.
-    - Kamailio's `sipcapture` module reads it the same way.
-  - The real layout is:
-    - Bytes 2 and 3 hold the address family and the IP protocol.
-    - Bytes 4 to 7 hold the ports.
-    - The addresses follow from byte 8.
-    - Each address is 4 bytes for IPv4 and 16 bytes for IPv6.
-  - The reader also started the payload at the header length byte.
-
-    - That byte does not count the 12-byte time header a version 2 packet carries.
-    - So every message it produced began with header bytes and did not parse as SIP.
-  - It assumed IPv4 and UDP and never read the time.
-  - sipnab now reads these fields:
-    - The family.
-    - The IP protocol.
-    - IPv4 or IPv6 addresses.
-    - For version 2, the time (`tv_sec` and `tv_usec`, little-endian, as Kamailio reads them) and the capture ID.
-  - A version 2 message takes the time its packet carries.
-  - A version 1 message carries no time.
-    - It takes the time sipnab received or sniffed it.
-  - The transport comes from the IP protocol byte by the rule HEP v3 uses.
-  - The header size follows from the family byte alone, as in Kamailio's receiver.
-  - sipnab does not read the header length byte.
-
-    - So it now accepts the HEP v2 packets `sngrep` sends.
-    - Those carry one byte of the total datagram length there.
-  - sipnab refuses some packets with a message that names the field:
-    - A packet whose family is neither IPv4 nor IPv6.
-    - A packet that ends inside its addresses or time header.
-  - Affected: any sender configured for HEP version 1 or 2, read with
-    `--hep-listen` or `--hep-parse`.
-  - The change leaves HEP v3 as it was.
+- **A `--report` run on RTP without SIP told the operator to pass `--report`.**
+  - Was: the run summary ended with `No SIP signaling found, but N RTP packets across M stream(s) were parsed. Use --report to see stream details.`
+  - Effect: when the run prints the report, the summary states the counts and leaves out the second sentence; without `--report` the message is unchanged.
+- **A `tcp` or `tls` `--hep-send` connect no longer waits for the operating system's limit.**
+  - Was: the dial had no time limit; a collector that drops the request held it about 127 seconds on Linux with the default six SYN retries.
+  - Was: the dial runs on the thread that forwards packets, so for that time nothing was sent, counted or stopped.
+  - Effect: every connect gives up after 3 seconds and counts as a `connect` failure, as a refused one does; the next packet dials again.
+  - Limit: the limit is a fixed value with no flag or key, as is the 10-second TLS handshake limit.
+  - Effect: this reaches `--hep-send` with `--hep-send-transport tcp` or `tls`.
+- **sipnab read HEP v1 and v2 packets at the wrong offsets, and refused HEP v1.**
+  - Was: the version 2 reader took the ports from bytes 2 to 5 and two IPv4 addresses from bytes 6 to 13.
+  - Was: it assumed IPv4 and UDP, never read the time, and every message it produced began with header bytes and did not parse as SIP.
+  - Effect: bytes 2 and 3 hold the address family and the IP protocol, bytes 4 to 7 the ports, and the addresses follow from byte 8.
+  - Effect: sipnab reads the family, the IP protocol, IPv4 or IPv6 addresses and, for version 2, the time and the capture ID; HEP v3 is unchanged.
+  - Effect: a version 2 message takes the time its packet carries; a version 1 message takes the time sipnab received or sniffed it.
+- **sipnab accepts the HEP v2 packets `sngrep` sends.**
+  - Effect: sipnab does not read the header length byte, where those packets carry one byte of the total datagram length.
+  - Effect: the header size follows from the family byte alone, as in Kamailio's receiver; the IP protocol byte gives the transport by the HEP v3 rule.
+  - Effect: the version 2 time is read as `tv_sec` and `tv_usec`, little-endian, as Kamailio reads them.
+  - Limit: sipnab refuses, naming the field, a packet whose family is neither IPv4 nor IPv6 or that ends inside its addresses or time header.
+  - Effect: this reaches any sender configured for HEP version 1 or 2, read with `--hep-listen` or `--hep-parse`.
 
 ## [0.5.207] - 2026-10-08
 
 ### Added
 
 - **The MCP `find_in_captures` limits are operator settings.**
-  - Two settings set the ceilings the tool clamps its per-call `max_files`
-    and `deadline_ms` to:
-    - `--mcp-sweep-max-files` / `[limits] mcp_sweep_max_files`.
-      - Default 20, accepted 1 to 4294967295.
-    - `--mcp-sweep-deadline-ms` / `[limits] mcp_sweep_deadline_ms`.
-      - Default 30000, accepted 1 to 43200000 (twelve hours).
-  - Before this, the tool clamped both to fixed values of 20 files and 30000 ms.
-    - So a sweep of a spool with more than 20 rotated files could not reach the older ones.
-  - The flag overrides the key.
-  - The response carries a new `limits` object with the values the sweep ran
-    under.
+  - Effect: `--mcp-sweep-max-files` / `[limits] mcp_sweep_max_files` sets the ceiling for the per-call `max_files`: default 20, accepted 1 to 4294967295.
+  - Effect: `--mcp-sweep-deadline-ms` / `[limits] mcp_sweep_deadline_ms` sets the ceiling for `deadline_ms`: default 30000, accepted 1 to 43200000 (twelve hours).
+  - Was: both were fixed at 20 files and 30000 ms, so a sweep of more than 20 rotated files could not reach the older ones.
+  - Effect: the flag overrides the key, and the response carries a new `limits` object with the values the sweep ran under.
 - **Breaking: an MCP `find_in_captures` sweep is a background job.**
-  - The call waits up to its new `wait_seconds` parameter.
-
-    - Default 30, clamped to `--mcp-max-wait-seconds`.
-  - It returns the result when the sweep finishes in that time.
-  - Otherwise it returns a `job_id` with `status: "running"` and
-    `progress` (`files_examined`, `files_total`, `elapsed_ms`).
-  - The new `find_in_captures_status` tool polls a job.
-    - It hands over the finished result once.
-
-  - The new `cancel_find_in_captures` tool stops one.
-  - A sweep stops before its next packet in three cases:
-    - Its deadline passes.
-    - A cancel arrives.
-    - SIGTERM arrives.
-  - `stopped_because` gains `canceled` and `shutdown`.
-  - At most four sweeps run per server.
-  - sipnab keeps a finished result for 600 seconds.
-  - At most 16 results wait for a poll.
-  - The response is `schema_version` 2.
-    - It adds `job_id`, `status` and `progress`.
-    - It leaves out `sweep` while the job runs.
-  - A client that reads `sweep` checks `status` first.
-    - A sweep that finishes within `wait_seconds` returns `sweep` as before.
-    - One still running returns no `sweep` until `find_in_captures_status` hands it over.
+  - Effect: the call waits up to its new `wait_seconds` (default 30, clamped to `--mcp-max-wait-seconds`) and returns the result when the sweep finishes in that time.
+  - Effect: otherwise it returns a `job_id` with `status: "running"` and `progress` (`files_examined`, `files_total`, `elapsed_ms`).
+  - Effect: the new `find_in_captures_status` tool polls a job and hands over the finished result once; the new `cancel_find_in_captures` tool stops one.
+  - Do: a client that reads `sweep` checks `status` first; the `schema_version` 2 response leaves out `sweep` while the job runs.
+  - Limit: at most four sweeps run per server, a finished result is kept 600 seconds, and at most 16 results wait for a poll.
+- **A `find_in_captures` sweep stops before its next packet on deadline, cancel or SIGTERM.**
+  - Effect: `stopped_because` gains `canceled` and `shutdown`.
 
 ### Changed
 
 - **Breaking: a refused config value exits 1 wherever startup refuses it.**
-  - A config-file value that `bootstrap::load_config` refused exited 1.
-  - One that `bootstrap::plan` refused exited 2:
-    - `[capture] portrange`
-    - `[filter] expression`
-    - `[actions] tfps`
-    - `[mcp] tools`
-    - `[security] alert`
-    - Half a TLS pair written in `[api]`, `[mcp]` or `[metrics]`.
-    - A `[vcon_forward] url` or `replace_url`.
-  - Each now exits 1.
-    - That is the code the exit status table gives a refused configuration.
-  - The same value given as a flag still exits 2.
-  - A script that tested for 2 after one of these keys reads 1.
-  - `[filter] from` and `[filter] to` are now checked when the file loads.
-  - An unknown `[security] alert` rule names the key.
-  - Planning used to refuse both, naming `--from`, `--to` or nothing.
+  - Was: these exited 2: `[capture] portrange`, `[filter] expression`, `[actions] tfps`, `[mcp] tools`, `[security] alert`, and a `[vcon_forward] url` or `replace_url`.
+  - Was: half a TLS pair written in `[api]`, `[mcp]` or `[metrics]` also exited 2.
+  - Effect: each exits 1, the code the exit status table gives a refused configuration; the same value given as a flag still exits 2.
+  - Do: a script that tested for 2 after one of these keys reads 1.
+  - Effect: `[filter] from` and `[filter] to` are checked when the file loads, and an unknown `[security] alert` rule names the key.
 - **Breaking: `--keylog` naming a file sipnab cannot read stops the run.**
-  - It logged an error, and the run went on without decrypting anything, exit 0.
-  - `--tls-key` and `--dtls-keylog` refuse the same condition.
-  - All three now exit 1 with `Failed to load --<flag> <path>: <reason>`.
-- **Breaking: sipnab refuses `--snaplen 0`, `--buffer 0`, `[capture] snaplen
-  = 0` and `[capture] buffer = 0`.**
-  - A zero snapshot keeps no byte of any packet.
-  - A zero buffer asks the kernel for no ring.
-  - Both started and captured nothing usable.
-  - The flags exit 2 and the keys exit 1.
-    - `--count 0` and the `[limits]` counts follow the same rule.
-- **Breaking: sipnab refuses an empty TLS path for the REST API, MCP or the
-  metrics endpoint at startup.**
-  - These used to start and fail when the listener opened the file:
-    - `--api-tls-cert ""` and `--api-tls-key ""`.
-    - Their `--mcp-` and `--metrics-` forms.
-    - An empty `tls_cert` or `tls_key` in `[api]`, `[mcp]` or `[metrics]`.
-  - The flags exit 2 and the keys exit 1.
-    - The `[hep]` TLS paths already did this.
-- **Breaking: sipnab refuses, on the command line, HEP options for a side the
-  run does not start.**
-  - The rules:
-    - `--hep-allow`, `--hep-rate-limit`, `--hep-rate-limit-per-peer` and `--hep-hmac-window` need `--hep-listen`.
-    - `--hep-id` needs `--hep-send`.
-    - `--hep-auth-mode` and `--hep-auth-file` need one of the two.
-  - sipnab accepted each without it, and it did nothing.
-  - `-E` is not enough.
-    - It reads no allowlist, rate limit or credential.
-  - sipnab does not refuse the same settings in a config file.
-
-    - One file serves runs with and without a listener.
-  - Instead, each of these gets a startup warning naming the key:
-    - `[limits] hep_rate_limit`, `[security] hep_hmac_window_secs`, `[hep] tls_cert` and `tls_key` on a run without
-      `--hep-listen`.
-    - `[hep] tls_ca` and `tls_extra_ca` on a run without `--hep-send`.
+  - Was: it logged an error, and the run went on without decrypting anything, exit 0.
+  - Effect: `--keylog`, `--tls-key` and `--dtls-keylog` exit 1 with `Failed to load --<flag> <path>: <reason>`.
+- **Breaking: sipnab refuses a zero `--snaplen`, `--buffer`, `[capture] snaplen` and `[capture] buffer`.**
+  - Was: `--snaplen 0` keeps no byte of any packet and `--buffer 0` asks the kernel for no ring; both started and captured nothing usable.
+  - Effect: the flags exit 2, and `[capture] snaplen = 0` and `[capture] buffer = 0` exit 1.
+  - Effect: `--count 0` and the `[limits]` counts follow the same rule.
+- **Breaking: startup refuses an empty TLS path for the REST API, MCP or metrics.**
+  - Was: `--api-tls-cert ""` and `--api-tls-key ""`, their `--mcp-` and `--metrics-` forms, and an empty `tls_cert` or `tls_key` in `[api]`, `[mcp]` or `[metrics]` were accepted.
+  - Was: the run started and failed when the listener opened the file.
+  - Effect: the flags exit 2 and the keys exit 1, as the `[hep]` TLS paths already did.
+- **Breaking: the command line refuses HEP options for a side the run does not start.**
+  - Effect: `--hep-allow`, `--hep-rate-limit`, `--hep-rate-limit-per-peer` and `--hep-hmac-window` need `--hep-listen`; `--hep-id` needs `--hep-send`; `--hep-auth-mode` and `--hep-auth-file` need one of the two.
+  - Was: sipnab accepted each without it, and it did nothing.
+  - Limit: `-E` is not enough: it reads no allowlist, rate limit or credential.
+  - Effect: a config file is not refused, since one file serves runs with and without a listener; each such key gets a startup warning naming it.
+  - Effect: warned are `[limits] hep_rate_limit`, `[security] hep_hmac_window_secs`, `[hep] tls_cert` and `tls_key` without `--hep-listen`, and `[hep] tls_ca` and `tls_extra_ca` without `--hep-send`.
 - **`--names` and `[names] hosts_file` load through one resolver.**
-
-  - Startup may accept a `hosts_file` that later fails to load.
-  - sipnab now warns about it, as it does for a `--names` file.
-    - Before, it skipped the file without a word.
-- **Every flag and key pair has a startup precedence test.**
-  - These were exempt because their effect showed only after startup:
-    - `--alert`, `--alert-exec`, `--alert-json`
-    - `--syslog`, `--chroot`, `--user`
-    - `--fraud-destination`, `--from`, `--to`, `--from-to-mode`
-    - `--names` and `--node-name`
-  - Each consumer now reads one resolver.
-  - The precedence test drives it.
-- **`.githooks/pre-push` runs clippy for the other Linux architecture.**
-
-  - Code under `#[cfg(target_arch = "x86_64")]` never compiles on an aarch64 host.
-    - So every local gate passed over it.
-    - On 2026-10-07, nine x86_64-only test lines passed both hooks and failed CI.
-  - `scripts/cross-arch-target.sh` names the other target.
-  - The hook runs `cargo clippy --target <it> --features full --tests -- -D warnings`.
-  - When that target is not installed, it prints NOT CHECKED.
-    - It also prints the `rustup target add` command.
-- **Unit tests under `src/` return `Result` and use `?` (LINT8).**
-  - The `#[cfg(test)]` code no longer calls these:
-    - `.unwrap()`
-    - `.expect(`
-    - `.expect_err(`
-    - `.unwrap_err()`
-    - `panic!(`
-  - A failure returns an error that names what was being done.
-  - The test names and count are unchanged.
-  - The calls that remain are the ones whose panic is the behavior under test:
-    - The three crash-handler probes in `src/crash.rs`.
-    - The panicking socket thread in `src/capture/live.rs`.
-    - The `#[should_panic]` power-of-two test in `src/capture/uprobe/perf.rs`.
-  - No user-visible behavior changes.
-- **The hardcoded-material gate no longer reports a counter in a test that
-  returns `Result<(), _>`.**
-  - `tests/hardcoded_crypto_material_test.rs` treated some functions as ones that return material.
-    - These had a material word in the name and a return type.
-  - A test returning `Result<(), TestError>` returns no value.
-  - A function returning material inside a `Result` is still reported.
+  - Effect: sipnab warns about a `hosts_file` that startup accepted and that later fails to load, as it does for a `--names` file.
+  - Was: it skipped the file without a word.
 
 ### Fixed
 
-- **`-H` over UDP no longer loses a datagram to an earlier one's ICMP
-  error.**
-  - The sender used a connected UDP socket.
-  - A datagram sent to a port with no listener gets an ICMP port-unreachable answer.
-    - That answer made the next send fail with `ECONNREFUSED`.
-    - sipnab lost that datagram.
-  - Example: `sipnab -N -I tests/fixtures/sip_call.pcap -H 127.0.0.1:19063` with nothing bound.
-    - It reported "4 packet(s) sent, 3 failed (write 3)".
-  - It now sends each datagram from an unconnected socket with `send_to`.
-    - The same run to a port with no listener reports 7 sent and none failed.
-  - TCP and TLS export work as before.
+- **`-H` over UDP no longer loses a datagram to an earlier one's ICMP error.**
+  - Was: on a connected UDP socket, the ICMP port-unreachable answer to one datagram made the next send fail with `ECONNREFUSED`, and sipnab lost that datagram.
+  - Was: `sipnab -N -I tests/fixtures/sip_call.pcap -H 127.0.0.1:19063` with nothing bound reported "4 packet(s) sent, 3 failed (write 3)".
+  - Effect: each datagram goes from an unconnected socket, and the same run reports 7 sent and none failed.
+  - Limit: TCP and TLS export work as before.
 - **A HEP packet that carries no time keeps the receive or capture time.**
-  - A HEP v3 packet without `TS_SEC`/`TS_USEC` chunks parsed as
-    1970-01-01T00:00:00Z.
-  - A HEP v2 packet took the time sipnab parsed it.
-  - Both happened on `-L` and `-E`.
-  - `HepPacket::timestamp` is now an `Option`.
-    - It is set only when the packet carries a `TS_SEC` chunk.
-  - Without one, `-L` uses the time the packet arrived.
-  - Without one, `-E` uses the time sipnab captured the wrapper.
-
-    - So a capture file read later keeps its own times.
-  - The HMAC replay window reads the token's own timestamp, not this one.
-    - It behaves as before.
-- **Breaking: an `[vcon_forward] auth_file` the forwarder cannot use exits
-  1.**
-  - The config key can name a credential file that sipnab cannot read, or that holds no credential.
-    - That stopped `--vcon-forward` with exit 2.
-    - Every other refused config value exits 1.
-  - The exit code now follows the setting that named the file.
-
-    - The rule lives in `settings::Origin`.
-    - The key exits 1.
-    - `--vcon-forward-auth-file` still exits 2.
-- **Breaking: sipnab refuses an empty `--node-name` and an empty `[capture]
-  node_name`.**
-  - sipnab accepted `--node-name ""` and then passed over it.
-    - So the run reported `[capture] node_name` from the config file, or the hostname.
-    - It said nothing.
-  - It passed over `node_name = ""` for the hostname the same way.
-  - The flag exits 2 at parse.
-
-    - The listener TLS path flags follow the same rule.
-
-  - The key exits 1 when the file loads.
-  - Each refusal names its setting.
-  - A value of only whitespace still passes to the next source.
+  - Was: on `-L` and `-E`, a HEP v3 packet without `TS_SEC`/`TS_USEC` chunks parsed as 1970-01-01T00:00:00Z, and a HEP v2 packet took the time sipnab parsed it.
+  - Effect: without a `TS_SEC` chunk, `-L` uses the time the packet arrived and `-E` the time sipnab captured the wrapper.
+  - Effect: a capture file read later keeps its own times; `HepPacket::timestamp` is now an `Option`.
+  - Limit: the HMAC replay window reads the token's own timestamp and behaves as before.
+- **Breaking: an `[vcon_forward] auth_file` the forwarder cannot use exits 1.**
+  - Was: a key naming a credential file sipnab cannot read, or that holds no credential, stopped `--vcon-forward` with exit 2.
+  - Effect: the key exits 1, as every other refused config value does; `--vcon-forward-auth-file` still exits 2.
+- **Breaking: sipnab refuses an empty `--node-name` and an empty `[capture] node_name`.**
+  - Was: sipnab passed over `--node-name ""` for the config file's `[capture] node_name` or the hostname, and over `node_name = ""` for the hostname, saying nothing.
+  - Effect: the flag exits 2 at parse, as the listener TLS path flags do, and the key exits 1 when the file loads.
+  - Effect: each refusal names its setting.
+  - Limit: a value of only whitespace still passes to the next source.
 - **`--exec-rate-limit` and `--api-max-conn` say that `0` means no limit.**
-  - Neither the help text nor the reference row said so.
-  - The `--api-max-conn` text also said it bounds connections.
-    - It bounds requests handled at once.
-    - It answers 503 past it.
+  - Was: neither the help text nor the reference row said so.
+  - Was: the `--api-max-conn` text said it bounds connections; it bounds requests handled at once and answers 503 past it.
 - **The exit status tables name both meanings of exit 3.**
-  - The CLI reference named only the lint gate.
-  - The man page named only the vCon forwarder's `401`/`403` stop.
-  - Both exit 3.
-- **`find_in_captures` no longer blocks every other MCP call and REST request
-  while it reads.**
-  - One thread serves REST and MCP.
-  - The sweep read its files on that thread inside the tool call.
-    - So no other request was answered until the sweep ended.
-  - The sweep now reads on its own thread.
+  - Was: the CLI reference named only the lint gate, and the man page only the vCon forwarder's `401`/`403` stop.
+- **`find_in_captures` no longer blocks every other MCP call and REST request while it reads.**
+  - Was: the sweep read its files on the one thread that serves REST and MCP, so no other request was answered until the sweep ended.
+  - Effect: the sweep reads on its own thread.
 
 ## [0.5.206] - 2026-10-07
 
