@@ -26,7 +26,7 @@ jobs:
     # concurrency group indefinitely. Observed: 11.4 min per fuzz target.
     timeout-minutes: 30
     name: fuzz ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:

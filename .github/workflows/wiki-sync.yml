@@ -28,7 +28,7 @@ jobs:
     # Bounds a wedged job: an unbounded one holds its
     # concurrency group indefinitely. Observed: 0.1 min.
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The wiki lives at <repo>.wiki.git and is pushed with GITHUB_TOKEN, so
     # this job genuinely needs write. It is the only one that does.
     permissions:
