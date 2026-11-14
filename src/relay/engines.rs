@@ -3680,7 +3680,15 @@ mod tests {
     /// dead engine is named in its configured place.
     #[test]
     fn an_unseen_call_with_dead_engines_costs_one_timeout() -> Result<(), TestError> {
-        use crate::test_engines::{FakeEngine, one_timeout};
+        use crate::test_engines::{FakeEngine, all_answered, waited_a_timeout};
+        // Asked at once, not in turn: three engines that answer only when
+        // all three hold a request. No wall time is read for it.
+        let asked = FakeEngine::together_beside_a_live_one(4, 0)?;
+        udp_target(&asked.iter().collect::<Vec<_>>(), "up-1@example.invalid")?;
+        assert!(
+            all_answered(&asked),
+            "the engines were asked one after another"
+        );
         let fakes = [
             FakeEngine::live()?,
             FakeEngine::dead()?,
@@ -3688,7 +3696,10 @@ mod tests {
             FakeEngine::dead()?,
         ];
         let (target, took) = udp_target(&fakes.iter().collect::<Vec<_>>(), "up-1@example.invalid")?;
-        assert!(one_timeout(took), "one timeout, not three: {took:?}");
+        assert!(
+            waited_a_timeout(took),
+            "the dead engines were waited for: {took:?}"
+        );
         let (control, reason) = asked_of(&target)?;
         assert_eq!(control, Some(fakes[0].addr), "the default's list names it");
         let reason = reason.ok_or("a reason")?;
@@ -3729,14 +3740,17 @@ mod tests {
     /// silent, and it costs one timeout.
     #[test]
     fn with_every_engine_dead_the_default_is_asked_after_one_timeout() -> Result<(), TestError> {
-        use crate::test_engines::{FakeEngine, one_timeout};
+        use crate::test_engines::{FakeEngine, waited_a_timeout};
         let fakes = [
             FakeEngine::dead()?,
             FakeEngine::dead()?,
             FakeEngine::dead()?,
         ];
         let (target, took) = udp_target(&fakes.iter().collect::<Vec<_>>(), "up-1@example.invalid")?;
-        assert!(one_timeout(took), "{took:?}");
+        assert!(
+            waited_a_timeout(took),
+            "the dead engines were waited for: {took:?}"
+        );
         let (control, reason) = asked_of(&target)?;
         assert_eq!(control, Some(fakes[0].addr), "the default");
         let reason = reason.ok_or("a reason")?;

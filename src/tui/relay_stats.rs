@@ -1153,31 +1153,47 @@ mod tests {
     /// one timeout, and each engine's block is in its configured place.
     #[test]
     fn the_counters_of_dead_engines_cost_one_timeout() -> Result<(), TestError> {
-        use crate::test_engines::{FakeEngine, TIMEOUT, client, one_timeout, routing};
+        use crate::test_engines::{
+            FakeEngine, TIMEOUT, all_answered, client, routing, waited_a_timeout,
+        };
+        let counters = |fakes: &[FakeEngine]| -> Result<(String, std::time::Duration), TestError> {
+            let r = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
+            let acc = TuiRelayAccess {
+                relay: client(r.default_engine(), TIMEOUT),
+                permit: crate::test_engines::live_permit()?,
+                addr: r.default_engine(),
+                routing: Some(Arc::new(r)),
+                holdings_max: None,
+            };
+            let started = std::time::Instant::now();
+            let text = do_ask_for(
+                &acc,
+                &(None, RelayStatsMode::Counters),
+                None,
+                fmt::FetchOrigin::Asked,
+                &crate::relay::engines::CallEvidence::default(),
+            );
+            Ok((text, started.elapsed()))
+        };
+        // Asked at once, not in turn: three engines that answer only when
+        // all three hold a request. No wall time is read for it.
+        let asked = FakeEngine::together_beside_a_live_one(4, 1)?;
+        let (text, _) = counters(&asked)?;
+        assert!(
+            all_answered(&asked),
+            "the engines were asked one after another: {text}"
+        );
         let fakes = [
             FakeEngine::dead()?,
             FakeEngine::live()?,
             FakeEngine::dead()?,
             FakeEngine::dead()?,
         ];
-        let r = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
-        let acc = TuiRelayAccess {
-            relay: client(r.default_engine(), TIMEOUT),
-            permit: crate::test_engines::live_permit()?,
-            addr: r.default_engine(),
-            routing: Some(Arc::new(r)),
-            holdings_max: None,
-        };
-        let started = std::time::Instant::now();
-        let text = do_ask_for(
-            &acc,
-            &(None, RelayStatsMode::Counters),
-            None,
-            fmt::FetchOrigin::Asked,
-            &crate::relay::engines::CallEvidence::default(),
+        let (text, took) = counters(&fakes)?;
+        assert!(
+            waited_a_timeout(took),
+            "the dead engines were waited for: {took:?}"
         );
-        let took = started.elapsed();
-        assert!(one_timeout(took), "one timeout, not three: {took:?}");
         let at: Vec<usize> = fakes
             .iter()
             .filter_map(|f| text.find(&format!("({})", f.addr)))

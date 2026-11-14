@@ -2897,15 +2897,12 @@ mod session_fixture_tests {
 #[cfg(all(test, not(target_arch = "wasm32"), feature = "native"))]
 mod statistics_of_each_tests {
     use super::*;
-    use crate::test_engines::{FakeEngine, LIST_BODY, TIMEOUT, live_permit, one_timeout};
+    use crate::test_engines::{FakeEngine, LIST_BODY, all_answered, live_permit, waited_a_timeout};
 
     type TestError = Box<dyn std::error::Error>;
 
     fn clients(fakes: &[FakeEngine]) -> Vec<ControlClient> {
-        fakes
-            .iter()
-            .map(|f| ControlClient::new(f.addr, TIMEOUT))
-            .collect()
+        fakes.iter().map(FakeEngine::control_client).collect()
     }
 
     /// Every engine's counters, in the order given.
@@ -2927,6 +2924,15 @@ mod statistics_of_each_tests {
     /// each dead engine reads unreachable in its own place.
     #[test]
     fn dead_engines_cost_one_timeout_not_one_each() -> Result<(), TestError> {
+        // Asked at once, not in turn: three engines that answer only when
+        // all three hold a request. No wall time is read for it.
+        let asked = FakeEngine::together_beside_a_live_one(4, 2)?;
+        let c = clients(&asked);
+        let got = statistics_of_each(c.iter().collect(), &live_permit()?);
+        assert!(
+            all_answered(&asked),
+            "the engines were asked one after another: {got:?}"
+        );
         let fakes = [
             FakeEngine::dead()?,
             FakeEngine::dead()?,
@@ -2937,7 +2943,10 @@ mod statistics_of_each_tests {
         let started = std::time::Instant::now();
         let got = statistics_of_each(c.iter().collect(), &live_permit()?);
         let took = started.elapsed();
-        assert!(one_timeout(took), "one timeout, not three: {took:?}");
+        assert!(
+            waited_a_timeout(took),
+            "the dead engines were waited for: {took:?}"
+        );
         let outcomes: Vec<String> = got
             .iter()
             .map(|r| match r {
