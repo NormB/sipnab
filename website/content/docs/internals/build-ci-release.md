@@ -2138,6 +2138,14 @@ Troubleshooting:
     python3 scripts/release-records.py fetch --tag v<prev> --repo NormB/sipnab --dest .git/release-records
     ```
 
+    `fetch` reads the newest tag-push run of `release.yml` for the tag and the run's job `Record the binary size`.
+    It downloads the artifact when that job succeeded and the artifact has not expired.
+    The run's own conclusion decides nothing: a run that failed, or that is in progress on a re-run, for
+    another job still holds the records.
+    `fetch` prints one line that names the run, its attempt, its status and its conclusion.
+    It refuses, and names the reason, when the tag has no tag-push run, when the job did not succeed,
+    and when the run has no `release-records` artifact or only an expired one.
+
   - Write the records and the advertisement:
 
     ```sh
