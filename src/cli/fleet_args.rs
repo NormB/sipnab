@@ -47,6 +47,9 @@ pub enum FleetCommand {
         #[arg(long, value_name = "SECS", default_value_t = 10,
               value_parser = clap::value_parser!(u64).range(1..=300))]
         timeout: u64,
+        /// The user to run as when started as root.
+        #[command(flatten)]
+        run_as: RunAs,
     },
     /// Create the key a fleet center encrypts its store under: a new file,
     /// readable by this user only, holding 32 random bytes in base64.
@@ -148,6 +151,30 @@ pub struct ServeFlags {
     #[arg(long, value_name = "SECS", default_value_t = 60,
           value_parser = clap::value_parser!(u64).range(1..=3600))]
     pub calls_flush_secs: u64,
+    /// The user to run as when started as root.
+    #[command(flatten)]
+    pub run_as: RunAs,
+}
+
+/// The user a `sipnab fleet` command runs as when it was started as root.
+/// A command that was not started as root changes in nothing.
+#[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunAs {
+    /// Started as root, run as this user once the key files are read (and,
+    /// for `serve`, the listener is bound). Default: `nobody`.
+    #[arg(long, value_name = "USER")]
+    pub user: Option<String>,
+    /// Started as root, stay root. One warning line says so.
+    #[arg(long)]
+    pub no_priv_drop: bool,
+}
+
+impl RunAs {
+    /// What [`crate::early_exit::action`] is asked for this process.
+    #[must_use]
+    pub fn asked(&self) -> crate::early_exit::Asked<'_> {
+        crate::early_exit::asked(self.user.as_deref(), None, self.no_priv_drop)
+    }
 }
 
 /// `--store-encryption`: how the center encrypts what it stores. There is

@@ -346,6 +346,9 @@ pub mod crash;
 pub mod crypto;
 pub mod cursor;
 pub mod duration;
+#[doc(hidden)]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod early_exit;
 pub mod error;
 pub mod expect;
 pub mod llmnr;
