@@ -105,6 +105,55 @@ INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=6553
   The scanner-kill worker does not need either: sipnab opens its raw socket
   before the drop.
 
+## Commands that do not capture
+
+Some commands open no capture and end before a capture would start. Since
+0.5.256 the ones that listen or connect drop root too. A command that is not
+started as root changes in nothing.
+
+| Command | Started as root |
+|---|---|
+| `sipnab fleet serve` | Reads its key files and binds as root, then runs as `--user`, else `nobody`, before it opens the store or accepts |
+| `sipnab fleet inventory` | Reads the hosts file and every token file as root, then asks each instance as `--user`, else `nobody` |
+| `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch` | Reads its credential, key and CA files as root, then runs as `--user`, else `[privilege] user`, else `nobody`, before it creates a directory or connects |
+| `--relay-holdings`, `--relay-sessions` | Runs as `--user`, else `[privilege] user`, else `nobody`, before it asks the relay |
+
+- A file the command reads once, such as a key, a token or a CA, can stay
+  readable by root only.
+- What the command writes must belong to the user it runs as: the center's
+  store and its directory, the forwarder's spool, and the directory that
+  holds `--vcon-fetch-out` or `--vcon-audio-fetch-out`.
+- When that user cannot write it, the command refuses to start, exits 2 and
+  creates nothing. The message names the path and three ways out:
+
+  ```text
+  --vcon-fetch: started as root, this command runs as user 'nobody', and 'nobody' cannot write in '/home/alice/vcons' (--vcon-fetch-out). Nothing was created. Choose one: chown nobody '/home/alice/vcons'; run it with --user alice, who can; or pass --no-priv-drop to keep root
+  ```
+
+- Under `sudo`, the message names the calling user in `--user` when that
+  user can write the path. Otherwise it prints `--user USER`.
+- `--no-priv-drop` keeps root, as before 0.5.256, and the command logs one
+  warning line that says so.
+- On macOS a command started as root with no `--user` keeps root, as a
+  capture does there, and logs one warning line.
+- `--vcon-audio-fetch-local` makes no connection, so it keeps the caller's
+  user.
+
+These commands still run as the user that started them, root included:
+
+- The commands that parse a file you name: `--strip-secrets`,
+  `--write-annotated`, `--show-frame`, `--find-in-files`,
+  `--compare-captures`, `--vcon-validate` and `--vcon-resign`. Run them as
+  an ordinary user when the file is one that user can read.
+- `sipnab g729 install`: it writes the table file into a directory root may
+  own. Its download runs as root, and sipnab checks it against a fixed
+  SHA-256 before it unpacks it. `--from DIR` uses no network
+  ([Decode G.729](g729.md)).
+- Commands that read no input from outside, or need root: `--setup-caps`,
+  `--uprobe-list`, `--mint-token`, `--dump-config`, `--vcon-spool-status`,
+  `--journal-show`, `--revert-actions`, `--completions`,
+  `--print-yang-module`, `sipnab fleet keygen` and `sipnab g729 status`.
+
 ## Read capture files only root can read
 
 Purpose: read a set of captures, or an archive of them, that only root may

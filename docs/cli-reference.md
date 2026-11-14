@@ -3164,6 +3164,8 @@ A capture run with `--fleet-report-url` is a fleet member: it reports a heartbea
 - `--hosts <FILE>`: the hosts file, one `[[host]]` table per instance with `name`, `url`, `token_file` and an optional `ca_file`.
 - `--json`: print the report as JSON instead of a table.
 - `--timeout <SECS>`: seconds to wait for each instance to connect and answer, 1 to 300. Default `10`.
+- `--user <USER>`: started as root, read the hosts file and the token files, then ask the instances as this user. Default `nobody`. Since 0.5.256.
+- `--no-priv-drop`: started as root, stay root. One warning line says so. Since 0.5.256.
 
 It exits `0` when every instance answered and there is no finding, `1` when an instance did not answer or there is a finding, and `2` when it cannot use the hosts file.
 
@@ -3187,6 +3189,8 @@ It exits `0` when every instance answered and there is no finding, `1` when an i
 - `--rate-limit-per-peer <N>`: requests per second one address may make before it gets `503`. `0` turns the limit off. Default `100`.
 - `--calls-retention-days <DAYS>`: days of call records the history store keeps, 1 to 548. Default `90`. The center removes the days past it at start and every minute. A build without the history store does not use it.
 - `--calls-flush-secs <SECS>`: seconds between two filings of the acknowledged call records and heartbeats into the history store, 1 to 3600. Default `60`. Each filing writes one file for each class and day, whatever the number of members, so `60` is at most 1,440 files a day in each class. One question opens at most 4,096 files: about 2.8 days at `60`, 28 days at `600`. A build without the history store does not use it.
+- `--user <USER>`: started as root, read the key files and bind the listener, then serve as this user. Default `nobody`. The store, its directory and the history beside it must be this user's, or the center refuses to start ([Run the center as a service](fleet.md#run-the-center-as-a-service)). Since 0.5.256.
+- `--no-priv-drop`: started as root, stay root. One warning line says so. Since 0.5.256.
 
 A build whose `--version` lists `fleet-store` has the history store: it keeps the call records members push and every heartbeat in sealed Parquet files under `<store>.parquet`, answers `GET /v1/fleet/calls` to a `full` token and `GET /v1/fleet/members/{id}/history` to an `inventory` token, and rebuilds its member list from the heartbeats when it starts without its store file. A build without it logs `this build has no history store` at start, and those routes answer `501`. [Keep call history at the center](fleet.md#keep-call-history-at-the-center) and [Keep heartbeat history at the center](fleet.md#keep-heartbeat-history-at-the-center) are the how-tos.
 

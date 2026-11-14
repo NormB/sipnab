@@ -226,7 +226,7 @@ being exceptions and start being a replication problem.
 
 **The TUI depends on being able to *fail* to read.** Every render-side access is
 `try_read()`, and a contended read deliberately skips a frame
-([`threading.md:344-347`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L344-L347)<!-- "**The TUI never blocks:** all render-side store access is `try_read()`." -->). There is no `try_read`
+([`threading.md:364-367`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L364-L367)<!-- "**The TUI never blocks:** all render-side store access is `try_read()`." -->). There is no `try_read`
 over a socket.
 
 **A merged view is the deliverable.** Multi-device capture merges N interfaces

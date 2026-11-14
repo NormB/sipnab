@@ -209,11 +209,13 @@ The privilege drop signals every other thread of the process.
 - A read with no time limit starts again.
   - In the same measurement a `read` on an empty pipe returned its byte, not an error.
 
-Three calls make a drop.
+Four calls make a drop.
 
 - `confine_after_capture_start` in [`app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs), for a run that starts a capture thread.
 - `prepare_cores_inputs` in the same file, for `--cores`.
 - `harden` in [`process_isolation/worker_process.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation/worker_process.rs), for the scanner-kill worker process.
+- `confine` in [`early_exit.rs`](https://github.com/NormB/sipnab/blob/main/src/early_exit.rs), for the commands that end before the capture launch.
+  - [Commands that end before the launch](#commands-that-end-before-the-launch) lists them.
 
 The table lists, for each way a run starts, the threads that exist at its drop and what an
 interrupted wait does there.
@@ -230,6 +232,10 @@ No row ends a run, logs an error or reports a timeout that did not happen.
 | `--kill-scanner` | `scanner-kill-fwd`, `scanner-kill-rx` ([`src/process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)) | A channel receive; a pipe read with no time limit. | `read_exact_or_eof` reads again after `Interrupted`. |
 | `--cores` | none | `run_cores_file` opens the set and drops before it starts a reader. | Does not apply. |
 | Scanner-kill worker process | none | `start` calls `harden` before `serve` starts `kill-worker-in` and `kill-worker-out`. | Does not apply. |
+| `sipnab fleet serve` | none | `prepare` reads the keys, binds and drops; `serve` builds the runtime after it. | Does not apply. |
+| `sipnab fleet inventory` | none | `main` reads every token file and drops before it starts a request thread. | Does not apply. |
+| `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch` | none | Each reads its files, drops, then creates its directory and connects, on the one thread. | Does not apply. |
+| `--relay-holdings`, `--relay-sessions` | none | `run_relay_listing` drops before the fan-out of [`src/relay/fan_out.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/fan_out.rs) starts. | Does not apply. |
 
 Everything else starts after `bootstrap::launch` returns, so after the drop.
 
@@ -239,8 +245,22 @@ Everything else starts after `bootstrap::launch` returns, so after the drop.
   - The `hep-send` delivery thread of `--hep-send`.
   - The vCon fetcher that `--api-allow-vcon-fetch` and `--mcp-allow-vcon-fetch` build.
   - `sipnab-dns`, `tui-processor` and the `--cores` workers.
-- `sipnab fleet` and `--vcon-fetch` are commands of their own. They make no drop.
+- `sipnab fleet` and `--vcon-fetch` are commands of their own. Each drops before it starts a thread.
 - The archive password command's reader and the relay snapshot's fan-out end before the capture starts.
+
+### Commands that end before the launch
+
+A command that ends before `bootstrap::launch` does not reach the capture run's drop.
+
+- [`src/early_exit.rs`](https://github.com/NormB/sipnab/blob/main/src/early_exit.rs) holds one row for each such command, with what it does when root starts it.
+  - A listener reads its key files and binds as root, then drops before it opens its store or accepts.
+  - A network client reads its secrets as root, then drops before it creates a file or connects.
+  - A keeper keeps the caller's privileges, and its row says why.
+  - A command that parses a file the caller named keeps them for now.
+    Its reader opens the input by path, so a drop before the open would refuse a capture only root can read.
+- [`tests/threads_at_privilege_drop_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/threads_at_privilege_drop_test.rs) reads every line of [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) that ends the process.
+  - A new exit fails the test until it has a row.
+- [Capture with the least privilege](@/docs/least-privilege.md#commands-that-do-not-capture) says what an operator sees.
 
 **How a gate holds this.**
 

@@ -512,6 +512,12 @@ used.
   need that name in `--allowed-host`. [The CLI reference](@/docs/cli.md#fleet-inventory-sipnab-fleet)
   lists every flag.
 
+- **[center]** Start it as the user that owns `/var/lib/sipnab`, not as
+  root. Since 0.5.256 a center that root starts reads its key files and
+  binds, then serves as `--user`, else `nobody`.
+  [Run the center as a service](#run-the-center-as-a-service) has the unit
+  and what a root start needs.
+
 - **[center]** To refuse any member without a certificate from your own CA,
   as well as its token, add `--tls-client-ca /etc/sipnab/members-ca.pem`.
   [Require member certificates on a fleet center](@/docs/mtls.md#require-member-certificates-on-a-fleet-center)
@@ -1934,9 +1940,127 @@ would.
   list's own record in every build: keep it in the backup. The history
   rebuilds what the file lacks; it does not replace it.
 
+### Run the center as a service
+
+The purpose is a center that starts at boot and never serves as root.
+
+**Before you start**
+
+- The steps above work: the center starts by hand with your key files.
+- The package created the `sipnab` user. Check with `id sipnab`.
+- Nothing changes on a member.
+
+**Steps**
+
+- **[center]** Give the key files to the service's user, and to nobody
+  else:
+
+  ```bash
+  # Run all of these, in order.
+  chown sipnab:sipnab /etc/sipnab/center.signing /etc/sipnab/center.storekey /etc/sipnab/center.key
+  chmod 600 /etc/sipnab/center.signing /etc/sipnab/center.storekey /etc/sipnab/center.key
+  ```
+
+- **[center]** Write `/etc/systemd/system/sipnab-fleet-center.service`. No
+  package ships this unit:
+
+  ```ini
+  [Unit]
+  Description=sipnab fleet center
+  Documentation=https://sipnab.com
+  After=network-online.target
+  Wants=network-online.target
+
+  [Service]
+  Type=simple
+  ExecStart=/usr/bin/sipnab fleet serve --listen 127.0.0.1:8444 \
+    --store /var/lib/sipnab-fleet/center.store \
+    --store-key-file /etc/sipnab/center.storekey \
+    --signing-key-file /etc/sipnab/center.signing \
+    --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key
+  User=sipnab
+  Group=sipnab
+  NoNewPrivileges=true
+  ProtectSystem=strict
+  ProtectHome=true
+  PrivateTmp=true
+  # /var/lib/sipnab-fleet, private to the sipnab user: the store, its
+  # intake and the history store live there.
+  StateDirectory=sipnab-fleet
+  StateDirectoryMode=0700
+  Restart=on-failure
+  RestartSec=5
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+- **[center]** Start it:
+
+  ```bash
+  # Run all of these, in order.
+  systemctl daemon-reload
+  systemctl enable sipnab-fleet-center
+  systemctl start sipnab-fleet-center
+  ```
+
+**Verify**
+
+- **[center]** The service runs as `sipnab`:
+
+  ```bash
+  systemctl show sipnab-fleet-center -p User -p ActiveState
+  ```
+
+  ```text
+  User=sipnab
+  ActiveState=active
+  ```
+
+**A center that root starts**
+
+A unit without `User=`, or `sudo sipnab fleet serve`, starts the center as
+root. Since 0.5.256 it does not stay root.
+
+- It reads the signing key, the store key and the TLS key, and binds
+  `--listen`, as root. So the key files can stay `root` mode 0600, and the
+  center can bind a port below 1024.
+- Then it serves as `--user`, else `nobody`, and says so:
+
+  ```text
+  INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+  ```
+
+- The store, its intake, the history store beside it and their directory
+  must be that user's. A center that ran as root before 0.5.256 left them
+  root's, so its first start after the upgrade refuses. It exits 2 and
+  creates nothing:
+
+  ```text
+  sipnab fleet serve: started as root, this command runs as user 'nobody', and 'nobody' cannot write in '/var/lib/sipnab' (the directory of --store). Nothing was created. Choose one: chown nobody '/var/lib/sipnab'; run it with --user USER, naming a user who can; or pass --no-priv-drop to keep root
+  ```
+
+- Fix it once, for the user the center serves as, on the directory that
+  holds your store:
+
+  ```bash
+  chown -R sipnab /var/lib/sipnab
+  ```
+
+  Then start the center with `--user sipnab`, or with `User=sipnab` in the
+  unit.
+- `--no-priv-drop` keeps root, as before 0.5.256, and logs one warning line.
+- The center reads a `--revoked-file` again each time it changes, so the
+  user the center serves as must be able to read it.
+
 ### Troubleshoot the center
 
 Each output below comes from the same run.
+
+- **The center exits 2 with `started as root, this command runs as user`.**
+  Root started it and the user it serves as cannot use the path the message
+  names. [A center that root starts](#run-the-center-as-a-service) has the
+  three ways out.
 
 - **`401` on the ingest.** The token is not a `fleet-report` token this
   center's key signed, it expired, or its id is in the revocation file. A `full`, `admin` or

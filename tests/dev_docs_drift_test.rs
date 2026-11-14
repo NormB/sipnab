@@ -1047,7 +1047,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // "Threads that exist at the privilege drop" links the two files that
     // drop, the five whose threads exist then, privilege.rs, and the test
     // that holds the section (+9).
-    const EXPECTED_CODE_LINKS: usize = 873;
+    // 873 -> 878 (COMMANDS-KEEP-ROOT): threading.md links early_exit.rs
+    // twice, fan_out.rs, and, in "Commands that end before the launch", the
+    // census test and main.rs (+5).
+    const EXPECTED_CODE_LINKS: usize = 878;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

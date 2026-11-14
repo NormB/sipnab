@@ -6373,7 +6373,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1496 -> 1498 (threads at the privilege drop): the start-path table of
     // "Threads that exist at the privilege drop" in
     // docs/internals/threading.md, with its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1498;
+    // 1498 -> 1500 (COMMANDS-KEEP-ROOT): the table of "Commands that do not
+    // capture" in docs/least-privilege.md, with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1500;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

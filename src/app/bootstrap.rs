@@ -2643,11 +2643,17 @@ fn run_relay_listing(
     );
     match relay_ask(action, permit) {
         Ok(ask) => {
-            let client = ControlClient::new(ask.socket, DEFAULT_CONTROL_TIMEOUT);
             // Planning refused an unusable engine rule, so an error cannot
             // reach here.
             let selection = cli.engine_selection(config).ok().flatten();
             let routing = crate::app::relay_engines::routing(cli, selection.as_ref());
+            // Started as root, the run changes user here: everything it
+            // reads from files is read, and nothing was sent to a relay.
+            if let Err(refusal) = confine_early_exit(cli, config, flag, &[]) {
+                crate::early_exit::report(&refusal);
+                return 2;
+            }
+            let client = ControlClient::new(ask.socket, DEFAULT_CONTROL_TIMEOUT);
             answer(cli, &client, routing.as_deref(), &ask.permit)
         }
         Err(blocked) => {
@@ -5802,10 +5808,26 @@ pub fn run_vcon_forward(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Op
     cli.vcon_forward_args.vcon_forward.as_ref()?;
     #[cfg(feature = "vcon")]
     {
-        use crate::app::vcon_forward::{ForwardPlan, run};
+        use crate::app::vcon_forward::{ForwardPlan, run_confined};
         let loaded = match apply_read_config(cli, read) {
             Ok(loaded) => loaded,
             Err(code) => return Some(code),
+        };
+        // Started as root, the forwarder changes user once its credential
+        // and trust files are read, before it creates a directory or
+        // connects; the spool and the two directories it moves containers
+        // into must be the new user's to write.
+        let confine = |settings: &crate::app::vcon_forward::ForwardSettings| {
+            let mut needs = crate::early_exit::tree_needs(&settings.spool, "--vcon-forward");
+            needs.push(crate::early_exit::creatable_dir(
+                &settings.done_dir,
+                "--vcon-forward-done ([vcon_forward] done)",
+            ));
+            needs.push(crate::early_exit::creatable_dir(
+                &settings.failed_dir,
+                "--vcon-forward-failed ([vcon_forward] failed)",
+            ));
+            confine_early_exit(cli, &loaded.config, "--vcon-forward", &needs)
         };
         let args = &cli.vcon_forward_args;
         let plan = match ForwardPlan::resolve_refusal(args, &loaded.config.vcon_forward) {
@@ -5816,11 +5838,12 @@ pub fn run_vcon_forward(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Op
             }
         };
         match plan.into_settings() {
-            Ok((settings, interval)) => Some(run(
+            Ok((settings, interval)) => Some(run_confined(
                 settings,
                 args.vcon_forward_once,
                 interval,
                 &crate::signals::shutdown_requested,
+                &confine,
             )),
             Err((origin, msg)) => {
                 tracing::error!("{msg}");
@@ -5836,6 +5859,44 @@ pub fn run_vcon_forward(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Op
             "--vcon-forward requires the 'vcon' feature (not compiled in)",
         ))
     }
+}
+
+/// Carry out the early-exit plan of `name` for a command of the capture
+/// command line: the target is `--user`, else `[privilege] user`, else
+/// `nobody`, as for a capture run ([`crate::early_exit::confine`]).
+///
+/// # Errors
+///
+/// The refusal's text. Nothing was created.
+///
+/// # Side effects
+///
+/// May change the process's user, and logs one line when it does or when
+/// `--no-priv-drop` keeps root.
+pub fn confine_early_exit(
+    cli: &Cli,
+    config: &Config,
+    name: &str,
+    needs: &[crate::early_exit::Need],
+) -> Result<(), String> {
+    crate::early_exit::confine(name, early_exit_asked(cli, config), needs).map(|_| ())
+}
+
+/// What [`crate::early_exit::action`] is asked for a command of the capture
+/// command line.
+fn early_exit_asked<'a>(cli: &'a Cli, config: &'a Config) -> crate::early_exit::Asked<'a> {
+    crate::early_exit::asked(effective_user(cli, config), None, cli.no_priv_drop(config))
+}
+
+/// Whether [`confine_early_exit`] for `name` will change the process's user.
+#[must_use]
+pub fn early_exit_drops(cli: &Cli, config: &Config, name: &str) -> bool {
+    crate::early_exit::early_exit(name).is_some_and(|exit| {
+        matches!(
+            crate::early_exit::action(exit, early_exit_asked(cli, config)),
+            crate::early_exit::Action::DropTo(_)
+        )
+    })
 }
 
 /// Handle `--vcon-spool-status`: print the spool's state as JSON and return
@@ -5926,7 +5987,7 @@ pub fn run_vcon_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Opti
     }
     #[cfg(feature = "vcon")]
     {
-        use crate::app::vcon_fetch::{prepare, run};
+        use crate::app::vcon_fetch::{prepare, run_confined};
         let loaded = match apply_read_config(cli, read) {
             Ok(loaded) => loaded,
             Err(code) => return Some(code),
@@ -5942,7 +6003,20 @@ pub fn run_vcon_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Opti
         };
         match prepare(&cli.vcon_fetch_args, &loaded.config.vcon_fetch, read_stdin) {
             Ok(Some((settings, uuids))) => {
-                Some(run(settings, &uuids, &crate::signals::shutdown_requested))
+                // Started as root, the fetcher changes user once its
+                // credential, keys and CA are read, before it creates the
+                // output directory or connects.
+                let confine = |settings: &crate::app::vcon_fetch::FetchSettings| {
+                    let need =
+                        crate::early_exit::creatable_dir(&settings.out_dir, "--vcon-fetch-out");
+                    confine_early_exit(cli, &loaded.config, "--vcon-fetch", &[need])
+                };
+                Some(run_confined(
+                    settings,
+                    &uuids,
+                    &crate::signals::shutdown_requested,
+                    &confine,
+                ))
             }
             // A stop, which exits 0, or 129 after SIGHUP, as every stop does.
             Ok(None) => {
@@ -6010,10 +6084,24 @@ pub fn run_vcon_audio_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -
     cli.vcon_audio_fetch_args.vcon_audio_fetch.as_ref()?;
     #[cfg(feature = "vcon")]
     {
-        if let Err(code) = apply_read_config(cli, read) {
-            return Some(code);
-        }
-        let code = match crate::app::vcon_audio_fetch::run(&cli.vcon_audio_fetch_args) {
+        let loaded = match apply_read_config(cli, read) {
+            Ok(loaded) => loaded,
+            Err(code) => return Some(code),
+        };
+        // Started as root, the command changes user once its keys, its CA
+        // and the container are read, before it creates the output
+        // directory or connects.
+        let args = &cli.vcon_audio_fetch_args;
+        let confine = || {
+            let needs: Vec<_> = args
+                .vcon_audio_fetch_out
+                .iter()
+                .map(|out| crate::early_exit::creatable_dir(out, "--vcon-audio-fetch-out"))
+                .collect();
+            confine_early_exit(cli, &loaded.config, "--vcon-audio-fetch", &needs)
+        };
+        let drops = early_exit_drops(cli, &loaded.config, "--vcon-audio-fetch");
+        let code = match crate::app::vcon_audio_fetch::run_confined(args, drops, &confine) {
             Ok(paths) => {
                 for path in paths {
                     tracing::info!("--vcon-audio-fetch: wrote '{}'", path.display());

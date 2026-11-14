@@ -23731,6 +23731,8 @@ A capture run with `--fleet-report-url` is a fleet member: it reports a heartbea
 - `--hosts <FILE>`: the hosts file, one `[[host]]` table per instance with `name`, `url`, `token_file` and an optional `ca_file`.
 - `--json`: print the report as JSON instead of a table.
 - `--timeout <SECS>`: seconds to wait for each instance to connect and answer, 1 to 300. Default `10`.
+- `--user <USER>`: started as root, read the hosts file and the token files, then ask the instances as this user. Default `nobody`. Since 0.5.256.
+- `--no-priv-drop`: started as root, stay root. One warning line says so. Since 0.5.256.
 
 It exits `0` when every instance answered and there is no finding, `1` when an instance did not answer or there is a finding, and `2` when it cannot use the hosts file.
 
@@ -23754,6 +23756,8 @@ It exits `0` when every instance answered and there is no finding, `1` when an i
 - `--rate-limit-per-peer <N>`: requests per second one address may make before it gets `503`. `0` turns the limit off. Default `100`.
 - `--calls-retention-days <DAYS>`: days of call records the history store keeps, 1 to 548. Default `90`. The center removes the days past it at start and every minute. A build without the history store does not use it.
 - `--calls-flush-secs <SECS>`: seconds between two filings of the acknowledged call records and heartbeats into the history store, 1 to 3600. Default `60`. Each filing writes one file for each class and day, whatever the number of members, so `60` is at most 1,440 files a day in each class. One question opens at most 4,096 files: about 2.8 days at `60`, 28 days at `600`. A build without the history store does not use it.
+- `--user <USER>`: started as root, read the key files and bind the listener, then serve as this user. Default `nobody`. The store, its directory and the history beside it must be this user's, or the center refuses to start ([Run the center as a service](fleet.md#run-the-center-as-a-service)). Since 0.5.256.
+- `--no-priv-drop`: started as root, stay root. One warning line says so. Since 0.5.256.
 
 A build whose `--version` lists `fleet-store` has the history store: it keeps the call records members push and every heartbeat in sealed Parquet files under `<store>.parquet`, answers `GET /v1/fleet/calls` to a `full` token and `GET /v1/fleet/members/{id}/history` to an `inventory` token, and rebuilds its member list from the heartbeats when it starts without its store file. A build without it logs `this build has no history store` at start, and those routes answer `501`. [Keep call history at the center](fleet.md#keep-call-history-at-the-center) and [Keep heartbeat history at the center](fleet.md#keep-heartbeat-history-at-the-center) are the how-tos.
 
@@ -30105,6 +30109,41 @@ Running as root, sipnab switches to an unprivileged account after opening the ca
 **What to do:** Name an existing account with `--user <USER>` or `[privilege] user`, or pass `--no-priv-drop` to keep the current account.
 
 **Exit code:** 1.
+
+### `{command}: started as root, this command runs as user '{target}', and '{target}' cannot {access} '{path}' ({what}). Nothing was created. Choose one: chown {target} '{path}'; {user_way}; or pass --no-priv-drop to keep root`
+
+Root started a command that opens no capture: `sipnab fleet serve`, `sipnab fleet inventory`, `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch`, `--relay-holdings` or `--relay-sessions`. Since 0.5.256 such a command reads its key files as root and then runs as another user. That user cannot use a path the command needs.
+
+- `{command}` is the command, and `{target}` the user it runs as: `--user`, else `[privilege] user`, else `nobody`.
+- `{path}` is the file or directory, `{what}` the flag that named it, and `{access}` what the user cannot do: `read`, `read and write`, or `write in`.
+- `{user_way}` names the user who called `sudo`, when that user can use the path. Otherwise it reads `--user USER`.
+- The command created no file and made no connection.
+
+**What to do:** Use one of the three ways the message lists.
+
+- Give the path to the user: `chown {target} '{path}'`. For a center's store or a forwarder's spool, give it the whole directory with `chown -R`.
+- Name a user who can use the path, with `--user`.
+- Pass `--no-priv-drop` to keep root, as before 0.5.256.
+
+[Commands that do not capture](least-privilege.md#commands-that-do-not-capture) lists what each command needs.
+
+**Exit code:** 2.
+
+### `{name}: failed to drop privileges: {e}`
+
+Root started a command that opens no capture, and the switch to another user failed. `{name}` is the command. `{e}` gives the reason, for example an account that does not exist.
+
+**What to do:** Name an existing account with `--user <USER>`, or pass `--no-priv-drop` to keep root.
+
+**Exit code:** 2.
+
+### `{command}: running as root because --no-priv-drop was given; without it this command runs as --user, or as '{nobody}'`
+
+A warning. Root started a command that opens no capture, with `--no-priv-drop`, so the command keeps root. `{command}` is the command.
+
+**What to do:** Nothing, when root is what you want. Otherwise remove `--no-priv-drop` and give the paths the command writes to the user it runs as.
+
+**Exit code:** None. This is a warning, and the run continues.
 
 ### `Failed to spawn processing thread: {e}`
 
@@ -41628,6 +41667,12 @@ used.
   need that name in `--allowed-host`. [The CLI reference](cli-reference.md#fleet-inventory-sipnab-fleet)
   lists every flag.
 
+- **[center]** Start it as the user that owns `/var/lib/sipnab`, not as
+  root. Since 0.5.256 a center that root starts reads its key files and
+  binds, then serves as `--user`, else `nobody`.
+  [Run the center as a service](#run-the-center-as-a-service) has the unit
+  and what a root start needs.
+
 - **[center]** To refuse any member without a certificate from your own CA,
   as well as its token, add `--tls-client-ca /etc/sipnab/members-ca.pem`.
   [Require member certificates on a fleet center](mtls.md#require-member-certificates-on-a-fleet-center)
@@ -43050,9 +43095,127 @@ would.
   list's own record in every build: keep it in the backup. The history
   rebuilds what the file lacks; it does not replace it.
 
+### Run the center as a service
+
+The purpose is a center that starts at boot and never serves as root.
+
+**Before you start**
+
+- The steps above work: the center starts by hand with your key files.
+- The package created the `sipnab` user. Check with `id sipnab`.
+- Nothing changes on a member.
+
+**Steps**
+
+- **[center]** Give the key files to the service's user, and to nobody
+  else:
+
+  ```bash
+  # Run all of these, in order.
+  chown sipnab:sipnab /etc/sipnab/center.signing /etc/sipnab/center.storekey /etc/sipnab/center.key
+  chmod 600 /etc/sipnab/center.signing /etc/sipnab/center.storekey /etc/sipnab/center.key
+  ```
+
+- **[center]** Write `/etc/systemd/system/sipnab-fleet-center.service`. No
+  package ships this unit:
+
+  ```ini
+  [Unit]
+  Description=sipnab fleet center
+  Documentation=https://sipnab.com
+  After=network-online.target
+  Wants=network-online.target
+
+  [Service]
+  Type=simple
+  ExecStart=/usr/bin/sipnab fleet serve --listen 127.0.0.1:8444 \
+    --store /var/lib/sipnab-fleet/center.store \
+    --store-key-file /etc/sipnab/center.storekey \
+    --signing-key-file /etc/sipnab/center.signing \
+    --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key
+  User=sipnab
+  Group=sipnab
+  NoNewPrivileges=true
+  ProtectSystem=strict
+  ProtectHome=true
+  PrivateTmp=true
+  # /var/lib/sipnab-fleet, private to the sipnab user: the store, its
+  # intake and the history store live there.
+  StateDirectory=sipnab-fleet
+  StateDirectoryMode=0700
+  Restart=on-failure
+  RestartSec=5
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+- **[center]** Start it:
+
+  ```bash
+  # Run all of these, in order.
+  systemctl daemon-reload
+  systemctl enable sipnab-fleet-center
+  systemctl start sipnab-fleet-center
+  ```
+
+**Verify**
+
+- **[center]** The service runs as `sipnab`:
+
+  ```bash
+  systemctl show sipnab-fleet-center -p User -p ActiveState
+  ```
+
+  ```text
+  User=sipnab
+  ActiveState=active
+  ```
+
+**A center that root starts**
+
+A unit without `User=`, or `sudo sipnab fleet serve`, starts the center as
+root. Since 0.5.256 it does not stay root.
+
+- It reads the signing key, the store key and the TLS key, and binds
+  `--listen`, as root. So the key files can stay `root` mode 0600, and the
+  center can bind a port below 1024.
+- Then it serves as `--user`, else `nobody`, and says so:
+
+  ```text
+  INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+  ```
+
+- The store, its intake, the history store beside it and their directory
+  must be that user's. A center that ran as root before 0.5.256 left them
+  root's, so its first start after the upgrade refuses. It exits 2 and
+  creates nothing:
+
+  ```text
+  sipnab fleet serve: started as root, this command runs as user 'nobody', and 'nobody' cannot write in '/var/lib/sipnab' (the directory of --store). Nothing was created. Choose one: chown nobody '/var/lib/sipnab'; run it with --user USER, naming a user who can; or pass --no-priv-drop to keep root
+  ```
+
+- Fix it once, for the user the center serves as, on the directory that
+  holds your store:
+
+  ```bash
+  chown -R sipnab /var/lib/sipnab
+  ```
+
+  Then start the center with `--user sipnab`, or with `User=sipnab` in the
+  unit.
+- `--no-priv-drop` keeps root, as before 0.5.256, and logs one warning line.
+- The center reads a `--revoked-file` again each time it changes, so the
+  user the center serves as must be able to read it.
+
 ### Troubleshoot the center
 
 Each output below comes from the same run.
+
+- **The center exits 2 with `started as root, this command runs as user`.**
+  Root started it and the user it serves as cannot use the path the message
+  names. [A center that root starts](#run-the-center-as-a-service) has the
+  three ways out.
 
 - **`401` on the ingest.** The token is not a `fleet-report` token this
   center's key signed, it expired, or its id is in the revocation file. A `full`, `admin` or
@@ -55202,6 +55365,55 @@ INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=6553
   `--priv-drop` turns the drop back on for one run when the file turns it off.
   The scanner-kill worker does not need either: sipnab opens its raw socket
   before the drop.
+
+## Commands that do not capture
+
+Some commands open no capture and end before a capture would start. Since
+0.5.256 the ones that listen or connect drop root too. A command that is not
+started as root changes in nothing.
+
+| Command | Started as root |
+|---|---|
+| `sipnab fleet serve` | Reads its key files and binds as root, then runs as `--user`, else `nobody`, before it opens the store or accepts |
+| `sipnab fleet inventory` | Reads the hosts file and every token file as root, then asks each instance as `--user`, else `nobody` |
+| `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch` | Reads its credential, key and CA files as root, then runs as `--user`, else `[privilege] user`, else `nobody`, before it creates a directory or connects |
+| `--relay-holdings`, `--relay-sessions` | Runs as `--user`, else `[privilege] user`, else `nobody`, before it asks the relay |
+
+- A file the command reads once, such as a key, a token or a CA, can stay
+  readable by root only.
+- What the command writes must belong to the user it runs as: the center's
+  store and its directory, the forwarder's spool, and the directory that
+  holds `--vcon-fetch-out` or `--vcon-audio-fetch-out`.
+- When that user cannot write it, the command refuses to start, exits 2 and
+  creates nothing. The message names the path and three ways out:
+
+  ```text
+  --vcon-fetch: started as root, this command runs as user 'nobody', and 'nobody' cannot write in '/home/alice/vcons' (--vcon-fetch-out). Nothing was created. Choose one: chown nobody '/home/alice/vcons'; run it with --user alice, who can; or pass --no-priv-drop to keep root
+  ```
+
+- Under `sudo`, the message names the calling user in `--user` when that
+  user can write the path. Otherwise it prints `--user USER`.
+- `--no-priv-drop` keeps root, as before 0.5.256, and the command logs one
+  warning line that says so.
+- On macOS a command started as root with no `--user` keeps root, as a
+  capture does there, and logs one warning line.
+- `--vcon-audio-fetch-local` makes no connection, so it keeps the caller's
+  user.
+
+These commands still run as the user that started them, root included:
+
+- The commands that parse a file you name: `--strip-secrets`,
+  `--write-annotated`, `--show-frame`, `--find-in-files`,
+  `--compare-captures`, `--vcon-validate` and `--vcon-resign`. Run them as
+  an ordinary user when the file is one that user can read.
+- `sipnab g729 install`: it writes the table file into a directory root may
+  own. Its download runs as root, and sipnab checks it against a fixed
+  SHA-256 before it unpacks it. `--from DIR` uses no network
+  ([Decode G.729](g729.md)).
+- Commands that read no input from outside, or need root: `--setup-caps`,
+  `--uprobe-list`, `--mint-token`, `--dump-config`, `--vcon-spool-status`,
+  `--journal-show`, `--revert-actions`, `--completions`,
+  `--print-yang-module`, `sipnab fleet keygen` and `sipnab g729 status`.
 
 ## Read capture files only root can read
 
@@ -68158,7 +68370,44 @@ name already exists, the fetcher skips that uuid and the run exits `1`. Add
 More:
 [Fetch a stored vCon](vcon.md#fetch-a-stored-vcon).
 
+## Run the forwarder or the fetcher from root
+
+Since 0.5.256 a forwarder or a fetcher that root starts does not stay root.
+One that an ordinary user starts changes in nothing.
+
+- It reads the key file, and a CA file when you name one, as root. The key
+  file can stay `root` mode 0600.
+- Then it runs as `--user`, else `[privilege] user`, else `nobody`, before it
+  creates a directory or connects to the store.
+- That user must own what the command writes:
+  - the forwarder's spool, where it makes `delivered` and `failed`,
+  - the directory that holds `--vcon-fetch-out`.
+- Give the spool to the user the forwarder runs as, once:
+
+  ```sh
+  sudo chown -R nobody spool
+  ```
+
+- Check which user it became. The log line is the capture run's:
+
+  ```text
+  INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+  ```
+
+- `--no-priv-drop` keeps root and logs one warning line.
+
+More:
+[Commands that do not capture](least-privilege.md#commands-that-do-not-capture).
+
 ## When something does not work
+
+- **The forwarder or the fetcher exits `2` and logs `started as root, this
+  command runs as user 'nobody'`.**
+  - Root started it, and the user it runs as cannot write the path the
+    message names. It created nothing and sent nothing.
+  - Use one of the three ways the message lists: `chown` the path to that
+    user, name a user who can write it with `--user`, or keep root with
+    `--no-priv-drop`.
 
 - **The forwarder exits `3` and logs `answered 401`.**
   - The token in `vcon-store.key` is wrong or expired.
@@ -88716,11 +88965,13 @@ The privilege drop signals every other thread of the process.
 - A read with no time limit starts again.
   - In the same measurement a `read` on an empty pipe returned its byte, not an error.
 
-Three calls make a drop.
+Four calls make a drop.
 
 - `confine_after_capture_start` in [`app/bootstrap.rs`](../../src/app/bootstrap.rs), for a run that starts a capture thread.
 - `prepare_cores_inputs` in the same file, for `--cores`.
 - `harden` in [`process_isolation/worker_process.rs`](../../src/process_isolation/worker_process.rs), for the scanner-kill worker process.
+- `confine` in [`early_exit.rs`](../../src/early_exit.rs), for the commands that end before the capture launch.
+  - [Commands that end before the launch](#commands-that-end-before-the-launch) lists them.
 
 The table lists, for each way a run starts, the threads that exist at its drop and what an
 interrupted wait does there.
@@ -88737,6 +88988,10 @@ No row ends a run, logs an error or reports a timeout that did not happen.
 | `--kill-scanner` | `scanner-kill-fwd`, `scanner-kill-rx` ([`src/process_isolation.rs`](../../src/process_isolation.rs)) | A channel receive; a pipe read with no time limit. | `read_exact_or_eof` reads again after `Interrupted`. |
 | `--cores` | none | `run_cores_file` opens the set and drops before it starts a reader. | Does not apply. |
 | Scanner-kill worker process | none | `start` calls `harden` before `serve` starts `kill-worker-in` and `kill-worker-out`. | Does not apply. |
+| `sipnab fleet serve` | none | `prepare` reads the keys, binds and drops; `serve` builds the runtime after it. | Does not apply. |
+| `sipnab fleet inventory` | none | `main` reads every token file and drops before it starts a request thread. | Does not apply. |
+| `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch` | none | Each reads its files, drops, then creates its directory and connects, on the one thread. | Does not apply. |
+| `--relay-holdings`, `--relay-sessions` | none | `run_relay_listing` drops before the fan-out of [`src/relay/fan_out.rs`](../../src/relay/fan_out.rs) starts. | Does not apply. |
 
 Everything else starts after `bootstrap::launch` returns, so after the drop.
 
@@ -88746,8 +89001,22 @@ Everything else starts after `bootstrap::launch` returns, so after the drop.
   - The `hep-send` delivery thread of `--hep-send`.
   - The vCon fetcher that `--api-allow-vcon-fetch` and `--mcp-allow-vcon-fetch` build.
   - `sipnab-dns`, `tui-processor` and the `--cores` workers.
-- `sipnab fleet` and `--vcon-fetch` are commands of their own. They make no drop.
+- `sipnab fleet` and `--vcon-fetch` are commands of their own. Each drops before it starts a thread.
 - The archive password command's reader and the relay snapshot's fan-out end before the capture starts.
+
+### Commands that end before the launch
+
+A command that ends before `bootstrap::launch` does not reach the capture run's drop.
+
+- [`src/early_exit.rs`](../../src/early_exit.rs) holds one row for each such command, with what it does when root starts it.
+  - A listener reads its key files and binds as root, then drops before it opens its store or accepts.
+  - A network client reads its secrets as root, then drops before it creates a file or connects.
+  - A keeper keeps the caller's privileges, and its row says why.
+  - A command that parses a file the caller named keeps them for now.
+    Its reader opens the input by path, so a drop before the open would refuse a capture only root can read.
+- [`tests/threads_at_privilege_drop_test.rs`](../../tests/threads_at_privilege_drop_test.rs) reads every line of [`src/main.rs`](../../src/main.rs) that ends the process.
+  - A new exit fails the test until it has a row.
+- [Capture with the least privilege](../least-privilege.md#commands-that-do-not-capture) says what an operator sees.
 
 **How a gate holds this.**
 

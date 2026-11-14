@@ -1424,6 +1424,21 @@ impl Forwarder {
     /// be created, or is on another filesystem; the replace URL has no
     /// `{uuid}` or does not parse; or HTTPS is needed and no CA loads.
     pub fn new(settings: ForwardSettings) -> Result<Self, String> {
+        Self::new_confined(settings, &|_| Ok(()))
+    }
+
+    /// [`Forwarder::new`], with `confine` called once every file the
+    /// settings name is read and before a directory is created: where a
+    /// forwarder started as root changes user
+    /// ([`crate::early_exit::confine`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Forwarder::new`], or what `confine` refused.
+    pub fn new_confined(
+        settings: ForwardSettings,
+        confine: &dyn Fn(&ForwardSettings) -> Result<(), String>,
+    ) -> Result<Self, String> {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let spool_meta = std::fs::metadata(&settings.spool)
             .map_err(|e| format!("--vcon-forward '{}': {e}", settings.spool.display()))?;
@@ -1433,6 +1448,28 @@ impl Forwarder {
                 settings.spool.display()
             ));
         }
+        let mut needs_tls = settings.url.tls;
+        if let Some(template) = &settings.replace_url {
+            needs_tls |= replace_endpoint(template, "0")
+                .map_err(|e| format!("the replace URL {e}"))?
+                .tls;
+        }
+        let tls = if needs_tls {
+            Some(client_config(
+                settings.ca.as_deref(),
+                settings.extra_ca.as_deref(),
+                &FORWARD_TRUST,
+            )?)
+        } else {
+            None
+        };
+        let scitt_tls = match &settings.scitt {
+            Some(scitt) if scitt.url.tls => {
+                Some(client_config(scitt.ca.as_deref(), None, &SCITT_TRUST)?)
+            }
+            _ => None,
+        };
+        confine(&settings)?;
         for (flag, dir) in [
             (
                 "--vcon-forward-done ([vcon_forward] done)",
@@ -1460,27 +1497,6 @@ impl Forwarder {
                 ));
             }
         }
-        let mut needs_tls = settings.url.tls;
-        if let Some(template) = &settings.replace_url {
-            needs_tls |= replace_endpoint(template, "0")
-                .map_err(|e| format!("the replace URL {e}"))?
-                .tls;
-        }
-        let tls = if needs_tls {
-            Some(client_config(
-                settings.ca.as_deref(),
-                settings.extra_ca.as_deref(),
-                &FORWARD_TRUST,
-            )?)
-        } else {
-            None
-        };
-        let scitt_tls = match &settings.scitt {
-            Some(scitt) if scitt.url.tls => {
-                Some(client_config(scitt.ca.as_deref(), None, &SCITT_TRUST)?)
-            }
-            _ => None,
-        };
         Ok(Self {
             settings,
             tls,
@@ -1980,7 +1996,20 @@ pub fn run(
     interval: Duration,
     stop: &dyn Fn() -> bool,
 ) -> i32 {
-    let Some(mut forwarder) = start(settings) else {
+    run_confined(settings, once, interval, stop, &|_| Ok(()))
+}
+
+/// [`run`], with `confine` called once the forwarder read its files and
+/// before it creates a directory or connects (see
+/// [`Forwarder::new_confined`]).
+pub fn run_confined(
+    settings: ForwardSettings,
+    once: bool,
+    interval: Duration,
+    stop: &dyn Fn() -> bool,
+    confine: &dyn Fn(&ForwardSettings) -> Result<(), String>,
+) -> i32 {
+    let Some(mut forwarder) = start(settings, confine) else {
         return 2;
     };
     loop {
@@ -2000,13 +2029,16 @@ pub fn run(
 
 /// Build the forwarder from `settings`, logging what it will do, or the
 /// reason the settings are refused (`None`).
-fn start(settings: ForwardSettings) -> Option<Forwarder> {
+fn start(
+    settings: ForwardSettings,
+    confine: &dyn Fn(&ForwardSettings) -> Result<(), String>,
+) -> Option<Forwarder> {
     if let Some(warning) = plaintext_warning(&settings.url) {
         tracing::warn!("{warning}");
     }
     let spool = settings.spool.display().to_string();
     let url = settings.url.to_string();
-    match Forwarder::new(settings) {
+    match Forwarder::new_confined(settings, confine) {
         Ok(forwarder) => {
             tracing::info!("vCon forwarder watching '{spool}', delivering to {url}");
             Some(forwarder)
