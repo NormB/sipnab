@@ -2728,11 +2728,45 @@ fn drain_hep_stream<R: std::io::Read>(
             tracing::debug!("HEP stream from {peer}: stop reached with data still arriving");
             return;
         }
-        match stream.read(chunk) {
-            Ok(0) => return,
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            // The read timeout ticked with nothing new: the socket is drained.
-            Err(_) => return,
+        match DrainRead::of(stream.read(chunk)) {
+            DrainRead::Data(n) => buf.extend_from_slice(&chunk[..n]),
+            DrainRead::Again => {}
+            DrainRead::Closed | DrainRead::Quiet => return,
+            DrainRead::Failed(e) => {
+                tracing::debug!("HEP stream from {peer}: read failed while draining: {e}");
+                return;
+            }
+        }
+    }
+}
+
+/// What one read of a connection being drained means for the drain.
+#[derive(Debug)]
+enum DrainRead {
+    /// That many bytes arrived.
+    Data(usize),
+    /// The peer closed: nothing more will come.
+    Closed,
+    /// The read timeout ran out with nothing new: the socket is drained.
+    Quiet,
+    /// A signal interrupted the read. Nothing is known about the socket, so
+    /// the drain reads again; its budget still bounds it.
+    Again,
+    /// The read failed. The connection is of no further use.
+    Failed(std::io::Error),
+}
+
+impl DrainRead {
+    /// Classify the result of one read.
+    fn of(read: std::io::Result<usize>) -> Self {
+        match read {
+            Ok(0) => Self::Closed,
+            Ok(n) => Self::Data(n),
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::Interrupted => Self::Again,
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => Self::Quiet,
+                _ => Self::Failed(e),
+            },
         }
     }
 }
@@ -12647,6 +12681,157 @@ mod tests {
             );
             assert_eq!(delivered(&rx), 1, "the waiting packet is passed on");
             Ok(())
+        }
+
+        /// A stream whose reads fail with the kinds given, in order, and then
+        /// yield `rest` and the end of the stream.
+        struct FailsFirst {
+            kinds: std::collections::VecDeque<std::io::ErrorKind>,
+            rest: std::io::Cursor<Vec<u8>>,
+        }
+
+        impl FailsFirst {
+            fn new(kinds: &[std::io::ErrorKind], rest: Vec<u8>) -> Self {
+                Self {
+                    kinds: kinds.iter().copied().collect(),
+                    rest: std::io::Cursor::new(rest),
+                }
+            }
+        }
+
+        impl std::io::Read for FailsFirst {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                match self.kinds.pop_front() {
+                    Some(kind) => Err(kind.into()),
+                    None => self.rest.read(out),
+                }
+            }
+        }
+
+        /// How many packets a reader that is winding down passes on from
+        /// `stream`.
+        fn drained_from(stream: &mut impl std::io::Read) -> usize {
+            use std::sync::atomic::Ordering;
+            let opts = opts(&[], None);
+            let config = limits(None, None);
+            let shared = shared(&opts, &config);
+            let (tx, rx) = crate::capture::channel::packet_channel(16);
+            shared.stop.store(true, Ordering::Relaxed);
+            serve_hep_stream(stream, PEER, &shared, &tx);
+            delivered(&rx)
+        }
+
+        /// A signal that interrupts the drain's read does not end the drain:
+        /// what the peer sent before the stop is still passed on. The drain
+        /// used to take any failed read for an empty socket, so a second
+        /// Ctrl-C, a SIGHUP or a SIGCHLD inside its second dropped the
+        /// packets the socket still held.
+        #[test]
+        fn an_interrupted_read_while_draining_still_passes_on_what_the_peer_sent() {
+            use std::io::ErrorKind::Interrupted;
+            let mut stream = FailsFirst::new(&[Interrupted], stream_packet());
+            assert_eq!(
+                drained_from(&mut stream),
+                1,
+                "the packet behind the interrupted read is passed on"
+            );
+        }
+
+        /// Several interrupted reads in a row change nothing either.
+        #[test]
+        fn a_run_of_interrupted_reads_does_not_end_the_drain() {
+            use std::io::ErrorKind::Interrupted;
+            let two = [stream_packet(), stream_packet()].concat();
+            let mut stream = FailsFirst::new(&[Interrupted; 7], two);
+            assert_eq!(drained_from(&mut stream), 2, "both packets are passed on");
+        }
+
+        /// A read timeout with nothing new is what "drained" means: the
+        /// drain ends there and reads no further.
+        #[test]
+        fn a_quiet_read_ends_the_drain() {
+            for quiet in [std::io::ErrorKind::WouldBlock, std::io::ErrorKind::TimedOut] {
+                let mut stream = FailsFirst::new(&[quiet], stream_packet());
+                assert_eq!(
+                    drained_from(&mut stream),
+                    0,
+                    "{quiet:?}: the socket was empty, so the drain is over"
+                );
+                assert_eq!(
+                    stream.rest.position(),
+                    0,
+                    "{quiet:?}: nothing is read after the quiet read"
+                );
+            }
+        }
+
+        /// A read that fails for another reason ends the drain as well.
+        #[test]
+        fn a_failed_read_ends_the_drain() {
+            let mut stream =
+                FailsFirst::new(&[std::io::ErrorKind::ConnectionReset], stream_packet());
+            assert_eq!(drained_from(&mut stream), 0, "the connection is gone");
+            assert_eq!(stream.rest.position(), 0, "nothing is read after it");
+        }
+
+        /// A stream that only ever interrupts cannot hold the stop: the
+        /// drain's budget still ends it.
+        #[test]
+        fn reads_that_are_always_interrupted_end_at_the_budget() {
+            struct AlwaysInterrupted;
+            impl std::io::Read for AlwaysInterrupted {
+                fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                    Err(std::io::ErrorKind::Interrupted.into())
+                }
+            }
+            let begun = Instant::now();
+            assert_eq!(drained_from(&mut AlwaysInterrupted), 0, "nothing arrived");
+            assert!(
+                begun.elapsed() >= HEP_STREAM_DRAIN_BUDGET,
+                "the drain read on for its budget, not less: {:?}",
+                begun.elapsed()
+            );
+        }
+
+        /// Each result of a read has one meaning for the drain, and its log
+        /// line tells a drained socket from a failed read.
+        #[test]
+        fn each_read_result_has_one_meaning_for_the_drain() {
+            use std::io::ErrorKind;
+            assert!(
+                matches!(DrainRead::of(Ok(0)), DrainRead::Closed),
+                "the end of the stream is a peer that closed"
+            );
+            assert!(
+                matches!(DrainRead::of(Ok(9)), DrainRead::Data(9)),
+                "bytes are data"
+            );
+            for kind in [ErrorKind::WouldBlock, ErrorKind::TimedOut] {
+                assert!(
+                    matches!(DrainRead::of(Err(kind.into())), DrainRead::Quiet),
+                    "{kind:?} is the read timeout: drained"
+                );
+            }
+            assert!(
+                matches!(
+                    DrainRead::of(Err(ErrorKind::Interrupted.into())),
+                    DrainRead::Again
+                ),
+                "an interrupted read says nothing about the socket"
+            );
+            for kind in [
+                ErrorKind::ConnectionReset,
+                ErrorKind::BrokenPipe,
+                ErrorKind::InvalidData,
+            ] {
+                assert!(
+                    matches!(
+                        DrainRead::of(Err(kind.into())),
+                        DrainRead::Failed(ref e) if e.kind() == kind
+                    ),
+                    "{kind:?} is a failed read, and keeps its error for the log"
+                );
+            }
         }
 
         /// A peer that never pauses cannot hold a stop: the reader gives up
