@@ -14,6 +14,14 @@ entry that carries them.
 
 - **The pre-commit hook's step log keeps the test total of a suite that passed.** After a passing suite the hook writes nextest's `Summary` line (the tests run, passed and skipped) to `sipnab-pre-commit-steps.log` as a note of that run, and `python3 scripts/hook-steps.py` prints it under the run's table. Before, a summary was kept only for a failed run, so two passing runs could not be compared by their totals. This is a change for contributors: the shipped program is the same. [Where a hook run spent its time](docs/internals/testing.md#the-development-loop) describes the note.
 
+### Fixed
+
+- **A release check that the CDN refused no longer reports that the download page does not name the release (PAGES-LIVE-MAPS-BLOCKED-TO-EXIT-3, CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER).** The release run of 0.5.254 failed twice in "Advertise the release on the site" with "the download page does not name 0.5.254" while the page named it: the CDN had answered 403 to the hosted runner. This is a change for maintainers of the release flow: the shipped program is the same.
+  - `scripts/pages-live.py verify` now ends with exit status 4 and "the edge refused the read of the download page, so nothing is known" for a refused read, with 2 for a read that failed another way, and with 3 only for a page that answered and does not name the release.
+  - It prints every release check when it ends, and its output reaches the job log line by line. After a refused read it waits 15, 30, 60 and 120 seconds, so a refused client sends five requests in 300 seconds where it sent 42.
+  - `scripts/verify-site-advertises.sh` sends one request for a check where it sent two, and prints what the edge answered before its verdict: the status, the `server`, `cf-ray`, `cf-mitigated` and `content-type` headers, and the first 200 bytes of an answer that is not a success.
+  - [Advertising a release](docs/internals/build-ci-release.md#advertising-a-release) lists the exit statuses and what to do after an exit of 4.
+
 ## [0.5.254] - 2026-11-14
 
 ### Added
