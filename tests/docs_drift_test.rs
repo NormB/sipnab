@@ -104,6 +104,22 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // The same section names `scripts/pages-live.py verify --artifact` and
+    // `scripts/verify-site-advertises.sh --classify`.
+    (
+        "artifact",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "classify",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "After the release" runs `scripts/post-release.py run --host`.
     (
         "host",
@@ -6527,13 +6543,16 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1496 -> 1498 (threads at the privilege drop): the start-path table of
     // "Threads that exist at the privilege drop" in
     // docs/internals/threading.md, with its site mirror (+2).
-    // 1498 -> 1500 (fleet history reads the selected rows): the table of
+    // 1498 -> 1500 (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER): the table of
+    // job summary lines in build-ci-release.md's "The daily advertisement
+    // check", with its site mirror (+2).
+    // 1500 -> 1502 (fleet history reads the selected rows): the table of
     // read times under "What the reads cost" in docs/fleet.md's "The files
     // of the history store", with its site mirror (+2).
-    // 1500 -> 1502 (binary sizes of 0.5.254): the table of release build
+    // 1502 -> 1504 (binary sizes of 0.5.254): the table of release build
     // sizes in docs/fleet.md's "Upgrade a center to compressed history
     // files", with its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1502;
+    const EXPECTED_TABLES: usize = 1504;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

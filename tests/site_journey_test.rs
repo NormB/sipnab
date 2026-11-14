@@ -6683,7 +6683,16 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // Measurement: the scan read 282 with that file staged.
     // 282 -> 283 (RUNNER-IMAGE-FLOATS): ci.yml's comment on the fixed runner
     // images names `tests/ci_runner_target_test.rs`.
-    const EXPECTED_REFERENCES: usize = 283;
+    // 283 -> 289 (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER): pages.yml's step
+    // that records what the built download page advertises names
+    // `scripts/pages-live.py`, `website/config.toml` and
+    // `scripts/verify-site-advertises.sh` (+3; its `live` job's comment
+    // names the verifier once, as before); cert-expiry.yml names
+    // `scripts/pages-live.py` in its trigger paths, in the advertisement
+    // step's comment and in its command (+3; that comment names the
+    // verifier once, as the command it replaces did). Measurement: the scan
+    // read 283 on main 79dee8c47 and 289 with both files staged.
+    const EXPECTED_REFERENCES: usize = 289;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
