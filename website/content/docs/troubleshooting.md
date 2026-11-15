@@ -1208,6 +1208,13 @@ tcpdump -r tests/pcap-samples/DTMFsipinfo.pcap -nn 'pppoes and portrange 5060-50
 that is the cause.** sipnab uses your expression exactly as typed and never
 edits it.
 
+For a filter that names no VLAN, MPLS, PPPoE or link-layer offset, sipnab warns
+at startup, except on a capture of loopback (`lo`, `lo0`) only:
+
+```text
+Your BPF filter is used as given and was not modified. Note that a port-based filter is matched against the outer headers only: it will not see SIP inside a VLAN tag, QinQ, PPPoE or MPLS, and the packets are dropped in the kernel where no sipnab counter can report them. Drop the filter to get sipnab's encapsulation-aware one, or add --capture-tunnels for UDP-tunneled signaling.
+```
+
 Drop it and let sipnab generate one.
 
 - The generated filter carries an arm for VLAN, QinQ, PPPoE, VLAN-over-PPPoE and

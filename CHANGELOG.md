@@ -2629,381 +2629,151 @@ entry that carries them.
 ### Added
 
 - **Every yes/no setting now has a flag for each direction.**
-  - A config file could set one.
-    - `--no-config` was then the only way to override it for a run.
-  - Eight new flags complete the pairs.
-  - The last of a pair typed wins.
-  - Six turn off a feature the file turned on:
-    - `--no-hep-parse`
-    - `--no-delta-time`
-    - `--no-fraud-detect`
-    - `--no-kill-scanner`
-    - `--no-reverse-dns`
-    - `--no-resolve`
-  - Two turn back on a feature the file turned off:
-    - `--rtp` (against `[capture] no_rtp`).
-    - `--priv-drop` (against `[privilege] no_priv_drop`).
-  - `--no-resolve` turns name display off whatever else would turn it on.
-    - This includes `--names` files and `[names.manual]`.
-- **A match expression or a file name typed where sipnab expects a capture
-  filter now gets an error that says what to type.**
-  - `sngrep` and `sipgrep` take a match expression before the capture filter.
-  - sipnab takes only the filter.
-    - It matches SIP text with `-e`.
-  - `sipnab -I call.pcap INVITE` used to fail with libpcap's own syntax error.
-    - It now says to use `-e '<pattern>'`.
-  - `sipnab call.pcap`, which sngrep accepts, read the file name as a capture filter.
-    - sipnab now refuses it before any capture opens.
-    - The refusal names the `sipnab -I call.pcap` it meant.
+  - Was: a config file could set one, and `--no-config` was then the only way to override it for a run.
+  - Effect: `--no-hep-parse`, `--no-delta-time`, `--no-fraud-detect`, `--no-kill-scanner`, `--no-reverse-dns` and `--no-resolve` turn off a feature the file turned on.
+  - Effect: `--rtp` (against `[capture] no_rtp`) and `--priv-drop` (against `[privilege] no_priv_drop`) turn back on a feature the file turned off.
+  - Effect: the last of a pair typed wins.
+  - Limit: `--no-resolve` turns name display off whatever else would turn it on, `--names` files and `[names.manual]` included.
+- **A pattern or file name given as capture filter names what to type.**
+  - Was: `sipnab -I call.pcap INVITE`, as `sngrep` and `sipgrep` take it, failed with libpcap's own syntax error.
+  - Effect: it now says to use `-e '<pattern>'`; sipnab takes only the filter and matches SIP text with `-e`.
+  - Effect: `sipnab call.pcap`, which sngrep accepts, is refused before any capture opens, naming the `sipnab -I call.pcap` it meant.
 
 ### Fixed
 
 - **MCP `rtp_stats` carries an AMR-WB stream's wideband score.**
-
-  - REST (`GET /v1/streams`) and the TUI's `MOS_CQEW` row carried the G.107.1 `MOS_CQEW` since it shipped.
-  - `docs/mos-and-codecs.md` said MCP did too.
-  - `rtp_stats` builds its stream from the NDJSON line.
-    - It carried only the narrowband `mos`.
-    - That is the figure the wideband score exists to correct.
-  - It now adds `mos_wideband`, `mos_wideband_context` and `mos_wideband_unavailable`.
-    - They come from the same projection REST serializes.
+  - Was: REST (`GET /v1/streams`) and the TUI's `MOS_CQEW` row carried the G.107.1 `MOS_CQEW`, and `docs/mos-and-codecs.md` said MCP did too.
+  - Was: `rtp_stats` carried only the narrowband `mos`, the figure the wideband score exists to correct.
+  - Effect: it adds `mos_wideband`, `mos_wideband_context` and `mos_wideband_unavailable`, from the same projection REST serializes.
 - **A closed stderr no longer crashes a finished run with exit 101.**
-  - `sipnab -N -I call.pcap 2>&1 | head -1` closes the pipe after one line.
-
-    - Every later stderr write then fails.
-  - tracing-subscriber reported each failed log line with an `eprintln!` to the same stderr.
-  - sipnab printed its own stderr lines with `eprintln!`.
-  - Both panic on a failed write.
-
-    - So the panic hook exited 101 and wrote a crash report.
-  - The subscriber no longer reports its own write failures.
-  - sipnab's 65 stderr lines go through one macro that drops a failed write.
-  - The run now exits with the code it would have had.
-    - That is 0 for that command.
-
-### Removed
-
-- **AI agent planning documents are no longer in the repository.**
-  - `docs/superpowers/` held three specs and plans written on 2026-07-24 and 2026-07-25.
-  - A gate test now fails if `docs/superpowers/` or `.superpowers/` is tracked again.
-  - Some exclusions named the directory.
-    - They were in the docs gates, Vale, codespell and lychee configs.
-    - They are gone with it.
-  - The files remain in git history.
+  - Was: `sipnab -N -I call.pcap 2>&1 | head -1` closes the pipe after one line, and the next failed stderr write panicked.
+  - Was: the panic hook then exited 101 and wrote a crash report.
+  - Effect: a failed stderr write is dropped, and the run exits with the code it would have had: 0 for that command.
 
 ### Security
 
-- **The TypeScript MCP client example pins `@modelcontextprotocol/sdk`
-  1.32.1, past CVE-2026-104850 (GHSA-6qxp-vccf-f47h).**
-  - Versions 1.12.0 to 1.30.x let an MCP server choose the authorization server.
-    - The SDK's OAuth client sends credentials to that server.
-  - 1.31.0 fixed it.
-  - `clients/typescript` pinned 1.30.1.
-  - The example does not use OAuth.
-  - sipnab itself has no npm dependency in its binary.
-
-- **Legacy `%from`-style exec placeholders now reach the hook as one quoted
-  word (CWE-78).**
-  - Some templates used unquoted rewrites:
-    - `--on-dialog-exec` and `--on-quality-exec` templates rewrote `%from` to an unquoted `$SIPNAB_FROM`.
-    - `--alert-exec` did the same for `%src`, `%rule` and `%detail`.
-  - So `sh -c` split a captured value on its spaces and expanded `*` in it.
-    - A crafted SIP header could add or replace hook arguments.
-  - Each placeholder now becomes one of these:
-    - `"${SIPNAB_FROM}"` outside quotes.
-    - `${SIPNAB_FROM}` inside double quotes.
-    - `'"${SIPNAB_FROM}"'` inside single quotes.
-      - There, the old rewrite left the literal text `$SIPNAB_FROM`.
-  - The braces also fix `%from_x`.
-    - It expanded an unset `SIPNAB_FROM_x`.
-    - It should expand the From value followed by `_x`.
-  - Both hooks now share one rewrite.
-  - Templates that use `$SIPNAB_*` directly are unchanged.
+- **The TypeScript MCP client example pins `@modelcontextprotocol/sdk` 1.32.1, past CVE-2026-104850 (GHSA-6qxp-vccf-f47h).**
+  - Was: `clients/typescript` pinned 1.30.1; versions 1.12.0 to 1.30.x let an MCP server choose the authorization server the SDK's OAuth client sends credentials to.
+  - Limit: 1.31.0 fixed it; the example does not use OAuth, and sipnab itself has no npm dependency in its binary.
+- **Legacy `%from`-style exec placeholders now reach the hook as one quoted word (CWE-78).**
+  - Was: `--on-dialog-exec` and `--on-quality-exec` rewrote `%from` to an unquoted `$SIPNAB_FROM`; `--alert-exec` did the same for `%src`, `%rule` and `%detail`.
+  - Was: `sh -c` split a captured value on its spaces and expanded `*` in it, so a crafted SIP header could add or replace hook arguments.
+  - Effect: each placeholder becomes `"${SIPNAB_FROM}"` outside quotes, `${SIPNAB_FROM}` inside double quotes, and `'"${SIPNAB_FROM}"'` inside single quotes.
+  - Effect: `%from_x` expands the From value followed by `_x`, not an unset `SIPNAB_FROM_x`; inside single quotes the old rewrite left the literal `$SIPNAB_FROM`.
+  - Limit: templates that use `$SIPNAB_*` directly are unchanged.
 
 ### Changed
 
-- **Rust 1.99.0, the latest stable release, replaces 1.98.1 as the pinned
-  toolchain.**
-  - `rust-version` moves to 1.99 in the four crates that state it.
-  - These jobs install 1.99.0: CI, quality, bench, pages, reproducible and release.
-
-    - They use `dtolnay/rust-toolchain` at its `1.99.0` branch, pinned by SHA.
-  - Both Dockerfiles build on `rust:1.99-slim-trixie`.
-  - The gnu release builds on a `rust:1-bookworm` digest whose rustc is 1.99.0.
-  - Building from source now needs Rust 1.99+.
+- **Rust 1.99.0 replaces 1.98.1 as the pinned toolchain.**
+  - Do: building from source now needs Rust 1.99+; `rust-version` is 1.99 in the four crates that state it.
+  - Effect: both Dockerfiles build on `rust:1.99-slim-trixie`, and the gnu release builds on a `rust:1-bookworm` digest whose rustc is 1.99.0.
 
 ## [0.5.203] - 2026-10-05
 
 ### Added
 
 - **MCP over HTTP and the metrics endpoint serve HTTPS themselves.**
-  - `--mcp-tls-cert` / `--mcp-tls-key` and `--metrics-tls-cert` /
-    `--metrics-tls-key` take a PEM certificate chain and private key.
-  - `--api-tls-cert` / `--api-tls-key` already did this for the REST API.
-  - The port then speaks HTTPS only, TLS 1.2 and 1.3.
-  - The bearer token or Basic credential is unchanged.
-  - Startup refuses each of these cases and names the file or flag:
-    - one half of a pair
-    - an unreadable file
-    - a file with no certificate or no key
-    - a key other users can read
-    - a key that is not the certificate's
-  - MCP shares the REST API's accept loop, now in `src/tls_listener.rs`:
-    - 10-second handshake timeout
-    - 256 handshakes at once
-  - See [MCP TLS](docs/mcp-deploy.md#mcp-tls) and
-    [Metrics TLS](docs/prometheus-metrics.md#metrics-tls).
+  - Do: give `--mcp-tls-cert` / `--mcp-tls-key` or `--metrics-tls-cert` / `--metrics-tls-key` a PEM certificate chain and private key, as `--api-tls-cert` / `--api-tls-key` already take.
+  - Effect: the port then speaks HTTPS only, TLS 1.2 and 1.3; the bearer token or Basic credential is unchanged.
+  - Limit: startup refuses half a pair, an unreadable file, a file lacking certificate or key, a key others can read, or a mismatched key.
+  - Effect: MCP shares the REST API's accept loop: a 10-second handshake timeout and 256 handshakes at once.
+  - Docs: [MCP TLS](docs/mcp-deploy.md#mcp-tls), [Metrics TLS](docs/prometheus-metrics.md#metrics-tls).
 - **`--hep-tls-extra-ca` trusts a CA in addition to the host's bundle.**
-
-  - The HEP sender's `--hep-tls-ca` still REPLACES the trust store.
-  - The new flag is the separate, explicit way to add a private collector's
-    issuer.
-  - With it, the public roots still count.
-  - The two flags cannot be combined.
-  - On a host with no CA bundle, startup refuses the new flag and names
-    `--hep-tls-ca`.
+  - Effect: it adds a private collector's issuer while the public roots still count; `--hep-tls-ca` still REPLACES the trust store.
+  - Limit: the two flags cannot be combined, and on a host with no CA bundle startup refuses the new flag and names `--hep-tls-ca`.
 - **Every TLS flag has a `sipnab.toml` key.**
-  - `[api]`, `[mcp]` and `[metrics]` take `tls_cert` and `tls_key`.
-  - A new `[hep]` section takes `tls_ca`, `tls_extra_ca`, `tls_cert` and
-    `tls_key`.
-  - Each flag replaces its own key.
-    - So a certificate on the command line and its key in the file make a
-      pair.
-  - The HEP sender's trust is one setting.
-    - A `--hep-tls-ca` or `--hep-tls-extra-ca` flag replaces both trust keys.
-  - Pending flags in `src/settings.rs` fall from 103 to 98.
+  - Effect: `[api]`, `[mcp]` and `[metrics]` take `tls_cert` and `tls_key`; a new `[hep]` section takes `tls_ca`, `tls_extra_ca`, `tls_cert` and `tls_key`.
+  - Effect: each flag replaces its own key, so a certificate on the command line and its key in the file make a pair.
+  - Limit: the HEP sender's trust is one setting: a `--hep-tls-ca` or `--hep-tls-extra-ca` flag replaces both trust keys.
 
 ### Fixed
 
 - **`-E` / `[capture] hep_parse` works in the TUI and under `--cores`.**
-  - Only the single-threaded headless run unwrapped HEP.
-  - The TUI showed no dialogs for a proxy's HEP copy sniffed on `lo`
-    (`-d lo -E "udp dst port 9063"`).
-    - `-N` decoded the same traffic in full.
-  - `-I file --cores N -E` reported no calls.
-  - One rule, `pipeline::apply_hep_parse`, now runs on every path:
-    - headless
-    - `--cores`
-    - the TUI's capture thread
-    - a capture opened or re-scanned inside the TUI
-  - Reported by Giovanni Maruzzelli
-    ([@gmaruzz](https://github.com/gmaruzz)).
+  - Was: the TUI showed no dialogs for a proxy's HEP copy sniffed on `lo` (`-d lo -E "udp dst port 9063"`).
+  - Was: `-N` decoded the same traffic in full.
+  - Was: `-I file --cores N -E` reported no calls.
+  - Effect: HEP is unwrapped headless, under `--cores`, in the TUI's capture thread and in a capture opened or re-scanned inside the TUI.
+  - Credit: Reported by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)).
 - **A `--hep-send` run whose sender cannot start now fails with exit 2.**
-  - These cases used to be logged as an error while the run went on and
-    exited 0:
-    - an unreachable or untrusted collector
-    - a name that does not resolve
-  - So `sipnab -N -I capture.pcap --hep-send collector.example.com:9060 && echo forwarded` reported success
-    with nothing sent.
-  - `--metrics` and `--api` already refused the same way.
+  - Was: an unreachable or untrusted collector, or a name that does not resolve, was logged while the run went on and exited 0.
+  - Was: `sipnab -N -I capture.pcap --hep-send collector.example.com:9060 && echo forwarded` reported success with nothing sent.
+  - Effect: `--metrics` and `--api` already refused the same way.
 
 ### Changed
 
-- **The e2e test tooling takes proxy-addr 2.0.8 and compression 1.8.2.**
-  - `e2e/package-lock.json` is for Lighthouse CI only and is never shipped.
-  - It moves off two versions, both published 2026-10-05:
-    - proxy-addr 2.0.7 (GHSA-jqcg-44mw-7w3h, critical)
-    - compression 1.8.1 (GHSA-vc2v-76pw-4v95, high)
-  - sprintf-js 1.0.3 (GHSA-hp3w-g68c-fv3c) has no fixed release.
-    - `osv-scanner.toml` and the VEX document record it as not affecting
-      sipnab.
-    - sipnab does not contain it.
-
-- **The home page groups TFPS with fail2ban and gives rtpproxy its own map
-  item.**
-  - TFPS and fail2ban share the "Attack blocking" tile.
-    - In the same way, rtpengine and rtpproxy share "Media relay".
-  - The system map's relay entry is split.
-    - rtpproxy links to its own guide with `--rtpproxy-control`.
-  - The page no longer names other SIP capture tools.
-
+- **The home page groups TFPS with fail2ban and gives rtpproxy its own map item.**
+  - Effect: TFPS and fail2ban share the "Attack blocking" tile, as rtpengine and rtpproxy share "Media relay".
+  - Effect: the system map's rtpproxy entry links to its own guide with `--rtpproxy-control`.
 - **The TLS pairing rules run after the config file is read.**
-  - One half of a certificate/key pair stops the run with exit 2.
-    - The half can come from either the flags or the file.
-    - The error names the flag and the key for the missing half.
-  - The check covers every listener's keys, whether or not the run starts it.
-  - The same applies to `--hep-listen-transport tls` with no certificate or
-    key.
-  - `--hep-tls-cert` and `--hep-tls-key` no longer require each other on the
-    command line.
-
-    - The other half may be in `[hep]`.
-    - Each now requires `--hep-listen-transport`.
-- **The port-based BPF filter warning is not printed for a loopback
-  capture.**
-  - The warning that a port filter misses SIP inside VLAN, QinQ, PPPoE or
-    MPLS reads: "Your BPF filter is used as given and was not modified. Note
-    that a port-based filter is matched against the outer headers only: it
-    will not see SIP inside a VLAN tag, QinQ, PPPoE or MPLS, and the packets
-    are dropped in the kernel where no sipnab counter can report them. Drop
-    the filter to get sipnab's encapsulation-aware one, or add
-    --capture-tunnels for UDP-tunneled signaling."
-  - Loopback (`lo`, `lo0`) carries none of those.
-
-    - So on a capture of loopback only, the warning was wrong.
-  - Any other interface, `any`, or a mix keeps the warning.
-  - Reported by Giovanni Maruzzelli
-    ([@gmaruzz](https://github.com/gmaruzz)).
-- **The `metrics` feature depends on `rustls`**, for the metrics endpoint's
-  HTTPS.
-  - `metrics` is a default feature.
-  - So a default build now compiles rustls and ring.
-
+  - Effect: half a certificate/key pair, from flags or file, stops the run with exit 2, naming the flag and key of the missing half.
+  - Effect: the check covers every listener's keys, whether or not the run starts it, and `--hep-listen-transport tls` with no certificate or key.
+  - Effect: `--hep-tls-cert` and `--hep-tls-key` no longer require each other on the command line, since the other half may be in `[hep]`.
+  - Do: each now requires `--hep-listen-transport`.
+- **The port-based BPF filter warning is not printed for a loopback capture.**
+  - Was: the warning that a port filter misses SIP inside VLAN, QinQ, PPPoE or MPLS was printed for loopback (`lo`, `lo0`).
+  - Effect: loopback carries none of those; any other interface, `any`, or a mix keeps the warning.
+  - Docs: [A live capture that sees nothing](docs/troubleshooting.md#a-live-capture-that-sees-nothing).
+  - Credit: Reported by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)).
+- **The `metrics` feature depends on `rustls`, for the metrics endpoint's HTTPS.**
+  - Effect: `metrics` is a default feature, so a default build now compiles rustls and ring.
 - **Dependencies move to their latest compatible releases.**
-  - `jsonschema` 0.57.0 to 0.58.3.
-    - It is a test-only dependency.
-    - It checks vCon and MCP output against their schemas.
-  - `rmcp` 3.5.0.
-  - `tokio-rustls` 0.26.6.
-  - `smallvec` 1.16.2.
-  - The `wasm-bindgen` family 0.2.129.
-  - The fuzzing images' OSS-Fuzz Rust base.
-    - Both images use the same digest, so ClusterFuzzLite and OSS-Fuzz build
-      alike.
-  - osv.dev lists no advisory against any of the new versions.
+  - Effect: `rmcp` 3.5.0, `tokio-rustls` 0.26.6, `smallvec` 1.16.2 and the `wasm-bindgen` family 0.2.129.
+  - Effect: osv.dev lists no advisory against any of the new versions.
 
 ## [0.5.202] - 2026-10-03
 
 ### Added
 
 - **The homepage shows how sipnab fits together.**
-  - A map sits above the terminal animation.
-  - It lays out what sipnab reads:
-    - a live interface
-    - capture files
-    - HEP from OpenSIPS, Kamailio and rtpengine
-    - encrypted SIP
-    - tunnels
-    - media relays
-  - It lays out the four stages sipnab works through: unwrap, parse, track,
-    judge.
-  - It lays out where you read the answer:
-    - the terminal UI
-    - script output
-    - the REST API
-    - the MCP server for AI agents
-    - Prometheus
-    - HEP to Homer
-    - vCon
-  - It also lays out what sipnab can act on: alerts, fail2ban, TFPS bans.
-  - Each item links to its guide and names the flag that turns it on.
-  - The map is plain HTML.
-    - So it reads the same with scripting off, to a screen reader and to an
-      AI agent.
+  - Effect: a map above the terminal animation lays out what sipnab reads: a live interface, capture files, HEP, encrypted SIP, tunnels and media relays.
+  - Effect: it lays out the four stages sipnab works through (unwrap, parse, track, judge) and what sipnab can act on: alerts, fail2ban, TFPS bans.
+  - Effect: it lays out where you read the answer: the terminal UI, script output, the REST API, MCP, Prometheus, HEP to Homer and vCon.
+  - Effect: each item links to its guide and names the flag that turns it on; the map is plain HTML, readable with scripting off.
 - **sipnab honors `$XDG_CONFIG_HOME`.**
-  - The per-user config file is `$XDG_CONFIG_HOME/sipnab/sipnab.toml`.
-  - It is `~/.config/sipnab/sipnab.toml` only when that variable is unset,
-    empty or not an absolute path.
-    - The XDG Base Directory specification says so.
-  - Saves from the terminal UI follow it too.
+  - Effect: the per-user config file is `$XDG_CONFIG_HOME/sipnab/sipnab.toml`, and saves from the terminal UI follow it too.
+  - Limit: it is `~/.config/sipnab/sipnab.toml` only when that variable is unset, empty or not an absolute path, as the XDG Base Directory specification says.
 - **sipnab says when a config file is being ignored.**
-  - sipnab reads only the first config file it finds.
-  - So a setting in `~/.sipnabrc` did nothing while
-    `~/.config/sipnab/sipnab.toml` existed, and sipnab said nothing.
-  - Now, when more than one default location holds a file, sipnab names the
-    one it read and the ones it did not.
-  - It does so in three places:
-    - on stderr
-    - in `--dump-config` (`# Also present and NOT read:`)
-    - on the status line when the terminal UI opens
+  - Was: sipnab reads only the first config file it finds, so a setting in `~/.sipnabrc` did nothing while `~/.config/sipnab/sipnab.toml` existed.
+  - Effect: when more than one default location holds a file, sipnab names the one it read and the ones it did not.
+  - Effect: it does so on stderr, in `--dump-config` (`# Also present and NOT read:`) and on the status line when the terminal UI opens.
 
 ### Changed
 
 - **A misspelled `[media] listening_context` stops the run.**
-  - The valid values are `"monotic"` and `"diotic"`.
-    - Case and surrounding spaces do not matter.
-  - sipnab used to ignore any other value.
-    - `"monotic"` stayed in force, and sipnab said nothing.
-  - Startup now refuses such a value with an error naming the key.
+  - Was: sipnab ignored any value but `"monotic"` and `"diotic"`, and `"monotic"` stayed in force without a word.
+  - Effect: startup refuses such a value with an error naming the key; case and surrounding spaces do not matter.
 
 ### Fixed
 
 - **Saving from the terminal UI no longer hides your `~/.sipnabrc`.**
-  - Two saves always wrote `~/.config/sipnab/sipnab.toml`:
-    - the F10 column selector's `s`
-    - name edits under `[names] persist_to_config`
-  - That file comes before `~/.sipnabrc` in the search order.
-
-    - So after one saved layout, every later run loaded the new file.
-    - Those runs ignored every other setting in `~/.sipnabrc`.
-  - Under `--config` or `$SIPNAB_CONFIG`, the save went to a file the run
-    never read.
-  - Both saves now write the file the run loaded.
-    - They keep its comments and other settings.
-  - With no file loaded, they create the user config file as before.
-
-    - That is `$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default
-      `~/.config/sipnab/sipnab.toml`.
-  - When the settings came from `/etc/sipnab/sipnab.toml`, sipnab refuses the
-    save.
-    - It says why on the status line.
-    - The reason: a file of your own would hide every setting in it.
-
-- **The CLI and config references now say which flag and which key set the
-  same thing, for every pair.**
-  - 36 flag rows in the
-    [CLI reference](https://sipnab.com/docs/cli/) lacked the
-    `Config: [section] key` note their key needed.
-    - Among them: `--device`, `--portrange`, `--snaplen`, `--limit`
-      (`[limits] dialog_limit`) and `--no-promisc` (`[capture] promisc`).
-  - 28 key rows in the
-    [config reference](https://sipnab.com/docs/config/) never named their
-    flag.
-  - `[media] listening_context` had no row at all.
-  - Each key row now also says how its flag combines with it. The flag does
-    one of these:
-    - overrides it
-    - also turns it on
-    - adds to it
-    - forces it off
-  - A new table in the source pairs every flag with its key.
-  - Tests hold both references to that table.
-
-    - So the two cannot drift apart again.
+  - Was: the F10 column selector's `s` and name edits under `[names] persist_to_config` always wrote `~/.config/sipnab/sipnab.toml`.
+  - Was: that file comes first in the search order, so later runs ignored `~/.sipnabrc`; under `--config` or `$SIPNAB_CONFIG` the save went to an unread file.
+  - Effect: both saves write the file the run loaded, keeping its comments and other settings; with no file loaded they create the user config file.
+  - Limit: when the settings came from `/etc/sipnab/sipnab.toml`, sipnab refuses the save and says why on the status line.
+- **The CLI and config references say which flag and which key set the same thing.**
+  - Was: 36 flag rows of the CLI reference lacked their `Config: [section] key` note, among them `--limit` (`[limits] dialog_limit`) and `--no-promisc` (`[capture] promisc`).
+  - Was: 28 key rows of the config reference never named their flag, and `[media] listening_context` had no row at all.
+  - Effect: each key row says whether its flag overrides it, also turns it on, adds to it or forces it off.
+  - Docs: [CLI reference](https://sipnab.com/docs/cli/), [config reference](https://sipnab.com/docs/config/).
 
 ## [0.5.201] - 2026-10-02
 
 ### Added
 
 - **`[capture] hep_parse` and `[capture] bpf_filter` config keys.**
-  - The loopback HEP setup had two options with no key.
-  - These two can now live in `sipnab.toml`.
-    - So a bare `sipnab` reads a proxy's HEP mirror on `lo`.
-  - `hep_parse = true` does what `-E` does.
-  - `bpf_filter` is the capture filter that the trailing positional argument
-    sets.
-    - That argument or `--bpf-file` replaces it.
-  - When sipnab reads a capture file through a filter from the config, it
-    says so on stderr.
-
-    - So a file whose calls fall outside the filter does not read as empty.
-  - Requested by Giovanni Maruzzelli
-    ([@gmaruzz](https://github.com/gmaruzz)) in
-    [#343](https://github.com/NormB/sipnab/issues/343).
+  - Effect: `hep_parse = true` does what `-E` does, so a bare `sipnab` reads a proxy's HEP mirror on `lo`.
+  - Effect: `bpf_filter` is the capture filter the trailing positional argument sets; that argument or `--bpf-file` replaces it.
+  - Effect: sipnab says on stderr when it reads a capture file through a config filter, so a filtered file does not read as empty.
+  - Credit: Requested by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in [#343](https://github.com/NormB/sipnab/issues/343).
 
 ### Fixed
 
-- **The rtpengine guides now say what a real call through rtpengine shows.**
-  - Every block of two guides ran again:
-    - [Add rtpengine to your voice stack](https://sipnab.com/docs/rtpengine-relay/)
-    - [Let sipnab name rtpengine's media](https://sipnab.com/docs/rtpengine-sipnab/)
-  - The runs used clean Debian 13 and Ubuntu 24.04.
-    - The calls' audio crossed the relay.
-  - Each claim was checked against what the machines printed.
-  - Corrected:
-    - Step 4's capture ends with `No SIP signaling found`, not
-      `No SIP traffic found`.
-    - The four streams of step 3 are two PCMA and two PCMU.
-      - The reason: rtpengine converts between codecs for SIPp's PCMU-only
-        callee.
-
-    - With nothing listening at the `homer` address, rtpengine logs
-      `Write error to Homer` for each call.
-      - It does not log only `Connection error from Homer`.
-  - The [rtpengine reference](https://sipnab.com/docs/rtpengine/) restarted a
-    unit named `rtpengine`.
-    - A relay packaged from rtpengine's source tree does not have that unit.
-    - There it is `ngcp-rtpengine-daemon`.
+- **The rtpengine guides say what a real call through rtpengine shows.**
+  - Effect: every block of [Add rtpengine to your voice stack](https://sipnab.com/docs/rtpengine-relay/) and [Let sipnab name rtpengine's media](https://sipnab.com/docs/rtpengine-sipnab/) ran again on clean Debian 13 and Ubuntu 24.04.
+  - Was: step 4's capture was said to end with `No SIP traffic found`; it ends with `No SIP signaling found`.
+  - Effect: the four streams of step 3 are two PCMA and two PCMU, as rtpengine converts between codecs for SIPp's PCMU-only callee.
+  - Effect: with nothing listening at the `homer` address, rtpengine logs `Write error to Homer` for each call, not only `Connection error from Homer`.
+  - Was: the [rtpengine reference](https://sipnab.com/docs/rtpengine/) restarted a unit named `rtpengine`; a relay packaged from rtpengine's source tree has `ngcp-rtpengine-daemon`.
 
 ## [0.5.200] - 2026-10-01
 
