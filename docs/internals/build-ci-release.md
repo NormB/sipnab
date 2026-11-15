@@ -761,6 +761,8 @@ starting at 0, in order:
 - every feature declaring what its own modules import
 - the privilege-drop path still dropping privileges
 - WASM exports in sync with the site's JS
+- `CHANGELOG.md` as the base has it, after a merge
+  ([After a merge of main](#after-a-merge-of-main))
 - the homepage test count still generated, not written into the template,
   plus the site version matching `Cargo.toml`
 - no TODO stubs
@@ -2112,6 +2114,25 @@ Troubleshooting:
   [`scripts/release-records.py`](../../scripts/release-records.py) `ceiling` checks the sha256 of the
   tarball and measures the `sipnab` file in it.
   It writes the binary-ceiling line, and the job uploads it as the run's `release-records` artifact.
+- The record holds the x86_64-musl binary alone, and `release.yml` enforces the ceiling on the two musl targets alone.
+  The sizes of the aarch64 binaries move in steps with no change of code, so a size comparison for an aarch64
+  target cannot tell less than 64 KiB of growth from none.
+  - Measured on 0.5.255, aarch64-gnu: the tag build is 27,759,432 bytes and a build of the commit before the
+    version change is 27,693,888 bytes, 65,544 fewer.
+    The function bodies differ by 232 bytes.
+  - Measured: the linker adds a veneer for Cortex-A53 erratum 843419 where an instruction's address requires one,
+    and each veneer takes 4,096 bytes.
+    The tag build has four and the other build has one.
+  - Measured: the file offset of the writable segment follows a 64 KiB alignment.
+    The three added veneers moved the end of the executable segment 84 bytes past that offset, and the
+    segment went 65,536 bytes further into the file.
+    The name of the debug file accounts for the other 8 bytes.
+  - Inferred, not measured: the version change moved the veneers, because it changes the symbol hashes and
+    with them the order of the functions.
+  - Measured on 0.5.255: the aarch64-musl binary has the same 64 KiB alignment, is 20,948,936 bytes, and
+    leaves 5,265,464 bytes under the 25 MB ceiling.
+    The erratum workaround and the 64 KiB alignment stay: Cortex-A53 hosts need the first, and kernels with
+    16 KiB or 64 KiB pages need the second.
 - The eBPF load verification runs on the OpenSIPS VM (a privileged host with BTF) once the assets exist,
   from [`scripts/post-release.py`](../../scripts/post-release.py) (see [After the release](#after-the-release)).
   The site no longer waits for it, so a verify that does not print `ATTACHED` withdraws the release at once.
@@ -2128,6 +2149,14 @@ Troubleshooting:
     ```sh
     python3 scripts/release-records.py fetch --tag v<prev> --repo NormB/sipnab --dest .git/release-records
     ```
+
+    `fetch` reads the newest tag-push run of `release.yml` for the tag and the run's job `Record the binary size`.
+    It downloads the artifact when that job succeeded and the artifact has not expired.
+    The run's own conclusion decides nothing: a run that failed, or that is in progress on a re-run, for
+    another job still holds the records.
+    `fetch` prints one line that names the run, its attempt, its status and its conclusion.
+    It refuses, and names the reason, when the tag has no tag-push run, when the job did not succeed,
+    and when the run has no `release-records` artifact or only an expired one.
 
   - Write the records and the advertisement:
 
@@ -2545,6 +2574,47 @@ It runs four checks at once:
 - `the tap is on <version>, newer than <version>`: you ran the check for an older release, and the tap is correct as it stands.
 - [`scripts/tests/test_post_release.py`](../../scripts/tests/test_post_release.py) drives every branch through a fake runner.
 
+### The text of a release
+
+The release page on GitHub holds three parts, in this order.
+
+1. The `CHANGELOG.md` section of the version.
+   It says what changed and what an operator must do before an upgrade.
+2. The download table, "Which download do I want?".
+   [`ops/release/platform-table.sh`](../../ops/release/platform-table.sh) derives it from the artifacts that built.
+3. The notes GitHub generates: one line for each merged pull request, and the link that compares the two tags.
+
+Through 0.5.256 the workflow wrote only parts 2 and 3, so an instruction in the changelog did not reach a reader of the release page.
+
+[`scripts/release-notes.py`](../../scripts/release-notes.py) writes part 1.
+
+- It prints what `CHANGELOG.md` holds between `## [<version>] - <date>` and the next `## ` heading.
+- A release page is outside the repository, so the script rewrites each relative link target as an address in the repository at the tag.
+  `docs/fleet.md#x` becomes `https://github.com/NormB/sipnab/blob/v<version>/docs/fleet.md#x`.
+  A target with a scheme stays as it is, and so does text in a code span or a code block.
+- GitHub shows each line break of a release text.
+  The script therefore joins a paragraph or a list item that the changelog writes on several lines.
+- It exits 1 and prints nothing on standard output when the version has no section, two sections or a section with no entry.
+  It also refuses a link target with a `..` step, a target in angle brackets, and a section over 100,000 characters.
+  GitHub's API refuses a release text over 125,000 characters; the bound leaves the rest for parts 2 and 3.
+  The action that publishes the release cuts a longer text at 124,999 characters without an error, so a cut can only remove the end of part 3.
+
+`release.yml` runs the script twice for a tag.
+
+- The job `Tag matches crate version` runs it in the step `Check that the release has its CHANGELOG section` and discards the output.
+  A tag without a section fails there, before the builds.
+- The job `Create Release` runs it in the step `Render the release text`, which writes the section and then the table to `release-body.md`.
+  A failure there ends the job before the step `Create GitHub Release`, so the workflow publishes nothing without the section.
+
+Run it by hand to read the first part of a release page before the tag exists:
+
+```sh
+python3 scripts/release-notes.py 0.5.256 --repo NormB/sipnab
+```
+
+[`scripts/tests/test_release_notes.py`](../../scripts/tests/test_release_notes.py) holds the script to every section of `CHANGELOG.md`, not only the newest.
+A section that the script would refuse, or one over the bound, fails in a pull request and not at the tag.
+
 ### Symbol files
 
 The release strips every binary it publishes.
@@ -2906,6 +2976,48 @@ Two more checks read the changelog.
   - It requires the notes to name each addition in its release's section or a later one.
   - Whatever the working tree adds over the last tag, the notes must name above that tag's section.
     Before a release, that means under `[Unreleased]`.
+
+#### After a merge of main
+
+Purpose: git merges `CHANGELOG.md` line by line and does not read its headings.
+Five times on 2026-11-13 and 2026-11-14 a merge of `main` put entries in the wrong place without a conflict:
+inside a released section, under another heading, and joined to a heading with no blank line.
+[`scripts/check-changelog-merge.py`](../../scripts/check-changelog-merge.py) refuses such a file.
+
+Prerequisites:
+
+- The clone has `origin/main`. Run `git fetch origin` when the script says that it finds no merge base.
+- The script reads the staged file, so stage `CHANGELOG.md` first.
+
+Steps:
+
+1. Merge `main`, and stage the result.
+2. Run `python3 scripts/check-changelog-merge.py`. The pre-commit hook runs it in the step `CHANGELOG as the base has it`, and CI runs it in the `Check` job.
+3. The script compares the staged file with the file of the base.
+   The base is the commit that the merge brings in while a merge is open, and otherwise the merge base of `HEAD` and `origin/main`.
+   `--base <ref>` names another one.
+
+The script holds four rules:
+
+- An entry of the base's `[Unreleased]` that the staged file also holds sits under the same `###` heading.
+  An entry is one top-level bullet with every indented line under it, and the script knows it by its first line.
+- `[Unreleased]` holds each heading once and each entry once.
+- A blank line comes before `## [Unreleased]`, before each of its headings and before the first released heading.
+- The released part of the base, from the first `## [x.y.z]` heading to the end, is the end of the staged file, byte for byte.
+
+Verify: the script prints `the CHANGELOG is as the base <commit> has it` and exits 0.
+Exit 1 lists each problem with the first line of the entry and the two headings.
+Exit 2 means that the script could not read the base or one of the two files.
+
+Troubleshooting:
+
+- `is under '### Fixed' here and under '### Changed' on the base`: move the entry, with its sub-bullets, under the heading that the message names.
+- A message that starts with `the released part`: it lists the lines that differ.
+  - When a merge moved an entry into a released section, move it back to `[Unreleased]`.
+  - When the commit rewrites released sections on purpose, write the sha256 that the message prints to
+    [`.config/changelog-released.sha256`](../../.config/changelog-released.sha256) in the same commit.
+    The rule passes when that file holds the sha256 of the released part and the base holds another value.
+- The script does not judge the form of an entry. That is the subject of the format gate of the changelog.
 
 ### Re-measuring the benchmarks
 

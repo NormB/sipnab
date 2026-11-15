@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.255" "User Commands"
+.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.257" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -21,6 +21,10 @@ sipnab \- SIP & RTP capture, analysis, and security tool
 .br
 .B sipnab g729
 .RB { install | status }
+.RI [ options ]
+.br
+.B sipnab fleet
+.RB { inventory | keygen | serve | verify }
 .RI [ options ]
 .SH DESCRIPTION
 .B sipnab
@@ -1372,6 +1376,20 @@ Download the ITU\-T G.729 software package, check its sha256, build the G.729 co
 Print whether the table file holds the tables, the path it read and the hash of the values. Exit 0 when the file holds the tables, 1 when it does not.
 .PP
 For both commands, \fB\-\-g729\-tables\fR names the table file, as for a capture run; without it, \fB[g729] tables\fR, else \fBg729\-tables.bin\fR in the directory of the user config file. \fB\-f\fR and \fB\-\-no\-config\fR choose the config file as for a run. See docs/g729.md.
+.TP
+\fBsipnab fleet inventory\fR \fB\-\-hosts\fR \fIFILE\fR [\fB\-\-json\fR] [\fB\-\-timeout\fR \fISECS\fR]
+Ask every sipnab instance in a hosts file for its inventory and print one row for each instance and the findings across them. Exit 0 when every instance answered and there is no finding, 1 when an instance did not answer or there is a finding, 2 when the hosts file cannot be used.
+.TP
+\fBsipnab fleet keygen\fR \fB\-\-out\fR \fIFILE\fR
+Create the key a fleet center encrypts its store under, in a new file that this user alone can read, and print the key's id. Exit 2 when the file exists or cannot be written.
+.TP
+\fBsipnab fleet serve\fR \fB\-\-listen\fR \fIADDR\fR \fB\-\-store\fR \fIFILE\fR \fB\-\-store\-key\-file\fR \fIFILE\fR \fB\-\-signing\-key\-file\fR \fIFILE\fR [\fIoptions\fR]
+Run a fleet center: take heartbeats and call records from fleet members and serve every member, with the ones gone silent. It runs until SIGINT or SIGTERM, then exits 0. Exit 2 when it refuses an argument, a key, the store or the listener.
+.TP
+\fBsipnab fleet verify\fR \fB\-\-store\fR \fIFILE\fR \fB\-\-store\-key\-file\fR \fIFILE\fR [\fB\-\-store\-old\-key\-file\fR \fIFILE\fR] [\fB\-\-class\fR \fICLASS\fR] [\fB\-\-from\fR \fIDATE\fR] [\fB\-\-to\fR \fIDATE\fR] [\fB\-\-json\fR] [\fB\-\-user\fR \fIUSER\fR] [\fB\-\-no\-priv\-drop\fR]
+Read every row of every file of a fleet center's history store and report each file that is refused, with the first reason. It changes nothing, so it runs beside a running center and on a backup copy. \fB\-\-class\fR reads call records (\fBcalls\fR) or heartbeats (\fBmembers\fR) only; \fB\-\-from\fR and \fB\-\-to\fR name the first and the last UTC day, as YYYY\-MM\-DD. Started as root, it reads the key files as root and the history files as \fB\-\-user\fR, else nobody; \fB\-\-no\-priv\-drop\fR keeps root. Exit 0 when no file is refused, 1 when one is, 2 when the pass cannot run.
+.PP
+The fleet commands open no capture. See docs/fleet.md and docs/cli\-reference.md.
 .SH TUI KEYBINDINGS
 The interactive TUI supports the terminal viewer-compatible navigation:
 .SS Call List

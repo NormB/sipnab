@@ -1510,10 +1510,27 @@ pub fn prepare(
 /// Creates the output directory, connects to the store, and writes one file
 /// per container.
 pub fn run(settings: FetchSettings, uuids: &[String], stop: &dyn Fn() -> bool) -> i32 {
+    run_confined(settings, uuids, stop, &|_| Ok(()))
+}
+
+/// [`run`], with `confine` called once the CA is read and before the output
+/// directory is created or a connection made: where a fetcher started as
+/// root changes user ([`crate::early_exit::confine`]). A refusal of
+/// `confine` is exit code 2.
+pub fn run_confined(
+    settings: FetchSettings,
+    uuids: &[String],
+    stop: &dyn Fn() -> bool,
+    confine: &dyn Fn(&FetchSettings) -> Result<(), String>,
+) -> i32 {
     if let Some(warning) = plaintext_warning(&settings.url) {
         tracing::warn!("{warning}");
     }
-    let fetcher = match Fetcher::new(settings) {
+    let fetcher = match Fetcher::reader(settings).and_then(|fetcher| {
+        confine(&fetcher.settings)?;
+        prepare_out_dir(&fetcher.settings.out_dir, "--vcon-fetch-out")?;
+        Ok(fetcher)
+    }) {
         Ok(f) => f,
         Err(e) => {
             stderr_line!("{e}");

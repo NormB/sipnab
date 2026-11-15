@@ -120,6 +120,14 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // "After a merge of main" names `scripts/check-changelog-merge.py --base`.
+    (
+        "base",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "After the release" runs `scripts/post-release.py run --host`.
     (
         "host",
@@ -6552,7 +6560,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1502 -> 1504 (binary sizes of 0.5.254): the table of release build
     // sizes in docs/fleet.md's "Upgrade a center to compressed history
     // files", with its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1504;
+    // 1504 -> 1506 (COMMANDS-KEEP-ROOT): the table of "Commands that do not
+    // capture" in docs/least-privilege.md, with its site mirror (+2).
+    // 1506 -> 1508 (`sipnab fleet verify`): the table of exit statuses in
+    // docs/fleet.md's "Verify the history store", with its site mirror (+2).
+    // 1508 -> 1510 (`sipnab fleet verify`, measured): the table of measured
+    // pass times in the same section, with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1510;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

@@ -1,0 +1,7 @@
+# The sha256 of the released part of CHANGELOG.md (from the first
+# `## [x.y.z]` heading to the end) as the last commit that rewrote released
+# sections on purpose left it. scripts/check-changelog-merge.py refuses a
+# released part that differs from the base's unless the same commit moves
+# this pin to the sha256 it prints. A release adds a section on top and
+# does not move the pin.
+e68ab4bac1cd983c0723e96556b2e5bb8e9be2aee31d185bff6f2e82a6fd003c

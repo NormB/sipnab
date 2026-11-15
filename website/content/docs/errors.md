@@ -5914,6 +5914,17 @@ nothing of that class.
 **What to do:** Check that the center's user can read `<store>.parquet` and
 the `calls` and `members` directories in it.
 
+### `fleet center: an upkeep pass did not finish: {e}`
+
+An error. The pass that checks for silent members, files what waits and
+applies retention ended in a panic. `{e}` is what the runtime said. The
+center goes on: the next pass runs at its time, and that pass logs each
+silent member as silent again.
+
+**What to do:** Report it with the lines the log holds before this one. If
+the line repeats, restart the center: it files what its intake and its store
+file hold when it starts.
+
 ### `fleet center: the heartbeats were not filed and wait in the store file: {e}`
 
 A warning. The center could not write the heartbeats it acknowledged into the
@@ -6124,6 +6135,124 @@ the path, and a heartbeat has no Call-ID.
 
 **What to do:** Use `from`, `to` and `limit`.
 
+## Fleet verify (`sipnab fleet verify`)
+
+`sipnab fleet verify` prints these messages.
+[Verify the history store](@/docs/fleet.md#verify-the-history-store) describes the
+command. A message that starts with `sipnab fleet verify:` means the pass
+did not run, and the exit code is 2. A line that starts with `refused:`
+names one refused file with the first reason, and the exit code is then 1.
+The reasons that start with `sealed layer:` and `parquet:` are those of
+[Fleet center](#fleet-center-sipnab-fleet-serve): the command reads a file
+as the center does.
+
+Four lines have no entry of their own below:
+
+- `'<text>' is not a day as YYYY-MM-DD`: `--from` or `--to` holds something
+  other than a day in that spelling, with four, two and two digits. Write
+  the day as `2026-11-03`. The days are UTC days. The exit code is 2.
+- `refused: <file>: <reason>`: the command refused the file at that path
+  under the history directory. The reason is the first check that failed,
+  and the command went on to the next file. The troubleshooting list of
+  [Verify the history store](@/docs/fleet.md#verify-the-history-store) says what
+  to do for each kind of reason. The exit code is 1 when the pass ends.
+- `sipnab fleet verify: the history store: <class>: <reason>`: the command
+  could not list a directory of the class. Run the command as the center's
+  user, and check that this user can read `<store>.parquet` and the
+  directories in it. A run that root starts checks this before it reads and
+  prints the `started as root` message in place of this one. The exit code
+  is 2.
+- `rows: the file holds no row`, a reason after `refused:`: the file opens
+  and its Parquet holds no row. The center writes no such file. Keep the
+  file and report the line with the version of the release that wrote it.
+
+### `no history directory '{}': nothing to verify`
+
+Printed after `sipnab fleet verify:`. There is no directory under the name of `--store` with `.parquet` added. The
+command reads nothing and does not create the directory.
+
+**What to do:** Give the `--store` of the center's service unit. A center
+whose `--version` does not list `fleet-store` keeps no history.
+
+**Exit code:** 2.
+
+### `--from {from} is after --to {to}`
+
+Printed after `sipnab fleet verify:`. The window ends before it starts.
+
+**What to do:** Swap the two days. Both days belong to the window.
+
+**Exit code:** 2.
+
+### `--class {other}: the classes are {CLASS_CALLS} and {CLASS_MEMBERS}`
+
+The class is not one of the history store: `calls` or `members`. The
+command line refuses another value of `--class` before this check, so a run
+of the command does not print the line.
+
+**What to do:** Give `--class calls` or `--class members`, or leave the flag
+out to read both.
+
+**Exit code:** 2.
+
+### `sipnab fleet verify: this build has no history store (Cargo feature `fleet-store`): run the command from the build the center runs`
+
+The build's `--version` does not list `fleet-store`: a static musl build or
+a `-noaudio` package. It cannot read a history file.
+
+**What to do:** Run the command from a build that lists `fleet-store`.
+
+**Exit code:** 2.
+
+### `rows: row {} was received on {received}, and the file is in the directory of {day}`
+
+A reason after `refused:`. A row's receive time is on another UTC day than
+the `date=` directory of the file.
+
+**What to do:** Keep the file and report the line with the version of the
+release that wrote it.
+
+### `rows: the earliest row was received at {} ms, and the name says {}`
+
+A reason after `refused:`. The earliest receive time in the file is not the
+first time in its name. Both are milliseconds since 1970.
+
+**What to do:** Keep the file and report the line with the version of the
+release that wrote it.
+
+### `rows: the latest row was received at {} ms, and the name says {}`
+
+A reason after `refused:`. The latest receive time in the file is not the
+second time in its name.
+
+**What to do:** Keep the file and report the line with the version of the
+release that wrote it.
+
+### `rows: the mark of the rows is h{:016x}, and the name says h{:016x}`
+
+A reason after `refused:`. The name of a file states a mark that the center
+computes from the member, the stream, the position and the receive time of
+each row. The rows of this file give another mark, so they are not the rows
+the file had when the center named it.
+
+**What to do:** Keep the file and report the line with the version of the
+release that wrote it.
+
+### `rows: row {} is of the member '{}', and the file is in the directory of '{}'`
+
+A reason after `refused:`, for a file that release 0.5.249 wrote under
+`member=<id>`. A row is of another member than the directory names.
+
+**What to do:** Keep the file and report the line.
+
+### `rows: the first row is {}-{}, and the name says {}-{}`
+
+A reason after `refused:`, for a file that release 0.5.249 wrote under
+`member=<id>`. The stream and the position of the file's first row are not
+the two in its name.
+
+**What to do:** Keep the file and report the line.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`
@@ -6204,6 +6333,41 @@ Running as root, sipnab switches to an unprivileged account after opening the ca
 **What to do:** Name an existing account with `--user <USER>` or `[privilege] user`, or pass `--no-priv-drop` to keep the current account.
 
 **Exit code:** 1.
+
+### `{command}: started as root, this command runs as user '{target}', and '{target}' cannot {access} '{path}' ({what}). Nothing was created. Choose one: chown {target} '{path}'; {user_way}; or pass --no-priv-drop to keep root`
+
+Root started a command that opens no capture: `sipnab fleet serve`, `sipnab fleet inventory`, `sipnab fleet verify`, `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch`, `--relay-holdings` or `--relay-sessions`. Since 0.5.256 such a command reads its key files as root and then runs as another user. That user cannot use a path the command needs.
+
+- `{command}` is the command, and `{target}` the user it runs as: `--user`, else `[privilege] user`, else `nobody`.
+- `{path}` is the file or directory, `{what}` the flag that named it, and `{access}` what the user cannot do: `read`, `read and write`, or `write in`.
+- `{user_way}` names the user who called `sudo`, when that user can use the path. Otherwise it reads `--user USER`.
+- The command created no file and made no connection.
+
+**What to do:** Use one of the three ways the message lists.
+
+- Give the path to the user: `chown {target} '{path}'`. For a center's store or a forwarder's spool, give it the whole directory with `chown -R`. For `sipnab fleet verify` on a store that a center uses, do not change the owner: name the center's user with `--user`.
+- Name a user who can use the path, with `--user`.
+- Pass `--no-priv-drop` to keep root, as before 0.5.256.
+
+[Commands that do not capture](@/docs/least-privilege.md#commands-that-do-not-capture) lists what each command needs.
+
+**Exit code:** 2.
+
+### `{name}: failed to drop privileges: {e}`
+
+Root started a command that opens no capture, and the switch to another user failed. `{name}` is the command. `{e}` gives the reason, for example an account that does not exist.
+
+**What to do:** Name an existing account with `--user <USER>`, or pass `--no-priv-drop` to keep root.
+
+**Exit code:** 2.
+
+### `{command}: running as root because --no-priv-drop was given; without it this command runs as --user, or as '{nobody}'`
+
+A warning. Root started a command that opens no capture, with `--no-priv-drop`, so the command keeps root. `{command}` is the command.
+
+**What to do:** Nothing, when root is what you want. Otherwise remove `--no-priv-drop` and give the paths the command writes to the user it runs as.
+
+**Exit code:** None. This is a warning, and the run continues.
 
 ### `Failed to spawn processing thread: {e}`
 

@@ -1054,9 +1054,18 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 875 -> 877 (size claims in the changelog, +2): build-ci-release.md's
     // "The changelog" links scripts/check-changelog-size-claims.py and its
     // test file.
-    // 877 -> 878 (changelog outline format, +1): build-ci-release.md's "The
+    // 877 -> 882 (COMMANDS-KEEP-ROOT, +5): threading.md links early_exit.rs
+    // twice, fan_out.rs, and, in "Commands that end before the launch", the
+    // census test and main.rs.
+    // 882 -> 884 (CHANGELOG merge gate, +2): build-ci-release.md's "After a
+    // merge of main" links scripts/check-changelog-merge.py and
+    // .config/changelog-released.sha256.
+    // 884 -> 885 (changelog outline format, +1): build-ci-release.md's "The
     // format of an entry" links tests/changelog_format_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 878;
+    // The text of a release: build-ci-release.md links
+    // scripts/release-notes.py, ops/release/platform-table.sh and
+    // scripts/tests/test_release_notes.py.
+    const EXPECTED_CODE_LINKS: usize = 888;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
