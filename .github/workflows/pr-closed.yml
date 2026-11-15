@@ -33,6 +33,10 @@ concurrency:
 jobs:
   cancel:
     name: End the CI run of the closed pull request
+    # A merged pull request's CI run ended green before the merge, so a merge
+    # has nothing to cancel. The trigger cannot filter on `merged`: a merge
+    # still creates a run, and this job is skipped.
+    if: github.event.pull_request.merged == false
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

@@ -267,10 +267,33 @@ def test_ci_is_named_ci():
     assert workflow_name(CI) == "CI", "the closed workflow writes this name into its group"
 
 
-def test_a_merged_pull_request_closes_too():
-    # GitHub sends `closed` for a merge as for a close without one; one
-    # action covers both, and the workflow does not test `merged`.
-    assert "merged" not in code(CLOSED)
+def test_the_job_does_not_run_for_a_merge():
+    # A merged pull request's CI run ended green before the merge, so there
+    # is nothing to cancel. GitHub sends `closed` for a merge too and the
+    # trigger cannot filter on `merged`, so the run is created and its job is
+    # skipped. GitHub's `==` turns null and false into 0, so a payload with
+    # no `merged` runs the job, which only prints.
+    jobs = top(CLOSED, "jobs")
+    assert re.search(r"(?m)^    if: github\.event\.pull_request\.merged == false$", jobs), jobs
+
+
+def test_the_group_names_no_context_but_the_number():
+    # So no event, merged or not, can give main's group: the group has no
+    # `github.ref`, which is the base branch for a merged pull request.
+    group = value(top(CLOSED, "concurrency"), "group")
+    assert re.findall(r"\$\{\{\s*(.*?)\s*\}\}", group) == ["github.event.pull_request.number"], group
+
+
+def test_an_empty_number_gives_a_group_that_is_not_mains():
+    assert closed_group(None) == "ci-CI-"
+    assert closed_group(None).casefold() != ci_group(None, "refs/heads/main").casefold()
+
+
+def test_the_workflows_row_states_the_limits():
+    page = text(REPO / "docs" / "internals" / "build-ci-release.md")
+    row = next(line for line in page.split("\n") if line.startswith("| `pr-closed.yml` |"))
+    for needed in ("merge conflict", "merged", "skipped", "not stated"):
+        assert needed in row, needed
 
 
 def test_the_closed_workflow_has_a_name_that_says_what_it_does():
