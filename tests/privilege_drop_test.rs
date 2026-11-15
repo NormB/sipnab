@@ -1905,9 +1905,16 @@ impl Drop for RootRemoves {
 /// A directory every user may create entries in, as `/tmp` is (mode 1777),
 /// given to a root run as its `TMPDIR`, so what the run leaves there can be
 /// listed.
+///
+/// Made under `/tmp`, not under this process's own temporary directory: on
+/// macOS that one is a per-user folder under `/var/folders` (mode 0700),
+/// which the user a root run drops to cannot reach, and since
+/// CAPTURE-RESOLVE-AS-ROOT that user unpacks the run's archives.
 fn scratch_tmpdir() -> Result<(tempfile::TempDir, RootRemoves), TestError> {
     use std::os::unix::fs::PermissionsExt as _;
-    let dir = tempfile::tempdir()?;
+    let dir = tempfile::Builder::new()
+        .prefix("sipnab-scratch-tmpdir-")
+        .tempdir_in("/tmp")?;
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o1777))?;
     let cleanup = RootRemoves(dir.path().to_path_buf());
     Ok((dir, cleanup))
