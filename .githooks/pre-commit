@@ -953,6 +953,30 @@ else
     echo -e "${YELLOW}SKIP (python3 absent)${NC}"
 fi
 
+# ── CHANGELOG as the base has it ───────────────────────────────────
+# git merges CHANGELOG.md line by line and knows nothing of its headings.
+# Five times on 2026-11-13 and 2026-11-14 an automatic merge of main put
+# entries in the wrong place without a conflict: inside a released section;
+# a heading joined to an entry with no blank line; main's `Changed` entry
+# under the branch's `### Fixed`. The script compares the CHANGELOG.md of the
+# index with the one of the commit being merged (MERGE_HEAD), or of the
+# merge base with origin/main: the rules are in its docstring. A repository
+# with no origin/main and no merge in progress has no base to compare with,
+# and the step says so; CI runs the same script where the base always exists.
+step "CHANGELOG as the base has it"
+if ! command -v python3 >/dev/null 2>&1; then
+    echo -e "${YELLOW}SKIP (python3 absent)${NC}"
+elif ! git rev-parse -q --verify 'origin/main^{commit}' >/dev/null 2>&1 \
+    && ! git rev-parse -q --verify 'MERGE_HEAD^{commit}' >/dev/null 2>&1; then
+    echo -e "${YELLOW}SKIP (no origin/main and no merge in progress: no base)${NC}"
+elif CHANGELOG_OUT=$(python3 scripts/check-changelog-merge.py 2>&1); then
+    echo -e "${GREEN}OK${NC}"
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "$CHANGELOG_OUT" | sed 's/^/    /'
+    exit 1
+fi
+
 # ── Script tests ───────────────────────────────────────────────────
 # Twenty Python scripts had no tests at all, and several of them are the
 # fixers the gates below depend on. A fixer that stops producing what its gate

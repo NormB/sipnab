@@ -761,6 +761,8 @@ starting at 0, in order:
 - every feature declaring what its own modules import
 - the privilege-drop path still dropping privileges
 - WASM exports in sync with the site's JS
+- `CHANGELOG.md` as the base has it, after a merge
+  ([After a merge of main](#after-a-merge-of-main))
 - the homepage test count still generated, not written into the template,
   plus the site version matching `Cargo.toml`
 - no TODO stubs
@@ -2811,10 +2813,49 @@ is the user's side.
 `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and says so in its header.
 
-- Entries sit under `Added` / `Changed` /
-  `Fixed` / `Removed`.
-- The project uses a few extra headings where those four
-  do not fit what a release actually did.
+- Entries sit under `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` and `Security`.
+- The older sections use a few extra headings, and hold entries written as paragraphs.
+
+#### The format of an entry
+
+The reader of the changelog decides whether to upgrade, and what to do after.
+An entry is an outline of at most six lines:
+
+```markdown
+- **The lead: what changed, in the user's terms.**
+  - Was: for a fix, what went wrong before.
+  - Effect: what the user sees or can now do.
+  - Do: what the user must do, with the command or the setting.
+  - Limit: one limit or caveat.
+  - Docs: [the page title](docs/page.md#the-heading).
+```
+
+- The lead is one bold line of at most 15 words, with nothing after it.
+  It states the effect, not the mechanism.
+- One to five sub-bullets follow, each one line of at most 25 words after its label.
+  The labels are `Effect:`, `Do:`, `Limit:`, `Docs:` and `Was:`.
+- Every entry has an `Effect:` or a `Was:` line. The other labels appear only when they apply.
+- A `Docs:` line holds a link. A link counts the words of its title, not its address.
+- An entry about sizes or limits can hold one table of at most six rows in place of its `Effect:` line.
+- A credit that an old entry already carries, such as "Requested by", stays word for word as a last sub-bullet labeled `Credit:`.
+  It does not count toward the five, and no entry gains or loses one.
+- Nothing else stands under a bullet: no paragraph, no continuation line and no third level.
+
+What goes into an entry:
+
+- A command, a flag, a setting, a file path, an error text or a number that the user meets, in code font.
+- No internal names: no function, type, test or backlog names, and no account of the tests of the change.
+- The detail goes into the docs page that the `Docs:` line links.
+- A change that no user of a released artifact can see has no entry.
+  Hooks, CI, tests, gates and refactors are such changes.
+- Related changes of one release share one entry.
+
+[`changelog_format_test`](../../tests/changelog_format_test.rs) holds the format.
+
+- It reads `[Unreleased]` and every release section down to the one that its `CONVERTED_DOWN_TO` names.
+- The sections below that one keep the old form until a later change rewrites them and lowers the constant.
+- It prints the section, the lead and the rule for each entry that departs from the format.
+- A `Not released.` paragraph and a `**Held:**` line are the only text it allows outside an entry.
 
 **A size statement carries its numbers.**
 An entry that compares binary sizes names the two sizes it compared, or the release workflow run that printed them.
@@ -2857,9 +2898,7 @@ It exists because an edit whose anchor included the heading destroyed it.
 - The sibling gate searches for the heading naming the *current site version*.
   That heading was still present further down.
 
-Nothing gates the changelog's prose, which is deliberate.
-Prose would satisfy a gate on prose.
-Two checks read it all the same.
+Two more checks read the changelog.
 
 - The release date must match [`website/config.toml`](../../website/config.toml).
   `site_release_date_matches_changelog` asserts it.
@@ -2869,6 +2908,48 @@ Two checks read it all the same.
   - It requires the notes to name each addition in its release's section or a later one.
   - Whatever the working tree adds over the last tag, the notes must name above that tag's section.
     Before a release, that means under `[Unreleased]`.
+
+#### After a merge of main
+
+Purpose: git merges `CHANGELOG.md` line by line and does not read its headings.
+Five times on 2026-11-13 and 2026-11-14 a merge of `main` put entries in the wrong place without a conflict:
+inside a released section, under another heading, and joined to a heading with no blank line.
+[`scripts/check-changelog-merge.py`](../../scripts/check-changelog-merge.py) refuses such a file.
+
+Prerequisites:
+
+- The clone has `origin/main`. Run `git fetch origin` when the script says that it finds no merge base.
+- The script reads the staged file, so stage `CHANGELOG.md` first.
+
+Steps:
+
+1. Merge `main`, and stage the result.
+2. Run `python3 scripts/check-changelog-merge.py`. The pre-commit hook runs it in the step `CHANGELOG as the base has it`, and CI runs it in the `Check` job.
+3. The script compares the staged file with the file of the base.
+   The base is the commit that the merge brings in while a merge is open, and otherwise the merge base of `HEAD` and `origin/main`.
+   `--base <ref>` names another one.
+
+The script holds four rules:
+
+- An entry of the base's `[Unreleased]` that the staged file also holds sits under the same `###` heading.
+  An entry is one top-level bullet with every indented line under it, and the script knows it by its first line.
+- `[Unreleased]` holds each heading once and each entry once.
+- A blank line comes before `## [Unreleased]`, before each of its headings and before the first released heading.
+- The released part of the base, from the first `## [x.y.z]` heading to the end, is the end of the staged file, byte for byte.
+
+Verify: the script prints `the CHANGELOG is as the base <commit> has it` and exits 0.
+Exit 1 lists each problem with the first line of the entry and the two headings.
+Exit 2 means that the script could not read the base or one of the two files.
+
+Troubleshooting:
+
+- `is under '### Fixed' here and under '### Changed' on the base`: move the entry, with its sub-bullets, under the heading that the message names.
+- A message that starts with `the released part`: it lists the lines that differ.
+  - When a merge moved an entry into a released section, move it back to `[Unreleased]`.
+  - When the commit rewrites released sections on purpose, write the sha256 that the message prints to
+    [`.config/changelog-released.sha256`](../../.config/changelog-released.sha256) in the same commit.
+    The rule passes when that file holds the sha256 of the released part and the base holds another value.
+- The script does not judge the form of an entry. That is the subject of the format gate of the changelog.
 
 ### Re-measuring the benchmarks
 

@@ -120,6 +120,14 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // "After a merge of main" names `scripts/check-changelog-merge.py --base`.
+    (
+        "base",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "After the release" runs `scripts/post-release.py run --host`.
     (
         "host",
