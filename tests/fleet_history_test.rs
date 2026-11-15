@@ -1137,6 +1137,25 @@ mod with_the_store {
             (Some(2), &serde_json::json!(true)),
             "edge with the earlier key listed, its files are read: {answer}"
         );
+        drop(c);
+        // The next start leaves the earlier key out: the store file is
+        // under the new key by now, the history file is not.
+        let c = start(None)?;
+        let (status, answer) = calls(&c.addr, "")?;
+        assert_eq!(
+            (status, answer["count"].as_u64(), &answer["complete"]),
+            (200, Some(0), &serde_json::json!(false)),
+            "edge without the earlier key the center starts and answers without its files: \
+             {answer}"
+        );
+        assert!(
+            answer["refused"][0]["reason"]
+                .as_str()
+                .is_some_and(|why| why
+                    .starts_with("sealed layer: the file was written under key id ")
+                    && why.ends_with(", which is not loaded")),
+            "edge the refused file names the key it is under: {answer}"
+        );
         Ok(())
     }
 }

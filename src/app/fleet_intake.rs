@@ -121,6 +121,70 @@ pub struct Intake {
     held: Vec<(DateTime<Utc>, usize)>,
     /// Records the bounds removed since the center started.
     dropped: u64,
+    /// How many records left the front of the intake since the center
+    /// started, removed or filed: the number of the first record held.
+    first: u64,
+    /// While a filing is out ([`Intake::filing`]): the lines of the
+    /// records taken since it started, which are the last records held.
+    since: Option<Vec<Vec<u8>>>,
+}
+
+/// How many of the records an intake holds leave it when a filing is done.
+///
+/// The filing took `count` records at the number `first`; the intake now
+/// holds `held` records and its first is the number `now_first`. Records
+/// the bounds removed in between are not counted a second time, and
+/// records that arrived in between stay.
+#[must_use]
+pub fn filed_count(first: u64, count: usize, now_first: u64, held: usize) -> usize {
+    let end = first.saturating_add(count as u64);
+    usize::try_from(end.saturating_sub(now_first)).map_or(held, |left| left.min(held))
+}
+
+/// What an intake held at one moment ([`Intake::snapshot`]), not yet read.
+#[derive(Debug)]
+pub struct Snapshot {
+    /// The number of the first record.
+    first: u64,
+    /// The records, in the file as it was.
+    prefix: super::fleet_log::Prefix,
+    /// The file, as messages name it.
+    shown: String,
+}
+
+impl Snapshot {
+    /// The number of the first record, for [`Intake::filed`].
+    #[must_use]
+    pub fn first(&self) -> u64 {
+        self.first
+    }
+
+    /// How many records [`Snapshot::rows`] returns.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.prefix.count()
+    }
+
+    /// The records, oldest first: exactly those the intake held when the
+    /// snapshot was taken, whatever it took, removed or filed since.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be read, the sealed layer refuses it, or a record
+    /// in it does not parse. The message names the file.
+    pub fn rows(self) -> Result<Vec<IntakeRecord>, String> {
+        let lines = self
+            .prefix
+            .lines()
+            .map_err(|e| format!("the intake '{}': {e}", self.shown))?;
+        parsed(&self.shown, &lines)
+    }
+
+    /// The prefix, for a test that reads it through a reader of its own.
+    #[cfg(test)]
+    pub(super) fn prefix_mut(&mut self) -> &mut super::fleet_log::Prefix {
+        &mut self.prefix
+    }
 }
 
 impl std::fmt::Debug for Intake {
@@ -175,6 +239,8 @@ impl Intake {
                 log,
                 held: held[first..].to_vec(),
                 dropped: first as u64,
+                first: 0,
+                since: None,
             },
             records,
         ))
@@ -201,6 +267,9 @@ impl Intake {
                 .zip(&lines)
                 .map(|(record, line)| (record.received_at, line.len())),
         );
+        if let Some(since) = &mut self.since {
+            since.extend(lines);
+        }
         Ok(())
     }
 
@@ -231,12 +300,106 @@ impl Intake {
             .rewrite(lines[from..].iter().cloned().map(Ok))
             .map_err(|e| format!("the intake '{shown}': {e}"))?;
         self.held.drain(..first);
+        self.first = self.first.saturating_add(first as u64);
         self.dropped = self.dropped.saturating_add(first as u64);
         Ok(first)
     }
 
-    /// The records the intake holds, oldest first, read from the file: what
-    /// the history store files.
+    /// The records the intake holds now, to be read later
+    /// ([`Snapshot::rows`]): the file is opened and its header read here,
+    /// and the records are not. The center takes this under its lock and
+    /// reads and parses the records after the lock is released.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be opened, or its header cannot be read. The
+    /// message names the file.
+    #[cfg(any(feature = "fleet-store", test))]
+    pub fn snapshot(&self) -> Result<Snapshot, String> {
+        let shown = self.log.path().display().to_string();
+        let prefix = self
+            .log
+            .prefix()
+            .map_err(|e| format!("the intake '{shown}': {e}"))?;
+        Ok(Snapshot {
+            first: self.first,
+            prefix,
+            shown,
+        })
+    }
+
+    /// [`Intake::snapshot`] for a filing: from here until
+    /// [`Intake::filed`] or [`Intake::not_filed`], the intake also keeps
+    /// the lines of the records it takes, so that `filed` writes the file
+    /// again from them without reading it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Intake::snapshot`]; no line is then kept.
+    #[cfg(any(feature = "fleet-store", test))]
+    pub fn filing(&mut self) -> Result<Snapshot, String> {
+        self.since = None;
+        let snapshot = self.snapshot()?;
+        self.since = Some(Vec::new());
+        Ok(snapshot)
+    }
+
+    /// The filing that [`Intake::filing`] started did not file its
+    /// records: they stay, and the lines kept for it are let go.
+    #[cfg(any(feature = "fleet-store", test))]
+    pub fn not_filed(&mut self) {
+        self.since = None;
+    }
+
+    /// The history store filed the `count` records a snapshot took at the
+    /// number `first` ([`Snapshot::first`], [`Snapshot::count`]): those of
+    /// them the intake still holds leave it, and the file is written again
+    /// with the records that arrived since ([`filed_count`]). Returns how
+    /// many left. These are not counted as removed by the bounds
+    /// ([`Intake::dropped`]).
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be rewritten, or, when no lines were kept for this
+    /// filing, cannot be read. The file and the records this intake holds
+    /// are then as they were.
+    #[cfg(any(feature = "fleet-store", test))]
+    pub fn filed(&mut self, first: u64, count: usize) -> Result<usize, String> {
+        // The lines kept for this filing are used here or let go: after
+        // this call, however it ends, no filing is out.
+        let since = self.since.take();
+        let leave = filed_count(first, count, self.first, self.held.len());
+        if leave == 0 {
+            return Ok(0);
+        }
+        let shown = self.log.path().display().to_string();
+        let rest = self.held.len().saturating_sub(leave);
+        // The records that stay are those taken since the filing started.
+        // Their lines were kept, so the file, which may hold as much as
+        // the intake's bound, is not read under the center's lock. Without
+        // kept lines for exactly those records, the file is the source,
+        // and it is not read either when no record stays.
+        let stay = match since {
+            Some(lines) if lines.len() == rest => lines,
+            _ if rest == 0 => Vec::new(),
+            _ => {
+                let mut lines = self
+                    .log
+                    .held_lines()
+                    .map_err(|e| format!("the intake '{shown}': {e}"))?;
+                lines.drain(..leave.min(lines.len()));
+                lines
+            }
+        };
+        self.log
+            .rewrite(stay.into_iter().map(Ok))
+            .map_err(|e| format!("the intake '{shown}': {e}"))?;
+        self.held.drain(..leave);
+        self.first = self.first.saturating_add(leave as u64);
+        Ok(leave)
+    }
+
+    /// The records the intake holds, oldest first, read from the file.
     ///
     /// # Errors
     ///
@@ -244,30 +407,18 @@ impl Intake {
     /// in it does not parse. The message names the file.
     #[cfg(any(feature = "fleet-store", test))]
     pub fn rows(&self) -> Result<Vec<IntakeRecord>, String> {
-        let shown = self.log.path().display().to_string();
-        let lines = self
-            .log
-            .held_lines()
-            .map_err(|e| format!("the intake '{shown}': {e}"))?;
-        parsed(&shown, &lines)
+        self.snapshot()?.rows()
     }
 
-    /// Write the file again with no record in it, after the history store
-    /// filed what it held. Returns how many records it held. These are not
-    /// counted as removed by the bounds ([`Intake::dropped`]).
+    /// Every record the intake holds leaves it, as after a filing of all
+    /// of them. Returns how many it held.
     ///
     /// # Errors
     ///
-    /// The file cannot be rewritten; it and this intake are then as they
-    /// were.
-    #[cfg(any(feature = "fleet-store", test))]
+    /// As [`Intake::filed`].
+    #[cfg(test)]
     pub fn clear(&mut self) -> Result<usize, String> {
-        let held = self.held.len();
-        self.log
-            .rewrite(std::iter::empty())
-            .map_err(|e| format!("the intake '{}': {e}", self.log.path().display()))?;
-        self.held.clear();
-        Ok(held)
+        self.filed(self.first, self.held.len())
     }
 
     /// How many records the intake holds.
@@ -1275,6 +1426,834 @@ mod tests {
             (records[0].cursor.seq, records[0].call_records),
             (3, 3),
             "edge a replay does not move a position back or count a record twice"
+        );
+        Ok(())
+    }
+}
+
+/// A filing reads the intake without holding it: the tests of
+/// [`Intake::snapshot`], [`Intake::filing`], [`Intake::filed`] and
+/// [`filed_count`].
+#[cfg(test)]
+mod filing_tests {
+    use super::*;
+    use crate::app::fleet_log::faults::{real, stop_at};
+    use crate::app::fleet_seal::MasterKey;
+
+    /// What a test returns.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Three days, the retention the tests use.
+    const KEEP: chrono::Duration = chrono::Duration::hours(72);
+
+    /// The test key.
+    fn keys() -> Arc<Keys> {
+        Arc::new(Keys::new(MasterKey::from_bytes([1; 32]), Vec::new()))
+    }
+
+    /// A time `secs` seconds after a fixed start.
+    fn at(secs: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::UNIX_EPOCH + chrono::TimeDelta::seconds(1_800_000_000 + secs)
+    }
+
+    /// The record at `seq` of member `edge-a`, received at `at(seq)`.
+    fn rec(seq: u64) -> IntakeRecord {
+        let secs = i64::try_from(seq).unwrap_or(0);
+        IntakeRecord {
+            member: "edge-a".to_string(),
+            received_at: at(secs),
+            stream: "s".to_string(),
+            seq,
+            sent_at: at(secs - 1),
+            selected_by: "failed".to_string(),
+            call: serde_json::json!({
+                "call_id": format!("call-{seq}@example.com"),
+                "from": "sip:+12025550101@example.com",
+            }),
+        }
+    }
+
+    /// The records at `seqs`.
+    fn recs(seqs: std::ops::RangeInclusive<u64>) -> Vec<IntakeRecord> {
+        seqs.map(rec).collect()
+    }
+
+    /// The intake at `path`, opened at `at(100)`.
+    fn open(path: &Path) -> Result<(Intake, Vec<IntakeRecord>), String> {
+        Intake::open(path, keys(), at(100), KEEP, MAX_INTAKE_BYTES)
+    }
+
+    /// An intake in a directory of its own that took the records 1 to `n`:
+    /// the directory, the file and the intake.
+    fn holding(n: u64) -> Result<(tempfile::TempDir, PathBuf, Intake), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub)?;
+        let path = sub.join("center.store.intake");
+        let (mut intake, _) = open(&path)?;
+        intake.append(&recs(1..=n))?;
+        Ok((dir, path, intake))
+    }
+
+    /// The sequence numbers of the records the intake at `path` holds at
+    /// the next start.
+    fn seqs_at(path: &Path) -> Result<Vec<u64>, String> {
+        open(path).map(|(_, records)| records.iter().map(|r| r.seq).collect())
+    }
+
+    /// Change one byte of the last record of the file at `path`.
+    fn damage(path: &Path) -> std::io::Result<()> {
+        let mut bytes = std::fs::read(path)?;
+        let at = bytes.len().saturating_sub(40);
+        bytes[at] ^= 0x01;
+        std::fs::write(path, bytes)
+    }
+
+    /// The directory of the intake at `path` moved away, so that the file
+    /// cannot be written again. Returns where it went.
+    fn moved_away(path: &Path) -> std::io::Result<PathBuf> {
+        let sub = path.parent().ok_or(std::io::ErrorKind::NotFound)?;
+        let moved = sub.with_file_name("moved");
+        std::fs::rename(sub, &moved)?;
+        Ok(moved)
+    }
+
+    #[test]
+    fn success_a_snapshot_reads_the_records_the_intake_held() -> TestResult {
+        let (_dir, _path, intake) = holding(3)?;
+        let snapshot = intake.snapshot()?;
+        assert_eq!(
+            (snapshot.first(), snapshot.count()),
+            (0, 3),
+            "success three from number 0"
+        );
+        assert_eq!(
+            snapshot.rows()?,
+            recs(1..=3),
+            "success a snapshot reads the records the intake held"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_snapshot_leaves_out_records_taken_after_it() -> TestResult {
+        let (_dir, _path, mut intake) = holding(3)?;
+        let snapshot = intake.snapshot()?;
+        intake.append(&recs(4..=5))?;
+        assert_eq!(
+            snapshot.rows()?,
+            recs(1..=3),
+            "success a snapshot leaves out records taken after it"
+        );
+        assert_eq!(
+            intake.rows()?,
+            recs(1..=5),
+            "success the intake holds all five"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_filed_removes_the_filed_records_and_keeps_the_later_ones() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(4..=5))?;
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            3,
+            "success the three filed records leave"
+        );
+        assert_eq!(intake.records(), 2, "success two are held");
+        assert_eq!(
+            intake.rows()?,
+            recs(4..=5),
+            "success the file holds the later two"
+        );
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![4, 5],
+            "success filed removes the filed records and keeps the later ones"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_filed_with_nothing_new_leaves_an_empty_intake() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            3,
+            "success three leave"
+        );
+        assert_eq!(
+            (intake.records(), intake.bytes(), intake.dropped()),
+            (0, 0, 0),
+            "success nothing is held, and filed records are not counted as removed"
+        );
+        drop(intake);
+        assert!(
+            seqs_at(&path)?.is_empty(),
+            "success filed with nothing new leaves an empty intake"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_filed_writes_the_kept_lines_without_reading_the_file() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(4..=4))?;
+        damage(&path)?;
+        assert!(
+            intake.rows().is_err(),
+            "success the file can no longer be read"
+        );
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            3,
+            "success filed writes the kept lines without reading the file"
+        );
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![4],
+            "success the new file holds the later record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_intake_takes_records_after_filed() -> TestResult {
+        let (_dir, path, mut intake) = holding(2)?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(3..=3))?;
+        intake.filed(snapshot.first(), snapshot.count())?;
+        intake.append(&recs(4..=4))?;
+        assert_eq!(intake.rows()?, recs(3..=4), "success the intake holds both");
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![3, 4],
+            "success an intake takes records after filed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_next_snapshot_starts_at_the_number_after_the_filed_records() -> TestResult {
+        let (_dir, _path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(4..=4))?;
+        intake.filed(snapshot.first(), snapshot.count())?;
+        let next = intake.filing()?;
+        assert_eq!(
+            (next.first(), next.count()),
+            (3, 1),
+            "success the next snapshot starts at the number after the filed records"
+        );
+        assert_eq!(
+            next.rows()?,
+            recs(4..=4),
+            "success and holds the later record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_filed_after_a_plain_snapshot_reads_the_file_for_the_rest() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.snapshot()?;
+        intake.append(&recs(4..=5))?;
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            3,
+            "success three leave"
+        );
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![4, 5],
+            "success filed after a plain snapshot reads the file for the rest"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_bytes_held_follow_a_filing() -> TestResult {
+        let (_dir, _path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        let before = intake.bytes();
+        intake.append(&recs(4..=4))?;
+        let one = intake.bytes().saturating_sub(before);
+        intake.filed(snapshot.first(), snapshot.count())?;
+        assert!(one > 0, "success a record has bytes");
+        assert_eq!(
+            intake.bytes(),
+            one,
+            "success the bytes held follow a filing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_snapshot_is_whole_when_a_record_lands_before_its_read() -> TestResult {
+        let (_dir, _path, intake) = holding(3)?;
+        let intake = Arc::new(parking_lot::Mutex::new(intake));
+        let mut snapshot = intake.lock().snapshot()?;
+        let writer = Arc::clone(&intake);
+        snapshot.prefix_mut().read_through(Box::new(move |file| {
+            let _ = writer.lock().append(&recs(4..=6));
+            Box::new(file)
+        }));
+        assert_eq!(
+            snapshot.rows()?,
+            recs(1..=3),
+            "success a snapshot is whole when a record lands before its read"
+        );
+        assert_eq!(intake.lock().records(), 6, "success the append was taken");
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_rows_of_an_intake_are_the_rows_of_a_snapshot() -> TestResult {
+        let (_dir, _path, intake) = holding(4)?;
+        assert_eq!(
+            intake.rows()?,
+            intake.snapshot()?.rows()?,
+            "success the rows of an intake are the rows of a snapshot"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_filed_count_is_the_count_when_nothing_else_happened() {
+        assert_eq!(
+            filed_count(0, 3, 0, 3),
+            3,
+            "success filed count is the count when nothing else happened"
+        );
+        assert_eq!(filed_count(7, 2, 7, 2), 2, "success at a later number too");
+    }
+
+    #[test]
+    fn success_filed_count_leaves_the_records_that_arrived() {
+        assert_eq!(
+            filed_count(0, 3, 0, 5),
+            3,
+            "success filed count leaves the records that arrived"
+        );
+    }
+
+    #[test]
+    fn failure_a_snapshot_of_an_intake_whose_file_is_away_names_the_intake() -> TestResult {
+        let (_dir, path, intake) = holding(2)?;
+        std::fs::remove_file(&path)?;
+        let got = intake.snapshot();
+        assert!(
+            got.as_ref().is_err_and(|e| e.starts_with("the intake '")),
+            "failure a snapshot of an intake whose file is away names the intake: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_filing_that_cannot_open_the_file_fails_and_the_next_one_works() -> TestResult {
+        let (_dir, path, mut intake) = holding(2)?;
+        let moved = moved_away(&path)?;
+        let got = intake.filing();
+        assert!(
+            got.as_ref().is_err_and(|e| e.starts_with("the intake '")),
+            "failure a filing that cannot open the file fails: {got:?}"
+        );
+        std::fs::rename(&moved, path.parent().ok_or("no parent")?)?;
+        let snapshot = intake.filing()?;
+        assert_eq!(
+            snapshot.rows()?,
+            recs(1..=2),
+            "failure and the next one works"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_filed_that_cannot_rewrite_the_file_leaves_every_record() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(4..=4))?;
+        let moved = moved_away(&path)?;
+        let got = intake.filed(snapshot.first(), snapshot.count());
+        assert!(
+            got.as_ref().is_err_and(|e| e.starts_with("the intake '")),
+            "failure filed fails and names the intake: {got:?}"
+        );
+        assert_eq!(
+            intake.records(),
+            4,
+            "failure the intake still counts its four records"
+        );
+        std::fs::rename(&moved, path.parent().ok_or("no parent")?)?;
+        assert_eq!(
+            intake.rows()?,
+            recs(1..=4),
+            "failure filed that cannot rewrite the file leaves every record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_after_a_failed_filed_the_next_filing_takes_every_record() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(4..=4))?;
+        let moved = moved_away(&path)?;
+        assert!(
+            intake.filed(snapshot.first(), snapshot.count()).is_err(),
+            "failure filed fails"
+        );
+        std::fs::rename(&moved, path.parent().ok_or("no parent")?)?;
+        let next = intake.filing()?;
+        assert_eq!(
+            (next.first(), next.count()),
+            (0, 4),
+            "failure the numbers did not move"
+        );
+        assert_eq!(
+            intake.filed(next.first(), next.count())?,
+            4,
+            "failure after a failed filed the next filing takes every record"
+        );
+        drop(intake);
+        assert!(
+            seqs_at(&path)?.is_empty(),
+            "failure and the file is then empty"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_filed_after_a_plain_snapshot_of_a_changed_file_is_refused() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.snapshot()?;
+        intake.append(&recs(4..=4))?;
+        damage(&path)?;
+        let got = intake.filed(snapshot.first(), snapshot.count());
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.starts_with("the intake '") && e.contains("sealed layer")),
+            "failure filed after a plain snapshot of a changed file is refused: {got:?}"
+        );
+        assert_eq!(intake.records(), 4, "failure every record is still counted");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_rows_of_a_snapshot_whose_file_was_changed_are_refused() -> TestResult {
+        let (_dir, path, intake) = holding(3)?;
+        let snapshot = intake.snapshot()?;
+        damage(&path)?;
+        let got = snapshot.rows();
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.starts_with("the intake '") && e.contains("sealed layer")),
+            "failure the rows of a snapshot whose file was changed are refused: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_line_that_is_not_a_call_record_in_a_snapshot_is_refused() -> TestResult {
+        let (_dir, _path, mut intake) = holding(2)?;
+        intake.log_mut().append(&[b"not a call record".to_vec()])?;
+        let got = intake.log_mut().prefix().map(|prefix| Snapshot {
+            first: 0,
+            prefix,
+            shown: "x".to_string(),
+        })?;
+        let got = got.rows();
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.contains("record 3 is not a call record")),
+            "failure a line that is not a call record in a snapshot is refused: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_failed_append_during_a_filing_is_not_kept() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        intake.log_mut().open_with(stop_at(60, libc::ENOSPC));
+        assert!(
+            intake.append(&recs(4..=4)).is_err(),
+            "failure the append failed"
+        );
+        intake.log_mut().open_with(real());
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            3,
+            "failure three leave"
+        );
+        assert_eq!(intake.records(), 0, "failure nothing is held");
+        drop(intake);
+        assert!(
+            seqs_at(&path)?.is_empty(),
+            "failure a failed append during a filing is not kept"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_filing_that_did_not_file_leaves_every_record() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let _snapshot = intake.filing()?;
+        intake.append(&recs(4..=4))?;
+        intake.not_filed();
+        assert_eq!(intake.records(), 4, "failure four are held");
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![1, 2, 3, 4],
+            "failure a filing that did not file leaves every record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_filed_a_second_time_for_the_same_records_removes_nothing() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(4..=5))?;
+        let (first, count) = (snapshot.first(), snapshot.count());
+        assert_eq!(
+            intake.filed(first, count)?,
+            3,
+            "failure the first time three leave"
+        );
+        assert_eq!(
+            intake.filed(first, count)?,
+            0,
+            "failure filed a second time for the same records removes nothing"
+        );
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![4, 5],
+            "failure the later two are still held"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_filed_count_is_zero_when_the_bounds_removed_every_filed_record() {
+        assert_eq!(
+            filed_count(0, 3, 5, 4),
+            0,
+            "failure filed count is zero when the bounds removed every filed record"
+        );
+        assert_eq!(
+            filed_count(0, 3, 3, 4),
+            0,
+            "failure and when they removed exactly those"
+        );
+    }
+
+    #[test]
+    fn failure_filed_count_never_passes_what_is_held() {
+        assert_eq!(
+            filed_count(0, 10, 0, 4),
+            4,
+            "failure filed count never passes what is held"
+        );
+    }
+
+    #[test]
+    fn failure_filed_count_of_no_records_is_zero() {
+        assert_eq!(
+            filed_count(4, 0, 4, 9),
+            0,
+            "failure filed count of no records is zero"
+        );
+        assert_eq!(
+            filed_count(0, 3, 0, 0),
+            0,
+            "failure and of an intake that holds none"
+        );
+    }
+
+    #[test]
+    fn edge_a_snapshot_of_an_empty_intake_has_no_rows() -> TestResult {
+        let (_dir, _path, intake) = holding(0)?;
+        let snapshot = intake.snapshot()?;
+        assert_eq!(snapshot.count(), 0, "edge the count is zero");
+        assert!(
+            snapshot.rows()?.is_empty(),
+            "edge a snapshot of an empty intake has no rows"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_filed_of_no_records_does_not_write_the_file() -> TestResult {
+        let (_dir, path, mut intake) = holding(2)?;
+        let before = std::fs::read(&path)?;
+        assert_eq!(intake.filed(0, 0)?, 0, "edge nothing leaves");
+        assert_eq!(
+            std::fs::read(&path)?,
+            before,
+            "edge filed of no records does not write the file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_records_the_bounds_removed_during_a_filing_are_not_counted_twice() -> TestResult {
+        let (_dir, path, mut intake) = holding(4)?;
+        let snapshot = intake.filing()?;
+        assert_eq!(
+            intake.trim(at(3) + KEEP, KEEP, MAX_INTAKE_BYTES)?,
+            2,
+            "edge two are removed"
+        );
+        intake.append(&recs(5..=5))?;
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            2,
+            "edge records the bounds removed during a filing are not counted twice"
+        );
+        assert_eq!(
+            (intake.records(), intake.dropped()),
+            (1, 2),
+            "edge one held, two removed"
+        );
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![5],
+            "edge the file holds the record that arrived"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_bounds_that_pass_the_filed_records_leave_filed_nothing_to_do() -> TestResult {
+        let (_dir, path, mut intake) = holding(2)?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(3..=4))?;
+        assert_eq!(
+            intake.trim(at(4) + KEEP, KEEP, MAX_INTAKE_BYTES)?,
+            3,
+            "edge three removed"
+        );
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            0,
+            "edge bounds that pass the filed records leave filed nothing to do"
+        );
+        assert_eq!(intake.records(), 1, "edge one record is held");
+        let next = intake.filing()?;
+        assert_eq!(
+            (next.first(), next.count()),
+            (3, 1),
+            "edge the next filing starts at 3"
+        );
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![4],
+            "edge the file holds the last record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_bounds_that_remove_a_part_of_the_filed_records_keep_every_later_one() -> TestResult {
+        let (_dir, path, mut intake) = holding(2)?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(3..=5))?;
+        assert_eq!(
+            intake.trim(at(2) + KEEP, KEEP, MAX_INTAKE_BYTES)?,
+            1,
+            "edge one removed"
+        );
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            1,
+            "edge record 2 leaves"
+        );
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![3, 4, 5],
+            "edge bounds that remove a part of the filed records keep every later one"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_filed_count_at_the_largest_numbers_does_not_overflow() {
+        assert_eq!(
+            filed_count(u64::MAX, usize::MAX, 0, 3),
+            3,
+            "edge filed count at the largest numbers does not overflow"
+        );
+        assert_eq!(
+            filed_count(u64::MAX - 1, 5, u64::MAX, 9),
+            0,
+            "edge at the last number"
+        );
+    }
+
+    #[test]
+    fn edge_filed_count_of_records_removed_in_part_is_the_rest() {
+        assert_eq!(
+            filed_count(2, 5, 4, 10),
+            3,
+            "edge filed count of records removed in part is the rest"
+        );
+    }
+
+    #[test]
+    fn edge_a_repair_during_a_filing_keeps_the_record_that_followed_it() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        intake.log_mut().open_with(stop_at(60, libc::ENOSPC));
+        assert!(
+            intake.append(&recs(4..=4)).is_err(),
+            "edge the append failed"
+        );
+        intake.log_mut().open_with(real());
+        intake.append(&recs(5..=5))?;
+        assert_eq!(
+            snapshot.rows()?,
+            recs(1..=3),
+            "edge the snapshot reads the file it opened"
+        );
+        assert_eq!(intake.filed(0, 3)?, 3, "edge three leave");
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![5],
+            "edge a repair during a filing keeps the record that followed it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_question_during_a_filing_reads_every_record() -> TestResult {
+        let (_dir, _path, mut intake) = holding(3)?;
+        let filing = intake.filing()?;
+        intake.append(&recs(4..=4))?;
+        assert_eq!(
+            intake.snapshot()?.rows()?,
+            recs(1..=4),
+            "edge a question during a filing reads every record"
+        );
+        assert_eq!(
+            intake.filed(filing.first(), filing.count())?,
+            3,
+            "edge the filing ends"
+        );
+        assert_eq!(
+            intake.rows()?,
+            recs(4..=4),
+            "edge and the later record is held"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_stop_before_filed_leaves_every_record_for_the_next_start() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(4..=4))?;
+        assert_eq!(
+            snapshot.rows()?.len(),
+            3,
+            "edge the filing read its three records"
+        );
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![1, 2, 3, 4],
+            "edge a stop before filed leaves every record for the next start"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_second_filing_before_filed_starts_the_kept_lines_again() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let _abandoned = intake.filing()?;
+        intake.append(&recs(4..=4))?;
+        let snapshot = intake.filing()?;
+        intake.append(&recs(5..=5))?;
+        assert_eq!(snapshot.count(), 4, "edge the second filing holds four");
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            4,
+            "edge four leave"
+        );
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![5],
+            "edge a second filing before filed starts the kept lines again"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_filed_for_every_record_held_does_not_read_the_file() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let snapshot = intake.snapshot()?;
+        damage(&path)?;
+        assert!(
+            intake.rows().is_err(),
+            "edge the file can no longer be read"
+        );
+        assert_eq!(
+            intake.filed(snapshot.first(), snapshot.count())?,
+            3,
+            "edge filed for every record held does not read the file"
+        );
+        drop(intake);
+        assert!(
+            seqs_at(&path)?.is_empty(),
+            "edge the new file holds no record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_after_a_filing_that_did_not_file_no_kept_line_is_used() -> TestResult {
+        let (_dir, path, mut intake) = holding(3)?;
+        let _abandoned = intake.filing()?;
+        intake.not_filed();
+        let snapshot = intake.snapshot()?;
+        intake.append(&recs(4..=4))?;
+        damage(&path)?;
+        // One record stays. Its line is read from the file, which is
+        // refused: no line kept for the filing that did not file is used.
+        let got = intake.filed(snapshot.first(), snapshot.count());
+        assert!(
+            got.as_ref().is_err_and(|e| e.contains("sealed layer")),
+            "failure after a filing that did not file no kept line is used: {got:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_filed_for_a_part_of_what_is_held_keeps_the_rest_in_order() -> TestResult {
+        let (_dir, path, mut intake) = holding(5)?;
+        assert_eq!(intake.filed(0, 2)?, 2, "edge the first two leave");
+        assert_eq!(intake.filed(2, 1)?, 1, "edge then the third");
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path)?,
+            vec![4, 5],
+            "edge filed for a part of what is held keeps the rest in order"
         );
         Ok(())
     }
