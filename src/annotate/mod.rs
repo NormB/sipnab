@@ -510,7 +510,15 @@ impl Notes {
     /// not a note sipnab accepts. One bad line refuses the whole file: a
     /// notes file partly loaded would be saved back without the rest.
     pub fn load(path: &Path) -> Result<Self, NotesFileError> {
-        let file = std::fs::File::open(path).map_err(NotesFileError::Io)?;
+        Self::load_opened(std::fs::File::open(path).map_err(NotesFileError::Io)?)
+    }
+
+    /// [`Notes::load`] from a file already open, read from where it stands.
+    ///
+    /// # Errors
+    ///
+    /// As [`Notes::load`].
+    pub fn load_opened(file: std::fs::File) -> Result<Self, NotesFileError> {
         let mut notes = Self::from_reader(std::io::BufReader::new(file))?;
         notes.unsaved = false;
         Ok(notes)
@@ -987,6 +995,48 @@ mod tests {
         .map_err(|e| format!("two notes: {e:?}"))?;
         assert_eq!(notes.len(), 2);
         assert_eq!(notes.get(&frame("a.pcap#1")?), Some(&accepted("second")?));
+        Ok(())
+    }
+
+    // ---- a notes file already open ----
+
+    /// `text` written to a file, opened, and the file removed.
+    fn notes_opened_then_removed(text: &str) -> Result<std::fs::File, TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let path = dir.path().join("notes.jsonl");
+        std::fs::write(&path, text).map_err(|e| format!("write: {e:?}"))?;
+        let file = std::fs::File::open(&path).map_err(|e| format!("open: {e:?}"))?;
+        std::fs::remove_file(&path).map_err(|e| format!("remove: {e:?}"))?;
+        Ok(file)
+    }
+
+    #[test]
+    fn an_open_notes_file_is_read_with_its_path_gone() -> Result<(), TestError> {
+        let file = notes_opened_then_removed(
+            "{\"frame\":\"a.pcap#0@00000000deadbeef\",\"note\":\"first\"}\n",
+        )?;
+        let notes = Notes::load_opened(file).map_err(|e| format!("one note: {e:?}"))?;
+        assert_eq!(notes.len(), 1, "the note was read through the descriptor");
+        assert!(!notes.unsaved, "notes just loaded have nothing to save");
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_notes_file_with_a_bad_line_is_refused() -> Result<(), TestError> {
+        let file =
+            notes_opened_then_removed("{\"frame\":\"a.pcap#0\",\"note\":\"ok\"}\nnot json\n")?;
+        assert!(
+            Notes::load_opened(file).is_err(),
+            "one bad line refuses the whole file, by descriptor as by path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_empty_notes_file_holds_no_notes() -> Result<(), TestError> {
+        let notes = Notes::load_opened(notes_opened_then_removed("")?)
+            .map_err(|e| format!("empty: {e:?}"))?;
+        assert!(notes.is_empty(), "an empty file is no notes, not an error");
         Ok(())
     }
 

@@ -213,6 +213,57 @@ pub fn parse_pointer(text: &str) -> Result<FrameRef, ResolveError> {
 ///
 /// As [`resolve`].
 pub fn resolve_with_link_type(pointer: &FrameRef) -> Result<(Resolution, i32), ResolveError> {
+    resolve_from(pointer, None)
+}
+
+/// What a pointer's source was opened as before the process dropped
+/// privileges ([`open_source_up_front`]). Nothing has been read from it.
+#[derive(Debug)]
+pub struct OpenedSource {
+    /// The file that was opened: the source itself, or the file above it.
+    path: std::path::PathBuf,
+    /// The open's result.
+    file: std::io::Result<std::fs::File>,
+    /// Whether `path` is a file above a source that does not exist, so the
+    /// source can only be a member of it.
+    above: bool,
+}
+
+/// Open the file a pointer's source names, or, when the source does not
+/// exist, the regular file above it that it may be a member of. Reads file
+/// types and opens one descriptor; no content is read.
+#[must_use]
+pub fn open_source_up_front(source: &str) -> OpenedSource {
+    let path = Path::new(source);
+    let (path, above) = match super::archive::first_file_above(source) {
+        Some(file) if !path.exists() => (file, true),
+        _ => (path.to_path_buf(), false),
+    };
+    OpenedSource {
+        file: super::file::open_up_front(&path),
+        path,
+        above,
+    }
+}
+
+/// [`resolve`] through a source opened up front: the capture, or the archive
+/// that holds it, is read through its descriptor and never by its path.
+///
+/// # Errors
+///
+/// As [`resolve`].
+pub fn resolve_opened(
+    pointer: &FrameRef,
+    opened: OpenedSource,
+) -> Result<Resolution, ResolveError> {
+    resolve_from(pointer, Some(opened)).map(|(resolution, _)| resolution)
+}
+
+/// [`resolve_with_link_type`], by path or through `opened`.
+fn resolve_from(
+    pointer: &FrameRef,
+    opened: Option<OpenedSource>,
+) -> Result<(Resolution, i32), ResolveError> {
     // Refuse before touching the filesystem. These bytes were read out of a
     // process and never existed as a frame, so every filesystem answer below
     // would be about the wrong question.
@@ -223,7 +274,10 @@ pub fn resolve_with_link_type(pointer: &FrameRef) -> Result<(Resolution, i32), R
             ordinal: pointer.origin.ordinal,
         });
     }
-    let (mut cap, _guard) = open_source(&pointer.source)?;
+    let (mut cap, _guard) = match opened {
+        Some(opened) => open_opened_source(&pointer.source, opened)?,
+        None => open_source(&pointer.source)?,
+    };
     let link_type = cap.get_datalink().0;
 
     let mut seen: u64 = 0;
@@ -285,23 +339,69 @@ fn open_source(source: &str) -> Result<(pcap::Capture<pcap::Offline>, SourceGuar
         && let Some(archive) = super::archive::locate_member(source)
     {
         let limits = super::archive::Limits::for_run();
-        return match super::archive::extract_member(&archive, source, &limits) {
-            Ok(Some((member, dir))) => pcap::Capture::from_file(&member.path)
-                .map(|cap| (cap, SourceGuard::Member { _dir: dir }))
-                .map_err(|e| unreadable(e.to_string())),
-            Ok(None) => Err(unreadable(format!(
-                "'{}' holds no member named '{}'",
-                archive.display(),
-                source
-                    .strip_prefix(&archive.display().to_string())
-                    .map_or(source, |rest| rest.trim_start_matches('/'))
-            ))),
-            Err(e) => Err(unreadable(e.to_string())),
-        };
+        let extracted = super::archive::extract_member(&archive, source, &limits);
+        return open_member(source, &archive, extracted);
     }
     super::file::open_offline(path)
         .map(|(cap, guard)| (cap, SourceGuard::File { _inflated: guard }))
         .map_err(|e| unreadable(format!("{e:#}")))
+}
+
+/// Open the member a walk of `archive` for the label `source` wrote out.
+fn open_member(
+    source: &str,
+    archive: &Path,
+    extracted: std::io::Result<Option<(super::archive::Member, super::archive::ExtractDir)>>,
+) -> Result<(pcap::Capture<pcap::Offline>, SourceGuard), ResolveError> {
+    let unreadable = |cause: String| ResolveError::Unreadable {
+        source: source.to_string(),
+        cause,
+    };
+    match extracted {
+        Ok(Some((member, dir))) => pcap::Capture::from_file(&member.path)
+            .map(|cap| (cap, SourceGuard::Member { _dir: dir }))
+            .map_err(|e| unreadable(e.to_string())),
+        Ok(None) => Err(unreadable(format!(
+            "'{}' holds no member named '{}'",
+            archive.display(),
+            source
+                .strip_prefix(&archive.display().to_string())
+                .map_or(source, |rest| rest.trim_start_matches('/'))
+        ))),
+        Err(e) => Err(unreadable(e.to_string())),
+    }
+}
+
+/// [`open_source`] through what [`open_source_up_front`] opened.
+fn open_opened_source(
+    source: &str,
+    opened: OpenedSource,
+) -> Result<(pcap::Capture<pcap::Offline>, SourceGuard), ResolveError> {
+    let unreadable = |cause: String| ResolveError::Unreadable {
+        source: source.to_string(),
+        cause,
+    };
+    let OpenedSource { path, file, above } = opened;
+    let file = file.map_err(|e| unreadable(e.to_string()))?;
+    let member = super::file::Member::opened(&path, &file);
+    if !above {
+        return member
+            .open_for_libpcap()
+            .map(|(cap, guard)| (cap, SourceGuard::File { _inflated: guard }))
+            .map_err(|e| unreadable(format!("{e:#}")));
+    }
+    // The source does not exist and `path` is the file above it: a member
+    // label when that file is an archive, and a path that leads nowhere when
+    // it is not, which the open by path reports as it always did.
+    if !matches!(member.container_format(), Ok(Some(f)) if super::archive::unwraps(f)) {
+        return super::file::open_offline(Path::new(source))
+            .map(|(cap, guard)| (cap, SourceGuard::File { _inflated: guard }))
+            .map_err(|e| unreadable(format!("{e:#}")));
+    }
+    let limits = super::archive::Limits::for_run();
+    let extracted = super::file::rewound(&file)
+        .and_then(|file| super::archive::extract_member_opened(file, &path, source, &limits));
+    open_member(source, &path, extracted)
 }
 
 /// Follow a pointer back to the frame's bytes.
@@ -360,6 +460,206 @@ mod archive_member_tests {
             kind: FrameSource::Wire,
             bytes: None,
         }
+    }
+
+    // ---- a source opened up front, read through its descriptor ----
+    //
+    // Each success test removes the file after it is opened: a resolver
+    // that opened it by path again would find nothing.
+
+    /// Write `bytes` as `name` in a new directory.
+    fn written(name: &str, bytes: &[u8]) -> Result<(tempfile::TempDir, String), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let path = tmp.path().join(name);
+        std::fs::write(&path, bytes).map_err(|e| format!("write: {e:?}"))?;
+        Ok((tmp, path.display().to_string()))
+    }
+
+    /// Open `source` up front, remove `file`, and resolve through the handle.
+    fn resolved_after_removal(
+        file: &str,
+        pointer: &FrameRef,
+    ) -> Result<Result<Resolution, ResolveError>, TestError> {
+        let opened = open_source_up_front(&pointer.source);
+        std::fs::remove_file(file).map_err(|e| format!("remove: {e:?}"))?;
+        Ok(resolve_opened(pointer, opened))
+    }
+
+    #[test]
+    fn an_opened_capture_resolves_with_its_path_gone() -> Result<(), TestError> {
+        let (_tmp, path) = written("a.pcap", &pcap_of(1, &[b"zero", b"one"]))?;
+        let got =
+            resolved_after_removal(&path, &pointer(&path, 1))?.map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            got,
+            Resolution::Unverified(b"one".to_vec()),
+            "the frame was read through the descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_gzip_capture_resolves_with_its_path_gone() -> Result<(), TestError> {
+        let (_tmp, path) = written("a.pcap.gz", &gzip(&pcap_of(1, &[b"zero", b"one"]))?)?;
+        let got =
+            resolved_after_removal(&path, &pointer(&path, 0))?.map_err(|e| format!("{e:?}"))?;
+        assert_eq!(got.bytes(), b"zero", "inflated from the descriptor");
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_archive_gives_its_member_with_its_path_gone() -> Result<(), TestError> {
+        let inner = build(&[Spec::file(
+            "b.pcap.gz",
+            &gzip(&pcap_of(1, &[b"b0", b"b1"]))?,
+        )]);
+        let outer = build(&[
+            Spec::file("dir/a.pcap", &pcap_of(1, &[b"a0", b"a1"])),
+            Spec::file("in.tar", &inner),
+        ]);
+        let (_tmp, path) = written("set.tgz", &gzip(&outer)?)?;
+        let got = resolved_after_removal(&path, &pointer(&format!("{path}/dir/a.pcap"), 1))?
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            got.bytes(),
+            b"a1",
+            "the member was walked out of the descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_archive_gives_a_nested_member() -> Result<(), TestError> {
+        let inner = build(&[Spec::file(
+            "b.pcap.gz",
+            &gzip(&pcap_of(1, &[b"b0", b"b1"]))?,
+        )]);
+        let outer = build(&[Spec::file("in.tar", &inner)]);
+        let (_tmp, path) = written("set.tar", &outer)?;
+        let got = resolved_after_removal(&path, &pointer(&format!("{path}/in.tar/b.pcap.gz"), 1))?
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            got.bytes(),
+            b"b1",
+            "through the nested archive and the gzip"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_source_verifies_a_digest() -> Result<(), TestError> {
+        let (_tmp, path) = written("a.pcap", &pcap_of(1, &[b"zero"]))?;
+        let mut wanted = pointer(&path, 0);
+        wanted.origin.digest = Some(frame_digest(b"zero"));
+        let got = resolved_after_removal(&path, &wanted)?.map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            got,
+            Resolution::Verified(b"zero".to_vec()),
+            "the digest was checked"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_source_resolves_as_the_path_does() -> Result<(), TestError> {
+        let (_tmp, path) = written("a.pcap", &pcap_of(1, &[b"zero", b"one"]))?;
+        let by_path = resolve(&pointer(&path, 1)).map_err(|e| format!("{e:?}"))?;
+        let opened = resolve_opened(&pointer(&path, 1), open_source_up_front(&path))
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(by_path, opened, "one answer, two ways to reach the file");
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_source_with_a_changed_frame_is_refused() -> Result<(), TestError> {
+        let (_tmp, path) = written("a.pcap", &pcap_of(1, &[b"zero"]))?;
+        let mut wanted = pointer(&path, 0);
+        wanted.origin.digest = Some(frame_digest(b"other"));
+        let refused = resolved_after_removal(&path, &wanted)?;
+        assert!(
+            matches!(refused, Err(ResolveError::Changed { ordinal: 0, .. })),
+            "a digest that does not match is refused: {refused:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_source_too_short_for_the_ordinal_is_refused() -> Result<(), TestError> {
+        let (_tmp, path) = written("a.pcap", &pcap_of(1, &[b"zero"]))?;
+        let refused = resolved_after_removal(&path, &pointer(&path, 5))?;
+        assert!(
+            matches!(
+                refused,
+                Err(ResolveError::NoSuchFrame {
+                    frames_present: 1,
+                    ..
+                })
+            ),
+            "the count of frames present comes back: {refused:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_source_that_does_not_exist_is_unreadable_when_opened_up_front() {
+        let source = "/nonexistent-sipnab-test/a.pcap";
+        let refused = resolve_opened(&pointer(source, 0), open_source_up_front(source));
+        assert!(
+            matches!(refused, Err(ResolveError::Unreadable { .. })),
+            "nothing to open: {refused:?}"
+        );
+    }
+
+    #[test]
+    fn an_opened_file_that_is_no_capture_is_unreadable() -> Result<(), TestError> {
+        let (_tmp, path) = written("a.pcap", b"not a capture at all")?;
+        let refused = resolved_after_removal(&path, &pointer(&path, 0))?;
+        assert!(
+            matches!(refused, Err(ResolveError::Unreadable { .. })),
+            "libpcap refuses the descriptor's bytes: {refused:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_archive_without_the_member_says_so() -> Result<(), TestError> {
+        let outer = build(&[Spec::file("a.pcap", &pcap_of(1, &[b"a0"]))]);
+        let (_tmp, path) = written("set.tar", &outer)?;
+        let refused = resolved_after_removal(&path, &pointer(&format!("{path}/b.pcap"), 0))?;
+        let Err(ResolveError::Unreadable { cause, .. }) = refused else {
+            return Err(format!("resolved: {refused:?}").into());
+        };
+        assert!(
+            cause.contains("holds no member named 'b.pcap'"),
+            "the refusal names the member: {cause}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_path_below_an_opened_capture_is_not_a_member() -> Result<(), TestError> {
+        let (_tmp, path) = written("a.pcap", &pcap_of(1, &[b"zero"]))?;
+        let source = format!("{path}/inner.pcap");
+        let refused = resolve_opened(&pointer(&source, 0), open_source_up_front(&source));
+        assert!(
+            matches!(refused, Err(ResolveError::Unreadable { .. })),
+            "a capture is not an archive, so the label leads nowhere: {refused:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_uprobe_pointer_is_refused_before_the_opened_source_is_read() {
+        let mut wanted = pointer("/nonexistent-sipnab-test/a.pcap", 0);
+        wanted.kind = FrameSource::Uprobe {
+            comm: std::sync::Arc::from("opensips"),
+            pid: 7,
+        };
+        let refused = resolve_opened(&wanted, open_source_up_front(&wanted.source));
+        assert!(
+            matches!(refused, Err(ResolveError::NeverOnTheWire { pid: 7, .. })),
+            "bytes read out of a process were never a frame: {refused:?}"
+        );
     }
 
     /// A pointer whose source is `<archive>/<member>` resolves to that frame
