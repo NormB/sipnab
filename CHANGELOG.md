@@ -8,6 +8,14 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Reading a capture that carries RTP takes slightly less CPU.**
+  - Effect: sipnab no longer allocates memory for each RTP packet to test whether it is HEP; this was about 1% of its CPU.
+  - Limit: Run times of `-N --report -I` did not change by more than the spread between runs.
+
 ## [0.5.258] - 2026-11-15
 
 ### Added

@@ -162,6 +162,10 @@ pub fn sniffed_ng(
     datagram: &[u8],
     received: chrono::DateTime<chrono::Utc>,
 ) -> Option<SniffedNg> {
+    // Every non-SIP UDP datagram comes here: see `looks_like_hep`.
+    if !crate::capture::hep::looks_like_hep(datagram) {
+        return None;
+    }
     let hep = crate::capture::hep::parse_hep(datagram).ok()?;
     if !is_ng_over_hep(hep.protocol.to_byte(), &hep.payload) {
         return None;
@@ -406,7 +410,8 @@ impl crate::relay::ControlDecoder for NgControlDecoder {
         // and asking the bare parser first would read the envelope as a
         // malformed message rather than recognizing it.
         #[cfg(feature = "hep")]
-        if let Ok(hep) = crate::capture::hep::parse_hep(payload)
+        if crate::capture::hep::looks_like_hep(payload)
+            && let Ok(hep) = crate::capture::hep::parse_hep(payload)
             && is_ng_over_hep(hep.protocol.to_byte(), &hep.payload)
         {
             return Some(crate::relay::DecodedControl {
@@ -613,6 +618,110 @@ mod engine_sighting_tests {
                 String::from_utf8_lossy(payload)
             );
         }
+        Ok(())
+    }
+}
+
+/// `sniffed_ng` runs on every UDP datagram that is not SIP, which on a
+/// carrier capture is every RTP packet. A datagram that cannot be HEP must
+/// be turned away before any error value is built: the error used to be an
+/// `anyhow::Error`, a heap allocation and a backtrace capture per RTP packet,
+/// measured at 0.5 to 1.0% of the CPU of a file run (perf, 2026-11-15).
+#[cfg(all(test, feature = "hep"))]
+mod not_hep_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// An RTP header (version 2, PCMU) and twenty bytes of payload.
+    fn rtp() -> Vec<u8> {
+        let mut d = vec![
+            0x80, 0x00, 0x12, 0x34, 0, 0, 0x03, 0x20, 0xde, 0xad, 0xbe, 0xef,
+        ];
+        d.extend_from_slice(&[0xff; 20]);
+        d
+    }
+
+    fn at() -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+        use chrono::TimeZone;
+        Ok(chrono::Utc
+            .timestamp_opt(1_793_800_000, 0)
+            .single()
+            .ok_or("fixed instant")?)
+    }
+
+    fn assert_no_allocation(datagram: &[u8], port: u16, what: &str) -> Result<(), TestError> {
+        let received = at()?;
+        let (allocations, got) = crate::test_alloc::allocations_during(|| {
+            sniffed_ng(port, datagram, received).is_some()
+        });
+        assert!(!got, "{what}: not an ng message");
+        assert_eq!(allocations, 0, "{what}: turned away without allocating");
+        Ok(())
+    }
+
+    #[test]
+    fn an_rtp_packet_on_the_mirror_port_is_turned_away_without_allocating() -> Result<(), TestError>
+    {
+        assert_no_allocation(&rtp(), HEP_MIRROR_PORTS[0], "RTP on the mirror port")
+    }
+
+    #[test]
+    fn an_rtp_packet_on_another_port_is_turned_away_without_allocating() -> Result<(), TestError> {
+        assert_no_allocation(&rtp(), 10_000, "RTP on a media port")
+    }
+
+    #[test]
+    fn an_empty_datagram_is_turned_away_without_allocating() -> Result<(), TestError> {
+        assert_no_allocation(&[], 10_000, "an empty datagram")
+    }
+
+    #[test]
+    fn every_first_byte_that_is_no_hep_version_is_turned_away_without_allocating()
+    -> Result<(), TestError> {
+        for first in (0u8..=255).filter(|b| ![0x01, 0x02].contains(b)) {
+            let mut d = rtp();
+            d[0] = first;
+            assert_no_allocation(&d, HEP_MIRROR_PORTS[0], &format!("first byte {first:#04x}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_three_byte_hep_prefix_is_turned_away_without_allocating() -> Result<(), TestError> {
+        assert_no_allocation(b"HEP", HEP_MIRROR_PORTS[0], "\"HEP\" alone")?;
+        assert_no_allocation(b"HEP2rest", HEP_MIRROR_PORTS[0], "\"HEP2\"")?;
+        assert_no_allocation(b"hep3rest", HEP_MIRROR_PORTS[0], "lower-case \"hep3\"")
+    }
+
+    /// The check turns away nothing the parser would read: a real `ng` copy
+    /// over HEP v3 still arrives, on the mirror port, with its sighting.
+    #[test]
+    fn an_ng_copy_over_hep_v3_is_still_read() -> Result<(), TestError> {
+        let ep = crate::capture::hep::HepEndpoint {
+            src_addr: std::net::IpAddr::from([192, 0, 2, 30]),
+            dst_addr: std::net::IpAddr::from([127, 0, 0, 1]),
+            src_port: 40000,
+            dst_port: 2223,
+            transport: crate::net::TransportProto::Udp,
+        };
+        let datagram = crate::capture::hep::build_hep_v3_correlated(
+            &ep,
+            at()?,
+            crate::capture::hep::HepProtocol::Unknown(NG_HEP_CAPTURE_PROTO),
+            2001,
+            None,
+            Some(b"c1@example.invalid"),
+            b"c2 d7:call-id18:c1@example.invalid7:command5:offer8:from-tag2:fte",
+        );
+        let got = sniffed_ng(HEP_MIRROR_PORTS[0], &datagram, at()?)
+            .and_then(|ng| ng.engine_sighting)
+            .map(|(call, _)| call);
+        assert_eq!(
+            got.as_deref(),
+            Some("c1@example.invalid"),
+            "the copy is read and names its call"
+        );
         Ok(())
     }
 }

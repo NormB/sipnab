@@ -2179,7 +2179,9 @@ pub fn apply_hep_parse(
 /// NOT DECODED by that number, as `--hep-listen` does.
 #[cfg(feature = "hep")]
 pub fn unwrap_hep(pp: &ParsedPacket) -> Option<Result<ParsedPacket, crate::error::CaptureError>> {
-    if pp.transport != TransportProto::Udp {
+    // A datagram that cannot be HEP is turned away before `parse_hep` builds
+    // an error value for it: see `looks_like_hep`.
+    if pp.transport != TransportProto::Udp || !crate::capture::hep::looks_like_hep(&pp.payload) {
         return None;
     }
     let hep = crate::capture::hep::parse_hep(&pp.payload).ok()?;
@@ -3376,6 +3378,29 @@ mod quiet_bad_parse_tests {
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
             hep: None,
+        }
+    }
+
+    /// `-E` reads every UDP datagram as a possible HEP wrapper; one that cannot
+    /// be HEP is turned away before an error value (a heap allocation and a
+    /// backtrace capture) is built for it.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn hep_parse_turns_away_a_datagram_that_is_not_hep_without_allocating() {
+        for (what, bytes) in [
+            (
+                "RTP",
+                &[0x80u8, 0x00, 0x12, 0x34, 0, 0, 0, 0, 1, 2, 3, 4][..],
+            ),
+            ("SIP", &b"OPTIONS sip:x SIP/2.0\r\n\r\n"[..]),
+            ("empty", &[][..]),
+            ("\"HEP\" alone", &b"HEP"[..]),
+        ] {
+            let pp = packet(bytes);
+            let (allocations, got) =
+                crate::test_alloc::allocations_during(|| unwrap_hep(&pp).is_none());
+            assert!(got, "{what}: not read as HEP");
+            assert_eq!(allocations, 0, "{what}: turned away without allocating");
         }
     }
 
