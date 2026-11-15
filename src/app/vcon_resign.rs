@@ -27,7 +27,71 @@ const BAD_SETTINGS: i32 = 2;
 /// that does not load; 1 for an input that does not read or is refused
 /// ([`crate::output::vcon_jose::resign_at`]), and for an output that exists
 /// or cannot be written.
+#[cfg(test)]
 pub fn run(args: &crate::cli::VconResignArgs) -> Result<PathBuf, (i32, String)> {
+    prepare(args)?.finish(&crate::early_exit::Confined::in_a_test())
+}
+
+/// A re-signing whose files are read and whose input is not parsed yet:
+/// the state between [`prepare`] and [`Prepared::finish`], where a run that
+/// was started as root drops its privileges.
+pub struct Prepared {
+    /// The key and certificate chain the new signature is made with.
+    signer: crate::output::vcon_jose::Signer,
+    /// The `[vcon_input]` checks the input's own signature is held to.
+    opener: std::sync::Arc<crate::output::vcon_jose::Opener>,
+    /// The input's bytes, as read.
+    bytes: Vec<u8>,
+    /// The input, for the refusal that names it.
+    input: PathBuf,
+    /// `--vcon-resign-out`.
+    out: PathBuf,
+}
+
+impl Prepared {
+    /// The file the result is written to.
+    #[must_use]
+    pub fn out(&self) -> &Path {
+        &self.out
+    }
+
+    /// Parse and verify the input, sign it again and write the result. It
+    /// takes the proof that the run is confined: the input is parsed here
+    /// for the first time.
+    ///
+    /// # Errors
+    ///
+    /// Exit code 1 and the reason: the input is refused
+    /// ([`crate::output::vcon_jose::resign_at`]), or the output exists or
+    /// cannot be written.
+    pub fn finish(self, _confined: &crate::early_exit::Confined) -> Result<PathBuf, (i32, String)> {
+        let cap = crate::capture::vcon_input::MAX_CONTAINER_BYTES;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let resigned = crate::output::vcon_jose::resign_at(
+            &self.bytes,
+            &self.signer,
+            &self.opener,
+            usize::try_from(cap).unwrap_or(usize::MAX),
+            now,
+        )
+        .map_err(|e| (REFUSED, format!("'{}': {e}", self.input.display())))?;
+        write_new(&self.out, &resigned).map_err(|e| (REFUSED, e))?;
+        Ok(self.out)
+    }
+}
+
+/// Read what `--vcon-resign` needs: the key and the certificate, the
+/// `[vcon_input]` signer checks, and the input's bytes. Nothing of the
+/// input is parsed.
+///
+/// # Errors
+///
+/// The exit code and the reason: 2 for a flag that is missing, or a key,
+/// certificate or signer check that does not load; 1 for an input that does
+/// not read or is over the size limit.
+pub fn prepare(args: &crate::cli::VconResignArgs) -> Result<Prepared, (i32, String)> {
     let missing = |flag: &str| (BAD_SETTINGS, format!("needs {flag}"));
     let input = args.vcon_resign.as_ref().ok_or_else(|| missing("a file"))?;
     let key = args
@@ -48,19 +112,13 @@ pub fn run(args: &crate::cli::VconResignArgs) -> Result<PathBuf, (i32, String)> 
     let opener = crate::capture::vcon_input::opener().map_err(|e| (BAD_SETTINGS, e))?;
     let cap = crate::capture::vcon_input::MAX_CONTAINER_BYTES;
     let bytes = read_capped(input, cap).map_err(|e| (REFUSED, e))?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let resigned = crate::output::vcon_jose::resign_at(
-        &bytes,
-        &signer,
-        &opener,
-        usize::try_from(cap).unwrap_or(usize::MAX),
-        now,
-    )
-    .map_err(|e| (REFUSED, format!("'{}': {e}", input.display())))?;
-    write_new(out, &resigned).map_err(|e| (REFUSED, e))?;
-    Ok(out.clone())
+    Ok(Prepared {
+        signer,
+        opener,
+        bytes,
+        input: input.clone(),
+        out: out.clone(),
+    })
 }
 
 /// The file at `path`, refused when it is over `cap` bytes.

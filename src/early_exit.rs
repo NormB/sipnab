@@ -12,10 +12,11 @@
 //! `tests/threads_at_privilege_drop_test.rs` fails when `src/main.rs` gains
 //! an exit this table does not hold.
 //!
-//! Seven rows carry [`Plan::KeepsForNow`]: commands that parse a file the
-//! caller named and whose readers open that file by path. They keep the
-//! caller's privileges until each reader takes an open handle
-//! (COMMANDS-PARSE-AS-ROOT).
+//! Seven rows carry [`Plan::ParsesNamedFile`]: commands that parse a file
+//! the caller named. As root they only name, open and read: the inputs by
+//! handle or whole, the key files, the directory listings. They drop in
+//! [`confine`] and judge, unwrap and parse from those handles as the user
+//! they dropped to, so a capture only root can read is still read.
 
 use crate::privilege::{self, DropSkip, DropTarget};
 use std::path::{Path, PathBuf};
@@ -29,11 +30,15 @@ pub enum Plan {
     Listener,
     /// Reads its secrets as root, then drops before its first connection.
     NetworkClient,
+    /// Reads its key files as root, then drops before it opens a file it
+    /// reports on.
+    Reader,
     /// Keeps the caller's privileges; the row's reason says why.
     Keeps,
-    /// Parses a file the caller named and keeps the caller's privileges for
-    /// now: its reader opens the input by path (COMMANDS-PARSE-AS-ROOT).
-    KeepsForNow,
+    /// Parses a file the caller named: names, opens and reads its inputs
+    /// and its key files as root, then drops before it judges or parses a
+    /// byte of them.
+    ParsesNamedFile,
     /// Drops on a path of its own, which the row's reason names.
     OwnDrop,
 }
@@ -42,7 +47,10 @@ impl Plan {
     /// Whether a run under this plan drops in [`confine`].
     #[must_use]
     pub fn drops_here(self) -> bool {
-        matches!(self, Plan::Listener | Plan::NetworkClient)
+        matches!(
+            self,
+            Plan::Listener | Plan::NetworkClient | Plan::Reader | Plan::ParsesNamedFile
+        )
     }
 }
 
@@ -59,12 +67,9 @@ pub struct EarlyExit {
     pub reason: &'static str,
 }
 
-/// The backlog entry the [`Plan::KeepsForNow`] rows wait for.
-pub const PARSE_AS_ROOT_ENTRY: &str = "COMMANDS-PARSE-AS-ROOT";
-
-/// The reason every [`Plan::KeepsForNow`] row carries.
-const FOR_NOW: &str = "parses a file the caller named; its reader opens the input by path, so it \
-                       keeps the caller's privileges until COMMANDS-PARSE-AS-ROOT";
+/// The reason every [`Plan::ParsesNamedFile`] row carries.
+const PARSES: &str = "parses a file the caller named; opens and reads its inputs and key files \
+                      as root, then drops before it judges, unwraps or parses them";
 
 /// The reason of an exit that reports an error and reads nothing more.
 const ERROR_EXIT: &str = "reports an error and ends; reads no input from outside";
@@ -86,7 +91,7 @@ const fn row(
 
 /// Every way a run ends before `bootstrap::launch`, in the order of `main`'s
 /// steps.
-pub const EARLY_EXITS: [EarlyExit; 35] = [
+pub const EARLY_EXITS: [EarlyExit; 36] = [
     row(
         "--internal-kill-worker",
         "0",
@@ -126,6 +131,13 @@ pub const EARLY_EXITS: [EarlyExit; 35] = [
         "reads its keys and binds as root, then drops before it opens the store or accepts",
     ),
     row(
+        "fleet verify",
+        "0c",
+        Plan::Reader,
+        "reads its key files as root, then drops before it lists the history directory or \
+         opens a history file",
+    ),
+    row(
         "--help",
         "1",
         Plan::Keeps,
@@ -157,13 +169,13 @@ pub const EARLY_EXITS: [EarlyExit; 35] = [
         Plan::Keeps,
         "grants the binary its capture capabilities, which needs root",
     ),
-    row("--show-frame", "2", Plan::KeepsForNow, FOR_NOW),
-    row("--write-annotated", "2", Plan::KeepsForNow, FOR_NOW),
+    row("--show-frame", "2", Plan::ParsesNamedFile, PARSES),
+    row("--write-annotated", "2", Plan::ParsesNamedFile, PARSES),
     row("--notes refusal", "2", Plan::Keeps, ERROR_EXIT),
-    row("--strip-secrets", "2", Plan::KeepsForNow, FOR_NOW),
-    row("--find-in-files", "2", Plan::KeepsForNow, FOR_NOW),
-    row("--compare-captures", "2", Plan::KeepsForNow, FOR_NOW),
-    row("--vcon-validate", "2", Plan::KeepsForNow, FOR_NOW),
+    row("--strip-secrets", "2", Plan::ParsesNamedFile, PARSES),
+    row("--find-in-files", "2", Plan::ParsesNamedFile, PARSES),
+    row("--compare-captures", "2", Plan::ParsesNamedFile, PARSES),
+    row("--vcon-validate", "2", Plan::ParsesNamedFile, PARSES),
     row("validation error", "3", Plan::Keeps, ERROR_EXIT),
     row("provenance error", "3b", Plan::Keeps, ERROR_EXIT),
     row(
@@ -191,7 +203,7 @@ pub const EARLY_EXITS: [EarlyExit; 35] = [
         "lists the spool's directories and failure records, which sipnab wrote; a spool private \
          to root stays readable",
     ),
-    row("--vcon-resign", "4e", Plan::KeepsForNow, FOR_NOW),
+    row("--vcon-resign", "4e", Plan::ParsesNamedFile, PARSES),
     row(
         "--vcon-audio-fetch",
         "4f",
@@ -326,6 +338,8 @@ pub enum Access {
     ReadWrite,
     /// Create, rename and remove entries in a directory.
     WriteDir,
+    /// List a directory and open the entries in it.
+    ReadDir,
 }
 
 impl Access {
@@ -336,6 +350,7 @@ impl Access {
             Access::Read => 0o4,
             Access::ReadWrite => 0o6,
             Access::WriteDir => 0o3,
+            Access::ReadDir => 0o5,
         }
     }
 
@@ -343,7 +358,7 @@ impl Access {
     #[must_use]
     pub fn words(self) -> &'static str {
         match self {
-            Access::Read => "read",
+            Access::Read | Access::ReadDir => "read",
             Access::ReadWrite => "read and write",
             Access::WriteDir => "write in",
         }
@@ -367,6 +382,20 @@ pub struct Need {
 /// are not followed.
 #[must_use]
 pub fn tree_needs(root: &Path, what: &'static str) -> Vec<Need> {
+    tree_needs_with(root, what, Access::WriteDir)
+}
+
+/// The needs of a directory tree a run only reads: every directory under
+/// `root`, `root` included, to list, and every file to read. A tree that
+/// does not exist has none. Symbolic links are not followed.
+#[must_use]
+pub fn read_tree_needs(root: &Path, what: &'static str) -> Vec<Need> {
+    tree_needs_with(root, what, Access::ReadDir)
+}
+
+/// The needs of the tree under `root`: `dir_access` on every directory,
+/// `root` included, and a read of every file.
+fn tree_needs_with(root: &Path, what: &'static str, dir_access: Access) -> Vec<Need> {
     let mut needs = Vec::new();
     let mut dirs = vec![root.to_path_buf()];
     while let Some(dir) = dirs.pop() {
@@ -376,7 +405,7 @@ pub fn tree_needs(root: &Path, what: &'static str) -> Vec<Need> {
         needs.push(Need {
             path: dir,
             what,
-            access: Access::WriteDir,
+            access: dir_access,
         });
         for entry in entries.flatten() {
             match entry.file_type() {
@@ -543,6 +572,7 @@ fn holds(need: &Need) -> bool {
         Access::Read => AccessWanted::Read,
         Access::ReadWrite => AccessWanted::ReadAndWrite,
         Access::WriteDir => AccessWanted::WriteAndSearch,
+        Access::ReadDir => AccessWanted::ReadAndSearch,
     };
     match effective_access(&need.path, wanted) {
         Ok(()) => true,
@@ -597,6 +627,52 @@ pub fn confine(name: &str, asked: Asked<'_>, needs: &[Need]) -> Result<Option<Dr
         return Err(refusal(name, need, target.user(), offer));
     }
     Ok(Some(target))
+}
+
+/// Proof that a command that parses a named file carried out its plan:
+/// that [`confine_file_command`] ran and did not refuse. The step of such a
+/// command that parses its input takes one, so the parse cannot be written
+/// before the drop. Only [`confine_file_command`] makes one.
+#[derive(Debug)]
+pub struct Confined(());
+
+impl Confined {
+    /// A proof for a test that parses without a process to confine. Its
+    /// one caller, `app::vcon_resign::run`, exists with the `vcon` feature.
+    #[cfg(all(test, feature = "vcon"))]
+    pub(crate) fn in_a_test() -> Self {
+        Self(())
+    }
+}
+
+/// [`confine`] for a command that parses a file the caller named
+/// ([`Plan::ParsesNamedFile`]). Call it after the command opened and read
+/// its inputs and before it judges or parses a byte of them.
+///
+/// # Errors
+///
+/// `name` is not such a command, or what [`confine`] refuses.
+///
+/// # Side effects
+///
+/// As [`confine`].
+pub fn confine_file_command(
+    name: &str,
+    asked: Asked<'_>,
+    needs: &[Need],
+) -> Result<Confined, String> {
+    let exit = early_exit(name)
+        .filter(|exit| exit.plan == Plan::ParsesNamedFile)
+        .ok_or_else(|| format!("{name}: not a command that parses a named file"))?;
+    if action(exit, asked) == Action::KeepWarned {
+        // Printed, not logged: a run that reads `-I` without `--no-tui` logs
+        // errors only, and the line that says root was kept must reach the
+        // operator whatever the log shows.
+        report(&kept_root_warning(name));
+    } else {
+        confine(name, asked, needs)?;
+    }
+    Ok(Confined(()))
 }
 
 /// [`Asked`] for this process: whether it is root, and the three settings.
@@ -862,14 +938,201 @@ mod tests {
         );
     }
 
+    // ---- the commands that parse a named file (COMMANDS-PARSE-AS-ROOT) ----
+
+    /// The seven, in the order of `main`'s steps.
+    const FILE_COMMANDS: [&str; 7] = [
+        "--show-frame",
+        "--write-annotated",
+        "--strip-secrets",
+        "--find-in-files",
+        "--compare-captures",
+        "--vcon-validate",
+        "--vcon-resign",
+    ];
+
     #[test]
-    fn a_for_now_row_keeps_root_whatever_user_is_named() {
+    fn confining_a_file_command_that_is_not_root_gives_the_proof() {
+        let asked = Asked {
+            root: false,
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert!(
+                confine_file_command(name, asked, &[]).is_ok(),
+                "{name}: an ordinary user's run is confined as it stands"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_of_another_plan_gets_no_file_command_proof() {
+        let asked = Asked {
+            root: false,
+            ..ROOT
+        };
+        for name in ["fleet serve", "--vcon-fetch", "--cores", "--dump-config"] {
+            let refused = confine_file_command(name, asked, &[]);
+            assert!(
+                refused.is_err_and(|e| e.contains("not a command that parses a named file")),
+                "{name} is not a file command"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_with_no_row_gets_no_file_command_proof() {
+        let refused = confine_file_command("--no-such-flag", ROOT, &[]);
+        assert!(
+            refused.is_err_and(|e| e.starts_with("--no-such-flag:")),
+            "a name the table does not hold is refused before anything is dropped"
+        );
+    }
+
+    #[test]
+    fn the_seven_file_commands_carry_the_parse_plan() {
+        for name in FILE_COMMANDS {
+            assert_eq!(exit(name).plan, Plan::ParsesNamedFile, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_parse_plan_rows_are_the_seven_in_step_order() {
+        let names: Vec<&str> = rows()
+            .filter(|row| row.plan == Plan::ParsesNamedFile)
+            .map(|row| row.name)
+            .collect();
+        assert_eq!(names, FILE_COMMANDS, "the rows that parse a named file");
+    }
+
+    #[test]
+    fn the_parse_plan_drops_here() {
+        assert!(
+            Plan::ParsesNamedFile.drops_here(),
+            "a command that parses a named file drops in confine"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_root_file_command_with_no_user_drops_to_nobody() {
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), ROOT), Action::DropTo("nobody"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_root_file_command_drops_to_the_flag_user() {
         let asked = Asked {
             flag_user: Some("u"),
             ..ROOT
         };
-        for row in rows().filter(|row| row.plan == Plan::KeepsForNow) {
-            assert_eq!(action(row, asked), Action::Keep(row.reason), "{}", row.name);
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::DropTo("u"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_root_file_command_drops_to_the_config_user() {
+        let asked = Asked {
+            config_user: Some("c"),
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::DropTo("c"), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_flag_user_outranks_the_config_user_for_a_file_command() {
+        let asked = Asked {
+            flag_user: Some("u"),
+            config_user: Some("c"),
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::DropTo("u"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_file_command_never_keeps_root_for_a_reason_of_its_row() {
+        let asked = Asked {
+            flag_user: Some("u"),
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert!(
+                !matches!(action(exit(name), asked), Action::Keep(_)),
+                "{name} keeps root"
+            );
+        }
+    }
+
+    #[test]
+    fn no_row_waits_for_a_later_change() {
+        for row in rows() {
+            assert!(
+                !row.reason.contains("for now") && !row.reason.contains("COMMANDS-PARSE-AS-ROOT"),
+                "{} still keeps root for now: {}",
+                row.name,
+                row.reason
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_command_that_is_not_root_changes_in_nothing() {
+        let asked = Asked {
+            root: false,
+            flag_user: Some("u"),
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::Unchanged, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_file_command_with_no_priv_drop_keeps_root_with_the_warning() {
+        let asked = Asked {
+            no_priv_drop: true,
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::KeepWarned, "{name}");
+        }
+    }
+
+    #[test]
+    fn no_priv_drop_outranks_a_named_user_for_a_file_command() {
+        let asked = Asked {
+            no_priv_drop: true,
+            flag_user: Some("u"),
+            config_user: Some("c"),
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::KeepWarned, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_file_command_row_says_what_runs_as_root() {
+        for name in FILE_COMMANDS {
+            let reason = exit(name).reason;
+            assert!(
+                reason.contains("as root") && reason.contains("drops"),
+                "{name}: the reason does not say what runs as root and that it drops: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_file_commands_of_step_2_and_step_4e_keep_their_steps() {
+        for name in FILE_COMMANDS {
+            let want = if name == "--vcon-resign" { "4e" } else { "2" };
+            assert_eq!(exit(name).step, want, "{name}");
         }
     }
 
@@ -1067,34 +1330,6 @@ mod tests {
     }
 
     #[test]
-    fn the_for_now_rows_are_the_seven_and_name_their_entry() {
-        let names: Vec<&str> = rows()
-            .filter(|row| row.plan == Plan::KeepsForNow)
-            .map(|row| row.name)
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "--show-frame",
-                "--write-annotated",
-                "--strip-secrets",
-                "--find-in-files",
-                "--compare-captures",
-                "--vcon-validate",
-                "--vcon-resign",
-            ],
-            "the commands that still parse as root"
-        );
-        for row in rows().filter(|row| row.plan == Plan::KeepsForNow) {
-            assert!(
-                row.reason.contains(PARSE_AS_ROOT_ENTRY),
-                "{} does not name its backlog entry",
-                row.name
-            );
-        }
-    }
-
-    #[test]
     fn only_listener_and_client_rows_drop_here() {
         for row in rows() {
             let drops = matches!(
@@ -1181,6 +1416,7 @@ mod tests {
             (Access::Read, "cannot read "),
             (Access::ReadWrite, "cannot read and write "),
             (Access::WriteDir, "cannot write in "),
+            (Access::ReadDir, "cannot read "),
         ] {
             let text = refusal("fleet serve", &need("/p", access), "nobody", None);
             assert!(text.contains(words), "{words:?} not in: {text}");
@@ -1196,7 +1432,264 @@ mod tests {
         );
     }
 
+    // ---- `fleet verify`: reads its key files as root, then drops ----
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn success_verify_started_as_root_drops_to_nobody() {
+        assert_eq!(
+            action(exit("fleet verify"), ROOT),
+            Action::DropTo("nobody"),
+            "success a root run of `fleet verify` with no --user reads history files as nobody"
+        );
+    }
+
+    #[test]
+    fn success_verify_started_as_root_drops_to_the_flag_user() {
+        let asked = Asked {
+            flag_user: Some("sipnab-center"),
+            ..ROOT
+        };
+        assert_eq!(
+            action(exit("fleet verify"), asked),
+            Action::DropTo("sipnab-center"),
+            "success --user names the user `fleet verify` reads history files as"
+        );
+    }
+
+    #[test]
+    fn success_verify_with_no_priv_drop_keeps_root_and_warns() {
+        let asked = Asked {
+            no_priv_drop: true,
+            flag_user: Some("sipnab-center"),
+            ..ROOT
+        };
+        assert_eq!(
+            action(exit("fleet verify"), asked),
+            Action::KeepWarned,
+            "success --no-priv-drop keeps root for `fleet verify`, with the warning line"
+        );
+    }
+
+    #[test]
+    fn edge_verify_not_started_as_root_changes_in_nothing() {
+        let asked = Asked {
+            root: false,
+            flag_user: Some("sipnab-center"),
+            ..ROOT
+        };
+        assert_eq!(
+            action(exit("fleet verify"), asked),
+            Action::Unchanged,
+            "edge a `fleet verify` that is not root stays the user it was started as"
+        );
+    }
+
+    #[test]
+    fn edge_the_verify_row_says_what_it_reads_on_each_side_of_the_drop() {
+        let row = exit("fleet verify");
+        assert!(
+            row.plan.drops_here(),
+            "edge the plan of `fleet verify` is one that drops: {:?}",
+            row.plan
+        );
+        assert!(
+            row.reason.contains("key files as root") && row.reason.contains("history file"),
+            "edge the reason names the key files before the drop and the history files after: {}",
+            row.reason
+        );
+    }
+
+    #[test]
+    fn success_a_directory_is_read_with_the_read_and_search_bits() {
+        let dir = |mode| Entry {
+            uid: 7,
+            gid: 8,
+            mode,
+        };
+        assert!(
+            reaches(&[], dir(0o500), 7, 9, Access::ReadDir),
+            "success the owner lists a directory it may read and search"
+        );
+        assert!(
+            reaches(&[], dir(0o050), 6, 8, Access::ReadDir),
+            "success a member of the group lists it by the group bits"
+        );
+        assert!(
+            reaches(&[], dir(0o005), 6, 9, Access::ReadDir),
+            "success everyone else lists it by the other bits"
+        );
+    }
+
+    #[test]
+    fn failure_a_directory_without_the_search_bit_is_not_read() {
+        let leaf = Entry {
+            uid: 7,
+            gid: 8,
+            mode: 0o704,
+        };
+        assert!(
+            !reaches(&[], leaf, 6, 9, Access::ReadDir),
+            "failure a directory a user may list and not search is not one it can read files in"
+        );
+    }
+
+    #[test]
+    fn failure_a_directory_without_the_read_bit_is_not_read() {
+        let leaf = Entry {
+            uid: 7,
+            gid: 8,
+            mode: 0o701,
+        };
+        assert!(
+            !reaches(&[], leaf, 6, 9, Access::ReadDir),
+            "failure a directory a user may search and not list is not one a pass can read"
+        );
+    }
+
+    #[test]
+    fn edge_a_write_grant_is_not_a_read_of_a_directory() {
+        let leaf = Entry {
+            uid: 7,
+            gid: 8,
+            mode: 0o702,
+        };
+        assert!(
+            !reaches(&[], leaf, 6, 9, Access::ReadDir),
+            "edge the write bit alone lists nothing"
+        );
+        assert_eq!(
+            Access::ReadDir.bits(),
+            0o5,
+            "edge a directory is read with the read and the search bit, and no other"
+        );
+    }
+
+    #[test]
+    fn failure_the_refusal_of_a_history_store_names_the_three_ways_out() {
+        let lack = Need {
+            path: PathBuf::from("/var/lib/sipnab/center.store.parquet"),
+            what: "the history store of --store",
+            access: Access::ReadDir,
+        };
+        assert_eq!(
+            refusal("fleet verify", &lack, "nobody", Some("center")),
+            "fleet verify: started as root, this command runs as user 'nobody', and 'nobody' \
+             cannot read '/var/lib/sipnab/center.store.parquet' (the history store of --store). \
+             Nothing was created. Choose one: chown nobody \
+             '/var/lib/sipnab/center.store.parquet'; run it with --user center, who can; or pass \
+             --no-priv-drop to keep root",
+            "failure the refusal of `fleet verify` is the one a center's start gives"
+        );
+    }
+
     type TestError = Box<dyn std::error::Error>;
+
+    #[test]
+    fn success_a_read_tree_needs_its_directories_listed_and_its_files_read() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let day = dir.path().join("day");
+        std::fs::create_dir(&day)?;
+        std::fs::write(day.join("rows"), b"x")?;
+        let mut needs = read_tree_needs(dir.path(), "the history store of --store");
+        needs.sort_by(|a, b| a.path.cmp(&b.path));
+        assert!(
+            needs
+                .iter()
+                .all(|need| need.what == "the history store of --store"),
+            "success every need carries the words the refusal prints: {needs:?}"
+        );
+        let got: Vec<(PathBuf, Access)> = needs.into_iter().map(|n| (n.path, n.access)).collect();
+        assert_eq!(
+            got,
+            [
+                (dir.path().to_path_buf(), Access::ReadDir),
+                (day.clone(), Access::ReadDir),
+                (day.join("rows"), Access::Read),
+            ],
+            "success every directory to list, every file to read, and nothing to write"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_read_tree_that_does_not_exist_has_no_needs() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        assert_eq!(
+            read_tree_needs(&dir.path().join("absent"), "--store"),
+            [],
+            "edge a history directory that is absent is the pass's own refusal, not a lack"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_read_tree_does_not_follow_a_symbolic_link() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let tree = dir.path().join("tree");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&tree)?;
+        std::fs::create_dir(&outside)?;
+        std::fs::write(outside.join("file"), b"x")?;
+        std::os::unix::fs::symlink(&outside, tree.join("link"))?;
+        let needs = read_tree_needs(&tree, "--store");
+        assert_eq!(
+            needs
+                .iter()
+                .map(|n| (n.path.clone(), n.access))
+                .collect::<Vec<_>>(),
+            [(tree, Access::ReadDir)],
+            "edge what a link points to is not part of the tree"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_this_process_lacks_a_directory_it_cannot_list_or_search() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        if privilege::is_root() {
+            // Root is granted everything; the lack cannot be shown as root.
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let want = |path: &Path| Need {
+            path: path.to_path_buf(),
+            what: "the history store of --store",
+            access: Access::ReadDir,
+        };
+        assert!(
+            holds(&want(dir.path())),
+            "failure its own directory is held before it is closed"
+        );
+        let mut closed = Vec::new();
+        for mode in [0o400, 0o100, 0o300] {
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode))?;
+            closed.push((mode, holds(&want(dir.path()))));
+        }
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        assert_eq!(
+            closed,
+            [(0o400, false), (0o100, false), (0o300, false)],
+            "failure a directory is lacked without both the read and the search bit"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_directory_retention_removed_is_not_a_lack() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let gone = Need {
+            path: dir.path().join("date=2026-11-11"),
+            what: "the history store of --store",
+            access: Access::ReadDir,
+        };
+        assert!(
+            holds(&gone),
+            "edge a day removed between the listing and the check is not refused for"
+        );
+        Ok(())
+    }
 
     #[test]
     fn a_tree_needs_its_directories_written_and_its_files_read() -> Result<(), TestError> {

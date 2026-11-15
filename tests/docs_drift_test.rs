@@ -6562,7 +6562,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // files", with its site mirror (+2).
     // 1504 -> 1506 (COMMANDS-KEEP-ROOT): the table of "Commands that do not
     // capture" in docs/least-privilege.md, with its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1506;
+    // 1506 -> 1508 (`sipnab fleet verify`): the table of exit statuses in
+    // docs/fleet.md's "Verify the history store", with its site mirror (+2).
+    // 1508 -> 1510 (`sipnab fleet verify`, measured): the table of measured
+    // pass times in the same section, with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1510;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

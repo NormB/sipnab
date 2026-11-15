@@ -295,12 +295,34 @@ pub fn write_annotated_copy(
     notes: &Notes,
     output: &Path,
 ) -> Result<CopyReport, CopyError> {
+    write_annotated_copy_of(
+        crate::capture::file::Member::by_path(input),
+        input_label,
+        notes,
+        output,
+    )
+}
+
+/// [`write_annotated_copy`] of an input read by its path or, when it was
+/// opened up front, through its descriptor and never by its path.
+///
+/// # Errors
+///
+/// As [`write_annotated_copy`].
+pub(crate) fn write_annotated_copy_of(
+    member: crate::capture::file::Member<'_>,
+    input_label: &str,
+    notes: &Notes,
+    output: &Path,
+) -> Result<CopyReport, CopyError> {
+    let input = member.path;
     if is_classic_name(output) {
         return Err(CopyError::ClassicOutput(output.display().to_string()));
     }
     let by_ordinal = place(notes, input, input_label)?;
 
-    let (mut cap, _gunzipped) = crate::capture::file::open_offline(input)
+    let (mut cap, _gunzipped) = member
+        .open_for_libpcap()
         .map_err(|e| CopyError::Unreadable(format!("{e:#}")))?;
     let link_type = cap.get_datalink().0;
 

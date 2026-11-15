@@ -508,6 +508,10 @@ fn every_flag_the_page_names_exists() -> Result<(), TestError> {
     let mut g729 = sipnab::cli::g729_args::G729Cli::command();
     g729.build();
     longs(&g729, &mut real);
+    // And those of `sipnab fleet`, which has its own parser too.
+    let mut fleet = sipnab::cli::fleet_args::FleetCli::command();
+    fleet.build();
+    longs(&fleet, &mut real);
     let re = regex::Regex::new(r"--([a-z0-9][a-z0-9-]*)")?;
     let man = hand_written(&man_page()?);
     assert!(

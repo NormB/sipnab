@@ -368,7 +368,12 @@ mod before_the_launch {
         ("run_g729_command()", &["g729 install", "g729 status"]),
         (
             "run_fleet_command()",
-            &["fleet inventory", "fleet keygen", "fleet serve"],
+            &[
+                "fleet inventory",
+                "fleet keygen",
+                "fleet serve",
+                "fleet verify",
+            ],
         ),
         ("bootstrap::apply_config(", &["config error"]),
         ("bootstrap::plan(", &["plan error"]),
@@ -419,9 +424,9 @@ mod before_the_launch {
     /// The rows that leave inside `Cli::parse_args()`, where clap ends the run.
     const PARSER_EXITS: [&str; 3] = ["--help", "--version", "argument error"];
 
-    /// The commands that parse a file the caller named and still keep the
-    /// caller's privileges. The list is emptied by COMMANDS-PARSE-AS-ROOT.
-    const PARSE_AS_ROOT: [&str; 7] = [
+    /// The commands that parse a file the caller named: each opens and
+    /// reads as root, drops, and then parses (COMMANDS-PARSE-AS-ROOT).
+    const FILE_COMMANDS: [&str; 7] = [
         "--show-frame",
         "--write-annotated",
         "--strip-secrets",
@@ -547,7 +552,7 @@ mod before_the_launch {
                 "src/cli/fleet_args.rs",
                 "pub enum FleetCommand {",
                 "fleet",
-                vec!["Inventory", "Keygen", "Serve"],
+                vec!["Inventory", "Keygen", "Serve", "Verify"],
             ),
             (
                 "src/cli/g729_args.rs",
@@ -591,49 +596,199 @@ mod before_the_launch {
     }
 
     #[test]
-    fn the_commands_that_still_parse_as_root_are_listed_with_their_backlog_entry()
-    -> Result<(), TestError> {
-        use sipnab::early_exit::{PARSE_AS_ROOT_ENTRY, Plan, rows};
-        let for_now: Vec<&str> = rows()
-            .filter(|row| row.plan == Plan::KeepsForNow)
+    fn no_command_that_parses_a_named_file_keeps_root() -> Result<(), TestError> {
+        use sipnab::early_exit::{Plan, rows};
+        let parsing: Vec<&str> = rows()
+            .filter(|row| row.plan == Plan::ParsesNamedFile)
             .map(|row| row.name)
             .collect();
         assert_eq!(
-            for_now, PARSE_AS_ROOT,
-            "the commands that parse a named file as root changed. When a reader \
-         takes an open handle and its command drops, remove it from both lists."
+            parsing, FILE_COMMANDS,
+            "the commands that parse a named file changed: a new one opens its input as \
+             root, drops in `FileCommand::confine`, and parses after"
         );
-        if !for_now.is_empty() {
-            let table = production("src/early_exit.rs")?;
+        let table = production("src/early_exit.rs")?;
+        for gone in ["KeepsForNow", "for now"] {
             assert!(
-                table.contains(PARSE_AS_ROOT_ENTRY),
-                "src/early_exit.rs no longer names the backlog entry its for-now rows wait for"
+                !table.contains(gone),
+                "src/early_exit.rs still holds a row that keeps root `{gone}`"
             );
-            let page = std::fs::read_to_string(root().join("docs/least-privilege.md"))?;
-            for name in for_now {
-                assert!(
-                    page.contains(&format!("`{name}`")),
-                    "docs/least-privilege.md does not say that `{name}` still parses as root"
-                );
-                let row = sipnab::early_exit::early_exit(name).ok_or("row")?;
-                assert!(
-                    row.reason.contains(PARSE_AS_ROOT_ENTRY),
-                    "the row `{name}` does not name {PARSE_AS_ROOT_ENTRY}"
-                );
-            }
         }
+        let page = std::fs::read_to_string(root().join("docs/least-privilege.md"))?;
+        for name in FILE_COMMANDS {
+            assert!(
+                page.contains(&format!("`{name}`")),
+                "docs/least-privilege.md does not say what `{name}` does when root starts it"
+            );
+        }
+        Ok(())
+    }
+
+    /// For each command that parses a named file: the file and function
+    /// that run it, and three texts in the order they must stand in. The
+    /// first reads or opens the input, the second drops, the third parses.
+    const READ_DROP_PARSE: [(&str, &str, &str, [&str; 3]); 7] = [
+        (
+            "--vcon-validate",
+            "src/app/queries/b3.rs",
+            "\nfn vcon_validate(",
+            [
+                "std::fs::read(path)",
+                "drop.confine(&[])",
+                "validated(&confined, bytes)",
+            ],
+        ),
+        (
+            "--find-in-files",
+            "src/app/queries/b3.rs",
+            "\nfn find_in_files(",
+            [
+                "open_set_up_front(&files)",
+                "drop.confine(&[])",
+                "swept(\n        &confined,",
+            ],
+        ),
+        (
+            "--compare-captures",
+            "src/app/queries/b3.rs",
+            "\nfn compare_captures(",
+            [
+                "open_up_front(path)",
+                "drop.confine(&[])",
+                "compare_opened_files(",
+            ],
+        ),
+        (
+            "--show-frame",
+            "src/app/bootstrap.rs",
+            "\nfn show_frame(",
+            [
+                "open_source_up_front(&parsed.source)",
+                "drop.confine(&[])",
+                "frame_of(&confined)",
+            ],
+        ),
+        (
+            "--strip-secrets and --write-annotated",
+            "src/app/bootstrap.rs",
+            "\nfn one_capture_confined(",
+            [
+                "named.open_up_front()",
+                "drop.confine(&[output_need(",
+                "judged(&confined)",
+            ],
+        ),
+        (
+            "--write-annotated",
+            "src/app/bootstrap.rs",
+            "\nfn annotated_copy(",
+            [
+                "std::fs::File::open(notes_file)",
+                "})?;",
+                "Notes::load_opened",
+            ],
+        ),
+        (
+            "--vcon-resign",
+            "src/app/bootstrap.rs",
+            "\npub fn run_vcon_resign(",
+            [
+                "vcon_resign::prepare(",
+                "drop.confine(&[output_need(prepared.out()",
+                "prepared.finish(&confined)",
+            ],
+        ),
+    ];
+
+    #[test]
+    fn each_file_command_reads_then_drops_then_parses() -> Result<(), TestError> {
+        for (name, rel, function, [reads, drops, parses]) in READ_DROP_PARSE {
+            let text = production(rel)?;
+            let body = &text[position(&text, function, rel)?..];
+            let (read, drop, parse) = (
+                position(body, reads, rel)?,
+                position(body, drops, rel)?,
+                position(body, parses, rel)?,
+            );
+            assert!(
+                read < drop,
+                "{name}: `{reads}` must stand before `{drops}` in {rel}: the input is \
+                 opened while the run is still root"
+            );
+            assert!(
+                drop < parse,
+                "{name}: `{drops}` must stand before `{parses}` in {rel}: nothing is \
+                 parsed before the drop"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_parsing_step_of_a_vcon_command_takes_the_proof_of_the_drop() -> Result<(), TestError> {
+        let resign = production("src/app/vcon_resign.rs")?;
+        assert!(
+            resign.contains("pub fn finish(self, _confined: &crate::early_exit::Confined)"),
+            "`Prepared::finish` no longer takes the proof that the run is confined"
+        );
+        let table = production("src/early_exit.rs")?;
+        assert_eq!(
+            (
+                table.matches("Ok(Confined(()))").count(),
+                table.matches("Self(())").count()
+            ),
+            (1, 1),
+            "the proof is made in two places only: by `confine_file_command`, and by the \
+             constructor that exists in a test build"
+        );
         Ok(())
     }
 
     /// For each row that drops in `early_exit::confine`: the file that carries
     /// out its plan and the text that names the row there.
-    const CONFINE_SITES: [(&str, &str, &str); 7] = [
+    const CONFINE_SITES: [(&str, &str, &str); 15] = [
+        (
+            "--show-frame",
+            "src/app/bootstrap.rs",
+            "FileCommand::new(cli, None, \"--show-frame\")",
+        ),
+        (
+            "--write-annotated",
+            "src/app/bootstrap.rs",
+            "FileCommand::new(cli, None, \"--write-annotated\")",
+        ),
+        (
+            "--strip-secrets",
+            "src/app/bootstrap.rs",
+            "FileCommand::new(cli, Some(&loaded.config), \"--strip-secrets\")",
+        ),
+        (
+            "--find-in-files",
+            "src/app/queries/b3.rs",
+            "FileCommand::new(cli, Some(&loaded.config), \"--find-in-files\")",
+        ),
+        (
+            "--compare-captures",
+            "src/app/queries/b3.rs",
+            "FileCommand::new(cli, Some(&loaded.config), \"--compare-captures\")",
+        ),
+        (
+            "--vcon-validate",
+            "src/app/queries/b3.rs",
+            "FileCommand::new(cli, None, \"--vcon-validate\")",
+        ),
+        (
+            "--vcon-resign",
+            "src/app/bootstrap.rs",
+            "FileCommand::new(cli, config, \"--vcon-resign\")",
+        ),
         ("fleet serve", "src/app/fleet_center.rs", "\"fleet serve\","),
         (
             "fleet inventory",
             "src/app/fleet.rs",
             "confine(\"fleet inventory\"",
         ),
+        ("fleet verify", "src/app/fleet.rs", "\"fleet verify\","),
         (
             "--vcon-forward",
             "src/app/bootstrap.rs",
@@ -722,6 +877,19 @@ mod before_the_launch {
             position(main, "map(read_files)", "src/app/fleet.rs")? < confine
                 && confine < position(main, "std::thread::scope(", "src/app/fleet.rs")?,
             "`fleet inventory` reads every file, drops, then starts its request threads"
+        );
+        let verify = production("src/app/fleet_verify.rs")?;
+        let run = &verify[position(&verify, "\npub fn run(", "src/app/fleet_verify.rs")?..];
+        let run = &run[..position(run, "\n}\n", "src/app/fleet_verify.rs")?];
+        let confine = position(run, "confine(history.dir())", "src/app/fleet_verify.rs")?;
+        assert!(
+            position(run, "keys_of(args)", "src/app/fleet_verify.rs")? < confine
+                && confine < position(run, "verify(&history", "src/app/fleet_verify.rs")?,
+            "`fleet verify` reads its key files, drops, then lists and reads the history files"
+        );
+        assert!(
+            !starts_a_thread(&verify),
+            "`fleet verify` starts a thread; the drop is no longer made by the only thread"
         );
         Ok(())
     }
