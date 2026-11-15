@@ -515,6 +515,67 @@ fn ask(
     })
 }
 
+/// `sipnab fleet verify` in a build that links the history store: the
+/// pass of [`super::fleet_verify::run`] on the standard streams. Returns
+/// the exit code.
+#[cfg(feature = "fleet-store")]
+fn verify_command(flags: crate::cli::fleet_args::VerifyFlags) -> i32 {
+    let args = super::fleet_verify::VerifyArgs {
+        store: flags.store,
+        store_key_file: flags.store_key_file,
+        store_old_key_files: flags.store_old_key_file,
+        class: flags
+            .class
+            .map(crate::cli::fleet_args::HistoryClass::as_str),
+        from: flags.from,
+        to: flags.to,
+        json: flags.json,
+    };
+    if crate::privilege::is_root() {
+        // For the one line `--no-priv-drop` or the macOS rule logs. A run
+        // that is not root logs nothing new.
+        crate::app::bootstrap::init_logging_at("warn");
+    }
+    let run_as = flags.run_as;
+    super::fleet_verify::run(
+        &args,
+        chrono::Utc::now(),
+        // Every key file first, then the drop, then the history files: a
+        // run started as root lists and reads them as the user it dropped
+        // to, and is refused here when that user cannot (COMMANDS-KEEP-ROOT).
+        &mut |history| {
+            crate::early_exit::confine(
+                "fleet verify",
+                run_as.asked(),
+                &crate::early_exit::read_tree_needs(history, HISTORY_OF_STORE),
+            )
+            .map(|_| ())
+        },
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    )
+}
+
+/// What the refusal of a start calls the history directory, in
+/// `sipnab fleet verify` as in `sipnab fleet serve`.
+#[cfg(feature = "fleet-store")]
+pub(super) const HISTORY_OF_STORE: &str = "the history store of --store";
+
+/// `sipnab fleet verify` in a build without the history store: there is
+/// nothing it could read, so the pass cannot run. Returns exit code 2.
+#[cfg(not(feature = "fleet-store"))]
+fn verify_command(flags: crate::cli::fleet_args::VerifyFlags) -> i32 {
+    use std::io::Write as _;
+    let _ = flags;
+    let _ = writeln!(std::io::stderr(), "sipnab fleet verify: {NO_HISTORY_STORE}");
+    2
+}
+
+/// What `sipnab fleet verify` says in a build without the history store.
+#[cfg(not(feature = "fleet-store"))]
+const NO_HISTORY_STORE: &str = "this build has no history store (Cargo feature `fleet-store`): \
+     run the command from the build the center runs";
+
 /// `sipnab fleet ...`, with `args` as its whole command line, the first
 /// being the command's own name. Returns the exit code.
 pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
@@ -594,6 +655,7 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
                 run_as,
             });
         }
+        crate::cli::fleet_args::FleetCommand::Verify(flags) => return verify_command(flags),
     };
     let mut err = std::io::stderr();
     let entries = match std::fs::read_to_string(&hosts)

@@ -286,11 +286,31 @@ impl Run {
 
     /// Start `command` in a process group of its own, to be gone `within`
     /// that time.
-    fn spawn(mut command: Command, marker: &Path, within: Duration) -> Result<Self, TestError> {
+    fn spawn(command: Command, marker: &Path, within: Duration) -> Result<Self, TestError> {
+        Self::spawn_into(command, marker, within, Stdio::null())
+    }
+
+    /// Start `sipnab args` as root with its standard output written to the
+    /// file `out`.
+    #[cfg(feature = "fleet-store")]
+    fn start_into(args: &[&str], marker: &Path, out: &Path) -> Result<Self, TestError> {
+        let mut command = root_run::sudo()?;
+        command.arg(BIN).args(args);
+        let out = std::fs::File::create(out)?;
+        Self::spawn_into(command, marker, TEST_DEADLINE, Stdio::from(out))
+    }
+
+    /// [`Run::spawn`], with the command's standard output going to `out`.
+    fn spawn_into(
+        mut command: Command,
+        marker: &Path,
+        within: Duration,
+        out: Stdio,
+    ) -> Result<Self, TestError> {
         use std::os::unix::process::CommandExt as _;
         let mut child = command
             .process_group(0)
-            .stdout(Stdio::null())
+            .stdout(out)
             .stderr(Stdio::piped())
             .spawn()?;
         let stderr = child.stderr.take().ok_or("piped stderr")?;
@@ -956,6 +976,478 @@ fn an_inventory_started_as_root_asks_as_nobody() -> Result<(), TestError> {
     )?;
     run.finish()?;
     Ok(())
+}
+
+/// `sipnab fleet verify` started as root reads its key files as root and
+/// the history files as the user it dropped to.
+///
+/// A pass ends by itself, so there is no listener to find it by. These
+/// stores hold [`verify::REFUSED_FILES`] files that are not sealed files,
+/// under names the history store writes: the pass refuses each with one
+/// line on its standard output, which is a pipe to the test. The lines are
+/// more than a pipe holds, so once the test has read the first line and
+/// reads no more, the pass is past its drop, is reading history files, and
+/// waits to write. The test reads the uids of the process there, then
+/// reads the rest.
+#[cfg(feature = "fleet-store")]
+mod verify {
+    use super::*;
+
+    /// The directory of the day whose call records these stores hold.
+    const DAY: &str = "calls/date=2026-11-11";
+
+    /// A name the history store writes for a file of that day.
+    const NAME: &str = "1794355200000-1794355200001-h0000000000000001.sealed";
+
+    /// The summary of a store that holds no file.
+    const NO_FILES: &str = "calls: 0 files, 0 clean, 0 refused, 0 gone, 0 rows\n\
+                            members: 0 files, 0 clean, 0 refused, 0 gone, 0 rows\n";
+
+    /// A store key file only root can read, and beside `store` a history
+    /// directory with one day in it, this user's and open to every user.
+    struct Store {
+        key: PathBuf,
+        store: PathBuf,
+        history: PathBuf,
+        out: PathBuf,
+    }
+
+    impl Store {
+        fn new(scratch: &Scratch) -> Result<Self, TestError> {
+            let key = scratch.path("store.key");
+            let made = Command::new(BIN)
+                .args(["fleet", "keygen", "--out", text(&key)?])
+                .output()?;
+            if !made.status.success() {
+                return Err(format!("keygen: {}", String::from_utf8_lossy(&made.stderr)).into());
+            }
+            make_root_only(&key)?;
+            let data = scratch.path("data");
+            let history = data.join("center.store.parquet");
+            std::fs::create_dir_all(history.join(DAY))?;
+            for dir in [
+                data.clone(),
+                history.clone(),
+                history.join("calls"),
+                history.join(DAY),
+            ] {
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))?;
+            }
+            Ok(Self {
+                key,
+                store: data.join("center.store"),
+                history,
+                out: scratch.path("stdout"),
+            })
+        }
+
+        /// The path of the one history file.
+        fn file(&self) -> PathBuf {
+            self.history.join(DAY).join(NAME)
+        }
+
+        /// Fill the day with [`REFUSED_FILES`] files every user can read,
+        /// none of them a sealed file.
+        fn with_refused_files(self) -> Result<Self, TestError> {
+            for n in 0..REFUSED_FILES {
+                let at = DAY_START_MS + n;
+                let name = format!("{at:013}-{at:013}-h{n:016x}.sealed");
+                std::fs::write(self.history.join(DAY).join(name), b"not a sealed file\n")?;
+            }
+            Ok(self)
+        }
+
+        fn args(&self, more: &[&str]) -> Result<Vec<String>, TestError> {
+            let mut args: Vec<String> = [
+                "fleet",
+                "verify",
+                "--store",
+                text(&self.store)?,
+                "--store-key-file",
+                text(&self.key)?,
+            ]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+            args.extend(more.iter().map(|s| (*s).to_string()));
+            Ok(args)
+        }
+
+        /// Run the pass as root to its end: exit code, stdout, stderr.
+        fn pass(&self, more: &[&str]) -> Result<(Option<i32>, String, String), TestError> {
+            let args = self.args(more)?;
+            let (code, log) = Run::start_into(&strs(&args), &self.store, &self.out)?.finish()?;
+            Ok((code, std::fs::read_to_string(&self.out)?, log))
+        }
+
+        /// Run the pass as root over the refused files, its standard
+        /// output a pipe: the uids of the process while it reads history
+        /// files and waits to write, then exit code, stdout, stderr.
+        fn pass_held(
+            &self,
+            more: &[&str],
+        ) -> Result<(Vec<u32>, Option<i32>, String, String), TestError> {
+            let args = self.args(more)?;
+            let mut command = root_run::sudo()?;
+            command.arg(BIN).args(&args);
+            let mut run = Run::spawn_into(command, &self.store, TEST_DEADLINE, Stdio::piped())?;
+            let stdout = run.child.stdout.take().ok_or("piped stdout")?;
+            let (first_tx, first_rx) = channel();
+            let (go_tx, go_rx) = channel::<()>();
+            let (rest_tx, rest_rx) = channel();
+            // One line, then nothing until the test says so: the pipe fills
+            // and the pass waits where it is.
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(stdout);
+                let mut first = String::new();
+                let _ = reader.read_line(&mut first);
+                let _ = first_tx.send(first);
+                let _ = go_rx.recv();
+                let mut rest = String::new();
+                let _ = reader.read_to_string(&mut rest);
+                let _ = rest_tx.send(rest);
+            });
+            let first = first_rx
+                .recv_timeout(run.left())
+                .map_err(|_| format!("no line of the pass by the deadline:\n{}", run.log()))?;
+            let uids = if first.starts_with("refused: ") {
+                run.uids()
+            } else {
+                Err(format!("the pass refused no file; its first line: {first:?}").into())
+            };
+            let _ = go_tx.send(());
+            let rest = rest_rx
+                .recv_timeout(run.left())
+                .map_err(|_| "the pass did not end its output by the deadline".to_string());
+            let (code, log) = run.finish()?;
+            Ok((uids?, code, first + &rest?, log))
+        }
+    }
+
+    /// The first millisecond of the day [`DAY`] names.
+    const DAY_START_MS: u64 = 1_794_355_200_000;
+
+    /// How many files a held pass refuses. Each costs the pass one line of
+    /// more than 100 bytes, and a pipe holds 65,536 bytes unless a process
+    /// asks for more, so the lines are several times what the pipe holds.
+    pub(super) const REFUSED_FILES: u64 = 3_000;
+
+    /// What a pass prints once it has refused every file of the day.
+    fn refused_the_file(out: &str) -> bool {
+        out.starts_with(&format!("refused: {DAY}/"))
+            && out.lines().filter(|l| l.starts_with("refused: ")).count() as u64 == REFUSED_FILES
+            && out.contains(&format!(
+                "calls: {REFUSED_FILES} files, 0 clean, {REFUSED_FILES} refused, 0 gone, 0 rows\n"
+            ))
+    }
+
+    #[test]
+    fn success_a_pass_started_as_root_reads_history_files_as_nobody() -> Result<(), TestError> {
+        if !sudo_or_skip("success_a_pass_started_as_root_reads_history_files_as_nobody") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-nobody")?;
+        let store = Store::new(&scratch)?.with_refused_files()?;
+        let (uids, code, out, log) = store.pass_held(&[])?;
+        assert_eq!(
+            uids,
+            [uid_of("nobody")?; 4],
+            "success the process that reads a history file is nobody:\n{log}"
+        );
+        assert_eq!(
+            code,
+            Some(1),
+            "success the pass went on to its verdict:\n{log}"
+        );
+        assert!(
+            refused_the_file(&out),
+            "success the key file only root can read was loaded before the drop, and the file \
+             was read after it:\n{out}\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_pass_started_as_root_with_user_reads_as_that_user() -> Result<(), TestError> {
+        if !sudo_or_skip("success_a_pass_started_as_root_with_user_reads_as_that_user") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-user")?;
+        let store = Store::new(&scratch)?.with_refused_files()?;
+        let me = me()?;
+        let (uids, code, out, log) = store.pass_held(&["--user", &me])?;
+        assert_eq!(
+            uids,
+            [uid_of(&me)?; 4],
+            "success --user names the user that reads the history files:\n{log}"
+        );
+        assert!(
+            code == Some(1) && refused_the_file(&out),
+            "success the pass went on to its verdict as that user:\n{out}\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_pass_with_no_priv_drop_stays_root_and_says_so() -> Result<(), TestError> {
+        if !sudo_or_skip("success_a_pass_with_no_priv_drop_stays_root_and_says_so") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-kept")?;
+        let store = Store::new(&scratch)?.with_refused_files()?;
+        let (uids, code, out, log) = store.pass_held(&["--no-priv-drop"])?;
+        assert_eq!(
+            uids, [0; 4],
+            "success --no-priv-drop keeps root for the read:\n{log}"
+        );
+        assert!(
+            log.contains("fleet verify: running as root because --no-priv-drop was given"),
+            "success one line says root was kept:\n{log}"
+        );
+        assert!(
+            code == Some(1) && refused_the_file(&out),
+            "success the pass went on to its verdict as root:\n{out}\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_key_file_only_root_can_read_is_loaded() -> Result<(), TestError> {
+        if !sudo_or_skip("success_a_key_file_only_root_can_read_is_loaded") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-key")?;
+        let store = Store::new(&scratch)?;
+        let key = std::fs::metadata(&store.key)?;
+        assert_eq!(
+            (key.uid(), key.mode() & 0o777),
+            (0, 0o600),
+            "success the key file is root's, mode 0600"
+        );
+        let (code, out, log) = store.pass(&[])?;
+        assert_eq!(
+            (code, out.as_str()),
+            (Some(0), NO_FILES),
+            "success the pass loaded the key as root and read the store as nobody:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_pass_as_root_prints_its_json() -> Result<(), TestError> {
+        if !sudo_or_skip("success_a_pass_as_root_prints_its_json") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-json")?;
+        let store = Store::new(&scratch)?;
+        let (code, out, log) = store.pass(&["--json"])?;
+        assert_eq!(code, Some(0), "success a clean pass exits 0:\n{log}");
+        assert!(
+            out.contains("\"result\":\"clean\"") && out.lines().count() == 1,
+            "success the report is one JSON document:\n{out}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_store_nobody_cannot_read_is_refused_before_a_file_is_read() -> Result<(), TestError>
+    {
+        if !sudo_or_skip("failure_a_store_nobody_cannot_read_is_refused_before_a_file_is_read") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-closed")?;
+        // A pass that read the files would print a line for each.
+        let store = Store::new(&scratch)?.with_refused_files()?;
+        std::fs::set_permissions(&store.history, std::fs::Permissions::from_mode(0o700))?;
+        let before = names_under(scratch.dir.path())?;
+        let (code, out, log) = store.pass(&[])?;
+        assert_eq!(
+            (code, out.as_str()),
+            (Some(2), ""),
+            "failure a refused pass exits 2 and reports nothing:\n{log}"
+        );
+        let me = me()?;
+        for part in [
+            "sipnab fleet verify: started as root, this command runs as user 'nobody'",
+            &format!("cannot read '{}'", text(&store.history)?),
+            "(the history store of --store)",
+            "Nothing was created",
+            "chown nobody",
+            &format!("--user {me}"),
+            "--no-priv-drop",
+        ] {
+            assert!(
+                log.contains(part),
+                "failure the refusal lacks {part:?}:\n{log}"
+            );
+        }
+        let mut after = names_under(scratch.dir.path())?;
+        after.retain(|path| path != &store.out);
+        assert_eq!(
+            after, before,
+            "failure a refused pass leaves the store as it was"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_history_file_only_root_can_read_is_refused_by_name() -> Result<(), TestError> {
+        if !sudo_or_skip("failure_a_history_file_only_root_can_read_is_refused_by_name") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-root-file")?;
+        let store = Store::new(&scratch)?;
+        std::fs::write(store.file(), b"left by a center that ran as root")?;
+        make_root_only(&store.file())?;
+        let (code, out, log) = store.pass(&[])?;
+        assert_eq!(
+            (code, out.as_str()),
+            (Some(2), ""),
+            "failure a file the drop user cannot read is not reported as a damaged file:\n{log}"
+        );
+        assert!(
+            log.contains(&format!("cannot read '{}'", text(&store.file())?))
+                && log.contains("--user USER"),
+            "failure the refusal names the file, and no user by name: only root reads it:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_day_nobody_cannot_search_is_refused_by_name() -> Result<(), TestError> {
+        if !sudo_or_skip("failure_a_day_nobody_cannot_search_is_refused_by_name") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-day")?;
+        let store = Store::new(&scratch)?.with_refused_files()?;
+        let day = store.history.join(DAY);
+        std::fs::set_permissions(&day, std::fs::Permissions::from_mode(0o744))?;
+        let (code, out, log) = store.pass(&[])?;
+        assert_eq!(
+            (code, out.as_str()),
+            (Some(2), ""),
+            "failure a day the drop user can list and not search refuses the pass:\n{log}"
+        );
+        assert!(
+            log.contains(&format!("cannot read '{}'", text(&day)?)),
+            "failure the refusal names the day's directory:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_user_that_does_not_exist_ends_the_pass() -> Result<(), TestError> {
+        if !sudo_or_skip("failure_a_user_that_does_not_exist_ends_the_pass") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-no-user")?;
+        let store = Store::new(&scratch)?.with_refused_files()?;
+        let (code, out, log) = store.pass(&["--user", "sipnab-no-such-user-here"])?;
+        assert_eq!(
+            (code, out.as_str()),
+            (Some(2), ""),
+            "failure a pass that cannot drop reads no history file:\n{log}"
+        );
+        assert!(
+            log.contains("sipnab fleet verify: failed to drop privileges"),
+            "failure the message says the drop failed:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_refused_key_file_is_told_before_the_drop() -> Result<(), TestError> {
+        if !sudo_or_skip("failure_a_refused_key_file_is_told_before_the_drop") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-bad-key")?;
+        let store = Store::new(&scratch)?.with_refused_files()?;
+        // A key file other users can read is refused, whoever reads it.
+        as_root("chmod", &["644", text(&store.key)?])?;
+        let (code, out, log) = store.pass(&[])?;
+        assert_eq!(
+            (code, out.as_str()),
+            (Some(2), ""),
+            "failure a refused key file ends the pass:\n{log}"
+        );
+        assert!(
+            log.contains("--store-key-file") && !log.contains("runs as user"),
+            "failure the message is the key file's and not a refusal of the drop:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_no_history_directory_is_told_after_the_drop() -> Result<(), TestError> {
+        if !sudo_or_skip("edge_no_history_directory_is_told_after_the_drop") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-absent")?;
+        let mut store = Store::new(&scratch)?;
+        store.store = scratch.path("data").join("other.store");
+        let (code, out, log) = store.pass(&[])?;
+        assert_eq!(
+            (code, out.as_str()),
+            (Some(2), ""),
+            "edge no history directory is not a clean pass:\n{log}"
+        );
+        assert!(
+            log.contains("sipnab fleet verify: no history directory '")
+                && !log.contains("runs as user"),
+            "edge the message is the pass's own:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_store_of_another_user_is_read_with_user() -> Result<(), TestError> {
+        if !sudo_or_skip("edge_a_store_of_another_user_is_read_with_user") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("verify-owner")?;
+        let store = Store::new(&scratch)?;
+        // Closed to every user but its owner, as a center keeps it.
+        std::fs::set_permissions(&store.history, std::fs::Permissions::from_mode(0o700))?;
+        let me = me()?;
+        let (code, out, log) = store.pass(&["--user", &me])?;
+        assert_eq!(
+            (code, out.as_str()),
+            (Some(0), NO_FILES),
+            "edge the way out the refusal offers reads the store:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_pass_that_is_not_root_reads_no_user_flag() -> Result<(), TestError> {
+        let scratch = Scratch::new("verify-plain")?;
+        let key = scratch.path("plain.key");
+        let made = Command::new(BIN)
+            .args(["fleet", "keygen", "--out", text(&key)?])
+            .status()?;
+        assert!(made.success(), "edge a key file for this user: {made}");
+        let store = scratch.path("center.store");
+        std::fs::create_dir(scratch.path("center.store.parquet"))?;
+        if uid_of(&me()?)? == 0 {
+            // As root the flag is read; the other tests hold that.
+            return Ok(());
+        }
+        let ran = Command::new(BIN)
+            .args(["fleet", "verify", "--store", text(&store)?])
+            .args(["--store-key-file", text(&key)?])
+            .args(["--user", "sipnab-no-such-user-here"])
+            .output()?;
+        assert_eq!(
+            (
+                ran.status.code(),
+                String::from_utf8_lossy(&ran.stdout).as_ref(),
+                String::from_utf8_lossy(&ran.stderr).as_ref()
+            ),
+            (Some(0), NO_FILES, ""),
+            "edge a pass that is not root changes in nothing, whatever --user names"
+        );
+        Ok(())
+    }
 }
 
 /// The commands that parse a file the caller named, started as root
