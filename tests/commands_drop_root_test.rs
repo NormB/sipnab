@@ -2670,8 +2670,12 @@ mod capture_runs {
             log.contains(&expected),
             "the message names the input, the directory, the user and the fix:\n{log}"
         );
+        // Only the refusal's own line is read: an instrumented build (the
+        // coverage job) prints its own `Permission denied` for a profile it
+        // cannot write as nobody.
         assert!(
-            !log.contains("Permission denied"),
+            !log.lines()
+                .any(|l| l.contains("-I/--input:") && l.contains("Permission denied")),
             "refused before the unpack tried the directory:\n{log}"
         );
         Ok(())
