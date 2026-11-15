@@ -494,6 +494,65 @@ def test_the_bound_leaves_room_under_what_a_release_holds():
     assert rn.BOUND < rn.GITHUB_LIMIT
 
 
+# The six tarballs a release builds, as ops/release/test-platform-table.sh
+# names them.
+TARBALLS = [
+    f"sipnab-9.9.9-{target}.tar.gz"
+    for target in (
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+    )
+]
+
+
+def download_table(tmp_path):
+    """What ops/release/platform-table.sh prints for a release's six
+    tarballs."""
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    for name in TARBALLS:
+        (artifacts / name).touch()
+    result = subprocess.run(
+        ["bash", str(ROOT / "ops" / "release" / "platform-table.sh"), str(artifacts)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("### Which download do I want?"), result.stdout[:80]
+    return result.stdout
+
+
+def test_the_action_cuts_a_release_text_one_character_under_what_github_holds():
+    # softprops/action-gh-release cuts the text it sends, the file and the
+    # generated notes after it, to this many characters.
+    assert rn.ACTION_CUT == 124999
+    assert rn.ACTION_CUT == rn.GITHUB_LIMIT - 1
+
+
+def test_the_largest_section_and_the_table_stay_far_under_the_cut(tmp_path):
+    # release-body.md is the section, a blank line and the table. A text
+    # over the cut would lose its end without an error, so the file of the
+    # largest section is held under it with room for the generated notes.
+    table = download_table(tmp_path)
+    changelog = real_changelog()
+    largest = max(len(text) for _, text in rn.every_release_text(changelog, "NormB/sipnab"))
+    body = largest + len("\n") + len(table)
+    assert body < rn.ACTION_CUT // 2, f"release-body.md would be {body} characters of {rn.ACTION_CUT}"
+
+
+def test_any_section_the_script_accepts_leaves_the_table_under_the_cut(tmp_path):
+    # The bound, not today's largest section, is what holds a future one.
+    table = download_table(tmp_path)
+    room = rn.ACTION_CUT - (rn.BOUND + len("\n") + len(table))
+    assert room >= 20000, f"{room} characters are left for the generated notes"
+
+
 def test_the_rows_of_a_table_stay_apart():
     table = "| Key | Does |\n|---|---|\n| `q` | quits |"
     assert of(table) == table

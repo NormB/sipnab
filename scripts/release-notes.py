@@ -55,10 +55,20 @@ USAGE = "usage: release-notes.py VERSION --repo OWNER/NAME [--changelog PATH]"
 # 125000 characters)". Nobody measured it for this repository.
 GITHUB_LIMIT = 125000
 
-# The most characters this script writes: a chosen bound, which leaves a
-# quarter of GITHUB_LIMIT for the download table and the generated notes
-# that release.yml puts after the section. The largest section of
-# CHANGELOG.md is 0.5.233, about 37,000 characters as the file writes it.
+# What the step "Create GitHub Release" sends is cut, not refused, at this
+# many characters: softprops/action-gh-release, at the commit release.yml
+# pins (8a0cd651e5b2365bd640854a3fa5dfc70e4875f3), src/github.ts holds
+# "// release notes can be a maximum of 125000 characters" and cuts the text,
+# release-body.md followed by the generated notes, with
+# `input.substring(0, githubNotesMaxCharLength - 1)`. A cut drops the end of
+# the text without an error, so it must fall, if ever, in the generated notes.
+ACTION_CUT = GITHUB_LIMIT - 1
+
+# The most characters this script writes: a chosen bound. With the download
+# table after it, release-body.md stays more than 20,000 characters under
+# ACTION_CUT (scripts/tests/test_release_notes.py holds both), so the section
+# is never what a cut removes. The largest section of CHANGELOG.md is 0.5.233,
+# about 37,000 characters as the file writes it.
 BOUND = 100000
 
 _VERSION = re.compile(r"\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?")

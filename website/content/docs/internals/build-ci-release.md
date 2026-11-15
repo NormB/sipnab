@@ -2579,6 +2579,7 @@ Through 0.5.256 the workflow wrote only parts 2 and 3, so an instruction in the 
 - It exits 1 and prints nothing on standard output when the version has no section, two sections or a section with no entry.
   It also refuses a link target with a `..` step, a target in angle brackets, and a section over 100,000 characters.
   GitHub's API refuses a release text over 125,000 characters; the bound leaves the rest for parts 2 and 3.
+  The action that publishes the release cuts a longer text at 124,999 characters without an error, so a cut can only remove the end of part 3.
 
 `release.yml` runs the script twice for a tag.
 
