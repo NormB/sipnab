@@ -1060,7 +1060,7 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 882 -> 884 (CHANGELOG merge gate, +2): build-ci-release.md's "After a
     // merge of main" links scripts/check-changelog-merge.py and
     // .config/changelog-released.sha256.
-    const EXPECTED_CODE_LINKS: usize = 884;
+    const EXPECTED_CODE_LINKS: usize = 887;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

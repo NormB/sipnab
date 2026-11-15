@@ -63,6 +63,13 @@ jobs:
             echo "::error::tag ${GITHUB_REF_NAME} would ship artifacts named $tag containing a binary that reports $crate"
             exit 1
           fi
+      # The release text starts with the CHANGELOG section of the version
+      # (the release job, "Render the release text"). A tag whose version has
+      # no section, or an empty one, stops here, before the builds, and not
+      # after them at the step that publishes.
+      - name: Check that the release has its CHANGELOG section
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python3 -I scripts/release-notes.py "${GITHUB_REF_NAME#v}" --repo "$GITHUB_REPOSITORY" > /dev/null
 
   build:
     needs: preflight
@@ -1149,8 +1156,18 @@ jobs:
       # failed detection — and nothing on that page said which one to take. The
       # rows come from the directory rather than a hand-kept list, and an
       # unmapped target fails the step instead of quietly dropping a platform.
-      - name: Render the platform table
-        run: bash ops/release/platform-table.sh artifacts > release-body.md
+      #
+      # Before the table comes the CHANGELOG section of the version, with its
+      # links made absolute to the repository at the tag: it holds what an
+      # operator must do before an upgrade, and the notes GitHub generates
+      # hold only pull request titles. A missing or empty section fails this
+      # step, so nothing is published without it.
+      - name: Render the release text
+        run: |
+          set -euo pipefail
+          python3 -I scripts/release-notes.py "${GITHUB_REF_NAME#v}" --repo "$GITHUB_REPOSITORY" > release-body.md
+          echo >> release-body.md
+          bash ops/release/platform-table.sh artifacts >> release-body.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
