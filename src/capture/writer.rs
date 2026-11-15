@@ -1355,6 +1355,8 @@ pub(crate) enum AccessWanted {
     Write,
     /// Create or remove entries in a directory.
     WriteAndSearch,
+    /// List a directory and open the entries in it.
+    ReadAndSearch,
 }
 
 /// `faccessat(2)` with `AT_EACCESS`: whether the EFFECTIVE user may access
@@ -1369,6 +1371,7 @@ pub(crate) fn effective_access(path: &Path, wanted: AccessWanted) -> std::io::Re
         AccessWanted::ReadAndWrite => libc::R_OK | libc::W_OK,
         AccessWanted::Write => libc::W_OK,
         AccessWanted::WriteAndSearch => libc::W_OK | libc::X_OK,
+        AccessWanted::ReadAndSearch => libc::R_OK | libc::X_OK,
     };
     // SAFETY: `c_path` is a valid NUL-terminated string that outlives the
     // call, and faccessat only reads it.

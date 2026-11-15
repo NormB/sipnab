@@ -1883,7 +1883,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // step 4 of "Encrypt the center's store" in docs/fleet.md to "Keep call
     // history at the center", which holds the entry for a key that is not
     // loaded.
-    const EXPECTED_WIKI_LINKS: usize = 2689;
+    // 2689 -> 2697 (`sipnab fleet verify`, +8): docs/fleet.md 3 (two to its
+    // own "Verify the history store", one to the "Fleet verify" section of
+    // errors.md); docs/errors.md 3 (two to that how-to, one to its own "Fleet
+    // center"); docs/cli-reference.md 1 and docs/least-privilege.md 1, both
+    // to the how-to.
+    const EXPECTED_WIKI_LINKS: usize = 2697;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -1062,7 +1062,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // .config/changelog-released.sha256.
     // 884 -> 885 (changelog outline format, +1): build-ci-release.md's "The
     // format of an entry" links tests/changelog_format_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 885;
+    // The text of a release: build-ci-release.md links
+    // scripts/release-notes.py, ops/release/platform-table.sh and
+    // scripts/tests/test_release_notes.py.
+    const EXPECTED_CODE_LINKS: usize = 888;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -2583,6 +2583,47 @@ It runs four checks at once:
 - `the tap is on <version>, newer than <version>`: you ran the check for an older release, and the tap is correct as it stands.
 - [`scripts/tests/test_post_release.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_post_release.py) drives every branch through a fake runner.
 
+### The text of a release
+
+The release page on GitHub holds three parts, in this order.
+
+1. The `CHANGELOG.md` section of the version.
+   It says what changed and what an operator must do before an upgrade.
+2. The download table, "Which download do I want?".
+   [`ops/release/platform-table.sh`](https://github.com/NormB/sipnab/blob/main/ops/release/platform-table.sh) derives it from the artifacts that built.
+3. The notes GitHub generates: one line for each merged pull request, and the link that compares the two tags.
+
+Through 0.5.256 the workflow wrote only parts 2 and 3, so an instruction in the changelog did not reach a reader of the release page.
+
+[`scripts/release-notes.py`](https://github.com/NormB/sipnab/blob/main/scripts/release-notes.py) writes part 1.
+
+- It prints what `CHANGELOG.md` holds between `## [<version>] - <date>` and the next `## ` heading.
+- A release page is outside the repository, so the script rewrites each relative link target as an address in the repository at the tag.
+  `docs/fleet.md#x` becomes `https://github.com/NormB/sipnab/blob/v<version>/docs/fleet.md#x`.
+  A target with a scheme stays as it is, and so does text in a code span or a code block.
+- GitHub shows each line break of a release text.
+  The script therefore joins a paragraph or a list item that the changelog writes on several lines.
+- It exits 1 and prints nothing on standard output when the version has no section, two sections or a section with no entry.
+  It also refuses a link target with a `..` step, a target in angle brackets, and a section over 100,000 characters.
+  GitHub's API refuses a release text over 125,000 characters; the bound leaves the rest for parts 2 and 3.
+  The action that publishes the release cuts a longer text at 124,999 characters without an error, so a cut can only remove the end of part 3.
+
+`release.yml` runs the script twice for a tag.
+
+- The job `Tag matches crate version` runs it in the step `Check that the release has its CHANGELOG section` and discards the output.
+  A tag without a section fails there, before the builds.
+- The job `Create Release` runs it in the step `Render the release text`, which writes the section and then the table to `release-body.md`.
+  A failure there ends the job before the step `Create GitHub Release`, so the workflow publishes nothing without the section.
+
+Run it by hand to read the first part of a release page before the tag exists:
+
+```sh
+python3 scripts/release-notes.py 0.5.256 --repo NormB/sipnab
+```
+
+[`scripts/tests/test_release_notes.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_release_notes.py) holds the script to every section of `CHANGELOG.md`, not only the newest.
+A section that the script would refuse, or one over the bound, fails in a pull request and not at the tag.
+
 ### Symbol files
 
 The release strips every binary it publishes.

@@ -543,7 +543,7 @@ const FILE_SUFFIX: &str = ".sealed";
 
 /// The day the directory name `name` spells, if it is one this module
 /// writes: no other spelling of the same day is one.
-fn parse_date_dir(name: &str) -> Option<NaiveDate> {
+pub(crate) fn parse_date_dir(name: &str) -> Option<NaiveDate> {
     let text = name.strip_prefix(DATE_PREFIX)?;
     let date = NaiveDate::parse_from_str(text, DATE_FORMAT).ok()?;
     (date.format(DATE_FORMAT).to_string() == text).then_some(date)
@@ -1137,7 +1137,7 @@ fn encode_cut<R: Row>(
 /// counted from 0, before they are written. Every file a build writes
 /// goes through [`encode_cut`], which changes nothing; tests write the
 /// file a defective writer would have written.
-fn encode_with<R: Row>(
+pub(crate) fn encode_with<R: Row>(
     rows: &[R],
     least: usize,
     most: usize,
@@ -1755,6 +1755,35 @@ fn names(path: &Path) -> std::io::Result<Vec<(String, bool)>> {
     Ok(out)
 }
 
+/// The bytes of the history file at `path`.
+///
+/// The file is opened without waiting and its type is read from the open
+/// descriptor, so a FIFO, a device or a socket under a history file's name
+/// is refused and not read: a blocking open of a FIFO waits for a writer,
+/// and a reader of the store must not wait on what a file's name holds
+/// (FLEET-HISTORY-READS-A-FIFO).
+///
+/// # Errors
+///
+/// The file cannot be opened or read, or it is not a regular file.
+fn read_history_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    let kind = file.metadata()?.file_type();
+    if let Some(kind) = crate::capture::file::not_a_file_kind(kind) {
+        return Err(std::io::Error::other(format!(
+            "is {kind}, not a file of the history store"
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 /// Whether `name` is a staged file a write goes through.
 fn is_staged(name: &str) -> bool {
     name.starts_with('.') && name.ends_with(".partial")
@@ -2074,6 +2103,40 @@ impl History {
         Ok(out)
     }
 
+    /// Every file of the class `class` in the days `wants` rules in, by
+    /// path: the files of this layout and those release 0.5.249 wrote
+    /// under `member=<id>`. No file is ruled out by what its name says of
+    /// its rows. A class with no directory has no file.
+    ///
+    /// # Errors
+    ///
+    /// A directory of the store cannot be read.
+    pub fn list_days(
+        &self,
+        class: &str,
+        wants: &dyn Fn(NaiveDate) -> bool,
+    ) -> std::io::Result<Vec<Listed>> {
+        let days = match self.day_dirs(class) {
+            Ok(days) => days,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut out = Vec::new();
+        for (date_dir, day) in days {
+            if !parse_date_dir(&date_dir).is_some_and(wants) {
+                continue;
+            }
+            match Self::day_files(class, &date_dir, &day, &|_| true, &|_, _| true) {
+                Ok(files) => out.extend(files),
+                // Retention removed the day after it was listed.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        out.sort_by(|a, b| a.rel.cmp(&b.rel));
+        Ok(out)
+    }
+
     /// The rows of the file at `rel` that answer `query`.
     ///
     /// # Errors
@@ -2085,8 +2148,8 @@ impl History {
     }
 
     /// [`History::read`], with a file that is absent told apart.
-    fn read_io<R: Row>(&self, rel: &str, query: &Query) -> std::io::Result<Decoded<R>> {
-        let bytes = match std::fs::read(self.dir.join(rel)) {
+    pub(crate) fn read_io<R: Row>(&self, rel: &str, query: &Query) -> std::io::Result<Decoded<R>> {
+        let bytes = match read_history_file(&self.dir.join(rel)) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(e),
             Err(e) => return Err(std::io::Error::other(format!("{rel}: {e}"))),
@@ -2396,7 +2459,7 @@ pub type Unread = Vec<(String, String)>;
 
 /// Why the file at `rel` was not read, without the path: a read's error
 /// starts with the path, which an answer holds in a field of its own.
-fn reason(rel: &str, e: &std::io::Error) -> String {
+pub(crate) fn reason(rel: &str, e: &std::io::Error) -> String {
     let text = e.to_string();
     text.strip_prefix(rel)
         .and_then(|rest| rest.strip_prefix(": "))
