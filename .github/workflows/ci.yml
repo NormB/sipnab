@@ -26,9 +26,13 @@ env:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same ref to save runner minutes.
+# Cancel superseded runs on the same ref to save runner minutes. A pull
+# request's runs are grouped by its number, `ci-CI-<number>`, so that
+# .github/workflows/pr-closed.yml, started when the pull request closes, can
+# enter the same group and cancel a run still in progress. A push has no pull
+# request, so its group is still its ref.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
@@ -1178,7 +1182,12 @@ jobs:
     # 68 minutes behind pull request and Dependabot runs. `runner_labels` in
     # scripts/check-feature-matrix.py is the rule and renders this line;
     # scripts/tests/test_feature_matrix_runner.py holds the two together.
-    runs-on: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && fromJSON('["self-hosted","jetson"]') || fromJSON('["self-hosted","overflow"]') }}
+    #
+    # A release pull request (head branch `release/...` of this repository,
+    # never a fork's) asks for the four runners too: on 2026-11-14 release
+    # PR #808's two groups queued from 23:15Z behind another pull request's
+    # job on the overflow pair.
+    runs-on: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/') && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","jetson"]') || fromJSON('["self-hosted","overflow"]') }}
     strategy:
       fail-fast: false
       matrix:
