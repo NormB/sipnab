@@ -2780,445 +2780,148 @@ entry that carries them.
 ### Changed
 
 - **The OpenSIPS and Kamailio guides' test calls now carry audio.**
-  - They used SIPp's `uac` scenario.
-    - That scenario sends SDP and no RTP.
-    - So sipnab never had media to show.
-  - The calls now play SIPp's G.711 sample (`uac_pcap`) to a callee that
-    echoes it.
-  - The guides and their sipnab pages ran again on Debian 13 and Ubuntu
-    24.04.
-    - The runs checked the audio on the wire.
-
-  - The runs moved the pages:
-    - The sipnab pages say what the report shows under the call: four RTP
-      streams, 236 `PCMA` and 10 `telephone-event` packets each way.
-    - They quote the `100` each proxy actually sends, not `100 Trying`:
-      - `100 Giving it a try`
-      - `100 trying -- your call is important to us`
-    - Their troubleshooting item quotes what sipnab prints when it sees the
-      call's audio but not its SIP, such as `No SIP signaling found, but 839 RTP packets across 2 stream(s) were parsed. Use --report to see stream details.`
-    - With both proxies on one machine, they say how the two calls' audio
-      shows.
-      - The audio is sent from the same ports with the same SSRC.
-      - It shows as one stream per direction.
+  - Was: they used SIPp's `uac` scenario, which sends SDP and no RTP, so sipnab never had media to show.
+  - Effect: the calls play SIPp's G.711 sample (`uac_pcap`) to a callee that echoes it; the guides ran again on Debian 13 and Ubuntu 24.04.
+  - Effect: the sipnab pages show four RTP streams, quote each proxy's actual `100`, not `100 Trying`, and quote sipnab's `No SIP signaling found` message.
+  - Limit: with both proxies on one machine, both calls' audio comes from the same ports with the same SSRC and shows as one stream per direction.
+  - Docs: [Watch a call through OpenSIPS](docs/opensips-sipnab.md#watch-a-call-through-opensips), [Watch a call through Kamailio](docs/kamailio-sipnab.md#watch-a-call-through-kamailio).
 
 ### Fixed
 
-- **The shipped fail2ban jail banned nobody on Debian 13 or Ubuntu 24.04.**
-  - `contrib/fail2ban/sipnab-jail.conf` banned with `iptables-allports`.
-  - Installing fail2ban on Debian 13 brings nftables, not the `iptables`
-    command. The result:
-    - fail2ban listed the scanner as banned.
-    - The ban action failed with `returned 127`.
-    - The scanner's traffic still got through.
-  - On Ubuntu 24.04 the jail named no `backend`.
-    - So the distribution's `backend = systemd` made it read the journal.
-    - It never read `/var/log/sipnab.log`.
-  - The jail now sets `backend = auto`.
-  - It bans with `nftables[type=allports]` on UDP and TCP.
-  - It shows the iptables action in a comment, for hosts that still ban with
-    iptables.
-  - It also bans after 5 detections within `findtime`, not 1.
-  - A test pins all three settings.
-  - [Feed fail2ban from sipnab](https://sipnab.com/docs/fail2ban-sipnab/) now
-    does three things:
-    - It installs the jail as shipped.
-    - It shows four detections not banning and the fifth banning.
-    - It has a tested section for the iptables action.
-  - The jail in
-    [Detect SIP scanners and auto-block via fail2ban](https://sipnab.com/docs/cookbook/#detect-sip-scanners-and-auto-block-via-fail2ban)
-    bans with nftables too.
-
-### Security
-
-- **The site-test tooling no longer pulls in a vulnerable `basic-ftp`.**
-  - CVE-2026-102990 (GHSA-c475-qrg2-pj4r, high) affects every `basic-ftp`
-    before 6.2.1.
-    - It is a quadratic-time denial of service in its directory-listing
-      parser.
-  - `e2e/package-lock.json` resolved 5.3.1 through the Lighthouse runner's
-    proxy agent.
-  - An `overrides` entry in `e2e/package.json` now resolves 6.2.1.
-  - Nothing here ships to a user: `e2e/` is build-time only.
+- **The shipped fail2ban jail bans on Debian 13 and Ubuntu 24.04.**
+  - Was: on Debian 13 its `iptables-allports` action failed with `returned 127`, for want of `iptables`, and the scanner's traffic still got through.
+  - Was: on Ubuntu 24.04 the jail named no `backend`, so it read the journal and never `/var/log/sipnab.log`.
+  - Effect: `contrib/fail2ban/sipnab-jail.conf` sets `backend = auto`, bans with `nftables[type=allports]` on UDP and TCP, and shows the iptables action in a comment.
+  - Effect: it bans after 5 detections within `findtime`, not 1; the cookbook's scanner jail bans with nftables too.
+  - Docs: [Install sipnab's filter and jail](docs/fail2ban-sipnab.md#install-sipnabs-filter-and-jail), [Ban with iptables instead of nftables](docs/fail2ban-sipnab.md#ban-with-iptables-instead-of-nftables).
 
 ## [0.5.199] - 2026-10-01
 
 ### Added
 
 - **Two voice-stack guides for fail2ban.**
-  - [Ban SIP scanners with fail2ban](https://sipnab.com/docs/fail2ban/):
-    - OpenSIPS logs scanners and wrong passwords.
-    - fail2ban bans them with nftables.
-    - Meanwhile a phone keeps registering and calling.
-    - No sipnab is involved.
-  - [Feed fail2ban from sipnab](https://sipnab.com/docs/fail2ban-sipnab/):
-    - It runs sipnab's scanner and registration-flood detectors as a
-      service.
-    - fail2ban bans what they find, with `contrib/fail2ban`'s filter and
-      jail.
-    - It says what `--kill-scanner` sends back to a scanner: a `200 OK` from
-      the SIP server's address.
-    - It says that the contrib jail as shipped bans nobody on either system
-      tested:
-      - On Debian 13 its `iptables-allports` action fails for want of
-        `iptables`.
-      - On Ubuntu 24.04 it reads the journal instead of its log file.
-
-    - The page's `.local` override fixes both.
-  - Every block ran as written on clean Debian 13 and Ubuntu 24.04.
+  - Effect: [Ban SIP scanners with fail2ban](docs/fail2ban.md) has OpenSIPS log scanners and wrong passwords for fail2ban to ban with nftables, without sipnab.
+  - Effect: meanwhile a phone keeps registering and calling.
+  - Effect: [Feed fail2ban from sipnab](docs/fail2ban-sipnab.md) runs sipnab's scanner and registration-flood detectors as a service, banned through `contrib/fail2ban`'s filter and jail.
+  - Effect: it says `--kill-scanner` sends a scanner a `200 OK` from the SIP server's address, and every block ran on clean Debian 13 and Ubuntu 24.04.
+  - Limit: the page says the contrib jail as shipped bans nobody on either system tested; its `.local` override fixes both.
 
 ### Security
 
 - **Release tags are signed, and an unsigned tag cannot be pushed.**
-  - The `pre-push` gate now refuses a `v*` tag unless both are true:
-    - It is an annotated tag.
-    - It has a good SSH signature from a key in `.github/allowed_signers`.
-  - Tags v0.5.176 to v0.5.197 went out unsigned.
-    - The reason: `tag.gpgSign` was not set.
-  - The maintainer has re-signed every existing `v*` tag with the
-    maintainer's key.
-    - Each tag points at the same commit as before.
+  - Effect: every `v*` tag is annotated and carries a good SSH signature from a key in `.github/allowed_signers`.
+  - Was: tags v0.5.176 to v0.5.197 went out unsigned, because `tag.gpgSign` was not set.
+  - Effect: the maintainer re-signed every existing `v*` tag; each points at the same commit as before.
+  - Docs: [Hooks](docs/internals/build-ci-release.md#hooks).
 
 ## [0.5.198] - 2026-09-30
 
 ### Added
 
 - **Two voice-stack guides for rtpproxy.**
-  - [Add rtpproxy to your voice stack](https://sipnab.com/docs/rtpproxy-relay/):
-    - It installs rtpproxy 3.2.0 from the project's own packages.
-    - OpenSIPS or Kamailio anchors every call's media on it.
-    - A test call proves it: rtpproxy's own counters show it relaying the
-      audio.
-    - No sipnab is involved.
-  - [Let sipnab name rtpproxy's media](https://sipnab.com/docs/rtpproxy-sipnab/):
-    - sipnab names the media on the relay from rtpproxy's control traffic,
-      with `--rtpproxy-control`.
-    - It works beside the SIP proxy.
-    - It also works on the relay's own machine, where no SIP passes.
-  - Every command ran as written on clean Debian 13 and Ubuntu 24.04.
-    - The own-machine case ran on two machines.
-  - The home page's media relay tile links both.
+  - Effect: [Add rtpproxy to your voice stack](docs/rtpproxy-relay.md) installs rtpproxy 3.2.0 from the project's own packages, with no sipnab.
+  - Effect: OpenSIPS or Kamailio anchors every call's media on it, and rtpproxy's own counters show a test call's audio relayed.
+  - Effect: [Let sipnab name rtpproxy's media](docs/rtpproxy-sipnab.md) names the relay's media from its control traffic with `--rtpproxy-control`.
+  - Effect: that works beside the SIP proxy and on the relay's own machine, where no SIP passes; the home page's media relay tile links both.
+  - Effect: every command ran as written on clean Debian 13 and Ubuntu 24.04; the own-machine case ran on two machines.
 - **The Linux release binary is reproducible.**
-  - Building a release's tag gives the same bytes as the published `sipnab`
-    binary, given the same toolchain.
-  - Two builds of one commit used to differ:
-    - The embedded eBPF programs carried the build directory and the
-      builder's `$CARGO_HOME`.
-    - Their compiler was whatever `nightly` meant that day.
-  - The paths are now remapped.
-  - The eBPF nightly is pinned to a date.
-  - A weekly job builds twice in two directories and fails on any
-    difference.
-  - [Rebuild a release and compare it](docs/install.md#rebuild-a-release-and-compare-it)
-    shows how to check a download yourself.
-- **How to upgrade.**
-  - [docs/install.md](docs/install.md#upgrade-sipnab) now gives the upgrade
-    command for every install route:
-    - install script
-    - tarball
-    - `.deb`
-    - `.rpm` with `rpm -U`
-    - Homebrew
-    - cargo
-    - source
-    - Docker
-  - It says what survives an upgrade.
-  - It says when to rerun `--setup-caps` or restart the service.
+  - Effect: building a release's tag with the same toolchain gives the same bytes as the published `sipnab` binary.
+  - Was: the embedded eBPF programs carried the build directory and `$CARGO_HOME`, and were built with that day's `nightly`.
+  - Effect: the paths are now remapped and the eBPF nightly is pinned to a date.
+  - Docs: [Rebuild a release and compare it](docs/install.md#rebuild-a-release-and-compare-it).
+- **The install page says how to upgrade.**
+  - Effect: it gives the upgrade command for the install script, tarball, `.deb`, `.rpm` (`rpm -U`), Homebrew, cargo, source and Docker.
+  - Effect: it says what survives an upgrade, and when to rerun `--setup-caps` or restart the service.
+  - Docs: [Upgrade sipnab](docs/install.md#upgrade-sipnab).
 - **An assurance case.**
-  - [docs/assurance-case.md](docs/assurance-case.md) argues, with code
-    citations, how sipnab applies each secure-design principle.
-  - It answers each entry of the 2025 CWE Top 25.
-  - It names the gaps it found.
-- **Code review requirements** in
-  [CONTRIBUTING.md](CONTRIBUTING.md#code-review).
-  - Who reviews.
-  - How.
-  - What is checked.
-  - What a change needs before it merges.
+  - Effect: it argues, with code citations, how sipnab applies each secure-design principle, and answers each entry of the 2025 CWE Top 25.
+  - Effect: it names the gaps it found.
+  - Docs: [docs/assurance-case.md](docs/assurance-case.md).
+- **Code review requirements.**
+  - Effect: they say who reviews, how, what is checked, and what a change needs before it merges.
+  - Docs: [Code review](CONTRIBUTING.md#code-review).
 
 ### Security
 
 - **The raw `--kill-scanner` send sockets are opened close-on-exec.**
-  - sipnab opens them while it still has `CAP_NET_RAW`.
-  - It holds them until the scanner-kill worker process starts.
-  - They were opened without close-on-exec.
-    - So any program that sipnab or a library in it started during that time
-      inherited a raw send socket.
-  - Now they are closed at exec.
-  - The worker still gets its copies.
-  - A new log line is written once the capturing process has closed its own
-    copies:
-    `scanner-kill: this process closed its copies of the send descriptors handed to worker process <pid>`.
-    - It names each socket by inode.
-
-- **The REST API refuses a web page that rebinds its name to your server
-  (DNS rebinding, CWE-352).**
-  - A keyless API on loopback served any request that reached it.
-  - A page at `http://evil.example:8080/` could point `evil.example` at
-    `127.0.0.1`.
-    - Then, as a same-origin request from the victim's browser, it could read
-      `/v1/dialogs` or flip `POST /v1/persistence`.
-  - The API now checks the `Host` header before anything else runs.
-  - It accepts:
-    - `localhost`, `127.0.0.1`, `::1` and the bound address, on any port
-    - any IP address on a `0.0.0.0` or `::` bind
-    - names added with the new `--api-allowed-host` flag or
-      `[api] allowed_hosts` key
-  - Anything else gets `403` naming the host and the flag.
-  - A request with no `Host` gets `400`.
-  - `*` turns the check off.
-  - **Breaking for a deployment reached by a DNS name:**
-    - Add that name with `--api-allowed-host`.
-    - Or have the reverse proxy send `Host: 127.0.0.1`.
-- The MCP HTTP transport now uses the same `Host` rule.
-
-  - The rule is shared in one module.
-  - It replaces rmcp's built-in check.
-  - It also accepts the bound address (any IP address on a wildcard bind).
-  - It refuses a bad `Host` before the bearer check.
-    - So a rebound page learns nothing about the credential it lacks.
-  - The `403` body now names the host and `--mcp-allowed-host`.
-- **Two-factor authentication is now mandatory** for anyone with write
-  access to the repository or access to the project's credentials.
-  - It uses an authenticator app or a security key.
-  - SMS is not accepted
-    ([MAINTAINERS.md](MAINTAINERS.md#getting-commit-access), linked from
-    [SECURITY.md](SECURITY.md)).
+  - Was: sipnab opens them with `CAP_NET_RAW` and holds them until the scanner-kill worker starts; any program started meanwhile inherited one.
+  - Effect: they are now closed at exec, and the worker still gets its copies.
+  - Effect: the capturing process logs `scanner-kill: this process closed its copies of the send descriptors handed to worker process <pid>`.
+  - Effect: that line names each socket by inode.
+- **The REST API refuses a web page's DNS rebinding (CWE-352).**
+  - Was: a page at `http://evil.example:8080/` could point its name at `127.0.0.1` and read `/v1/dialogs` or flip `POST /v1/persistence`.
+  - Effect: the API checks `Host` first: `localhost`, `127.0.0.1`, `::1` and the bound address pass, any IP on a `0.0.0.0` or `::` bind.
+  - Effect: names added with `--api-allowed-host` or `[api] allowed_hosts` pass; others get `403` naming the host and flag; no `Host` gets `400`; `*` disables it.
+  - Do: a deployment reached by a DNS name adds it with `--api-allowed-host`, or has the reverse proxy send `Host: 127.0.0.1`.
+  - Docs: [Which `Host` names the API answers](docs/rest-api.md#which-host-names-the-api-answers).
+- **The MCP HTTP transport uses the same `Host` rule.**
+  - Effect: it also accepts the bound address (any IP address on a wildcard bind), in place of rmcp's built-in check.
+  - Effect: it refuses a bad `Host` before the bearer check, so a rebound page learns nothing about the credential it lacks.
+  - Effect: the `403` body names the host and `--mcp-allowed-host`.
+  - Docs: [Stop a browser reaching your server](docs/mcp-deploy.md#stop-a-browser-reaching-your-server---mcp-allowed-host).
+- **Two-factor authentication is mandatory for write access and the project's credentials.**
+  - Effect: it uses an authenticator app or a security key; SMS is not accepted.
+  - Docs: [Getting commit access](MAINTAINERS.md#getting-commit-access).
 
 ### Fixed
 
-- The Homebrew install command in [docs/install.md](docs/install.md) read
-  `brew install sipnab`.
-  - The formula lives in the tap.
-  - So it is now `brew install NormB/tap/sipnab`.
-- `THIRD-PARTY-NOTICES.md` now records three vendored items:
-  - the Mermaid script
-  - the Scalar script
-  - the vCon schema copy
-  - Each one has its version, source, license and hash.
+- **The Homebrew install command names the tap.**
+  - Was: [docs/install.md](docs/install.md) read `brew install sipnab`, but the formula lives in the tap.
+  - Effect: it is now `brew install NormB/tap/sipnab`.
+- **`THIRD-PARTY-NOTICES.md` records three vendored items.**
+  - Effect: the Mermaid script, the Scalar script and the vCon schema copy, each with its version, source, license and hash.
 
 ## [0.5.197] - 2026-09-30
 
 ### Added
 
 - **MCP tool bundles: load only the tools a client needs.**
-  - `--mcp-tools` now takes a comma-separated list of these:
-    - bundles: `core`, `signaling`, `captures`, `security`, `media`, `relay`,
-      `tfps`, `server`, `vcon`, `tls`
-    - single tool names
-    - your own bundles from `[mcp.bundles]`
-  - `full` stays the default.
-  - The list can also be set in the config file as `[mcp] tools`.
-    - The flag replaces it.
-  - An unknown or empty name refuses the run, exit 2.
-    - The error lists the valid bundles.
-  - The handshake names what was loaded and the bundles that were not.
-  - [Choosing which tools load](docs/mcp-tools.md#choosing-which-tools-load)
-    lists every bundle and what it costs a client.
-
-- **`max_capture_sources` sets how many capture sources sipnab remembers by
-  name.**
-
-  - Each of these takes one slot:
-    - input files
-    - the device
-    - HEP senders
-    - traced processes
-  - A slot is how a packet points back at its bytes.
-    - That is the `frame` field of `--json`, which `--show-frame` follows.
-  - Set it with `--max-capture-sources N` or `[limits] max_capture_sources`.
-    - Default 65536, floor 1.
-  - sipnab refuses to start, exit 2, when the limit cannot hold the input
-    files or device plus `max_tracked_peers` HEP senders.
-  - Past the limit, sipnab still analyzes a packet from a new source.
-
-    - That packet carries no frame pointer.
-    - sipnab warns once and counts it.
-  - The table is read-only on every surface:
-    - `sipnab_capture_sources`, `sipnab_capture_sources_max` and
-      `sipnab_capture_sources_refused_total` on `/metrics`
-    - `capture_sources` and `capture_sources_refused_total` in
-      `runtime_stats` and `GET /v1/runtime`
-    - `capture_sources` in MCP `capture_health`
+  - Effect: `--mcp-tools` takes a comma-separated list of bundles, single tool names and your own bundles from `[mcp.bundles]`.
+  - Effect: the bundles are `core`, `signaling`, `captures`, `security`, `media`, `relay`, `tfps`, `server`, `vcon` and `tls`; `full` stays the default.
+  - Effect: `[mcp] tools` sets the list in the config file, and the flag replaces it; the handshake names what loaded and what did not.
+  - Limit: an unknown or empty name refuses the run, exit 2, and the error lists the valid bundles.
+  - Docs: [Choosing which tools load](docs/mcp-tools.md#choosing-which-tools-load).
+- **`max_capture_sources` sets how many capture sources sipnab remembers by name.**
+  - Effect: each input file, device, HEP sender and traced process takes a slot, which the `--json` `frame` field uses to point back at its bytes.
+  - Do: set it with `--max-capture-sources N` or `[limits] max_capture_sources`; default 65536, floor 1.
+  - Limit: startup refuses, exit 2, when it cannot hold the inputs plus `max_tracked_peers` HEP senders; past it, a new source's packets carry no frame pointer.
+  - Effect: `/metrics`, `runtime_stats`, `GET /v1/runtime` and MCP `capture_health` show the table's size and refusals.
+  - Docs: [`[limits]`](docs/config-reference.md#limits).
 
 ### Changed
 
 - **Breaking: MCP output schemas are off by default.**
-  - `tools/list` no longer carries each tool's `outputSchema`.
-  - This cut what every tool costs a client from 181,691 bytes to 78,920
-    (measured on 0.5.196).
-  - MCP makes output schemas optional.
-  - Every response still carries the same JSON as text and as
-    `structuredContent`.
-  - A client that validates responses against the declared shape turns them
-    back on with `--mcp-output-schemas` or `[mcp] output_schemas = true`.
-
-- **CI's feature matrix runs on the project's own runners, and the pre-push
-  hook no longer repeats it.**
-  - The Features job builds every reduced combination on the aarch64
-    self-hosted runners.
-    - It no longer uses GitHub's hosted queue.
-
-  - Some steps assume a disposable VM. They now run only on hosted runners:
-    - freeing disk by deleting preinstalled software
-    - restoring and uploading the cargo cache
-  - `python3 scripts/check-feature-matrix.py` still builds the whole matrix by
-    hand before a push.
-  - The hook keeps its reduced-combination check.
-- **The pre-push corpus gate builds without LTO.**
-  - It built under the `profiling` profile.
-
-    - That profile inherits release's full LTO and single codegen unit.
-    - So the 21 corpus test binaries took 827 s to rebuild after any library
-      change.
-  - A new `[profile.corpus]` keeps what the gate needs:
-    - the optimization
-    - the unwinding the gate needs to name a failing test
-  - It drops LTO.
-    - Rebuild: 83 s.
-    - The run takes 174 s instead of 161 s.
-  - About twelve minutes come off every push that changes the library.
-
+  - Effect: `tools/list` no longer carries each tool's `outputSchema`; what every tool costs a client fell from 181,691 bytes to 78,920 (measured on 0.5.196).
+  - Effect: MCP makes output schemas optional, and every response still carries the same JSON as text and as `structuredContent`.
+  - Do: a client that validates responses against the declared shape sets `--mcp-output-schemas` or `[mcp] output_schemas = true`.
 - **`--pcap-export-mode decrypted` works.**
-  - It has exited 2 since 0.5.181.
-    - That release made it refuse, because it used to embed TLS keys while
-      the docs promised plaintext.
-  - It now writes what sipnab decrypted as plaintext, and no key material:
-    - SIP from TLS and WSS as one plain TCP frame per message
-    - SRTP as plain RTP with the authentication tag removed
-    - both on the captured addresses, ports and capture times
-    - everything else as captured
-  - The rebuilt frames replace a decrypted TLS connection's captured segments.
-    - Their sequence numbers run on.
-    - So a stream reassembler reads the SIP in order.
-  - Frames wait up to 5 s of capture time for a late decryption.
-    - They leave in capture order.
-    - A stop discards what is still waiting.
-  - PCAP-NG exports say they were decrypted, in the section comment.
-    - They name each rebuilt frame's source.
-
-  - The run ends with a line of counts.
-  - The TUI's live `-O` rewrites SRTP only.
-    - The reason: the TUI does not decrypt TLS.
-  - The file can hold readable signaling and listenable audio.
+  - Was: it has exited 2 since 0.5.181, the release that made it refuse because it embedded TLS keys while the docs promised plaintext.
+  - Effect: it writes plaintext and no key material: SIP from TLS and WSS as one TCP frame per message, SRTP as RTP without the tag.
+  - Effect: rebuilt frames keep the captured addresses, ports and times, and wait up to 5 s for a late decryption; PCAP-NG exports name their source.
+  - Limit: the TUI's live `-O` rewrites SRTP only, as the TUI does not decrypt TLS; a stop discards frames still waiting.
+  - Docs: [Write the decrypted call to a file](docs/tls-capture.md#write-the-decrypted-call-to-a-file).
 
 ### Fixed
 
 - **An output file sipnab cannot create now says why.**
-  - These reported only `Failed to create output file '<path>'`:
-    - `-O`
-    - a `--split` file created mid-run
-    - a TUI pcap or WAV save
-  - That message dropped the operating system's reason
-    (`Permission denied`, `No such file or directory`).
-  - The whole cause now follows the path.
-  - Sometimes the reason is `Permission denied` and sipnab had dropped
-    privileges. Then the line also names:
-    - the user sipnab runs as
-    - three ways out:
-      - make the directory writable by that user
-      - pass `--user`
-      - pass `--no-priv-drop`
-  - Run as root, sipnab creates output files after the drop.
-    - By default it runs as `nobody` then.
-    - So a `root:root` `0755` directory refused them, and nothing said so.
-  - [An output file sipnab cannot create](docs/troubleshooting.md#an-output-file-sipnab-cannot-create).
+  - Was: `-O`, a `--split` file created mid-run and a TUI pcap or WAV save reported only `Failed to create output file '<path>'`.
+  - Effect: the operating system's reason (`Permission denied`, `No such file or directory`) now follows the path.
+  - Effect: after a privilege drop the `Permission denied` line names the user and three ways out: a writable directory, `--user` or `--no-priv-drop`.
+  - Was: run as root, sipnab creates output files as `nobody` after the drop, so a `root:root` `0755` directory refused them silently.
+  - Docs: [An output file sipnab cannot create](docs/troubleshooting.md#an-output-file-sipnab-cannot-create).
 - **The media tools now find a call on a media-relay host.**
-  - A relay sees the RTP and its own control traffic, never the SIP.
-    - So its dialog store is empty.
-    - Its streams still carry the Call-ID the relay named.
-  - `rtp_stats`, `media_diagnostics`, `explain_attribution` and
-    `export_audio` looked the Call-ID up among the dialogs first.
-    - So on such a host every call was "not found".
-  - `GET /v1/dialogs/{call_id}/audio` answered 404 the same way.
-  - They now answer from the streams when no dialog is held.
-  - The MCP answers carry `dialog_seen: false` and a `dialog_absent` object.
-    - Its `reason` and `note` are the ones `reconcile_orphans` uses.
-  - The REST route sends a `Sipnab-Dialog-Seen` header.
-  - sipnab still refuses a Call-ID that neither a dialog nor any stream
-    carries.
-    - The message now names both searches:
-      `no SIP dialog and no RTP stream associated with call_id 'no-such-call@192.0.2.1' in this capture`.
-  - The SIP-only tools still need the dialog.
-  - See [`rtp_stats`](docs/mcp-tools-core.md#rtp_stats).
-- **A HEP listener or uprobe capture no longer grows memory with every
-  packet.**
-  - Each packet's source label (`capture_id@address`, `uprobe:comm/pid`) was
-    built fresh and stored again.
-  - So the table of source names grew with the packet count.
-    - It should grow with the number of senders.
-  - sipnab now stores each name once.
-  - `max_capture_sources` bounds the table.
+  - Was: `rtp_stats`, `media_diagnostics`, `explain_attribution`, `export_audio` and `GET /v1/dialogs/{call_id}/audio` found no call where no SIP passes.
+  - Effect: they answer from the streams; MCP adds `dialog_seen: false` and `dialog_absent`, and REST a `Sipnab-Dialog-Seen` header.
+  - Limit: a Call-ID no dialog or stream carries is refused with `no SIP dialog and no RTP stream associated with call_id 'no-such-call@192.0.2.1' in this capture`.
+  - Limit: the SIP-only tools still need the dialog.
+  - Docs: [`rtp_stats`](docs/mcp-tools-core.md#rtp_stats).
+- **A HEP listener or uprobe capture no longer grows memory with every packet.**
+  - Was: each packet's source label (`capture_id@address`, `uprobe:comm/pid`) was stored again, so the table grew with the packet count.
+  - Effect: sipnab stores each name once, and `max_capture_sources` bounds the table.
 - **A build in a git worktree no longer rebuilds everything every time.**
-
-  - The build script watched three paths so that a new commit re-stamps
-    `sipnab --version`:
-    - `.git/HEAD`
-    - `.git/packed-refs`
-    - the branch's ref file
-  - In a linked worktree, `.git` is a file that names the real git directory.
-    - So none of those paths existed.
-  - cargo treats a missing watched path as changed.
-    - So every cargo command re-ran the build script.
-    - It rebuilt sipnab and all of its test binaries.
-  - A second `cargo test --no-run` with nothing changed took 95 s.
-    - It now takes 1 s.
-  - The script now follows `.git` to the worktree's own directory and the
-    shared one.
-  - It watches only files that exist.
-    - This also fixes a clone that has never packed its refs.
-- **The pre-commit hook runs the test binaries side by side.**
-  - `cargo test` runs the suite's ~355 test binaries one at a time.
-
-    - So the hook's test step kept one core busy on a 14-core machine:
-      314 s.
-  - It now goes through `scripts/parallel-tests.py`.
-    - cargo hands each binary to a recording runner.
-    - The script then runs the recordings in a pool.
-    - Result: 58 s, with the same 358 result lines and 10412 passes.
-  - Every binary runs even after one fails.
-    - So one run shows every failure.
-
-  - `SIPNAB_TEST_JOBS` sets the pool size.
-    - `1` runs them one at a time.
-
-  - The hang watchdog now reaches the test binaries under the pool.
-- **The pre-commit hook's own test harness passes again, and CI runs it.**
-  - `scripts/test-pre-commit.sh` was 33 passed, 5 failed on `main`.
-    - Its sandbox copied a hand-kept list of the hook's Python gates.
-    - The list had gone stale.
-    - The hook died before reaching the gates that four scenarios test.
-  - The list now comes from the hook itself.
-  - The `Git hook scenarios` CI job runs the harness beside the pre-push one.
-- **A git hook from another checkout refuses to run.**
-  - `core.hooksPath` was set to an absolute path into one checkout.
-    - So that checkout's branch's hooks gated a commit in any worktree.
-
-  - On 2026-09-29 that was a branch whose pre-commit lacked the
-    `sipnab-bpf-types` step.
-    - Commits on `main` went through without it.
-  - Both hooks now check first that they are the tree's own.
-  - Otherwise they exit and name the fix:
-    `git config core.hooksPath .githooks`.
-  - `SIPNAB_HOOK_ANY_TREE=1` turns the check off, and says so.
-- **The two slowest test binaries overlap their waits.**
-  - In `config_wiring_test`, three `[limits]` probes each prove an absence.
-
-    - Each waits out a whole observation window, about 10 s apiece.
-    - They ran one after another.
-    - They now run on their own threads while the other probes run.
-    - The test takes 10.2 s instead of 37.7 s.
-  - `doc_commands_run_test` ran its 313 documented commands one at a time.
-
-    - They now run on a few threads: 6.2 s instead of 22.7 s.
-  - Each command also gets a home directory of its own inside its sandbox
-    directory.
-    - They inherited the real `HOME`.
-    - So a local config could change what the gate saw.
-- **`crash_test` resolves a crash report's frames in one symbolizer run.**
-  - Each `addr2line` run loads the whole 184 MB debug binary.
-  - So one call per frame made it the slowest test binary, at 55.8 s.
-  - It now takes about 9 s.
+  - Was: the build script watched `.git` paths that do not exist in a linked worktree, so every cargo command rebuilt sipnab and its tests.
+  - Effect: it follows `.git` to the worktree's own and the shared git directory, and watches only files that exist.
+  - Effect: this also fixes a clone that has never packed its refs.
 
 ## [0.5.196] - 2026-09-29
 
