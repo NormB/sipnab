@@ -97,21 +97,47 @@ GROUPS: list[str] = ["overflow", "overflow"]
 # two groups queued for 34 and 68 minutes behind pull request and Dependabot
 # runs that held the overflow pair. The pool a group names stays `overflow`
 # either way: the four runners are one host with one toolchain.
+#
+# A release pull request (head branch `release/...` in this repository) asks
+# for the four runners too: on 2026-11-14 release PR #808's two Features jobs
+# queued from 23:15Z while another pull request's job held one of the
+# overflow pair. A fork's branch never does, whatever it is named: the check
+# is on the head repository, not only on the name. This is capacity, not
+# priority: GitHub documents no order among queued jobs.
 MAIN_RUNNER: list[str] = ["self-hosted", "jetson"]
 OVERFLOW_RUNNER: list[str] = ["self-hosted", "overflow"]
 MAIN_EVENT = "push"
 MAIN_REF = "refs/heads/main"
+RELEASE_EVENT = "pull_request"
+RELEASE_PREFIX = "release/"
 
 
-def runner_labels(event_name: str, ref: str) -> list[str]:
-    """The labels the `features` job runs on for one event and ref.
+def runner_labels(
+    event_name: str,
+    ref: str,
+    head_ref: str = "",
+    head_repo: "str | None" = None,
+    repository: str = "",
+) -> list[str]:
+    """The labels the `features` job runs on for one event.
 
-    Case is ignored, as GitHub's `==` ignores it in a workflow expression.
+    `head_ref` is `github.head_ref`, `head_repo` is
+    `github.event.pull_request.head.repo.full_name` (None when the event has
+    no pull request or the fork was deleted) and `repository` is
+    `github.repository`. Case is ignored, as GitHub's `==` and `startsWith`
+    ignore it in a workflow expression.
     """
-    if not isinstance(event_name, str) or not isinstance(ref, str):
-        raise TypeError("event_name and ref are the text GitHub gives a workflow")
+    texts = (event_name, ref, head_ref, repository)
+    if not all(isinstance(t, str) for t in texts) or not (head_repo is None or isinstance(head_repo, str)):
+        raise TypeError("the values are the text GitHub gives a workflow")
     main = event_name.casefold() == MAIN_EVENT and ref.casefold() == MAIN_REF
-    return list(MAIN_RUNNER if main else OVERFLOW_RUNNER)
+    release = (
+        event_name.casefold() == RELEASE_EVENT
+        and head_ref.casefold().startswith(RELEASE_PREFIX)
+        and head_repo is not None
+        and head_repo.casefold() == repository.casefold()
+    )
+    return list(MAIN_RUNNER if main or release else OVERFLOW_RUNNER)
 
 
 def runs_on_expression() -> str:
@@ -124,7 +150,9 @@ def runs_on_expression() -> str:
         return "fromJSON('" + json.dumps(labels, separators=(",", ":")) + "')"
 
     return (
-        f"${{{{ github.event_name == '{MAIN_EVENT}' && github.ref == '{MAIN_REF}' "
+        f"${{{{ (github.event_name == '{MAIN_EVENT}' && github.ref == '{MAIN_REF}' "
+        f"|| github.event_name == '{RELEASE_EVENT}' && startsWith(github.head_ref, '{RELEASE_PREFIX}') "
+        "&& github.event.pull_request.head.repo.full_name == github.repository) "
         f"&& {array(MAIN_RUNNER)} || {array(OVERFLOW_RUNNER)} }}}}"
     )
 
