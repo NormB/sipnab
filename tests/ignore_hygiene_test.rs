@@ -45,12 +45,13 @@ const MANUAL_ONLY: &[(&str, &str, &str)] = &[
          `sudo <test-binary> --ignored fanout_applies_to_an_open_pcap_handle`.",
     ),
     (
-        "src/app/fleet_verify.rs",
-        "edge_a_pass_is_measured_for_a_fleet",
+        "tests/fleet_history_test.rs",
+        "edge_a_pass_of_the_binary_is_measured_for_a_fleet",
         "a measurement and not a check: it files a store of the size of a fleet and \
-         prints how long a pass of `sipnab fleet verify` takes, which is a figure only \
-         in a release build on a named machine. Run by hand with `cargo test --release \
-         --features full --lib a_pass_is_measured -- --ignored --nocapture`.",
+         prints how long a pass of the real `sipnab fleet verify` takes and what it \
+         prints, which is a figure only in a release build on a named machine. Run by \
+         hand with `cargo test --release --features full --test fleet_history_test \
+         a_pass_of_the_binary_is_measured -- --ignored --nocapture`.",
     ),
 ];
 

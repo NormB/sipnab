@@ -1764,13 +1764,15 @@ either.
    ```
 
    ```text
-   calls: 90 files, 90 clean, 0 refused, 0 gone, 1620000 rows
-   members: 4320 files, 4320 clean, 0 refused, 0 gone, 8640000 rows
+   calls: 20 files, 20 clean, 0 refused, 0 gone, 1080000 rows
+   members: 1440 files, 1440 clean, 0 refused, 0 gone, 2880000 rows
    ```
 
    The command prints one line for each class when it ends. `files` is the
    number of files it listed, and `rows` is the number of rows in the clean
-   files.
+   files. The outputs on this page are from a test store of synthetic rows
+   for one day: 20 filings of 54,000 call records and one filing a minute
+   of 2,000 members' heartbeats.
 
 2. **[center]** To read less, name a class or a window of UTC days. Both
    days belong to the window:
@@ -1795,24 +1797,39 @@ either.
    that only the old key opens.
 
 4. **[center]** For a script, add `--json`. The command then prints one JSON
-   document and no other line:
+   document on one line and no other line. Here it is through `jq .`, for
+   the test store with one file cut in half:
 
    ```json
    {
-     "started_at": "2026-11-14T20:00:00Z",
-     "version": "0.5.256",
-     "result": "refused",
      "classes": [
-       {"class": "calls", "files": 90, "clean": 89, "refused": 1, "gone": 0, "rows": 1602000},
-       {"class": "members", "files": 4320, "clean": 4320, "refused": 0, "gone": 0, "rows": 8640000}
+       {
+         "class": "calls",
+         "clean": 19,
+         "files": 20,
+         "gone": 0,
+         "refused": 1,
+         "rows": 1026000
+       },
+       {
+         "class": "members",
+         "clean": 1440,
+         "files": 1440,
+         "gone": 0,
+         "refused": 0,
+         "rows": 2880000
+       }
      ],
      "refused": [
        {
          "class": "calls",
-         "file": "calls/date=2026-11-03/1793664000120-1793664059870-h5f0c2a9e41b7d386.sealed",
-         "reason": "sealed layer: the file was truncated: its last record is incomplete"
+         "file": "calls/date=2026-11-11/1794355200000-1794355253999-h39bb7d2c07e281e0.sealed",
+         "reason": "sealed layer: the file was truncated: it ends before its records do"
        }
-     ]
+     ],
+     "result": "refused",
+     "started_at": "2026-11-15T09:24:01Z",
+     "version": "0.5.255"
    }
    ```
 
@@ -1864,11 +1881,27 @@ sipnab fleet verify --store /mnt/restore/center.store \
 A store that has filed nothing yet has the directory and no file: the
 command prints `0 files` for each class and exits `0`.
 
+**How long a pass takes.** Measured on 2026-11-15 with a release build on
+an NVIDIA Jetson AGX Thor (aarch64, 14 processors), with other jobs running
+on the host (load average 17 to 28). The pass read the test store above:
+583,543,021 bytes of call record files and 441,207,414 bytes of heartbeat
+files. Each
+time is one run of the command, from its start to its exit, over three
+rounds:
+
+| Pass | Files | Rows | Time |
+|---|---|---|---|
+| `--class calls` | 20 | 1,080,000 | 2.8 to 6.2 s |
+| `--class members` | 1,440 | 2,880,000 | 4.2 to 9.0 s |
+| Both classes | 1,460 | 3,960,000 | 8.6 to 13.0 s |
+
+The pass reads every file of the classes it checks, whole.
+
 **Troubleshoot.** A refused file has one line, the path and the first
 reason:
 
 ```text
-refused: calls/date=2026-11-03/1793664000120-1793664059870-h5f0c2a9e41b7d386.sealed: sealed layer: the file was truncated: its last record is incomplete
+refused: calls/date=2026-11-11/1794355200000-1794355253999-h39bb7d2c07e281e0.sealed: sealed layer: the file was truncated: it ends before its records do
 ```
 
 - **`sealed layer: the file was written under key id <id>, which is not

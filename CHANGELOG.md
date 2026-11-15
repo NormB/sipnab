@@ -40,6 +40,10 @@ entry that carries them.
   - Effect: The how-to now says to keep the old key loaded until retention has removed every history file written under it.
   - Do: If you rotated the store key since 0.5.249 and still have the old key file, keep passing it with `--store-old-key-file`.
   - Docs: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
+- **A fleet center answers a history question when a FIFO lies under a history file's name.**
+  - Was: The center opened the FIFO and waited for a writer, so each question that read that entry got no answer.
+  - Effect: The center names the entry as refused, `is a pipe or FIFO, not a file of the history store`, and answers.
+  - Docs: [Verify the history store](docs/fleet.md#verify-the-history-store).
 
 ### Security
 
