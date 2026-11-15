@@ -119,4 +119,50 @@ pub fn store_key_file(dir: &std::path::Path) -> Result<std::path::PathBuf, TestE
     Ok(path)
 }
 
+/// `sipnab` with `args`, run to its end or ended at `within`: exit code,
+/// stdout and stderr.
+///
+/// A run that is still there at the deadline is killed, and that is an
+/// error that carries what the run wrote: a command that waits (on a FIFO
+/// under a file's name, on a lock) fails its test and is not left behind.
+pub fn sipnab_within(
+    args: &[&str],
+    within: Duration,
+) -> Result<(Option<i32>, String, String), TestError> {
+    let scratch = tempfile::tempdir()?;
+    let (out, err) = (scratch.path().join("stdout"), scratch.path().join("stderr"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(args)
+        .env("NO_COLOR", "1")
+        .env_remove("SIPNAB_LOG")
+        .stdin(Stdio::null())
+        .stdout(std::fs::File::create(&out)?)
+        .stderr(std::fs::File::create(&err)?)
+        .tied_to_test()
+        .spawn()?;
+    let deadline = Instant::now() + within;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "`sipnab {}` did not end within {within:?} and was ended; stdout:\n{}\nstderr:\n{}",
+                args.join(" "),
+                std::fs::read_to_string(&out)?,
+                std::fs::read_to_string(&err)?
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok((
+        status.code(),
+        std::fs::read_to_string(&out)?,
+        std::fs::read_to_string(&err)?,
+    ))
+}
+
 include!("child_lifetime.rs");

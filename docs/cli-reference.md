@@ -3196,6 +3196,19 @@ A build whose `--version` lists `fleet-store` has the history store: it keeps th
 
 It exits `0` once stopped, and `2` when it refuses an argument, the signing key, the store or the listener.
 
+`sipnab fleet verify` reads every row of every file of a center's history store and reports each file it refuses: one `refused:` line for a file, with the first reason, then one line for each class. It creates and changes nothing, so it runs beside a running center and on a backup copy. [Verify the history store](fleet.md#verify-the-history-store) is the how-to.
+
+- `--store <FILE>`: the center's store file. The command reads the history directory beside it, `<store>.parquet`, and does not read the store file.
+- `--store-key-file <FILE>`: the key the center encrypts the store under, readable by this user only. Required.
+- `--store-old-key-file <FILE>`: an earlier `--store-key-file` that some history files are still under (repeatable).
+- `--class <calls|members>`: read one class only, call records or heartbeats. Default: both.
+- `--from <DATE>` and `--to <DATE>`: the first and the last UTC day to read, `YYYY-MM-DD`. Both days belong to the window. Default: every day.
+- `--json`: print the report as one JSON document, with `started_at`, `version`, `result`, the counts of each class and the refused files.
+- `--user <USER>`: started as root, read the key files, then list and read the history files as this user. Default `nobody`. This user must read `<store>.parquet` and everything in it, or the command refuses before it reads a history file.
+- `--no-priv-drop`: started as root, stay root. One warning line says so.
+
+It exits `0` when it refuses no file, `1` when it refuses at least one, and `2` when the pass cannot run: it refuses an argument or a key file, it cannot read a directory of the store, the user a run started as root drops to cannot read the store, there is no `<store>.parquet` directory beside `--store`, or the build has no history store.
+
 ## G.729 tables (`sipnab g729`)
 
 `sipnab g729` installs and checks the G.729 codebook tables that `--g729-tables` reads. A codebook table is the set of numeric values the G.729 decoder needs. sipnab does not ship them. [G.729 audio](g729.md) is the full how-to.

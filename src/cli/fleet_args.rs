@@ -71,6 +71,81 @@ pub enum FleetCommand {
     /// Runs until SIGINT or SIGTERM, then exits 0. Exits 2 when an argument,
     /// the signing key, the store or the listener is refused.
     Serve(Box<ServeFlags>),
+    /// Read every row of every file of a fleet center's history store and
+    /// report each file that is refused: one line for a refused file,
+    /// then one line for each class.
+    ///
+    /// Changes nothing, so it runs beside a running center and on a
+    /// backup copy. Exits 0 when no file is refused, 1 when one is, and 2
+    /// when the pass cannot run: an argument or a key file is refused, or
+    /// there is no history directory beside `--store`.
+    Verify(VerifyFlags),
+}
+
+/// The flags of `sipnab fleet verify`.
+#[derive(clap::Args, Debug)]
+pub struct VerifyFlags {
+    /// The center's store file. The history directory is beside it, under
+    /// the same name with `.parquet` added. The store file itself is not
+    /// read.
+    #[arg(long, value_name = "FILE")]
+    pub store: PathBuf,
+    /// The key the store is encrypted under, readable by this user only.
+    #[arg(long, value_name = "FILE")]
+    pub store_key_file: PathBuf,
+    /// An earlier `--store-key-file` some files may still be under
+    /// (repeatable).
+    #[arg(long, value_name = "FILE")]
+    pub store_old_key_file: Vec<PathBuf>,
+    /// Read one class only: call records or heartbeats. Default: both.
+    #[arg(long, value_name = "CLASS", value_enum)]
+    pub class: Option<HistoryClass>,
+    /// The first day to read, `YYYY-MM-DD` (UTC). Default: the earliest.
+    #[arg(long, value_name = "DATE", value_parser = parse_day)]
+    pub from: Option<chrono::NaiveDate>,
+    /// The last day to read, `YYYY-MM-DD` (UTC). Default: the latest.
+    #[arg(long, value_name = "DATE", value_parser = parse_day)]
+    pub to: Option<chrono::NaiveDate>,
+    /// Print the report as one JSON document instead of lines.
+    #[arg(long)]
+    pub json: bool,
+    /// The user to run as when started as root.
+    #[command(flatten)]
+    pub run_as: RunAs,
+}
+
+/// `--class`: a data class of the history store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum HistoryClass {
+    /// Call records.
+    Calls,
+    /// Heartbeats.
+    Members,
+}
+
+impl HistoryClass {
+    /// The name the flag takes, which is the class's directory.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Calls => "calls",
+            Self::Members => "members",
+        }
+    }
+}
+
+/// A day as `--from` and `--to` take it: `YYYY-MM-DD` and no other
+/// spelling of the same day.
+///
+/// # Errors
+///
+/// `text` is not a day in that spelling.
+pub fn parse_day(text: &str) -> Result<chrono::NaiveDate, String> {
+    const FORMAT: &str = "%Y-%m-%d";
+    chrono::NaiveDate::parse_from_str(text, FORMAT)
+        .ok()
+        .filter(|day| day.format(FORMAT).to_string() == text)
+        .ok_or_else(|| format!("'{text}' is not a day as YYYY-MM-DD"))
 }
 
 /// The flags of `sipnab fleet serve`.

@@ -24,6 +24,8 @@ pub mod fleet_log;
 pub mod fleet_member;
 #[cfg(feature = "api")]
 pub mod fleet_seal;
+#[cfg(feature = "fleet-store")]
+pub mod fleet_verify;
 #[cfg(feature = "g729")]
 pub mod g729_install;
 #[cfg(any(feature = "vcon", feature = "g729", feature = "api"))]

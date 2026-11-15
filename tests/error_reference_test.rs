@@ -1040,7 +1040,11 @@ const EXPECTED_UNRESOLVED: usize = 87;
 // 668 -> 669 (a calls filing outside the center's lock): +1 in
 // src/app/fleet_center.rs, the error of an upkeep pass that ended in a
 // panic.
-const EXPECTED_TEMPLATES: usize = 669;
+// 669 -> 678 (`sipnab fleet verify`): +9 in src/app/fleet_verify.rs: the
+// class and the window that `Scope::new` refuses, the history directory
+// that is absent, and the six disagreements of a file's rows with its path
+// (day, earliest and latest receive time, mark, member, first row).
+const EXPECTED_TEMPLATES: usize = 678;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -6446,8 +6446,10 @@ fn the_key_rotation_step_keeps_the_old_key_while_history_files_are_under_it()
         "each history file stays under the key that wrote it until retention removes it",
         "`--calls-retention-days` (default 90)",
         "`--retention-hours` (default 72)",
-        "keep the old key file and `--store-old-key-file` on every start until retention \
-         has removed every history file written under the old key",
+        "keep the old key file and `--store-old-key-file` on every start until `sipnab fleet \
+         verify` with the new key alone refuses no file",
+        "(#verify-the-history-store)",
+        "That takes until retention has removed every history file written under the old key",
         "Only then destroy the old key",
         "`was written under key id <id>, which is not loaded`",
         "(#keep-call-history-at-the-center)",
