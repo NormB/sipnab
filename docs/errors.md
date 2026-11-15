@@ -2312,6 +2312,26 @@ sipnab could not turn the `-I`/`--input` values into a list of capture files to 
 
 **Exit code:** 1.
 
+### `-I/--input: cannot unpack '{}': user '{user}' cannot create files in the temporary directory '{}', where sipnab unpacks an archive or a compressed capture after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), or pass --user with a user who can write it`
+
+A run started as root drops to `{user}` (`--user`, else `[privilege] user`,
+else `nobody`) before it reads its `-I` files, and unpacks an archive or a
+`.pcap.gz` as that user, under `TMPDIR`. The first `{}` is the first file
+that needs unpacking, the second is `TMPDIR`. sipnab stops there, before it
+unpacks anything. On macOS, root's own `TMPDIR` under `/var/folders` is a
+directory `nobody` cannot write.
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.pcap.gz': user 'nobody' cannot create files in the temporary directory '/var/folders/xy/T', where sipnab unpacks an archive or a compressed capture after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), or pass --user with a user who can write it
+```
+
+**What to do:** Run with `TMPDIR=/tmp` before the rest of the command
+(`sudo TMPDIR=/tmp sipnab -N -I a.pcap.gz`), or pass `--user` with a user
+that can write the directory. See
+[Read capture files only root can read](least-privilege.md#read-capture-files-only-root-can-read).
+
+**Exit code:** 1.
+
 ### `multi-core reconstruction failed: {e:#}`
 
 The multi-core reader (`--cores N`) failed. `{e:#}` is the error chain.

@@ -149,6 +149,11 @@ The reason is where the thread starts.
   - The chroot.
   - The privilege drop.
 - The reason: the capture source must be open while the process still holds `CAP_NET_RAW`.
+- A file run (`-I`) without `--chroot` is the exception: it drops privileges
+  first and starts the thread after, so the process reads no byte of an
+  input as root. The run opened its files when it planned, and the thread
+  reads them through those descriptors. A failure in the privileged steps of such a run
+  has no thread to stop.
 - Every failure from that point on happens with a capture thread already
   running and holding its source. Such failures include:
   - An unopenable source.

@@ -8620,6 +8620,7 @@ impl Cli {
         crate::capture::input_set::ResolveOptions {
             recursive: self.capture_args.recursive,
             name_glob: self.capture_args.input_name.clone(),
+            refuse_unwrap: false,
         }
     }
 

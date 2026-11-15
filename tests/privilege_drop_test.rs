@@ -2260,10 +2260,13 @@ fn a_root_run_reads_a_root_only_compressed_member_after_the_drop() -> Result<(),
 }
 
 /// A root run whose `TMPDIR` sits inside a directory the drop user cannot
-/// enter removes its extraction before the drop: `nobody` could not reach
-/// the directory to remove it at exit. macOS gives root such a `TMPDIR`
-/// (its per-user directory under `/var/folders`, mode 0700), and the macOS runner's
-/// tests found the extraction left there.
+/// enter stops with exit 1 and leaves nothing there. Since
+/// CAPTURE-RESOLVE-AS-ROOT the archive is unwrapped after the drop, by the
+/// drop user, which cannot reach that directory. macOS gives root such a
+/// `TMPDIR` (its per-user directory under `/var/folders`, mode 0700); before,
+/// the run unwrapped there as root and removed the extraction before the
+/// drop, and the macOS runner's tests found the extraction left there when
+/// it did not.
 #[test]
 fn a_root_run_whose_tmpdir_the_drop_user_cannot_reach_leaves_nothing() -> Result<(), TestError> {
     if root_unavailable("a_root_run_whose_tmpdir_the_drop_user_cannot_reach_leaves_nothing") {
@@ -2291,11 +2294,24 @@ fn a_root_run_whose_tmpdir_the_drop_user_cannot_reach_leaves_nothing() -> Result
         ],
     )?;
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_read_in_full(&out, 2);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the drop user cannot unwrap where it cannot reach:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("-I/--input: cannot unpack")
+            && stderr.contains(&format!(
+                "user 'nobody' cannot create files in the temporary directory '{}'",
+                tmp.display()
+            ))
+            && stderr.contains("Set TMPDIR to a directory that user can write (TMPDIR=/tmp)"),
+        "the refusal names the input, the directory, the user and the fix:\n{stderr}"
+    );
     assert_eq!(
         entries(&tmp)?,
         Vec::<String>::new(),
-        "an extraction the drop user cannot reach must be gone when the run ends:\n{stderr}"
+        "nothing is left in a temporary directory the drop user cannot reach:\n{stderr}"
     );
     Ok(())
 }
@@ -2380,7 +2396,9 @@ fn a_root_run_refuses_a_truncated_root_only_archive_and_leaves_nothing() -> Resu
 
 /// A root run whose later root-only member is not a capture is refused at
 /// startup, naming that member and its format, not a permission the drop
-/// took away: the set is checked as root, before the drop.
+/// took away: the set is opened as root, and judged through those
+/// descriptors after the drop (CAPTURE-RESOLVE-AS-ROOT), before any packet
+/// is read.
 #[test]
 fn a_root_run_refuses_a_later_root_only_member_that_is_not_a_capture() -> Result<(), TestError> {
     if root_unavailable("a_root_run_refuses_a_later_root_only_member_that_is_not_a_capture") {
@@ -2419,9 +2437,15 @@ fn a_root_run_refuses_a_later_root_only_member_that_is_not_a_capture() -> Result
         "the refusal names the member and its format:\n{stderr}"
     );
     assert!(!stderr.contains("Permission denied"), "{stderr}");
+    let dropped = stderr.find("Dropped privileges");
+    let refused = stderr.find("unknown file format");
     assert!(
-        !stderr.contains("Dropped privileges"),
-        "refused before the drop:\n{stderr}"
+        matches!((dropped, refused), (Some(d), Some(r)) if d < r),
+        "judged as the drop user, through the descriptor opened as root:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Reading from"),
+        "refused before any file is read:\n{stderr}"
     );
     Ok(())
 }

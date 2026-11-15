@@ -1283,12 +1283,24 @@ pub fn resolve_planned_inputs(
     named: NamedSet,
 ) -> Result<crate::capture::input_set::OpenedSet, PlanError> {
     let opened = named.is_opened();
-    let resolved = named.resolve(&cli.input_resolve_options());
+    // A drop user that cannot write the temporary directory cannot unpack:
+    // the set is refused at its first archive, before anything is unpacked.
+    let tmpdir_refusal = this_runs_tmpdir_refusal();
+    let resolved = named.resolve(&crate::capture::input_set::ResolveOptions {
+        refuse_unwrap: tmpdir_refusal.is_some(),
+        ..cli.input_resolve_options()
+    });
     // From here on nothing waits on the terminal for an archive password.
     end_archive_prompts();
     let set = match resolved {
         Ok(set) => set,
         Err(e) => {
+            if let (Some(refusal), Some(refused)) = (
+                &tmpdir_refusal,
+                e.downcast_ref::<crate::capture::input_set::UnwrapRefused>(),
+            ) {
+                return Err(refusal.at(&refused.path));
+            }
             // Every file skipped: `--report` still prints the vCon
             // containers among them, each with its reason, before the run
             // fails as it does without `--report`.
@@ -1351,6 +1363,80 @@ fn decrypted_output_targets(cli: &Cli) -> Vec<(&'static str, &std::path::Path)> 
         targets.push(("--vcon-out", out.as_path()));
     }
     targets
+}
+
+/// Whether a run confines itself (the privileged half: secrets, keylog,
+/// privilege drop) before it judges its `-I` set and starts its reader: a
+/// file run (`file_run`) that does not chroot (`chroots`). A `--chroot` run
+/// judges its set before the chroot, because the members it unwraps are
+/// written to the temporary directory by path. Pure.
+fn judges_inputs_after_drop(file_run: bool, chroots: bool) -> bool {
+    file_run && !chroots
+}
+
+/// The refusal a run that dropped to `dropped_to` gives at the first archive
+/// or compressed capture of its set, before it unpacks anything, when that
+/// user cannot create files in `tmpdir` (`writable`). `None` for a run that
+/// did not drop, or whose drop user can. Pure.
+fn unwrap_tmpdir_refusal(
+    dropped_to: Option<&str>,
+    tmpdir: &std::path::Path,
+    writable: bool,
+) -> Option<TmpdirRefusal> {
+    let user = dropped_to?;
+    (!writable).then(|| TmpdirRefusal {
+        user: user.to_string(),
+        tmpdir: tmpdir.to_path_buf(),
+    })
+}
+
+/// A drop user that cannot create files in the temporary directory
+/// ([`unwrap_tmpdir_refusal`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TmpdirRefusal {
+    /// The user the run dropped to.
+    user: String,
+    /// The directory archive members are unpacked into.
+    tmpdir: std::path::PathBuf,
+}
+
+impl TmpdirRefusal {
+    /// The refusal of the run at `input`, the first file that needed
+    /// unpacking: exit 1, naming the file, the directory, the user and both
+    /// ways out.
+    fn at(&self, input: &std::path::Path) -> PlanError {
+        let user = &self.user;
+        PlanError {
+            exit_code: 1,
+            message: format!(
+                "-I/--input: cannot unpack '{}': user '{user}' cannot create files in the \
+                 temporary directory '{}', where sipnab unpacks an archive or a compressed \
+                 capture after it drops root. Set TMPDIR to a directory that user can write \
+                 (TMPDIR=/tmp), or pass --user with a user who can write it",
+                input.display(),
+                self.tmpdir.display()
+            ),
+        }
+    }
+}
+
+/// Whether this process may create files in `dir`: write and search
+/// permission for its effective user, by `faccessat(2)`, which creates
+/// nothing. After the drop that is the user dropped to. The check the
+/// output refusals make ([`capture::writer::effective_access`]).
+fn can_create_files_in(dir: &std::path::Path) -> bool {
+    capture::writer::effective_access(dir, capture::writer::AccessWanted::WriteAndSearch).is_ok()
+}
+
+/// The refusal this process gives before it unpacks anything, when it
+/// dropped privileges to a user that cannot write the temporary directory.
+fn this_runs_tmpdir_refusal() -> Option<TmpdirRefusal> {
+    let tmpdir = std::env::temp_dir();
+    unwrap_tmpdir_refusal(
+        privilege::dropped_to(),
+        &tmpdir,
+        can_create_files_in(&tmpdir),
+    )
 }
 
 /// A judged `-I` set as the single reader takes it.
@@ -3633,7 +3719,30 @@ pub fn launch(
 
     let source = source.unwrap_or_else(auto_detect_source);
 
-    // 13b. Judge the `-I` set `plan` named: what the capture thread reads.
+    // Whether this run may put a packet on the network at all — decided from
+    // the source that was actually resolved (auto-detection included), before
+    // it is moved into the capture thread. See `security::transmit_guard`.
+    // It depends on the kind of source alone, so a file set not yet judged
+    // decides it as the judged set would.
+    let transmit_permit = crate::security::transmit_guard::TransmitPermit::for_source(&source);
+
+    // 13b. A file run that will drop privileges confines itself first and
+    //      judges its `-I` set as the user it dropped to: no byte of an input
+    //      is read, unwrapped or parsed as root (CAPTURE-RESOLVE-AS-ROOT).
+    //      Every named file was opened as root when the run planned, so a
+    //      root-only input is still read, through that descriptor.
+    let after_drop =
+        judges_inputs_after_drop(inputs.is_some(), effective_chroot(cli, config).is_some());
+    let (transmit_permit, privileged) = if after_drop {
+        match confine_privileged(cli, config, mode, transmit_permit, &[]) {
+            Ok(confined) => (None, Some(confined)),
+            Err(e) => e.exit(),
+        }
+    } else {
+        (transmit_permit, None)
+    };
+
+    // 13c. Judge the `-I` set `plan` named: what the capture thread reads.
     let (source, judged) = match inputs {
         Some(named) => match judge_planned_inputs(cli, config, named, mode, vcon_rules) {
             Ok((source, judged)) => (source, Some(judged)),
@@ -3644,11 +3753,6 @@ pub fn launch(
             (source, None)
         }
     };
-
-    // Whether this run may put a packet on the network at all — decided from
-    // the source that was actually resolved (auto-detection included), before
-    // it is moved into the capture thread. See `security::transmit_guard`.
-    let transmit_permit = crate::security::transmit_guard::TransmitPermit::for_source(&source);
 
     // RE4's startup snapshot, taken from the RESOLVED source for the same
     // reason `may_transmit` is: `-d any` and device auto-detection mean the
@@ -3668,6 +3772,13 @@ pub fn launch(
         Some(JudgedInputs { paths, handed }) => (paths, handed),
         None => (Vec::new(), None),
     };
+    let reads_metadata = reads_input_metadata_before_confinement(handed.is_some(), mode);
+    if reads_metadata
+        && after_drop
+        && let Some(files) = &handed
+    {
+        crate::capture::pcapng_meta::read_opened_before_use(&input_files, files);
+    }
     let capture_config = &CaptureConfig {
         open_set_up_front: handed.is_some(),
         handed_set: handed.map_or_else(
@@ -3678,13 +3789,11 @@ pub fn launch(
     };
 
     // The input files whose pcapng metadata, the TLS secrets embedded in it
-    // among it, is read before the run confines itself.
+    // among it, is read before the reader starts: through the descriptors the
+    // set was judged with when the run judged it after the drop, before the
+    // run confines itself otherwise.
     let read_in_advance = match &source {
-        CaptureSource::File { paths }
-            if reads_input_metadata_before_confinement(capture_config.open_set_up_front, mode) =>
-        {
-            paths.clone()
-        }
+        CaptureSource::File { paths } if reads_metadata && !after_drop => paths.clone(),
         _ => Vec::new(),
     };
 
@@ -3692,11 +3801,14 @@ pub fn launch(
     let (capture, (reconfigure_control, reconfigure_outcomes)) =
         start_capture_thread(cli, source, capture_config, reconfigure);
 
-    let confined =
-        match confine_after_capture_start(cli, config, mode, transmit_permit, &read_in_advance) {
-            Ok(c) => c,
-            Err(e) => capture.abort(e),
-        };
+    let confined = match privileged {
+        Some(confined) => confine_unprivileged(cli, config).map(|()| confined),
+        None => confine_after_capture_start(cli, config, mode, transmit_permit, &read_in_advance),
+    };
+    let confined = match confined {
+        Ok(c) => c,
+        Err(e) => capture.abort(e),
+    };
 
     Launched {
         handle: capture.handle,
@@ -3731,6 +3843,27 @@ struct Confined {
 /// environment error, 2 for a flag this build cannot honor). The caller stops
 /// the capture thread and exits.
 fn confine_after_capture_start(
+    cli: &Cli,
+    config: &Config,
+    mode: &RunMode,
+    transmit_permit: Option<TransmitPermit>,
+    read_in_advance: &[std::path::PathBuf],
+) -> Result<Confined, PlanError> {
+    let confined = confine_privileged(cli, config, mode, transmit_permit, read_in_advance)?;
+    confine_unprivileged(cli, config)?;
+    Ok(confined)
+}
+
+/// The privileged half of [`confine_after_capture_start`], in order: start
+/// the scanner-kill worker, read the secret files and `read_in_advance`'s
+/// pcapng metadata, hand the extracted members over, chroot, open the keylog,
+/// and drop privileges. A file run that judges its set after the drop runs
+/// this before its capture thread starts ([`judges_inputs_after_drop`]).
+///
+/// # Errors
+///
+/// As [`confine_after_capture_start`].
+fn confine_privileged(
     cli: &Cli,
     config: &Config,
     mode: &RunMode,
@@ -3832,7 +3965,22 @@ fn confine_after_capture_start(
     crate::secret_files::install(secrets);
     #[cfg(not(feature = "tls"))]
     let () = keylog_source;
+    Ok(Confined {
+        kill_worker,
+        #[cfg(feature = "tls")]
+        keylog_source,
+    })
+}
 
+/// The half of [`confine_after_capture_start`] after the drop, in order:
+/// refuse an output the dropped user cannot create and an unreadable
+/// revocation list, start syslog, protect key material, bound the reachable
+/// files, and record syscalls.
+///
+/// # Errors
+///
+/// As [`confine_after_capture_start`].
+fn confine_unprivileged(cli: &Cli, config: &Config) -> Result<(), PlanError> {
     // 16a'. Every output created later must be creatable by the user this
     // process now runs as, or the run ends here rather than at the first
     // packet or the first finished call.
@@ -3905,12 +4053,7 @@ fn confine_after_capture_start(
     let seccomp_status = install_syscall_logging(cli);
     crate::seccomp::requirement_verdict(seccomp_mode(cli), &seccomp_status)
         .map_err(|refusal| PlanError::new(1, refusal))?;
-
-    Ok(Confined {
-        kill_worker,
-        #[cfg(feature = "tls")]
-        keylog_source,
-    })
+    Ok(())
 }
 
 /// What the confinement step hands back: the keylog source opened while
@@ -15916,6 +16059,103 @@ mod planned_inputs_tests {
             "no output, no warning"
         );
         Ok(())
+    }
+
+    #[test]
+    fn failure_a_tmpdir_the_drop_user_cannot_write_names_it_the_user_and_the_fix() {
+        let refusal = unwrap_tmpdir_refusal(
+            Some("nobody"),
+            std::path::Path::new("/var/folders/xy/T"),
+            false,
+        )
+        .map(|r| r.at(std::path::Path::new("/c/a.pcap.gz")));
+        assert_eq!(
+            refusal.as_ref().map(|e| (e.exit_code, e.message.as_str())),
+            Some((
+                1,
+                "-I/--input: cannot unpack '/c/a.pcap.gz': user 'nobody' cannot create files in \
+                 the temporary directory '/var/folders/xy/T', where sipnab unpacks an archive or a \
+                 compressed capture after it drops root. Set TMPDIR to a directory that user can \
+                 write (TMPDIR=/tmp), or pass --user with a user who can write it"
+            )),
+            "exit 1, the file, the directory, the user and both ways out"
+        );
+    }
+
+    #[test]
+    fn success_a_tmpdir_the_drop_user_can_write_gives_no_refusal() {
+        assert_eq!(
+            unwrap_tmpdir_refusal(Some("nobody"), std::path::Path::new("/tmp"), true),
+            None,
+            "nothing to refuse"
+        );
+    }
+
+    #[test]
+    fn edge_a_run_that_did_not_drop_gives_no_tmpdir_refusal() {
+        assert_eq!(
+            unwrap_tmpdir_refusal(None, std::path::Path::new("/nowhere"), false),
+            None,
+            "a run that keeps its user meets the directory's own error, as before"
+        );
+    }
+
+    #[test]
+    fn success_a_directory_this_user_owns_takes_new_files() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        assert!(
+            can_create_files_in(dir.path()),
+            "its own temporary directory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_directory_without_write_permission_takes_no_new_files() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        if privilege::is_root() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))?;
+        let answer = can_create_files_in(dir.path());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        assert!(!answer, "read and search only: no new file");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_directory_that_does_not_exist_takes_no_new_files() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        assert!(
+            !can_create_files_in(&dir.path().join("gone")),
+            "a missing directory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_file_run_judges_its_set_after_the_drop() {
+        assert!(
+            judges_inputs_after_drop(true, false),
+            "a file run confines itself before it reads a byte of its inputs"
+        );
+    }
+
+    #[test]
+    fn edge_a_chroot_file_run_judges_before_the_chroot() {
+        assert!(
+            !judges_inputs_after_drop(true, true),
+            "a --chroot run writes unwrapped members by path, so it judges first"
+        );
+    }
+
+    #[test]
+    fn edge_a_run_with_no_file_keeps_its_order() {
+        assert!(
+            !judges_inputs_after_drop(false, false) && !judges_inputs_after_drop(false, true),
+            "a live, HEP or socket source opens it before it confines itself"
+        );
     }
 
     #[test]

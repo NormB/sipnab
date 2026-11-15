@@ -99,7 +99,32 @@ pub struct ResolveOptions {
     /// Matched against the file name alone, so it behaves the same at every
     /// depth when [`Self::recursive`] is set.
     pub name_glob: Option<String>,
+    /// This run cannot unwrap an archive or a compressed capture: the set is
+    /// refused with [`UnwrapRefused`] at the first one, before anything is
+    /// unpacked.
+    pub refuse_unwrap: bool,
 }
+
+/// Why a set was refused at an archive or a compressed capture: the run
+/// cannot unpack ([`ResolveOptions::refuse_unwrap`]). A type of its own, so
+/// the caller that set the option can say why in its own words.
+#[derive(Debug)]
+pub struct UnwrapRefused {
+    /// The file that needed unpacking.
+    pub path: PathBuf,
+}
+
+impl std::fmt::Display for UnwrapRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cannot unpack '{}': this run cannot unpack an archive or a compressed capture",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for UnwrapRefused {}
 
 /// One resolved capture file and the timestamp it starts at.
 #[derive(Debug, Clone)]
@@ -421,7 +446,7 @@ pub(crate) fn resolve_set_opened(path: &Path, file: std::fs::File) -> Result<Res
         tally: ResolveTally::default(),
         name_pat: None,
     };
-    let (resolved, tally, _) = judge(named, Some(vec![Ok(file)]))?;
+    let (resolved, tally, _) = judge(named, Some(vec![Ok(file)]), false)?;
     report_resolved(&resolved, &tally, false);
     Ok(resolved)
 }
@@ -438,7 +463,7 @@ fn resolve_counting(
     specs: &[String],
     opts: &ResolveOptions,
 ) -> Result<(ResolvedSet, ResolveTally)> {
-    let (set, tally, _) = judge(name_candidates(specs, opts)?, None)?;
+    let (set, tally, _) = judge(name_candidates(specs, opts)?, None, opts.refuse_unwrap)?;
     Ok((set, tally))
 }
 
@@ -604,9 +629,10 @@ impl NamedSet {
     /// As [`resolve`]: logs what was dropped, and holds what it extracted for
     /// the life of the run.
     pub fn resolve(self, opts: &ResolveOptions) -> Result<OpenedSet> {
+        let refusal = opts.refuse_unwrap;
         let (set, tally, handles) = match self {
-            Self::ByPath(named) => judge(named, None)?,
-            Self::Opened(OpenedCandidates { named, files }) => judge(named, Some(files))?,
+            Self::ByPath(named) => judge(named, None, refusal)?,
+            Self::Opened(OpenedCandidates { named, files }) => judge(named, Some(files), refusal)?,
         };
         report_resolved(&set, &tally, opts.recursive);
         let ResolvedSet {
@@ -770,6 +796,7 @@ fn reach(
 fn judge(
     named: Candidates,
     opened: Option<Vec<std::io::Result<std::fs::File>>>,
+    refuse_unwrap: bool,
 ) -> Result<(ResolvedSet, ResolveTally, Handles)> {
     let Candidates {
         specs,
@@ -800,6 +827,12 @@ fn judge(
         };
         match format {
             Ok(Some(f)) if crate::capture::archive::unwraps(f) => {
+                // Refused before the walker reads past the magic bytes or
+                // creates its directory: an archive found in a directory as
+                // well, which would otherwise be skipped with a warning.
+                if refuse_unwrap {
+                    return Err(UnwrapRefused { path }.into());
+                }
                 expand_archive(
                     member,
                     explicit,
@@ -2064,6 +2097,87 @@ mod tests {
             .resolve(&ResolveOptions::default())
             .map_err(|e| format!("a found file that will not open must not fail the set: {e:#}"))?;
         assert_eq!(set.paths(), [paths[0].clone()], "the readable file stays");
+        Ok(())
+    }
+
+    /// Options that refuse every unwrap.
+    fn refusing() -> ResolveOptions {
+        ResolveOptions {
+            refuse_unwrap: true,
+            ..ResolveOptions::default()
+        }
+    }
+
+    /// The file a refused unwrap names, from `refused`.
+    fn refused_at(refused: anyhow::Result<OpenedSet>) -> Result<PathBuf, TestError> {
+        let e = refused.err().ok_or("a refused unwrap resolved")?;
+        let why = format!("{e:#}");
+        Ok(e.downcast::<UnwrapRefused>()
+            .map_err(|_| format!("not an UnwrapRefused: {why}"))?
+            .path)
+    }
+
+    #[test]
+    fn failure_an_unwrap_refusal_refuses_a_compressed_capture_naming_it() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap.gz", gzip(&pcap_at(1_500, b"z"))?)])?;
+        let refused = named_set(&[spec(&paths[0])], true)?.resolve(&refusing());
+        assert_eq!(
+            refused_at(refused)?,
+            paths[0],
+            "the refusal names the file that needed unpacking"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_unwrap_refusal_refuses_before_anything_is_unpacked() -> Result<(), TestError> {
+        // gzip's magic, then no stream: unpacking it would fail on its own.
+        let mut broken = gzip(&pcap_at(1_500, b"z"))?;
+        broken.truncate(12);
+        let (_root, paths) = written(&[("broken.pcap.gz", broken)])?;
+        let refused = named_set(&[spec(&paths[0])], true)?.resolve(&refusing());
+        assert_eq!(
+            refused_at(refused)?,
+            paths[0],
+            "the refusal comes before the stream is read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_unwrap_refusal_refuses_a_found_archive_too() -> Result<(), TestError> {
+        let (root, _paths) = written(&[
+            ("a.pcap", pcap_at(1_000, b"a")),
+            ("b.pcap.gz", gzip(&pcap_at(2_000, b"b"))?),
+        ])?;
+        let refused = named_set(&[spec(root.path())], true)?.resolve(&refusing());
+        assert_eq!(
+            refused_at(refused)?.file_name(),
+            Some(std::ffi::OsStr::new("b.pcap.gz")),
+            "a found archive the run cannot unwrap is refused, not skipped in silence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_unwrap_refusal_leaves_a_plain_capture_alone() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        let set = named_set(&[spec(&paths[0])], true)?
+            .resolve(&refusing())
+            .map_err(|e| format!("a capture needs no unwrap: {e:#}"))?;
+        assert_eq!(set.paths(), paths, "read as it is");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_unwrap_refusal_applies_to_a_set_read_by_path() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap.gz", gzip(&pcap_at(1_500, b"z"))?)])?;
+        let refused = resolve(&[spec(&paths[0])], &refusing());
+        let why = format!("{:#}", refused.err().ok_or("resolved")?);
+        assert!(
+            why.starts_with(&format!("cannot unpack '{}'", paths[0].display())),
+            "one rule for both: {why}"
+        );
         Ok(())
     }
 

@@ -764,13 +764,29 @@ fn the_worker_starts_before_anything_that_could_stop_an_exec() -> Result<(), Tes
         "launch no longer runs its post-open steps through \
          confine_after_capture_start; repoint this test"
     );
-    let body = fn_body("fn confine_after_capture_start(")?;
     // Code only: a comment naming a step is not a call to it.
-    let code: String = body
-        .lines()
-        .map(|l| l.split("//").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let code_of = |body: String| -> String {
+        body.lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // The steps run in two halves, the privileged one first
+    // (CAPTURE-RESOLVE-AS-ROOT: a file run starts its reader between them).
+    let whole = code_of(fn_body("fn confine_after_capture_start(")?);
+    let first = whole.find("confine_privileged(").ok_or(
+        "confine_after_capture_start no longer runs confine_privileged; repoint this test",
+    )?;
+    let second = whole.find("confine_unprivileged(").ok_or(
+        "confine_after_capture_start no longer runs confine_unprivileged; repoint this test",
+    )?;
+    assert!(
+        first < second,
+        "the privileged half must run before the rest"
+    );
+    let code = code_of(fn_body("fn confine_privileged(")?)
+        + "\n"
+        + &code_of(fn_body("fn confine_unprivileged(")?);
     let at = |call: &str| {
         code.find(call)
             .ok_or_else(|| format!("launch no longer calls {call}; repoint this test"))

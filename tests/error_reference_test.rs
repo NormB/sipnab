@@ -1044,7 +1044,10 @@ const EXPECTED_UNRESOLVED: usize = 87;
 // class and the window that `Scope::new` refuses, the history directory
 // that is absent, and the six disagreements of a file's rows with its path
 // (day, earliest and latest receive time, mark, member, first row).
-const EXPECTED_TEMPLATES: usize = 678;
+// 678 -> 679 (CAPTURE-RESOLVE-AS-ROOT): +1 in src/app/bootstrap.rs, the
+// refusal of a run whose drop user cannot write TMPDIR, given at the first
+// archive or compressed capture before anything is unpacked.
+const EXPECTED_TEMPLATES: usize = 679;
 
 // ---------------------------------------------------------------------------
 // The page gates

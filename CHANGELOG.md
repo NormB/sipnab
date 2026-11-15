@@ -25,6 +25,15 @@ entry that carries them.
   - Effect: The center names the entry as refused, `is a pipe or FIFO, not a file of the history store`, and answers.
   - Docs: [Verify the history store](docs/fleet.md#verify-the-history-store).
 
+### Security
+
+- **A capture run started as root reads no byte of its `-I` files as root.**
+  - Was: The run unpacked, probed and began reading its capture files as root, before it dropped to `--user` or `nobody`.
+  - Effect: It opens each file as root, drops, then unpacks and reads as that user; `Reading N capture files` now prints after the drop.
+  - Do: The drop user creates unpacked members, so give it a writable `TMPDIR` such as `/tmp`; otherwise the run stops at the first archive.
+  - Limit: Files only root can read still read, and exit codes and messages are unchanged; a `--chroot` run still unpacks before the chroot.
+  - Docs: [Read capture files only root can read](docs/least-privilege.md#read-capture-files-only-root-can-read).
+
 ## [0.5.257] - 2026-11-15
 
 ### Changed

@@ -78,18 +78,18 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:3615`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3615)<!-- "pub fn launch(" -->) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:3701`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3701)<!-- "pub fn launch(" -->) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
-- **Auto-detection.** [`src/app/bootstrap.rs:3634`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3634)<!-- "let source = source.unwrap_or_else(auto_detect_source);" --> substitutes a default interface
+- **Auto-detection.** [`src/app/bootstrap.rs:3720`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3720)<!-- "let source = source.unwrap_or_else(auto_detect_source);" --> substitutes a default interface
   when the plan produced `None`.
-- **Channel shape.** [`src/app/bootstrap.rs:4642`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4642)<!-- "let (tx, rx) = match &source {" --> picks a batched channel for
+- **Channel shape.** [`src/app/bootstrap.rs:4785`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4785)<!-- "let (tx, rx) = match &source {" --> picks a batched channel for
   `File` and a per-packet channel for everything else, because a live source's
   packets have to become visible the moment they arrive.
 - **Transmit permission.** `TransmitPermit::for_source`
   ([`src/security/transmit_guard.rs:112`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L112)<!-- "pub fn for_source(source: &CaptureSource)" -->) grants or refuses the scanner-kill path
   from the source *variant*: `Live` and `Hep` yes, `File` and `Uprobe` no.
-- **Thread spawn.** [`src/app/bootstrap.rs:4712`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4712)<!-- "if !cli.capture_args.multi_device { return capture::start_capture(" --> branches to
+- **Thread spawn.** [`src/app/bootstrap.rs:4855`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4855)<!-- "if !cli.capture_args.multi_device { return capture::start_capture(" --> branches to
   `start_multi_capture` for `--multi-device`, otherwise `start_capture`
   ([`src/capture/native.rs:501`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L501)<!-- "pub fn start_capture(" -->), which matches the variant and spawns one named
   thread per arm.
@@ -433,7 +433,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:155`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L155)<!-- "if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device { return RunMode::CoresFile;" -->), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:8591`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8591)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:8734`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8734)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -488,7 +488,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
   ([`src/capture/parse.rs:85`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L85)<!-- "/// - [`Uprobe`](Self::Uprobe)" --> onward). Combining is coherent in principle and buys
   nothing over `-d` plus `--keylog`; leave it refused until someone asks.
 - **`--multi-device` with `-L`.** `--multi-device` reinterprets the `-d` string as
-  a comma-separated list ([`src/app/bootstrap.rs:4722`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4722)<!-- "let CaptureSource::Live { device } = &source else {" -->). Composing a list with a
+  a comma-separated list ([`src/app/bootstrap.rs:4865`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4865)<!-- "let CaptureSource::Live { device } = &source else {" -->). Composing a list with a
   HEP member is reasonable and should wait for stage three.
 - **`-O` with a composite.** See [section 5.2, "What breaks"](#52-what-breaks).
 - **`--cores > 1`.** Already warned, offline-only, no change.
@@ -496,8 +496,8 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 ### 6.3 What the operator gets told
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
-message ([`src/app/bootstrap.rs:2178-2191`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2178-L2191)<!-- "fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {" -->), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:8591`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8591)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
+message ([`src/app/bootstrap.rs:2264-2277`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2264-L2277)<!-- "fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {" -->), `--cores` on a live source warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:8734`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8734)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:1057`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1057)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" -->). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a

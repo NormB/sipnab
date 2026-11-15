@@ -90,7 +90,7 @@ generators and proxies — where operators most want to compare two captures.
 `-I` now accepts a file, a directory, a glob, or a repeated set
 ([`cli.rs:774-799`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L774-L799)<!-- "/// Read packets from a capture file" -->), resolves it into one chronologically
 ordered list (`input_set::resolve`,
-[`input_set.rs:355`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L355)<!-- "/// resolves" -->), and streams every file
+[`input_set.rs:380`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L380)<!-- "/// resolves" -->), and streams every file
 into **one** `DialogStore` through one channel
 (`capture_files`, [`file.rs:586`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L586)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->). It is tempting to
 read that as "sipnab now has a cross-capture story, so the comparison request is
@@ -98,7 +98,7 @@ satisfied."
 
 It is the opposite operation, and the module that implements it says so in as
 many words. `warn_on_overlap`
-([`input_set.rs:1458`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1458)<!-- "/// A clean ring" -->) exists precisely to warn
+([`input_set.rs:1491`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1491)<!-- "/// A clean ring" -->) exists precisely to warn
 an operator away from the comparison use case:
 
 ```
@@ -133,7 +133,7 @@ produce — silently, with `--problems` adding nothing.
 The `same instant` warning did fire, which is the design working. But the
 warning detects overlap in *time*, not overlap in *identity*: `same_instant_pairs`
 compares consecutive files' first-packet timestamps against `SAME_INSTANT_SECS`
-(1 ms, [`input_set.rs:1489`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1489)<!-- "const SAME_INSTANT_SECS:" -->) and
+(1 ms, [`input_set.rs:1522`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1522)<!-- "const SAME_INSTANT_SECS:" -->) and
 `overlap_message` compares the previous file's end against the next one's start.
 Two captures that share Call-IDs without overlapping in time trip neither — and
 that population is not exotic, since a load generator reuses Call-IDs across
@@ -530,7 +530,7 @@ claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 socket opened in the privileged window and handed to the worker
 (`RawKillSocket::open`, [`process_isolation.rs:152`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L152)<!-- "/// Open the raw IPv4 and IPv6 send sockets." -->),
 `--kill-spoof {auto|raw|ephemeral}` with a loud failure for `raw`
-([`bootstrap.rs:5009-5017`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5009-L5017)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
+([`bootstrap.rs:5152-5160`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5152-L5160)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
 matters most — the forged source is never a parameter. It is always the sniffed
 packet's own destination ([`batch.rs:1775-1776`, `:1816-1817`](../../src/app/batch.rs)),
 so `-K` is a targeted transaction reply and not a general spoofer.
@@ -548,7 +548,7 @@ with the reason stated above it: *"a HEP sender asserts the inner src/dst
 addresses, so absent receiver-side authentication an attacker could steer the
 kill response at a chosen victim (SSRF-style)."* `--hep-allow-kill` is off by
 default and a test pins that it stays off
-([`cli.rs:11855-11860`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L11855-L11860)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
+([`cli.rs:11856-11861`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L11856-L11861)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
 be opt-in (SN-01)"*).
 
 **Field injection into the input of a ban decision.** `fail2ban.rs`'s
@@ -863,9 +863,9 @@ A narrower tool is worth building alongside it, and carries none of the above:
 **`capture_sources` (read-only)** — report the *full* resolved `-I` set
 rather than `primary_input()`'s first element, with each file's first-packet
 timestamp. `input_set::resolve` already computes that timestamp into
-`ResolvedInput.first_packet` ([`input_set.rs:106-122`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L106-L122)<!-- "pub struct ResolvedInput" -->)
+`ResolvedInput.first_packet` ([`input_set.rs:131-147`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L131-L147)<!-- "pub struct ResolvedInput" -->)
 and `bootstrap` then throws it away —
-[`bootstrap.rs:1378`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1378)<!-- "let (paths, handed) = resolve_planned_inputs(cli, config, named)?" --> keeps
+[`bootstrap.rs:1464`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1464)<!-- "let (paths, handed) = resolve_planned_inputs(cli, config, named)?" --> keeps
 only the paths of the judged set. An agent's actual complaint in
 the persistent case is usually *"I do not know what I am holding"*, and that is
 the tool for it. It is Tier 1 by the roadmap's own criterion — *"the agent
