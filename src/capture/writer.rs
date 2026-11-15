@@ -1346,7 +1346,11 @@ pub fn check_output_creatable(path: &Path, kind: OutputKind) -> std::io::Result<
 
 /// The access [`effective_access`] asks the kernel about.
 #[derive(Debug, Clone, Copy)]
-enum AccessWanted {
+pub(crate) enum AccessWanted {
+    /// Read a file.
+    Read,
+    /// Read and rewrite a file.
+    ReadAndWrite,
     /// Write to an existing file.
     Write,
     /// Create or remove entries in a directory.
@@ -1356,11 +1360,13 @@ enum AccessWanted {
 /// `faccessat(2)` with `AT_EACCESS`: whether the EFFECTIVE user may access
 /// `path`, which after a privilege drop is the drop user.
 #[cfg(unix)]
-fn effective_access(path: &Path, wanted: AccessWanted) -> std::io::Result<()> {
+pub(crate) fn effective_access(path: &Path, wanted: AccessWanted) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt as _;
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     let mode = match wanted {
+        AccessWanted::Read => libc::R_OK,
+        AccessWanted::ReadAndWrite => libc::R_OK | libc::W_OK,
         AccessWanted::Write => libc::W_OK,
         AccessWanted::WriteAndSearch => libc::W_OK | libc::X_OK,
     };
@@ -1376,7 +1382,7 @@ fn effective_access(path: &Path, wanted: AccessWanted) -> std::io::Result<()> {
 
 /// No `faccessat` here: the later `open` reports any refusal instead.
 #[cfg(not(unix))]
-fn effective_access(_path: &Path, _wanted: AccessWanted) -> std::io::Result<()> {
+pub(crate) fn effective_access(_path: &Path, _wanted: AccessWanted) -> std::io::Result<()> {
     Ok(())
 }
 

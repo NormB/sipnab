@@ -17,6 +17,31 @@ entry that carries them.
   - Limit: older sections keep their paragraphs until they are rewritten; entries about hooks, CI and tests, which no user of a release sees, are removed.
   - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
 
+## [0.5.256] - 2026-11-14
+
+### Changed
+
+- **Commands that listen or connect no longer stay root when root starts them.**
+  - Effect: `sipnab fleet serve`, `sipnab fleet inventory`, `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch`, `--relay-holdings` and `--relay-sessions`, started as root, run as `--user`, else `[privilege] user`, else `nobody`.
+  - Limit: The command exits 2 when that user cannot write the store directory, the spool or the output directory; the message names the path.
+  - Limit: A fleet center that ran as root left its store owned by root, so its first start after the upgrade refuses.
+  - Do: Give the path to that user (`chown -R nobody /var/lib/sipnab`), name a user who can write it (`--user sipnab`), or keep root (`--no-priv-drop`).
+  - Docs: [Commands that do not capture](docs/least-privilege.md#commands-that-do-not-capture) and [Run the center as a service](docs/fleet.md#run-the-center-as-a-service).
+
+### Fixed
+
+- **A fleet center that receives SIGTERM right after it starts exits cleanly.**
+  - Was: A SIGTERM that arrived just after the line `fleet center serving` ended the center with status 143, without its last store rewrite.
+  - Effect: The center installs its stop handlers before it logs that line, so a stop at any time exits 0.
+
+### Security
+
+- **Commands that listen or connect drop root before they accept or connect.**
+  - Was: Started as root, `sipnab fleet serve`, `sipnab fleet inventory`, `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch`, `--relay-holdings` and `--relay-sessions` stayed root for the whole run.
+  - Effect: Each reads its key files as root, then runs as `--user`, else `[privilege] user`, else `nobody`.
+  - Do: Start these commands as an ordinary user where you can; `--no-priv-drop` keeps root and logs one warning line.
+  - Docs: [Commands that do not capture](docs/least-privilege.md#commands-that-do-not-capture).
+
 ## [0.5.255] - 2026-11-14
 
 ### Changed

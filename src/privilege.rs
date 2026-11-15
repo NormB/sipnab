@@ -772,7 +772,7 @@ pub fn make_undumpable() -> std::io::Result<()> {
 /// that a concurrent `getpwnam`/`getpwuid` on another thread can overwrite
 /// between the lookup and reading the fields. Production resolution happens once
 /// at single-threaded startup, but the reentrant call is correct regardless.
-fn resolve_user(username: &str) -> Result<(u32, u32)> {
+pub(crate) fn resolve_user(username: &str) -> Result<(u32, u32)> {
     // Initial scratch-buffer size for the string fields; grow on ERANGE.
     // SAFETY: `sysconf` takes no pointers and only reads a system constant.
     let initial: usize = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {

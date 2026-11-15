@@ -217,6 +217,25 @@ enum Source {
 /// any recording was not written. The recordings that were written stay
 /// written.
 pub fn run(args: &crate::cli::VconAudioFetchArgs) -> Result<Vec<PathBuf>, (i32, Vec<String>)> {
+    run_confined(args, false, &|| Ok(()))
+}
+
+/// [`run`] for a process that may change user before it connects.
+///
+/// `confine` is called once the keys and the CA are read and before the
+/// output directory is created; a run with `--vcon-audio-fetch-local`, which
+/// makes no connection, does not call it. When `drops` says the call will
+/// change the user, the container is read before it, so a container only
+/// the starting user can read is still read.
+///
+/// # Errors
+///
+/// As [`run`]; a refusal of `confine` is exit code 2.
+pub fn run_confined(
+    args: &crate::cli::VconAudioFetchArgs,
+    drops: bool,
+    confine: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<PathBuf>, (i32, Vec<String>)> {
     let one = |code: i32, why: String| (code, vec![why]);
     let input = args
         .vcon_audio_fetch
@@ -250,6 +269,19 @@ pub fn run(args: &crate::cli::VconAudioFetchArgs) -> Result<Vec<PathBuf>, (i32, 
             })?,
         )
     };
+    let read_container = || {
+        crate::app::vcon_resign::read_capped(input, crate::capture::vcon_input::MAX_CONTAINER_BYTES)
+            .map_err(|e| one(REFUSED, e))
+    };
+    let connects = matches!(source, Source::Https(_));
+    let read_early = if connects && drops {
+        Some(read_container()?)
+    } else {
+        None
+    };
+    if connects {
+        confine().map_err(|e| one(BAD_SETTINGS, e))?;
+    }
     crate::app::vcon_fetch::prepare_out_dir(out, "--vcon-audio-fetch-out")
         .map_err(|e| one(BAD_SETTINGS, e))?;
     let max_size = args
@@ -258,11 +290,10 @@ pub fn run(args: &crate::cli::VconAudioFetchArgs) -> Result<Vec<PathBuf>, (i32, 
     let max_size = usize::try_from(max_size).unwrap_or(usize::MAX);
 
     let shown = input.display();
-    let bytes = crate::app::vcon_resign::read_capped(
-        input,
-        crate::capture::vcon_input::MAX_CONTAINER_BYTES,
-    )
-    .map_err(|e| one(REFUSED, e))?;
+    let bytes = match read_early {
+        Some(bytes) => bytes,
+        None => read_container()?,
+    };
     let (container, _) = crate::capture::vcon_input::open_bytes(&bytes)
         .map_err(|e| one(REFUSED, format!("'{shown}': {e}")))?;
     let uuid = container

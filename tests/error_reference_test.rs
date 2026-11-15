@@ -57,6 +57,9 @@ const SCOPE_FILES: &[&str] = &[
     "src/cli.rs",
     "src/config.rs",
     "src/settings.rs",
+    // The commands that end before the capture launch: what a start as root
+    // refuses, and the line `--no-priv-drop` logs.
+    "src/early_exit.rs",
 ];
 
 /// Directories whose `.rs` files (recursively) are in scope.
@@ -1023,7 +1026,10 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // 664 -> 665 (fleet history compression): +1 in src/app/fleet_history.rs,
 // the refusal of a history file whose Parquet names a codec this build
 // does not read.
-const EXPECTED_TEMPLATES: usize = 665;
+// 665 -> 668 (COMMANDS-KEEP-ROOT): +3 in src/early_exit.rs, new in the
+// scope: the refusal of a command started as root whose target user lacks
+// a path, the failure of its drop, and the warning `--no-priv-drop` logs.
+const EXPECTED_TEMPLATES: usize = 668;
 
 // ---------------------------------------------------------------------------
 // The page gates
