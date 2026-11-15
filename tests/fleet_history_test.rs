@@ -23,6 +23,11 @@ use std::time::{Duration, Instant};
 #[path = "support/fleet_center.rs"]
 mod fleet_center;
 
+/// A real member, for the start that answers `503` while it rebuilds.
+#[cfg(feature = "fleet-store")]
+#[path = "support/server.rs"]
+mod server;
+
 use fleet_center::{Center, TestError, http, store_key_file};
 
 /// The center's signing key.
@@ -1606,128 +1611,336 @@ mod with_the_store {
         into.extend(log.try_iter());
     }
 
-    /// A client of a center that is rebuilding its member registry at start
-    /// (no store file, so every heartbeat file is read): the port is bound
-    /// before the rebuild, so the connection is taken by the kernel and the
-    /// request waits, unanswered, until the rebuild and the start's filing
-    /// have ended and the center serves; then it is answered in full.
-    ///
-    /// Read from the process, not assumed: the port is found in `/proc`
-    /// while the center has not logged the rebuild's end, the request is
-    /// sent, and the test watches the socket and the log together. The
-    /// time the request waited is printed (`rebuild-wait`).
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn edge_a_request_during_the_rebuild_at_start_is_answered_only_after_it()
-    -> Result<(), TestError> {
-        use fleet_center::{Starting, listening_port};
-        use std::io::{Read as _, Write as _};
-        const MEMBERS: u64 = 500;
-        const FILINGS: u64 = 120;
-        let dir = tempfile::tempdir()?;
-        let store = history(dir.path())?;
-        let start = chrono::Utc::now() - chrono::TimeDelta::minutes(i64::try_from(FILINGS)? + 5);
-        for filing in 1..=FILINGS {
+    /// What the center logs once it is bound, before it opens its store,
+    /// followed by the address it answers `503` on.
+    const ANSWERING: &str = "fleet center answering 503 on ";
+
+    /// The cause the center's `503` names while it rebuilds.
+    const REBUILDING: &str = "the center is rebuilding its member list from the history store";
+
+    /// What the center logs once it serves.
+    const SERVING: &str = "fleet center serving";
+
+    /// A center started in `dir` with no store file and `filings` files of
+    /// heartbeats of `members` members in its history, so that its start
+    /// reads every file; returned once it says it answers `503`, with the
+    /// address and the lines it logged. The rebuild has not ended then, or
+    /// the store is too small for this host, and that is an error.
+    fn rebuilding_center(
+        dir: &Path,
+        members: u64,
+        filings: u64,
+    ) -> Result<(fleet_center::Starting, String, Vec<String>), TestError> {
+        let store = history(dir)?;
+        let start = chrono::Utc::now() - chrono::TimeDelta::minutes(i64::try_from(filings)? + 5);
+        for filing in 1..=filings {
             let at = start + chrono::TimeDelta::minutes(i64::try_from(filing)?);
-            store.file(&filing_of_beats("edge", MEMBERS, filing, at)?)?;
+            store.file(&filing_of_beats("edge", members, filing, at)?)?;
         }
-        let mut center = Starting::spawn(&center_args(dir.path(), &[])?)?;
+        let mut center = fleet_center::Starting::spawn(&center_args(dir, &[])?)?;
         let deadline = Instant::now() + Duration::from_secs(300);
         let mut lines = Vec::new();
-        let port = loop {
-            drain(&center.log, &mut lines);
-            if let Some(port) = listening_port(center.pid())? {
-                break port;
-            }
-            if let Some(status) = center.exited()? {
-                return Err(
-                    format!("the center exited before it bound: {status}\n{lines:#?}").into(),
-                );
-            }
-            if Instant::now() > deadline {
-                return Err(format!("the center bound no port:\n{lines:#?}").into());
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        let addr = format!("127.0.0.1:{port}");
-        let mut s = std::net::TcpStream::connect(&addr)?;
-        write!(
-            s,
-            "GET /v1/fleet/members HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\n\
-             Connection: close\r\n\r\n",
-            token("reader", sipnab::auth::SCOPE_INVENTORY)
-        )?;
-        let sent = Instant::now();
-        drain(&center.log, &mut lines);
-        assert!(
-            !lines
-                .iter()
-                .any(|l| l.contains(REBUILT) || l.contains("fleet center serving")),
-            "edge the request was sent while the rebuild ran: the center had not yet logged its \
-             end (if it had, the store is too small for this host):\n{lines:#?}"
-        );
-        // While the log does not hold the rebuild's end, no byte of an answer
-        // may arrive. A byte read is checked against the log once more, with
-        // a bound, since the forwarding thread may hold a line already
-        // written.
-        s.set_read_timeout(Some(Duration::from_millis(50)))?;
-        let mut first = [0_u8; 1];
-        let answered = loop {
-            drain(&center.log, &mut lines);
-            match s.read(&mut first) {
-                Ok(0) => {
-                    return Err(format!("the connection closed unanswered:\n{lines:#?}").into());
-                }
-                Ok(_) => break Instant::now(),
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) => {}
-                Err(e) => return Err(e.into()),
-            }
-            if Instant::now() > deadline {
-                return Err(format!("no answer before the deadline:\n{lines:#?}").into());
-            }
-        };
-        let served_by = Instant::now() + Duration::from_secs(10);
-        while !lines.iter().any(|l| l.contains("fleet center serving"))
-            && Instant::now() < served_by
-        {
+        loop {
             if let Ok(line) = center.log.recv_timeout(Duration::from_millis(100)) {
                 lines.push(line);
             }
+            if let Some(line) = lines.iter().find(|l| l.contains(ANSWERING)) {
+                let addr = line
+                    .split(ANSWERING)
+                    .nth(1)
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .ok_or("an address after the 503 line")?
+                    .to_string();
+                drain(&center.log, &mut lines);
+                if lines
+                    .iter()
+                    .any(|l| l.contains(REBUILT) || l.contains(SERVING))
+                {
+                    return Err(format!(
+                        "the rebuild ended before the test could ask (the store is too small \
+                         for this host):\n{lines:#?}"
+                    )
+                    .into());
+                }
+                return Ok((center, addr, lines));
+            }
+            if let Some(status) = center.exited()? {
+                return Err(format!("the center exited at start: {status}\n{lines:#?}").into());
+            }
+            if Instant::now() > deadline {
+                return Err(format!("the center logged no 503 line:\n{lines:#?}").into());
+            }
         }
+    }
+
+    /// Wait up to `within` for `center` to log a line holding `needle`,
+    /// keeping every line in `lines`.
+    fn logged(
+        center: &fleet_center::Starting,
+        lines: &mut Vec<String>,
+        needle: &str,
+        within: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + within;
+        while !lines.iter().any(|l| l.contains(needle)) {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            if let Ok(line) = center
+                .log
+                .recv_timeout(left.min(Duration::from_millis(100)))
+            {
+                lines.push(line);
+            }
+        }
+        true
+    }
+
+    /// One request of the members during the rebuild at start: it is
+    /// answered at once, `503` with `Retry-After` and a problem body that
+    /// names the rebuild; once the center serves, the same request is
+    /// answered `200` with every member the rebuild took. The time the
+    /// first answer took is printed (`rebuild-503`).
+    #[test]
+    fn edge_a_request_during_the_rebuild_at_start_is_answered_503_with_retry_after()
+    -> Result<(), TestError> {
+        use std::io::Write as _;
+        const MEMBERS: u64 = 500;
+        const FILINGS: u64 = 120;
+        let dir = tempfile::tempdir()?;
+        let (center, addr, mut lines) = rebuilding_center(dir.path(), MEMBERS, FILINGS)?;
+        let reader = token("reader", sipnab::auth::SCOPE_INVENTORY);
+        let sent = Instant::now();
+        let (status, head, body) =
+            fleet_center::http_full(&addr, "GET", "/v1/fleet/members", &reader)?;
+        let took = sent.elapsed();
+        drain(&center.log, &mut lines);
+        assert!(
+            !lines.iter().any(|l| l.contains(SERVING)),
+            "edge the answer came while the center rebuilt:\n{lines:#?}"
+        );
+        assert_eq!(status, 503, "edge 503 during the rebuild: {head}\n{body}");
+        assert!(
+            head.lines()
+                .any(|l| l.eq_ignore_ascii_case("retry-after: 5")),
+            "edge with Retry-After: {head}"
+        );
+        let first = body.clone();
+        let problem: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            (problem["status"].as_u64(), problem["detail"].as_str()),
+            (Some(503), Some(REBUILDING)),
+            "edge a problem body naming the rebuild: {body}"
+        );
+        assert!(
+            logged(&center, &mut lines, SERVING, Duration::from_secs(300)),
+            "edge the center serves after the rebuild:\n{lines:#?}"
+        );
         let rebuilt = lines.iter().position(|l| l.contains(REBUILT));
-        let serving = lines
-            .iter()
-            .position(|l| l.contains("fleet center serving"));
+        let serving = lines.iter().position(|l| l.contains(SERVING));
         assert!(
-            rebuilt.is_some() && serving.is_some() && rebuilt < serving,
-            "edge the first byte of the answer came after the center logged the rebuild's end \
-             and then that it serves:\n{lines:#?}"
+            rebuilt.is_some() && rebuilt < serving,
+            "edge it says it serves after the rebuild's end:\n{lines:#?}"
         );
-        s.set_read_timeout(Some(Duration::from_secs(30)))?;
-        let mut raw = vec![first[0]];
-        s.read_to_end(&mut raw)?;
-        let raw = String::from_utf8(raw)?;
-        let (head, body) = raw.split_once("\r\n\r\n").ok_or("an HTTP answer")?;
-        assert!(
-            head.starts_with("HTTP/1.1 200"),
-            "edge the request that waited is answered 200: {head}"
+        let (status, _, body) =
+            fleet_center::http_full(&addr, "GET", "/v1/fleet/members", &reader)?;
+        assert_eq!(
+            status, 200,
+            "edge then the request is answered: {body:.400}"
         );
-        let report: serde_json::Value = serde_json::from_str(body)?;
+        let report: serde_json::Value = serde_json::from_str(&body)?;
         assert_eq!(
             report["members"].as_array().map(Vec::len),
             Some(usize::try_from(MEMBERS)?),
-            "edge the answer holds every member the rebuild took: {body:.400}"
+            "edge with every member the rebuild took: {body:.400}"
         );
         writeln!(
             std::io::stderr(),
-            "rebuild-wait files={FILINGS} members={MEMBERS} waited_ms={}",
-            answered.duration_since(sent).as_millis()
+            "rebuild-503 files={FILINGS} members={MEMBERS} answered_ms={}\nrebuild-503 sample: \
+             503 {first}\nrebuild-503 sample: {}",
+            took.as_millis(),
+            lines
+                .iter()
+                .find(|l| l.contains(ANSWERING))
+                .ok_or("the 503 line")?
         )?;
         Ok(())
+    }
+
+    /// SIGTERM while the center rebuilds at start: the handler is already
+    /// installed, so the center ends the rebuild between two files, says
+    /// so, and exits 0 without serving; the store file and the history then
+    /// verify clean, and the next start opens them and serves every member.
+    #[test]
+    fn success_a_stop_during_the_rebuild_at_start_exits_0_and_the_store_verifies()
+    -> Result<(), TestError> {
+        use std::io::Write as _;
+        const MEMBERS: u64 = 500;
+        const FILINGS: u64 = 120;
+        let dir = tempfile::tempdir()?;
+        let (mut center, _addr, mut lines) = rebuilding_center(dir.path(), MEMBERS, FILINGS)?;
+        center.terminate()?;
+        let status = center.wait_within(Duration::from_secs(60))?;
+        drain(&center.log, &mut lines);
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "success the stop exits 0 through the handler:\n{lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("the stop ended the rebuild of the member list at start")),
+            "success it says the stop ended the rebuild:\n{lines:#?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains(REBUILT) || l.contains(SERVING)),
+            "success the rebuild did not end and the center did not serve:\n{lines:#?}"
+        );
+        let (code, out, err) = verify_at(
+            &dir.path().join("center.store"),
+            &dir.path().join("center.storekey"),
+            &[],
+        )?;
+        assert_eq!(
+            code,
+            Some(0),
+            "success the store verifies clean:\n{out}\n{err}"
+        );
+        for line in lines.iter().filter(|l| l.contains("stop")) {
+            writeln!(std::io::stderr(), "rebuild-stop sample: {line}")?;
+        }
+        let center = center_after_stop(dir.path())?;
+        let report = members_of(&center.addr)?;
+        assert_eq!(
+            report["members"].as_array().map(Vec::len),
+            Some(usize::try_from(MEMBERS)?),
+            "success the next start serves every member"
+        );
+        Ok(())
+    }
+
+    /// A center on a port of its own, of the store in `dir`, once it
+    /// serves.
+    fn center_after_stop(dir: &Path) -> Result<Center, TestError> {
+        let args = center_args(dir, &[])?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        Center::start_within(&args, Duration::from_secs(300))
+    }
+
+    /// The members answer of the center on `addr`.
+    fn members_of(addr: &str) -> Result<serde_json::Value, TestError> {
+        let (status, body) = http(
+            addr,
+            "GET",
+            "/v1/fleet/members",
+            &token("reader", sipnab::auth::SCOPE_INVENTORY),
+            b"",
+        )?;
+        if status != 200 {
+            return Err(format!("members answered {status}: {body:.400}").into());
+        }
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    /// A real member that pushes to a center that is rebuilding at start:
+    /// the center answers its push `503`, the member says so and keeps the
+    /// heartbeat in its spool, and once the center serves, the member
+    /// delivers it: the spooled file is gone, nothing went to the spool's
+    /// failed directory, and the center counts the member's heartbeats.
+    #[test]
+    fn success_a_member_keeps_its_push_through_the_rebuild_and_delivers_it_after()
+    -> Result<(), TestError> {
+        const MEMBERS: u64 = 1000;
+        const FILINGS: u64 = 240;
+        let dir = tempfile::tempdir()?;
+        let (center, addr, mut lines) = rebuilding_center(dir.path(), MEMBERS, FILINGS)?;
+        let member = a_member(dir.path(), "edge-m", &addr)?;
+        let waited = member
+            .srv
+            .wait_for_log("the center answered HTTP 503", Duration::from_secs(120));
+        let pending = sipnab::app::spool::pending(&member.spool)?;
+        drain(&center.log, &mut lines);
+        assert!(
+            waited.is_some(),
+            "success the member was answered 503 and said so:\n{lines:#?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains(SERVING)),
+            "success while the center rebuilt (if not, the store is too small for this \
+             host):\n{lines:#?}"
+        );
+        let first = pending
+            .first()
+            .ok_or("success a heartbeat kept in the spool")?
+            .clone();
+        assert!(
+            logged(&center, &mut lines, SERVING, Duration::from_secs(300)),
+            "success the center serves after the rebuild:\n{lines:#?}"
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let delivered = loop {
+            let heard = members_of(&addr)?["members"]
+                .as_array()
+                .and_then(|rows| rows.iter().find(|r| r["member"] == "edge-m").cloned());
+            let gone = !member.spool.join(&first).exists();
+            if (gone && heard.is_some()) || Instant::now() > deadline {
+                break (gone, heard);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert!(
+            delivered.0,
+            "success the heartbeat that waited left the spool"
+        );
+        let heard = delivered.1.ok_or("success the center has the member")?;
+        assert!(
+            heard["verified"]["heartbeats"].as_u64() >= Some(1),
+            "success and counts its heartbeats: {heard}"
+        );
+        let failed = std::fs::read_dir(member.spool.join("failed"))?.count();
+        assert_eq!(failed, 0, "success nothing was refused into failed/");
+        Ok(())
+    }
+
+    /// The members' own REST API key.
+    const MEMBER_KEY: &str = "fleet-history-e2e-member-key-0123456789abcdef";
+
+    /// A real capture run with the REST API that reports to `center` every
+    /// second as `name`, from its own spool in `dir`.
+    struct Member {
+        srv: server::ApiServer,
+        spool: PathBuf,
+    }
+
+    fn a_member(dir: &Path, name: &str, center: &str) -> Result<Member, TestError> {
+        let tok = private_file(
+            dir,
+            &format!("{name}.token"),
+            &token(name, sipnab::auth::SCOPE_FLEET_REPORT),
+        )?;
+        let spool = dir.join(format!("{name}.spool"));
+        let cfg = dir.join(format!("{name}.toml"));
+        std::fs::write(
+            &cfg,
+            format!(
+                "[fleet]\nreport_url = \"http://{center}\"\nreport_token_file = {:?}\n\
+                 spool_dir = {:?}\nheartbeat_secs = 1\n",
+                tok.to_str().ok_or("utf-8")?,
+                spool.to_str().ok_or("utf-8")?,
+            ),
+        )?;
+        let srv = server::ApiServer::spawn(&[
+            "--api-signing-key",
+            MEMBER_KEY,
+            "--node-name",
+            name,
+            "--config",
+            cfg.to_str().ok_or("utf-8")?,
+        ])?;
+        Ok(Member { srv, spool })
     }
 
     /// `len` characters that differ from row to row, so that the codec does

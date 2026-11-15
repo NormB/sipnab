@@ -861,10 +861,34 @@ mod before_the_launch {
                 && position(prepare, "open_private_file(", "src/app/fleet_center.rs")? < confine,
             "the center reads its keys and binds before it drops"
         );
+        // The store is opened after the drop: `prepare` opens none, and the
+        // center opens it in `open_center`, which `run` calls inside the
+        // runtime that `serve` starts after `prepare` returned. A store
+        // opened before the drop would be created by root.
         assert!(
-            confine < position(prepare, "Center::open(", "src/app/fleet_center.rs")?,
-            "the center opens its store after it drops: a store opened before \
-         would be created by root"
+            !prepare.contains("Center::open("),
+            "`prepare` opens no store: the center opens it after the drop, in `open_center`"
+        );
+        let open = &center[position(&center, "\nfn open_center(", "src/app/fleet_center.rs")?..];
+        let open = &open[..position(open, "\n}\n", "src/app/fleet_center.rs")?];
+        assert!(
+            open.contains("Center::open("),
+            "`open_center` is where the center opens its store"
+        );
+        let run = &center[position(&center, "\nasync fn run(", "src/app/fleet_center.rs")?..];
+        let run = &run[..position(run, "\n}\n", "src/app/fleet_center.rs")?];
+        assert!(
+            run.contains("open_center(opening, stopped)"),
+            "`run` opens the center"
+        );
+        assert!(
+            position(serve, "match prepare(&args)", "src/app/fleet_center.rs")?
+                < position(
+                    serve,
+                    "runtime.block_on(run(plan))",
+                    "src/app/fleet_center.rs"
+                )?,
+            "`serve` runs `run`, which opens the store, only after `prepare`, which drops"
         );
         assert!(
             !starts_a_thread(prepare),

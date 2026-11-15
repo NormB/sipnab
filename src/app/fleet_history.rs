@@ -2340,6 +2340,24 @@ impl History {
         known: &BTreeMap<String, DateTime<Utc>>,
         max_files: usize,
     ) -> Result<Restored, String> {
+        self.newest_heartbeats_until(oldest, known, max_files, &|| false)
+    }
+
+    /// [`Self::newest_heartbeats`], asking `stopped` before each file
+    /// whether a stop was asked for. When it answers yes, reading ends,
+    /// [`Restored::stopped`] is set and no member is restored: a rebuild
+    /// stopped part way restores nothing.
+    ///
+    /// # Errors
+    ///
+    /// A directory of the store cannot be read.
+    pub fn newest_heartbeats_until(
+        &self,
+        oldest: NaiveDate,
+        known: &BTreeMap<String, DateTime<Utc>>,
+        max_files: usize,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Restored, String> {
         let query = Query {
             from: oldest.and_hms_opt(0, 0, 0).map(|at| at.and_utc()),
             ..Query::all()
@@ -2364,6 +2382,10 @@ impl History {
             if out.files_read + out.refused.len() >= max_files {
                 out.files_not_read = files.len() - index;
                 break;
+            }
+            if stopped() {
+                out.stopped = true;
+                return Ok(out);
             }
             let read = self.read_io_by::<MemberRecord>(&file.rel, |parquet| {
                 let held = |member: &[u8]| {
@@ -2422,6 +2444,22 @@ impl History {
         since: &BTreeMap<String, DateTime<Utc>>,
         max_files: usize,
     ) -> Result<CallsAfter, String> {
+        self.calls_after_until(since, max_files, &|| false)
+    }
+
+    /// [`Self::calls_after`], asking `stopped` before each file whether a
+    /// stop was asked for. When it answers yes, reading ends,
+    /// [`CallsAfter::stopped`] is set and no call record is kept.
+    ///
+    /// # Errors
+    ///
+    /// A directory of the store cannot be read.
+    pub fn calls_after_until(
+        &self,
+        since: &BTreeMap<String, DateTime<Utc>>,
+        max_files: usize,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<CallsAfter, String> {
         let mut out = CallsAfter::default();
         let Some(earliest) = since.values().min().copied() else {
             return Ok(out);
@@ -2445,6 +2483,11 @@ impl History {
             if out.files_read + out.refused.len() >= max_files {
                 out.files_not_read = files.len() - index;
                 break;
+            }
+            if stopped() {
+                out.stopped = true;
+                out.rows.clear();
+                return Ok(out);
             }
             match self.read_io::<IntakeRecord>(&file.rel, &query) {
                 Ok(decoded) => {
@@ -2481,6 +2524,9 @@ pub struct CallsAfter {
     pub files_read: usize,
     /// The files left unread because more than the bound could hold rows.
     pub files_not_read: usize,
+    /// Whether a stop ended the reading before its end; it then holds no
+    /// call record.
+    pub stopped: bool,
 }
 
 /// The files that could not be read, each with the reason.
@@ -2510,6 +2556,9 @@ pub struct Restored {
     /// The rows built from the files that were opened: a row is built
     /// only when [`builds_row`] says so.
     pub rows_built: usize,
+    /// Whether a stop ended the rebuild before its end; it then restores
+    /// no member.
+    pub stopped: bool,
 }
 
 /// Whether the rebuild at start builds a heartbeat row received at
@@ -10200,5 +10249,233 @@ mod rebuild_tests {
             builds_row(Some(1_000_000_000), 1_000_000_001),
             "edge one nanosecond newer is built"
         );
+    }
+}
+
+/// The stop a center's start can be asked for while it rebuilds its member
+/// registry: [`History::newest_heartbeats_until`] and
+/// [`History::calls_after_until`] ask before each file whether to go on.
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+    use crate::app::fleet_calls::CallCounts;
+    use crate::app::fleet_center::Cursor;
+    use crate::app::fleet_seal::MasterKey;
+    use std::cell::Cell;
+
+    /// What a test returns.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// 2026-11-11T00:00:00Z plus `ms` milliseconds.
+    fn at_ms(ms: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::UNIX_EPOCH + chrono::TimeDelta::milliseconds(1_794_355_200_000 + ms)
+    }
+
+    /// Heartbeat `count` of `member`, received `ms` milliseconds into
+    /// 2026-11-11.
+    fn beat(member: &str, ms: i64, count: u64) -> MemberRecord {
+        MemberRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            peer: "192.0.2.10".to_string(),
+            heartbeats: count,
+            cursor: Cursor {
+                stream: "s".to_string(),
+                seq: count,
+                sent_at: at_ms(ms - 250),
+            },
+            heartbeat_secs: 30,
+            inventory: serde_json::json!({"host": "edge.example.com"}),
+            call_records: count,
+            calls: Some(CallCounts {
+                selected: count,
+                dropped_by_cap: 0,
+                left_out: 0,
+                spooled: 0,
+            }),
+        }
+    }
+
+    /// The call record at `seq` of `member`, received `ms` milliseconds
+    /// into 2026-11-11.
+    fn call(member: &str, ms: i64, seq: u64) -> IntakeRecord {
+        IntakeRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            stream: "s".to_string(),
+            seq,
+            sent_at: at_ms(ms - 250),
+            selected_by: "failed".to_string(),
+            call: serde_json::json!({"call_id": format!("call-{seq}@example.com")}),
+        }
+    }
+
+    /// A history store in a new directory with `files` files of heartbeats
+    /// of the members edge-0 to edge-4, one filing a minute, and as many
+    /// files of call records of edge-0.
+    fn store(files: i64) -> Result<(tempfile::TempDir, History), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let keys = Arc::new(Keys::new(MasterKey::from_bytes([7; 32]), Vec::new()));
+        let history = History::open(&dir.path().join("center.store"), keys)?;
+        for filing in 0..files {
+            let count = u64::try_from(filing)? + 1;
+            let rows: Vec<MemberRecord> = (0..5_i64)
+                .map(|m| beat(&format!("edge-{m}"), filing * 60_000 + m, count))
+                .collect();
+            history.file(&rows)?;
+            history.file(&[call("edge-0", filing * 60_000 + 10, count)])?;
+        }
+        Ok((dir, history))
+    }
+
+    /// From the first day on, every member unknown, at most 4,096 files,
+    /// asking `stopped` before each file.
+    fn rebuild(history: &History, stopped: &dyn Fn() -> bool) -> Result<Restored, String> {
+        history.newest_heartbeats_until(at_ms(0).date_naive(), &BTreeMap::new(), 4096, stopped)
+    }
+
+    /// The call records of edge-0 from the first instant on, asking
+    /// `stopped` before each file.
+    fn calls(history: &History, stopped: &dyn Fn() -> bool) -> Result<CallsAfter, String> {
+        let since = BTreeMap::from([("edge-0".to_string(), at_ms(0))]);
+        history.calls_after_until(&since, 4096, stopped)
+    }
+
+    /// A stop that answers no `go_on` times, then yes, counting the asks.
+    fn after(go_on: usize, asked: &Cell<usize>) -> impl Fn() -> bool + '_ {
+        move || {
+            asked.set(asked.get() + 1);
+            asked.get() > go_on
+        }
+    }
+
+    // ── SUCCESS ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn success_a_rebuild_never_stopped_is_the_rebuild_without_a_stop() -> TestResult {
+        let (_dir, history) = store(4)?;
+        let plain = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 4096)?;
+        let until = rebuild(&history, &|| false)?;
+        assert_eq!(until, plain, "success the same answer, field by field");
+        assert!(!until.stopped, "success and not stopped");
+        assert_eq!(
+            (until.files_read, until.members.len()),
+            (4, 5),
+            "success every file read and every member restored"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_stop_is_asked_once_before_each_file() -> TestResult {
+        let (_dir, history) = store(4)?;
+        let asked = Cell::new(0);
+        let found = rebuild(&history, &after(usize::MAX, &asked))?;
+        assert_eq!(
+            (asked.get(), found.files_read),
+            (4, 4),
+            "success four files, four asks"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_call_records_never_stopped_are_those_without_a_stop() -> TestResult {
+        let (_dir, history) = store(3)?;
+        let since = BTreeMap::from([("edge-0".to_string(), at_ms(0))]);
+        let plain = history.calls_after(&since, 4096)?;
+        let until = calls(&history, &|| false)?;
+        assert_eq!(until, plain, "success the same call records");
+        assert_eq!(until.rows.len(), 3, "success one in each file");
+        assert!(!until.stopped, "success and not stopped");
+        Ok(())
+    }
+
+    // ── FAILURE ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn failure_a_stop_before_the_first_file_reads_none_and_restores_none() -> TestResult {
+        let (_dir, history) = store(3)?;
+        let found = rebuild(&history, &|| true)?;
+        assert!(found.stopped, "failure the rebuild says it was stopped");
+        assert_eq!(
+            (found.files_read, found.rows_built, found.members.len()),
+            (0, 0, 0),
+            "failure no file read, no row built, no member restored"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_stop_after_two_files_restores_no_member_of_them() -> TestResult {
+        let (_dir, history) = store(4)?;
+        let asked = Cell::new(0);
+        let found = rebuild(&history, &after(2, &asked))?;
+        assert!(found.stopped, "failure stopped at the third ask");
+        assert_eq!(
+            (found.files_read, asked.get()),
+            (2, 3),
+            "failure two files read, then the stop"
+        );
+        assert!(
+            found.members.is_empty(),
+            "failure a stopped rebuild restores no member, not the members of a part: {:?}",
+            found.members
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_call_records_stopped_before_the_first_file_are_none() -> TestResult {
+        let (_dir, history) = store(3)?;
+        let found = calls(&history, &|| true)?;
+        assert!(found.stopped, "failure the reading says it was stopped");
+        assert_eq!(
+            (found.files_read, found.rows.len()),
+            (0, 0),
+            "failure no file read, no call record"
+        );
+        Ok(())
+    }
+
+    // ── EDGE ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn edge_a_store_without_files_is_not_stopped_by_a_stop() -> TestResult {
+        let (_dir, history) = store(0)?;
+        let asked = Cell::new(0);
+        let found = rebuild(&history, &after(0, &asked))?;
+        assert_eq!(
+            (found.stopped, asked.get()),
+            (false, 0),
+            "edge with no file to read there is nothing to stop and nothing is asked"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_stop_at_the_last_file_leaves_it_unread() -> TestResult {
+        let (_dir, history) = store(3)?;
+        let asked = Cell::new(0);
+        let found = rebuild(&history, &after(2, &asked))?;
+        assert_eq!(
+            (found.stopped, found.files_read),
+            (true, 2),
+            "edge the last of three files is not read once the stop is asked"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_call_records_stopped_after_one_file_hold_none() -> TestResult {
+        let (_dir, history) = store(3)?;
+        let asked = Cell::new(0);
+        let found = calls(&history, &after(1, &asked))?;
+        assert_eq!(
+            (found.stopped, found.files_read, found.rows.len()),
+            (true, 1, 0),
+            "edge one file read, then the stop: no call record is kept"
+        );
+        Ok(())
     }
 }

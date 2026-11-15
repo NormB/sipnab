@@ -30,6 +30,12 @@ impl Center {
 
     /// `sipnab fleet serve` with `args`, once it says where it serves.
     pub fn start(args: &[&str]) -> Result<Self, TestError> {
+        Self::start_within(args, Duration::from_secs(30))
+    }
+
+    /// [`Self::start`], waiting up to `within` for the center to say where
+    /// it serves: a start that rebuilds a large member list takes longer.
+    pub fn start_within(args: &[&str], within: Duration) -> Result<Self, TestError> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .args(["fleet", "serve"])
             .args(args)
@@ -49,7 +55,7 @@ impl Center {
                 let _ = tx.send(line);
             }
         });
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + within;
         let mut early = Vec::new();
         while Instant::now() < deadline {
             match log.recv_timeout(Duration::from_millis(200)) {
@@ -130,6 +136,36 @@ impl Starting {
     pub fn exited(&mut self) -> Result<Option<std::process::ExitStatus>, TestError> {
         Ok(self.child.try_wait()?)
     }
+
+    /// Send the center SIGTERM.
+    pub fn terminate(&self) -> Result<(), TestError> {
+        let pid = i32::try_from(self.child.id())?;
+        // SAFETY: kill(2) with the PID of a child this value spawned and has
+        // not reaped; it touches no memory.
+        let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error().into())
+        }
+    }
+
+    /// The center's exit status, once it exits within `within`; at the
+    /// deadline it is killed, and that is an error.
+    pub fn wait_within(&mut self, within: Duration) -> Result<std::process::ExitStatus, TestError> {
+        let deadline = Instant::now() + within;
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                return Ok(status);
+            }
+            if Instant::now() > deadline {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                return Err(format!("the center did not exit within {within:?}").into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 impl Drop for Starting {
@@ -203,6 +239,28 @@ pub fn http(
     let (head, rest) = raw.split_once("\r\n\r\n").ok_or("an HTTP answer")?;
     let status = head.split_whitespace().nth(1).ok_or("a status")?.parse()?;
     Ok((status, rest.to_string()))
+}
+
+/// One GET-like exchange on `addr` with no body: status, the head and the
+/// body, read within 30 seconds.
+pub fn http_full(
+    addr: &str,
+    method: &str,
+    path: &str,
+    token: &str,
+) -> Result<(u16, String, String), TestError> {
+    let mut s = std::net::TcpStream::connect(addr)?;
+    s.set_read_timeout(Some(Duration::from_secs(30)))?;
+    write!(
+        s,
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\n\
+         Connection: close\r\n\r\n"
+    )?;
+    let mut raw = String::new();
+    s.read_to_string(&mut raw)?;
+    let (head, rest) = raw.split_once("\r\n\r\n").ok_or("an HTTP answer")?;
+    let status = head.split_whitespace().nth(1).ok_or("a status")?.parse()?;
+    Ok((status, head.to_string(), rest.to_string()))
 }
 
 /// A store key file in `dir` for a test center: mode 0600, a fixed key.
