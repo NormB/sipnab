@@ -8,6 +8,23 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **`sipnab fleet verify` reads every row of every history file of a fleet center.**
+  - Effect: The command reports each file it refuses with the first reason, changes nothing, and exits `0`, `1` or `2`.
+  - Do: Run it as the center's user with `--store` and `--store-key-file`, after a restore and before you destroy an old store key.
+  - Limit: It does not look for a row that two files hold, and does not read the store file or the intake.
+  - Docs: [Verify the history store](docs/fleet.md#verify-the-history-store).
+
+### Fixed
+
+- **A fleet center answers history questions when a FIFO has a history file's name.**
+  - Was: The center opened the FIFO and waited for a writer, so each question that read that entry got no answer.
+  - Effect: The center names the entry as refused, `is a pipe or FIFO, not a file of the history store`, and answers.
+  - Docs: [Verify the history store](docs/fleet.md#verify-the-history-store).
+
 ## [0.5.257] - 2026-11-15
 
 ### Changed
