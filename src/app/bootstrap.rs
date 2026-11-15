@@ -16071,6 +16071,9 @@ mod planned_inputs_tests {
         Ok(NamedSet::new(named, true))
     }
 
+    // A build without `vcon` refuses the container as unreadable before the
+    // `--cores` check, with exit 1: the refusal under test needs the reader.
+    #[cfg(feature = "vcon")]
     #[test]
     fn failure_cores_refuses_a_container_known_only_through_its_descriptor() -> Result<(), TestError>
     {
