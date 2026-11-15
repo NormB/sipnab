@@ -220,11 +220,23 @@ pub struct SweepControl<'a> {
 /// not an unreadable file. [`outcome`] decides `complete`.
 #[must_use]
 pub fn sweep_files(input: &SweepInput<'_>, control: &SweepControl<'_>) -> SweepOutcome {
+    sweep_opened_files(input, control, None)
+}
+
+/// [`sweep_files`] over candidates opened up front: `opened` holds one open
+/// result per candidate, in order, and each file is read through its
+/// descriptor, never by its path. A candidate that did not open is reported
+/// unreadable with the error its open gave. `None` reads every file by path.
+pub fn sweep_opened_files(
+    input: &SweepInput<'_>,
+    control: &SweepControl<'_>,
+    opened: Option<&[std::io::Result<std::fs::File>]>,
+) -> SweepOutcome {
     let mut matches = Vec::new();
     let mut unreadable = Vec::new();
     let mut examined = 0usize;
     let mut stopped = None;
-    for path in input.candidates {
+    for (index, path) in input.candidates.iter().enumerate() {
         if examined >= input.max_files {
             stopped = Some(StoppedBecause::MaxFiles);
             break;
@@ -255,8 +267,16 @@ pub fn sweep_files(input: &SweepInput<'_>, control: &SweepControl<'_>) -> SweepO
         // records a partial read against the LOADED capture's completeness,
         // and a scratch file this sweep stopped reading says nothing about
         // the capture an agent is working in.
-        let read = crate::capture::replay::read_into_stores_until(
-            path,
+        let file = match opened.and_then(|files| files.get(index)) {
+            Some(Err(e)) => {
+                unreadable.push(unreadable_file(&filename, &e.to_string()));
+                continue;
+            }
+            Some(Ok(file)) => Some(file),
+            None => None,
+        };
+        let read = crate::capture::replay::read_member_into_stores_until(
+            crate::capture::file::Member::of(path, file),
             input.options,
             &scratch_dialogs,
             &scratch_streams,
@@ -314,4 +334,150 @@ pub fn sweep_files(input: &SweepInput<'_>, control: &SweepControl<'_>) -> SweepO
         unreadable,
         stopped,
     )
+}
+
+#[cfg(test)]
+mod opened_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The Call-ID of the one call in `sip-rtp-g711.pcap`.
+    const CALL: &str = "1-1966@10.0.2.20";
+
+    /// Copies of two fixtures in a new directory: the one that holds `CALL`
+    /// first.
+    fn spool() -> Result<(tempfile::TempDir, Vec<PathBuf>), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let samples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
+        let mut paths = Vec::new();
+        for name in ["sip-rtp-g711.pcap", "sip-problem-call.pcap"] {
+            let path = dir.path().join(name);
+            std::fs::copy(samples.join(name), &path).map_err(|e| format!("copy: {e:?}"))?;
+            paths.push(path);
+        }
+        Ok((dir, paths))
+    }
+
+    /// Sweep `candidates` for `CALL`, through `opened` when it is given.
+    fn swept(
+        candidates: &[PathBuf],
+        opened: Option<&[std::io::Result<std::fs::File>]>,
+    ) -> Result<SweepOutcome, TestError> {
+        let filter = crate::sip::dsl::FilterExpr::parse(&format!("call_id == \"{CALL}\""))
+            .map_err(|e| format!("filter: {e:#}"))?;
+        Ok(sweep_opened_files(
+            &SweepInput {
+                candidates,
+                filter: &filter,
+                row_cap: 1000,
+                options: &crate::pipeline::PipelineOptions::default(),
+                max_files: candidates.len(),
+            },
+            &SweepControl {
+                between_files: &|| None,
+                inside_file: &|| None,
+                examined: &|_| {},
+            },
+            opened,
+        ))
+    }
+
+    fn names(matches: &[FileMatch]) -> Vec<&str> {
+        matches.iter().map(|m| m.filename.as_str()).collect()
+    }
+
+    #[test]
+    fn opened_files_are_swept_with_their_paths_gone() -> Result<(), TestError> {
+        let (_dir, paths) = spool()?;
+        let by_path = swept(&paths, None)?;
+        let opened = crate::capture::file::open_set_up_front(&paths);
+        for path in &paths {
+            std::fs::remove_file(path).map_err(|e| format!("remove: {e:?}"))?;
+        }
+        let answer = swept(&paths, Some(&opened))?;
+        assert_eq!(
+            names(&answer.matches),
+            ["sip-rtp-g711.pcap"],
+            "the call was found through the descriptor"
+        );
+        assert_eq!(answer.files_examined, 2, "both files were read");
+        assert!(answer.unreadable.is_empty(), "none was unreadable");
+        assert_eq!(
+            names(&answer.matches),
+            names(&by_path.matches),
+            "the sweep through descriptors is the one by path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_candidate_that_did_not_open_is_unreadable_with_the_opens_error() -> Result<(), TestError> {
+        let (dir, mut paths) = spool()?;
+        paths.push(dir.path().join("absent.pcap"));
+        let opened = crate::capture::file::open_set_up_front(&paths);
+        let answer = swept(&paths, Some(&opened))?;
+        assert_eq!(answer.files_examined, 2, "the two that opened were read");
+        assert_eq!(answer.unreadable.len(), 1, "one did not open");
+        assert_eq!(answer.unreadable[0].filename, "absent.pcap", "it is named");
+        assert!(
+            answer.unreadable[0].reason.contains("No such file"),
+            "with the error its open gave: {}",
+            answer.unreadable[0].reason
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_file_that_is_no_capture_is_unreadable() -> Result<(), TestError> {
+        let (dir, mut paths) = spool()?;
+        let junk = dir.path().join("junk.pcap");
+        std::fs::write(&junk, b"not a capture").map_err(|e| format!("write: {e:?}"))?;
+        paths.push(junk);
+        let opened = crate::capture::file::open_set_up_front(&paths);
+        let answer = swept(&paths, Some(&opened))?;
+        assert_eq!(
+            answer.unreadable.len(),
+            1,
+            "the file that is no capture is reported, and the sweep goes on"
+        );
+        assert_eq!(names(&answer.matches), ["sip-rtp-g711.pcap"], "the call");
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_archive_is_swept_through_its_descriptor() -> Result<(), TestError> {
+        use crate::capture::archive::tar::testutil::{Spec, build};
+        let (dir, paths) = spool()?;
+        let capture = std::fs::read(&paths[0]).map_err(|e| format!("read: {e:?}"))?;
+        let archive = dir.path().join("set.tar");
+        std::fs::write(&archive, build(&[Spec::file("in/a.pcap", &capture)]))
+            .map_err(|e| format!("write: {e:?}"))?;
+        let candidates = [archive.clone()];
+        let opened = crate::capture::file::open_set_up_front(&candidates);
+        std::fs::remove_file(&archive).map_err(|e| format!("remove: {e:?}"))?;
+        let answer = swept(&candidates, Some(&opened))?;
+        assert!(
+            answer.unreadable.is_empty(),
+            "the archive was walked through its descriptor: {:?}",
+            answer.unreadable.first().map(|u| u.reason.as_str())
+        );
+        assert_eq!(
+            names(&answer.matches),
+            ["set.tar"],
+            "the call in its member was found"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_candidate_past_the_opened_list_is_read_by_its_path() -> Result<(), TestError> {
+        let (_dir, paths) = spool()?;
+        // One descriptor for two candidates: the second has none.
+        let opened = crate::capture::file::open_set_up_front(&paths[1..]);
+        let answer = swept(&[paths[1].clone(), paths[0].clone()], Some(&opened))?;
+        assert_eq!(answer.files_examined, 2, "both were read");
+        assert_eq!(names(&answer.matches), ["sip-rtp-g711.pcap"], "the call");
+        Ok(())
+    }
 }

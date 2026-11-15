@@ -440,9 +440,24 @@ pub fn secrets_kind_name(secrets_type: Option<u32>) -> String {
 /// inflation), is not pcapng (missing/invalid SHB), contains a truncated or
 /// invalid block length, or when writing `dst` fails.
 pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<StrippedSecrets> {
-    use std::io::{Error, ErrorKind};
-    ensure_within_size_cap(std::fs::metadata(src)?.len(), max_metadata_file_bytes())?;
-    let raw = std::fs::read(src)?;
+    strip_secrets_opened(std::fs::File::open(src)?, dst)
+}
+
+/// [`strip_secrets`] of a capture already open, read from its start: the
+/// read of a process that dropped privileges after it opened the file.
+///
+/// # Errors
+///
+/// As [`strip_secrets`].
+pub fn strip_secrets_opened(
+    mut src: std::fs::File,
+    dst: &Path,
+) -> std::io::Result<StrippedSecrets> {
+    use std::io::{Error, ErrorKind, Read as _, Seek as _};
+    ensure_within_size_cap(src.metadata()?.len(), max_metadata_file_bytes())?;
+    src.seek(std::io::SeekFrom::Start(0))?;
+    let mut raw = Vec::new();
+    src.read_to_end(&mut raw)?;
     let bytes = crate::capture::pcap_reader::decompress_capture(&raw)
         .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
     // The on-disk cap above saw the compressed size; re-check what it inflated
@@ -942,6 +957,78 @@ mod tests {
         let left = std::fs::read(&dst)?;
         assert_eq!(left.len(), 28, "only the SHB is left: {} bytes", left.len());
         Ok(stripped)
+    }
+
+    // ---- a capture already open, read through its descriptor ----
+
+    /// `bytes` written to a file, opened, and the file removed.
+    fn opened_then_removed(
+        bytes: &[u8],
+    ) -> Result<(tempfile::TempDir, std::fs::File, std::path::PathBuf), TestError> {
+        let dir = tempfile::tempdir()?;
+        let src = dir.path().join("in.pcapng");
+        std::fs::write(&src, bytes)?;
+        let file = std::fs::File::open(&src)?;
+        std::fs::remove_file(&src)?;
+        let dst = dir.path().join("out.pcapng");
+        Ok((dir, file, dst))
+    }
+
+    #[test]
+    fn an_open_capture_is_stripped_with_its_path_gone() -> Result<(), TestError> {
+        let bytes = pcapng_with_dsbs(false, &[Some(0x544c_534b), Some(0x544c_534b)]);
+        let (_dir, file, dst) = opened_then_removed(&bytes)?;
+        let stripped = strip_secrets_opened(file, &dst)?;
+        assert_eq!(stripped, strip_bytes(&bytes)?, "the same count as by path");
+        assert_eq!(std::fs::read(&dst)?.len(), 28, "only the SHB is left");
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_capture_read_to_its_end_is_stripped_from_its_start() -> Result<(), TestError> {
+        use std::io::Read as _;
+        let bytes = pcapng_with_dsbs(true, &[Some(0x544c_534b)]);
+        let (_dir, mut file, dst) = opened_then_removed(&bytes)?;
+        let mut sink = Vec::new();
+        file.read_to_end(&mut sink)?;
+        let stripped = strip_secrets_opened(file, &dst)?;
+        assert_eq!(
+            stripped.total(),
+            1,
+            "a descriptor another reader left at the end is rewound"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_file_that_is_not_pcapng_is_refused_and_nothing_is_written() -> Result<(), TestError>
+    {
+        let (_dir, file, dst) = opened_then_removed(b"this is no pcapng file, whatever its name")?;
+        let refused = strip_secrets_opened(file, &dst);
+        assert!(
+            refused.is_err_and(|e| e.kind() == std::io::ErrorKind::InvalidData),
+            "bytes that are not pcapng are refused"
+        );
+        assert!(!dst.exists(), "no output is left by a refused strip");
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_gzip_capture_is_inflated_and_stripped() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let src = dir.path().join("in.pcapng");
+        std::fs::write(&src, pcapng_with_dsbs(false, &[Some(0x544c_534b)]))?;
+        let gz = gzip_file(&src)?;
+        let file = std::fs::File::open(&gz)?;
+        std::fs::remove_file(&gz)?;
+        let dst = dir.path().join("out.pcapng");
+        assert_eq!(
+            strip_secrets_opened(file, &dst)?.total(),
+            1,
+            "the compressed capture's one secrets block"
+        );
+        assert_eq!(std::fs::read(&dst)?.len(), 28, "written uncompressed");
+        Ok(())
     }
 
     /// Each kind the specification lists is counted under its own name.

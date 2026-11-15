@@ -218,7 +218,7 @@ fn open_classified(
 ///
 /// The two share one read position, so each reader of a member takes one in
 /// turn, and none of them reads while another still does.
-fn rewound(file: &std::fs::File) -> std::io::Result<std::fs::File> {
+pub(crate) fn rewound(file: &std::fs::File) -> std::io::Result<std::fs::File> {
     use std::io::Seek as _;
     let mut dup = file.try_clone()?;
     dup.seek(std::io::SeekFrom::Start(0))?;
@@ -631,7 +631,7 @@ pub(crate) fn open_set_up_front(
 }
 
 /// Open one file of a set up front. See [`open_set_up_front`].
-fn open_up_front(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_up_front(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt as _;
     if let Some(why) = not_a_file(path) {
         return Err(std::io::Error::other(why));
@@ -661,19 +661,52 @@ fn refuse_opened_non_file(file: std::fs::File) -> std::io::Result<std::fs::File>
 /// never opened by its path again: after a chroot the path leads nowhere, or
 /// to a different file, and after a privilege drop it may not open.
 #[derive(Debug, Clone, Copy)]
-struct Member<'a> {
+pub(crate) struct Member<'a> {
     /// The member's path, which also names it in every log line and packet.
-    path: &'a Path,
+    pub(crate) path: &'a Path,
     /// The descriptor opened up front, or `None` to open the path now.
-    up_front: Option<&'a std::fs::File>,
+    pub(crate) up_front: Option<&'a std::fs::File>,
 }
 
 impl<'a> Member<'a> {
     /// A member read by its path.
-    fn by_path(path: &'a Path) -> Self {
+    pub(crate) fn by_path(path: &'a Path) -> Self {
         Self {
             path,
             up_front: None,
+        }
+    }
+
+    /// A member read through `file`, the descriptor it was opened up front
+    /// with: `path` names it and is never opened.
+    pub(crate) fn opened(path: &'a Path, file: &'a std::fs::File) -> Self {
+        Self {
+            path,
+            up_front: Some(file),
+        }
+    }
+
+    /// A member read through `file` when it has one, by its path otherwise.
+    pub(crate) fn of(path: &'a Path, file: Option<&'a std::fs::File>) -> Self {
+        Self {
+            path,
+            up_front: file,
+        }
+    }
+
+    /// The wrapper the member's leading bytes sniff as, if any.
+    ///
+    /// # Errors
+    ///
+    /// The member cannot be read.
+    pub(crate) fn container_format(
+        &self,
+    ) -> std::io::Result<Option<crate::capture::archive::Format>> {
+        match self.up_front {
+            Some(file) => {
+                rewound(file).and_then(|mut f| crate::capture::archive::container_format_in(&mut f))
+            }
+            None => crate::capture::archive::container_format(self.path),
         }
     }
 
@@ -688,7 +721,7 @@ impl<'a> Member<'a> {
     }
 
     /// Whether the member is a stored vCon container.
-    fn is_container(&self) -> bool {
+    pub(crate) fn is_container(&self) -> bool {
         match self.up_front {
             Some(file) => rewound(file).is_ok_and(crate::capture::vcon_input::is_container_in),
             None => crate::capture::vcon_input::is_container_file(self.path),
@@ -696,7 +729,7 @@ impl<'a> Member<'a> {
     }
 
     /// Read and rebuild the member as a stored vCon container.
-    fn read_container(&self) -> Result<crate::capture::vcon_input::Rebuilt> {
+    pub(crate) fn read_container(&self) -> Result<crate::capture::vcon_input::Rebuilt> {
         let name = crate::capture::archive::source_name(self.path);
         let rebuilt = match self.up_front {
             Some(file) => {
@@ -709,7 +742,7 @@ impl<'a> Member<'a> {
     }
 
     /// Whether the member is a pcapng whose interfaces disagree.
-    fn is_merged(&self) -> bool {
+    pub(crate) fn is_merged(&self) -> bool {
         match self.up_front {
             Some(file) => {
                 rewound(file).is_ok_and(|mut f| crate::capture::merged::is_merged_file(&mut f))
@@ -719,7 +752,7 @@ impl<'a> Member<'a> {
     }
 
     /// Decode the member as a merged pcapng.
-    fn open_merged(&self) -> Result<crate::capture::merged::MergedPcapNg> {
+    pub(crate) fn open_merged(&self) -> Result<crate::capture::merged::MergedPcapNg> {
         match self.up_front {
             Some(file) => crate::capture::merged::MergedPcapNg::from_file(
                 rewound(file).with_context(|| {
@@ -735,7 +768,9 @@ impl<'a> Member<'a> {
     }
 
     /// Open the member for libpcap, unwrapping a compressed capture.
-    fn open_for_libpcap(&self) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+    pub(crate) fn open_for_libpcap(
+        &self,
+    ) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
         match self.up_front {
             Some(file) => {
                 open_offline_up_front(self.path, file, &crate::capture::archive::Limits::for_run())

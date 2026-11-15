@@ -621,9 +621,9 @@
     {
       "file": "src/app/queries/b3.rs",
       "call": "stderr_line!(\"{}\", e.message)",
-      "count": 3,
+      "count": 4,
       "carries": [],
-      "why": "The PlanError load_config returns when --compare-captures or --find-in-files reads the config before reading files (the same values bootstrap.rs logs through apply_read_config, from out-of-scope config, limits and security validation), and the one build_filter_expr returns for --find-in-files (the filter refusals a run of the same command line gives)."
+      "why": "The PlanError load_config returns when --compare-captures or --find-in-files reads the config before reading files (the same values bootstrap.rs logs through apply_read_config, from out-of-scope config, limits and security validation), the one build_filter_expr returns for --find-in-files (the filter refusals a run of the same command line gives), and the one fit_set_under_open_file_limit returns when --find-in-files, started as root, opens its whole set before it drops privileges (the open-file limit refusals a --cores run of src/app/bootstrap.rs gives, which have their entries)."
     },
     {
       "file": "src/app/bootstrap.rs",

@@ -17,6 +17,11 @@ entry that carries them.
   - Do: Give the store directory, the spool or the output directory to that user with `chown`, name its owner with `--user`, or keep root with `--no-priv-drop`.
   - Limit: Files a command writes must belong to that user; the refusal names the path and, under `sudo`, the `--user` value to use.
   - Docs: [Commands that do not capture](docs/least-privilege.md#commands-that-do-not-capture) and [Run the center as a service](docs/fleet.md#run-the-center-as-a-service).
+- **Commands that parse a file you name no longer stay root when root starts them.**
+  - Effect: `--strip-secrets`, `--write-annotated` and `--vcon-resign` started as root write their output as `--user`, else `nobody`, and may refuse to start.
+  - Do: Name an output directory that user can write, pass `--user "$SUDO_USER"`, or keep root with `--no-priv-drop`.
+  - Limit: As root, `--find-in-files` opens every file first, so a set over the open-file limit exits 2.
+  - Docs: [Run a command that parses a file as root](docs/least-privilege.md#run-a-command-that-parses-a-file-as-root).
 
 ### Fixed
 
@@ -31,6 +36,10 @@ entry that carries them.
   - Effect: Each reads its key files as root, then runs as `--user`, else `[privilege] user`, else `nobody`.
   - Do: Start these commands as an ordinary user where you can; `--no-priv-drop` keeps root and logs one warning line.
   - Docs: [Commands that do not capture](docs/least-privilege.md#commands-that-do-not-capture).
+- **Commands that parse a file you name drop root before they parse it.**
+  - Was: Started as root, `--show-frame`, `--strip-secrets`, `--write-annotated`, `--find-in-files`, `--compare-captures`, `--vcon-validate` and `--vcon-resign` unpacked and parsed their input as root.
+  - Effect: Each opens its input as root, then unpacks and parses it as `--user`, else `[privilege] user`, else `nobody`; files only root can read still read.
+  - Docs: [Run a command that parses a file as root](docs/least-privilege.md#run-a-command-that-parses-a-file-as-root).
 
 ## [0.5.255] - 2026-11-14
 

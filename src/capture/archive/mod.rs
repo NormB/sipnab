@@ -772,9 +772,12 @@ pub fn listed_files(dir: &Path) -> std::io::Result<Vec<(PathBuf, ListedKind)>> {
 /// what is found inside a container, and a `.pcap.gz` contains no choice.
 #[must_use]
 pub fn holds_members(path: &Path) -> bool {
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
+    std::fs::File::open(path).is_ok_and(holds_members_in)
+}
+
+/// [`holds_members`] of a file already open, read from where it stands.
+#[must_use]
+pub fn holds_members_in(file: std::fs::File) -> bool {
     let mut src = io::BufReader::new(file);
     let mut head = [0u8; tar::BLOCK];
     let Ok(n) = read_head(&mut src, &mut head) else {
@@ -888,26 +891,83 @@ fn expand_filtered_inner(
 ///
 /// As [`expand`].
 pub fn expand_opened(file: std::fs::File, path: &Path, limits: &Limits) -> io::Result<Expansion> {
+    expand_opened_filtered(file, path, limits, None)
+}
+
+/// [`expand_opened`], unpacking only the members whose name `keep` accepts:
+/// [`expand_filtered`] for a file opened up front.
+///
+/// # Errors
+///
+/// As [`expand_opened`].
+pub fn expand_opened_filtered(
+    file: std::fs::File,
+    path: &Path,
+    limits: &Limits,
+    keep: Option<&dyn Fn(&str) -> bool>,
+) -> io::Result<Expansion> {
     #[cfg(feature = "archive")]
     {
-        password::keyring_in_use(|keyring| walk_opened(file, path, limits, keyring))
+        password::keyring_in_use(|keyring| walk_opened(file, path, limits, keep, None, keyring))
     }
     #[cfg(not(feature = "archive"))]
     {
-        walk_opened(file, path, limits, ())
+        walk_opened(file, path, limits, keep, None, ())
     }
 }
 
-/// [`expand_opened`], with the keyring given.
+/// [`extract_member`] for an archive opened up front: `path` names it and is
+/// never opened.
+///
+/// # Errors
+///
+/// As [`extract_member`].
+pub fn extract_member_opened(
+    file: std::fs::File,
+    path: &Path,
+    label: &str,
+    limits: &Limits,
+) -> io::Result<Option<(Member, ExtractDir)>> {
+    #[cfg(feature = "archive")]
+    let walked = password::keyring_in_use(|keyring| {
+        walk_opened(file, path, limits, None, Some(label), keyring)
+    });
+    #[cfg(not(feature = "archive"))]
+    let walked = walk_opened(file, path, limits, None, Some(label), ());
+    found_member(walked?)
+}
+
+/// The one member a walk for a label wrote out, from what the walk left.
+fn found_member(mut out: Expansion) -> io::Result<Option<(Member, ExtractDir)>> {
+    if let Some(member) = out.members.pop() {
+        return match out.dir.take() {
+            Some(dir) => Ok(Some((member, dir))),
+            None => Err(io::Error::other("extracted member has no directory")),
+        };
+    }
+    // Not found. A walk that stopped early has not shown the member is
+    // absent, so say what stopped it instead of "no such member".
+    if let Some(stop) = out.stops.first() {
+        return Err(io::Error::other(stop.to_string()));
+    }
+    Ok(None)
+}
+
+/// Walk the archive in `file`, unpacking the members `keep` accepts, or only
+/// the one labeled `label`.
 fn walk_opened(
     file: std::fs::File,
     path: &Path,
     limits: &Limits,
+    keep: Option<&dyn Fn(&str) -> bool>,
+    label: Option<&str>,
     keyring: KeyringArg<'_>,
 ) -> io::Result<Expansion> {
+    let wanted = label;
     let mut file = io::BufReader::new(file);
     let label = path.display().to_string();
-    let mut walker = Walker::new(limits, None, path, &label);
+    let mut walker = Walker::new(limits, wanted, path, &label);
+    walker.keep = keep;
     // Nothing reopens `path`: see `expand_opened`.
     walker.root = None;
     #[cfg(feature = "archive")]
@@ -996,19 +1056,7 @@ fn extract_member_inner(
     if let Some(e) = walker.fatal.take() {
         return Err(e);
     }
-    let mut out = walker.out;
-    if let Some(member) = out.members.pop() {
-        return match out.dir.take() {
-            Some(dir) => Ok(Some((member, dir))),
-            None => Err(io::Error::other("extracted member has no directory")),
-        };
-    }
-    // Not found. A walk that stopped early has not shown the member is
-    // absent, so say what stopped it instead of "no such member".
-    if let Some(stop) = out.stops.first() {
-        return Err(io::Error::other(stop.to_string()));
-    }
-    Ok(None)
+    found_member(walker.out)
 }
 
 /// The archive a member label points into, when `source` is one.
@@ -1023,6 +1071,20 @@ fn extract_member_inner(
 /// shadows a real file.
 #[must_use]
 pub fn locate_member(source: &str) -> Option<PathBuf> {
+    let above = first_file_above(source)?;
+    match container_format(&above) {
+        Ok(Some(f)) if unwraps(f) => Some(above),
+        _ => None,
+    }
+}
+
+/// The first existing ancestor of `source`, when it is a regular file: the
+/// file a member label would point into. Reads file types only, never a
+/// file's content, so it is the half of [`locate_member`] a process runs
+/// before it drops privileges; whether the file is an archive is judged
+/// after, through its descriptor.
+#[must_use]
+pub fn first_file_above(source: &str) -> Option<PathBuf> {
     for ancestor in Path::new(source).ancestors().skip(1) {
         if ancestor.as_os_str().is_empty() {
             return None;
@@ -1030,13 +1092,7 @@ pub fn locate_member(source: &str) -> Option<PathBuf> {
         let Ok(meta) = std::fs::metadata(ancestor) else {
             continue;
         };
-        if !meta.is_file() {
-            return None;
-        }
-        return match container_format(ancestor) {
-            Ok(Some(f)) if unwraps(f) => Some(ancestor.to_path_buf()),
-            _ => None,
-        };
+        return meta.is_file().then(|| ancestor.to_path_buf());
     }
     None
 }
@@ -2534,6 +2590,144 @@ mod tests {
 
     fn labels(exp: &Expansion) -> Vec<String> {
         exp.members.iter().map(|m| m.label.clone()).collect()
+    }
+
+    // ---- an archive opened up front, walked through its descriptor ----
+
+    /// A tar of two captures, written as `set.tar` in a new directory.
+    fn two_member_tar() -> Result<(tempfile::TempDir, PathBuf), TestError> {
+        use tar::testutil::{Spec, build};
+        let dir = tempfile::tempdir()?;
+        let bytes = build(&[
+            Spec::file("a.pcap", &pcap_bytes(b"a")),
+            Spec::file("b.pcap", &pcap_bytes(b"b")),
+        ]);
+        let path = write(dir.path(), "set.tar", &bytes)?;
+        Ok((dir, path))
+    }
+
+    #[test]
+    fn the_file_above_a_member_label_is_found_without_reading_it() -> Result<(), TestError> {
+        let (_dir, path) = two_member_tar()?;
+        let label = format!("{}/a.pcap", path.display());
+        assert_eq!(
+            first_file_above(&label),
+            Some(path),
+            "the archive the label points into"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_file_above_a_path_below_a_capture_is_the_capture() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let capture = write(dir.path(), "a.pcap", &pcap_bytes(b"a"))?;
+        let below = format!("{}/x/y.pcap", capture.display());
+        assert_eq!(
+            first_file_above(&below),
+            Some(capture.clone()),
+            "any regular file counts: what it holds is judged later"
+        );
+        assert_eq!(
+            locate_member(&below),
+            None,
+            "a capture is not an archive, so the path is no member label"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_path_below_a_directory_has_no_file_above_it() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let absent = format!("{}/absent/a.pcap", dir.path().display());
+        assert_eq!(
+            first_file_above(&absent),
+            None,
+            "the first ancestor that exists is a directory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_bare_name_has_no_file_above_it() {
+        assert_eq!(
+            first_file_above("absent-sipnab-test.pcap"),
+            None,
+            "a name with no directory has no ancestor to ask"
+        );
+    }
+
+    #[test]
+    fn an_open_tar_holds_members_and_an_open_capture_does_not() -> Result<(), TestError> {
+        let (dir, tar) = two_member_tar()?;
+        let capture = write(dir.path(), "a.pcap", &pcap_bytes(b"a"))?;
+        assert!(
+            holds_members_in(std::fs::File::open(&tar)?),
+            "a tar holds members"
+        );
+        assert!(
+            !holds_members_in(std::fs::File::open(&capture)?),
+            "a capture holds no members"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_member_is_written_out_of_an_open_archive_whose_path_is_gone() -> Result<(), TestError> {
+        let (_dir, path) = two_member_tar()?;
+        let file = std::fs::File::open(&path)?;
+        std::fs::remove_file(&path)?;
+        let label = format!("{}/b.pcap", path.display());
+        let (member, _held) = extract_member_opened(file, &path, &label, &limits())?
+            .ok_or("the member was not found")?;
+        assert_eq!(member.label, label, "the member the label names");
+        assert_eq!(
+            std::fs::read(&member.path)?,
+            pcap_bytes(b"b"),
+            "its bytes, read through the descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_archive_without_the_label_gives_no_member() -> Result<(), TestError> {
+        let (_dir, path) = two_member_tar()?;
+        let file = std::fs::File::open(&path)?;
+        let label = format!("{}/c.pcap", path.display());
+        assert!(
+            extract_member_opened(file, &path, &label, &limits())?.is_none(),
+            "no member carries that label"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_archive_unpacks_only_the_names_the_filter_keeps() -> Result<(), TestError> {
+        let (_dir, path) = two_member_tar()?;
+        let file = std::fs::File::open(&path)?;
+        std::fs::remove_file(&path)?;
+        let keep = |name: &str| name.starts_with('b');
+        let exp = expand_opened_filtered(file, &path, &limits(), Some(&keep))?;
+        assert_eq!(
+            labels(&exp),
+            [format!("{}/b.pcap", path.display())],
+            "only the member the filter keeps"
+        );
+        assert_eq!(exp.filtered, 1, "the other member is counted as filtered");
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_file_that_is_not_an_archive_has_no_members_to_give() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = write(dir.path(), "a.pcap", &pcap_bytes(b"a"))?;
+        let label = format!("{}/inner.pcap", path.display());
+        let found = extract_member_opened(std::fs::File::open(&path)?, &path, &label, &limits());
+        assert!(
+            !matches!(found, Ok(Some(_))),
+            "a capture is not walked into: {found:?}"
+        );
+        Ok(())
     }
 
     #[test]

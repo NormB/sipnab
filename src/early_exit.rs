@@ -12,10 +12,11 @@
 //! `tests/threads_at_privilege_drop_test.rs` fails when `src/main.rs` gains
 //! an exit this table does not hold.
 //!
-//! Seven rows carry [`Plan::KeepsForNow`]: commands that parse a file the
-//! caller named and whose readers open that file by path. They keep the
-//! caller's privileges until each reader takes an open handle
-//! (COMMANDS-PARSE-AS-ROOT).
+//! Seven rows carry [`Plan::ParsesNamedFile`]: commands that parse a file
+//! the caller named. As root they only name, open and read: the inputs by
+//! handle or whole, the key files, the directory listings. They drop in
+//! [`confine`] and judge, unwrap and parse from those handles as the user
+//! they dropped to, so a capture only root can read is still read.
 
 use crate::privilege::{self, DropSkip, DropTarget};
 use std::path::{Path, PathBuf};
@@ -31,9 +32,10 @@ pub enum Plan {
     NetworkClient,
     /// Keeps the caller's privileges; the row's reason says why.
     Keeps,
-    /// Parses a file the caller named and keeps the caller's privileges for
-    /// now: its reader opens the input by path (COMMANDS-PARSE-AS-ROOT).
-    KeepsForNow,
+    /// Parses a file the caller named: names, opens and reads its inputs
+    /// and its key files as root, then drops before it judges or parses a
+    /// byte of them.
+    ParsesNamedFile,
     /// Drops on a path of its own, which the row's reason names.
     OwnDrop,
 }
@@ -42,7 +44,10 @@ impl Plan {
     /// Whether a run under this plan drops in [`confine`].
     #[must_use]
     pub fn drops_here(self) -> bool {
-        matches!(self, Plan::Listener | Plan::NetworkClient)
+        matches!(
+            self,
+            Plan::Listener | Plan::NetworkClient | Plan::ParsesNamedFile
+        )
     }
 }
 
@@ -59,12 +64,9 @@ pub struct EarlyExit {
     pub reason: &'static str,
 }
 
-/// The backlog entry the [`Plan::KeepsForNow`] rows wait for.
-pub const PARSE_AS_ROOT_ENTRY: &str = "COMMANDS-PARSE-AS-ROOT";
-
-/// The reason every [`Plan::KeepsForNow`] row carries.
-const FOR_NOW: &str = "parses a file the caller named; its reader opens the input by path, so it \
-                       keeps the caller's privileges until COMMANDS-PARSE-AS-ROOT";
+/// The reason every [`Plan::ParsesNamedFile`] row carries.
+const PARSES: &str = "parses a file the caller named; opens and reads its inputs and key files \
+                      as root, then drops before it judges, unwraps or parses them";
 
 /// The reason of an exit that reports an error and reads nothing more.
 const ERROR_EXIT: &str = "reports an error and ends; reads no input from outside";
@@ -157,13 +159,13 @@ pub const EARLY_EXITS: [EarlyExit; 35] = [
         Plan::Keeps,
         "grants the binary its capture capabilities, which needs root",
     ),
-    row("--show-frame", "2", Plan::KeepsForNow, FOR_NOW),
-    row("--write-annotated", "2", Plan::KeepsForNow, FOR_NOW),
+    row("--show-frame", "2", Plan::ParsesNamedFile, PARSES),
+    row("--write-annotated", "2", Plan::ParsesNamedFile, PARSES),
     row("--notes refusal", "2", Plan::Keeps, ERROR_EXIT),
-    row("--strip-secrets", "2", Plan::KeepsForNow, FOR_NOW),
-    row("--find-in-files", "2", Plan::KeepsForNow, FOR_NOW),
-    row("--compare-captures", "2", Plan::KeepsForNow, FOR_NOW),
-    row("--vcon-validate", "2", Plan::KeepsForNow, FOR_NOW),
+    row("--strip-secrets", "2", Plan::ParsesNamedFile, PARSES),
+    row("--find-in-files", "2", Plan::ParsesNamedFile, PARSES),
+    row("--compare-captures", "2", Plan::ParsesNamedFile, PARSES),
+    row("--vcon-validate", "2", Plan::ParsesNamedFile, PARSES),
     row("validation error", "3", Plan::Keeps, ERROR_EXIT),
     row("provenance error", "3b", Plan::Keeps, ERROR_EXIT),
     row(
@@ -191,7 +193,7 @@ pub const EARLY_EXITS: [EarlyExit; 35] = [
         "lists the spool's directories and failure records, which sipnab wrote; a spool private \
          to root stays readable",
     ),
-    row("--vcon-resign", "4e", Plan::KeepsForNow, FOR_NOW),
+    row("--vcon-resign", "4e", Plan::ParsesNamedFile, PARSES),
     row(
         "--vcon-audio-fetch",
         "4f",
@@ -599,6 +601,51 @@ pub fn confine(name: &str, asked: Asked<'_>, needs: &[Need]) -> Result<Option<Dr
     Ok(Some(target))
 }
 
+/// Proof that a command that parses a named file carried out its plan:
+/// that [`confine_file_command`] ran and did not refuse. The step of such a
+/// command that parses its input takes one, so the parse cannot be written
+/// before the drop. Only [`confine_file_command`] makes one.
+#[derive(Debug)]
+pub struct Confined(());
+
+impl Confined {
+    /// A proof for a test that parses without a process to confine.
+    #[cfg(test)]
+    pub(crate) fn in_a_test() -> Self {
+        Self(())
+    }
+}
+
+/// [`confine`] for a command that parses a file the caller named
+/// ([`Plan::ParsesNamedFile`]). Call it after the command opened and read
+/// its inputs and before it judges or parses a byte of them.
+///
+/// # Errors
+///
+/// `name` is not such a command, or what [`confine`] refuses.
+///
+/// # Side effects
+///
+/// As [`confine`].
+pub fn confine_file_command(
+    name: &str,
+    asked: Asked<'_>,
+    needs: &[Need],
+) -> Result<Confined, String> {
+    let exit = early_exit(name)
+        .filter(|exit| exit.plan == Plan::ParsesNamedFile)
+        .ok_or_else(|| format!("{name}: not a command that parses a named file"))?;
+    if action(exit, asked) == Action::KeepWarned {
+        // Printed, not logged: a run that reads `-I` without `--no-tui` logs
+        // errors only, and the line that says root was kept must reach the
+        // operator whatever the log shows.
+        report(&kept_root_warning(name));
+    } else {
+        confine(name, asked, needs)?;
+    }
+    Ok(Confined(()))
+}
+
 /// [`Asked`] for this process: whether it is root, and the three settings.
 #[must_use]
 pub fn asked<'a>(
@@ -862,14 +909,201 @@ mod tests {
         );
     }
 
+    // ---- the commands that parse a named file (COMMANDS-PARSE-AS-ROOT) ----
+
+    /// The seven, in the order of `main`'s steps.
+    const FILE_COMMANDS: [&str; 7] = [
+        "--show-frame",
+        "--write-annotated",
+        "--strip-secrets",
+        "--find-in-files",
+        "--compare-captures",
+        "--vcon-validate",
+        "--vcon-resign",
+    ];
+
     #[test]
-    fn a_for_now_row_keeps_root_whatever_user_is_named() {
+    fn confining_a_file_command_that_is_not_root_gives_the_proof() {
+        let asked = Asked {
+            root: false,
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert!(
+                confine_file_command(name, asked, &[]).is_ok(),
+                "{name}: an ordinary user's run is confined as it stands"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_of_another_plan_gets_no_file_command_proof() {
+        let asked = Asked {
+            root: false,
+            ..ROOT
+        };
+        for name in ["fleet serve", "--vcon-fetch", "--cores", "--dump-config"] {
+            let refused = confine_file_command(name, asked, &[]);
+            assert!(
+                refused.is_err_and(|e| e.contains("not a command that parses a named file")),
+                "{name} is not a file command"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_with_no_row_gets_no_file_command_proof() {
+        let refused = confine_file_command("--no-such-flag", ROOT, &[]);
+        assert!(
+            refused.is_err_and(|e| e.starts_with("--no-such-flag:")),
+            "a name the table does not hold is refused before anything is dropped"
+        );
+    }
+
+    #[test]
+    fn the_seven_file_commands_carry_the_parse_plan() {
+        for name in FILE_COMMANDS {
+            assert_eq!(exit(name).plan, Plan::ParsesNamedFile, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_parse_plan_rows_are_the_seven_in_step_order() {
+        let names: Vec<&str> = rows()
+            .filter(|row| row.plan == Plan::ParsesNamedFile)
+            .map(|row| row.name)
+            .collect();
+        assert_eq!(names, FILE_COMMANDS, "the rows that parse a named file");
+    }
+
+    #[test]
+    fn the_parse_plan_drops_here() {
+        assert!(
+            Plan::ParsesNamedFile.drops_here(),
+            "a command that parses a named file drops in confine"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_root_file_command_with_no_user_drops_to_nobody() {
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), ROOT), Action::DropTo("nobody"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_root_file_command_drops_to_the_flag_user() {
         let asked = Asked {
             flag_user: Some("u"),
             ..ROOT
         };
-        for row in rows().filter(|row| row.plan == Plan::KeepsForNow) {
-            assert_eq!(action(row, asked), Action::Keep(row.reason), "{}", row.name);
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::DropTo("u"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_root_file_command_drops_to_the_config_user() {
+        let asked = Asked {
+            config_user: Some("c"),
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::DropTo("c"), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_flag_user_outranks_the_config_user_for_a_file_command() {
+        let asked = Asked {
+            flag_user: Some("u"),
+            config_user: Some("c"),
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::DropTo("u"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_file_command_never_keeps_root_for_a_reason_of_its_row() {
+        let asked = Asked {
+            flag_user: Some("u"),
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert!(
+                !matches!(action(exit(name), asked), Action::Keep(_)),
+                "{name} keeps root"
+            );
+        }
+    }
+
+    #[test]
+    fn no_row_waits_for_a_later_change() {
+        for row in rows() {
+            assert!(
+                !row.reason.contains("for now") && !row.reason.contains("COMMANDS-PARSE-AS-ROOT"),
+                "{} still keeps root for now: {}",
+                row.name,
+                row.reason
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_command_that_is_not_root_changes_in_nothing() {
+        let asked = Asked {
+            root: false,
+            flag_user: Some("u"),
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::Unchanged, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_file_command_with_no_priv_drop_keeps_root_with_the_warning() {
+        let asked = Asked {
+            no_priv_drop: true,
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::KeepWarned, "{name}");
+        }
+    }
+
+    #[test]
+    fn no_priv_drop_outranks_a_named_user_for_a_file_command() {
+        let asked = Asked {
+            no_priv_drop: true,
+            flag_user: Some("u"),
+            config_user: Some("c"),
+            ..ROOT
+        };
+        for name in FILE_COMMANDS {
+            assert_eq!(action(exit(name), asked), Action::KeepWarned, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_file_command_row_says_what_runs_as_root() {
+        for name in FILE_COMMANDS {
+            let reason = exit(name).reason;
+            assert!(
+                reason.contains("as root") && reason.contains("drops"),
+                "{name}: the reason does not say what runs as root and that it drops: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_file_commands_of_step_2_and_step_4e_keep_their_steps() {
+        for name in FILE_COMMANDS {
+            let want = if name == "--vcon-resign" { "4e" } else { "2" };
+            assert_eq!(exit(name).step, want, "{name}");
         }
     }
 
@@ -1063,34 +1297,6 @@ mod tests {
         for row in rows() {
             assert!(!row.reason.is_empty(), "{} has no reason", row.name);
             assert!(!row.step.is_empty(), "{} has no step", row.name);
-        }
-    }
-
-    #[test]
-    fn the_for_now_rows_are_the_seven_and_name_their_entry() {
-        let names: Vec<&str> = rows()
-            .filter(|row| row.plan == Plan::KeepsForNow)
-            .map(|row| row.name)
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "--show-frame",
-                "--write-annotated",
-                "--strip-secrets",
-                "--find-in-files",
-                "--compare-captures",
-                "--vcon-validate",
-                "--vcon-resign",
-            ],
-            "the commands that still parse as root"
-        );
-        for row in rows().filter(|row| row.plan == Plan::KeepsForNow) {
-            assert!(
-                row.reason.contains(PARSE_AS_ROOT_ENTRY),
-                "{} does not name its backlog entry",
-                row.name
-            );
         }
     }
 

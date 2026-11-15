@@ -104,7 +104,23 @@ pub fn compare_files(
     options: &crate::pipeline::PipelineOptions,
     top_n: usize,
 ) -> Result<CaptureComparison, CompareError> {
-    crate::capture::compare::compare(
+    compare_opened_files((a, None), (b, None), dimensions, options, top_n)
+}
+
+/// [`compare_files`] of files opened up front
+/// ([`crate::capture::compare::compare_opened`]).
+///
+/// # Errors
+///
+/// As [`compare_files`].
+pub fn compare_opened_files(
+    a: crate::capture::compare::OpenedRef<'_>,
+    b: crate::capture::compare::OpenedRef<'_>,
+    dimensions: &[String],
+    options: &crate::pipeline::PipelineOptions,
+    top_n: usize,
+) -> Result<CaptureComparison, CompareError> {
+    crate::capture::compare::compare_opened(
         a,
         b,
         dimensions,
