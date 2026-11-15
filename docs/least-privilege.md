@@ -118,12 +118,15 @@ started as root changes in nothing.
 | `sipnab fleet verify` | Reads its key files as root, then lists and reads the history files as `--user`, else `nobody` |
 | `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch` | Reads its credential, key and CA files as root, then runs as `--user`, else `[privilege] user`, else `nobody`, before it creates a directory or connects |
 | `--relay-holdings`, `--relay-sessions` | Runs as `--user`, else `[privilege] user`, else `nobody`, before it asks the relay |
+| `--show-frame`, `--strip-secrets`, `--write-annotated`, `--find-in-files`, `--compare-captures` | Since 0.5.257: names and opens its capture files (and the notes file) as root, then runs as `--user`, else `[privilege] user`, else `nobody`, before it unpacks or parses any of them |
+| `--vcon-validate`, `--vcon-resign` | Since 0.5.257: reads the container's bytes (and the signing key and certificate) as root, then runs as `--user`, else `[privilege] user`, else `nobody`, before it parses them |
 
 - A file the command reads once, such as a key, a token or a CA, can stay
   readable by root only.
 - What the command writes must belong to the user it runs as: the center's
   store and its directory, the forwarder's spool, and the directory that
-  holds `--vcon-fetch-out` or `--vcon-audio-fetch-out`.
+  holds `--vcon-fetch-out`, `--vcon-audio-fetch-out`, `--vcon-resign-out`, or
+  the copy `--strip-secrets` or `--write-annotated` writes.
 - When that user cannot write it, the command refuses to start, exits 2 and
   creates nothing. The message names the path and three ways out:
 
@@ -149,10 +152,6 @@ started as root changes in nothing.
 
 These commands still run as the user that started them, root included:
 
-- The commands that parse a file you name: `--strip-secrets`,
-  `--write-annotated`, `--show-frame`, `--find-in-files`,
-  `--compare-captures`, `--vcon-validate` and `--vcon-resign`. Run them as
-  an ordinary user when the file is one that user can read.
 - `sipnab g729 install`: it writes the table file into a directory root may
   own. Its download runs as root, and sipnab checks it against a fixed
   SHA-256 before it unpacks it. `--from DIR` uses no network
@@ -161,6 +160,61 @@ These commands still run as the user that started them, root included:
   `--uprobe-list`, `--mint-token`, `--dump-config`, `--vcon-spool-status`,
   `--journal-show`, `--revert-actions`, `--completions`,
   `--print-yang-module`, `sipnab fleet keygen` and `sipnab g729 status`.
+
+## Run a command that parses a file as root
+
+Purpose: run `--show-frame`, `--strip-secrets`, `--write-annotated`,
+`--find-in-files`, `--compare-captures`, `--vcon-validate` or `--vcon-resign`
+on a file only root can read, without parsing that file as root. Since
+0.5.257 sipnab opens the file as root and parses it as another user.
+
+Prerequisites:
+
+- sipnab 0.5.257 or later, started as root (with `sudo`, for example).
+- For a command that writes a file (`--strip-secrets`, `--write-annotated`,
+  `--vcon-resign-out`): a directory for the output that the user the run
+  drops to can write. No other system needs a change.
+
+Steps:
+
+1. Choose the user the command runs as: `--user USER`, else
+   `[privilege] user` in the config file, else `nobody`. `--show-frame`,
+   `--write-annotated` and `--vcon-validate` read the config file for
+   `[privilege]` only; if it does not load, they use `--user`, else `nobody`.
+2. Run the command and name the output in a directory that user can write.
+   Here `call.pcapng` is a capture only root can read, in a directory you
+   own:
+
+   ```sh
+   sudo sipnab --strip-secrets clean.pcapng -I call.pcapng --user "$SUDO_USER"
+   ```
+
+3. A command that prints its answer needs no output directory:
+
+   ```sh
+   sudo sipnab --show-frame 'call.pcapng#12'
+   ```
+
+Verify: the output file belongs to the user the run dropped to
+(`ls -l clean.pcapng`). With `--no-tui` (`-N`), the log holds
+`Dropped privileges to user 'nobody'` before the command's result.
+
+Troubleshoot:
+
+- The run exits 2 with a message that starts
+  `--strip-secrets: started as root`: it stopped before it parsed or created
+  anything. Use one of the three ways the message lists.
+- A gzip capture or an archive fails with `Permission denied`: sipnab
+  unpacks it after the drop, into the temporary directory. Point `TMPDIR` at
+  a directory the user the run drops to can write.
+- `--find-in-files` exits 2 and names the open-file limit: as root it opens
+  every file before the drop. Raise the limit (`ulimit -n`), or sweep fewer
+  files in one run.
+- `--write-annotated` says a note names another capture: after the drop,
+  sipnab cannot compare two spellings of a path inside a directory the user
+  cannot enter. Spell `-I` as the notes file spells the capture.
+- `--no-priv-drop` keeps root for the whole command, and the command prints
+  one line that says so.
 
 ## Read capture files only root can read
 

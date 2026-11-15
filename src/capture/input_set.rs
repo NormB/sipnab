@@ -388,19 +388,41 @@ pub fn resolve_set(specs: &[String], opts: &ResolveOptions) -> Result<ResolvedSe
 /// Resolve, and report what resolution left out.
 fn resolve_reporting(specs: &[String], opts: &ResolveOptions) -> Result<ResolvedSet> {
     let (resolved, tally) = resolve_counting(specs, opts)?;
+    report_resolved(&resolved, &tally, opts.recursive);
+    Ok(resolved)
+}
 
-    // Reported here rather than left to the caller, so it reaches the operator
-    // for every `-I` path there is without each of them remembering to ask.
+/// Say what a resolution dropped, and warn when its files overlap in time.
+///
+/// Reported here rather than left to the caller, so it reaches the operator
+/// for every `-I` path there is without each of them remembering to ask.
+fn report_resolved(resolved: &ResolvedSet, tally: &ResolveTally, recursive: bool) {
     if tally.dropped_any() {
-        let line = tally.summary(resolved.inputs.len(), opts.recursive);
+        let line = tally.summary(resolved.inputs.len(), recursive);
         if tally.lossy() {
             tracing::warn!("{line}");
         } else {
             tracing::info!("{line}");
         }
     }
-
     warn_on_overlap(&resolved.inputs);
+}
+
+/// [`resolve_set`] of the one file `path`, opened up front as `file`: judged
+/// through the descriptor, never by its path.
+///
+/// # Errors
+///
+/// As [`resolve_set`].
+pub(crate) fn resolve_set_opened(path: &Path, file: std::fs::File) -> Result<ResolvedSet> {
+    let named = Candidates {
+        specs: vec![path.display().to_string()],
+        files: vec![(path.to_path_buf(), true)],
+        tally: ResolveTally::default(),
+        name_pat: None,
+    };
+    let (resolved, tally, _) = judge(named, Some(vec![Ok(file)]))?;
+    report_resolved(&resolved, &tally, false);
     Ok(resolved)
 }
 
@@ -416,6 +438,123 @@ fn resolve_counting(
     specs: &[String],
     opts: &ResolveOptions,
 ) -> Result<(ResolvedSet, ResolveTally)> {
+    let (set, tally, _) = judge(name_candidates(specs, opts)?, None)?;
+    Ok((set, tally))
+}
+
+/// The files a `-I` set names, before any of them is judged: globs and
+/// directories expanded, duplicates dropped. Naming reads directory listings
+/// and file types only; no file's content has been read.
+#[derive(Debug)]
+pub struct Candidates {
+    /// The specs, for the error that says none of them held a capture.
+    specs: Vec<String>,
+    /// Each file, and whether the operator named it.
+    files: Vec<(PathBuf, bool)>,
+    /// What naming dropped.
+    tally: ResolveTally,
+    /// `--name`, compiled.
+    name_pat: Option<glob::Pattern>,
+}
+
+impl Candidates {
+    /// How many files the set names.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Whether the set names no file.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// The files, in the order they are judged.
+    pub fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.files.iter().map(|(path, _)| path.as_path())
+    }
+
+    /// Open every file now, for a set judged after the process drops
+    /// privileges: one descriptor each, and nothing read from any of them.
+    /// A file that does not open keeps its error, and the judge reports it.
+    #[must_use]
+    pub fn open_up_front(self) -> OpenedCandidates {
+        let files = self
+            .files
+            .iter()
+            .map(|(path, _)| super::file::open_up_front(path))
+            .collect();
+        OpenedCandidates { named: self, files }
+    }
+}
+
+/// [`Candidates`], each opened ([`Candidates::open_up_front`]).
+#[derive(Debug)]
+pub struct OpenedCandidates {
+    /// The files.
+    named: Candidates,
+    /// One open result per file, in the same order.
+    files: Vec<std::io::Result<std::fs::File>>,
+}
+
+/// A set resolved from files opened up front ([`resolve_opened`]).
+#[derive(Debug)]
+pub struct OpenedSet {
+    /// The captures, in read order.
+    pub inputs: Vec<ResolvedInput>,
+    /// The descriptor of each input that is a file the operator's set named,
+    /// by its path. A member written out of an archive has none: the process
+    /// that judged the archive wrote it, and reads it by path.
+    handles: Vec<(PathBuf, std::fs::File)>,
+}
+
+impl OpenedSet {
+    /// Take the descriptor `path` was opened with, if it has one.
+    pub fn take_handle(&mut self, path: &Path) -> Option<std::fs::File> {
+        let at = self.handles.iter().position(|(p, _)| p == path)?;
+        Some(self.handles.swap_remove(at).1)
+    }
+}
+
+/// [`resolve`] for a set opened up front: every file is sniffed, unwrapped
+/// and probed through its descriptor, never by its path, so it can be judged
+/// after a privilege drop that the path would not survive.
+///
+/// # Errors
+///
+/// As [`resolve`]. A named file that did not open fails the set with the
+/// error its open gave.
+///
+/// # Side effects
+///
+/// As [`resolve`]: logs what was dropped, and holds what it extracted for
+/// the life of the run.
+pub fn resolve_opened(opened: OpenedCandidates, opts: &ResolveOptions) -> Result<OpenedSet> {
+    let OpenedCandidates { named, files } = opened;
+    let (set, tally, handles) = judge(named, Some(files))?;
+    report_resolved(&set, &tally, opts.recursive);
+    let ResolvedSet {
+        inputs,
+        extractions,
+        incomplete,
+        ..
+    } = set;
+    if incomplete {
+        crate::output::run_integrity::record_archives_cut_short();
+    }
+    for kept in extractions {
+        crate::capture::archive::keep_for_run(kept);
+    }
+    Ok(OpenedSet { inputs, handles })
+}
+
+/// Name the files `specs` hold: the first half of [`resolve`].
+///
+/// # Errors
+///
+/// No spec was given, `--name` is not a pattern, or a spec names nothing.
+pub fn name_candidates(specs: &[String], opts: &ResolveOptions) -> Result<Candidates> {
     if specs.is_empty() {
         bail!("no capture input given");
     }
@@ -461,22 +600,101 @@ fn resolve_counting(
         }
     }
 
+    Ok(Candidates {
+        specs: specs.to_vec(),
+        files: candidates,
+        tally,
+        name_pat,
+    })
+}
+
+/// The descriptor of each resolved input that had one, by its path.
+type Handles = Vec<(PathBuf, std::fs::File)>;
+
+/// How the judge reaches one candidate.
+enum Reach {
+    /// By its path: the set was not opened up front.
+    ByPath,
+    /// Through the descriptor it was opened up front with.
+    Opened(std::fs::File),
+    /// Not at all: it did not open, and nobody named it.
+    Skipped,
+}
+
+/// How the judge reaches the candidate `path`, from what its open up front
+/// gave (`None` for a set read by path). A file that did not open is a file
+/// that cannot be read: a named one fails the set, a found one is skipped
+/// and counted.
+///
+/// # Errors
+///
+/// A file named with `-I` did not open.
+fn reach(
+    opened: Option<std::io::Result<std::fs::File>>,
+    path: &Path,
+    explicit: bool,
+    tally: &mut ResolveTally,
+) -> Result<Reach> {
+    match opened {
+        None => Ok(Reach::ByPath),
+        Some(Ok(file)) => Ok(Reach::Opened(file)),
+        Some(Err(e)) if explicit => {
+            bail!(
+                "cannot read capture '{}' named with -I: {e}",
+                path.display()
+            );
+        }
+        Some(Err(e)) => {
+            tally.unreadable += 1;
+            tracing::warn!("Skipping '{}': cannot open it ({e})", path.display());
+            Ok(Reach::Skipped)
+        }
+    }
+}
+
+/// Judge each candidate: sniff it, unwrap it, probe its first packet. The
+/// second half of [`resolve`], and the one rule for a set read by path
+/// (`opened` is `None`) and a set opened up front.
+///
+/// # Returns
+///
+/// The set, what was dropped, and the descriptor of every resolved input
+/// that had one.
+fn judge(
+    named: Candidates,
+    opened: Option<Vec<std::io::Result<std::fs::File>>>,
+) -> Result<(ResolvedSet, ResolveTally, Handles)> {
+    let Candidates {
+        specs,
+        files: candidates,
+        mut tally,
+        name_pat,
+    } = named;
+    let mut opened = opened.map(Vec::into_iter);
+    let mut handles: Handles = Vec::new();
     let mut resolved: Vec<ResolvedInput> = Vec::new();
     let mut extractions: Vec<crate::capture::archive::KeptExtraction> = Vec::new();
     for (path, explicit) in candidates {
+        let next = opened.as_mut().and_then(Iterator::next);
+        let file = match reach(next, &path, explicit, &mut tally)? {
+            Reach::ByPath => None,
+            Reach::Opened(file) => Some(file),
+            Reach::Skipped => continue,
+        };
+        let member = super::file::Member::of(&path, file.as_ref());
         // A wrapper — gzip, tar, or both — is unwrapped here, before libpcap
         // is asked, and its captures join the set like files found in a
         // directory. See `crate::capture::archive`. A gzip format vCon is
         // not a wrapper: the vCon reader inflates it.
-        let format = if super::vcon_input::is_container_file(&path) {
+        let format = if member.is_container() {
             Ok(None)
         } else {
-            crate::capture::archive::container_format(&path)
+            member.container_format()
         };
         match format {
             Ok(Some(f)) if crate::capture::archive::unwraps(f) => {
                 expand_archive(
-                    &path,
+                    member,
                     explicit,
                     name_pat.as_ref(),
                     &mut tally,
@@ -500,12 +718,16 @@ fn resolve_counting(
             // A capture, or something libpcap will judge: the path below.
             Ok(None) | Err(_) => {}
         }
-        match first_packet_time(&path) {
-            Ok(first_packet) => resolved.push(ResolvedInput {
-                path,
-                first_packet,
-                label: None,
-            }),
+        let probed = first_packet_time_of(member);
+        match probed {
+            Ok(first_packet) => {
+                handles.extend(file.map(|file| (path.clone(), file)));
+                resolved.push(ResolvedInput {
+                    path,
+                    first_packet,
+                    label: None,
+                });
+            }
             Err(e) if explicit => {
                 return Err(e).with_context(|| {
                     format!("cannot read capture '{}' named with -I", path.display())
@@ -562,6 +784,7 @@ fn resolve_counting(
             not_read: tally.members_skipped + tally.unreadable,
         },
         tally,
+        handles,
     ))
 }
 
@@ -576,7 +799,7 @@ fn resolve_counting(
 ///
 /// Only when an archive named directly cannot be opened at all.
 fn expand_archive(
-    path: &Path,
+    member: super::file::Member<'_>,
     explicit: bool,
     name_pat: Option<&glob::Pattern>,
     tally: &mut ResolveTally,
@@ -585,8 +808,15 @@ fn expand_archive(
 ) -> Result<()> {
     use crate::capture::archive;
 
+    let path = member.path;
     let keep = |name: &str| name_pat.is_none_or(|p| p.matches(name));
-    let mut exp = match archive::expand_filtered(path, &archive::Limits::for_run(), Some(&keep)) {
+    let limits = archive::Limits::for_run();
+    let expanded = match member.up_front {
+        Some(file) => super::file::rewound(file)
+            .and_then(|file| archive::expand_opened_filtered(file, path, &limits, Some(&keep))),
+        None => archive::expand_filtered(path, &limits, Some(&keep)),
+    };
+    let mut exp = match expanded {
         Ok(exp) => exp,
         Err(e) if explicit => {
             return Err(e).with_context(|| {
@@ -1032,20 +1262,30 @@ fn note_undescended_dir(
 /// the same opener as the read path, so gzip members are handled identically
 /// and a mixed compressed/uncompressed set needs no special case here.
 pub(crate) fn first_packet_time(path: &Path) -> Result<Option<f64>> {
+    first_packet_time_of(super::file::Member::by_path(path))
+}
+
+/// [`first_packet_time`] of a member read by its path or, when it was opened
+/// up front, through its descriptor and never by its path.
+fn first_packet_time_of(member: super::file::Member<'_>) -> Result<Option<f64>> {
+    let path = member.path;
     // A stored vCon container is read, validated and timed by its earliest
     // message, so a directory of them sorts like a directory of captures and
     // an invalid one is refused here with the schema's reasons. See
     // `crate::capture::vcon_input`.
-    if super::vcon_input::is_container_file(path) {
-        return container_first_message(path);
+    if member.is_container() {
+        return match member.up_front {
+            Some(_) => container_first_message_of(member.read_container()?),
+            None => container_first_message(path),
+        };
     }
     // A merged pcapng must be recognized BEFORE libpcap touches it. libpcap
     // opens such a file happily and fails on the first packet that names a
     // second interface, so there is no open-time error to catch -- and this
     // gate has to agree with the read path, or an explicitly named merged
     // capture is rejected here and never reaches the reader that can open it.
-    if super::merged::is_merged(path) {
-        let mut merged = super::merged::MergedPcapNg::open(path)?;
+    if member.is_merged() {
+        let mut merged = member.open_merged()?;
         return Ok(merged.next_frame().map(|f| {
             #[allow(clippy::cast_precision_loss)]
             {
@@ -1053,7 +1293,7 @@ pub(crate) fn first_packet_time(path: &Path) -> Result<Option<f64>> {
             }
         }));
     }
-    let (mut cap, _gz_guard) = super::file::open_offline(path)?;
+    let (mut cap, _gz_guard) = member.open_for_libpcap()?;
     match cap.next_packet() {
         Ok(pkt) => {
             let ts = pkt.header.ts;
@@ -1080,13 +1320,27 @@ fn container_first_message(path: &Path) -> Result<Option<f64>> {
         // container report from this one read; its text is the reader's.
         let rebuilt =
             super::vcon_input::read_file_reporting(path).map_err(|r| anyhow::Error::new(*r))?;
+        container_first_message_of(rebuilt)
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        let rebuilt = super::vcon_input::read_file(path).map_err(anyhow::Error::new)?;
+        container_first_message_of(rebuilt)
+    }
+}
+
+/// Epoch seconds of the earliest message of a container already read.
+// A `Result` in both builds, so the two callers read alike.
+#[allow(clippy::unnecessary_wraps)]
+fn container_first_message_of(rebuilt: super::vcon_input::Rebuilt) -> Result<Option<f64>> {
+    #[cfg(feature = "vcon")]
+    {
         Ok(rebuilt
             .first_message
             .map(|t| t.timestamp() as f64 + f64::from(t.timestamp_subsec_micros()) / 1_000_000.0))
     }
     #[cfg(not(feature = "vcon"))]
     {
-        let rebuilt = super::vcon_input::read_file(path).map_err(anyhow::Error::new)?;
         let _ = rebuilt;
         Ok(None)
     }
@@ -1167,6 +1421,289 @@ mod tests {
 
     fn spec(p: &Path) -> String {
         p.to_string_lossy().into_owned()
+    }
+
+    // ---- a set opened up front and judged through its descriptors ----
+    //
+    // Each test removes the files after they are opened and before they are
+    // judged: a judge that opened any of them by path would find nothing.
+
+    /// Write `files` into a new directory and return it with their paths.
+    fn written(files: &[(&str, Vec<u8>)]) -> Result<(tempfile::TempDir, Vec<PathBuf>), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let mut paths = Vec::new();
+        for (name, bytes) in files {
+            let path = root.path().join(name);
+            std::fs::write(&path, bytes).map_err(|e| format!("write {name}: {e:?}"))?;
+            paths.push(path);
+        }
+        Ok((root, paths))
+    }
+
+    /// Name `specs`, open the set, remove every named file, and judge it.
+    fn judged_after_removal(specs: &[String]) -> Result<Result<OpenedSet, String>, TestError> {
+        let options = ResolveOptions::default();
+        let named = name_candidates(specs, &options).map_err(|e| format!("naming: {e:#}"))?;
+        let paths: Vec<PathBuf> = named.paths().map(Path::to_path_buf).collect();
+        let opened = named.open_up_front();
+        for path in &paths {
+            std::fs::remove_file(path).map_err(|e| format!("remove: {e:?}"))?;
+        }
+        Ok(resolve_opened(opened, &options).map_err(|e| format!("{e:#}")))
+    }
+
+    #[test]
+    fn an_opened_set_resolves_in_packet_order_with_no_path_left() -> Result<(), TestError> {
+        let (_root, paths) = written(&[
+            ("later.pcap", pcap_at(2_000, b"b")),
+            ("earlier.pcap", pcap_at(1_000, b"a")),
+        ])?;
+        let set = judged_after_removal(&[spec(&paths[0]), spec(&paths[1])])??;
+        let order: Vec<&Path> = set.inputs.iter().map(|r| r.path.as_path()).collect();
+        assert_eq!(
+            order,
+            [paths[1].as_path(), paths[0].as_path()],
+            "the set is ordered by first packet, read through the descriptors"
+        );
+        assert_eq!(
+            set.inputs[0].first_packet,
+            Some(1_000.0),
+            "the first packet's time was read through the descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn each_resolved_file_keeps_the_descriptor_it_was_opened_with() -> Result<(), TestError> {
+        use std::io::Read as _;
+        let bytes = pcap_at(1_000, b"payload");
+        let (_root, paths) = written(&[("a.pcap", bytes.clone())])?;
+        let mut set = judged_after_removal(&[spec(&paths[0])])??;
+        let file = set.take_handle(&paths[0]).ok_or("no descriptor")?;
+        let mut read = Vec::new();
+        crate::capture::file::rewound(&file)
+            .and_then(|mut f| f.read_to_end(&mut read))
+            .map_err(|e| format!("read: {e:?}"))?;
+        assert_eq!(read, bytes, "the descriptor reads the removed file");
+        assert!(
+            set.take_handle(&paths[0]).is_none(),
+            "a descriptor is taken once"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_gzip_capture_is_inflated_from_its_descriptor() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap.gz", gzip(&pcap_at(1_500, b"z"))?)])?;
+        let mut set = judged_after_removal(&[spec(&paths[0])])??;
+        assert_eq!(set.inputs.len(), 1, "one capture");
+        assert_eq!(
+            set.inputs[0].first_packet,
+            Some(1_500.0),
+            "probed after inflation"
+        );
+        // The judge inflated it into a file of its own, which it reads by
+        // path: the compressed file's descriptor is not needed again.
+        let inflated = set.inputs[0].path.clone();
+        assert_ne!(inflated, paths[0], "the capture is the inflated copy");
+        assert!(inflated.is_file(), "the inflated copy was written out");
+        assert_eq!(
+            set.inputs[0].name(),
+            paths[0].display().to_string(),
+            "it goes by the compressed file's name"
+        );
+        assert!(
+            set.take_handle(&inflated).is_none(),
+            "an inflated copy has no descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_archive_resolves_to_members_read_by_path() -> Result<(), TestError> {
+        let tar = tar_of(&[
+            ("set/later.pcap", &pcap_at(2_000, b"b")),
+            ("set/earlier.pcap", &pcap_at(1_000, b"a")),
+        ]);
+        let (_root, paths) = written(&[("set.tgz", gzip(&tar)?)])?;
+        let mut set = judged_after_removal(&[spec(&paths[0])])??;
+        let names: Vec<String> = set.inputs.iter().map(|r| r.name().to_string()).collect();
+        assert_eq!(
+            names,
+            [
+                format!("{}/set/earlier.pcap", paths[0].display()),
+                format!("{}/set/later.pcap", paths[0].display()),
+            ],
+            "the members, labeled and in packet order"
+        );
+        for input in std::mem::take(&mut set.inputs) {
+            assert!(input.path.is_file(), "the member was written out");
+            assert!(
+                set.take_handle(&input.path).is_none(),
+                "a member has no descriptor: the judge wrote it and reads it by path"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_directory_is_named_before_any_file_is_read() -> Result<(), TestError> {
+        let (root, _paths) = written(&[
+            ("a.pcap", pcap_at(1_000, b"a")),
+            ("b.pcap", pcap_at(2_000, b"b")),
+        ])?;
+        let named = name_candidates(&[spec(root.path())], &ResolveOptions::default())
+            .map_err(|e| format!("naming: {e:#}"))?;
+        assert_eq!(named.len(), 2, "both files are candidates");
+        assert!(!named.is_empty(), "the set is not empty");
+        let set = judged_after_removal(&[spec(root.path())])??;
+        assert_eq!(
+            set.inputs.len(),
+            2,
+            "both were judged through their descriptors"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_file_named_twice_is_one_candidate() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        let named = name_candidates(
+            &[spec(&paths[0]), spec(&paths[0])],
+            &ResolveOptions::default(),
+        )
+        .map_err(|e| format!("naming: {e:#}"))?;
+        assert_eq!(
+            named.paths().collect::<Vec<_>>(),
+            [paths[0].as_path()],
+            "a duplicate is dropped at naming, so it costs no descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn naming_no_spec_is_refused() {
+        let refused = name_candidates(&[], &ResolveOptions::default());
+        assert!(
+            refused.is_err_and(|e| e.to_string().contains("no capture input given")),
+            "an empty set is refused at naming"
+        );
+    }
+
+    #[test]
+    fn naming_a_bad_name_pattern_is_refused() -> Result<(), TestError> {
+        let (root, _paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        let options = ResolveOptions {
+            name_glob: Some("[".to_string()),
+            ..ResolveOptions::default()
+        };
+        let refused = name_candidates(&[spec(root.path())], &options);
+        assert!(
+            refused.is_err_and(|e| format!("{e:#}").contains("bad filename pattern")),
+            "a pattern that does not compile is refused at naming"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_named_file_that_is_no_capture_fails_the_opened_set() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("notes.pcap", b"this is not a capture".to_vec())])?;
+        let refused = judged_after_removal(&[spec(&paths[0])])?;
+        let why = refused.err().ok_or("a text file resolved")?;
+        assert!(
+            why.contains("cannot read capture") && why.contains("named with -I"),
+            "the refusal names the file the operator named: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_named_file_that_did_not_open_fails_the_set_with_the_opens_error() -> Result<(), TestError>
+    {
+        let (root, paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        let named = name_candidates(&[spec(&paths[0])], &ResolveOptions::default())
+            .map_err(|e| format!("naming: {e:#}"))?;
+        // Removed between naming and opening: the open fails, and the judge
+        // reports that error instead of trying the path.
+        std::fs::remove_file(&paths[0]).map_err(|e| format!("remove: {e:?}"))?;
+        let refused = resolve_opened(named.open_up_front(), &ResolveOptions::default());
+        let why = format!("{:#}", refused.err().ok_or("resolved")?);
+        assert!(
+            why.contains("cannot read capture") && why.contains("No such file"),
+            "the open's own error is reported: {why}"
+        );
+        drop(root);
+        Ok(())
+    }
+
+    #[test]
+    fn a_found_file_that_is_no_capture_is_skipped_in_an_opened_set() -> Result<(), TestError> {
+        let (root, paths) = written(&[
+            ("a.pcap", pcap_at(1_000, b"a")),
+            ("junk.pcap", b"junk".to_vec()),
+        ])?;
+        let set = judged_after_removal(&[spec(root.path())])??;
+        let kept: Vec<&Path> = set.inputs.iter().map(|r| r.path.as_path()).collect();
+        assert_eq!(
+            kept,
+            [paths[0].as_path()],
+            "the file found in the directory is skipped; the capture stays"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_set_with_no_capture_names_the_specs() -> Result<(), TestError> {
+        let (root, _paths) = written(&[("junk.pcap", b"junk".to_vec())])?;
+        let refused = judged_after_removal(&[spec(root.path())])?;
+        let why = refused.err().ok_or("resolved")?;
+        assert!(
+            why.contains(&spec(root.path())),
+            "the refusal names what was asked for: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn one_opened_archive_resolves_as_a_set() -> Result<(), TestError> {
+        let tar = tar_of(&[("m.pcap", &pcap_at(1_000, b"a"))]);
+        let (_root, paths) = written(&[("set.tar", tar)])?;
+        let file =
+            crate::capture::file::open_up_front(&paths[0]).map_err(|e| format!("open: {e:?}"))?;
+        std::fs::remove_file(&paths[0]).map_err(|e| format!("remove: {e:?}"))?;
+        let set = resolve_set_opened(&paths[0], file).map_err(|e| format!("{e:#}"))?;
+        assert_eq!(
+            set.inputs.len(),
+            1,
+            "the archive's one member, walked through the descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_judge_reads_a_set_by_path_as_it_reads_one_opened() -> Result<(), TestError> {
+        let (_root, paths) = written(&[
+            ("later.pcap", pcap_at(2_000, b"b")),
+            ("earlier.pcap", pcap_at(1_000, b"a")),
+        ])?;
+        let specs = [spec(&paths[0]), spec(&paths[1])];
+        let options = ResolveOptions::default();
+        let by_path = resolve(&specs, &options).map_err(|e| format!("{e:#}"))?;
+        let named = name_candidates(&specs, &options).map_err(|e| format!("{e:#}"))?;
+        let opened =
+            resolve_opened(named.open_up_front(), &options).map_err(|e| format!("{e:#}"))?;
+        let key = |inputs: &[ResolvedInput]| -> Vec<(PathBuf, Option<u64>)> {
+            inputs
+                .iter()
+                .map(|r| (r.path.clone(), r.first_packet.map(f64::to_bits)))
+                .collect()
+        };
+        assert_eq!(
+            key(&by_path),
+            key(&opened.inputs),
+            "one judge, two ways to reach a file"
+        );
+        Ok(())
     }
 
     /// A single file still resolves to exactly itself. This is the

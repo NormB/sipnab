@@ -1878,7 +1878,7 @@ fn raise_open_file_soft_limit(soft: u64, hard: u64) -> std::io::Result<()> {
 ///
 /// Exit 2 when the set does not fit under the hard limit, exit 1 when the
 /// soft limit could not be raised.
-fn fit_set_under_open_file_limit(files: usize) -> Result<(), PlanError> {
+pub(crate) fn fit_set_under_open_file_limit(files: usize) -> Result<(), PlanError> {
     let (soft, hard) = open_file_limits();
     match set_fd_budget(files, soft, hard) {
         SetFdBudget::Fits => Ok(()),
@@ -5251,7 +5251,7 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     // that frame. Needs no config, no capture and no privileges -- it reads one
     // frame out of one file.
     if let Some(ref pointer) = cli.name_args.show_frame {
-        return Some(show_frame(pointer));
+        return Some(show_frame(cli, pointer));
     }
 
     // --write-annotated: a pcapng copy of one capture with the operator's
@@ -5334,7 +5334,7 @@ fn notes_refusal(cli: &Cli) -> Option<i32> {
 /// than one capture.
 struct OneCopyCommand<'a> {
     /// The flag, as the operator typed it (`--strip-secrets`).
-    flag: &'a str,
+    flag: &'static str,
     /// What the command writes (`one sanitized copy`).
     writes: &'a str,
     /// The sentence that tells the operator what to do instead.
@@ -5357,9 +5357,96 @@ fn resolve_one_capture(
     out: &str,
 ) -> Result<crate::capture::input_set::ResolvedInput, PlanError> {
     let flag = command.flag;
-    let mut resolved =
+    let resolved =
         crate::capture::input_set::resolve(&cli.capture_args.input, &cli.input_resolve_options())
-            .map_err(|e| PlanError::new(1, format!("{flag}: {e:#}")))?;
+            .map_err(|e| unresolved_input(flag, &e))?;
+    let capture = the_one_capture(resolved, command)?;
+    // The copy must not be written over the file it is made from.
+    let protected = crate::capture::output_guard::ProtectedInputs::new(
+        &cli.capture_args.input,
+        std::slice::from_ref(&capture.path),
+        cli.capture_args.recursive,
+    );
+    protected
+        .check(std::path::Path::new(out), flag, false)
+        .map_err(PlanError::arg)?;
+    Ok(capture)
+}
+
+/// [`resolve_one_capture`] for a command that drops privileges before it
+/// parses: started as root and dropping, the files `-I` names are opened,
+/// `before_drop` runs, the process drops, and the set is judged through the
+/// descriptors; the capture comes back with the one it is read through.
+/// A run that does not drop resolves by path and reads by path.
+///
+/// # Errors
+///
+/// As [`resolve_one_capture`]; the set does not fit under the open-file
+/// limit or the user dropped to cannot write the output's directory (exit
+/// 2); what `before_drop` refuses.
+///
+/// # Side effects
+///
+/// May change the process's user ([`FileCommand::confine`]).
+fn one_capture_confined(
+    cli: &Cli,
+    drop: &FileCommand<'_>,
+    command: &OneCopyCommand<'_>,
+    out: &str,
+    before_drop: &mut dyn FnMut() -> Result<(), PlanError>,
+) -> Result<
+    (
+        crate::capture::input_set::ResolvedInput,
+        Option<std::fs::File>,
+    ),
+    PlanError,
+> {
+    use crate::capture::input_set;
+    if !drop.drops() {
+        let _confined = drop.confine(&[])?;
+        return resolve_one_capture(cli, command, out).map(|capture| (capture, None));
+    }
+    let flag = command.flag;
+    let options = cli.input_resolve_options();
+    let failed = |e: anyhow::Error| unresolved_input(flag, &e);
+    let named = input_set::name_candidates(&cli.capture_args.input, &options).map_err(failed)?;
+    fit_set_under_open_file_limit(named.len())?;
+    // The copy must not be written over a file it could be made from:
+    // checked against every file the set names, while each path still
+    // resolves for this process.
+    let protected = crate::capture::output_guard::ProtectedInputs::new(
+        &cli.capture_args.input,
+        &named
+            .paths()
+            .map(std::path::Path::to_path_buf)
+            .collect::<Vec<_>>(),
+        cli.capture_args.recursive,
+    );
+    protected
+        .check(std::path::Path::new(out), flag, false)
+        .map_err(PlanError::arg)?;
+    let opened = named.open_up_front();
+    before_drop()?;
+    let confined = drop.confine(&[output_need(std::path::Path::new(out), command.flag)])?;
+    // The set is judged only once the run is confined.
+    let judged = |_: &crate::early_exit::Confined| input_set::resolve_opened(opened, &options);
+    let mut set = judged(&confined).map_err(failed)?;
+    let capture = the_one_capture(std::mem::take(&mut set.inputs), command)?;
+    let file = set.take_handle(&capture.path);
+    Ok((capture, file))
+}
+
+/// The failure of a single-output command whose `-I` did not resolve.
+fn unresolved_input(flag: &str, e: &anyhow::Error) -> PlanError {
+    PlanError::new(1, format!("{flag}: {e:#}"))
+}
+
+/// The one capture of `resolved`, or the refusal of a set of any other size.
+fn the_one_capture(
+    mut resolved: Vec<crate::capture::input_set::ResolvedInput>,
+    command: &OneCopyCommand<'_>,
+) -> Result<crate::capture::input_set::ResolvedInput, PlanError> {
+    let flag = command.flag;
     if resolved.len() != 1 {
         let names = resolved
             .iter()
@@ -5376,15 +5463,6 @@ fn resolve_one_capture(
             ),
         ));
     }
-    // The copy must not be written over the file it is made from.
-    let protected = crate::capture::output_guard::ProtectedInputs::new(
-        &cli.capture_args.input,
-        &resolved.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
-        cli.capture_args.recursive,
-    );
-    protected
-        .check(std::path::Path::new(out), flag, false)
-        .map_err(PlanError::arg)?;
     Ok(resolved.swap_remove(0))
 }
 
@@ -5449,7 +5527,7 @@ fn strip_secrets_copy(cli: &Cli, out: &str) -> Result<String, PlanError> {
     // without it, a ring member over the default would be strippable when
     // the ceiling was typed on the command line and refused when the same
     // number was written in the config file.
-    load_config(cli)?;
+    let loaded = load_config(cli)?;
     // Resolve `-I` the way a normal run does instead of reading
     // `cli.primary_input()`, the first `-I` *argument*. `-I` is repeatable
     // and expands directories and globs, so the argument is often not a
@@ -5486,11 +5564,17 @@ fn strip_secrets_copy(cli: &Cli, out: &str) -> Result<String, PlanError> {
         advice: "Run it once per file — stripping only one of them would ship the rest with \
                  their decryption secrets intact.",
     };
-    let capture = resolve_one_capture(cli, &command, out)?;
+    // Started as root, the run drops before it judges or reads the capture,
+    // and reads it through the descriptor it opened first.
+    let drop = FileCommand::new(cli, Some(&loaded.config), "--strip-secrets");
+    let (capture, file) = one_capture_confined(cli, &drop, &command, out, &mut || Ok(()))?;
     let input = capture.name().to_string();
-    let stripped =
-        crate::capture::pcapng_meta::strip_secrets(&capture.path, std::path::Path::new(out))
-            .map_err(|e| PlanError::new(1, format!("--strip-secrets failed: {e}")))?;
+    let out_path = std::path::Path::new(out);
+    let stripped = match file {
+        Some(file) => crate::capture::pcapng_meta::strip_secrets_opened(file, out_path),
+        None => crate::capture::pcapng_meta::strip_secrets(&capture.path, out_path),
+    }
+    .map_err(|e| PlanError::new(1, format!("--strip-secrets failed: {e}")))?;
     Ok(format!(
         "Stripped {}: {input} -> {out}",
         stripped.describe()
@@ -5548,8 +5632,15 @@ fn annotated_copy(cli: &Cli, out: &str) -> Result<String, PlanError> {
         writes: "one copy",
         advice: "Run it once per capture.",
     };
-    let capture = resolve_one_capture(cli, &command, out)?;
     let notes_file = std::path::Path::new(notes_path);
+    // Started as root, the run opens the capture and the notes file, drops,
+    // and parses both through those descriptors.
+    let drop = FileCommand::new(cli, None, "--write-annotated");
+    let mut notes_opened = None;
+    let (capture, file) = one_capture_confined(cli, &drop, &command, out, &mut || {
+        notes_opened = Some(std::fs::File::open(notes_file));
+        Ok(())
+    })?;
     if names_the_same_file(std::path::Path::new(out), notes_file) {
         return Err(PlanError::arg(format!(
             "--write-annotated {out} would overwrite the notes file it reads; \
@@ -5557,8 +5648,13 @@ fn annotated_copy(cli: &Cli, out: &str) -> Result<String, PlanError> {
         )));
     }
 
-    let notes = crate::annotate::Notes::load(notes_file)
-        .map_err(|e| PlanError::new(1, format!("--notes {notes_path}: {e}")))?;
+    let notes = match notes_opened {
+        Some(opened) => opened
+            .map_err(crate::annotate::NotesFileError::Io)
+            .and_then(crate::annotate::Notes::load_opened),
+        None => crate::annotate::Notes::load(notes_file),
+    }
+    .map_err(|e| PlanError::new(1, format!("--notes {notes_path}: {e}")))?;
     if notes.is_empty() {
         return Err(PlanError::new(
             1,
@@ -5570,8 +5666,8 @@ fn annotated_copy(cli: &Cli, out: &str) -> Result<String, PlanError> {
     // name. For a member of an archive it is `<archive>/<member>`, the name
     // the member's frame pointers carry, never the file it was extracted to.
     let label = capture.name().to_string();
-    let report = crate::annotate::copy::write_annotated_copy(
-        &capture.path,
+    let report = crate::annotate::copy::write_annotated_copy_of(
+        crate::capture::file::Member::of(&capture.path, file.as_ref()),
         &label,
         &notes,
         std::path::Path::new(out),
@@ -5611,8 +5707,10 @@ fn names_the_same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
 /// `0` when the frame was found (verified, or unverified and labeled as
 /// such), `1` when the pointer could not be honored, `2` when it did not
 /// parse.
-fn show_frame(pointer: &str) -> i32 {
-    use crate::capture::resolve::{Resolution, parse_pointer, resolve};
+fn show_frame(cli: &Cli, pointer: &str) -> i32 {
+    use crate::capture::resolve::{
+        Resolution, open_source_up_front, parse_pointer, resolve, resolve_opened,
+    };
 
     let parsed = match parse_pointer(pointer) {
         Ok(p) => p,
@@ -5627,7 +5725,24 @@ fn show_frame(pointer: &str) -> i32 {
         }
     };
 
-    match resolve(&parsed) {
+    // Started as root: the file the pointer names is opened, the process
+    // drops, and the frame is found through that descriptor.
+    let drop = FileCommand::new(cli, None, "--show-frame");
+    let opened = drop.drops().then(|| open_source_up_front(&parsed.source));
+    let confined = match drop.confine(&[]) {
+        Ok(confined) => confined,
+        Err(refusal) => {
+            crate::early_exit::report(&refusal.message);
+            return refusal.exit_code;
+        }
+    };
+    // The frame is read only once the run is confined.
+    let frame_of = |_: &crate::early_exit::Confined| match opened {
+        Some(opened) => resolve_opened(&parsed, opened),
+        None => resolve(&parsed),
+    };
+    let resolved = frame_of(&confined);
+    match resolved {
         Ok(Resolution::Verified(bytes)) => {
             print_found_frame(pointer, &parsed, &bytes, true);
             0
@@ -5882,6 +5997,91 @@ pub fn confine_early_exit(
     crate::early_exit::confine(name, early_exit_asked(cli, config), needs).map(|_| ())
 }
 
+/// The privilege drop of a command that parses a file the caller named
+/// ([`crate::early_exit::Plan::ParsesNamedFile`]).
+///
+/// The command names, opens and reads its inputs and key files, calls
+/// [`FileCommand::confine`], and only then judges or parses a byte of them.
+/// When [`FileCommand::drops`] is false (the process is not root, or it
+/// keeps root) the command reads its inputs by path, as it always did.
+pub(crate) struct FileCommand<'a> {
+    /// The command line.
+    cli: &'a Cli,
+    /// The configuration that names `[privilege] user`.
+    config: std::borrow::Cow<'a, Config>,
+    /// The command's row in [`crate::early_exit::EARLY_EXITS`].
+    name: &'static str,
+}
+
+impl<'a> FileCommand<'a> {
+    /// The drop of the command `name`. `config` is the configuration the
+    /// command read; a command that reads none passes `None`, and a root run
+    /// then reads the config file for `[privilege]` only: a file that does
+    /// not load names no user, so the run drops to `--user` or `nobody`.
+    ///
+    /// # Side effects
+    ///
+    /// May read the config file, when the process is root and `config` is
+    /// `None`.
+    pub(crate) fn new(cli: &'a Cli, config: Option<&'a Config>, name: &'static str) -> Self {
+        let config = match config {
+            Some(config) => std::borrow::Cow::Borrowed(config),
+            None => std::borrow::Cow::Owned(privilege_only_config(cli, privilege::is_root())),
+        };
+        Self { cli, config, name }
+    }
+
+    /// Whether [`FileCommand::confine`] will change the process's user, so
+    /// the command must open its inputs first.
+    pub(crate) fn drops(&self) -> bool {
+        early_exit_drops(self.cli, &self.config, self.name)
+    }
+
+    /// Drop, and check that the user dropped to holds `needs`.
+    ///
+    /// # Errors
+    ///
+    /// Exit 2 with the refusal's text ([`crate::early_exit::confine`]).
+    /// Nothing was created.
+    ///
+    /// # Returns
+    ///
+    /// The proof the command's parsing step takes.
+    ///
+    /// # Side effects
+    ///
+    /// As [`confine_early_exit`].
+    pub(crate) fn confine(
+        &self,
+        needs: &[crate::early_exit::Need],
+    ) -> Result<crate::early_exit::Confined, PlanError> {
+        let asked = early_exit_asked(self.cli, &self.config);
+        crate::early_exit::confine_file_command(self.name, asked, needs).map_err(PlanError::arg)
+    }
+}
+
+/// The configuration a command that reads none takes `[privilege]` from:
+/// the config file when the process is `root`, else the defaults, which
+/// name no user. A file that does not load counts as the defaults.
+fn privilege_only_config(cli: &Cli, root: bool) -> Config {
+    if !root {
+        return Config::default();
+    }
+    load_config(cli)
+        .map(|loaded| loaded.config)
+        .unwrap_or_default()
+}
+
+/// The need of a command that writes `out` after its drop: to write in the
+/// directory that holds it, where the copy is made and renamed.
+pub(crate) fn output_need(out: &std::path::Path, what: &'static str) -> crate::early_exit::Need {
+    let dir = match out.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => std::path::Path::new("."),
+    };
+    crate::early_exit::creatable_dir(dir, what)
+}
+
 /// What [`crate::early_exit::action`] is asked for a command of the capture
 /// command line.
 fn early_exit_asked<'a>(cli: &'a Cli, config: &'a Config) -> crate::early_exit::Asked<'a> {
@@ -6053,7 +6253,25 @@ pub fn run_vcon_resign(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Opt
         if let Err(code) = apply_read_config(cli, read) {
             return Some(code);
         }
-        let code = match crate::app::vcon_resign::run(&cli.vcon_resign_args) {
+        // The key, the certificate and the input's bytes are read first;
+        // started as root, the run then drops before it parses the input.
+        let prepared = match crate::app::vcon_resign::prepare(&cli.vcon_resign_args) {
+            Ok(prepared) => prepared,
+            Err((code, message)) => {
+                tracing::error!("--vcon-resign: {message}");
+                return Some(code);
+            }
+        };
+        let config = read.as_ref().ok().map(|loaded| &loaded.config);
+        let drop = FileCommand::new(cli, config, "--vcon-resign");
+        let confined = match drop.confine(&[output_need(prepared.out(), "--vcon-resign-out")]) {
+            Ok(confined) => confined,
+            Err(refusal) => {
+                crate::early_exit::report(&refusal.message);
+                return Some(refusal.exit_code);
+            }
+        };
+        let code = match prepared.finish(&confined) {
             Ok(path) => {
                 tracing::info!("--vcon-resign: wrote '{}'", path.display());
                 0
@@ -14298,6 +14516,198 @@ mod decision_tests {
     }
 
     // ── startup commands ───────────────────────────────────────────────
+
+    fn resolved_input(path: &str) -> crate::capture::input_set::ResolvedInput {
+        crate::capture::input_set::ResolvedInput {
+            path: path.into(),
+            first_packet: None,
+            label: None,
+        }
+    }
+
+    const ONE_COPY: OneCopyCommand<'static> = OneCopyCommand {
+        flag: "--strip-secrets",
+        writes: "one sanitized copy",
+        advice: "Run it once per file.",
+    };
+
+    #[test]
+    fn the_one_capture_of_a_set_of_one_is_that_capture() -> Result<(), TestError> {
+        let one =
+            the_one_capture(vec![resolved_input("a.pcap")], &ONE_COPY).map_err(|e| e.message)?;
+        assert_eq!(
+            one.path,
+            std::path::Path::new("a.pcap"),
+            "the set's one capture"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_set_of_two_is_refused_and_both_are_named() -> Result<(), TestError> {
+        let refused = the_one_capture(
+            vec![resolved_input("a.pcap"), resolved_input("b.pcap")],
+            &ONE_COPY,
+        )
+        .err()
+        .ok_or("two captures")?;
+        assert_eq!(refused.exit_code, 1, "a set of two is a failure, not usage");
+        for part in [
+            "resolved to 2 files",
+            "'a.pcap'",
+            "'b.pcap'",
+            "once per file",
+        ] {
+            assert!(
+                refused.message.contains(part),
+                "lacks {part:?}: {}",
+                refused.message
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_set_of_none_is_refused() -> Result<(), TestError> {
+        let refused = the_one_capture(Vec::new(), &ONE_COPY)
+            .err()
+            .ok_or("no capture")?;
+        assert_eq!(refused.exit_code, 1, "an empty set is a failure");
+        assert!(
+            refused.message.contains("resolved to 0 files"),
+            "{}",
+            refused.message
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_need_of_an_output_is_its_directory() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let need = output_need(&dir.path().join("out.pcapng"), "--strip-secrets");
+        assert_eq!(need.path, dir.path(), "the copy is made in this directory");
+        assert_eq!(
+            need.access,
+            crate::early_exit::Access::WriteDir,
+            "the run creates and renames a file there"
+        );
+        assert_eq!(need.what, "--strip-secrets", "the refusal names the flag");
+        Ok(())
+    }
+
+    #[test]
+    fn the_need_of_an_output_that_exists_is_still_its_directory() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let out = dir.path().join("out.pcapng");
+        std::fs::write(&out, b"an earlier copy").map_err(|e| format!("write: {e:?}"))?;
+        assert_eq!(
+            output_need(&out, "--strip-secrets").path,
+            dir.path(),
+            "the copy replaces the file by a rename in its directory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_need_of_a_bare_output_name_is_the_current_directory() {
+        let need = output_need(std::path::Path::new("out.pcapng"), "--write-annotated");
+        assert_eq!(
+            need.path,
+            std::path::Path::new("."),
+            "a name with no directory is written where the run stands"
+        );
+    }
+
+    #[test]
+    fn the_need_of_an_output_below_a_missing_directory_is_the_nearest_one() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let need = output_need(
+            &dir.path().join("absent/deeper/out.json"),
+            "--vcon-resign-out",
+        );
+        assert_eq!(
+            need.path,
+            dir.path(),
+            "the nearest directory that exists decides"
+        );
+        Ok(())
+    }
+
+    /// A config file holding `text`, and the command line that names it.
+    fn config_naming(text: &str) -> Result<(tempfile::TempDir, Cli), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, text).map_err(|e| format!("write: {e:?}"))?;
+        let cli = cli_from(&["--config", path.to_str().ok_or("utf-8")?]);
+        Ok((dir, cli))
+    }
+
+    #[test]
+    fn a_root_file_command_takes_its_user_from_the_config_file() -> Result<(), TestError> {
+        let (_dir, cli) = config_naming("[privilege]\nuser = \"capture\"\n")?;
+        assert_eq!(
+            privilege_only_config(&cli, true).privilege.user.as_deref(),
+            Some("capture"),
+            "[privilege] user is read for a command that reads no other setting"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_ordinary_user_reads_no_config_for_the_drop() -> Result<(), TestError> {
+        let (_dir, cli) = config_naming("[privilege]\nuser = \"capture\"\n")?;
+        assert_eq!(
+            privilege_only_config(&cli, false).privilege.user,
+            None,
+            "a process that is not root drops nowhere, so the file is not read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_config_that_does_not_load_names_no_user() -> Result<(), TestError> {
+        let (_dir, cli) = config_naming("[privilege\nuser = ")?;
+        assert_eq!(
+            privilege_only_config(&cli, true).privilege.user,
+            None,
+            "a file that does not parse leaves the drop to --user or nobody"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_file_command_drops_only_when_the_process_is_root() {
+        let cli = cli_from(&["--user", "capture"]);
+        let drop = FileCommand::new(&cli, None, "--show-frame");
+        assert_eq!(
+            drop.drops(),
+            privilege::is_root(),
+            "with a user named, the run drops exactly when it is root"
+        );
+    }
+
+    #[test]
+    fn a_run_that_does_not_drop_resolves_its_one_capture_by_path() -> Result<(), TestError> {
+        let cli = cli_from(&["--no-priv-drop", "-I", FIXTURE_FILE]);
+        let drop = FileCommand::new(&cli, None, "--strip-secrets");
+        assert!(!drop.drops(), "--no-priv-drop never drops");
+        let mut ran = false;
+        let (capture, file) =
+            one_capture_confined(&cli, &drop, &ONE_COPY, "out.pcapng", &mut || {
+                ran = true;
+                Ok(())
+            })
+            .map_err(|e| e.message)?;
+        assert_eq!(
+            capture.path,
+            std::path::Path::new(FIXTURE_FILE),
+            "the capture -I names"
+        );
+        assert!(file.is_none(), "a run that keeps its user reads by path");
+        assert!(!ran, "the step before a drop does not run without one");
+        Ok(())
+    }
 
     /// A single-output command refuses a set of inputs, and an output that
     /// names its input.
