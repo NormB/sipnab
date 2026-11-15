@@ -13519,7 +13519,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.256 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.257 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13542,7 +13542,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.256` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.257` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13731,7 +13731,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.256) | Plugin | `Recommends` |
+| Artifact (0.5.257) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13771,11 +13771,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.256 for the
+it first, in the same shell, to the release you want, e.g. 0.5.257 for the
 latest:
 
 ```bash
-VERSION=0.5.256
+VERSION=0.5.257
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13915,13 +13915,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.256, as in
+you want, e.g. 0.5.257, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.256
+   VERSION=0.5.257
    ```
 
 - Download the package:
@@ -14042,25 +14042,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.256-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.257-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.256-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.257-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.256-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.257-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.256-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.257-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14546,14 +14546,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.256
+docker pull ghcr.io/normb/sipnab:0.5.257
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.256` | That release |
+| `0.5.257` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14591,7 +14591,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.256 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.257 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14604,11 +14604,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.256 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.257 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.256` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.256`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.257` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.257`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14806,7 +14806,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.257 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+sipnab 0.5.258 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -15030,7 +15030,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.256
+docker pull ghcr.io/normb/sipnab:0.5.257
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -37768,7 +37768,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.257 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+   sipnab 0.5.258 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -38470,7 +38470,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.257"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.258"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -39155,7 +39155,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.257",
+  "version": "0.5.258",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -40098,7 +40098,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.257"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.258"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -51610,7 +51610,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.257",
+  "version": "0.5.258",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -56059,7 +56059,7 @@ before it does either, and reads each one through the descriptor it opened
 then. A run that keeps its credentials (not root, or `--no-priv-drop` without
 `--chroot`) opens each file when it reaches it, as before.
 
-Since 0.5.258 a root run that drops privileges reads none of those bytes as
+Since 0.5.259 a root run that drops privileges reads none of those bytes as
 root: it opens the files, drops, and then unpacks, probes and reads them as
 the user it dropped to. The line `Reading N capture files` comes after
 `Dropped privileges` in the log.
@@ -56127,7 +56127,7 @@ up inside `DIR` and stopped with `Failed to drop privileges: User 'nobody' not
 found` unless `DIR` held an `etc/passwd` naming the user.
 
 A file run (`-I`) opens its files before it changes root and reads them
-through those descriptors, so `DIR` needs no copy of them. Since 0.5.258 an
+through those descriptors, so `DIR` needs no copy of them. Since 0.5.259 an
 archive or a `.pcap.gz` unpacks after the chroot, as the drop user, into the
 temporary directory inside `DIR`: create it, writable by that user.
 
@@ -89140,6 +89140,47 @@ It runs four checks at once:
 - `the tap is on <version>, newer than <version>`: you ran the check for an older release, and the tap is correct as it stands.
 - [`scripts/tests/test_post_release.py`](../../scripts/tests/test_post_release.py) drives every branch through a fake runner.
 
+### The text of a release
+
+The release page on GitHub holds three parts, in this order.
+
+1. The `CHANGELOG.md` section of the version.
+   It says what changed and what an operator must do before an upgrade.
+2. The download table, "Which download do I want?".
+   [`ops/release/platform-table.sh`](../../ops/release/platform-table.sh) derives it from the artifacts that built.
+3. The notes GitHub generates: one line for each merged pull request, and the link that compares the two tags.
+
+Through 0.5.256 the workflow wrote only parts 2 and 3, so an instruction in the changelog did not reach a reader of the release page.
+
+[`scripts/release-notes.py`](../../scripts/release-notes.py) writes part 1.
+
+- It prints what `CHANGELOG.md` holds between `## [<version>] - <date>` and the next `## ` heading.
+- A release page is outside the repository, so the script rewrites each relative link target as an address in the repository at the tag.
+  `docs/fleet.md#x` becomes `https://github.com/NormB/sipnab/blob/v<version>/docs/fleet.md#x`.
+  A target with a scheme stays as it is, and so does text in a code span or a code block.
+- GitHub shows each line break of a release text.
+  The script therefore joins a paragraph or a list item that the changelog writes on several lines.
+- It exits 1 and prints nothing on standard output when the version has no section, two sections or a section with no entry.
+  It also refuses a link target with a `..` step, a target in angle brackets, and a section over 100,000 characters.
+  GitHub's API refuses a release text over 125,000 characters; the bound leaves the rest for parts 2 and 3.
+  The action that publishes the release cuts a longer text at 124,999 characters without an error, so a cut can only remove the end of part 3.
+
+`release.yml` runs the script twice for a tag.
+
+- The job `Tag matches crate version` runs it in the step `Check that the release has its CHANGELOG section` and discards the output.
+  A tag without a section fails there, before the builds.
+- The job `Create Release` runs it in the step `Render the release text`, which writes the section and then the table to `release-body.md`.
+  A failure there ends the job before the step `Create GitHub Release`, so the workflow publishes nothing without the section.
+
+Run it by hand to read the first part of a release page before the tag exists:
+
+```sh
+python3 scripts/release-notes.py 0.5.256 --repo NormB/sipnab
+```
+
+[`scripts/tests/test_release_notes.py`](../../scripts/tests/test_release_notes.py) holds the script to every section of `CHANGELOG.md`, not only the newest.
+A section that the script would refuse, or one over the bound, fails in a pull request and not at the tag.
+
 ### Symbol files
 
 The release strips every binary it publishes.
@@ -92140,6 +92181,7 @@ Each successful run gets a row here.
 | 0.5.254 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-14 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.255 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-14 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.256 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.257 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it

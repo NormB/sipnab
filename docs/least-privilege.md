@@ -237,7 +237,7 @@ before it does either, and reads each one through the descriptor it opened
 then. A run that keeps its credentials (not root, or `--no-priv-drop` without
 `--chroot`) opens each file when it reaches it, as before.
 
-Since 0.5.258 a root run that drops privileges reads none of those bytes as
+Since 0.5.259 a root run that drops privileges reads none of those bytes as
 root: it opens the files, drops, and then unpacks, probes and reads them as
 the user it dropped to. The line `Reading N capture files` comes after
 `Dropped privileges` in the log.
@@ -305,7 +305,7 @@ up inside `DIR` and stopped with `Failed to drop privileges: User 'nobody' not
 found` unless `DIR` held an `etc/passwd` naming the user.
 
 A file run (`-I`) opens its files before it changes root and reads them
-through those descriptors, so `DIR` needs no copy of them. Since 0.5.258 an
+through those descriptors, so `DIR` needs no copy of them. Since 0.5.259 an
 archive or a `.pcap.gz` unpacks after the chroot, as the drop user, into the
 temporary directory inside `DIR`: create it, writable by that user.
 

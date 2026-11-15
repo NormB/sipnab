@@ -1266,7 +1266,7 @@ mod corpus {
             .iter()
             .filter(|(release, _)| release == "0.5.233")
             .count();
-        eq!(in_0_5_233, 17);
+        eq!(in_0_5_233, 13);
         Ok(())
     }
 

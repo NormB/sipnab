@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 const ALLOWED: &[(&str, &str, &str)] = &[
     (
         "CHANGELOG.md",
-        r#"- **`--find-in-files <PATH>...` finds which capture files hold the dialogs the run's filter selects**: `--filter`, a diagnostic alias such as `--problems`, and `--since`/`--until`. A directory stands for the capture files directly in it. It prints each file with a match, the count and the first matching Call-ID, and every file it could not read, and says whether it read every file: it exits 0 when it did and 1 when it did not, and 2 with no filter. Under `--json` it prints the `sweep` the MCP `find_in_captures` tool reports, from the same sweep. See [Find the files that hold a call](docs/cli-reference.md#find-the-files-that-hold-a-call)."#,
+        r#"- **`--find-in-files <PATH>...` finds which capture files hold the dialogs the run's filter selects.**"#,
         r#"clap's notation for a value that repeats, as `--help` prints `--find-in-files <PATH>...`"#,
     ),
     (
@@ -61,7 +61,7 @@ const ALLOWED: &[(&str, &str, &str)] = &[
     ),
     (
         "CHANGELOG.md",
-        r#"  - A line 3 wider than the terminal now ends in `…` instead of stopping at"#,
+        r#"  - Limit: a filter applied as an expression is always shown in full; a line 3 wider than the terminal ends in `…`."#,
         r#"sipnab's own cut marker: a status line wider than the terminal ends in U+2026 (`fit_spans_to_cols` in src/tui/render/status.rs)"#,
     ),
     (
