@@ -1224,7 +1224,8 @@ maintainer writes.
 - **Public claims match the code.** Anything the change says in the README,
   the site or the docs is true of the code as merged.
 - **A changelog entry.** A user-visible change adds an entry under
-  `## [Unreleased]` in [CHANGELOG.md](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md).
+  `## [Unreleased]` in [CHANGELOG.md](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md), in
+  [the format of an entry](https://github.com/NormB/sipnab/blob/main/docs/internals/build-ci-release.md#the-format-of-an-entry).
 - **The contributor agreement.** Everyone who committed to the branch has
   signed the [CLA](#contributor-license-agreement).
 
