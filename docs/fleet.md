@@ -1516,7 +1516,7 @@ INFO sipnab::app::fleet_center: fleet center: the stop ended the rebuild of the 
 
 A stop after the rebuild, while the start files, waits for that filing to
 end. The center then rewrites its store as it does at any stop, and exits
-0. Releases up to 0.5.257 opened the store before they installed the
+0. Releases up to 0.5.258 opened the store before they installed the
 handlers: a SIGTERM during the rebuild ended the process at once, and a
 request waited unanswered until the rebuild ended.
 
@@ -1688,7 +1688,7 @@ synthetic store, 1,440 files of 113,477,614 sealed bytes, three runs:
 | How the rebuild read the 1,440 files | Rows built | Time |
 |---|---|---|
 | As this release does it | 2,000, one for each member | 1.95 to 1.99 s |
-| As releases 0.5.251 to 0.5.257 did it, in the same binary | 2,880,000, every row | 12.4 to 12.8 s |
+| As releases 0.5.251 to 0.5.258 did it, in the same binary | 2,880,000, every row | 12.4 to 12.8 s |
 
 The center answers `503` for that time
 ([What the center answers while it starts](#what-the-center-answers-while-it-starts)).
@@ -1704,7 +1704,7 @@ from the same file. Releases 0.5.249 to 0.5.254 refused the file for every
 question that read the row's row group. The rebuild of the member list at
 start refuses a file only for a damaged row it builds: a damaged row older
 than the row it holds of that member is not built, and the start takes the
-file's other rows. Releases 0.5.251 to 0.5.257 refused the file at start for
+file's other rows. Releases 0.5.251 to 0.5.258 refused the file at start for
 such a row too. One read still builds every row of each file it opens and
 refuses the file for one such row anywhere in it: the check a filing makes
 of the files of the same day that can already hold its rows. Neither read

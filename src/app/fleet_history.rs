@@ -9719,7 +9719,7 @@ mod rebuild_tests {
     }
 
     /// What the rebuild restores when every row of every file it opens is
-    /// built, as releases 0.5.251 to 0.5.257 did it: the newest heartbeat of
+    /// built, as releases 0.5.251 to 0.5.258 did it: the newest heartbeat of
     /// each member by receive time, then heartbeat count, sorted by member.
     fn by_every_row(history: &History) -> Result<Vec<MemberRecord>, Box<dyn std::error::Error>> {
         let mut newest: BTreeMap<String, MemberRecord> = BTreeMap::new();
