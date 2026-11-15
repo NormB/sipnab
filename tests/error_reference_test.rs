@@ -1033,7 +1033,10 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // 665 -> 668 (COMMANDS-KEEP-ROOT): +3 in src/early_exit.rs, new in the
 // scope: the refusal of a command started as root whose target user lacks
 // a path, the failure of its drop, and the warning `--no-priv-drop` logs.
-const EXPECTED_TEMPLATES: usize = 668;
+// 668 -> 669 (a calls filing outside the center's lock): +1 in
+// src/app/fleet_center.rs, the error of an upkeep pass that ended in a
+// panic.
+const EXPECTED_TEMPLATES: usize = 669;
 
 // ---------------------------------------------------------------------------
 // The page gates
