@@ -1484,7 +1484,7 @@ A filing of call records has three steps:
    does not read the intake file for this.
 
 A filing of heartbeats has the same three steps over the rows that wait in
-memory. The releases 0.5.249 to 0.5.255 held the lock for all three steps of
+memory. The releases 0.5.249 to 0.5.256 held the lock for all three steps of
 a filing of call records, so nothing got an answer until the filing ended.
 
 Measured in a release build (Cargo feature set `full`, aarch64, load average

@@ -18,6 +18,10 @@ howto_sections_test
 # A repo path a page shows as a bare code span: it failed a hook run after
 # this script had passed, for a section that named a new test file.
 doc_link_hygiene_test
+# A gate that holds literal lines of workflow steps, of the pre-push hook and
+# of docs/internals/build-ci-release.md: it failed a hook run after this
+# script had passed, for a change that replaced a step of cert-expiry.yml.
+site_liveness_test
 closed_stderr_test
 commit_subject_gate_test
 committed_capture_provenance_test

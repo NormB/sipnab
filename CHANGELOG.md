@@ -10,19 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
-### Changed
-
-- **Commands that listen or connect no longer stay root when root starts them.**
-  - Effect: `sipnab fleet serve`, `--vcon-forward` and `--vcon-fetch` started as root now run as `--user`, else `nobody`, and may refuse to start.
-  - Do: Give the store directory, the spool or the output directory to that user with `chown`, name its owner with `--user`, or keep root with `--no-priv-drop`.
-  - Limit: Files a command writes must belong to that user; the refusal names the path and, under `sudo`, the `--user` value to use.
-  - Docs: [Commands that do not capture](docs/least-privilege.md#commands-that-do-not-capture) and [Run the center as a service](docs/fleet.md#run-the-center-as-a-service).
-
 ### Fixed
 
-- **A fleet center that receives SIGTERM right after it starts exits cleanly.**
-  - Was: A SIGTERM that arrived just after the line `fleet center serving` ended the center with status 143, without its last store rewrite.
-  - Effect: The center installs its stop handlers before it logs that line, so a stop at any time exits 0.
 - **The fleet center answers pushes and status requests during a filing of call records.**
   - Was: Every push and status request waited until the whole filing ended, 607 to 633 ms for a full intake in a release build.
   - Effect: A request now waits only for the start and the end of a filing; the read and the write run without the center's lock.
@@ -32,6 +21,23 @@ entry that carries them.
   - Effect: The how-to now says to keep the old key loaded until retention has removed every history file written under it.
   - Do: If you rotated the store key since 0.5.249 and still have the old key file, keep passing it with `--store-old-key-file`.
   - Docs: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
+
+## [0.5.256] - 2026-11-14
+
+### Changed
+
+- **Commands that listen or connect no longer stay root when root starts them.**
+  - Effect: `sipnab fleet serve`, `sipnab fleet inventory`, `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch`, `--relay-holdings` and `--relay-sessions`, started as root, run as `--user`, else `[privilege] user`, else `nobody`.
+  - Limit: The command exits 2 when that user cannot write the store directory, the spool or the output directory; the message names the path.
+  - Limit: A fleet center that ran as root left its store owned by root, so its first start after the upgrade refuses.
+  - Do: Give the path to that user (`chown -R nobody /var/lib/sipnab`), name a user who can write it (`--user sipnab`), or keep root (`--no-priv-drop`).
+  - Docs: [Commands that do not capture](docs/least-privilege.md#commands-that-do-not-capture) and [Run the center as a service](docs/fleet.md#run-the-center-as-a-service).
+
+### Fixed
+
+- **A fleet center that receives SIGTERM right after it starts exits cleanly.**
+  - Was: A SIGTERM that arrived just after the line `fleet center serving` ended the center with status 143, without its last store rewrite.
+  - Effect: The center installs its stop handlers before it logs that line, so a stop at any time exits 0.
 
 ### Security
 
