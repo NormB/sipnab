@@ -1,0 +1,42 @@
+name: Cancel CI of a closed pull request
+
+# A closed pull request's CI run goes on until it ends: closing a pull
+# request starts no CI run, so nothing enters the run's concurrency group to
+# cancel it. On 2026-11-14 two Dependabot pull requests closed at about
+# 22:5xZ kept their CI runs (43649960687 and 43650219749) going until a
+# person canceled them at 00:11Z, holding the two `overflow` runners that
+# the release pull request's jobs waited for.
+#
+# This workflow starts on the `closed` action (a merge sends it too) and
+# enters CI's concurrency group for the pull request, `ci-CI-<number>`
+# (ci.yml's `concurrency.group`), with cancel-in-progress: GitHub cancels the
+# run in progress. A concurrency group is one name space for the whole
+# repository, so a group of another workflow is reached by its name. CI's
+# name is written out here because `github.workflow` in this file is this
+# workflow's own name. scripts/tests/test_ci_cancel_on_close.py holds the two
+# group names together.
+#
+# It runs nothing from the pull request: no checkout, no action, no secret,
+# no permission, and the pull request's number reaches the shell through the
+# environment.
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+permissions: {}
+
+concurrency:
+  group: ci-CI-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  cancel:
+    name: End the CI run of the closed pull request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Say which group this run entered
+        env:
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: echo "pull request $NUMBER closed; a CI run in the group ci-CI-$NUMBER was canceled by this run"
