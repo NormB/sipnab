@@ -1382,18 +1382,22 @@ pub fn run_cores_file(
     config: &Config,
     capture_config: &CaptureConfig,
     portrange: (u16, u16),
-    paths: &[PathBuf],
+    inputs: Option<crate::capture::input_set::NamedSet>,
     filter: Option<&FilterExpr>,
     vcon_rules: &[VconRule],
 ) {
-    if paths.is_empty() {
-        // Unreachable through `main`: `RunMode::CoresFile` requires `-I`, and
-        // `input_set::resolve` already failed the run if nothing resolved. Say
-        // so loudly anyway rather than exiting 0 with an empty report, which is
-        // precisely the failure this path used to have.
+    // Unreachable through `main`: `RunMode::CoresFile` requires `-I`, so the
+    // plan names a set. Said loudly anyway rather than exiting 0 with an
+    // empty report, which is precisely the failure this path used to have.
+    let Some(named) = inputs else {
         stderr_line!("--cores: no capture files to read");
         crate::capture::archive::release_run_and_exit(1);
-    }
+    };
+    let paths = match crate::app::bootstrap::judge_cores_inputs(cli, config, named, vcon_rules) {
+        Ok(paths) => paths,
+        Err(e) => e.exit(),
+    };
+    let paths = paths.as_slice();
     crate::app::bootstrap::refuse_cores_without_a_view(cli, !vcon_rules.is_empty());
     let no_rtp = cli.no_rtp(config);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);

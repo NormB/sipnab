@@ -757,7 +757,11 @@ fn lists() -> Result<Lists, TestError> {
 // `--find-in-files` started as root, the open-file limit refusal that
 // `fit_set_under_open_file_limit` of src/app/bootstrap.rs returns (3 -> 4
 // sites of `stderr_line!("{}", e.message)` there).
-const EXPECTED_UNRESOLVED: usize = 86;
+// 86 -> 87 (CAPTURE-RESOLVE-AS-ROOT): the capture-source limit refusal of a
+// file set moved from `plan` to `resolve_planned_inputs`, which judges the
+// set, so src/app/bootstrap.rs holds `PlanError::arg(msg)` at 3 sites (2 ->
+// 3), each passing on `capture_source_capacity_refusal`'s message.
+const EXPECTED_UNRESOLVED: usize = 87;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.

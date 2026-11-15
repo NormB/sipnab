@@ -374,7 +374,7 @@ mod before_the_launch {
         ("bootstrap::plan(", &["plan error"]),
         ("bootstrap::run_relay_holdings(", &["--relay-holdings"]),
         ("bootstrap::run_relay_sessions(", &["--relay-sessions"]),
-        ("run_cores_file(&cli, &loaded, &plan)", &["--cores"]),
+        ("run_cores_file(&cli, &loaded, &mut plan)", &["--cores"]),
         ("launch_and_dispatch(cli, loaded, plan)", &[]),
         (
             "bootstrap::install_archive_passwords(",

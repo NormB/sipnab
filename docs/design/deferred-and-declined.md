@@ -98,7 +98,7 @@ satisfied."
 
 It is the opposite operation, and the module that implements it says so in as
 many words. `warn_on_overlap`
-([`input_set.rs:1351`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1351)<!-- "/// A clean ring" -->) exists precisely to warn
+([`input_set.rs:1458`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1458)<!-- "/// A clean ring" -->) exists precisely to warn
 an operator away from the comparison use case:
 
 ```
@@ -107,7 +107,7 @@ the same traffic, packets present in both are counted twice
 ```
 
 and its companion in the read path, `overlap_message`
-([`file.rs:1335`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1335)<!-- "/// anyway, so" -->), repeats the consequence for the
+([`file.rs:1364`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1364)<!-- "/// anyway, so" -->), repeats the consequence for the
 end-against-start case: *"they overlap by {by} ms, so packets present in both
 are counted twice."* The doc comment above `warn_on_overlap` is explicit that
 *"Overlap means the set is not one sequence — most often two capture runs, or
@@ -133,7 +133,7 @@ produce — silently, with `--problems` adding nothing.
 The `same instant` warning did fire, which is the design working. But the
 warning detects overlap in *time*, not overlap in *identity*: `same_instant_pairs`
 compares consecutive files' first-packet timestamps against `SAME_INSTANT_SECS`
-(1 ms, [`input_set.rs:1382`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1382)<!-- "const SAME_INSTANT_SECS:" -->) and
+(1 ms, [`input_set.rs:1489`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1489)<!-- "const SAME_INSTANT_SECS:" -->) and
 `overlap_message` compares the previous file's end against the next one's start.
 Two captures that share Call-IDs without overlapping in time trip neither — and
 that population is not exotic, since a load generator reuses Call-IDs across
@@ -165,7 +165,7 @@ retains no record of which capture anything came from.**
   `capture_mode` ([`tui/mod.rs:247`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L247)<!-- "/// Capture mode" -->), overwritten wholesale
   on each in-TUI open ([`file_open.rs:832`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L832)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
   The `-I` set never reaches the TUI: `plan.source` is consumed by
-  `bootstrap::launch` ([`main.rs:444-447`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L444-L447)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
+  `bootstrap::launch` ([`main.rs:434-437`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L434-L437)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
   ([`state.rs:218-229`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/tui/state.rs#L218-L229)) carries no path.
 - Opening a capture from inside the TUI **clears** both stores rather than
   merging — `reset_for_load`
@@ -530,7 +530,7 @@ claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 socket opened in the privileged window and handed to the worker
 (`RawKillSocket::open`, [`process_isolation.rs:152`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L152)<!-- "/// Open the raw IPv4 and IPv6 send sockets." -->),
 `--kill-spoof {auto|raw|ephemeral}` with a loud failure for `raw`
-([`bootstrap.rs:4793-4801`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4793-L4801)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
+([`bootstrap.rs:5009-5017`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5009-L5017)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
 matters most — the forged source is never a parameter. It is always the sniffed
 packet's own destination ([`batch.rs:1775-1776`, `:1816-1817`](../../src/app/batch.rs)),
 so `-K` is a targeted transaction reply and not a general spoofer.
@@ -865,8 +865,8 @@ rather than `primary_input()`'s first element, with each file's first-packet
 timestamp. `input_set::resolve` already computes that timestamp into
 `ResolvedInput.first_packet` ([`input_set.rs:106-122`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L106-L122)<!-- "pub struct ResolvedInput" -->)
 and `bootstrap` then throws it away —
-[`bootstrap.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1233)<!-- "let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(" --> is
-`resolved.into_iter().map(|r| r.path).collect()`. An agent's actual complaint in
+[`bootstrap.rs:1378`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1378)<!-- "let (paths, handed) = resolve_planned_inputs(cli, config, named)?" --> keeps
+only the paths of the judged set. An agent's actual complaint in
 the persistent case is usually *"I do not know what I am holding"*, and that is
 the tool for it. It is Tier 1 by the roadmap's own criterion — *"the agent
 cannot see its own context"* — and it mutates nothing.
