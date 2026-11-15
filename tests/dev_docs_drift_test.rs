@@ -1065,7 +1065,8 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // The text of a release: build-ci-release.md links
     // scripts/release-notes.py, ops/release/platform-table.sh and
     // scripts/tests/test_release_notes.py.
-    const EXPECTED_CODE_LINKS: usize = 888;
+    // The pr-closed.yml row links scripts/tests/test_ci_cancel_on_close.py.
+    const EXPECTED_CODE_LINKS: usize = 889;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
