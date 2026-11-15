@@ -123,6 +123,7 @@ started as root changes in nothing.
 |---|---|
 | `sipnab fleet serve` | Reads its key files and binds as root, then runs as `--user`, else `nobody`, before it opens the store or accepts |
 | `sipnab fleet inventory` | Reads the hosts file and every token file as root, then asks each instance as `--user`, else `nobody` |
+| `sipnab fleet verify` | Reads its key files as root, then lists and reads the history files as `--user`, else `nobody` |
 | `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch` | Reads its credential, key and CA files as root, then runs as `--user`, else `[privilege] user`, else `nobody`, before it creates a directory or connects |
 | `--relay-holdings`, `--relay-sessions` | Runs as `--user`, else `[privilege] user`, else `nobody`, before it asks the relay |
 
@@ -138,6 +139,13 @@ started as root changes in nothing.
   --vcon-fetch: started as root, this command runs as user 'nobody', and 'nobody' cannot write in '/home/alice/vcons' (--vcon-fetch-out). Nothing was created. Choose one: chown nobody '/home/alice/vcons'; run it with --user alice, who can; or pass --no-priv-drop to keep root
   ```
 
+- The `sipnab fleet` commands read no configuration file. `[privilege] user`
+  does not name their user: it is `--user`, else `nobody`.
+- `sipnab fleet verify` writes nothing. The user it runs as must read the
+  history directory, every directory in it and every file in them. When
+  that user cannot, the command refuses before it reads a history file,
+  exits 2, and the message says `cannot read` with the path
+  ([Verify the history store](@/docs/fleet.md#verify-the-history-store)).
 - Under `sudo`, the message names the calling user in `--user` when that
   user can write the path. Otherwise it prints `--user USER`.
 - `--no-priv-drop` keeps root, as before 0.5.256, and the command logs one

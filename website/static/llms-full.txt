@@ -23763,6 +23763,19 @@ A build whose `--version` lists `fleet-store` has the history store: it keeps th
 
 It exits `0` once stopped, and `2` when it refuses an argument, the signing key, the store or the listener.
 
+`sipnab fleet verify` reads every row of every file of a center's history store and reports each file it refuses: one `refused:` line for a file, with the first reason, then one line for each class. It creates and changes nothing, so it runs beside a running center and on a backup copy. [Verify the history store](fleet.md#verify-the-history-store) is the how-to.
+
+- `--store <FILE>`: the center's store file. The command reads the history directory beside it, `<store>.parquet`, and does not read the store file.
+- `--store-key-file <FILE>`: the key the center encrypts the store under, readable by this user only. Required.
+- `--store-old-key-file <FILE>`: an earlier `--store-key-file` that some history files are still under (repeatable).
+- `--class <calls|members>`: read one class only, call records or heartbeats. Default: both.
+- `--from <DATE>` and `--to <DATE>`: the first and the last UTC day to read, `YYYY-MM-DD`. Both days belong to the window. Default: every day.
+- `--json`: print the report as one JSON document, with `started_at`, `version`, `result`, the counts of each class and the refused files.
+- `--user <USER>`: started as root, read the key files, then list and read the history files as this user. Default `nobody`. This user must read `<store>.parquet` and everything in it, or the command refuses before it reads a history file.
+- `--no-priv-drop`: started as root, stay root. One warning line says so.
+
+It exits `0` when it refuses no file, `1` when it refuses at least one, and `2` when the pass cannot run: it refuses an argument or a key file, it cannot read a directory of the store, the user a run started as root drops to cannot read the store, there is no `<store>.parquet` directory beside `--store`, or the build has no history store.
+
 ## G.729 tables (`sipnab g729`)
 
 `sipnab g729` installs and checks the G.729 codebook tables that `--g729-tables` reads. A codebook table is the set of numeric values the G.729 decoder needs. sipnab does not ship them. [G.729 audio](g729.md) is the full how-to.
@@ -30040,6 +30053,124 @@ the path, and a heartbeat has no Call-ID.
 
 **What to do:** Use `from`, `to` and `limit`.
 
+## Fleet verify (`sipnab fleet verify`)
+
+`sipnab fleet verify` prints these messages.
+[Verify the history store](fleet.md#verify-the-history-store) describes the
+command. A message that starts with `sipnab fleet verify:` means the pass
+did not run, and the exit code is 2. A line that starts with `refused:`
+names one refused file with the first reason, and the exit code is then 1.
+The reasons that start with `sealed layer:` and `parquet:` are those of
+[Fleet center](#fleet-center-sipnab-fleet-serve): the command reads a file
+as the center does.
+
+Four lines have no entry of their own below:
+
+- `'<text>' is not a day as YYYY-MM-DD`: `--from` or `--to` holds something
+  other than a day in that spelling, with four, two and two digits. Write
+  the day as `2026-11-03`. The days are UTC days. The exit code is 2.
+- `refused: <file>: <reason>`: the command refused the file at that path
+  under the history directory. The reason is the first check that failed,
+  and the command went on to the next file. The troubleshooting list of
+  [Verify the history store](fleet.md#verify-the-history-store) says what
+  to do for each kind of reason. The exit code is 1 when the pass ends.
+- `sipnab fleet verify: the history store: <class>: <reason>`: the command
+  could not list a directory of the class. Run the command as the center's
+  user, and check that this user can read `<store>.parquet` and the
+  directories in it. A run that root starts checks this before it reads and
+  prints the `started as root` message in place of this one. The exit code
+  is 2.
+- `rows: the file holds no row`, a reason after `refused:`: the file opens
+  and its Parquet holds no row. The center writes no such file. Keep the
+  file and report the line with the version of the release that wrote it.
+
+### `no history directory '{}': nothing to verify`
+
+Printed after `sipnab fleet verify:`. There is no directory under the name of `--store` with `.parquet` added. The
+command reads nothing and does not create the directory.
+
+**What to do:** Give the `--store` of the center's service unit. A center
+whose `--version` does not list `fleet-store` keeps no history.
+
+**Exit code:** 2.
+
+### `--from {from} is after --to {to}`
+
+Printed after `sipnab fleet verify:`. The window ends before it starts.
+
+**What to do:** Swap the two days. Both days belong to the window.
+
+**Exit code:** 2.
+
+### `--class {other}: the classes are {CLASS_CALLS} and {CLASS_MEMBERS}`
+
+The class is not one of the history store: `calls` or `members`. The
+command line refuses another value of `--class` before this check, so a run
+of the command does not print the line.
+
+**What to do:** Give `--class calls` or `--class members`, or leave the flag
+out to read both.
+
+**Exit code:** 2.
+
+### `sipnab fleet verify: this build has no history store (Cargo feature `fleet-store`): run the command from the build the center runs`
+
+The build's `--version` does not list `fleet-store`: a static musl build or
+a `-noaudio` package. It cannot read a history file.
+
+**What to do:** Run the command from a build that lists `fleet-store`.
+
+**Exit code:** 2.
+
+### `rows: row {} was received on {received}, and the file is in the directory of {day}`
+
+A reason after `refused:`. A row's receive time is on another UTC day than
+the `date=` directory of the file.
+
+**What to do:** Keep the file and report the line with the version of the
+release that wrote it.
+
+### `rows: the earliest row was received at {} ms, and the name says {}`
+
+A reason after `refused:`. The earliest receive time in the file is not the
+first time in its name. Both are milliseconds since 1970.
+
+**What to do:** Keep the file and report the line with the version of the
+release that wrote it.
+
+### `rows: the latest row was received at {} ms, and the name says {}`
+
+A reason after `refused:`. The latest receive time in the file is not the
+second time in its name.
+
+**What to do:** Keep the file and report the line with the version of the
+release that wrote it.
+
+### `rows: the mark of the rows is h{:016x}, and the name says h{:016x}`
+
+A reason after `refused:`. The name of a file states a mark that the center
+computes from the member, the stream, the position and the receive time of
+each row. The rows of this file give another mark, so they are not the rows
+the file had when the center named it.
+
+**What to do:** Keep the file and report the line with the version of the
+release that wrote it.
+
+### `rows: row {} is of the member '{}', and the file is in the directory of '{}'`
+
+A reason after `refused:`, for a file that release 0.5.249 wrote under
+`member=<id>`. A row is of another member than the directory names.
+
+**What to do:** Keep the file and report the line.
+
+### `rows: the first row is {}-{}, and the name says {}-{}`
+
+A reason after `refused:`, for a file that release 0.5.249 wrote under
+`member=<id>`. The stream and the position of the file's first row are not
+the two in its name.
+
+**What to do:** Keep the file and report the line.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`
@@ -30123,7 +30254,7 @@ Running as root, sipnab switches to an unprivileged account after opening the ca
 
 ### `{command}: started as root, this command runs as user '{target}', and '{target}' cannot {access} '{path}' ({what}). Nothing was created. Choose one: chown {target} '{path}'; {user_way}; or pass --no-priv-drop to keep root`
 
-Root started a command that opens no capture: `sipnab fleet serve`, `sipnab fleet inventory`, `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch`, `--relay-holdings` or `--relay-sessions`. Since 0.5.256 such a command reads its key files as root and then runs as another user. That user cannot use a path the command needs.
+Root started a command that opens no capture: `sipnab fleet serve`, `sipnab fleet inventory`, `sipnab fleet verify`, `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch`, `--relay-holdings` or `--relay-sessions`. Since 0.5.256 such a command reads its key files as root and then runs as another user. That user cannot use a path the command needs.
 
 - `{command}` is the command, and `{target}` the user it runs as: `--user`, else `[privilege] user`, else `nobody`.
 - `{path}` is the file or directory, `{what}` the flag that named it, and `{access}` what the user cannot do: `read`, `read and write`, or `write in`.
@@ -30132,7 +30263,7 @@ Root started a command that opens no capture: `sipnab fleet serve`, `sipnab flee
 
 **What to do:** Use one of the three ways the message lists.
 
-- Give the path to the user: `chown {target} '{path}'`. For a center's store or a forwarder's spool, give it the whole directory with `chown -R`.
+- Give the path to the user: `chown {target} '{path}'`. For a center's store or a forwarder's spool, give it the whole directory with `chown -R`. For `sipnab fleet verify` on a store that a center uses, do not change the owner: name the center's user with `--user`.
 - Name a user who can use the path, with `--user`.
 - Pass `--no-priv-drop` to keep root, as before 0.5.256.
 
@@ -42169,10 +42300,12 @@ development build after 0.5.243 and the files in one working directory.
      `fleet-store`): from the next start on, leave `--store-old-key-file`
      out and destroy the old key.
    - **A center with the history store:** keep the old key file and
-     `--store-old-key-file` on every start until retention has removed
-     every history file written under the old key. That is the longer of
-     the two periods after the rotation, 90 days with the defaults. Only
-     then destroy the old key. A center that starts without the old key
+     `--store-old-key-file` on every start until `sipnab fleet verify` with
+     the new key alone refuses no file
+     ([Verify the history store](#verify-the-history-store)). That takes
+     until retention has removed every history file written under the old
+     key: the longer of the two periods after the rotation, 90 days with
+     the defaults. Only then destroy the old key. A center that starts without the old key
      runs, and refuses each of those files with `was written under key id
      <id>, which is not loaded`
      ([Keep call history at the center](#keep-call-history-at-the-center)
@@ -42778,8 +42911,9 @@ question that read the row's row group. Two reads still build every row of
 each file they open and refuse the file for one such row anywhere in it: the
 rebuild of the member list at a start without the store file, and the check
 a filing makes of the files of the same day that can already hold its rows.
-Neither opens every file of the store, and sipnab has no command that
-checks every row of every file. A member id that is not text, or a column
+Neither opens every file of the store. `sipnab fleet verify` does: it
+builds every row of every file and reports each file it refuses
+([Verify the history store](#verify-the-history-store)). A member id that is not text, or a column
 that the center cannot read, refuses the file for every question that reads
 its row group, as before.
 
@@ -42876,6 +43010,211 @@ center that runs out of them cannot file.
 - **A listing still shows `member=` directories after the upgrade.** They
   are the files of release 0.5.249. The center reads them and removes them
   when their day passes the retention.
+
+### Verify the history store
+
+**Purpose.** `sipnab fleet verify` reads every row of every file of the
+history store and reports each file it refuses. A question to the center
+builds only the rows it selects, so a file with a row that does not parse
+goes unnoticed until a question selects that row. This command selects
+every row of every file. Run it after you restore the store from a backup,
+after a disk fault, before you destroy an old store key, and on a schedule
+if you want to know about a refused file before a question finds it.
+
+For each file the command makes these checks in this order, and reports the
+first one that fails:
+
+1. It reads the file.
+2. It opens the sealed layer under a key you gave. The layer must hold every
+   record whole and name the path the file is at.
+3. It reads the Parquet footer. The schema must be the one this build reads,
+   and this build must read the codec of every column.
+4. It builds every row: each JSON value, send time and text must parse.
+5. It compares the rows with the path. Every row's receive time must be on
+   the UTC day of the `date=` directory. The earliest and the latest receive
+   time must be the two times in the name, and the mark in the name must be
+   the mark of the rows. For a file that release 0.5.249 wrote under
+   `member=<id>`, every row must be of that member, and the first row must
+   have the stream and the position in the name.
+
+**What it does not check.** It does not look for a row that two files hold.
+It does not read the store file or the intake of call records. It reads only
+files under the names the store writes: another file in one of the
+directories is not a file of the store, and the center does not read it
+either.
+
+**Prerequisites.**
+
+- A build whose `--version` lists `fleet-store`: the build the center runs.
+  A build without the history store exits `2` and says so.
+- The store key file, and the file of every earlier key that a history file
+  can still be under. A key rotation does not rewrite the history files:
+  each stays under the key that wrote it until retention removes it.
+- Read access to `<store>.parquet`. Run the command as the center's user.
+  A run that root starts reads the key files as root, so they can stay
+  `root` mode 0600. It then lists and reads the history files as `--user`,
+  else `nobody`. "A pass that root starts", below, has the details.
+- Nothing changes on a member or on the center. You do not stop the center:
+  the command creates, changes and removes nothing. When retention removes a
+  file between the command's listing and its read, the command counts the
+  file as `gone` and does not refuse it.
+
+**Steps.**
+
+1. **[center]** Run the pass with the center's `--store` and key:
+
+   ```bash
+   sipnab fleet verify --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey
+   ```
+
+   ```text
+   calls: 90 files, 90 clean, 0 refused, 0 gone, 1620000 rows
+   members: 4320 files, 4320 clean, 0 refused, 0 gone, 8640000 rows
+   ```
+
+   The command prints one line for each class when it ends. `files` is the
+   number of files it listed, and `rows` is the number of rows in the clean
+   files.
+
+2. **[center]** To read less, name a class or a window of UTC days. Both
+   days belong to the window:
+
+   ```bash
+   sipnab fleet verify --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey \
+     --class calls --from 2026-11-01 --to 2026-11-07
+   ```
+
+3. **[center]** After a key rotation, name the earlier key too, as the
+   center does:
+
+   ```bash
+   sipnab fleet verify --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey.2 \
+     --store-old-key-file /etc/sipnab/center.storekey
+   ```
+
+   Run it once without `--store-old-key-file` before you destroy the old
+   key. Each file it then refuses with `was written under key id` is a file
+   that only the old key opens.
+
+4. **[center]** For a script, add `--json`. The command then prints one JSON
+   document and no other line:
+
+   ```json
+   {
+     "started_at": "2026-11-14T20:00:00Z",
+     "version": "0.5.256",
+     "result": "refused",
+     "classes": [
+       {"class": "calls", "files": 90, "clean": 89, "refused": 1, "gone": 0, "rows": 1602000},
+       {"class": "members", "files": 4320, "clean": 4320, "refused": 0, "gone": 0, "rows": 8640000}
+     ],
+     "refused": [
+       {
+         "class": "calls",
+         "file": "calls/date=2026-11-03/1793664000120-1793664059870-h5f0c2a9e41b7d386.sealed",
+         "reason": "sealed layer: the file was truncated: its last record is incomplete"
+       }
+     ]
+   }
+   ```
+
+   `started_at` is when the pass started and `version` is the version of the
+   program that ran it. `result` is `clean` or `refused`.
+
+**Check a backup copy.** The command is also the check of a backup. Restore
+or copy the history directory to any place, keep its name as the name of a
+store file with `.parquet` added, and give that store file's path as
+`--store`. The store file itself need not be there, because the command
+does not read it. The paths under the history directory must be the ones
+the center wrote: the sealed layer of each file names the file's path under
+that directory.
+
+```bash
+sipnab fleet verify --store /mnt/restore/center.store \
+  --store-key-file /etc/sipnab/center.storekey
+```
+
+**A pass that root starts.** The command does not stay root.
+
+- It reads `--store-key-file` and every `--store-old-key-file` as root.
+- Then it runs as `--user`, else `nobody`, and lists and reads the history
+  files as that user. The command reads no configuration file, so
+  `[privilege] user` does not name the user.
+- That user must read `<store>.parquet`, every directory in it and every
+  file in them. When it cannot, the command reads no history file, exits
+  `2` and names the path and three ways out:
+
+  ```text
+  sipnab fleet verify: started as root, this command runs as user 'nobody', and 'nobody' cannot read '/var/lib/sipnab/center.store.parquet' (the history store of --store). Nothing was created. Choose one: chown nobody '/var/lib/sipnab/center.store.parquet'; run it with --user USER, naming a user who can; or pass --no-priv-drop to keep root
+  ```
+
+  For a center's store, take the second way and name the center's user:
+  `--user sipnab`. Do not change the owner of a store that a center uses,
+  because the center must keep its write access.
+- `--no-priv-drop` keeps root for the whole pass and logs one warning line.
+- A pass that root did not start changes in nothing, and `--user` has no
+  effect on it.
+
+**Verify.** The exit status is the verdict:
+
+| Exit status | Meaning |
+|---|---|
+| `0` | The command refused no file. Files that were `gone` do not change this. |
+| `1` | The command refused at least one file. Each has one `refused:` line, or one entry under `refused` with `--json`. |
+| `2` | The pass did not run: the command refused an argument or a key file, it cannot read a directory of the store, the user a run started as root drops to cannot read the store, there is no `<store>.parquet` directory beside `--store`, or the build has no history store. |
+
+A store that has filed nothing yet has the directory and no file: the
+command prints `0 files` for each class and exits `0`.
+
+**Troubleshoot.** A refused file has one line, the path and the first
+reason:
+
+```text
+refused: calls/date=2026-11-03/1793664000120-1793664059870-h5f0c2a9e41b7d386.sealed: sealed layer: the file was truncated: its last record is incomplete
+```
+
+- **`sealed layer: the file was written under key id <id>, which is not
+  loaded`.** The file is under an earlier store key. Give that key's file
+  with `--store-old-key-file`. Start the center with it too, or the center
+  refuses the same file for each question that reads it.
+- **`sealed layer:` with `did not authenticate`, `was truncated` or `was cut
+  at its end`.** The file changed after the center wrote it. Restore the
+  file from a backup and run the command again.
+- **`sealed layer: the file was written as '<path>' and is not at that
+  path`.** Someone moved or renamed the file. Move it back to the path the
+  message gives.
+- **`parquet:` with a row number.** A row does not parse. The center seals
+  each file, so only a defect in the release that wrote the file produces
+  such a row. Keep the file and report the line with the version of the
+  release that wrote the file. The center still answers every question that
+  does not select the row.
+- **`rows:`.** The file opens and every row parses, and the rows are not the
+  rows the path names: a row of another day or member, another earliest or
+  latest time, or another mark. The center seals the path into the file, so
+  only a defect in the release that wrote the file produces this. Keep the
+  file and report the line.
+- **`no history directory '<path>': nothing to verify` and exit `2`.**
+  `--store` does not name the center's store file, or the build that runs
+  the center has no history store. Compare the path with the `--store` of
+  the center's service unit.
+- **`is a pipe or FIFO, not a file of the history store`.** The entry under
+  a history file's name is not a regular file. The message names a
+  character device, a block device or a socket in the same way. The center
+  writes only regular files, and it refuses the same entry for each question
+  that reads it. Neither the command nor the center opens such an entry for
+  reading. Find out who made it, then remove it.
+- **`started as root, this command runs as user` and exit `2`.** Root
+  started the pass, and the user it runs as cannot read the path in the
+  message. Run it with `--user` and the center's user. "A pass that root
+  starts", above, has the other ways.
+- **A file is `gone`.** Retention removed it during the pass. Nothing is
+  wrong.
+
+[Fleet verify](errors.md#fleet-verify-sipnab-fleet-verify) lists each
+message.
 
 ### Upgrade a center to compressed history files
 
@@ -55525,6 +55864,7 @@ started as root changes in nothing.
 |---|---|
 | `sipnab fleet serve` | Reads its key files and binds as root, then runs as `--user`, else `nobody`, before it opens the store or accepts |
 | `sipnab fleet inventory` | Reads the hosts file and every token file as root, then asks each instance as `--user`, else `nobody` |
+| `sipnab fleet verify` | Reads its key files as root, then lists and reads the history files as `--user`, else `nobody` |
 | `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch` | Reads its credential, key and CA files as root, then runs as `--user`, else `[privilege] user`, else `nobody`, before it creates a directory or connects |
 | `--relay-holdings`, `--relay-sessions` | Runs as `--user`, else `[privilege] user`, else `nobody`, before it asks the relay |
 
@@ -55540,6 +55880,13 @@ started as root changes in nothing.
   --vcon-fetch: started as root, this command runs as user 'nobody', and 'nobody' cannot write in '/home/alice/vcons' (--vcon-fetch-out). Nothing was created. Choose one: chown nobody '/home/alice/vcons'; run it with --user alice, who can; or pass --no-priv-drop to keep root
   ```
 
+- The `sipnab fleet` commands read no configuration file. `[privilege] user`
+  does not name their user: it is `--user`, else `nobody`.
+- `sipnab fleet verify` writes nothing. The user it runs as must read the
+  history directory, every directory in it and every file in them. When
+  that user cannot, the command refuses before it reads a history file,
+  exits 2, and the message says `cannot read` with the path
+  ([Verify the history store](fleet.md#verify-the-history-store)).
 - Under `sudo`, the message names the calling user in `--user` when that
   user can write the path. Otherwise it prints `--user USER`.
 - `--no-priv-drop` keeps root, as before 0.5.256, and the command logs one

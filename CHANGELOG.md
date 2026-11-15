@@ -10,6 +10,14 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`sipnab fleet verify` reads every row of every history file of a fleet center.**
+  - Effect: The command reports each file it refuses with the first reason, changes nothing, and exits `0`, `1` or `2`.
+  - Do: Run it as the center's user with `--store` and `--store-key-file`, after a restore and before you destroy an old store key.
+  - Limit: It does not look for a row that two files hold, and does not read the store file or the intake.
+  - Docs: [Verify the history store](docs/fleet.md#verify-the-history-store).
+
 ### Changed
 
 - **Commands that listen or connect no longer stay root when root starts them.**

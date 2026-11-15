@@ -1626,7 +1626,7 @@ fn needs_after_the_drop(args: &ServeArgs) -> Vec<crate::early_exit::Need> {
     #[cfg(feature = "fleet-store")]
     needs.extend(crate::early_exit::tree_needs(
         &super::fleet_history::dir_for(&args.store),
-        "the history store of --store",
+        super::fleet::HISTORY_OF_STORE,
     ));
     if let Some(revoked) = &args.revoked_file {
         needs.push(Need {

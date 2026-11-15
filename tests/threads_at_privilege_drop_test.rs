@@ -368,7 +368,12 @@ mod before_the_launch {
         ("run_g729_command()", &["g729 install", "g729 status"]),
         (
             "run_fleet_command()",
-            &["fleet inventory", "fleet keygen", "fleet serve"],
+            &[
+                "fleet inventory",
+                "fleet keygen",
+                "fleet serve",
+                "fleet verify",
+            ],
         ),
         ("bootstrap::apply_config(", &["config error"]),
         ("bootstrap::plan(", &["plan error"]),
@@ -547,7 +552,7 @@ mod before_the_launch {
                 "src/cli/fleet_args.rs",
                 "pub enum FleetCommand {",
                 "fleet",
-                vec!["Inventory", "Keygen", "Serve"],
+                vec!["Inventory", "Keygen", "Serve", "Verify"],
             ),
             (
                 "src/cli/g729_args.rs",
@@ -627,13 +632,14 @@ mod before_the_launch {
 
     /// For each row that drops in `early_exit::confine`: the file that carries
     /// out its plan and the text that names the row there.
-    const CONFINE_SITES: [(&str, &str, &str); 7] = [
+    const CONFINE_SITES: [(&str, &str, &str); 8] = [
         ("fleet serve", "src/app/fleet_center.rs", "\"fleet serve\","),
         (
             "fleet inventory",
             "src/app/fleet.rs",
             "confine(\"fleet inventory\"",
         ),
+        ("fleet verify", "src/app/fleet.rs", "\"fleet verify\","),
         (
             "--vcon-forward",
             "src/app/bootstrap.rs",
@@ -722,6 +728,19 @@ mod before_the_launch {
             position(main, "map(read_files)", "src/app/fleet.rs")? < confine
                 && confine < position(main, "std::thread::scope(", "src/app/fleet.rs")?,
             "`fleet inventory` reads every file, drops, then starts its request threads"
+        );
+        let verify = production("src/app/fleet_verify.rs")?;
+        let run = &verify[position(&verify, "\npub fn run(", "src/app/fleet_verify.rs")?..];
+        let run = &run[..position(run, "\n}\n", "src/app/fleet_verify.rs")?];
+        let confine = position(run, "confine(history.dir())", "src/app/fleet_verify.rs")?;
+        assert!(
+            position(run, "keys_of(args)", "src/app/fleet_verify.rs")? < confine
+                && confine < position(run, "verify(&history", "src/app/fleet_verify.rs")?,
+            "`fleet verify` reads its key files, drops, then lists and reads the history files"
+        );
+        assert!(
+            !starts_a_thread(&verify),
+            "`fleet verify` starts a thread; the drop is no longer made by the only thread"
         );
         Ok(())
     }

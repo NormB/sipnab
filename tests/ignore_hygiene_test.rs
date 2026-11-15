@@ -35,14 +35,24 @@ type TestError = Box<dyn std::error::Error>;
 /// Each entry is `(file, test name, why no CI step runs it)`. An entry that
 /// names no ignored test is itself a failure, so this list cannot outlive the
 /// tests it excuses.
-const MANUAL_ONLY: &[(&str, &str, &str)] = &[(
-    "src/capture/fanout.rs",
-    "fanout_applies_to_an_open_pcap_handle",
-    "opens a live AF_PACKET socket, which needs CAP_NET_RAW. The GitHub-hosted \
-     runners run cargo as an unprivileged user, and the self-hosted aarch64 runner \
-     runner in self-hosted-smoke.yml runs without sudo. Run by hand with \
-     `sudo <test-binary> --ignored fanout_applies_to_an_open_pcap_handle`.",
-)];
+const MANUAL_ONLY: &[(&str, &str, &str)] = &[
+    (
+        "src/capture/fanout.rs",
+        "fanout_applies_to_an_open_pcap_handle",
+        "opens a live AF_PACKET socket, which needs CAP_NET_RAW. The GitHub-hosted \
+         runners run cargo as an unprivileged user, and the self-hosted aarch64 runner \
+         runner in self-hosted-smoke.yml runs without sudo. Run by hand with \
+         `sudo <test-binary> --ignored fanout_applies_to_an_open_pcap_handle`.",
+    ),
+    (
+        "src/app/fleet_verify.rs",
+        "edge_a_pass_is_measured_for_a_fleet",
+        "a measurement and not a check: it files a store of the size of a fleet and \
+         prints how long a pass of `sipnab fleet verify` takes, which is a figure only \
+         in a release build on a named machine. Run by hand with `cargo test --release \
+         --features full --lib a_pass_is_measured -- --ignored --nocapture`.",
+    ),
+];
 
 /// One `#[ignore]` attribute found in a source file.
 #[derive(Debug, PartialEq)]
