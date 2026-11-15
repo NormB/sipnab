@@ -9,10 +9,17 @@ that label, each group builds every combination from nothing, and on
 queued for 34 and 68 minutes behind pull request and Dependabot runs.
 
 `runner_labels` in scripts/check-feature-matrix.py is the rule: a push to
-main asks for every aarch64 runner on the host, anything else for the
+main asks for every aarch64 runner on the host, and so does a pull request
+from a `release/` branch of this repository; anything else asks for the
 overflow pair. `runs_on_expression` renders that rule as the GitHub
 expression the workflow carries, and these tests hold the workflow to it by
 evaluating the expression the workflow actually has.
+
+The release pull request was added on 2026-11-15: release PR #808's two
+Features jobs queued from 2026-11-14 23:15Z while another pull request's job
+held one of the overflow pair (backlog OVERFLOW-RUNNERS-HAVE-NO-RELEASE-
+PRIORITY). The four runners are capacity, not priority: GitHub documents no
+order among queued jobs for self-hosted runners.
 """
 import json
 import pathlib
@@ -28,25 +35,37 @@ fm = load("check-feature-matrix")
 
 MAIN = ["self-hosted", "jetson"]
 OVERFLOW = ["self-hosted", "overflow"]
+HERE = "NormB/sipnab"
 
 EXPRESSION = re.compile(
-    r"^\$\{\{ github\.event_name == '([^']*)' && github\.ref == '([^']*)' "
+    r"^\$\{\{ \(github\.event_name == '([^']*)' && github\.ref == '([^']*)' "
+    r"\|\| github\.event_name == '([^']*)' && startsWith\(github\.head_ref, '([^']*)'\) "
+    r"&& github\.event\.pull_request\.head\.repo\.full_name == github\.repository\) "
     r"&& fromJSON\('(\[[^']*\])'\) \|\| fromJSON\('(\[[^']*\])'\) \}\}$"
 )
 
 
-def evaluate(expression, event_name, ref):
-    """What GitHub makes of `A == 'x' && B == 'y' && fromJSON(T) || fromJSON(E)`.
+def evaluate(expression, event_name, ref, head_ref="", head_repo=None, repository=HERE):
+    """What GitHub makes of
+    `(A == 'x' && B == 'y' || C == 'z' && startsWith(D, 'p') && E == F) && fromJSON(T) || fromJSON(E)`.
 
-    GitHub compares strings without regard to case, and an empty array is
-    false, so an empty T falls through to E.
+    `&&` binds tighter than `||`. GitHub compares strings and `startsWith`
+    without regard to case, a missing value (`head.repo` of a deleted fork,
+    or of an event that is not a pull request) equals no string, and an empty
+    array is false, so an empty T falls through to E.
     """
     m = EXPRESSION.match(expression)
     assert m, f"not the shape runs_on_expression renders: {expression}"
-    event, wanted_ref, then, otherwise = m.groups()
+    event, wanted_ref, pull_event, prefix, then, otherwise = m.groups()
     then, otherwise = json.loads(then), json.loads(otherwise)
-    hit = event_name.casefold() == event.casefold() and ref.casefold() == wanted_ref.casefold()
-    return then if hit and then else otherwise
+    main = event_name.casefold() == event.casefold() and ref.casefold() == wanted_ref.casefold()
+    release = (
+        event_name.casefold() == pull_event.casefold()
+        and head_ref.casefold().startswith(prefix.casefold())
+        and head_repo is not None
+        and head_repo.casefold() == repository.casefold()
+    )
+    return then if (main or release) and then else otherwise
 
 
 def workflow_runs_on():
@@ -83,6 +102,91 @@ def test_a_push_to_main_asks_for_every_aarch64_runner(event_name, ref):
 ])
 def test_anything_else_asks_for_the_overflow_pair(event_name, ref):
     assert fm.runner_labels(event_name, ref) == OVERFLOW, (event_name, ref)
+
+
+PR = "refs/pull/808/merge"
+
+
+@pytest.mark.parametrize("head_ref,head_repo,repository", [
+    ("release/0.5.256", HERE, HERE),
+    ("release/0.6.0", HERE, HERE),
+    ("release/x", HERE, HERE),
+    ("Release/0.5.256", HERE, HERE),
+    ("RELEASE/0.5.256", HERE, HERE),
+    ("release/0.5.256", "normb/sipnab", HERE),
+    ("release/0.5.256", HERE, "NORMB/SIPNAB"),
+    ("release/", HERE, HERE),
+])
+def test_a_release_pull_request_of_this_repository_asks_for_every_aarch64_runner(head_ref, head_repo, repository):
+    assert fm.runner_labels("pull_request", PR, head_ref, head_repo, repository) == MAIN, (head_ref, head_repo)
+
+
+def test_the_release_pull_request_of_0_5_256_would_have_had_four_runners():
+    # PR #808: head release/0.5.256 in NormB/sipnab, its Features jobs queued
+    # for the overflow pair from 2026-11-14 23:15Z.
+    assert fm.runner_labels("pull_request", "refs/pull/808/merge", "release/0.5.256", HERE, HERE) == MAIN
+
+
+@pytest.mark.parametrize("head_repo", [
+    "someone/sipnab",
+    "NormB/sipnab-fork",
+    "NormB/sipna",
+    "xNormB/sipnab",
+    "NormB/sipnab ",
+    "",
+    None,
+])
+def test_a_release_branch_of_a_fork_never_reaches_the_four_runners(head_repo):
+    # A fork's pull request runs code nobody here wrote; its `release/`
+    # branch name is the fork's choice. None is a fork that was deleted.
+    assert fm.runner_labels("pull_request", PR, "release/0.5.256", head_repo, HERE) == OVERFLOW, head_repo
+
+
+@pytest.mark.parametrize("head_ref", [
+    "releases/0.5.256",
+    "release-0.5.256",
+    "release0.5.256",
+    "release",
+    "x/release/0.5.256",
+    " release/0.5.256",
+    "release\\0.5.256",
+    "fix/release-records-any-run",
+    "dependabot/cargo/release/x",
+    "",
+])
+def test_a_branch_that_is_not_a_release_branch_asks_for_the_overflow_pair(head_ref):
+    assert fm.runner_labels("pull_request", PR, head_ref, HERE, HERE) == OVERFLOW, head_ref
+
+
+@pytest.mark.parametrize("event_name", [
+    "push",
+    "pull_request_target",
+    "pull_request_review",
+    "merge_group",
+    "workflow_dispatch",
+    "pull",
+    "",
+])
+def test_a_release_branch_outside_a_pull_request_asks_for_the_overflow_pair(event_name):
+    assert fm.runner_labels(event_name, "refs/heads/release/0.5.256", "release/0.5.256", HERE, HERE) == OVERFLOW
+
+
+def test_the_release_branch_rule_names_the_prefix_once():
+    assert fm.RELEASE_EVENT == "pull_request"
+    assert fm.RELEASE_PREFIX == "release/"
+    assert fm.RELEASE_PREFIX in fm.runs_on_expression()
+
+
+@pytest.mark.parametrize("arguments", [
+    ("pull_request", PR, None, HERE, HERE),
+    ("pull_request", PR, "release/0.5.256", HERE, None),
+    ("pull_request", PR, "release/0.5.256", 1, HERE),
+    ("pull_request", PR, ["release/0.5.256"], HERE, HERE),
+])
+def test_a_pull_request_value_that_is_not_text_is_refused(arguments):
+    # The message, so a call with the wrong number of arguments does not pass.
+    with pytest.raises(TypeError, match="the text GitHub gives a workflow"):
+        fm.runner_labels(*arguments)
 
 
 def test_the_two_answers_are_different_lists():
@@ -149,29 +253,45 @@ def test_the_workflow_carries_the_rendered_expression():
 
 
 CASES = [
-    ("push", "refs/heads/main"),
-    ("PUSH", "refs/heads/MAIN"),
-    ("pull_request", "refs/pull/754/merge"),
-    ("pull_request", "refs/heads/main"),
-    ("push", "refs/heads/other"),
-    ("push", "refs/tags/v0.5.246"),
-    ("push", "refs/heads/main2"),
-    ("workflow_dispatch", "refs/heads/main"),
-    ("schedule", "refs/heads/main"),
-    ("merge_group", "refs/heads/main"),
-    ("", ""),
-    ("push", ""),
+    ("push", "refs/heads/main", "", None, HERE),
+    ("PUSH", "refs/heads/MAIN", "", None, HERE),
+    ("pull_request", "refs/pull/754/merge", "fix/x", HERE, HERE),
+    ("pull_request", "refs/heads/main", "", None, HERE),
+    ("push", "refs/heads/other", "", None, HERE),
+    ("push", "refs/tags/v0.5.246", "", None, HERE),
+    ("push", "refs/heads/main2", "", None, HERE),
+    ("workflow_dispatch", "refs/heads/main", "", None, HERE),
+    ("schedule", "refs/heads/main", "", None, HERE),
+    ("merge_group", "refs/heads/main", "", None, HERE),
+    ("", "", "", None, HERE),
+    ("push", "", "", None, HERE),
+    ("pull_request", "refs/pull/808/merge", "release/0.5.256", HERE, HERE),
+    ("pull_request", "refs/pull/808/merge", "Release/0.5.256", "normb/SIPNAB", HERE),
+    ("pull_request", "refs/pull/900/merge", "release/0.5.256", "someone/sipnab", HERE),
+    ("pull_request", "refs/pull/900/merge", "release/0.5.256", None, HERE),
+    ("pull_request", "refs/pull/808/merge", "releases/0.5.256", HERE, HERE),
+    ("push", "refs/heads/release/0.5.256", "release/0.5.256", HERE, HERE),
+    ("pull_request_target", "refs/heads/main", "release/0.5.256", HERE, HERE),
 ]
 
 
-@pytest.mark.parametrize("event_name,ref", CASES)
-def test_the_workflows_expression_gives_what_the_rule_gives(event_name, ref):
-    assert evaluate(workflow_runs_on(), event_name, ref) == fm.runner_labels(event_name, ref), (event_name, ref)
+@pytest.mark.parametrize("event_name,ref,head_ref,head_repo,repository", CASES)
+def test_the_workflows_expression_gives_what_the_rule_gives(event_name, ref, head_ref, head_repo, repository):
+    case = (event_name, ref, head_ref, head_repo, repository)
+    assert evaluate(workflow_runs_on(), *case) == fm.runner_labels(*case), case
 
 
-@pytest.mark.parametrize("event_name,ref", CASES)
-def test_the_rendered_expression_gives_what_the_rule_gives(event_name, ref):
-    assert evaluate(fm.runs_on_expression(), event_name, ref) == fm.runner_labels(event_name, ref), (event_name, ref)
+@pytest.mark.parametrize("event_name,ref,head_ref,head_repo,repository", CASES)
+def test_the_rendered_expression_gives_what_the_rule_gives(event_name, ref, head_ref, head_repo, repository):
+    case = (event_name, ref, head_ref, head_repo, repository)
+    assert evaluate(fm.runs_on_expression(), *case) == fm.runner_labels(*case), case
+
+
+def test_the_cases_reach_both_answers_through_both_branches():
+    main = [c for c in CASES if fm.runner_labels(*c) == MAIN]
+    assert any(c[0].casefold() == "push" for c in main), "a push to main"
+    assert any(c[0] == "pull_request" for c in main), "a release pull request"
+    assert sum(1 for c in CASES if fm.runner_labels(*c) == OVERFLOW) >= 12, "the near misses"
 
 
 def test_an_expression_with_an_empty_main_list_would_fall_through():
