@@ -86,6 +86,101 @@ impl Drop for Center {
     }
 }
 
+/// A `sipnab fleet serve` that is started and not waited for, stopped when
+/// dropped. Each log line comes as it arrives, so a test can see what the
+/// center did before it said where it serves.
+pub struct Starting {
+    child: std::process::Child,
+    /// Its log lines, as they come.
+    pub log: std::sync::mpsc::Receiver<String>,
+}
+
+impl Starting {
+    /// `sipnab fleet serve` with `args`, as soon as it is spawned.
+    pub fn spawn(args: &[String]) -> Result<Self, TestError> {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(["fleet", "serve"])
+            .args(args)
+            .env("NO_COLOR", "1")
+            .env_remove("SIPNAB_LOG")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .tied_to_test()
+            .spawn()?;
+        let stderr = child.stderr.take().ok_or("piped stderr")?;
+        let (tx, log) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+            {
+                let _ = tx.send(line);
+            }
+        });
+        Ok(Self { child, log })
+    }
+
+    /// The center's process id.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Whether the center has exited, with its status.
+    pub fn exited(&mut self) -> Result<Option<std::process::ExitStatus>, TestError> {
+        Ok(self.child.try_wait()?)
+    }
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The TCP port process `pid` listens on, or `None` while it holds no
+/// listening socket.
+///
+/// Read from `/proc`: the socket inodes the process holds open, matched
+/// against the sockets in the LISTEN state (`0A`) of `/proc/net/tcp` and
+/// `/proc/net/tcp6`. This finds the port a center bound with port 0
+/// before it logs where it serves, without a port the test reserves.
+#[cfg(target_os = "linux")]
+pub fn listening_port(pid: u32) -> Result<Option<u16>, TestError> {
+    let mut inodes = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(format!("/proc/{pid}/fd"))? {
+        let Ok(target) = std::fs::read_link(entry?.path()) else {
+            continue;
+        };
+        let target = target.to_string_lossy().into_owned();
+        if let Some(inode) = target
+            .strip_prefix("socket:[")
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            inodes.insert(inode.to_string());
+        }
+    }
+    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(text) = std::fs::read_to_string(table) else {
+            continue;
+        };
+        for line in text.lines().skip(1) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let (Some(local), Some(state), Some(inode)) =
+                (fields.get(1), fields.get(3), fields.get(9))
+            else {
+                continue;
+            };
+            if *state == "0A" && inodes.contains(*inode) {
+                let port = local.rsplit(':').next().ok_or("a local port")?;
+                return Ok(Some(u16::from_str_radix(port, 16)?));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// One HTTP exchange on `addr`: status and body.
 pub fn http(
     addr: &str,
