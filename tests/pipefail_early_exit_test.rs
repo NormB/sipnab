@@ -742,6 +742,10 @@ const REVIEWED_PIPEFAIL_MENTIONS: &[(&str, &str)] = &[
         "scripts/tests/test_fuzz_workflow_input.py",
         "runs a fuzz.yml `shell: bash` run block, which the gate scans as pipefail",
     ),
+    (
+        "scripts/tests/test_release_notes.py",
+        "asserts that release.yml's step that renders the release text starts with the setting; the gate scans release.yml",
+    ),
 ];
 
 /// Text formats that describe shell rather than run it.

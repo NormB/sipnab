@@ -18,6 +18,13 @@ entry that carries them.
   - Limit: It does not look for a row that two files hold, and does not read the store file or the intake.
   - Docs: [Verify the history store](docs/fleet.md#verify-the-history-store).
 
+### Changed
+
+- **The GitHub release page starts with the release's changelog section.**
+  - Effect: What to do before an upgrade is on the release page, above the download table and the list of pull requests.
+  - Effect: Links in that section point at the documentation as it was at the release's tag.
+  - Docs: [The text of a release](docs/internals/build-ci-release.md#the-text-of-a-release).
+
 ### Fixed
 
 - **A fleet center answers history questions when a FIFO has a history file's name.**
