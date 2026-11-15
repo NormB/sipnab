@@ -609,8 +609,9 @@ pub fn confine(name: &str, asked: Asked<'_>, needs: &[Need]) -> Result<Option<Dr
 pub struct Confined(());
 
 impl Confined {
-    /// A proof for a test that parses without a process to confine.
-    #[cfg(test)]
+    /// A proof for a test that parses without a process to confine. Its
+    /// one caller, `app::vcon_resign::run`, exists with the `vcon` feature.
+    #[cfg(all(test, feature = "vcon"))]
     pub(crate) fn in_a_test() -> Self {
         Self(())
     }
