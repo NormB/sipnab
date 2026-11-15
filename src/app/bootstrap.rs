@@ -1483,13 +1483,20 @@ pub fn judge_cores_inputs(
     config: &Config,
     named: NamedSet,
     vcon_rules: &[crate::app::batch::VconRule],
-) -> Result<Vec<std::path::PathBuf>, PlanError> {
-    let paths = resolve_planned_inputs(cli, config, named)?.paths();
-    refuse_cores_vcon_container(cli.limits_args.cores, &paths, |p| {
-        crate::capture::vcon_input::is_container_file(p)
+) -> Result<(Vec<std::path::PathBuf>, Option<capture::file::OpenResults>), PlanError> {
+    let up_front = named.is_opened();
+    let (paths, files) = resolve_planned_inputs(cli, config, named)?.into_reading(up_front);
+    // Through the descriptor a file was judged with, when it has one: the
+    // path of a root-only file does not open for the user the run dropped to.
+    refuse_cores_vcon_container(cli.limits_args.cores, &paths, |at, p| {
+        match files.as_ref().and_then(|f| f.get(at)) {
+            Some(Ok(file)) => capture::file::Member::opened(p, file).is_container(),
+            Some(Err(_)) => false,
+            None => crate::capture::vcon_input::is_container_file(p),
+        }
     })?;
     warn_file_transmitters(cli, vcon_rules, &RunMode::CoresFile, &paths);
-    Ok(paths)
+    Ok((paths, files))
 }
 
 /// The line a run over more than one capture file prints once its set is
@@ -1514,14 +1521,18 @@ fn reading_count_line(resolved: &[crate::capture::input_set::ResolvedInput]) -> 
 ///
 /// # Errors
 ///
-/// Exit code 2 when `cores` is above 1 and `is_container` holds for a path.
+/// Exit code 2 when `cores` is above 1 and `is_container` holds for a path
+/// (given with its index in `paths`).
 fn refuse_cores_vcon_container(
     cores: usize,
     paths: &[std::path::PathBuf],
-    is_container: impl Fn(&std::path::Path) -> bool,
+    is_container: impl Fn(usize, &std::path::Path) -> bool,
 ) -> Result<(), PlanError> {
     if cores > 1
-        && let Some(container) = paths.iter().find(|p| is_container(p))
+        && let Some((_, container)) = paths
+            .iter()
+            .enumerate()
+            .find(|(at, p)| is_container(*at, p))
     {
         return Err(PlanError::arg(format!(
             "--cores reads capture files in parallel and cannot read the stored vCon \
@@ -2174,41 +2185,57 @@ pub(crate) fn fit_set_under_open_file_limit(files: usize) -> Result<(), PlanErro
     }
 }
 
-/// Open a `--cores` run's input and drop root privileges, in that order.
+/// Drop root privileges, then judge a `--cores` run's `-I` set and open it
+/// for the readers, in that order.
 ///
-/// The single-core read opens its input while privileged and then drops to
-/// `--user` (or `nobody`). The parallel reader opens its files from reader
-/// threads, so a run that will drop opens the whole set first, drops, and
-/// reads from those handles. A run that will not drop (not root, or
-/// `--no-priv-drop`) returns `None` and reads each file by path, as before.
+/// `plan` opened every named file as root when the run will drop. This
+/// drops to `--user` (or `nobody`), judges the set as that user through
+/// those descriptors ([`judge_cores_inputs`]), and opens each capture for
+/// the parallel readers from the descriptor it was judged with: no byte of
+/// an input is read as root (CAPTURE-RESOLVE-AS-ROOT). A run that will not
+/// drop (not root, or `--no-priv-drop`) judges the set and returns no
+/// opened set: its readers open each file by path, as before.
 ///
-/// The directories archive members were extracted into are handed to the
-/// user the run drops to first ([`crate::capture::archive::ExtractionHandover`]),
-/// so the run can still remove them when it ends.
+/// # Returns
+///
+/// The judged set's paths in read order, and the opened set when the run
+/// dropped.
 ///
 /// # Errors
 ///
-/// The set does not fit under the open-file limit (exit 2), the drop failed
-/// (exit 1), or an output is not writable by the user the run dropped to.
+/// The drop failed (exit 1), an output is not writable by the user the run
+/// dropped to, or the set does not judge ([`judge_cores_inputs`]).
 pub fn prepare_cores_inputs(
     cli: &Cli,
     config: &Config,
-    paths: &[std::path::PathBuf],
+    named: NamedSet,
     may_map: bool,
-) -> Result<Option<crate::parallel::PreOpenedSet>, PlanError> {
+    vcon_rules: &[crate::app::batch::VconRule],
+) -> Result<
+    (
+        Vec<std::path::PathBuf>,
+        Option<crate::parallel::PreOpenedSet>,
+    ),
+    PlanError,
+> {
     let Some(target) =
         privilege::resolve_drop_target(effective_user(cli, config), cli.no_priv_drop(config))
             .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?
     else {
-        return Ok(None);
+        let (paths, _) = judge_cores_inputs(cli, config, named, vcon_rules)?;
+        return Ok((paths, None));
     };
-    fit_set_under_open_file_limit(paths.len())?;
-    let set = crate::parallel::pre_open_set(paths, may_map);
-    hand_over_extractions(effective_chroot(cli, config).is_some(), Some(&target));
     privilege::drop_to(&target)
         .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
     unwritable_output_refusal(cli)?;
-    Ok(Some(set))
+    let (paths, files) = judge_cores_inputs(cli, config, named, vcon_rules)?;
+    let set = match files {
+        Some(files) => crate::parallel::pre_open_opened(&paths, files, may_map),
+        // A run that drops opened its set when it planned; a set that was
+        // not is opened here, as the user the run dropped to.
+        None => crate::parallel::pre_open_set(&paths, may_map),
+    };
+    Ok((paths, Some(set)))
 }
 
 /// Hand the directories this run extracted archive members into to what
@@ -15875,7 +15902,7 @@ mod planned_inputs_tests {
     fn success_cores_reads_a_set_without_a_container() {
         let paths = [std::path::PathBuf::from("/c/a.pcap")];
         assert!(
-            refuse_cores_vcon_container(4, &paths, |_| false).is_ok(),
+            refuse_cores_vcon_container(4, &paths, |_, _| false).is_ok(),
             "no container, no refusal"
         );
     }
@@ -15962,7 +15989,7 @@ mod planned_inputs_tests {
             std::path::PathBuf::from("/c/a.pcap"),
             std::path::PathBuf::from("/c/call.vcon"),
         ];
-        let refused = refuse_cores_vcon_container(2, &paths, |p| p.ends_with("call.vcon"));
+        let refused = refuse_cores_vcon_container(2, &paths, |_, p| p.ends_with("call.vcon"));
         let e = refused.err().ok_or("a vCon container read under --cores")?;
         assert_eq!(e.exit_code, 2, "exit 2, as before");
         assert!(
@@ -16011,11 +16038,94 @@ mod planned_inputs_tests {
         );
     }
 
+    /// The set `args` names, opened up front as a run that drops opens it.
+    fn opened_set(args: &[&str]) -> Result<NamedSet, TestError> {
+        let cli = cli_of(args)?;
+        let named = crate::capture::input_set::name_candidates(
+            &cli.capture_args.input,
+            &cli.input_resolve_options(),
+        )
+        .map_err(|e| format!("naming: {e:#}"))?;
+        Ok(NamedSet::new(named, true))
+    }
+
+    #[test]
+    fn failure_cores_refuses_a_container_known_only_through_its_descriptor() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let container = dir.path().join("call.vcon.json");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json"),
+            &container,
+        )?;
+        let args = [
+            "--cores",
+            "2",
+            "--report",
+            "-I",
+            &*container.to_string_lossy(),
+        ]
+        .map(str::to_string);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let named = opened_set(&args)?;
+        // Gone by path, as a root-only file is for the user the run dropped to.
+        std::fs::remove_file(&container)?;
+        let refused = judge_cores_inputs(&cli_of(&args)?, &Config::default(), named, &[]);
+        let e = refused.err().ok_or("a vCon container read under --cores")?;
+        assert_eq!(e.exit_code, 2, "refused as before: {}", e.message);
+        assert!(
+            e.message.contains("cannot read the stored vCon container"),
+            "the container is found through its descriptor: {}",
+            e.message
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_cores_judges_a_set_opened_up_front_and_hands_its_descriptors()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let args = ["--cores", "2", "--report", "-I", &*a.to_string_lossy()].map(str::to_string);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let named = opened_set(&args)?;
+        let (paths, files) = judge_cores_inputs(&cli_of(&args)?, &Config::default(), named, &[])
+            .map_err(|e| format!("judge: {}", e.message))?;
+        assert_eq!(paths, [a], "the one capture");
+        assert!(
+            files.is_some_and(|f| f.len() == 1 && f[0].is_ok()),
+            "the descriptor it was judged with goes to the readers"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_cores_judges_a_set_named_by_path_and_hands_no_descriptors() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let args = ["--cores", "2", "--report", "-I", &*a.to_string_lossy()].map(str::to_string);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let cli = cli_of(&args)?;
+        let named = NamedSet::new(
+            crate::capture::input_set::name_candidates(
+                &cli.capture_args.input,
+                &cli.input_resolve_options(),
+            )
+            .map_err(|e| format!("naming: {e:#}"))?,
+            false,
+        );
+        let (_, files) = judge_cores_inputs(&cli, &Config::default(), named, &[])
+            .map_err(|e| format!("judge: {}", e.message))?;
+        assert!(files.is_none(), "its readers open each file by path");
+        Ok(())
+    }
+
     #[test]
     fn edge_one_core_reads_a_vcon_container() {
         let paths = [std::path::PathBuf::from("/c/call.vcon")];
         assert!(
-            refuse_cores_vcon_container(1, &paths, |_| true).is_ok(),
+            refuse_cores_vcon_container(1, &paths, |_, _| true).is_ok(),
             "the single reader reads a container"
         );
     }

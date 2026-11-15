@@ -216,8 +216,8 @@ The privilege drop signals every other thread of the process.
 
 Four calls make a drop.
 
-- `confine_after_capture_start` in [`app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs), for a run that starts a capture thread.
-- `prepare_cores_inputs` in the same file, for `--cores`.
+- `confine_privileged` in [`app/bootstrap.rs`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs), for a run that starts a capture thread: after the thread starts, or before it for a file run without `--chroot`.
+- `prepare_cores_inputs` in the same file, for `--cores`, before it judges the set.
 - `harden` in [`process_isolation/worker_process.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation/worker_process.rs), for the scanner-kill worker process.
 - `confine` in [`early_exit.rs`](https://github.com/NormB/sipnab/blob/main/src/early_exit.rs), for the commands that end before the capture launch.
   - [Commands that end before the launch](#commands-that-end-before-the-launch) lists them.

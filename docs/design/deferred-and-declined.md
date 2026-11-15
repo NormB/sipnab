@@ -92,7 +92,7 @@ generators and proxies — where operators most want to compare two captures.
 ordered list (`input_set::resolve`,
 [`input_set.rs:380`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L380)<!-- "/// resolves" -->), and streams every file
 into **one** `DialogStore` through one channel
-(`capture_files`, [`file.rs:586`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L586)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->). It is tempting to
+(`capture_files`, [`file.rs:599`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L599)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->). It is tempting to
 read that as "sipnab now has a cross-capture story, so the comparison request is
 satisfied."
 
@@ -107,7 +107,7 @@ the same traffic, packets present in both are counted twice
 ```
 
 and its companion in the read path, `overlap_message`
-([`file.rs:1364`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1364)<!-- "/// anyway, so" -->), repeats the consequence for the
+([`file.rs:1377`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1377)<!-- "/// anyway, so" -->), repeats the consequence for the
 end-against-start case: *"they overlap by {by} ms, so packets present in both
 are counted twice."* The doc comment above `warn_on_overlap` is explicit that
 *"Overlap means the set is not one sequence — most often two capture runs, or
@@ -530,7 +530,7 @@ claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 socket opened in the privileged window and handed to the worker
 (`RawKillSocket::open`, [`process_isolation.rs:152`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L152)<!-- "/// Open the raw IPv4 and IPv6 send sockets." -->),
 `--kill-spoof {auto|raw|ephemeral}` with a loud failure for `raw`
-([`bootstrap.rs:5152-5160`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5152-L5160)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
+([`bootstrap.rs:5179-5187`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5179-L5187)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
 matters most — the forged source is never a parameter. It is always the sniffed
 packet's own destination ([`batch.rs:1775-1776`, `:1816-1817`](../../src/app/batch.rs)),
 so `-K` is a targeted transaction reply and not a general spoofer.

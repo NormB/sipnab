@@ -1393,23 +1393,22 @@ pub fn run_cores_file(
         stderr_line!("--cores: no capture files to read");
         crate::capture::archive::release_run_and_exit(1);
     };
-    let paths = match crate::app::bootstrap::judge_cores_inputs(cli, config, named, vcon_rules) {
-        Ok(paths) => paths,
+    // Drops privileges first, then judges the set as the user it dropped
+    // to (CAPTURE-RESOLVE-AS-ROOT).
+    let (paths, pre_opened) = match crate::app::bootstrap::prepare_cores_inputs(
+        cli,
+        config,
+        named,
+        capture_config.bpf_filter.is_none(),
+        vcon_rules,
+    ) {
+        Ok(prepared) => prepared,
         Err(e) => e.exit(),
     };
     let paths = paths.as_slice();
     crate::app::bootstrap::refuse_cores_without_a_view(cli, !vcon_rules.is_empty());
     let no_rtp = cli.no_rtp(config);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);
-    let pre_opened = match crate::app::bootstrap::prepare_cores_inputs(
-        cli,
-        config,
-        paths,
-        capture_config.bpf_filter.is_none(),
-    ) {
-        Ok(set) => set,
-        Err(e) => e.exit(),
-    };
     let inputs = match &pre_opened {
         Some(set) => crate::parallel::Inputs::PreOpened(set),
         None => crate::parallel::Inputs::ByPath,

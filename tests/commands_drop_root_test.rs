@@ -2262,6 +2262,98 @@ mod capture_runs {
     }
 
     #[test]
+    fn a_cores_run_judges_its_inputs_as_nobody() -> Result<(), TestError> {
+        judged_as_nobody(
+            "a_cores_run_judges_its_inputs_as_nobody",
+            &["--cores", "2", "--report"],
+        )
+    }
+
+    #[test]
+    fn success_a_cores_run_counts_its_set_after_the_drop() -> Result<(), TestError> {
+        if !sudo_or_skip("success_a_cores_run_counts_its_set_after_the_drop") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("cores-count-line")?;
+        let first = root_only_pcap(&scratch, "a.pcap", 3, 0)?;
+        let second = root_only_pcap(&scratch, "b.pcap", 3, 10_000_000)?;
+        let (code, log) = run(&[
+            "-N",
+            "-v",
+            "--cores",
+            "2",
+            "--report",
+            "-I",
+            text(&first)?,
+            "-I",
+            text(&second)?,
+        ])?;
+        assert_eq!(code, Some(0), "both root-only files read:\n{log}");
+        assert!(
+            in_order(
+                &log,
+                "Dropped privileges to user 'nobody'",
+                "Reading 2 capture files in timestamp order"
+            ),
+            "the --cores set is judged, and counted, as nobody:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_cores_run_refuses_a_tmpdir_nobody_cannot_write() -> Result<(), TestError> {
+        use super::file_commands::{private_dir, root_only_sample, run_in};
+        if !sudo_or_skip("failure_a_cores_run_refuses_a_tmpdir_nobody_cannot_write") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("cores-tmp-root")?;
+        let gz = root_only_sample(&scratch, "sip-rtp-g711.pcap", "a.pcap.gz")?;
+        let roots_tmp = private_dir(&scratch, "tmp-root", "root")?;
+        let (code, log) = run_in(
+            &roots_tmp,
+            &["-N", "--cores", "2", "--report", "-I", text(&gz)?],
+        )?;
+        assert_eq!(code, Some(1), "refused, exit 1:\n{log}");
+        assert!(
+            log.contains(&format!(
+                "user 'nobody' cannot create files in the temporary directory '{}'",
+                text(&roots_tmp)?
+            )),
+            "the --cores run gives the same refusal as the single reader:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_cores_run_with_no_priv_drop_judges_as_root() -> Result<(), TestError> {
+        use super::file_commands::{private_dir, root_only_sample, run_in};
+        if !sudo_or_skip("edge_a_cores_run_with_no_priv_drop_judges_as_root") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("cores-keep-root")?;
+        let gz = root_only_sample(&scratch, "sip-rtp-g711.pcap", "a.pcap.gz")?;
+        let roots_tmp = private_dir(&scratch, "tmp-root", "root")?;
+        let (code, log) = run_in(
+            &roots_tmp,
+            &[
+                "-N",
+                "--no-priv-drop",
+                "--cores",
+                "2",
+                "--report",
+                "-I",
+                text(&gz)?,
+            ],
+        )?;
+        assert_eq!(
+            code,
+            Some(0),
+            "a --cores run that keeps root unwraps where only root can write:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn edge_a_user_named_with_user_judges_the_inputs_as_that_user() -> Result<(), TestError> {
         judged_as_nobody(
             "edge_a_user_named_with_user_judges_the_inputs_as_that_user",

@@ -127,6 +127,19 @@ pub fn open_offline_with(
     )
 }
 
+/// [`open_offline`] for a file opened up front, read through `file`: `path`
+/// is the name it goes by and is never opened.
+///
+/// # Errors
+///
+/// As [`open_offline`].
+pub(crate) fn open_offline_opened(
+    path: &Path,
+    file: &std::fs::File,
+) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+    open_offline_up_front(path, file, &crate::capture::archive::Limits::for_run())
+}
+
 /// [`open_offline_with`] for a file opened up front, read through `file`:
 /// `path` is the name it goes by and is never opened.
 ///
