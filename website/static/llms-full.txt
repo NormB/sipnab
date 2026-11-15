@@ -13519,7 +13519,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.254 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.255 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13542,7 +13542,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.254` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.255` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13731,7 +13731,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.254) | Plugin | `Recommends` |
+| Artifact (0.5.255) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13771,11 +13771,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.254 for the
+it first, in the same shell, to the release you want, e.g. 0.5.255 for the
 latest:
 
 ```bash
-VERSION=0.5.254
+VERSION=0.5.255
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13915,13 +13915,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.254, as in
+you want, e.g. 0.5.255, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.254
+   VERSION=0.5.255
    ```
 
 - Download the package:
@@ -14042,25 +14042,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.254-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.255-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.254-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.255-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.254-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.255-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.254-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.255-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14546,14 +14546,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.254
+docker pull ghcr.io/normb/sipnab:0.5.255
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.254` | That release |
+| `0.5.255` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14591,7 +14591,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.254 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.255 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14604,11 +14604,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.254 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.255 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.254` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.254`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.255` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.255`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14806,7 +14806,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.255 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+sipnab 0.5.256 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -15030,7 +15030,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.254
+docker pull ghcr.io/normb/sipnab:0.5.255
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -29819,6 +29819,17 @@ nothing of that class.
 **What to do:** Check that the center's user can read `<store>.parquet` and
 the `calls` and `members` directories in it.
 
+### `fleet center: an upkeep pass did not finish: {e}`
+
+An error. The pass that checks for silent members, files what waits and
+applies retention ended in a panic. `{e}` is what the runtime said. The
+center goes on: the next pass runs at its time, and that pass logs each
+silent member as silent again.
+
+**What to do:** Report it with the lines the log holds before this one. If
+the line repeats, restart the center: it files what its intake and its store
+file hold when it starts.
+
 ### `fleet center: the heartbeats were not filed and wait in the store file: {e}`
 
 A warning. The center could not write the heartbeats it acknowledged into the
@@ -37586,7 +37597,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.255 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+   sipnab 0.5.256 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -38288,7 +38299,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.255"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.256"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -38973,7 +38984,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.255",
+  "version": "0.5.256",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -39916,7 +39927,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.255"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.256"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -42147,9 +42158,26 @@ development build after 0.5.243 and the files in one working directory.
    INFO sipnab::app::fleet_center: fleet center store encryption sealed, key id dd70bddbd340fae5, 1 old key(s)
    ```
 
-   The center rewrites the store under the new key as it starts. From the
-   next start on, leave `--store-old-key-file` out, back up the new key file
-   and destroy the old one.
+   The center rewrites the store file under the new key as it starts. It
+   does not rewrite the files of the history store: each history file stays
+   under the key that wrote it until retention removes it. That is
+   `--calls-retention-days` (default 90) for call records and
+   `--retention-hours` (default 72) for heartbeats. Back up the new key
+   file.
+
+   - **A center without the history store** (its `--version` does not list
+     `fleet-store`): from the next start on, leave `--store-old-key-file`
+     out and destroy the old key.
+   - **A center with the history store:** keep the old key file and
+     `--store-old-key-file` on every start until retention has removed
+     every history file written under the old key. That is the longer of
+     the two periods after the rotation, 90 days with the defaults. Only
+     then destroy the old key. A center that starts without the old key
+     runs, and refuses each of those files with `was written under key id
+     <id>, which is not loaded`
+     ([Keep call history at the center](#keep-call-history-at-the-center)
+     has the entry). Nothing reads a history file after you destroy its
+     key.
 
 #### Upgrade a center that stored in clear
 
@@ -42598,6 +42626,74 @@ answer with this page.
 - **What the history store cannot show.** A whole file that someone deleted
   leaves no trace in the store, as for the store file itself. An answer does
   not include records the intake dropped at its size limit before a filing.
+
+### What waits during a filing
+
+**Purpose.** Know which requests the center answers while it files, and
+which steps of a filing make a request wait.
+
+The center keeps its members, its store file and its intake behind one lock.
+A push, `GET /v1/fleet/members` and the first step of a question each take
+that lock for a short time.
+
+A filing of call records has three steps:
+
+1. **Take.** Under the lock, the center opens the intake file and reads its
+   header and its length. It reads no record.
+2. **Read and write.** Without the lock, the center reads the records up to
+   that length, parses them and writes the files of the history store. This
+   is the step that takes time. The center answers pushes, status requests
+   and questions during it. A record that arrives now goes to the intake and
+   waits for the next filing.
+3. **End.** Under the lock, the center writes the intake again with only the
+   records that arrived during step 2. It kept their lines in memory, so it
+   does not read the intake file for this.
+
+A filing of heartbeats has the same three steps over the rows that wait in
+memory. The releases 0.5.249 to 0.5.256 held the lock for all three steps of
+a filing of call records, so nothing got an answer until the filing ended.
+
+Measured in a release build (Cargo feature set `full`, aarch64, load average
+13 to 22, three runs) with a full intake of 54,000 synthetic call records
+(67,412,988 bytes before sealing): steps 1 and 3 together held the lock 19
+to 22 ms when no record arrived during the filing, and 28 to 30 ms when
+2,000 records arrived during it. Step 1 alone took 23 to 30 microseconds.
+Step 2 took 495 to 511 ms without the lock. In the same binary, the three
+steps as one under the lock took 607 to 633 ms.
+
+What still waits:
+
+- **One filing at a time.** A second filing, of either class, and the
+  retention pass on the history store wait until the running filing ends.
+  They hold no lock that a request needs while they wait.
+- **A push waits for another push.** The center writes each push to disk
+  under the lock before it answers.
+- **Steps 1 and 3 of a filing, and the rewrite of the store file and of the
+  intake by retention,** hold the lock while they run.
+
+`GET /v1/fleet/calls` opens the intake under the lock in the same way and
+reads the waiting records without it. A question asked between step 2 and
+step 3 finds a record both in a file and in the intake, and the answer
+shows it once.
+
+**A stop during a filing.** A center that stops between step 2 and step 3
+leaves the records in the files and in the intake. The next filing, at the
+next start, finds them in the files and files none of them twice. The line
+`filed 0 call record(s) in 0 file(s) of the history store; N were in it
+already` reports that.
+
+**Why a filing reads the intake safely while pushes arrive.** A push adds
+its records after the length that step 1 took, and step 2 reads no byte
+past that length. A push also writes one of the two count slots in the
+file's header, and step 2 does not read the header again: step 1 read it
+while no push was writing. That matters because the center accepts a file
+with one count slot that does not check only when exactly one whole
+addition follows the counted records. A reader that saw a count slot half
+written, with a second push already started, would refuse a file that is
+whole. The filing's reader cannot see that state, so the center does not
+try a refused read again: a refusal is a real one. When retention or a
+repair writes the intake file again, it writes a new file and renames it
+into place. Step 2 keeps the file it opened, which nothing writes to.
 
 ### The files of the history store
 
@@ -51102,7 +51198,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.255",
+  "version": "0.5.256",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -82686,7 +82782,8 @@ maintainer writes.
 - **Public claims match the code.** Anything the change says in the README,
   the site or the docs is true of the code as merged.
 - **A changelog entry.** A user-visible change adds an entry under
-  `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+  `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md), in
+  [the format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
 - **The contributor agreement.** Everyone who committed to the branch has
   signed the [CLA](#contributor-license-agreement).
 
@@ -83945,6 +84042,8 @@ Other stores:
 - The stream store evicts oldest-out at `max_streams`.
 - TCP/IP reassembly caps entries, per-datagram size
   and per-stream buffered bytes in [`reassembly.rs`](../../src/capture/reassembly.rs).
+- The packet processor remembers at most `MAX_RESYNCED_STREAMS` (1024) TCP directions
+  that resumed behind a gap, between two reads by the TLS layer. The oldest goes first.
 
 An archive named with `-I` is attacker-shaped input of the same kind.
 Its walk in [`archive`](../../src/capture/archive/mod.rs) stops rather than evicts:
@@ -88069,6 +88168,25 @@ Troubleshooting:
   [`scripts/release-records.py`](../../scripts/release-records.py) `ceiling` checks the sha256 of the
   tarball and measures the `sipnab` file in it.
   It writes the binary-ceiling line, and the job uploads it as the run's `release-records` artifact.
+- The record holds the x86_64-musl binary alone, and `release.yml` enforces the ceiling on the two musl targets alone.
+  The sizes of the aarch64 binaries move in steps with no change of code, so a size comparison for an aarch64
+  target cannot tell less than 64 KiB of growth from none.
+  - Measured on 0.5.255, aarch64-gnu: the tag build is 27,759,432 bytes and a build of the commit before the
+    version change is 27,693,888 bytes, 65,544 fewer.
+    The function bodies differ by 232 bytes.
+  - Measured: the linker adds a veneer for Cortex-A53 erratum 843419 where an instruction's address requires one,
+    and each veneer takes 4,096 bytes.
+    The tag build has four and the other build has one.
+  - Measured: the file offset of the writable segment follows a 64 KiB alignment.
+    The three added veneers moved the end of the executable segment 84 bytes past that offset, and the
+    segment went 65,536 bytes further into the file.
+    The name of the debug file accounts for the other 8 bytes.
+  - Inferred, not measured: the version change moved the veneers, because it changes the symbol hashes and
+    with them the order of the functions.
+  - Measured on 0.5.255: the aarch64-musl binary has the same 64 KiB alignment, is 20,948,936 bytes, and
+    leaves 5,265,464 bytes under the 25 MB ceiling.
+    The erratum workaround and the 64 KiB alignment stay: Cortex-A53 hosts need the first, and kernels with
+    16 KiB or 64 KiB pages need the second.
 - The eBPF load verification runs on the OpenSIPS VM (a privileged host with BTF) once the assets exist,
   from [`scripts/post-release.py`](../../scripts/post-release.py) (see [After the release](#after-the-release)).
   The site no longer waits for it, so a verify that does not print `ATTACHED` withdraws the release at once.
@@ -88085,6 +88203,14 @@ Troubleshooting:
     ```sh
     python3 scripts/release-records.py fetch --tag v<prev> --repo NormB/sipnab --dest .git/release-records
     ```
+
+    `fetch` reads the newest tag-push run of `release.yml` for the tag and the run's job `Record the binary size`.
+    It downloads the artifact when that job succeeded and the artifact has not expired.
+    The run's own conclusion decides nothing: a run that failed, or that is in progress on a re-run, for
+    another job still holds the records.
+    `fetch` prints one line that names the run, its attempt, its status and its conclusion.
+    It refuses, and names the reason, when the tag has no tag-push run, when the job did not succeed,
+    and when the run has no `release-records` artifact or only an expired one.
 
   - Write the records and the advertisement:
 
@@ -88809,10 +88935,49 @@ is the user's side.
 `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and says so in its header.
 
-- Entries sit under `Added` / `Changed` /
-  `Fixed` / `Removed`.
-- The project uses a few extra headings where those four
-  do not fit what a release actually did.
+- Entries sit under `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` and `Security`.
+- The older sections use a few extra headings, and hold entries written as paragraphs.
+
+#### The format of an entry
+
+The reader of the changelog decides whether to upgrade, and what to do after.
+An entry is an outline of at most six lines:
+
+```markdown
+- **The lead: what changed, in the user's terms.**
+  - Was: for a fix, what went wrong before.
+  - Effect: what the user sees or can now do.
+  - Do: what the user must do, with the command or the setting.
+  - Limit: one limit or caveat.
+  - Docs: [the page title](docs/page.md#the-heading).
+```
+
+- The lead is one bold line of at most 15 words, with nothing after it.
+  It states the effect, not the mechanism.
+- One to five sub-bullets follow, each one line of at most 25 words after its label.
+  The labels are `Effect:`, `Do:`, `Limit:`, `Docs:` and `Was:`.
+- Every entry has an `Effect:` or a `Was:` line. The other labels appear only when they apply.
+- A `Docs:` line holds a link. A link counts the words of its title, not its address.
+- An entry about sizes or limits can hold one table of at most six rows in place of its `Effect:` line.
+- A credit that an old entry already carries, such as "Requested by", stays word for word as a last sub-bullet labeled `Credit:`.
+  It does not count toward the five, and no entry gains or loses one.
+- Nothing else stands under a bullet: no paragraph, no continuation line and no third level.
+
+What goes into an entry:
+
+- A command, a flag, a setting, a file path, an error text or a number that the user meets, in code font.
+- No internal names: no function, type, test or backlog names, and no account of the tests of the change.
+- The detail goes into the docs page that the `Docs:` line links.
+- A change that no user of a released artifact can see has no entry.
+  Hooks, CI, tests, gates and refactors are such changes.
+- Related changes of one release share one entry.
+
+[`changelog_format_test`](../../tests/changelog_format_test.rs) holds the format.
+
+- It reads `[Unreleased]` and every release section down to the one that its `CONVERTED_DOWN_TO` names.
+- The sections below that one keep the old form until a later change rewrites them and lowers the constant.
+- It prints the section, the lead and the rule for each entry that departs from the format.
+- A `Not released.` paragraph and a `**Held:**` line are the only text it allows outside an entry.
 
 **A size statement carries its numbers.**
 An entry that compares binary sizes names the two sizes it compared, or the release workflow run that printed them.
@@ -88855,9 +89020,7 @@ It exists because an edit whose anchor included the heading destroyed it.
 - The sibling gate searches for the heading naming the *current site version*.
   That heading was still present further down.
 
-Nothing gates the changelog's prose, which is deliberate.
-Prose would satisfy a gate on prose.
-Two checks read it all the same.
+Two more checks read the changelog.
 
 - The release date must match [`website/config.toml`](../../website/config.toml).
   `site_release_date_matches_changelog` asserts it.
@@ -91498,6 +91661,7 @@ Each successful run gets a row here.
 | 0.5.252 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-13 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.253 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-13 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.254 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-14 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.255 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-14 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it

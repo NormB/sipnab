@@ -1096,10 +1096,18 @@ mod tests {
     fn the_changelog_entry_links_the_how_to() -> Result<(), TestError> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("CHANGELOG.md");
         let text = std::fs::read_to_string(&path)?;
-        let entry = text
+        // An entry is its lead line and the indented lines under it: the
+        // link sits on the `Docs:` line of the outline.
+        let mut lines = text
             .lines()
-            .find(|l| l.contains("`search_messages`") && l.contains("`regex: true`"))
+            .skip_while(|l| !(l.contains("`search_messages`") && l.contains("`regex: true`")));
+        let lead = lines
+            .next()
             .ok_or("CHANGELOG.md has no entry for the regex option of search_messages")?;
+        let entry = std::iter::once(lead)
+            .chain(lines.take_while(|l| l.starts_with(' ')))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             entry.contains("(docs/mcp.md#search-messages-with-a-regular-expression)"),
             "the entry links no how-to: {entry}"

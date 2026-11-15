@@ -1879,7 +1879,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // its own "Commands that end before the launch".
     // 2687 -> 2688 (CHANGELOG merge gate): build-ci-release.md's list of
     // the pre-commit hook's gates links "After a merge of main".
-    const EXPECTED_WIKI_LINKS: usize = 2688;
+    // 2688 -> 2689 (key rotation keeps the old store key, +1): the link from
+    // step 4 of "Encrypt the center's store" in docs/fleet.md to "Keep call
+    // history at the center", which holds the entry for a key that is not
+    // loaded.
+    const EXPECTED_WIKI_LINKS: usize = 2689;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2036,7 +2040,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // CONTRIBUTING.md's line on accepted advisories.
     // 149 -> 150 (fleet history store): README.md's `fleet-store` feature row
     // links docs/fleet.md#keep-call-history-at-the-center.
-    const EXPECTED_COMMUNITY_LINKS: usize = 150;
+    // 150 -> 151 (changelog outline format): CONTRIBUTING.md's changelog
+    // item links docs/internals/build-ci-release.md#the-format-of-an-entry.
+    const EXPECTED_COMMUNITY_LINKS: usize = 151;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
