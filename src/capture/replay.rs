@@ -108,14 +108,48 @@ pub fn read_into_stores_until(
     progress: &AtomicU64,
     stop: &dyn Fn() -> Option<String>,
 ) -> ReadOutcome {
-    let holds_members = super::archive::holds_members(path);
+    read_member_into_stores_until(
+        crate::capture::file::Member::by_path(path),
+        opts,
+        dialog_store,
+        stream_store,
+        progress,
+        stop,
+    )
+}
+
+/// [`read_into_stores_until`] of a member read by its path or, when it was
+/// opened up front, through its descriptor and never by its path: the read
+/// of a process that dropped privileges after it opened the file.
+#[must_use]
+pub(crate) fn read_member_into_stores_until(
+    member: crate::capture::file::Member<'_>,
+    opts: &crate::pipeline::PipelineOptions,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    progress: &AtomicU64,
+    stop: &dyn Fn() -> Option<String>,
+) -> ReadOutcome {
+    let path = member.path;
+    let holds_members = match member.up_front {
+        Some(file) => {
+            crate::capture::file::rewound(file).is_ok_and(super::archive::holds_members_in)
+        }
+        None => super::archive::holds_members(path),
+    };
     if !holds_members {
-        return read_one(path, opts, dialog_store, stream_store, progress, stop);
+        return read_one(member, opts, dialog_store, stream_store, progress, stop);
     }
-    let set = match super::input_set::resolve_set(
-        &[path.display().to_string()],
-        &super::input_set::ResolveOptions::default(),
-    ) {
+    let resolved = match member.up_front {
+        Some(file) => crate::capture::file::rewound(file)
+            .map_err(anyhow::Error::from)
+            .and_then(|file| super::input_set::resolve_set_opened(path, file)),
+        None => super::input_set::resolve_set(
+            &[path.display().to_string()],
+            &super::input_set::ResolveOptions::default(),
+        ),
+    };
+    let set = match resolved {
         Ok(set) => set,
         Err(e) => {
             return ReadOutcome {
@@ -135,8 +169,9 @@ pub fn read_into_stores_until(
     for input in set.iter() {
         let before = total.packets;
         let member_progress = AtomicU64::new(0);
+        // A member was written out by this process: it is read by its path.
         let one = read_one(
-            &input.path,
+            crate::capture::file::Member::by_path(&input.path),
             opts,
             dialog_store,
             stream_store,
@@ -157,7 +192,7 @@ pub fn read_into_stores_until(
 
 /// Read one capture file into the stores. See [`read_into_stores`].
 fn read_one(
-    path: &Path,
+    member: crate::capture::file::Member<'_>,
     opts: &crate::pipeline::PipelineOptions,
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
@@ -166,12 +201,13 @@ fn read_one(
 ) -> ReadOutcome {
     // A stored vCon container: its messages are rebuilt and routed through
     // the same applier. See `crate::capture::vcon_input`.
-    if super::vcon_input::is_container_file(path) {
-        return read_container(path, opts, dialog_store, stream_store, progress);
+    let path = member.path;
+    if member.is_container() {
+        return read_container(member, opts, dialog_store, stream_store, progress);
     }
     // The guard owns any decompressed temp file (libpcap cannot read gzip) and
     // must outlive the read loop, so keep it bound for the whole function.
-    let (mut cap, _gz_guard) = match crate::capture::file::open_offline(path) {
+    let (mut cap, _gz_guard) = match member.open_for_libpcap() {
         Ok(opened) => opened,
         Err(e) => {
             // Zero of the file was read — the most partial read there is.
@@ -285,14 +321,23 @@ fn read_one(
 /// One read, no loop to stop: a container is a handful of messages already in
 /// memory, so the per-packet shutdown and `stop` checks have nothing to bound.
 fn read_container(
-    path: &Path,
+    member: crate::capture::file::Member<'_>,
     opts: &crate::pipeline::PipelineOptions,
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
     progress: &AtomicU64,
 ) -> ReadOutcome {
-    let name = super::archive::source_name(path);
-    match super::vcon_input::read_file(path) {
+    let name = super::archive::source_name(member.path);
+    let read = match member.up_front {
+        Some(file) => match crate::capture::file::rewound(file) {
+            Ok(file) => {
+                super::vcon_input::read_opened(file, member.path).map_err(|e| e.to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        None => super::vcon_input::read_file(member.path).map_err(|e| e.to_string()),
+    };
+    match read {
         #[cfg(feature = "vcon")]
         Ok(rebuilt) => {
             let packets =

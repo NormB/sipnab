@@ -12,10 +12,43 @@ entry that carries them.
 
 ### Changed
 
+- **Changelog sections 0.5.239 down to 0.5.215 are outlines too.**
+  - Effect: each entry says what changed, what to do and where the detail is; entries about hooks, CI and tests are removed.
+  - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
+
+## [0.5.257] - 2026-11-15
+
+### Changed
+
+- **Commands that parse a file you name no longer stay root when root starts them.**
+  - Effect: Started as root, `--show-frame`, `--strip-secrets`, `--write-annotated`, `--find-in-files`, `--compare-captures`, `--vcon-validate` and `--vcon-resign` parse as `--user`, else `[privilege] user`, else `nobody`.
+  - Limit: That user creates the output of `--strip-secrets`, `--write-annotated` and `--vcon-resign-out`; when it cannot write the directory, the command exits 2 before parsing.
+  - Do: Name an output directory that user can write, pass `--user "$SUDO_USER"`, or keep root with `--no-priv-drop`, which prints one line saying so.
+  - Limit: Gzip captures and archives unpack into `TMPDIR`, which that user must write; as root, `--find-in-files` exits 2 over the open-file limit.
+  - Docs: [Run a command that parses a file as root](docs/least-privilege.md#run-a-command-that-parses-a-file-as-root).
 - **Changelog entries are outlines: one lead line and up to five labeled lines.**
-  - Effect: the sections 0.5.255 down to 0.5.215 are rewritten in this form; each entry says what changed, what to do and where the detail is.
+  - Effect: the sections 0.5.255 down to 0.5.240 are rewritten in this form; each entry says what changed, what to do and where the detail is.
   - Limit: older sections keep their paragraphs until they are rewritten; entries about hooks, CI and tests, which no user of a release sees, are removed.
   - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
+
+### Fixed
+
+- **The fleet center answers pushes and status requests during a filing of call records.**
+  - Was: Every push and status request waited until the whole filing ended, 607 to 633 ms for a full intake in a release build.
+  - Effect: A request now waits only for the start and the end of a filing; the read and the write run without the center's lock.
+  - Docs: [What waits during a filing](docs/fleet.md#what-waits-during-a-filing).
+- **The key rotation how-to no longer tells you to destroy a key history files need.**
+  - Was: The how-to said to destroy the old store key after the next start, and history files written before the rotation stay under that key.
+  - Effect: The how-to now says to keep the old key loaded until retention has removed every history file written under it.
+  - Do: If you rotated the store key since 0.5.249 and still have the old key file, keep passing it with `--store-old-key-file`.
+  - Docs: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
+
+### Security
+
+- **Commands that parse a file you name drop root before they parse it.**
+  - Was: Started as root, `--show-frame`, `--strip-secrets`, `--write-annotated`, `--find-in-files`, `--compare-captures`, `--vcon-validate` and `--vcon-resign` unpacked and parsed their input as root.
+  - Effect: Each opens its input as root, then unpacks and parses it as `--user`, else `[privilege] user`, else `nobody`; files only root can read still read.
+  - Docs: [Run a command that parses a file as root](docs/least-privilege.md#run-a-command-that-parses-a-file-as-root).
 
 ## [0.5.256] - 2026-11-14
 

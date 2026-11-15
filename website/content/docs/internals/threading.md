@@ -256,8 +256,9 @@ A command that ends before `bootstrap::launch` does not reach the capture run's 
   - A listener reads its key files and binds as root, then drops before it opens its store or accepts.
   - A network client reads its secrets as root, then drops before it creates a file or connects.
   - A keeper keeps the caller's privileges, and its row says why.
-  - A command that parses a file the caller named keeps them for now.
-    Its reader opens the input by path, so a drop before the open would refuse a capture only root can read.
+  - A command that parses a file the caller named opens and reads its inputs as root, then drops before it unpacks or parses them.
+    Its readers take the open descriptor, so a capture only root can read is still read.
+    The step that parses takes a value only the drop can make (`early_exit::Confined`).
 - [`tests/threads_at_privilege_drop_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/threads_at_privilege_drop_test.rs) reads every line of [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) that ends the process.
   - A new exit fails the test until it has a row.
 - [Capture with the least privilege](@/docs/least-privilege.md#commands-that-do-not-capture) says what an operator sees.

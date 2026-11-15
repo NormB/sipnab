@@ -753,7 +753,11 @@ fn lists() -> Result<Lists, TestError> {
 // src/app/bootstrap.rs's `PlanError { exit_code: 1, message, }` passes on
 // the topology-hiding secret file's refusal, which names the file from
 // src/sip/th_callid.rs, out of scope.
-const EXPECTED_UNRESOLVED: usize = 85;
+// 85 -> 86 (COMMANDS-PARSE-AS-ROOT): src/app/queries/b3.rs prints, for
+// `--find-in-files` started as root, the open-file limit refusal that
+// `fit_set_under_open_file_limit` of src/app/bootstrap.rs returns (3 -> 4
+// sites of `stderr_line!("{}", e.message)` there).
+const EXPECTED_UNRESOLVED: usize = 86;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -1029,7 +1033,10 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // 665 -> 668 (COMMANDS-KEEP-ROOT): +3 in src/early_exit.rs, new in the
 // scope: the refusal of a command started as root whose target user lacks
 // a path, the failure of its drop, and the warning `--no-priv-drop` logs.
-const EXPECTED_TEMPLATES: usize = 668;
+// 668 -> 669 (a calls filing outside the center's lock): +1 in
+// src/app/fleet_center.rs, the error of an upkeep pass that ended in a
+// panic.
+const EXPECTED_TEMPLATES: usize = 669;
 
 // ---------------------------------------------------------------------------
 // The page gates

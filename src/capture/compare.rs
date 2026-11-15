@@ -231,7 +231,7 @@ fn take_hold(path: &std::path::Path) -> Option<std::sync::Arc<TestHold>> {
 /// helper that chose its own would be a second place to change them. Whatever a
 /// cap refuses is counted through [`CaptureSide::dialogs_dropped`].
 fn snapshot(
-    path: &std::path::Path,
+    member: crate::capture::file::Member<'_>,
     filename: &str,
     dimensions: &[String],
     opts: &crate::pipeline::PipelineOptions,
@@ -249,7 +249,7 @@ fn snapshot(
     let ss = Arc::new(parking_lot::RwLock::new(StreamStore::new(max_streams)));
     let progress = std::sync::atomic::AtomicU64::new(0);
     #[cfg(test)]
-    let hold = take_hold(path);
+    let hold = take_hold(member.path);
     let stop = || -> Option<String> {
         #[cfg(test)]
         if let Some(h) = &hold {
@@ -257,8 +257,9 @@ fn snapshot(
         }
         None
     };
-    let outcome =
-        crate::capture::replay::read_into_stores_until(path, opts, &ds, &ss, &progress, &stop);
+    let outcome = crate::capture::replay::read_member_into_stores_until(
+        member, opts, &ds, &ss, &progress, &stop,
+    );
 
     let dialogs_read = ds.read();
     let streams_read = ss.read();
@@ -380,6 +381,37 @@ pub fn compare(
     max_streams: usize,
     top_n: usize,
 ) -> Result<CaptureComparison, CompareError> {
+    compare_opened(
+        (a, None),
+        (b, None),
+        dimensions,
+        opts,
+        max_dialogs,
+        max_streams,
+        top_n,
+    )
+}
+
+/// One side of [`compare_opened`]: the capture, and the descriptor it was
+/// opened up front with, or `None` to read it by its path.
+pub type OpenedRef<'a> = (CaptureRef<'a>, Option<&'a std::fs::File>);
+
+/// [`compare`] of files opened up front: a side that has a descriptor is
+/// read through it, never by its path.
+///
+/// # Errors
+///
+/// As [`compare`].
+pub fn compare_opened(
+    (a, file_a): OpenedRef<'_>,
+    (b, file_b): OpenedRef<'_>,
+    dimensions: &[String],
+    opts: &crate::pipeline::PipelineOptions,
+    max_dialogs: usize,
+    max_streams: usize,
+    top_n: usize,
+) -> Result<CaptureComparison, CompareError> {
+    use crate::capture::file::Member;
     if a.path == b.path {
         return Err(CompareError::SameFile {
             a: a.name.to_string(),
@@ -387,8 +419,9 @@ pub fn compare(
         });
     }
 
-    let snap_a = snapshot(a.path, a.name, dimensions, opts, max_dialogs, max_streams);
-    let snap_b = snapshot(b.path, b.name, dimensions, opts, max_dialogs, max_streams);
+    let (side_a, side_b) = (Member::of(a.path, file_a), Member::of(b.path, file_b));
+    let snap_a = snapshot(side_a, a.name, dimensions, opts, max_dialogs, max_streams);
+    let snap_b = snapshot(side_b, b.name, dimensions, opts, max_dialogs, max_streams);
 
     for snap in [&snap_a, &snap_b] {
         if snap.side.dialogs == 0
@@ -457,6 +490,91 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/pcap-samples")
             .join(name)
+    }
+
+    // ---- two captures opened up front ----
+
+    /// A copy of the fixture `name`, opened, and the copy removed.
+    fn opened_copy(
+        dir: &std::path::Path,
+        name: &str,
+    ) -> Result<(PathBuf, std::fs::File), TestError> {
+        let path = dir.join(name);
+        std::fs::copy(fixture(name), &path).map_err(|e| format!("copy: {e:?}"))?;
+        let file = std::fs::File::open(&path).map_err(|e| format!("open: {e:?}"))?;
+        std::fs::remove_file(&path).map_err(|e| format!("remove: {e:?}"))?;
+        Ok((path, file))
+    }
+
+    fn compared(a: OpenedRef<'_>, b: OpenedRef<'_>) -> Result<CaptureComparison, CompareError> {
+        compare_opened(
+            a,
+            b,
+            &["state".to_string()],
+            &crate::pipeline::PipelineOptions::default(),
+            1000,
+            1000,
+            50,
+        )
+    }
+
+    #[test]
+    fn two_opened_captures_compare_with_their_paths_gone() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (path_a, file_a) = opened_copy(dir.path(), "b2bua-asterisk.pcapng")?;
+        let (path_b, file_b) = opened_copy(dir.path(), "sip-rtp-g711.pcap")?;
+        let (a, b) = (
+            fixture("b2bua-asterisk.pcapng"),
+            fixture("sip-rtp-g711.pcap"),
+        );
+        let side = |path, name| CaptureRef { path, name };
+        let opened = compared(
+            (side(&path_a, "a.pcap"), Some(&file_a)),
+            (side(&path_b, "b.pcap"), Some(&file_b)),
+        )
+        .map_err(|e| format!("opened: {e:?}"))?;
+        let by_path = compared((side(&a, "a.pcap"), None), (side(&b, "b.pcap"), None))
+            .map_err(|e| format!("by path: {e:?}"))?;
+        assert!(
+            opened.a.dialogs > 0 && opened.b.dialogs > 0,
+            "both sides read"
+        );
+        assert_eq!(
+            format!("{opened:?}"),
+            format!("{by_path:?}"),
+            "the comparison through descriptors is the one by path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_opened_side_that_is_no_capture_is_unreadable() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let junk = dir.path().join("junk.pcap");
+        std::fs::write(&junk, b"not a capture").map_err(|e| format!("write: {e:?}"))?;
+        let file = std::fs::File::open(&junk).map_err(|e| format!("open: {e:?}"))?;
+        let good = fixture("sip-rtp-g711.pcap");
+        let side = |path, name| CaptureRef { path, name };
+        let refused = compared(
+            (side(&junk, "junk.pcap"), Some(&file)),
+            (side(&good, "b.pcap"), None),
+        );
+        assert!(
+            matches!(refused, Err(CompareError::Unreadable { .. })),
+            "a side that yields nothing is refused: {refused:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_same_path_twice_is_refused_before_a_descriptor_is_read() {
+        let path = fixture("sip-rtp-g711.pcap");
+        let side = |name| CaptureRef { path: &path, name };
+        let refused = compared((side("a.pcap"), None), (side("b.pcap"), None));
+        assert!(
+            matches!(refused, Err(CompareError::SameFile { .. })),
+            "one file against itself: {refused:?}"
+        );
     }
 
     /// A hold placed on one path is taken only by a read of that path, and
@@ -701,7 +819,7 @@ mod tests {
     #[test]
     fn a_capture_over_the_dialog_ceiling_says_so() -> Result<(), TestError> {
         let snap = snapshot(
-            &fixture("sip-problem-call.pcap"),
+            crate::capture::file::Member::by_path(&fixture("sip-problem-call.pcap")),
             "sip-problem-call.pcap",
             &["state".to_string()],
             &crate::pipeline::PipelineOptions::default(),
