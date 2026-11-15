@@ -530,7 +530,7 @@ claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 socket opened in the privileged window and handed to the worker
 (`RawKillSocket::open`, [`process_isolation.rs:152`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L152)<!-- "/// Open the raw IPv4 and IPv6 send sockets." -->),
 `--kill-spoof {auto|raw|ephemeral}` with a loud failure for `raw`
-([`bootstrap.rs:5179-5187`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5179-L5187)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
+([`bootstrap.rs:5201-5209`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5201-L5209)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
 matters most — the forged source is never a parameter. It is always the sniffed
 packet's own destination ([`batch.rs:1775-1776`, `:1816-1817`](../../src/app/batch.rs)),
 so `-K` is a targeted transaction reply and not a general spoofer.
@@ -865,7 +865,7 @@ rather than `primary_input()`'s first element, with each file's first-packet
 timestamp. `input_set::resolve` already computes that timestamp into
 `ResolvedInput.first_packet` ([`input_set.rs:131-147`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L131-L147)<!-- "pub struct ResolvedInput" -->)
 and `bootstrap` then throws it away —
-[`bootstrap.rs:1464`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1464)<!-- "let (paths, handed) = resolve_planned_inputs(cli, config, named)?" --> keeps
+[`bootstrap.rs:1486`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1486)<!-- "let (paths, handed) = resolve_planned_inputs(cli, config, named)?" --> keeps
 only the paths of the judged set. An agent's actual complaint in
 the persistent case is usually *"I do not know what I am holding"*, and that is
 the tool for it. It is Tier 1 by the roadmap's own criterion — *"the agent

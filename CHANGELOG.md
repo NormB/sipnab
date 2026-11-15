@@ -29,9 +29,9 @@ entry that carries them.
 
 - **A capture run started as root reads no byte of its `-I` files as root.**
   - Was: The run unpacked, probed and began reading its capture files as root, before it dropped to `--user` or `nobody`.
-  - Effect: It opens each file as root, drops, then unpacks and reads as that user; `Reading N capture files` now prints after the drop.
+  - Effect: It opens each file as root and reads it as the drop user, so root-only files still read; `Reading N capture files` follows the drop.
   - Do: The drop user creates unpacked members, so give it a writable `TMPDIR` such as `/tmp`; otherwise the run stops at the first archive.
-  - Limit: Files only root can read still read, and exit codes and messages are unchanged; a `--chroot` run still unpacks before the chroot.
+  - Limit: Under `--chroot DIR`, archive or `.pcap.gz` input needs `DIR/tmp` writable by the drop user (mode 1777); other exit codes and messages are unchanged.
   - Docs: [Read capture files only root can read](docs/least-privilege.md#read-capture-files-only-root-can-read).
 
 ## [0.5.257] - 2026-11-15

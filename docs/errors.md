@@ -2332,6 +2332,26 @@ that can write the directory. See
 
 **Exit code:** 1.
 
+### `-I/--input: cannot unpack '{}': user '{user}' cannot create files in the temporary directory '{}' inside --chroot '{dir}', where sipnab unpacks an archive or a compressed capture after it drops root. Create '{dir}/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '{dir}'`
+
+The same refusal for a `--chroot` run. Such a run changes its root to
+`{dir}` and drops to `{user}` before it reads its `-I` files, and unpacks an
+archive or a `.pcap.gz` under the temporary directory as seen inside `{dir}`:
+the second `{}`, normally `/tmp`, which is `{dir}/tmp` on the host. sipnab
+stops at the first file that needs unpacking, before it unpacks anything. A
+capture that needs no unpacking reads with an empty `{dir}`.
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.tgz': user 'nobody' cannot create files in the temporary directory '/tmp' inside --chroot '/srv/jail', where sipnab unpacks an archive or a compressed capture after it drops root. Create '/srv/jail/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '/srv/jail'
+```
+
+**What to do:** Create the directory (`sudo mkdir -m 1777 /srv/jail/tmp`),
+or point `TMPDIR` at a directory inside `{dir}` that user can write, named
+as the run sees it after the chroot. See
+[Confine it to a directory](least-privilege.md#confine-it-to-a-directory).
+
+**Exit code:** 1.
+
 ### `multi-core reconstruction failed: {e:#}`
 
 The multi-core reader (`--cores N`) failed. `{e:#}` is the error chain.

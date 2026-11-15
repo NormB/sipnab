@@ -1047,7 +1047,9 @@ const EXPECTED_UNRESOLVED: usize = 87;
 // 678 -> 679 (CAPTURE-RESOLVE-AS-ROOT): +1 in src/app/bootstrap.rs, the
 // refusal of a run whose drop user cannot write TMPDIR, given at the first
 // archive or compressed capture before anything is unpacked.
-const EXPECTED_TEMPLATES: usize = 679;
+// 679 -> 680 (CAPTURE-RESOLVE-AS-ROOT, --chroot): +1 in src/app/bootstrap.rs,
+// the same refusal for a run that chrooted, naming DIR and DIR/tmp.
+const EXPECTED_TEMPLATES: usize = 680;
 
 // ---------------------------------------------------------------------------
 // The page gates

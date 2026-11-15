@@ -1285,7 +1285,8 @@ pub fn resolve_planned_inputs(
     let opened = named.is_opened();
     // A drop user that cannot write the temporary directory cannot unpack:
     // the set is refused at its first archive, before anything is unpacked.
-    let tmpdir_refusal = this_runs_tmpdir_refusal();
+    let tmpdir_refusal =
+        this_runs_tmpdir_refusal(effective_chroot(cli, config).map(std::path::Path::new));
     let resolved = named.resolve(&crate::capture::input_set::ResolveOptions {
         refuse_unwrap: tmpdir_refusal.is_some(),
         ..cli.input_resolve_options()
@@ -1366,12 +1367,12 @@ fn decrypted_output_targets(cli: &Cli) -> Vec<(&'static str, &std::path::Path)> 
 }
 
 /// Whether a run confines itself (the privileged half: secrets, keylog,
-/// privilege drop) before it judges its `-I` set and starts its reader: a
-/// file run (`file_run`) that does not chroot (`chroots`). A `--chroot` run
-/// judges its set before the chroot, because the members it unwraps are
-/// written to the temporary directory by path. Pure.
-fn judges_inputs_after_drop(file_run: bool, chroots: bool) -> bool {
-    file_run && !chroots
+/// chroot, privilege drop) before it judges its `-I` set and starts its
+/// reader: every file run (`file_run`). A `--chroot` run included: the
+/// members it unwraps are written, read and removed by path inside the new
+/// root, under the temporary directory seen there. Pure.
+fn judges_inputs_after_drop(file_run: bool) -> bool {
+    file_run
 }
 
 /// The refusal a run that dropped to `dropped_to` gives at the first archive
@@ -1382,11 +1383,13 @@ fn unwrap_tmpdir_refusal(
     dropped_to: Option<&str>,
     tmpdir: &std::path::Path,
     writable: bool,
+    chroot: Option<&std::path::Path>,
 ) -> Option<TmpdirRefusal> {
     let user = dropped_to?;
     (!writable).then(|| TmpdirRefusal {
         user: user.to_string(),
         tmpdir: tmpdir.to_path_buf(),
+        chroot: chroot.map(std::path::Path::to_path_buf),
     })
 }
 
@@ -1396,16 +1399,34 @@ fn unwrap_tmpdir_refusal(
 struct TmpdirRefusal {
     /// The user the run dropped to.
     user: String,
-    /// The directory archive members are unpacked into.
+    /// The directory archive members are unpacked into, as the run sees it.
     tmpdir: std::path::PathBuf,
+    /// The run's `--chroot` directory, when it chrooted: `tmpdir` is then a
+    /// path inside it.
+    chroot: Option<std::path::PathBuf>,
 }
 
 impl TmpdirRefusal {
     /// The refusal of the run at `input`, the first file that needed
-    /// unpacking: exit 1, naming the file, the directory, the user and both
-    /// ways out.
+    /// unpacking: exit 1, naming the file, the directory (and the chroot it
+    /// is inside), the user and both ways out.
     fn at(&self, input: &std::path::Path) -> PlanError {
         let user = &self.user;
+        if let Some(dir) = &self.chroot {
+            let dir = dir.display();
+            return PlanError {
+                exit_code: 1,
+                message: format!(
+                    "-I/--input: cannot unpack '{}': user '{user}' cannot create files in the \
+                     temporary directory '{}' inside --chroot '{dir}', where sipnab unpacks an \
+                     archive or a compressed capture after it drops root. Create '{dir}/tmp' \
+                     writable by that user (mode 1777), or set TMPDIR to such a directory inside \
+                     '{dir}'",
+                    input.display(),
+                    self.tmpdir.display()
+                ),
+            };
+        }
         PlanError {
             exit_code: 1,
             message: format!(
@@ -1430,12 +1451,13 @@ fn can_create_files_in(dir: &std::path::Path) -> bool {
 
 /// The refusal this process gives before it unpacks anything, when it
 /// dropped privileges to a user that cannot write the temporary directory.
-fn this_runs_tmpdir_refusal() -> Option<TmpdirRefusal> {
+fn this_runs_tmpdir_refusal(chroot: Option<&std::path::Path>) -> Option<TmpdirRefusal> {
     let tmpdir = std::env::temp_dir();
     unwrap_tmpdir_refusal(
         privilege::dropped_to(),
         &tmpdir,
         can_create_files_in(&tmpdir),
+        chroot,
     )
 }
 
@@ -3757,9 +3779,9 @@ pub fn launch(
     //      judges its `-I` set as the user it dropped to: no byte of an input
     //      is read, unwrapped or parsed as root (CAPTURE-RESOLVE-AS-ROOT).
     //      Every named file was opened as root when the run planned, so a
-    //      root-only input is still read, through that descriptor.
-    let after_drop =
-        judges_inputs_after_drop(inputs.is_some(), effective_chroot(cli, config).is_some());
+    //      root-only input is still read, through that descriptor. A
+    //      `--chroot` run chroots first too, and unwraps inside the new root.
+    let after_drop = judges_inputs_after_drop(inputs.is_some());
     let (transmit_permit, privileged) = if after_drop {
         match confine_privileged(cli, config, mode, transmit_permit, &[]) {
             Ok(confined) => (None, Some(confined)),
@@ -16177,6 +16199,7 @@ mod planned_inputs_tests {
             Some("nobody"),
             std::path::Path::new("/var/folders/xy/T"),
             false,
+            None,
         )
         .map(|r| r.at(std::path::Path::new("/c/a.pcap.gz")));
         assert_eq!(
@@ -16195,7 +16218,7 @@ mod planned_inputs_tests {
     #[test]
     fn success_a_tmpdir_the_drop_user_can_write_gives_no_refusal() {
         assert_eq!(
-            unwrap_tmpdir_refusal(Some("nobody"), std::path::Path::new("/tmp"), true),
+            unwrap_tmpdir_refusal(Some("nobody"), std::path::Path::new("/tmp"), true, None),
             None,
             "nothing to refuse"
         );
@@ -16204,7 +16227,7 @@ mod planned_inputs_tests {
     #[test]
     fn edge_a_run_that_did_not_drop_gives_no_tmpdir_refusal() {
         assert_eq!(
-            unwrap_tmpdir_refusal(None, std::path::Path::new("/nowhere"), false),
+            unwrap_tmpdir_refusal(None, std::path::Path::new("/nowhere"), false, None),
             None,
             "a run that keeps its user meets the directory's own error, as before"
         );
@@ -16247,23 +16270,55 @@ mod planned_inputs_tests {
     #[test]
     fn success_a_file_run_judges_its_set_after_the_drop() {
         assert!(
-            judges_inputs_after_drop(true, false),
+            judges_inputs_after_drop(true),
             "a file run confines itself before it reads a byte of its inputs"
         );
     }
 
     #[test]
-    fn edge_a_chroot_file_run_judges_before_the_chroot() {
+    fn edge_a_chroot_file_run_judges_after_the_chroot_and_the_drop() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let cli = cli_of(&[
+            "-I",
+            &a.to_string_lossy(),
+            "--chroot",
+            &dir.path().to_string_lossy(),
+        ])?;
         assert!(
-            !judges_inputs_after_drop(true, true),
-            "a --chroot run writes unwrapped members by path, so it judges first"
+            judges_inputs_after_drop(cli.has_input()),
+            "a --chroot run unwraps inside the new root, as the drop user"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_chroot_run_names_dir_the_tmpdir_inside_it_the_user_and_the_fix() {
+        let refusal = unwrap_tmpdir_refusal(
+            Some("nobody"),
+            std::path::Path::new("/tmp"),
+            false,
+            Some(std::path::Path::new("/srv/jail")),
+        )
+        .map(|r| r.at(std::path::Path::new("/c/a.tgz")));
+        assert_eq!(
+            refusal.as_ref().map(|e| (e.exit_code, e.message.as_str())),
+            Some((
+                1,
+                "-I/--input: cannot unpack '/c/a.tgz': user 'nobody' cannot create files in the \
+                 temporary directory '/tmp' inside --chroot '/srv/jail', where sipnab unpacks an \
+                 archive or a compressed capture after it drops root. Create '/srv/jail/tmp' \
+                 writable by that user (mode 1777), or set TMPDIR to such a directory inside \
+                 '/srv/jail'"
+            )),
+            "exit 1, the file, DIR, the TMPDIR inside it, the user and both ways out"
         );
     }
 
     #[test]
     fn edge_a_run_with_no_file_keeps_its_order() {
         assert!(
-            !judges_inputs_after_drop(false, false) && !judges_inputs_after_drop(false, true),
+            !judges_inputs_after_drop(false),
             "a live, HEP or socket source opens it before it confines itself"
         );
     }

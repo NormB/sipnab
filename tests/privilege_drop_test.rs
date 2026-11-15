@@ -2451,7 +2451,7 @@ fn a_root_run_refuses_a_later_root_only_member_that_is_not_a_capture() -> Result
 }
 
 /// A `--chroot` run reads every member of an archive and removes the
-/// extraction too: after the chroot its path does not resolve.
+/// extraction too: it unpacks inside the new root and removes it there.
 #[test]
 fn a_chrooted_root_run_reads_an_archive_and_removes_its_extraction() -> Result<(), TestError> {
     if root_unavailable("a_chrooted_root_run_reads_an_archive_and_removes_its_extraction") {
@@ -2460,9 +2460,11 @@ fn a_chrooted_root_run_reads_an_archive_and_removes_its_extraction() -> Result<(
     let dir = tempfile::tempdir()?;
     let archive = root_only_archive(dir.path())?;
     let jail = dir_nobody_can_write()?;
-    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    // Since CAPTURE-RESOLVE-AS-ROOT the archive unpacks inside the new root,
+    // as the drop user, so the jail holds a temporary directory it can write.
+    let jail_tmp = jail_tmp(jail.path())?;
     let out = root_sipnab(
-        tmpdir.path(),
+        std::path::Path::new("/tmp"),
         &[
             "-N".as_ref(),
             "--replay".as_ref(),
@@ -2476,11 +2478,20 @@ fn a_chrooted_root_run_reads_an_archive_and_removes_its_extraction() -> Result<(
     )?;
     assert_read_in_full(&out, 2);
     assert_eq!(
-        entries(tmpdir.path())?,
+        entries(&jail_tmp)?,
         Vec::<String>::new(),
-        "the extraction must be gone"
+        "the extraction inside the jail must be gone"
     );
     Ok(())
+}
+
+/// `jail/tmp`, mode 1777, removed as root when the test ends.
+fn jail_tmp(jail: &std::path::Path) -> Result<std::path::PathBuf, TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let tmp = jail.join("tmp");
+    std::fs::create_dir(&tmp)?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o1777))?;
+    Ok(tmp)
 }
 
 /// A `--cores` run, which drops on its own path, removes its extraction too.
@@ -2645,9 +2656,9 @@ fn a_chrooted_root_run_loads_tls_secrets_embedded_in_an_archive_member() -> Resu
     )]))?;
     let files = root_only_files(dir.path(), &[("set.tar.gz", &archive)])?;
     let jail = dir_nobody_can_write()?;
-    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let _jail_tmp = jail_tmp(jail.path())?;
     let out = root_sipnab(
-        tmpdir.path(),
+        std::path::Path::new("/tmp"),
         &[
             "-N".as_ref(),
             "-I".as_ref(),

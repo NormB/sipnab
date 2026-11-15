@@ -251,9 +251,10 @@ the user it dropped to. The line `Reading N capture files` comes after
   must be able to write `TMPDIR`: root's per-user temporary folder on macOS
   (under `/var/folders`, mode `0700`) is not one it can reach, so set
   `TMPDIR=/tmp` there.
-- A `--chroot` run unpacks before the chroot, as root, and removes the
-  directory before the chroot, because no path reaches it afterwards. Every
-  member is open by then.
+- A `--chroot` run changes root and drops first too, and unpacks inside
+  the new root, as the drop user, under `TMPDIR` as seen there (normally
+  `DIR/tmp` on the host). [Confine it to a directory](#confine-it-to-a-directory)
+  says what `DIR` then needs.
 - The run reads the TLS secrets a pcapng carries in a Decryption Secrets
   Block through the descriptor it opened as root, so a root-only capture
   still decrypts.
@@ -302,6 +303,25 @@ sipnab looks the user up before it changes root, so `DIR` needs no
 `etc/passwd`: an empty directory works. 0.5.233 and earlier looked the user
 up inside `DIR` and stopped with `Failed to drop privileges: User 'nobody' not
 found` unless `DIR` held an `etc/passwd` naming the user.
+
+A file run (`-I`) opens its files before it changes root and reads them
+through those descriptors, so `DIR` needs no copy of them. Since 0.5.258 an
+archive or a `.pcap.gz` unpacks after the chroot, as the drop user, into the
+temporary directory inside `DIR`: create it, writable by that user.
+
+```bash
+sudo mkdir -m 1777 /var/lib/sipnab/jail/tmp
+```
+
+Without it the run stops with exit `1` at the first such file, before it
+unpacks anything:
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.tgz': user 'nobody' cannot create files in the temporary directory '/tmp' inside --chroot '/var/lib/sipnab/jail', where sipnab unpacks an archive or a compressed capture after it drops root. Create '/var/lib/sipnab/jail/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '/var/lib/sipnab/jail'
+```
+
+The run removes what it unpacked from `DIR/tmp` when it ends. A capture that
+needs no unpacking reads with an empty `DIR`.
 
 A TLS client that names no CA file of its own (a `--hep-send-transport tls`
 sender without `--hep-tls-ca`, an HTTPS `[vcon_fetch]` store without `ca`)

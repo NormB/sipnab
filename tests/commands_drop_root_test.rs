@@ -2353,6 +2353,175 @@ mod capture_runs {
         Ok(())
     }
 
+    /// A gzip of a classic pcap of `count` frames, `gap_usec` apart, readable
+    /// by root only.
+    fn root_only_gz(
+        scratch: &Scratch,
+        name: &str,
+        count: usize,
+        gap_usec: u64,
+    ) -> Result<PathBuf, TestError> {
+        let one = frame(64);
+        let frames: Vec<(Vec<u8>, u64)> = (0..count as u64)
+            .map(|i| (one.clone(), i * gap_usec))
+            .collect();
+        let plain = scratch.path(&format!("{name}.plain"));
+        pcap_build::write_pcap_at(&plain, &frames, 1)?;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&std::fs::read(&plain)?)?;
+        std::fs::remove_file(&plain)?;
+        let path = scratch.path(name);
+        std::fs::write(&path, enc.finish()?)?;
+        make_root_only(&path)?;
+        Ok(path)
+    }
+
+    /// An empty directory for `--chroot`, owned by root, mode 0755.
+    fn chroot_dir(scratch: &Scratch) -> Result<PathBuf, TestError> {
+        scratch.dir_of("jail", "root")
+    }
+
+    /// `DIR/tmp` owned by root, mode 1777, as a chroot's temporary directory.
+    fn chroot_tmp(dir: &Path) -> Result<PathBuf, TestError> {
+        let tmp = dir.join("tmp");
+        as_root("mkdir", &[text(&tmp)?])?;
+        as_root("chmod", &["1777", text(&tmp)?])?;
+        Ok(tmp)
+    }
+
+    /// Every entry under `dir`, each as `<owner name> <path>`, read as root.
+    fn owners_under(dir: &Path) -> Result<Vec<String>, TestError> {
+        let out = root_run::sudo()?
+            .args(["find", text(dir)?, "-mindepth", "1", "-printf", "%u %p\\n"])
+            .output()?;
+        Ok(String::from_utf8(out.stdout)?
+            .lines()
+            .map(str::to_string)
+            .collect())
+    }
+
+    #[test]
+    fn edge_a_chroot_run_reads_a_plain_capture_with_an_empty_dir() -> Result<(), TestError> {
+        if !sudo_or_skip("edge_a_chroot_run_reads_a_plain_capture_with_an_empty_dir") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("chroot-plain")?;
+        let dir = chroot_dir(&scratch)?;
+        let pcap = root_only_pcap(&scratch, "a.pcap", 3, 0)?;
+        let (code, log) = run(&["-N", "-v", "--chroot", text(&dir)?, "-I", text(&pcap)?])?;
+        assert_eq!(code, Some(0), "an empty DIR still reads a capture:\n{log}");
+        assert!(
+            log.contains("1 of 1 file(s) read in full"),
+            "read through the descriptor opened before the chroot:\n{log}"
+        );
+        assert!(
+            in_order(
+                &log,
+                "Dropped privileges to user 'nobody'",
+                "Reading from '"
+            ),
+            "read after the chroot and the drop:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_chroot_run_unpacks_inside_dir_as_the_drop_user() -> Result<(), TestError> {
+        if !sudo_or_skip("success_a_chroot_run_unpacks_inside_dir_as_the_drop_user") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("chroot-unpack")?;
+        let dir = chroot_dir(&scratch)?;
+        let tmp = chroot_tmp(&dir)?;
+        // Two frames four seconds apart, replayed: the run holds its member
+        // open long enough to look at it.
+        let gz = root_only_gz(&scratch, "a.pcap.gz", 2, 4_000_000)?;
+        let mut live = Run::start(
+            &[
+                "-N",
+                "-v",
+                "--replay",
+                "--chroot",
+                text(&dir)?,
+                "-I",
+                text(&gz)?,
+            ],
+            Path::new(BIN),
+        )?;
+        live.line_with("Replaying from '")?;
+        let owners = owners_under(&tmp)?;
+        let (code, log) = live.finish()?;
+        assert_eq!(code, Some(0), "the member was read:\n{log}");
+        let extracted: Vec<&String> = owners
+            .iter()
+            .filter(|l| l.contains("/sipnab-archive-"))
+            .collect();
+        assert!(
+            !extracted.is_empty(),
+            "the extraction directory is inside DIR/tmp: {owners:?}\n{log}"
+        );
+        assert!(
+            extracted.iter().all(|l| l.starts_with("nobody ")),
+            "the drop user created the directory and every file in it: {owners:?}"
+        );
+        assert!(
+            extracted.iter().any(|l| l.ends_with(".pcap")),
+            "the unpacked member is among them: {owners:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_extraction_inside_dir_is_removed_at_exit() -> Result<(), TestError> {
+        if !sudo_or_skip("success_the_extraction_inside_dir_is_removed_at_exit") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("chroot-cleanup")?;
+        let dir = chroot_dir(&scratch)?;
+        let tmp = chroot_tmp(&dir)?;
+        let gz = root_only_gz(&scratch, "a.pcap.gz", 3, 1_000)?;
+        let (code, log) = run(&["-N", "--chroot", text(&dir)?, "-I", text(&gz)?])?;
+        assert_eq!(code, Some(0), "the member was read:\n{log}");
+        assert_eq!(
+            owners_under(&tmp)?,
+            Vec::<String>::new(),
+            "nothing is left in DIR/tmp when the run ends:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_chroot_run_without_a_writable_tmp_refuses_with_the_whole_text()
+    -> Result<(), TestError> {
+        if !sudo_or_skip("failure_a_chroot_run_without_a_writable_tmp_refuses_with_the_whole_text")
+        {
+            return Ok(());
+        }
+        let scratch = Scratch::new("chroot-no-tmp")?;
+        let dir = chroot_dir(&scratch)?;
+        let gz = root_only_gz(&scratch, "a.pcap.gz", 3, 1_000)?;
+        let (code, log) = run(&["-N", "--chroot", text(&dir)?, "-I", text(&gz)?])?;
+        assert_eq!(code, Some(1), "refused, exit 1:\n{log}");
+        let expected = format!(
+            "-I/--input: cannot unpack '{gz}': user 'nobody' cannot create files in the \
+             temporary directory '/tmp' inside --chroot '{dir}', where sipnab unpacks an archive \
+             or a compressed capture after it drops root. Create '{dir}/tmp' writable by that \
+             user (mode 1777), or set TMPDIR to such a directory inside '{dir}'",
+            gz = text(&gz)?,
+            dir = text(&dir)?
+        );
+        assert!(
+            log.contains(&expected),
+            "the whole refusal, naming DIR, the TMPDIR inside it, the user and the fix:\n{log}"
+        );
+        assert_eq!(
+            owners_under(&dir)?,
+            Vec::<String>::new(),
+            "nothing was created in DIR:\n{log}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn edge_a_user_named_with_user_judges_the_inputs_as_that_user() -> Result<(), TestError> {
         judged_as_nobody(
