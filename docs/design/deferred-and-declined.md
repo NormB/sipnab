@@ -98,7 +98,7 @@ satisfied."
 
 It is the opposite operation, and the module that implements it says so in as
 many words. `warn_on_overlap`
-([`input_set.rs:1097`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1097)<!-- "/// A clean ring" -->) exists precisely to warn
+([`input_set.rs:1351`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1351)<!-- "/// A clean ring" -->) exists precisely to warn
 an operator away from the comparison use case:
 
 ```
@@ -107,7 +107,7 @@ the same traffic, packets present in both are counted twice
 ```
 
 and its companion in the read path, `overlap_message`
-([`file.rs:1300`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1300)<!-- "/// anyway, so" -->), repeats the consequence for the
+([`file.rs:1335`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1335)<!-- "/// anyway, so" -->), repeats the consequence for the
 end-against-start case: *"they overlap by {by} ms, so packets present in both
 are counted twice."* The doc comment above `warn_on_overlap` is explicit that
 *"Overlap means the set is not one sequence — most often two capture runs, or
@@ -133,7 +133,7 @@ produce — silently, with `--problems` adding nothing.
 The `same instant` warning did fire, which is the design working. But the
 warning detects overlap in *time*, not overlap in *identity*: `same_instant_pairs`
 compares consecutive files' first-packet timestamps against `SAME_INSTANT_SECS`
-(1 ms, [`input_set.rs:1128`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1128)<!-- "const SAME_INSTANT_SECS:" -->) and
+(1 ms, [`input_set.rs:1382`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1382)<!-- "const SAME_INSTANT_SECS:" -->) and
 `overlap_message` compares the previous file's end against the next one's start.
 Two captures that share Call-IDs without overlapping in time trip neither — and
 that population is not exotic, since a load generator reuses Call-IDs across

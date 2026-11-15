@@ -16,6 +16,11 @@ entry that carries them.
   - Effect: the sections 0.5.255 down to 0.5.240 are rewritten in this form; each entry says what changed, what to do and where the detail is.
   - Limit: older sections keep their paragraphs until they are rewritten; entries about hooks, CI and tests, which no user of a release sees, are removed.
   - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
+- **Commands that parse a file you name no longer stay root when root starts them.**
+  - Effect: `--strip-secrets`, `--write-annotated` and `--vcon-resign` started as root write their output as `--user`, else `nobody`, and may refuse to start.
+  - Do: Name an output directory that user can write, pass `--user "$SUDO_USER"`, or keep root with `--no-priv-drop`.
+  - Limit: As root, `--find-in-files` opens every file first, so a set over the open-file limit exits 2.
+  - Docs: [Run a command that parses a file as root](docs/least-privilege.md#run-a-command-that-parses-a-file-as-root).
 
 ### Fixed
 
@@ -28,6 +33,13 @@ entry that carries them.
   - Effect: The how-to now says to keep the old key loaded until retention has removed every history file written under it.
   - Do: If you rotated the store key since 0.5.249 and still have the old key file, keep passing it with `--store-old-key-file`.
   - Docs: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
+
+### Security
+
+- **Commands that parse a file you name drop root before they parse it.**
+  - Was: Started as root, `--show-frame`, `--strip-secrets`, `--write-annotated`, `--find-in-files`, `--compare-captures`, `--vcon-validate` and `--vcon-resign` unpacked and parsed their input as root.
+  - Effect: Each opens its input as root, then unpacks and parses it as `--user`, else `[privilege] user`, else `nobody`; files only root can read still read.
+  - Docs: [Run a command that parses a file as root](docs/least-privilege.md#run-a-command-that-parses-a-file-as-root).
 
 ## [0.5.256] - 2026-11-14
 
