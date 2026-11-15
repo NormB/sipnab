@@ -1877,7 +1877,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // the error reference 1 and threading.md 1, to "Commands that do not
     // capture"; docs/least-privilege.md 1, to g729.md; threading.md 1, to
     // its own "Commands that end before the launch".
-    const EXPECTED_WIKI_LINKS: usize = 2687;
+    // 2687 -> 2688 (CHANGELOG merge gate): build-ci-release.md's list of
+    // the pre-commit hook's gates links "After a merge of main".
+    const EXPECTED_WIKI_LINKS: usize = 2688;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

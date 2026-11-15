@@ -1057,7 +1057,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 877 -> 882 (COMMANDS-KEEP-ROOT, +5): threading.md links early_exit.rs
     // twice, fan_out.rs, and, in "Commands that end before the launch", the
     // census test and main.rs.
-    const EXPECTED_CODE_LINKS: usize = 882;
+    // 882 -> 884 (CHANGELOG merge gate, +2): build-ci-release.md's "After a
+    // merge of main" links scripts/check-changelog-merge.py and
+    // .config/changelog-released.sha256.
+    const EXPECTED_CODE_LINKS: usize = 884;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
