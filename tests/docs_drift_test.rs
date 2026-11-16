@@ -6570,7 +6570,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // restore): the table of the rebuild's time before and after in
     // docs/fleet.md's "The files of the history store", with its site
     // mirror (+2).
-    const EXPECTED_TABLES: usize = 1512;
+    // 1512 -> 1514 (G729-INSTALL-DOWNLOADS-AS-ROOT): the troubleshooting table
+    // of docs/g729.md's "Install as root", with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1514;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;
