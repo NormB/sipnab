@@ -366,14 +366,64 @@ pub(crate) fn header_value<'a>(head: &'a [String], name: &str) -> Option<&'a str
     })
 }
 
-/// At most `keep` bytes of the body, and whether there was more. A body
-/// that ends early or fails to read ends where it ended: it is evidence for
-/// a person, not data the forwarder acts on.
+/// A body as it was read: at most `keep` bytes, whether there was more, and,
+/// when the body did not arrive whole, why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Body {
+    /// At most `keep` bytes of the body.
+    pub(crate) bytes: Vec<u8>,
+    /// The body was longer than `keep`; the rest was not read.
+    pub(crate) more: bool,
+    /// The body ended before its framing said it ends (a `Content-Length`
+    /// not reached, a chunked body without its last chunk) or a read failed
+    /// (a timeout, a reset): the message names the bytes read.
+    pub(crate) short: Option<String>,
+}
+
+/// At most `keep` bytes of a body the caller acts on, and whether there was
+/// more.
+///
+/// # Errors
+///
+/// The body did not arrive whole: it ended before its `Content-Length` or
+/// before its last chunk, a chunk size is not hex, or a read failed. The
+/// message names the bytes read and, when the answer declared it, the
+/// length expected.
 pub(crate) fn read_body(
     reader: &mut (impl BufRead + ?Sized),
     head: &[String],
     keep: usize,
+) -> Result<(Vec<u8>, bool), String> {
+    let body = read_body_parts(reader, head, keep);
+    match body.short {
+        Some(why) => Err(why),
+        None => Ok((body.bytes, body.more)),
+    }
+}
+
+/// At most `keep` bytes of a body quoted to a person (the text of a refusal),
+/// and whether there was more. A body that ends early or fails to read ends
+/// where it ended: it is evidence for a person, not data anything acts on.
+///
+/// Its callers are the vCon clients and the fleet member, so a build with
+/// `g729` alone (the static release builds' downloader) leaves it out.
+#[cfg(any(feature = "vcon", feature = "api"))]
+pub(crate) fn read_quoted_body(
+    reader: &mut (impl BufRead + ?Sized),
+    head: &[String],
+    keep: usize,
 ) -> (Vec<u8>, bool) {
+    let body = read_body_parts(reader, head, keep);
+    (body.bytes, body.more)
+}
+
+/// The one reading of a body that [`read_body`] and [`read_quoted_body`]
+/// share.
+pub(crate) fn read_body_parts(
+    reader: &mut (impl BufRead + ?Sized),
+    head: &[String],
+    keep: usize,
+) -> Body {
     let chunked = header_value(head, "transfer-encoding")
         .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
     if chunked {
@@ -381,36 +431,532 @@ pub(crate) fn read_body(
     }
     let length = header_value(head, "content-length").and_then(|v| v.parse::<u64>().ok());
     let limit = length.map_or(keep as u64 + 1, |n| n.min(keep as u64 + 1));
-    let mut body = Vec::new();
-    let _ = reader.take(limit).read_to_end(&mut body);
-    let more = body.len() > keep || length.is_some_and(|n| n > keep as u64);
-    body.truncate(keep);
-    (body, more)
+    let mut bytes = Vec::new();
+    let failed = reader.take(limit).read_to_end(&mut bytes).err();
+    let got = bytes.len();
+    // A body is whole when it reached its limit (its length, or one byte
+    // past what is kept) or, without a length, when the peer closed.
+    let reached = got as u64 == limit;
+    let short = match (length, failed) {
+        (Some(n), failed) if !reached => Some(match failed {
+            Some(e) => format!("the answer ended after {got} of its {n} bytes: {e}"),
+            None => format!("the answer ended after {got} of its {n} bytes"),
+        }),
+        (None, Some(e)) if !reached => Some(format!(
+            "reading the answer's body failed after {got} bytes: {e}"
+        )),
+        _ => None,
+    };
+    let more = short.is_none() && (got > keep || length.is_some_and(|n| n > keep as u64));
+    bytes.truncate(keep);
+    Body { bytes, more, short }
 }
 
-/// [`read_body`] for `Transfer-Encoding: chunked`.
-fn read_chunked(reader: &mut (impl BufRead + ?Sized), keep: usize) -> (Vec<u8>, bool) {
-    let mut body = Vec::new();
+/// [`read_body_parts`] for `Transfer-Encoding: chunked`.
+fn read_chunked(reader: &mut (impl BufRead + ?Sized), keep: usize) -> Body {
+    let mut bytes = Vec::new();
+    let end = |bytes: Vec<u8>, more: bool, short: Option<String>| Body { bytes, more, short };
     loop {
+        let got = bytes.len();
         let mut size_line = String::new();
-        if reader.read_line(&mut size_line).unwrap_or(0) == 0 {
-            return (body, false);
+        match reader.read_line(&mut size_line) {
+            Ok(0) => {
+                let why =
+                    format!("the chunked answer ended after {got} bytes, before its last chunk");
+                return end(bytes, false, Some(why));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                let why = format!("the chunked answer ended after {got} bytes: {e}");
+                return end(bytes, false, Some(why));
+            }
         }
         let hex = size_line.split(';').next().unwrap_or_default().trim();
         let Ok(size) = usize::from_str_radix(hex, 16) else {
-            return (body, false);
+            let why = format!(
+                "the chunked answer has a chunk size that is not hex after {got} bytes: {:?}",
+                size_line.trim_end()
+            );
+            return end(bytes, false, Some(why));
         };
         if size == 0 {
-            return (body, false);
+            return end(bytes, false, None);
         }
-        let room = keep.saturating_sub(body.len());
+        let room = keep.saturating_sub(got);
+        let want = size.min(room);
         let mut chunk = Vec::new();
-        let _ = reader.take(size.min(room) as u64).read_to_end(&mut chunk);
-        body.extend_from_slice(&chunk);
+        let failed = reader.take(want as u64).read_to_end(&mut chunk).err();
+        let read = chunk.len();
+        bytes.extend_from_slice(&chunk);
+        if read < want {
+            let why = match failed {
+                Some(e) => {
+                    format!("a chunk of the answer ended after {read} of its {size} bytes: {e}")
+                }
+                None => format!("a chunk of the answer ended after {read} of its {size} bytes"),
+            };
+            return end(bytes, false, Some(why));
+        }
         if size > room {
-            return (body, true);
+            return end(bytes, true, None);
         }
         let mut crlf = String::new();
-        let _ = reader.read_line(&mut crlf);
+        if let Err(e) = reader.read_line(&mut crlf) {
+            let why = format!("the chunked answer ended after {} bytes: {e}", bytes.len());
+            return end(bytes, false, Some(why));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufReader, ErrorKind};
+
+    /// A connection that hands out `data`, at most `step` bytes a read,
+    /// then ends: with `end` as the error of the next read, or at end of
+    /// file when `end` is `None`. `fail_once` makes the first read at that
+    /// offset fail once with that kind: `Interrupted`, as a signal does, or
+    /// a one-time error the connection then reads on after.
+    struct Wire {
+        data: Vec<u8>,
+        at: usize,
+        step: usize,
+        end: Option<ErrorKind>,
+        fail_once: Option<(usize, ErrorKind)>,
+    }
+
+    impl Read for Wire {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if let Some((at, kind)) = self.fail_once
+                && at == self.at
+            {
+                self.fail_once = None;
+                return Err(std::io::Error::new(kind, "the wire failed once"));
+            }
+            if self.at == self.data.len() {
+                return match self.end {
+                    Some(kind) => Err(std::io::Error::new(kind, "the wire failed")),
+                    None => Ok(0),
+                };
+            }
+            let n = buf.len().min(self.step).min(self.data.len() - self.at);
+            buf[..n].copy_from_slice(&self.data[self.at..self.at + n]);
+            self.at += n;
+            Ok(n)
+        }
+    }
+
+    /// The wire for `data`, read 7 bytes at a time through a 16-byte buffer
+    /// so that a body spans several reads.
+    fn wire(data: &[u8], end: Option<ErrorKind>) -> BufReader<Wire> {
+        BufReader::with_capacity(
+            16,
+            Wire {
+                data: data.to_vec(),
+                at: 0,
+                step: 7,
+                end,
+                fail_once: None,
+            },
+        )
+    }
+
+    /// The wire for `data`, one byte a read, whose read at offset `at`
+    /// fails once with `kind`.
+    fn wire_failing_once(data: &[u8], at: usize, kind: ErrorKind) -> BufReader<Wire> {
+        BufReader::with_capacity(
+            16,
+            Wire {
+                data: data.to_vec(),
+                at: 0,
+                step: 1,
+                end: None,
+                fail_once: Some((at, kind)),
+            },
+        )
+    }
+
+    fn head(lines: &[&str]) -> Vec<String> {
+        std::iter::once("HTTP/1.1 200 OK")
+            .chain(lines.iter().copied())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn sized(n: usize) -> Vec<String> {
+        head(&[&format!("Content-Length: {n}")])
+    }
+
+    fn chunked() -> Vec<String> {
+        head(&["Transfer-Encoding: chunked"])
+    }
+
+    fn bytes(n: usize) -> Vec<u8> {
+        (0..n).map(|i| b'a' + (i % 26) as u8).collect()
+    }
+
+    // SUCCESS
+
+    #[test]
+    fn a_body_of_its_content_length_is_read_whole() {
+        let body = bytes(100);
+        let got = read_body(&mut wire(&body, None), &sized(100), 1000);
+        assert_eq!(got, Ok((body, false)), "a whole sized body is the body");
+    }
+
+    #[test]
+    fn a_body_without_a_length_is_read_to_the_close() {
+        let body = bytes(50);
+        let got = read_body(&mut wire(&body, None), &head(&[]), 1000);
+        assert_eq!(got, Ok((body, false)), "an unsized body ends at the close");
+    }
+
+    #[test]
+    fn a_chunked_body_is_its_chunks_joined() {
+        let got = read_body(
+            &mut wire(b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n", None),
+            &chunked(),
+            1000,
+        );
+        assert_eq!(
+            got,
+            Ok((b"hello world".to_vec(), false)),
+            "chunks join in order"
+        );
+    }
+
+    #[test]
+    fn a_chunk_extension_does_not_change_the_size() {
+        let got = read_body(
+            &mut wire(b"5;name=x\r\nhello\r\n0\r\n\r\n", None),
+            &chunked(),
+            1000,
+        );
+        assert_eq!(
+            got,
+            Ok((b"hello".to_vec(), false)),
+            "an extension is not part of the size"
+        );
+    }
+
+    #[test]
+    fn a_sized_body_past_the_limit_is_cut_and_says_more() {
+        let body = bytes(100);
+        let got = read_body(&mut wire(&body, None), &sized(100), 10);
+        assert_eq!(
+            got,
+            Ok((body[..10].to_vec(), true)),
+            "the first 10 bytes, and more"
+        );
+    }
+
+    #[test]
+    fn a_chunked_body_past_the_limit_is_cut_and_says_more() {
+        let got = read_body(
+            &mut wire(b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n", None),
+            &chunked(),
+            8,
+        );
+        assert_eq!(
+            got,
+            Ok((b"hello wo".to_vec(), true)),
+            "the first 8 bytes, and more"
+        );
+    }
+
+    #[test]
+    fn an_unsized_body_past_the_limit_is_cut_and_says_more() {
+        let body = bytes(30);
+        let got = read_body(&mut wire(&body, None), &head(&[]), 20);
+        assert_eq!(
+            got,
+            Ok((body[..20].to_vec(), true)),
+            "the first 20 bytes, and more"
+        );
+    }
+
+    #[cfg(any(feature = "vcon", feature = "api"))]
+    #[test]
+    fn a_quoted_body_that_arrived_whole_is_the_body() {
+        let body = bytes(40);
+        let got = read_quoted_body(&mut wire(&body, None), &sized(40), 1000);
+        assert_eq!(got, (body, false), "a whole quoted body is the body");
+    }
+
+    // FAILURE
+
+    #[test]
+    fn a_sized_body_that_closes_early_is_refused_with_both_counts() {
+        let got = read_body(&mut wire(&bytes(40), None), &sized(100), 1000);
+        let e = got.expect_err("a body 60 bytes short is not the body");
+        assert!(
+            e.contains("40 of its 100 bytes"),
+            "names read and expected: {e}"
+        );
+    }
+
+    #[test]
+    fn a_sized_body_whose_read_times_out_is_refused_with_the_reason() {
+        let got = read_body(
+            &mut wire(&bytes(40), Some(ErrorKind::TimedOut)),
+            &sized(100),
+            1000,
+        );
+        let e = got.expect_err("a timed-out body is not the body");
+        assert!(
+            e.contains("40 of its 100 bytes"),
+            "names read and expected: {e}"
+        );
+        assert!(e.contains("the wire failed"), "names the read error: {e}");
+    }
+
+    #[test]
+    fn a_sized_body_whose_connection_resets_is_refused() {
+        let got = read_body(
+            &mut wire(&bytes(3), Some(ErrorKind::ConnectionReset)),
+            &sized(10),
+            1000,
+        );
+        let e = got.expect_err("a reset body is not the body");
+        assert!(
+            e.contains("3 of its 10 bytes"),
+            "names read and expected: {e}"
+        );
+    }
+
+    #[test]
+    fn an_unsized_body_whose_read_fails_is_refused_with_the_count() {
+        let got = read_body(
+            &mut wire(&bytes(12), Some(ErrorKind::WouldBlock)),
+            &head(&[]),
+            1000,
+        );
+        let e = got.expect_err("an unsized body cut by a read error is not the body");
+        assert!(e.contains("after 12 bytes"), "names the bytes read: {e}");
+        assert!(e.contains("the wire failed"), "names the read error: {e}");
+    }
+
+    #[test]
+    fn a_chunked_body_that_closes_before_its_last_chunk_is_refused() {
+        let got = read_body(&mut wire(b"5\r\nhello\r\n", None), &chunked(), 1000);
+        let e = got.expect_err("no last chunk, no whole body");
+        assert!(
+            e.contains("before its last chunk"),
+            "says what is missing: {e}"
+        );
+        assert!(e.contains("after 5 bytes"), "names the bytes read: {e}");
+    }
+
+    #[test]
+    fn a_chunked_body_whose_chunk_closes_early_is_refused() {
+        let got = read_body(&mut wire(b"a\r\nhel", None), &chunked(), 1000);
+        let e = got.expect_err("a chunk 7 bytes short is not the body");
+        assert!(
+            e.contains("3 of its 10 bytes"),
+            "names read and the chunk size: {e}"
+        );
+    }
+
+    #[test]
+    fn a_chunked_body_whose_read_times_out_inside_a_chunk_is_refused() {
+        let got = read_body(
+            &mut wire(b"a\r\nhel", Some(ErrorKind::TimedOut)),
+            &chunked(),
+            1000,
+        );
+        let e = got.expect_err("a timed-out chunk is not the body");
+        assert!(e.contains("the wire failed"), "names the read error: {e}");
+    }
+
+    #[test]
+    fn a_chunked_body_whose_size_line_read_fails_is_refused() {
+        let got = read_body(
+            &mut wire(b"5\r\nhello\r\n", Some(ErrorKind::TimedOut)),
+            &chunked(),
+            1000,
+        );
+        let e = got.expect_err("a failed size line read is not the end of the body");
+        assert!(e.contains("the wire failed"), "names the read error: {e}");
+        assert!(e.contains("after 5 bytes"), "names the bytes read: {e}");
+    }
+
+    #[test]
+    fn a_chunk_size_that_is_not_hex_is_refused() {
+        let got = read_body(
+            &mut wire(b"zz\r\nhello\r\n0\r\n\r\n", None),
+            &chunked(),
+            1000,
+        );
+        let e = got.expect_err("a size line that is not hex is not a chunked body");
+        assert!(e.contains("\"zz\""), "quotes the size line: {e}");
+    }
+
+    #[test]
+    fn a_chunked_body_whose_chunk_end_read_fails_is_refused() {
+        let got = read_body(
+            &mut wire(b"5\r\nhello", Some(ErrorKind::TimedOut)),
+            &chunked(),
+            1000,
+        );
+        let e = got.expect_err("a failed read after a chunk is not the end of the body");
+        assert!(e.contains("the wire failed"), "names the read error: {e}");
+    }
+
+    #[test]
+    fn a_short_sized_body_under_the_limit_is_refused_not_cut() {
+        let got = read_body(&mut wire(&bytes(5), None), &sized(100), 10);
+        let e = got.expect_err("5 bytes of 100 under a 10-byte limit is short, not more");
+        assert!(
+            e.contains("5 of its 100 bytes"),
+            "names read and expected: {e}"
+        );
+    }
+
+    // EDGE
+
+    #[test]
+    fn a_body_of_length_zero_is_empty_and_whole() {
+        let got = read_body(&mut wire(b"", Some(ErrorKind::TimedOut)), &sized(0), 1000);
+        assert_eq!(
+            got,
+            Ok((Vec::new(), false)),
+            "nothing is read for a length of 0"
+        );
+    }
+
+    #[test]
+    fn a_body_exactly_the_limit_is_whole_and_not_more() {
+        let body = bytes(10);
+        let got = read_body(&mut wire(&body, None), &sized(10), 10);
+        assert_eq!(
+            got,
+            Ok((body, false)),
+            "10 bytes under a 10-byte limit is whole"
+        );
+    }
+
+    #[test]
+    fn a_read_error_after_the_whole_sized_body_does_not_count() {
+        let body = bytes(20);
+        let got = read_body(
+            &mut wire(&body, Some(ErrorKind::TimedOut)),
+            &sized(20),
+            1000,
+        );
+        assert_eq!(
+            got,
+            Ok((body, false)),
+            "the body is whole before the failing read"
+        );
+    }
+
+    #[test]
+    fn a_sized_body_one_byte_short_of_the_limit_plus_one_is_refused() {
+        let got = read_body(&mut wire(&bytes(10), None), &sized(11), 10);
+        let e = got.expect_err("10 of 11 bytes is short even at the limit");
+        assert!(
+            e.contains("10 of its 11 bytes"),
+            "names read and expected: {e}"
+        );
+    }
+
+    #[test]
+    fn a_signal_during_a_body_read_is_read_through() {
+        let body = bytes(30);
+        let mut reader = wire_failing_once(&body, 14, ErrorKind::Interrupted);
+        let got = read_body(&mut reader, &sized(30), 1000);
+        assert_eq!(got, Ok((body, false)), "an interrupted read is read again");
+    }
+
+    #[test]
+    fn a_one_time_error_at_a_chunk_end_is_refused_with_that_error() {
+        // "5\r\nhello" is 8 bytes; the read of the chunk's CRLF fails once.
+        let mut reader = wire_failing_once(b"5\r\nhello\r\n0\r\n\r\n", 8, ErrorKind::TimedOut);
+        let e = read_body(&mut reader, &chunked(), 1000).expect_err("a failed chunk end");
+        assert!(
+            e.contains("after 5 bytes: the wire failed once"),
+            "names the bytes and the read error, not a later parse: {e}"
+        );
+    }
+
+    #[test]
+    fn a_first_chunk_of_size_zero_is_an_empty_whole_body() {
+        let got = read_body(&mut wire(b"0\r\n\r\n", None), &chunked(), 1000);
+        assert_eq!(
+            got,
+            Ok((Vec::new(), false)),
+            "a lone last chunk is an empty body"
+        );
+    }
+
+    #[test]
+    fn a_chunked_body_with_another_coding_listed_is_chunked() {
+        let head = head(&["Transfer-Encoding: gzip, Chunked"]);
+        let got = read_body(&mut wire(b"2\r\nhi\r\n0\r\n\r\n", None), &head, 1000);
+        assert_eq!(
+            got,
+            Ok((b"hi".to_vec(), false)),
+            "chunked is found in a list, any case"
+        );
+    }
+
+    #[test]
+    fn a_content_length_that_is_not_a_number_reads_to_the_close() {
+        let head = head(&["Content-Length: many"]);
+        let got = read_body(&mut wire(b"abc", None), &head, 1000);
+        assert_eq!(
+            got,
+            Ok((b"abc".to_vec(), false)),
+            "no length means the close ends it"
+        );
+    }
+
+    #[cfg(any(feature = "vcon", feature = "api"))]
+    #[test]
+    fn a_quoted_body_that_closes_early_keeps_what_arrived() {
+        let got = read_quoted_body(&mut wire(&bytes(4), None), &sized(100), 1000);
+        assert_eq!(got, (bytes(4), false), "evidence keeps the bytes that came");
+    }
+
+    #[cfg(any(feature = "vcon", feature = "api"))]
+    #[test]
+    fn a_quoted_chunked_body_whose_read_fails_keeps_what_arrived() {
+        let got = read_quoted_body(
+            &mut wire(b"5\r\nhello\r\n3\r\nab", Some(ErrorKind::TimedOut)),
+            &chunked(),
+            1000,
+        );
+        assert_eq!(
+            got,
+            (b"helloab".to_vec(), false),
+            "evidence keeps the bytes that came"
+        );
+    }
+
+    #[cfg(any(feature = "vcon", feature = "api"))]
+    #[test]
+    fn a_short_body_declared_past_the_limit_is_short_not_more() {
+        let got = read_body_parts(&mut wire(&bytes(5), None), &sized(100), 10);
+        assert!(!got.more, "5 bytes that came are not more than the 10 kept");
+        assert!(got.short.is_some(), "5 of 100 bytes is short");
+        let quoted = read_quoted_body(&mut wire(&bytes(5), None), &sized(100), 10);
+        assert_eq!(
+            quoted,
+            (bytes(5), false),
+            "quoted as far as it came, not as cut"
+        );
+    }
+
+    #[test]
+    fn the_parts_of_a_short_body_carry_both_the_bytes_and_the_reason() {
+        let got = read_body_parts(&mut wire(&bytes(6), None), &sized(9), 1000);
+        assert_eq!(got.bytes, bytes(6), "the bytes that came");
+        assert!(!got.more, "not more: short");
+        let reason = got.short.unwrap_or_default();
+        assert!(
+            reason.contains("6 of its 9 bytes"),
+            "the reason names both: {reason}"
+        );
     }
 }

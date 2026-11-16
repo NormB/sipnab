@@ -12914,6 +12914,10 @@ demos/mcp-stdio.sh tests/pcap-samples/sip-problem-call.pcap \
 }
 ```
 
+The helper calls the tool only after the capture has finished loading. It asks
+`capture_status` at most `MCP_MAX_POLLS` times (400 by default), then stops
+with `mcp-stdio: <capture> never finished loading`.
+
 A verdict, not a packet list:
 
 - signaling rather than media,
@@ -28401,7 +28405,7 @@ The credential line names header `{name}`. The forwarder writes this header itse
 
 ### `{url}: {problem}; nothing was written`
 
-The store's answer from `{url}` was incomplete. `{problem}` says how. sipnab wrote nothing.
+The store's answer from `{url}` was incomplete. `{problem}` says how, in the forms listed under [`{url}: {problem}, so the file is not whole`](#url-problem-so-the-file-is-not-whole): it names the bytes read and, when the answer declared it, the length. sipnab wrote nothing.
 
 **What to do:** Retry, and check the store and the network path.
 
@@ -28886,7 +28890,14 @@ The file a recording names is larger than the limit. `{}` is the limit and `{max
 
 ### `{url}: {problem}, so the file is not whole`
 
-The server that holds a recording's file closed the connection before it sent the length it declared. `{problem}` gives the two lengths. sipnab writes nothing for the recording.
+The file a recording names did not arrive whole. `{problem}` is one of these:
+
+- `the answer ended after {got} of its {n} bytes`: the server closed the connection before it sent the length it declared; a read error, such as a timeout, follows after a colon.
+- `the chunked answer ended after {got} bytes, before its last chunk`: a chunked answer stopped before its last chunk.
+- `a chunk of the answer ended after {read} of its {size} bytes`: one chunk stopped before its size.
+- `reading the answer's body failed after {got} bytes: {e}`: an answer without a length failed to read, for example on a timeout.
+
+sipnab writes nothing for the recording.
 
 **What to do:** Run the command again. If it recurs, check the server.
 
@@ -43975,7 +43986,7 @@ the center prints.
 |---|---|
 | `ok` | It answered with an inventory. |
 | `refused` | It answered with an HTTP status other than 200, such as `401` for a wrong, expired or narrower token, or `404` for a build without the inventory. |
-| `unreachable` | No answer: no connection, a timeout, a TLS failure, a token file sipnab would not read, or an answer that is not JSON. |
+| `unreachable` | No answer: no connection, a timeout, a TLS failure, a token file sipnab would not read, an answer cut short (the reason names the bytes read, as `the answer ended after 9 of its 40 bytes`), or an answer that is not JSON. |
 | `incompatible` | Its inventory has a `schema_version` newer than this build reads, or none. Upgrade the controller's sipnab. |
 
 **Findings across the fleet:**
@@ -56852,7 +56863,9 @@ keeps a different share of what senders had sent:
 - **`--duration`** keeps what reached sipnab before the deadline. The listener
   reads what its open connections hold, for up to 1 second each. It also
   accepts the connections still waiting in its backlog, for up to 1 second, and completes a TLS handshake under way, for up to 1 second, so a
-  sender that connected just before the deadline is not lost. The run then
+  sender that connected just before the deadline is not lost. Each second
+  counts from when the listener sees the deadline, so a pause across it
+  (Ctrl-Z, a loaded host) does not use them up. The run then
   reads on for up to 3 seconds for the listener to deliver it. A sender that
   goes on sending cannot hold the stop open past these limits.
 - **`--count N`** keeps exactly N packets, however many connections send at
@@ -82644,7 +82657,14 @@ merged pull request proves the same tree:
 - every check that `main` requires concluded `success` on the head.
 - every workflow run on the head succeeded: the newest of each name, with
   scheduled runs set aside. So the macOS leg, which `CI success` leaves out,
-  still gates the release.
+  still gates the release. The check leaves out two skipped runs, here and on
+  the tagged commit: the `pull_request` run of
+  `.github/workflows/pr-closed.yml`, which skips its only job when a pull
+  request merges, and the `workflow_run` run of
+  `.github/workflows/rerun-not-acquired.yml`, which skips its only job when
+  the CI run it watches succeeded. The script reads the workflow file from
+  GitHub's run record, so a workflow of another file with the same name still
+  counts. A canceled, failed or pending run of those workflows counts too.
 - no run on the tagged commit itself concluded `failure`, `timed_out`,
   `action_required` or `startup_failure`.
 
@@ -88612,6 +88632,13 @@ A hook enforces this rather than merely advising it.
   required check concluded `success` on the head, every workflow run on the head succeeded,
   and no run on the merge commit itself concluded red.
   - The head's runs include the macOS leg, so a macOS break still blocks the release.
+  - Two skipped runs do not count, on the head or on the commit itself: the `pull_request` run
+    of [`pr-closed.yml`](../../.github/workflows/pr-closed.yml), which skips its only job on a
+    merge, and the `workflow_run` run of `rerun-not-acquired.yml`, which skips its only job
+    when the CI run it watches succeeded. The script reads the workflow file from GitHub's run
+    record (`SKIPPED_BY_DESIGN`), not the name; any other skipped run, and a canceled, failed
+    or pending run of those workflows, still blocks. Tested in
+    [`test_tag_proof_skipped_by_design.py`](../../scripts/tests/test_tag_proof_skipped_by_design.py).
   - The hook prints the pull request and head it used.
   - The rule is `tag_ci` in [`scripts/tag-push-proof.py`](../../scripts/tag-push-proof.py),
     tested in [`test_tag_ci_proof.py`](../../scripts/tests/test_tag_ci_proof.py) and in the

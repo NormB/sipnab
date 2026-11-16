@@ -497,7 +497,7 @@ pub fn download(url: &str) -> Result<Vec<u8>, String> {
             if status != 200 {
                 return Err(format!("itu.int answered {status}"));
             }
-            let (body, more) = read_body(reader, &head, PACKAGE_BYTES);
+            let (body, more) = read_body(reader, &head, PACKAGE_BYTES)?;
             if more {
                 return Err(format!(
                     "itu.int answered more than {PACKAGE_BYTES} bytes, more than the package"

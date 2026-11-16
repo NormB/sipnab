@@ -16,6 +16,22 @@ entry that carries them.
   - Was: `--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` printed the per-message lines first, so `jq` failed without `--no-cli-print`.
   - Effect: Each implies `--no-cli-print`; `--json`, `--json-pretty`, `-T` or `--fail2ban` beside it still prints the per-message stream.
   - Docs: [Output formats](docs/output-formats.md).
+- **sipnab refuses an HTTPS answer cut short instead of using it.**
+  - Was: A body that stopped early, on a timeout, a reset or a close, counted as the whole answer.
+  - Effect: `sipnab fleet`, `--vcon-fetch`, `--vcon-audio-fetch`, `[[vcon.enrich]]` services, SCITT receipts and x5u chains refuse it, naming the bytes read.
+  - Effect: A `sipnab fleet` row reads `the answer ended after 9 of its 40 bytes` where it read `the answer is not JSON`.
+  - Docs: [Errors: so the file is not whole](docs/errors.md#url-problem-so-the-file-is-not-whole).
+- **A signal no longer drops a live RTP datagram or an rtpengine request.**
+  - Was: A signal such as `SIGHUP` during a send counted the datagram as unsent, or failed the relay request with `sending <command> to <relay>`.
+  - Effect: sipnab sends again within the same wait: 20 ms for live RTP, the control timeout for rtpengine.
+- **A paused TCP or TLS HEP listener keeps waiting senders at a `--duration` stop.**
+  - Was: A listener paused over a second as it reached the deadline could close waiting connections unread, or give up a TLS handshake.
+  - Effect: The listener takes its backlog and finishes handshakes for 1 second after it sees the stop, however long the pause.
+  - Docs: [What a TCP or TLS listener keeps when the run stops](docs/hep.md#what-a-tcp-or-tls-listener-keeps-when-the-run-stops).
+- **`demos/mcp-stdio.sh` asks a loading capture at most `MCP_MAX_POLLS` times.**
+  - Was: The helper sent one `capture_status` request more than `MCP_MAX_POLLS` before it gave up.
+  - Effect: `MCP_MAX_POLLS=N` now means N requests; the default stays 400.
+  - Docs: [See it work](docs/mcp.md#see-it-work).
 
 ## [0.5.259] - 2026-11-16
 

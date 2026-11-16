@@ -6696,7 +6696,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // the base has it" names `scripts/check-changelog-merge.py`.
     // Measurement: the scan read 289 on main 45087124b and 290 with that
     // step staged.
-    const EXPECTED_REFERENCES: usize = 294;
+    // 294 -> 295 (macOS terminal-loss measurements): ci.yml's comment on the
+    // step "TUI terminal-loss measurements (macOS)" names
+    // `tests/tui_terminal_loss_test.rs`. Measurement: the scan read 294 on
+    // fdc3e8ebe and 295 with that step staged.
+    const EXPECTED_REFERENCES: usize = 295;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
