@@ -12,6 +12,10 @@ entry that carries them.
 
 ### Fixed
 
+- **The post-capture JSON flags print JSON only, without the per-message lines.**
+  - Was: `--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` printed the per-message lines first, so `jq` failed without `--no-cli-print`.
+  - Effect: Each implies `--no-cli-print`; `--json`, `--json-pretty`, `-T` or `--fail2ban` beside it still prints the per-message stream.
+  - Docs: [Output formats](docs/output-formats.md).
 - **sipnab refuses an HTTPS answer cut short instead of using it.**
   - Was: A body that stopped early, on a timeout, a reset or a close, counted as the whole answer.
   - Effect: `sipnab fleet`, `--vcon-fetch`, `--vcon-audio-fetch`, `[[vcon.enrich]]` services, SCITT receipts and x5u chains refuse it, naming the bytes read.
