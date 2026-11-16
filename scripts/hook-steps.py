@@ -10,7 +10,9 @@ usage: hook-steps.py [--log FILE] [--runs N | --mean N]
 the hook's process number), the step as the hook prints it, whole seconds and
 the exit status, separated by tabs. The last line of a run is the step
 `total`. A run that a pass stamp skipped whole writes nothing; a run that was
-killed has no `total` line.
+killed has no `total` line. A run whose suite passed also has a note, a line
+of three fields: the run, `nextest`, and nextest's Summary line (tests run,
+passed, skipped); the table of the run ends with it.
 
 With no option the script prints the table of the newest run. `--runs N`
 prints the newest N runs, oldest first. `--mean N` prints, for each step, the
@@ -30,6 +32,9 @@ from typing import NamedTuple
 LOG_NAME = "sipnab-pre-commit-steps.log"
 TOTAL = "total"
 OUTSIDE = "(outside the steps)"
+# The notes a run can leave: a line of three fields, the second one of these.
+# `nextest` is the Summary line of a suite that passed.
+NOTES = ("nextest",)
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 
 
@@ -48,7 +53,7 @@ def parse(text: str) -> tuple:
     and a killed hook can leave a torn last line."""
     rows, bad = [], 0
     for line in text.splitlines():
-        if not line.strip():
+        if not line.strip() or _note(line) is not None:
             continue
         parts = line.split("\t")
         if (len(parts) != 4 or not parts[0].strip() or not parts[1].strip()
@@ -57,6 +62,24 @@ def parse(text: str) -> tuple:
             continue
         rows.append(Row(parts[0], parts[1], int(parts[2]), int(parts[3])))
     return rows, bad
+
+
+def _note(line: str) -> tuple | None:
+    """(run, name, text) of a note line: three fields, the second a NOTE name."""
+    parts = line.split("\t")
+    if len(parts) == 3 and parts[0].strip() and parts[1] in NOTES and parts[2].strip():
+        return parts[0], parts[1], parts[2].strip()
+    return None
+
+
+def notes(text: str) -> dict:
+    """{run: ["name: text", ...]} for the note lines of a log, in log order."""
+    by: dict = {}
+    for line in text.splitlines():
+        note = _note(line)
+        if note is not None:
+            by.setdefault(note[0], []).append(f"{note[1]}: {note[2]}")
+    return by
 
 
 def runs(rows) -> dict:
@@ -177,7 +200,8 @@ def main(argv=None) -> int:
             return 1
         print(text)
         return 0
-    print("\n\n".join(table(run, by[run]) for run in list(by)[-args.runs:]))
+    noted = notes(text)
+    print("\n\n".join("\n".join([table(run, by[run]), *noted.get(run, [])]) for run in list(by)[-args.runs:]))
     return 0
 
 

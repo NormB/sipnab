@@ -1778,13 +1778,17 @@ mod tests {
             let n = unsafe { libc::write(w, b"x".as_ptr() as *const libc::c_void, 1) };
             assert_eq!(n, 1, "write failed");
             let start = Instant::now();
-            // Generous timeout: must come back fast because data is ready.
-            let res =
-                wait_readable(r, Duration::from_secs(5)).map_err(|e| format!("poll ok: {e:?}"))?;
+            // The wait is ten minutes and the bound one: a wait that ignored
+            // the queued byte would run ten times past the bound, and a host
+            // loaded enough to stall this thread for a second or two (seen:
+            // 1.5 s at load 36) stays far inside it.
+            let res = wait_readable(r, Duration::from_secs(600))
+                .map_err(|e| format!("poll ok: {e:?}"))?;
             assert_eq!(res, WaitResult::Readable);
             assert!(
-                start.elapsed() < Duration::from_secs(1),
-                "should return immediately when readable"
+                start.elapsed() < Duration::from_secs(60),
+                "should return when readable, not at its timeout: {:?}",
+                start.elapsed()
             );
             close(r);
             close(w);
@@ -1798,7 +1802,14 @@ mod tests {
             let start = Instant::now();
             let res = wait_readable(r, Duration::ZERO).map_err(|e| format!("poll ok: {e:?}"))?;
             assert_eq!(res, WaitResult::TimedOut);
-            assert!(start.elapsed() < Duration::from_millis(500));
+            // A zero timeout read as "no timeout" never returns on this idle
+            // pipe, so the bound only has to tell a return from a hang: it
+            // is far above any stall a loaded host adds.
+            assert!(
+                start.elapsed() < Duration::from_secs(60),
+                "a zero timeout must not wait: {:?}",
+                start.elapsed()
+            );
             close(r);
             close(w);
             Ok(())

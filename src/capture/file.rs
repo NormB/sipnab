@@ -127,6 +127,19 @@ pub fn open_offline_with(
     )
 }
 
+/// [`open_offline`] for a file opened up front, read through `file`: `path`
+/// is the name it goes by and is never opened.
+///
+/// # Errors
+///
+/// As [`open_offline`].
+pub(crate) fn open_offline_opened(
+    path: &Path,
+    file: &std::fs::File,
+) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+    open_offline_up_front(path, file, &crate::capture::archive::Limits::for_run())
+}
+
 /// [`open_offline_with`] for a file opened up front, read through `file`:
 /// `path` is the name it goes by and is never opened.
 ///
@@ -218,7 +231,7 @@ fn open_classified(
 ///
 /// The two share one read position, so each reader of a member takes one in
 /// turn, and none of them reads while another still does.
-fn rewound(file: &std::fs::File) -> std::io::Result<std::fs::File> {
+pub(crate) fn rewound(file: &std::fs::File) -> std::io::Result<std::fs::File> {
     use std::io::Seek as _;
     let mut dup = file.try_clone()?;
     dup.seek(std::io::SeekFrom::Start(0))?;
@@ -595,7 +608,10 @@ pub fn capture_files(
         ..ReadTally::default()
     };
     let mut count: u64 = 0;
-    let up_front = config.open_set_up_front.then(|| open_set_up_front(paths));
+    let up_front = config
+        .handed_set
+        .take()
+        .or_else(|| config.open_set_up_front.then(|| open_set_up_front(paths)));
     let result = read_set(
         paths, up_front, config, &tx, ready_tx, &mut tally, &mut count,
     );
@@ -630,8 +646,34 @@ pub(crate) fn open_set_up_front(
     paths.iter().map(|path| open_up_front(path)).collect()
 }
 
+/// The descriptors a run opened for its `-I` set before it confined itself,
+/// handed to the reader ([`CaptureConfig::handed_set`]): one open result per
+/// path, in set order.
+///
+/// Shared by every clone of the config and taken once, so the one reader of
+/// the set gets them and nothing else holds a descriptor after it.
+#[derive(Debug, Clone, Default)]
+pub struct HandedSet(std::sync::Arc<parking_lot::Mutex<Option<OpenResults>>>);
+
+/// One open result per path of a set, in set order.
+pub type OpenResults = Vec<std::io::Result<std::fs::File>>;
+
+impl HandedSet {
+    /// Hand `files` to the reader.
+    #[must_use]
+    pub fn new(files: OpenResults) -> Self {
+        Self(std::sync::Arc::new(parking_lot::Mutex::new(Some(files))))
+    }
+
+    /// The handed results, once; `None` when nothing was handed or another
+    /// reader took them.
+    pub(crate) fn take(&self) -> Option<OpenResults> {
+        self.0.lock().take()
+    }
+}
+
 /// Open one file of a set up front. See [`open_set_up_front`].
-fn open_up_front(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_up_front(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt as _;
     if let Some(why) = not_a_file(path) {
         return Err(std::io::Error::other(why));
@@ -661,19 +703,52 @@ fn refuse_opened_non_file(file: std::fs::File) -> std::io::Result<std::fs::File>
 /// never opened by its path again: after a chroot the path leads nowhere, or
 /// to a different file, and after a privilege drop it may not open.
 #[derive(Debug, Clone, Copy)]
-struct Member<'a> {
+pub(crate) struct Member<'a> {
     /// The member's path, which also names it in every log line and packet.
-    path: &'a Path,
+    pub(crate) path: &'a Path,
     /// The descriptor opened up front, or `None` to open the path now.
-    up_front: Option<&'a std::fs::File>,
+    pub(crate) up_front: Option<&'a std::fs::File>,
 }
 
 impl<'a> Member<'a> {
     /// A member read by its path.
-    fn by_path(path: &'a Path) -> Self {
+    pub(crate) fn by_path(path: &'a Path) -> Self {
         Self {
             path,
             up_front: None,
+        }
+    }
+
+    /// A member read through `file`, the descriptor it was opened up front
+    /// with: `path` names it and is never opened.
+    pub(crate) fn opened(path: &'a Path, file: &'a std::fs::File) -> Self {
+        Self {
+            path,
+            up_front: Some(file),
+        }
+    }
+
+    /// A member read through `file` when it has one, by its path otherwise.
+    pub(crate) fn of(path: &'a Path, file: Option<&'a std::fs::File>) -> Self {
+        Self {
+            path,
+            up_front: file,
+        }
+    }
+
+    /// The wrapper the member's leading bytes sniff as, if any.
+    ///
+    /// # Errors
+    ///
+    /// The member cannot be read.
+    pub(crate) fn container_format(
+        &self,
+    ) -> std::io::Result<Option<crate::capture::archive::Format>> {
+        match self.up_front {
+            Some(file) => {
+                rewound(file).and_then(|mut f| crate::capture::archive::container_format_in(&mut f))
+            }
+            None => crate::capture::archive::container_format(self.path),
         }
     }
 
@@ -688,7 +763,7 @@ impl<'a> Member<'a> {
     }
 
     /// Whether the member is a stored vCon container.
-    fn is_container(&self) -> bool {
+    pub(crate) fn is_container(&self) -> bool {
         match self.up_front {
             Some(file) => rewound(file).is_ok_and(crate::capture::vcon_input::is_container_in),
             None => crate::capture::vcon_input::is_container_file(self.path),
@@ -696,7 +771,7 @@ impl<'a> Member<'a> {
     }
 
     /// Read and rebuild the member as a stored vCon container.
-    fn read_container(&self) -> Result<crate::capture::vcon_input::Rebuilt> {
+    pub(crate) fn read_container(&self) -> Result<crate::capture::vcon_input::Rebuilt> {
         let name = crate::capture::archive::source_name(self.path);
         let rebuilt = match self.up_front {
             Some(file) => {
@@ -709,7 +784,7 @@ impl<'a> Member<'a> {
     }
 
     /// Whether the member is a pcapng whose interfaces disagree.
-    fn is_merged(&self) -> bool {
+    pub(crate) fn is_merged(&self) -> bool {
         match self.up_front {
             Some(file) => {
                 rewound(file).is_ok_and(|mut f| crate::capture::merged::is_merged_file(&mut f))
@@ -719,7 +794,7 @@ impl<'a> Member<'a> {
     }
 
     /// Decode the member as a merged pcapng.
-    fn open_merged(&self) -> Result<crate::capture::merged::MergedPcapNg> {
+    pub(crate) fn open_merged(&self) -> Result<crate::capture::merged::MergedPcapNg> {
         match self.up_front {
             Some(file) => crate::capture::merged::MergedPcapNg::from_file(
                 rewound(file).with_context(|| {
@@ -735,7 +810,9 @@ impl<'a> Member<'a> {
     }
 
     /// Open the member for libpcap, unwrapping a compressed capture.
-    fn open_for_libpcap(&self) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+    pub(crate) fn open_for_libpcap(
+        &self,
+    ) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
         match self.up_front {
             Some(file) => {
                 open_offline_up_front(self.path, file, &crate::capture::archive::Limits::for_run())
@@ -3310,5 +3387,98 @@ mod tests {
         capture_files(&paths, &config, tx, None).map_err(|e| format!("read: {e:#}"))?;
         assert_eq!(rx.try_iter().count(), 5, "three frames and two");
         Ok(())
+    }
+
+    /// A config carrying the descriptors `paths` were opened with.
+    fn handed(paths: &[std::path::PathBuf]) -> CaptureConfig {
+        CaptureConfig {
+            handed_set: HandedSet::new(open_set_up_front(paths)),
+            ..CaptureConfig::default()
+        }
+    }
+
+    #[test]
+    fn success_capture_files_reads_the_descriptors_it_was_handed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let config = handed(&paths);
+        // Gone by path: only the handed descriptors reach the files.
+        remove_all(&paths)?;
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&paths, &config, tx, None)
+            .map_err(|e| format!("a handed set must read without its paths: {e:#}"))?;
+        assert_eq!(
+            rx.try_iter().count(),
+            5,
+            "three frames and two, by descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_handed_set_is_read_whether_or_not_the_config_opens_up_front()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let config = CaptureConfig {
+            open_set_up_front: true,
+            ..handed(&paths)
+        };
+        remove_all(&paths)?;
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&paths, &config, tx, None).map_err(|e| format!("read: {e:#}"))?;
+        assert_eq!(
+            rx.try_iter().count(),
+            5,
+            "the handed descriptors are used, not opened again"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_handed_open_error_skips_that_file_and_reads_the_rest() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let config = CaptureConfig {
+            handed_set: HandedSet::new(vec![
+                Err(std::io::Error::other("refused for the test")),
+                open_up_front(&paths[1]),
+            ]),
+            ..CaptureConfig::default()
+        };
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&paths, &config, tx, None).map_err(|e| format!("read: {e:#}"))?;
+        assert_eq!(
+            rx.try_iter().count(),
+            2,
+            "the file whose open failed is skipped, not opened by path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_handed_set_is_taken_once() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let set = HandedSet::new(open_set_up_front(&paths));
+        let copy = set.clone();
+        assert_eq!(
+            set.take().map(|f| f.len()),
+            Some(2),
+            "the first take has both"
+        );
+        assert!(
+            copy.take().is_none(),
+            "a clone shares the one set, so a second reader opens by path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_default_config_hands_no_set() {
+        assert!(
+            CaptureConfig::default().handed_set.take().is_none(),
+            "nothing is handed unless a run opened its set"
+        );
     }
 }

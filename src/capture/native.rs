@@ -343,6 +343,10 @@ pub struct CaptureConfig {
     /// when its turn comes, so a set of any size stays within its open-file
     /// limit. Ignored by every source but a file set.
     pub open_set_up_front: bool,
+    /// The descriptors the run already opened for its `-I` set, which the
+    /// reader takes in place of opening the set itself. Empty unless the run
+    /// judged its set through descriptors opened before it confined itself.
+    pub handed_set: file::HandedSet,
 }
 
 /// Default kernel capture buffer, in MiB — the ring libpcap fills and sipnab
@@ -396,6 +400,7 @@ impl Default for CaptureConfig {
             // Each file opened when its turn comes: what a run that keeps its
             // credentials has always done.
             open_set_up_front: false,
+            handed_set: file::HandedSet::default(),
         }
     }
 }

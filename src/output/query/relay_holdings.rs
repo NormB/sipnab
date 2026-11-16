@@ -673,7 +673,15 @@ mod tests {
     /// place beside the live one.
     #[test]
     fn holdings_with_dead_engines_cost_one_timeout() -> Result<(), TestError> {
-        use crate::test_engines::{FakeEngine, one_timeout};
+        use crate::test_engines::{FakeEngine, all_answered, waited_a_timeout};
+        // Asked at once, not in turn: three engines that answer only when
+        // all three hold a request. No wall time is read for it.
+        let asked = FakeEngine::together_beside_a_live_one(4, 1)?;
+        let (got, _) = udp_holdings(&asked)?;
+        assert!(
+            all_answered(&asked),
+            "the engines were asked one after another: {got:?}"
+        );
         let fakes = [
             FakeEngine::dead()?,
             FakeEngine::live()?,
@@ -682,8 +690,8 @@ mod tests {
         ];
         let (got, took) = udp_holdings(&fakes)?;
         assert!(
-            one_timeout(took),
-            "one timeout, not three: {took:?}: {got:?}"
+            waited_a_timeout(took),
+            "the dead engines were waited for: {took:?}: {got:?}"
         );
         let outcomes: Vec<&str> = got.iter().filter_map(|g| g.rsplit(' ').next()).collect();
         assert_eq!(

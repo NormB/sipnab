@@ -311,7 +311,44 @@ name already exists, the fetcher skips that uuid and the run exits `1`. Add
 More:
 [Fetch a stored vCon](vcon.md#fetch-a-stored-vcon).
 
+## Run the forwarder or the fetcher from root
+
+Since 0.5.256 a forwarder or a fetcher that root starts does not stay root.
+One that an ordinary user starts changes in nothing.
+
+- It reads the key file, and a CA file when you name one, as root. The key
+  file can stay `root` mode 0600.
+- Then it runs as `--user`, else `[privilege] user`, else `nobody`, before it
+  creates a directory or connects to the store.
+- That user must own what the command writes:
+  - the forwarder's spool, where it makes `delivered` and `failed`,
+  - the directory that holds `--vcon-fetch-out`.
+- Give the spool to the user the forwarder runs as, once:
+
+  ```sh
+  sudo chown -R nobody spool
+  ```
+
+- Check which user it became. The log line is the capture run's:
+
+  ```text
+  INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+  ```
+
+- `--no-priv-drop` keeps root and logs one warning line.
+
+More:
+[Commands that do not capture](least-privilege.md#commands-that-do-not-capture).
+
 ## When something does not work
+
+- **The forwarder or the fetcher exits `2` and logs `started as root, this
+  command runs as user 'nobody'`.**
+  - Root started it, and the user it runs as cannot write the path the
+    message names. It created nothing and sent nothing.
+  - Use one of the three ways the message lists: `chown` the path to that
+    user, name a user who can write it with `--user`, or keep root with
+    `--no-priv-drop`.
 
 - **The forwarder exits `3` and logs `answered 401`.**
   - The token in `vcon-store.key` is wrong or expired.

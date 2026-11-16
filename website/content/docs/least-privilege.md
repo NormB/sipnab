@@ -113,6 +113,117 @@ INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=6553
   The scanner-kill worker does not need either: sipnab opens its raw socket
   before the drop.
 
+## Commands that do not capture
+
+Some commands open no capture and end before a capture would start. Since
+0.5.256 the ones that listen or connect drop root too. A command that is not
+started as root changes in nothing.
+
+| Command | Started as root |
+|---|---|
+| `sipnab fleet serve` | Reads its key files and binds as root, then runs as `--user`, else `nobody`, before it opens the store or accepts |
+| `sipnab fleet inventory` | Reads the hosts file and every token file as root, then asks each instance as `--user`, else `nobody` |
+| `sipnab fleet verify` | Reads its key files as root, then lists and reads the history files as `--user`, else `nobody` |
+| `--vcon-forward`, `--vcon-fetch`, `--vcon-audio-fetch` | Reads its credential, key and CA files as root, then runs as `--user`, else `[privilege] user`, else `nobody`, before it creates a directory or connects |
+| `--relay-holdings`, `--relay-sessions` | Runs as `--user`, else `[privilege] user`, else `nobody`, before it asks the relay |
+| `--show-frame`, `--strip-secrets`, `--write-annotated`, `--find-in-files`, `--compare-captures` | Since 0.5.257: names and opens its capture files (and the notes file) as root, then runs as `--user`, else `[privilege] user`, else `nobody`, before it unpacks or parses any of them |
+| `--vcon-validate`, `--vcon-resign` | Since 0.5.257: reads the container's bytes (and the signing key and certificate) as root, then runs as `--user`, else `[privilege] user`, else `nobody`, before it parses them |
+
+- A file the command reads once, such as a key, a token or a CA, can stay
+  readable by root only.
+- What the command writes must belong to the user it runs as: the center's
+  store and its directory, the forwarder's spool, and the directory that
+  holds `--vcon-fetch-out`, `--vcon-audio-fetch-out`, `--vcon-resign-out`, or
+  the copy `--strip-secrets` or `--write-annotated` writes.
+- When that user cannot write it, the command refuses to start, exits 2 and
+  creates nothing. The message names the path and three ways out:
+
+  ```text
+  --vcon-fetch: started as root, this command runs as user 'nobody', and 'nobody' cannot write in '/home/alice/vcons' (--vcon-fetch-out). Nothing was created. Choose one: chown nobody '/home/alice/vcons'; run it with --user alice, who can; or pass --no-priv-drop to keep root
+  ```
+
+- The `sipnab fleet` commands read no configuration file. `[privilege] user`
+  does not name their user: it is `--user`, else `nobody`.
+- `sipnab fleet verify` writes nothing. The user it runs as must read the
+  history directory, every directory in it and every file in them. When
+  that user cannot, the command refuses before it reads a history file,
+  exits 2, and the message says `cannot read` with the path
+  ([Verify the history store](@/docs/fleet.md#verify-the-history-store)).
+- Under `sudo`, the message names the calling user in `--user` when that
+  user can write the path. Otherwise it prints `--user USER`.
+- `--no-priv-drop` keeps root, as before 0.5.256, and the command logs one
+  warning line that says so.
+- On macOS a command started as root with no `--user` keeps root, as a
+  capture does there, and logs one warning line.
+- `--vcon-audio-fetch-local` makes no connection, so it keeps the caller's
+  user.
+
+These commands still run as the user that started them, root included:
+
+- `sipnab g729 install`: it writes the table file into a directory root may
+  own. Its download runs as root, and sipnab checks it against a fixed
+  SHA-256 before it unpacks it. `--from DIR` uses no network
+  ([Decode G.729](@/docs/g729.md)).
+- Commands that read no input from outside, or need root: `--setup-caps`,
+  `--uprobe-list`, `--mint-token`, `--dump-config`, `--vcon-spool-status`,
+  `--journal-show`, `--revert-actions`, `--completions`,
+  `--print-yang-module`, `sipnab fleet keygen` and `sipnab g729 status`.
+
+## Run a command that parses a file as root
+
+Purpose: run `--show-frame`, `--strip-secrets`, `--write-annotated`,
+`--find-in-files`, `--compare-captures`, `--vcon-validate` or `--vcon-resign`
+on a file only root can read, without parsing that file as root. Since
+0.5.257 sipnab opens the file as root and parses it as another user.
+
+Prerequisites:
+
+- sipnab 0.5.257 or later, started as root (with `sudo`, for example).
+- For a command that writes a file (`--strip-secrets`, `--write-annotated`,
+  `--vcon-resign-out`): a directory for the output that the user the run
+  drops to can write. No other system needs a change.
+
+Steps:
+
+1. Choose the user the command runs as: `--user USER`, else
+   `[privilege] user` in the config file, else `nobody`. `--show-frame`,
+   `--write-annotated` and `--vcon-validate` read the config file for
+   `[privilege]` only; if it does not load, they use `--user`, else `nobody`.
+2. Run the command and name the output in a directory that user can write.
+   Here `call.pcapng` is a capture only root can read, in a directory you
+   own:
+
+   ```sh
+   sudo sipnab --strip-secrets clean.pcapng -I call.pcapng --user "$SUDO_USER"
+   ```
+
+3. A command that prints its answer needs no output directory:
+
+   ```sh
+   sudo sipnab --show-frame 'call.pcapng#12'
+   ```
+
+Verify: the output file belongs to the user the run dropped to
+(`ls -l clean.pcapng`). With `--no-tui` (`-N`), the log holds
+`Dropped privileges to user 'nobody'` before the command's result.
+
+Troubleshoot:
+
+- The run exits 2 with a message that starts
+  `--strip-secrets: started as root`: it stopped before it parsed or created
+  anything. Use one of the three ways the message lists.
+- A gzip capture or an archive fails with `Permission denied`: sipnab
+  unpacks it after the drop, into the temporary directory. Point `TMPDIR` at
+  a directory the user the run drops to can write.
+- `--find-in-files` exits 2 and names the open-file limit: as root it opens
+  every file before the drop. Raise the limit (`ulimit -n`), or sweep fewer
+  files in one run.
+- `--write-annotated` says a note names another capture: after the drop,
+  sipnab cannot compare two spellings of a path inside a directory the user
+  cannot enter. Spell `-I` as the notes file spells the capture.
+- `--no-priv-drop` keeps root for the whole command, and the command prints
+  one line that says so.
+
 ## Read capture files only root can read
 
 Purpose: read a set of captures, or an archive of them, that only root may
@@ -134,20 +245,27 @@ before it does either, and reads each one through the descriptor it opened
 then. A run that keeps its credentials (not root, or `--no-priv-drop` without
 `--chroot`) opens each file when it reaches it, as before.
 
+Since 0.5.259 a root run that drops privileges reads none of those bytes as
+root: it opens the files, drops, and then unpacks, probes and reads them as
+the user it dropped to. The line `Reading N capture files` comes after
+`Dropped privileges` in the log.
+
 - The run raises its open-file soft limit as far as the hard limit when the
   set needs it. Above the hard limit the run stops before it reads anything, with
   exit `2`.
-- The run unpacks an archive (`.tar.gz`, `.zip`, a `.pcap.gz`) before the
-  drop, as root, into a directory only its owner may enter (`0700`) holding
-  files only its owner may read (`0600`). Before the drop it gives that
-  directory to the user the run drops to, so the run can remove it when it
-  ends. A `--chroot` run removes it before the chroot instead, because no
-  path reaches it afterwards. So does a run whose drop user could not reach
-  it to remove it: a `TMPDIR` inside a directory only another user may
-  enter, such as root's per-user temporary folder on macOS
-  (under `/var/folders`, mode `0700`). Every member is open by then.
+- The run unpacks an archive (`.tar.gz`, `.zip`, a `.pcap.gz`) after the
+  drop, as the drop user, into a directory only its owner may enter (`0700`)
+  holding files only its owner may read (`0600`), under `TMPDIR`. That user
+  must be able to write `TMPDIR`: root's per-user temporary folder on macOS
+  (under `/var/folders`, mode `0700`) is not one it can reach, so set
+  `TMPDIR=/tmp` there.
+- A `--chroot` run changes root and drops first too, and unpacks inside
+  the new root, as the drop user, under `TMPDIR` as seen there (normally
+  `DIR/tmp` on the host). [Confine it to a directory](#confine-it-to-a-directory)
+  says what `DIR` then needs.
 - The run reads the TLS secrets a pcapng carries in a Decryption Secrets
-  Block before the drop too, so a root-only capture still decrypts.
+  Block through the descriptor it opened as root, so a root-only capture
+  still decrypts.
 
 Verify: with `SIPNAB_LOG=info`, the closing line counts every file as read in
 full, and no line says `Skipping`. On 2026-11-08 with sipnab built from source after
@@ -172,6 +290,18 @@ first by path after the drop, and skipped a root-only one with
 ending with exit `1` and a line such as `Read 2 packets: 1 of 2 file(s) read in
 full, 1 skipped`.
 
+When the drop user cannot write `TMPDIR`, the run stops with exit `1` at the
+first archive or `.pcap.gz`, before it unpacks anything:
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.pcap.gz': user 'nobody' cannot create files in the temporary directory '/var/folders/xy/T', where sipnab unpacks an archive or a compressed capture after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), or pass --user with a user who can write it
+```
+
+Run with `TMPDIR=/tmp` before the rest of the command
+(`sudo TMPDIR=/tmp sipnab -N -I a.pcap.gz`), or with `--user` naming a user
+that can write the directory. A capture that needs no
+unpacking reads whatever `TMPDIR` is.
+
 ## Confine it to a directory
 
 `--chroot DIR` (or `[privilege] chroot`) changes the root directory to `DIR`
@@ -181,6 +311,25 @@ sipnab looks the user up before it changes root, so `DIR` needs no
 `etc/passwd`: an empty directory works. 0.5.233 and earlier looked the user
 up inside `DIR` and stopped with `Failed to drop privileges: User 'nobody' not
 found` unless `DIR` held an `etc/passwd` naming the user.
+
+A file run (`-I`) opens its files before it changes root and reads them
+through those descriptors, so `DIR` needs no copy of them. Since 0.5.259 an
+archive or a `.pcap.gz` unpacks after the chroot, as the drop user, into the
+temporary directory inside `DIR`: create it, writable by that user.
+
+```bash
+sudo mkdir -m 1777 /var/lib/sipnab/jail/tmp
+```
+
+Without it the run stops with exit `1` at the first such file, before it
+unpacks anything:
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.tgz': user 'nobody' cannot create files in the temporary directory '/tmp' inside --chroot '/var/lib/sipnab/jail', where sipnab unpacks an archive or a compressed capture after it drops root. Create '/var/lib/sipnab/jail/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '/var/lib/sipnab/jail'
+```
+
+The run removes what it unpacked from `DIR/tmp` when it ends. A capture that
+needs no unpacking reads with an empty `DIR`.
 
 A TLS client that names no CA file of its own (a `--hep-send-transport tls`
 sender without `--hep-tls-ca`, an HTTPS `[vcon_fetch]` store without `ca`)

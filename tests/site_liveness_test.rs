@@ -1302,20 +1302,39 @@ fn the_advertisement_check_identifies_itself() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The watcher warns on a refusal rather than failing the job.
+/// The watcher warns on a refusal rather than failing the job, and the
+/// warning says whether the release was verified another way.
+///
+/// Until 2026-11-14 the step itself turned the verifier's exit 6 into a
+/// warning and exit 0: a green step that had verified nothing
+/// (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER). The verdict now belongs to
+/// `scripts/pages-live.py daily`, which reads two static files the CDN
+/// answers from every runner; scripts/tests/test_pages_live_artifact.py
+/// holds its behavior.
 #[test]
 fn the_watcher_warns_when_the_advertisement_check_is_refused() -> Result<(), TestError> {
     let wf = watcher()?;
     assert!(
-        wf.contains(r#"if [ "$rc" = 6 ]"#),
-        "the advertisement step does not act on the refusal verdict, so a \
-         blocked check fails the job every morning"
+        wf.contains(r#"python3 scripts/pages-live.py daily --expect "$published""#),
+        "the advertisement step does not run the check that can verify a \
+         release when the edge refuses the download page"
     );
     assert!(
-        wf.contains("::warning::The CDN refused the advertisement check"),
-        "a refused advertisement check produces no annotation, so the release \
-         goes unverified and nothing says so"
+        !wf.contains(r#"if [ "$rc" = 6 ]"#),
+        "the advertisement step turns a refused read into a pass by itself \
+         again: a green step that verified nothing"
     );
+    let check = std::fs::read_to_string(repo().join("scripts/pages-live.py"))?;
+    for annotation in [
+        "::warning title=Live download page not read::",
+        "::warning title=Advertisement not verified::",
+    ] {
+        assert!(
+            check.contains(annotation),
+            "a refused advertisement check produces no `{annotation}` \
+             annotation, so nothing says whether the release was verified"
+        );
+    }
     Ok(())
 }
 

@@ -730,3 +730,211 @@ def test_edge_the_real_runner_waits_for_a_child_that_closed_its_output_first(rea
     (0.001,)`); this child reaches it every time."""
     r = REAL_RUNNER(["sh", "-c", "exec >&- 2>&-; sleep 0.3; exit 7"], 30)
     assert (r.rc, r.out) == (7, "")
+
+
+# ---------------------------------------------------------------------------
+# The release check after the stamp: a read the edge refused is not a page
+# that names another release (PAGES-LIVE-MAPS-BLOCKED-TO-EXIT-3,
+# CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER). On 2026-11-14 the 0.5.254 release
+# run failed twice with "the download page does not name 0.5.254" and exit 3
+# while the page named it: the CDN had answered 403 to the runner.
+# ---------------------------------------------------------------------------
+
+EDGE_403 = "edge: status=403 server=cloudflare cf-ray=8e1a2b3c4d5e6f71-IAD cf-mitigated=challenge content-type=text/html"
+BLOCKED_OUT = (f"{EDGE_403}\nedge: first 200 bytes: <html>Just a moment...\n"
+               "BLOCKED: the edge refused this client (403).\n  Bot protection, a rate limit or a firewall rule.\n")
+
+
+class CheckedSite(Site):
+    """A live site whose release check answers from a list, the last answer
+    for every later call; it records when each check ran."""
+
+    def __init__(self, *answers):
+        super().__init__()
+        self.answers = list(answers)
+        self.checked_at = []
+
+    def __call__(self, argv, timeout, stdin=None):
+        if "verify-site-advertises.sh" in " ".join(argv):
+            self.calls.append((argv, stdin))
+            self.checked_at.append(self.now - 1_800_000_000.0)
+            rc, out = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+            return pl.Result(rc, out)
+        return super().__call__(argv, timeout, stdin)
+
+
+OK_OUT = "edge: status=200 server=cloudflare cf-ray=1-IAD cf-mitigated=- content-type=text/html\nOK: the page names 0.5.243.\n"
+STALE_OUT = ("edge: status=200 server=cloudflare cf-ray=2-IAD cf-mitigated=- content-type=text/html\n"
+             "STALE: the page is healthy and does not name 0.5.243.\n  This is the one verdict about the release.\n")
+
+
+def test_success_a_release_read_answered_at_once_is_one_check(capsys):
+    s = CheckedSite((0, OK_OUT))
+    assert verify(s, expect="0.5.243") == 0
+    assert s.checked_at == [0.0], s.checked_at
+
+
+def test_success_every_release_check_is_printed_with_its_number_time_and_verdict(capsys):
+    s = CheckedSite((1, STALE_OUT), (1, STALE_OUT), (0, OK_OUT))
+    assert verify(s, expect="0.5.243") == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("release check ")]
+    assert len(lines) == 3, lines
+    assert lines[0].startswith("release check 1 (+0 s): exit 1: ") and "STALE: the page is healthy" in lines[0], lines
+    assert lines[1].startswith("release check 2 (+15 s): exit 1: "), lines
+    assert lines[2].startswith("release check 3 (+30 s): exit 0: ") and "OK: the page names 0.5.243." in lines[2], lines
+
+
+def test_success_a_check_line_carries_the_edges_answer_and_not_the_advice(capsys):
+    s = CheckedSite((6, BLOCKED_OUT), (0, OK_OUT))
+    verify(s, expect="0.5.243")
+    first = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("release check 1 "))
+    assert EDGE_403 in first and "BLOCKED: the edge refused this client (403)." in first, first
+    assert "Bot protection" not in first, first
+
+
+def test_success_a_read_refused_first_and_answered_later_passes(capsys):
+    s = CheckedSite((6, BLOCKED_OUT), (6, BLOCKED_OUT), (0, OK_OUT))
+    assert verify(s, expect="0.5.243") == 0
+    assert s.checked_at == [0.0, 15.0, 45.0], s.checked_at
+
+
+def test_success_a_page_that_names_the_release_later_is_read_every_15_s(capsys):
+    s = CheckedSite((1, STALE_OUT), (1, STALE_OUT), (1, STALE_OUT), (0, OK_OUT))
+    assert verify(s, expect="0.5.243") == 0
+    assert s.checked_at == [0.0, 15.0, 30.0, 45.0], s.checked_at
+
+
+def test_success_output_is_written_as_it_happens_not_when_the_script_ends():
+    """A job log carries the time a line reached it. Block-buffered output
+    reached it at exit, so "live:" and the verdict five minutes later carried
+    the same second (2026-11-14, job 132416129137)."""
+    assert pl.print.keywords == {"flush": True}
+
+
+def test_success_the_exit_statuses_are_five_different_numbers():
+    assert sorted([pl.LIVE, pl.STALE, pl.UNREADABLE, pl.NOT_ADVERTISED, pl.BLOCKED]) == [0, 1, 2, 3, 4]
+
+
+def test_failure_a_refused_release_read_is_exit_4_and_says_the_read_was_refused(capsys):
+    s = CheckedSite((6, BLOCKED_OUT))
+    assert verify(s, expect="0.5.243") == 4
+    out = capsys.readouterr().out
+    error = next(line for line in out.splitlines() if line.startswith("::error::"))
+    assert "the edge refused the read of the download page" in error, error
+    assert "nothing is known about whether it names 0.5.243" in error, error
+
+
+def test_failure_a_refused_release_read_never_says_the_page_does_not_name_the_release(capsys):
+    s = CheckedSite((6, BLOCKED_OUT))
+    verify(s, expect="0.5.243")
+    out = capsys.readouterr().out
+    assert "::error::" in out and "does not name 0.5.243" not in out, out
+
+
+def test_failure_a_refused_read_prints_the_edges_answer_of_the_last_check(capsys):
+    s = CheckedSite((6, BLOCKED_OUT))
+    verify(s, expect="0.5.243")
+    out = capsys.readouterr().out
+    assert "edge: first 200 bytes: <html>Just a moment..." in out, out
+
+
+@pytest.mark.parametrize("rc, word", [(2, "UNREACHABLE: the host did not answer."),
+                                      (3, "TLS: the CDN could not validate the origin certificate (526)."),
+                                      (4, "HTTP: the server answered 500."),
+                                      (5, "EMPTY: 200 with no body.")])
+def test_failure_a_release_read_that_failed_another_way_is_unreadable(rc, word, capsys):
+    s = CheckedSite((rc, word + "\n"))
+    assert verify(s, expect="0.5.243") == 2
+    out = capsys.readouterr().out
+    error = next(line for line in out.splitlines() if line.startswith("::error::"))
+    assert "the download page could not be read" in error and f"exit {rc}" in error, error
+    assert "does not name 0.5.243" not in out, out
+
+
+def test_failure_a_verifier_status_nobody_defined_is_unreadable_not_unadvertised(capsys):
+    s = CheckedSite((99, "sh: 1: syntax error\n"))
+    assert verify(s, expect="0.5.243") == 2
+    assert "does not name 0.5.243" not in capsys.readouterr().out
+
+
+def test_failure_a_verifier_that_timed_out_is_unreadable(capsys):
+    s = CheckedSite((124, ""))
+    assert verify(s, expect="0.5.243") == 2
+
+
+def test_failure_only_a_healthy_page_without_the_release_is_exit_3(capsys):
+    s = CheckedSite((1, STALE_OUT))
+    assert verify(s, expect="0.5.243") == 3
+    out = capsys.readouterr().out
+    assert "::error::The live site is this run's artifact and the download page does not name 0.5.243." in out, out
+
+
+def test_failure_a_refused_read_backs_off_and_sends_five_checks_in_300_s(capsys):
+    s = CheckedSite((6, BLOCKED_OUT))
+    verify(s, expect="0.5.243")
+    assert s.checked_at == [0.0, 15.0, 45.0, 105.0, 225.0], s.checked_at
+
+
+def test_failure_a_stale_page_is_read_every_15_s_for_the_whole_bound(capsys):
+    s = CheckedSite((1, STALE_OUT))
+    verify(s, expect="0.5.243")
+    assert s.checked_at == [15.0 * n for n in range(21)], s.checked_at
+
+
+def test_failure_without_enforce_a_refused_read_is_an_error_annotation_and_exit_0(capsys):
+    s = CheckedSite((6, BLOCKED_OUT))
+    assert verify(s, expect="0.5.243", enforce=False) == 0
+    assert "::error::" in capsys.readouterr().out
+
+
+def test_failure_a_refused_read_starts_no_second_deploy(capsys):
+    s = CheckedSite((6, BLOCKED_OUT))
+    verify(s, expect="0.5.243")
+    assert s.deploys == []
+
+
+def test_edge_a_refusal_after_a_stale_answer_backs_off_from_15_s_again(capsys):
+    s = CheckedSite((6, BLOCKED_OUT), (6, BLOCKED_OUT), (1, STALE_OUT), (6, BLOCKED_OUT), (6, BLOCKED_OUT), (0, OK_OUT))
+    assert verify(s, expect="0.5.243") == 0
+    assert s.checked_at == [0.0, 15.0, 45.0, 60.0, 75.0, 105.0], s.checked_at
+
+
+def test_edge_the_last_check_decides_refused_after_stale_is_exit_4(capsys):
+    s = CheckedSite((1, STALE_OUT), (6, BLOCKED_OUT))
+    assert verify(s, expect="0.5.243") == 4
+
+
+def test_edge_the_last_check_decides_stale_after_refused_is_exit_3(capsys):
+    s = CheckedSite((6, BLOCKED_OUT), (1, STALE_OUT))
+    assert verify(s, expect="0.5.243") == 3
+
+
+def test_edge_no_wait_passes_the_bound(capsys):
+    s = CheckedSite((6, BLOCKED_OUT))
+    verify(s, expect="0.5.243")
+    assert s.now - 1_800_000_000.0 <= 300.0
+
+
+def test_edge_a_bound_of_zero_is_one_release_check(capsys):
+    s = CheckedSite((6, BLOCKED_OUT))
+    assert verify(s, expect="0.5.243", within=0.0) == 4
+    assert s.checked_at == [0.0], s.checked_at
+
+
+def test_edge_a_check_with_no_output_still_prints_its_line(capsys):
+    s = CheckedSite((124, ""))
+    verify(s, expect="0.5.243", within=0.0)
+    assert "release check 1 (+0 s): exit 124: (no output)" in capsys.readouterr().out
+
+
+def test_edge_no_release_expected_is_no_release_check(capsys):
+    s = CheckedSite((6, BLOCKED_OUT))
+    assert verify(s) == 0
+    assert s.checked_at == [] and "release check" not in capsys.readouterr().out
+
+
+def test_edge_a_verdict_line_is_one_line_however_many_the_verifier_printed(capsys):
+    s = CheckedSite((6, BLOCKED_OUT), (0, OK_OUT))
+    verify(s, expect="0.5.243")
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("release check ")]
+    assert len(lines) == 2 and " | " in lines[0], lines

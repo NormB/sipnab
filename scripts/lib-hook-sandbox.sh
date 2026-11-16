@@ -14,6 +14,9 @@
 #   sleep-<subcommand>  sleep that many seconds before it runs;
 #   canned-replay-junit.xml  the report of a `nextest run` given `-E` (the
 #                       replay of the last failures); canned-junit.xml otherwise.
+# It prints nextest-summary (written by default; a test may remove or replace
+# it) on standard error at the end of a `nextest run`, as nextest prints its
+# Summary line.
 
 # ── The sandbox: run the REAL hook against a stubbed cargo ─────────────────
 # Everything below used to be grepped for out of the hook's source, which made
@@ -217,6 +220,7 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		    _junit="$_h/canned-junit.xml"
 		    case " \$* " in *" -E "*) [ -f "$_h/canned-replay-junit.xml" ] && _junit="$_h/canned-replay-junit.xml" ;; esac
 		    cp "\$_junit" "\$_w/target/nextest/suite/junit.xml"
+		    [ -f "$_h/nextest-summary" ] && cat "$_h/nextest-summary" >&2
 		    exit 0 ;;
 		  test)
 		    if [ -f "$_h/fail-test" ]; then
@@ -266,6 +270,9 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		done
 		echo '</testsuites>'
 	} > "$_h/canned-junit.xml"
+	# nextest ends a run with a Summary line on standard error; the hook
+	# writes the one of a passing suite to its step log.
+	printf '%s\n' '------------' "     Summary [   0.004s] $_total tests run: $_total passed, 0 skipped" > "$_h/nextest-summary"
 	# The homepage the hook will check. It carries no number: the count is
 	# generated at deploy time from the file this loads.
 	cat > "$_d/website/templates/index.html" <<-'EOF'

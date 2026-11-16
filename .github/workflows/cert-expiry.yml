@@ -32,6 +32,8 @@ on:
       - 'scripts/check-cert-expiry.sh'
       - 'scripts/classify-origin-cert.sh'
       - 'scripts/verify-site-advertises.sh'
+      # The advertisement step's check.
+      - 'scripts/pages-live.py'
       # The advertisement step resolves the release with it.
       - 'scripts/advertise-release.py'
       - '.github/workflows/cert-expiry.yml'
@@ -53,8 +55,10 @@ jobs:
     # Four network round trips and a file comparison. A bound at all is the
     # point: a job that hangs on an unreachable host would sit for six hours
     # and report nothing, which is the same silence this whole workflow exists
-    # to break.
-    timeout-minutes: 5
+    # to break. Raised 5 -> 10 with the advertisement step's static reads:
+    # at the worst six reads of 20 s, two waits of 15 s and one page read of
+    # 20 s, 170 s, after the certificate steps.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -136,6 +140,25 @@ jobs:
         # published_version: since RELEASE-FAST C the committed value lags the
         # site by one release until the next release pull request. A failed
         # read of GitHub's releases fails the step rather than guess.
+        #
+        # The check is `scripts/pages-live.py daily`
+        # (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER). The CDN answers this
+        # runner's read of the download page with a browser challenge on
+        # some runner images, and until 2026-11-14 this step turned that
+        # refusal into a warning and a green step that had verified nothing.
+        # The CDN answers static files from every runner, so the check reads
+        # two of them: deploy-stamp.txt and advertised-release.txt, which
+        # the site build writes from its own download page (the release that
+        # page names by scripts/verify-site-advertises.sh --classify, and the
+        # page's sha256). Files of one deploy that name the release verify
+        # it. They prove what the deployed build's page said; they do not
+        # prove what the edge serves a visitor, so the live page is still
+        # read once: a page that answers and does not name the release
+        # fails, and a refused read is a warning with the edge's answer.
+        # When the files say nothing and the page is refused, the step
+        # writes a line that starts with `NOT VERIFIED:` to the job summary
+        # and to a warning and keeps its conclusion: nothing is known, in
+        # either direction.
         if: github.event_name != 'push'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -146,14 +169,4 @@ jobs:
             exit 1
           fi
           echo "site should advertise $published"
-          sh scripts/verify-site-advertises.sh "$published" && rc=0 || rc=$?
-          # 6 is BLOCKED: the edge refused this client, so the advertisement
-          # was never read. The site is very likely fine for everyone else and
-          # nothing about the release follows from it, so this is a warning
-          # rather than a daily failure -- and never a pass, because a check
-          # that cannot see anything must not report success.
-          if [ "$rc" = 6 ]; then
-            echo "::warning::The CDN refused the advertisement check, so the published release was never verified from the live page. Let the checker through at the edge."
-            rc=0
-          fi
-          exit "$rc"
+          python3 scripts/pages-live.py daily --expect "$published"

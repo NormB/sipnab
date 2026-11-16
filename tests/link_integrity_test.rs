@@ -1869,7 +1869,37 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // files" (two to the section, one to "Keep call history at the center",
     // one to the error reference) and the error reference's link to the
     // section.
-    const EXPECTED_WIKI_LINKS: usize = 2678;
+    // 2678 -> 2679 (fleet history reads the selected rows, +1): the link
+    // from "Keep heartbeat history at the center" in docs/fleet.md to "The
+    // files of the history store", which now holds the read times.
+    // 2679 -> 2687 (COMMANDS-KEEP-ROOT, +8): docs/fleet.md 2 and the CLI
+    // reference 1, to "Run the center as a service"; docs/vcon-store.md 1,
+    // the error reference 1 and threading.md 1, to "Commands that do not
+    // capture"; docs/least-privilege.md 1, to g729.md; threading.md 1, to
+    // its own "Commands that end before the launch".
+    // 2687 -> 2688 (CHANGELOG merge gate): build-ci-release.md's list of
+    // the pre-commit hook's gates links "After a merge of main".
+    // 2688 -> 2689 (key rotation keeps the old store key, +1): the link from
+    // step 4 of "Encrypt the center's store" in docs/fleet.md to "Keep call
+    // history at the center", which holds the entry for a key that is not
+    // loaded.
+    // 2689 -> 2697 (`sipnab fleet verify`, +8): docs/fleet.md 3 (two to its
+    // own "Verify the history store", one to the "Fleet verify" section of
+    // errors.md); docs/errors.md 3 (two to that how-to, one to its own "Fleet
+    // center"); docs/cli-reference.md 1 and docs/least-privilege.md 1, both
+    // to the how-to.
+    // 2697 -> 2698 (CAPTURE-RESOLVE-AS-ROOT): docs/errors.md's entry for the
+    // TMPDIR refusal links to "Read capture files only root can read" in
+    // least-privilege.md.
+    // 2698 -> 2700 (CAPTURE-RESOLVE-AS-ROOT, --chroot): docs/errors.md's entry
+    // for the --chroot refusal links "Confine it to a directory", and
+    // least-privilege.md's archive bullet links the same section.
+    // 2700 -> 2706 (a center answers 503 while it starts, +6): docs/fleet.md
+    // 4 (three to its new "What the center answers while it starts", one
+    // from it to "The files of the history store"); docs/errors.md 2 (one
+    // to its own "A `503` while the center starts", one to that section of
+    // fleet.md).
+    const EXPECTED_WIKI_LINKS: usize = 2706;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2026,7 +2056,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // CONTRIBUTING.md's line on accepted advisories.
     // 149 -> 150 (fleet history store): README.md's `fleet-store` feature row
     // links docs/fleet.md#keep-call-history-at-the-center.
-    const EXPECTED_COMMUNITY_LINKS: usize = 150;
+    // 150 -> 151 (changelog outline format): CONTRIBUTING.md's changelog
+    // item links docs/internals/build-ci-release.md#the-format-of-an-entry.
+    const EXPECTED_COMMUNITY_LINKS: usize = 151;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

@@ -21,6 +21,25 @@
   ],
   "resolved": [
     {
+      "file": "src/early_exit.rs",
+      "call": "stderr_line!(\"{refusal}\")",
+      "count": 1,
+      "carries": [
+        "{command}: started as root, this command runs as user '{target}', and '{target}' cannot {access} '{path}' ({what}). Nothing was created. Choose one: chown {target} '{path}'; {user_way}; or pass --no-priv-drop to keep root",
+        "{name}: failed to drop privileges: {e}"
+      ],
+      "why": "report in early_exit.rs, which run_relay_listing (src/app/bootstrap.rs) calls with what confine returned: the text of refusal or of confine's drop failure, both format! literals in early_exit.rs. The same two texts leave through `sipnab fleet serve: {e}` (fleet_center.rs), the forwarder's error!(\"{e}\") and the fetcher's stderr_line!(\"{e}\"), and `sipnab {e}` of `fleet inventory`. confine's third text, `{name}: no early-exit row`, cannot print: tests/threads_at_privilege_drop_test.rs holds that every name passed has a row."
+    },
+    {
+      "file": "src/early_exit.rs",
+      "call": "warn!(\"{}\", kept_root_warning(name))",
+      "count": 1,
+      "carries": [
+        "{command}: running as root because --no-priv-drop was given; without it this command runs as --user, or as '{nobody}'"
+      ],
+      "why": "confine in early_exit.rs, for a command that ends before the capture launch and was started as root with --no-priv-drop; the text is kept_root_warning's format! in the same file."
+    },
+    {
       "file": "src/app/batch.rs",
       "call": "stderr_line!(\"{}\", target.say(&format!(\"{e:#}\")))",
       "count": 1,
@@ -532,9 +551,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError::arg(msg)",
-      "count": 2,
+      "count": 3,
       "carries": [],
-      "why": "One occurrence is src/capture/bpf_filter.rs::forgot_input_flag (out of scope); the other is capture_source_capacity_refusal in bootstrap.rs."
+      "why": "One occurrence is src/capture/bpf_filter.rs::forgot_input_flag (out of scope); the other two are capture_source_capacity_refusal in bootstrap.rs, for a run without -I in plan and for a judged -I set in resolve_planned_inputs."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -602,9 +621,9 @@
     {
       "file": "src/app/queries/b3.rs",
       "call": "stderr_line!(\"{}\", e.message)",
-      "count": 3,
+      "count": 4,
       "carries": [],
-      "why": "The PlanError load_config returns when --compare-captures or --find-in-files reads the config before reading files (the same values bootstrap.rs logs through apply_read_config, from out-of-scope config, limits and security validation), and the one build_filter_expr returns for --find-in-files (the filter refusals a run of the same command line gives)."
+      "why": "The PlanError load_config returns when --compare-captures or --find-in-files reads the config before reading files (the same values bootstrap.rs logs through apply_read_config, from out-of-scope config, limits and security validation), the one build_filter_expr returns for --find-in-files (the filter refusals a run of the same command line gives), and the one fit_set_under_open_file_limit returns when --find-in-files, started as root, opens its whole set before it drops privileges (the open-file limit refusals a --cores run of src/app/bootstrap.rs gives, which have their entries)."
     },
     {
       "file": "src/app/bootstrap.rs",

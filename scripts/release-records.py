@@ -19,7 +19,10 @@ phase-two pull request:
 RELEASE-FAST C. `ceiling` runs in release.yml's `records` job against the
 published tarball, after checking it against the published SHA256SUMS.txt,
 and the job uploads the line as the tag run's `release-records` artifact.
-`fetch` downloads that artifact. `write` makes the advertisement commit's
+`fetch` downloads that artifact from the newest tag-push run of the tag, once
+that run's records job succeeded and the artifact has not expired; it prints
+the run, its attempt, status and conclusion, and the run's own conclusion
+decides nothing (a run red for another job still holds the records). `write` makes the advertisement commit's
 changes in the tree: it inserts both records, regenerates the internals
 mirror, and moves the advertised release with scripts/advertise-release.py,
 the same writer pages.yml runs. The next release pull request carries that
@@ -48,6 +51,8 @@ _PENDING = re.compile(r"(?m)^#\s+pending\s+\+[0-9,]+\s+bytes\s+against\s+(\d+\.\
 _CEILING = re.compile(r'(?m)^binary_size_ceiling_mb = "(\d+)"$')
 _ROW = re.compile(r"^\| (\d+\.\d+\.\d+) \|")
 ARTIFACT = "release-records"
+# The `name:` of release.yml's `records` job, the one job that uploads ARTIFACT.
+RECORDS_JOB = "Record the binary size"
 LEDGER = "docs/internals/uprobe-capture.md"
 CONFIG = "website/config.toml"
 
@@ -141,13 +146,48 @@ def insert_uprobe_row(md: str, row: str, version: str) -> str:
     return "\n".join(lines[: last + 1] + [row] + lines[last + 1 :])
 
 
-def records_run(runs: list, tag: str) -> int:
-    """The id of the newest successful tag-push run of release.yml for `tag`
-    (`gh run list` lists newest first)."""
+def tag_run(runs: list, tag: str) -> int:
+    """The id of the newest tag-push run of release.yml for `tag`, whatever
+    its status or conclusion (`gh run list` lists newest first). An older
+    run of the same tag is never taken in its place: it measured another
+    build."""
     for r in runs:
-        if r.get("headBranch") == tag and r.get("event") == "push" and r.get("conclusion") == "success":
+        if r.get("headBranch") == tag and r.get("event") == "push":
             return r["databaseId"]
-    raise RecordError(f"release.yml has no successful run for {tag}")
+    raise RecordError(f"release.yml has no tag-push run for {tag}")
+
+
+def records_source(run: dict, artifacts: list, tag: str) -> str:
+    """One line naming the run the records come from, once its records job
+    succeeded and its artifact has not expired.
+
+    The run's own conclusion is printed and decides nothing. The artifact is
+    the work of one job, so a run that is red, or in progress on a re-run,
+    for another job still holds the records; and a green run does not vouch
+    for a records job that did not succeed."""
+    run_id = run.get("databaseId")
+    jobs = [j for j in run.get("jobs") or [] if j.get("name") == RECORDS_JOB]
+    if not jobs:
+        raise RecordError(f"run {run_id} of {tag} has no job {RECORDS_JOB!r}")
+    if len(jobs) > 1:
+        raise RecordError(f"run {run_id} of {tag} has {len(jobs)} jobs named {RECORDS_JOB!r}")
+    concluded = jobs[0].get("conclusion") or "none yet"
+    if concluded != "success":
+        raise RecordError(
+            f"the job {RECORDS_JOB!r} of run {run_id} of {tag} did not succeed: status "
+            f"{jobs[0].get('status')}, conclusion {concluded}"
+        )
+    named = [a for a in artifacts if a.get("name") == ARTIFACT]
+    if not named:
+        raise RecordError(f"run {run_id} of {tag} has no `{ARTIFACT}` artifact")
+    live = [a for a in named if not a.get("expired")]
+    if not live:
+        raise RecordError(f"the `{ARTIFACT}` artifact of run {run_id} of {tag} expired at {named[0].get('expires_at')}")
+    return (
+        f"release-records: {tag}: run {run_id}, attempt {run.get('attempt')}, status {run.get('status')}, "
+        f"conclusion {run.get('conclusion') or 'none yet'}; job {RECORDS_JOB!r} succeeded; "
+        f"artifact {live[0].get('id')} expires {live[0].get('expires_at')}"
+    )
 
 
 def _gh(*args: str) -> str:
@@ -212,9 +252,13 @@ def main(argv: list[str] | None = None) -> int:
             print(ceiling_line(config, args.version, nbytes))
         elif args.cmd == "fetch":
             runs = json.loads(_gh("run", "list", "-R", args.repo, "--workflow", "release.yml", "--branch",
-                                  args.tag, "--json", "databaseId,headBranch,event,conclusion", "-L", "20"))
-            _gh("run", "download", str(records_run(runs, args.tag)), "-R", args.repo, "-n", ARTIFACT,
-                "-D", args.dest)
+                                  args.tag, "--json", "databaseId,headBranch,event,status,conclusion", "-L", "20"))
+            run_id = str(tag_run(runs, args.tag))
+            run = json.loads(_gh("run", "view", run_id, "-R", args.repo, "--json",
+                                 "databaseId,attempt,status,conclusion,jobs"))
+            listed = json.loads(_gh("api", f"repos/{args.repo}/actions/runs/{run_id}/artifacts?per_page=100"))
+            print(records_source(run, listed.get("artifacts") or [], args.tag))
+            _gh("run", "download", run_id, "-R", args.repo, "-n", ARTIFACT, "-D", args.dest)
         else:
             write(pathlib.Path(args.root).resolve(), args.version,
                   pathlib.Path(args.ceiling_line).read_text(encoding="utf-8"),

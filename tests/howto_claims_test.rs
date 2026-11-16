@@ -6423,3 +6423,48 @@ fn fail2ban_output_without_a_detector_warns_as_the_page_says_and_writes_nothing(
     );
     Ok(())
 }
+
+/// A key rotation rewrites the store file and no history file, so the
+/// how-to must not tell the operator to destroy the old key after the next
+/// start without the condition: retention has removed every history file
+/// written under that key. `files_under_an_earlier_key_need_that_key_listed`
+/// in tests/fleet_history_test.rs runs the behavior against the binary.
+#[cfg(feature = "api")]
+#[test]
+fn the_key_rotation_step_keeps_the_old_key_while_history_files_are_under_it()
+-> Result<(), TestError> {
+    let page = one_line(section(FLEET, "### Encrypt the center's store")?);
+    assert!(
+        !page.contains(
+            "From the next start on, leave `--store-old-key-file` out, back up the new key \
+             file and destroy the old one"
+        ),
+        "the step still tells every operator to destroy the old key after the next start"
+    );
+    for said in [
+        "It does not rewrite the files of the history store",
+        "each history file stays under the key that wrote it until retention removes it",
+        "`--calls-retention-days` (default 90)",
+        "`--retention-hours` (default 72)",
+        "keep the old key file and `--store-old-key-file` on every start until `sipnab fleet \
+         verify` with the new key alone refuses no file",
+        "(#verify-the-history-store)",
+        "That takes until retention has removed every history file written under the old key",
+        "Only then destroy the old key",
+        "`was written under key id <id>, which is not loaded`",
+        "(#keep-call-history-at-the-center)",
+    ] {
+        page_says(&page, said, "fleet");
+    }
+    let destroy = page
+        .find("Only then destroy the old key")
+        .ok_or("the step does not say when to destroy the old key")?;
+    let condition = page
+        .find("until retention has removed every history file")
+        .ok_or("the step does not state the condition")?;
+    assert!(
+        condition < destroy,
+        "the condition comes before the instruction to destroy the old key"
+    );
+    Ok(())
+}

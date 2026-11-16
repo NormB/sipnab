@@ -183,6 +183,7 @@ fn the_full_workflow_set_is_accounted_for() -> Result<(), TestError> {
         "memcheck.yml",
         "osv-scanner.yml",
         "pages.yml",
+        "pr-closed.yml",
         "pr-text.yml",
         "quality.yml",
         "release.yml",

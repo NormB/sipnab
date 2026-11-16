@@ -79,7 +79,7 @@ So a green `--features full` says nothing about whether `--features tls` alone
 compiles.
 That is exactly why CI has a feature matrix.
 
-## The nineteen workflows
+## The twenty workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -98,6 +98,7 @@ That is exactly why CI has a feature matrix.
 | `memcheck.yml` | weekly cron (Wednesdays 07:23 UTC) + manual + on its own path | Runs sipnab under Valgrind across its offline, archive, HEP, MCP and REST paths, built with `--cfg sipnab_tsan` so it allocates through the C library's heap, the only heap Valgrind sees. A definitely or indirectly lost block, or an invalid read, write or free, fails the job ([`scripts/memcheck-verdict.py`](../../scripts/memcheck-verdict.py)), and so does a log with no leak summary. Valgrind must first report a probe program's one known 4,096-byte leak, or the job fails. Runs on the local runners. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `pr-text.yml` | `pull_request_target`: PR opened, edited, reopened or pushed to | Checks the text a pull request publishes for the lab's private identities and for AI attribution with [`scripts/check-message-identity.sh`](../../scripts/check-message-identity.sh), the script the `commit-msg` hook runs. The `Commit messages and PR title name no private identity` job reads the title, the branch name and every commit message in the pull request's range, which is what a merge puts on `main`, and fails on a finding. The `PR description names no private identity (advisory)` job reads the description, which stays on the pull request page, and reports a finding as a warning without failing. Both jobs check out the base branch (no checkout names a ref, which Scorecard's Dangerous-Workflow check would report), so main's workflow, script and test judge the pull request, and the job fetches the pull request's commits from `refs/pull/N/head` as data and never checks them out or runs them; the fetched head must equal the event's head SHA. `contents: read` at the workflow level and no cache, because a `pull_request_target` run otherwise holds a write token and a cache it saves is restorable on main. Every value from the event reaches the shell only through `env:`. The pull request that added the workflow was not checked by it, because main had no `pr-text.yml` yet. Not required by `ci-success`. |
+| `pr-closed.yml` | PR closed or merged | Ends the `CI` run of a closed pull request. `ci.yml` groups a pull request's runs as `ci-CI-<number>`; this workflow enters that group with `cancel-in-progress`, so GitHub cancels the run still in progress. Before it, a closed pull request's run went on to its end and held the self-hosted runners other pull requests waited for. It checks out nothing, calls no action and asks for no permission. A merge also sends `closed`; GitHub creates the run and marks its job skipped (`merged == false`), since a merged pull request's run is already over. GitHub's documentation has not stated whether a skipped job's run still enters the group; the group names only the pull request's number, so it is never main's group `ci-CI-refs/heads/main`. Limit: GitHub runs no `pull_request` workflow for a pull request with a merge conflict, so closing such a pull request leaves its run going. [`scripts/tests/test_ci_cancel_on_close.py`](../../scripts/tests/test_ci_cancel_on_close.py) holds the two group names together. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](../../bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
@@ -761,6 +762,8 @@ starting at 0, in order:
 - every feature declaring what its own modules import
 - the privilege-drop path still dropping privileges
 - WASM exports in sync with the site's JS
+- `CHANGELOG.md` as the base has it, after a merge
+  ([After a merge of main](#after-a-merge-of-main))
 - the homepage test count still generated, not written into the template,
   plus the site version matching `Cargo.toml`
 - no TODO stubs
@@ -1021,10 +1024,13 @@ The workflow-shape test holds each job's runner.
 - On the `overflow` runners: two groups of the feature combinations.
   On a push to `main` the two groups take any of the four aarch64 runners instead.
   On 2026-11-11 a push to `main` waited 34 and 68 minutes for the two `overflow` runners behind pull request runs.
+  A release pull request takes the four runners too: one whose head branch starts with `release/` and lives in this repository, never a fork's.
+  On 2026-11-14 the 0.5.256 release pull request's two groups queued behind another pull request's job on the `overflow` pair.
+  This adds runners, not priority: GitHub documents no order among queued jobs for self-hosted runners.
   `test_the_workflow_carries_the_rendered_expression` holds the workflow to that rule.
 - On the x86_64 runner: the RPM packaging job.
   The RPM job builds no Rust, and the runner has every package it names, so it installs nothing there.
-- Only the four jobs above, and the feature combinations on a push to `main`, may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
+- Only the four jobs above, and the feature combinations on a push to `main` or a release pull request, may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
   `a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host` holds that, `an_x64_job_refuses_to_start_with_less_than_25_gb_free` the disk floor, and `a_pooled_job_builds_in_its_own_directory_and_removes_it` the build directory.
 - Everything else runs on GitHub's runners. The repository is public, so they cost nothing.
 
@@ -1905,6 +1911,13 @@ A hook enforces this rather than merely advising it.
   required check concluded `success` on the head, every workflow run on the head succeeded,
   and no run on the merge commit itself concluded red.
   - The head's runs include the macOS leg, so a macOS break still blocks the release.
+  - Two skipped runs do not count, on the head or on the commit itself: the `pull_request` run
+    of [`pr-closed.yml`](../../.github/workflows/pr-closed.yml), which skips its only job on a
+    merge, and the `workflow_run` run of `rerun-not-acquired.yml`, which skips its only job
+    when the CI run it watches succeeded. The script reads the workflow file from GitHub's run
+    record (`SKIPPED_BY_DESIGN`), not the name; any other skipped run, and a canceled, failed
+    or pending run of those workflows, still blocks. Tested in
+    [`test_tag_proof_skipped_by_design.py`](../../scripts/tests/test_tag_proof_skipped_by_design.py).
   - The hook prints the pull request and head it used.
   - The rule is `tag_ci` in [`scripts/tag-push-proof.py`](../../scripts/tag-push-proof.py),
     tested in [`test_tag_ci_proof.py`](../../scripts/tests/test_tag_ci_proof.py) and in the
@@ -2019,17 +2032,76 @@ Steps, all inside the workflow:
 3. When the stamp is not this run's, the script prints a warning and deploys the same artifact again through the Pages API,
    under the build version `<commit>-<run ID>-<attempt>`, which GitHub has not seen.
    It waits for GitHub's status of that deployment, then reads the stamp again.
-4. With `expect`, it then runs [`verify-site-advertises.sh`](../../scripts/verify-site-advertises.sh) for that release.
+4. The script then judges the release from the artifact of the run, not from a read of the live download page.
+   The CDN answers a hosted runner's read of an HTML page with a browser challenge on some runner images.
+   On 0.5.254 that challenge ended release run 43581489173 red twice while the site was right.
+   The CDN answers static `.txt` files from every runner.
+   - The build writes `advertised-release.txt` into the site as its last step before the upload (`pages-live.py advertised`).
+     The file holds three lines: `stamp <the stamp>`, `release <x.y.z>` and `sha256 <the sha256 of download/index.html>`.
+     The step judges the built download page with `verify-site-advertises.sh --classify` for the `published_version` of the site.
+     A built page that does not name that release fails the build.
+   - The `live` job downloads the `github-pages` artifact of its own run with `actions/download-artifact`, as the `csp` job does.
+   - `pages-live.py verify --artifact site-artifact/artifact.tar` reads three files from that tar in memory:
+     `deploy-stamp.txt`, `download/index.html` and `advertised-release.txt`.
+     It refuses a tar that holds a member name outside the site, and a file of the three that is a link or larger than 4 MiB.
+   - The artifact passes when its stamp and its `advertised-release.txt` carry the stamp of this run,
+     its download page names the release by the same `--classify`, and the file names that release and the sha256 of that page.
+   - The script then reads `https://sipnab.com/advertised-release.txt` every 15 seconds for at most 300 seconds, until it carries the stamp of this run.
+5. With `expect`, the script then reads the live download page with [`verify-site-advertises.sh`](../../scripts/verify-site-advertises.sh), as evidence.
+   Each check is one request. The verifier prints the edge's answer first, as a line that starts with `edge:`
+   (the status and the `server`, `cf-ray`, `cf-mitigated` and `content-type` headers), and the first 200 bytes of an answer that is not a success.
+   The script prints every check when it ends: `release check <n> (+<seconds> s): exit <status>: <the verifier's lines>`.
+   - It reads a page that does not name the release yet again every 15 seconds. A page that answers and still does not name it after 300 seconds fails the run.
+   - A read that the edge refused prints one warning that carries the `edge:` line, and the script sends no second request. The verdict of the artifact stands.
 
-Verify: the job's log ends with `live: https://sipnab.com/deploy-stamp.txt carries this run's stamp`.
+Verify: the job's log holds the line `live: https://sipnab.com/deploy-stamp.txt carries this run's stamp`, and a line that starts with `artifact:`.
 The exit status of `pages-live.py verify` says how the check ended:
 
 | Exit | Meaning |
 |---|---|
-| 0 | The site is this run's artifact, and it names the release that `expect` gives. |
-| 1 | The site is stale after the second deploy, or the second deploy failed. |
-| 2 | The script could not read the site, so the run knows nothing about the deploy. |
-| 3 | The site is this run's artifact, and the download page does not name the expected release. |
+| 0 | The site is this run's artifact, and the artifact names the release that `expect` gives. |
+| 1 | The site is stale after the second deploy, or the second deploy failed, or the live `advertised-release.txt` is not the one in the artifact after 300 seconds. |
+| 2 | The script could not read the site, so the run knows nothing about the deploy. It also means that the artifact names the release and the live download page gave no answer to judge: no connection, an error status or an empty body. |
+| 3 | The site is this run's artifact, and its download page does not name the expected release. It also means that the live page answered and does not name it, or that `advertised-release.txt` in the artifact disagrees with the page. |
+| 4 | The run knows nothing about the release: the script could not read the artifact, or the artifact carries the stamp of another run. Without `--artifact` it means that the edge refused the read of the download page with 403 or 429. |
+
+Troubleshoot an exit of 4: read the log of the step `Download this run's site artifact`. The step continues after a failed download, and the script then ends 4.
+Troubleshoot a warning about a refused read: the page can be right for every other reader.
+Read it from another address with `sh scripts/verify-site-advertises.sh <version>`, and search the log of the CDN for the `cf-ray` value of the `edge:` line.
+
+#### The daily advertisement check
+
+Purpose: [`cert-expiry.yml`](../../.github/workflows/cert-expiry.yml) asks every day whether the site advertises the newest release,
+and says so when it could not find out.
+Until 2026-11-14 its step turned a refused read of the download page into a warning and a green step that had verified nothing.
+
+Prerequisites:
+
+- The live site comes from a build that wrote `advertised-release.txt`. An older deploy answers 404 for that file.
+- The `github-pages` artifact expires after one day, so the daily check cannot read it. It reads the two static files instead.
+
+Steps, all inside the workflow:
+
+1. The step resolves the release to expect with `advertise-release.py resolve`.
+2. `pages-live.py daily --expect <version>` reads `deploy-stamp.txt` and `advertised-release.txt` from the site, each with a new query string.
+   When the two files carry different stamps it reads both again after 15 seconds, three times at most: a deploy can land between two reads.
+3. It reads the live download page once with `verify-site-advertises.sh`.
+4. It prints the verdict, and appends one line to the job summary.
+
+What the two files prove: the download page of the build that is live named that release, by the rule that judges a live page.
+What they do not prove: that the edge serves that page to a visitor. Only the read of the live page shows that.
+
+Verify: the job summary holds one of these lines.
+
+| Line starts with | Exit | Meaning |
+|---|---|---|
+| `Advertisement VERIFIED:` | 0 | The live page names the release, or the edge refused the page and the two files of one deploy name the release. The second case also prints a warning with the `edge:` line. |
+| `NOT VERIFIED:` | 0 | The edge refused the page and the two files say nothing. The step also prints a warning with the title `Advertisement not verified`. The check knows nothing about the release. |
+| `Advertisement FAILED:` | 1 | The live page answered and does not name the release, or the two files of one deploy name another release. |
+| `Advertisement FAILED:` | 2 to 5 | The live page gave no answer to judge. The exit status is the verifier's: no connection, a certificate error, an error status or an empty body. |
+
+Troubleshoot `NOT VERIFIED`: read the two files and the page from another address.
+`sh scripts/verify-site-advertises.sh <version>` reads the page, and the line gives the HTTP status of each file.
 
 - A `workflow_dispatch` run enforces the verdict (`--enforce`). A release advertises itself through such a run, and a withdrawal redeploys through one.
   The `advertise` job of `release.yml` waits for that run, so a stale site makes the release run red.
@@ -2043,7 +2115,8 @@ Troubleshooting:
 - `The live site could not be read`: read the stamp URL by hand and compare it with the stamp in the message.
   A 403 means the CDN refused the client.
 - A warning `the second deploy is live` on a green run means the first deploy did not go live. Record the run in the backlog entry.
-- [`test_pages_live.py`](../../scripts/tests/test_pages_live.py) holds the script, and
+- [`test_pages_live.py`](../../scripts/tests/test_pages_live.py) and
+  [`test_pages_live_artifact.py`](../../scripts/tests/test_pages_live_artifact.py) hold the script, and
   [`test_pages_live_workflow.py`](../../scripts/tests/test_pages_live_workflow.py) holds the workflow text.
 
 **The records are artifacts, and the next release pull request commits them.**
@@ -2052,6 +2125,25 @@ Troubleshooting:
   [`scripts/release-records.py`](../../scripts/release-records.py) `ceiling` checks the sha256 of the
   tarball and measures the `sipnab` file in it.
   It writes the binary-ceiling line, and the job uploads it as the run's `release-records` artifact.
+- The record holds the x86_64-musl binary alone, and `release.yml` enforces the ceiling on the two musl targets alone.
+  The sizes of the aarch64 binaries move in steps with no change of code, so a size comparison for an aarch64
+  target cannot tell less than 64 KiB of growth from none.
+  - Measured on 0.5.255, aarch64-gnu: the tag build is 27,759,432 bytes and a build of the commit before the
+    version change is 27,693,888 bytes, 65,544 fewer.
+    The function bodies differ by 232 bytes.
+  - Measured: the linker adds a veneer for Cortex-A53 erratum 843419 where an instruction's address requires one,
+    and each veneer takes 4,096 bytes.
+    The tag build has four and the other build has one.
+  - Measured: the file offset of the writable segment follows a 64 KiB alignment.
+    The three added veneers moved the end of the executable segment 84 bytes past that offset, and the
+    segment went 65,536 bytes further into the file.
+    The name of the debug file accounts for the other 8 bytes.
+  - Inferred, not measured: the version change moved the veneers, because it changes the symbol hashes and
+    with them the order of the functions.
+  - Measured on 0.5.255: the aarch64-musl binary has the same 64 KiB alignment, is 20,948,936 bytes, and
+    leaves 5,265,464 bytes under the 25 MB ceiling.
+    The erratum workaround and the 64 KiB alignment stay: Cortex-A53 hosts need the first, and kernels with
+    16 KiB or 64 KiB pages need the second.
 - The eBPF load verification runs on the OpenSIPS VM (a privileged host with BTF) once the assets exist,
   from [`scripts/post-release.py`](../../scripts/post-release.py) (see [After the release](#after-the-release)).
   The site no longer waits for it, so a verify that does not print `ATTACHED` withdraws the release at once.
@@ -2068,6 +2160,14 @@ Troubleshooting:
     ```sh
     python3 scripts/release-records.py fetch --tag v<prev> --repo NormB/sipnab --dest .git/release-records
     ```
+
+    `fetch` reads the newest tag-push run of `release.yml` for the tag and the run's job `Record the binary size`.
+    It downloads the artifact when that job succeeded and the artifact has not expired.
+    The run's own conclusion decides nothing: a run that failed, or that is in progress on a re-run, for
+    another job still holds the records.
+    `fetch` prints one line that names the run, its attempt, its status and its conclusion.
+    It refuses, and names the reason, when the tag has no tag-push run, when the job did not succeed,
+    and when the run has no `release-records` artifact or only an expired one.
 
   - Write the records and the advertisement:
 
@@ -2485,6 +2585,47 @@ It runs four checks at once:
 - `the tap is on <version>, newer than <version>`: you ran the check for an older release, and the tap is correct as it stands.
 - [`scripts/tests/test_post_release.py`](../../scripts/tests/test_post_release.py) drives every branch through a fake runner.
 
+### The text of a release
+
+The release page on GitHub holds three parts, in this order.
+
+1. The `CHANGELOG.md` section of the version.
+   It says what changed and what an operator must do before an upgrade.
+2. The download table, "Which download do I want?".
+   [`ops/release/platform-table.sh`](../../ops/release/platform-table.sh) derives it from the artifacts that built.
+3. The notes GitHub generates: one line for each merged pull request, and the link that compares the two tags.
+
+Through 0.5.256 the workflow wrote only parts 2 and 3, so an instruction in the changelog did not reach a reader of the release page.
+
+[`scripts/release-notes.py`](../../scripts/release-notes.py) writes part 1.
+
+- It prints what `CHANGELOG.md` holds between `## [<version>] - <date>` and the next `## ` heading.
+- A release page is outside the repository, so the script rewrites each relative link target as an address in the repository at the tag.
+  `docs/fleet.md#x` becomes `https://github.com/NormB/sipnab/blob/v<version>/docs/fleet.md#x`.
+  A target with a scheme stays as it is, and so does text in a code span or a code block.
+- GitHub shows each line break of a release text.
+  The script therefore joins a paragraph or a list item that the changelog writes on several lines.
+- It exits 1 and prints nothing on standard output when the version has no section, two sections or a section with no entry.
+  It also refuses a link target with a `..` step, a target in angle brackets, and a section over 100,000 characters.
+  GitHub's API refuses a release text over 125,000 characters; the bound leaves the rest for parts 2 and 3.
+  The action that publishes the release cuts a longer text at 124,999 characters without an error, so a cut can only remove the end of part 3.
+
+`release.yml` runs the script twice for a tag.
+
+- The job `Tag matches crate version` runs it in the step `Check that the release has its CHANGELOG section` and discards the output.
+  A tag without a section fails there, before the builds.
+- The job `Create Release` runs it in the step `Render the release text`, which writes the section and then the table to `release-body.md`.
+  A failure there ends the job before the step `Create GitHub Release`, so the workflow publishes nothing without the section.
+
+Run it by hand to read the first part of a release page before the tag exists:
+
+```sh
+python3 scripts/release-notes.py 0.5.256 --repo NormB/sipnab
+```
+
+[`scripts/tests/test_release_notes.py`](../../scripts/tests/test_release_notes.py) holds the script to every section of `CHANGELOG.md`, not only the newest.
+A section that the script would refuse, or one over the bound, fails in a pull request and not at the tag.
+
 ### Symbol files
 
 The release strips every binary it publishes.
@@ -2751,10 +2892,67 @@ is the user's side.
 `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and says so in its header.
 
-- Entries sit under `Added` / `Changed` /
-  `Fixed` / `Removed`.
-- The project uses a few extra headings where those four
-  do not fit what a release actually did.
+- Entries sit under `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` and `Security`.
+- The older sections use a few extra headings, and hold entries written as paragraphs.
+
+#### The format of an entry
+
+The reader of the changelog decides whether to upgrade, and what to do after.
+An entry is an outline of at most six lines:
+
+```markdown
+- **The lead: what changed, in the user's terms.**
+  - Was: for a fix, what went wrong before.
+  - Effect: what the user sees or can now do.
+  - Do: what the user must do, with the command or the setting.
+  - Limit: one limit or caveat.
+  - Docs: [the page title](docs/page.md#the-heading).
+```
+
+- The lead is one bold line of at most 15 words, with nothing after it.
+  It states the effect, not the mechanism.
+- One to five sub-bullets follow, each one line of at most 25 words after its label.
+  The labels are `Effect:`, `Do:`, `Limit:`, `Docs:` and `Was:`.
+- Every entry has an `Effect:` or a `Was:` line. The other labels appear only when they apply.
+- A `Docs:` line holds a link. A link counts the words of its title, not its address.
+- An entry about sizes or limits can hold one table of at most six rows in place of its `Effect:` line.
+- A credit that an old entry already carries, such as "Requested by", stays word for word as a last sub-bullet labeled `Credit:`.
+  It does not count toward the five, and no entry gains or loses one.
+- Nothing else stands under a bullet: no paragraph, no continuation line and no third level.
+
+What goes into an entry:
+
+- A command, a flag, a setting, a file path, an error text or a number that the user meets, in code font.
+- No internal names: no function, type, test or backlog names, and no account of the tests of the change.
+- The detail goes into the docs page that the `Docs:` line links.
+- A change that no user of a released artifact can see has no entry.
+  Hooks, CI, tests, gates and refactors are such changes.
+- Related changes of one release share one entry.
+
+[`changelog_format_test`](../../tests/changelog_format_test.rs) holds the format.
+
+- It reads `[Unreleased]` and every release section down to the one that its `CONVERTED_DOWN_TO` names.
+- The sections below that one keep the old form until a later change rewrites them and lowers the constant.
+- It prints the section, the lead and the rule for each entry that departs from the format.
+- A `Not released.` paragraph and a `**Held:**` line are the only text it allows outside an entry.
+
+**A size statement carries its numbers.**
+An entry that compares binary sizes names the two sizes it compared, or the release workflow run that printed them.
+The 0.5.254 entry on compressed history files said that the static builds "are the same size" and gave one figure for the aarch64 gnu build.
+The release builds printed other numbers.
+
+- The numbers come from the build jobs of `release.yml`.
+  The step `Verify the binary is stripped` prints `<binary>: no .symtab, <N> bytes` for each Linux target.
+- A tag push runs those jobs for a release.
+  A manual run of the workflow on a branch builds the same targets and publishes nothing, so a pull request can measure its own change before it lands.
+- Compare two runs target by target.
+  The 0.5.254 tag build and a manual run on the commit before the release commits, which changed only the version in `Cargo.toml` and `Cargo.lock`, differed by 8,184 bytes on `aarch64-unknown-linux-musl`. A difference of that order is not a finding.
+- [`scripts/check-changelog-size-claims.py`](../../scripts/check-changelog-size-claims.py) reads the `[Unreleased]` section.
+  It fails on a bullet that says `same size`, `no larger`, `bytes larger` or `bytes smaller` and holds neither two byte counts of seven digits or more nor a run number such as `run 43581489173`.
+  The script checks the form of the claim and not its numbers.
+  [`scripts/tests/test_check_changelog_size_claims.py`](../../scripts/tests/test_check_changelog_size_claims.py) runs it over `CHANGELOG.md` with the other script tests.
+- A released section stays as released.
+  A correction is a new entry under `[Unreleased]`.
 
 sipnab is pre-1.0.
 So the header states the versioning policy rather than claiming strict Semantic Versioning.
@@ -2779,9 +2977,7 @@ It exists because an edit whose anchor included the heading destroyed it.
 - The sibling gate searches for the heading naming the *current site version*.
   That heading was still present further down.
 
-Nothing gates the changelog's prose, which is deliberate.
-Prose would satisfy a gate on prose.
-Two checks read it all the same.
+Two more checks read the changelog.
 
 - The release date must match [`website/config.toml`](../../website/config.toml).
   `site_release_date_matches_changelog` asserts it.
@@ -2791,6 +2987,48 @@ Two checks read it all the same.
   - It requires the notes to name each addition in its release's section or a later one.
   - Whatever the working tree adds over the last tag, the notes must name above that tag's section.
     Before a release, that means under `[Unreleased]`.
+
+#### After a merge of main
+
+Purpose: git merges `CHANGELOG.md` line by line and does not read its headings.
+Five times on 2026-11-13 and 2026-11-14 a merge of `main` put entries in the wrong place without a conflict:
+inside a released section, under another heading, and joined to a heading with no blank line.
+[`scripts/check-changelog-merge.py`](../../scripts/check-changelog-merge.py) refuses such a file.
+
+Prerequisites:
+
+- The clone has `origin/main`. Run `git fetch origin` when the script says that it finds no merge base.
+- The script reads the staged file, so stage `CHANGELOG.md` first.
+
+Steps:
+
+1. Merge `main`, and stage the result.
+2. Run `python3 scripts/check-changelog-merge.py`. The pre-commit hook runs it in the step `CHANGELOG as the base has it`, and CI runs it in the `Check` job.
+3. The script compares the staged file with the file of the base.
+   The base is the commit that the merge brings in while a merge is open, and otherwise the merge base of `HEAD` and `origin/main`.
+   `--base <ref>` names another one.
+
+The script holds four rules:
+
+- An entry of the base's `[Unreleased]` that the staged file also holds sits under the same `###` heading.
+  An entry is one top-level bullet with every indented line under it, and the script knows it by its first line.
+- `[Unreleased]` holds each heading once and each entry once.
+- A blank line comes before `## [Unreleased]`, before each of its headings and before the first released heading.
+- The released part of the base, from the first `## [x.y.z]` heading to the end, is the end of the staged file, byte for byte.
+
+Verify: the script prints `the CHANGELOG is as the base <commit> has it` and exits 0.
+Exit 1 lists each problem with the first line of the entry and the two headings.
+Exit 2 means that the script could not read the base or one of the two files.
+
+Troubleshooting:
+
+- `is under '### Fixed' here and under '### Changed' on the base`: move the entry, with its sub-bullets, under the heading that the message names.
+- A message that starts with `the released part`: it lists the lines that differ.
+  - When a merge moved an entry into a released section, move it back to `[Unreleased]`.
+  - When the commit rewrites released sections on purpose, write the sha256 that the message prints to
+    [`.config/changelog-released.sha256`](../../.config/changelog-released.sha256) in the same commit.
+    The rule passes when that file holds the sha256 of the released part and the base holds another value.
+- The script does not judge the form of an entry. That is the subject of the format gate of the changelog.
 
 ### Re-measuring the benchmarks
 

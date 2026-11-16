@@ -504,6 +504,12 @@ used.
   need that name in `--allowed-host`. [The CLI reference](cli-reference.md#fleet-inventory-sipnab-fleet)
   lists every flag.
 
+- **[center]** Start it as the user that owns `/var/lib/sipnab`, not as
+  root. Since 0.5.256 a center that root starts reads its key files and
+  binds, then serves as `--user`, else `nobody`.
+  [Run the center as a service](#run-the-center-as-a-service) has the unit
+  and what a root start needs.
+
 - **[center]** To refuse any member without a certificate from your own CA,
   as well as its token, add `--tls-client-ca /etc/sipnab/members-ca.pem`.
   [Require member certificates on a fleet center](mtls.md#require-member-certificates-on-a-fleet-center)
@@ -622,6 +628,11 @@ with its REST API on `127.0.0.1:18080`, reporting every 5 seconds.
 - **`the center did not answer`.** The center is down, or a firewall drops
   the member's connections. The heartbeats wait; nothing needs doing on the
   member once the center is back.
+- **`the center answered HTTP 503`.** The center is starting and rebuilds
+  its member list, or its rate limit refused the member. The heartbeats
+  wait, and the member tries again after 1 s, 2 s, 4 s and so on, at most
+  one `heartbeat_secs` apart
+  ([What the center answers while it starts](#what-the-center-answers-while-it-starts)).
 - **`the center did not answer: sending: invalid peer certificate: UnknownIssuer`.**
   The member does not trust the center's certificate. Set `report_ca_file` to
   the certificate of the issuing CA.
@@ -978,9 +989,28 @@ development build after 0.5.243 and the files in one working directory.
    INFO sipnab::app::fleet_center: fleet center store encryption sealed, key id dd70bddbd340fae5, 1 old key(s)
    ```
 
-   The center rewrites the store under the new key as it starts. From the
-   next start on, leave `--store-old-key-file` out, back up the new key file
-   and destroy the old one.
+   The center rewrites the store file under the new key as it starts. It
+   does not rewrite the files of the history store: each history file stays
+   under the key that wrote it until retention removes it. That is
+   `--calls-retention-days` (default 90) for call records and
+   `--retention-hours` (default 72) for heartbeats. Back up the new key
+   file.
+
+   - **A center without the history store** (its `--version` does not list
+     `fleet-store`): from the next start on, leave `--store-old-key-file`
+     out and destroy the old key.
+   - **A center with the history store:** keep the old key file and
+     `--store-old-key-file` on every start until `sipnab fleet verify` with
+     the new key alone refuses no file
+     ([Verify the history store](#verify-the-history-store)). That takes
+     until retention has removed every history file written under the old
+     key: the longer of the two periods after the rotation, 90 days with
+     the defaults. Only then destroy the old key. A center that starts without the old key
+     runs, and refuses each of those files with `was written under key id
+     <id>, which is not loaded`
+     ([Keep call history at the center](#keep-call-history-at-the-center)
+     has the entry). Nothing reads a history file after you destroy its
+     key.
 
 #### Upgrade a center that stored in clear
 
@@ -1430,6 +1460,155 @@ answer with this page.
   leaves no trace in the store, as for the store file itself. An answer does
   not include records the intake dropped at its size limit before a filing.
 
+### What the center answers while it starts
+
+**Purpose.** Know what a member, a reader and a supervisor get from a center
+between the time it binds its port and the time it serves, and what a stop
+does in that time.
+
+**Before you start.** Nothing to set: every center does this. Nothing
+changes on a member.
+
+**What the center does at start, in order:**
+
+1. It reads its keys, binds `--listen`, and drops to the user it serves as.
+2. It installs its SIGTERM and SIGINT handlers.
+3. It answers every request, on every route, `503` with `Retry-After: 5`
+   and this problem body, and logs where it does. Both outputs come from a
+   test center with 500 members in 120 heartbeat files and no store file,
+   on a port the system picked:
+
+   ```text
+   503 {"detail":"the center is rebuilding its member list from the history store","status":503,"title":"Service Unavailable","type":"https://sipnab.com/problems/unavailable"}
+   ```
+
+   ```text
+   INFO sipnab::app::fleet_center: fleet center answering 503 on 127.0.0.1:33407 until it serves: the center is rebuilding its member list from the history store
+   ```
+
+4. It opens its store file and its history, rebuilds its member list,
+   files what the intake and the store file held, and applies retention.
+5. It logs `fleet center serving HTTP on <address>` (or `HTTPS`) and
+   answers each request from then on.
+
+A start with its store file reads one heartbeat file in step 4. A start
+without it reads every heartbeat file of `--retention-hours`, newest first
+([The files of the history store](#the-files-of-the-history-store) has the
+time for a fleet). A build without the history store answers `the center is
+opening its store` in step 3.
+
+**What a member does with the `503`.** It keeps the heartbeat or the call
+records in its spool and logs `heartbeats wait in the spool: the center
+answered HTTP 503` once. It tries again after 1 s, then 2 s, 4 s and so on,
+never more than one `[fleet] heartbeat_secs` apart, and delivers the spool
+once the center serves. It does not read `Retry-After`.
+
+**A stop during the start.** A SIGTERM or SIGINT during the rebuild in step
+4 ends the rebuild before the next file it would read. The center logs the
+two lines below and exits 0. It did not rewrite its store file with the
+rebuilt list and did not open its intake, so the store file holds the
+members it held before the start, and the next start rebuilds again:
+
+```text
+INFO sipnab::app::fleet_center: fleet center stopping: a stop was asked for before it served; it ends at the next file of the rebuild, or once the start's filing has ended
+INFO sipnab::app::fleet_center: fleet center: the stop ended the rebuild of the member list at start; the store was not rewritten
+```
+
+A stop after the rebuild, while the start files, waits for that filing to
+end. The center then rewrites its store as it does at any stop, and exits
+0. Releases up to 0.5.258 opened the store before they installed the
+handlers: a SIGTERM during the rebuild ended the process at once, and a
+request waited unanswered until the rebuild ended.
+
+**Verify.** Move a test center's store file aside, start the center with
+a history that holds many heartbeat files, and ask for the members at
+once:
+
+```bash
+curl -s -i -H "Authorization: Bearer $OPS_TOKEN" http://127.0.0.1:8444/v1/fleet/members
+```
+
+The answer is `503` with `Retry-After: 5` until the center logs `fleet
+center serving`, and `200` with every member after it.
+
+**Troubleshoot.**
+
+- **A supervisor marks the center failed during a long start.** Its
+  readiness check gets `503`. Wait for `200`, or for the `fleet center
+  serving` line, before you mark the center up.
+- **The `503` lasts longer than you expect.** The center has no store file,
+  or its store file is older than its newest heartbeat files, so it reads
+  the heartbeat files of the whole window. Keep the store file in your
+  backups with the history.
+
+### What waits during a filing
+
+**Purpose.** Know which requests the center answers while it files, and
+which steps of a filing make a request wait.
+
+The center keeps its members, its store file and its intake behind one lock.
+A push, `GET /v1/fleet/members` and the first step of a question each take
+that lock for a short time.
+
+A filing of call records has three steps:
+
+1. **Take.** Under the lock, the center opens the intake file and reads its
+   header and its length. It reads no record.
+2. **Read and write.** Without the lock, the center reads the records up to
+   that length, parses them and writes the files of the history store. This
+   is the step that takes time. The center answers pushes, status requests
+   and questions during it. A record that arrives now goes to the intake and
+   waits for the next filing.
+3. **End.** Under the lock, the center writes the intake again with only the
+   records that arrived during step 2. It kept their lines in memory, so it
+   does not read the intake file for this.
+
+A filing of heartbeats has the same three steps over the rows that wait in
+memory. The releases 0.5.249 to 0.5.256 held the lock for all three steps of
+a filing of call records, so nothing got an answer until the filing ended.
+
+Measured in a release build (Cargo feature set `full`, aarch64, load average
+13 to 22, three runs) with a full intake of 54,000 synthetic call records
+(67,412,988 bytes before sealing): steps 1 and 3 together held the lock 19
+to 22 ms when no record arrived during the filing, and 28 to 30 ms when
+2,000 records arrived during it. Step 1 alone took 23 to 30 microseconds.
+Step 2 took 495 to 511 ms without the lock. In the same binary, the three
+steps as one under the lock took 607 to 633 ms.
+
+What still waits:
+
+- **One filing at a time.** A second filing, of either class, and the
+  retention pass on the history store wait until the running filing ends.
+  They hold no lock that a request needs while they wait.
+- **A push waits for another push.** The center writes each push to disk
+  under the lock before it answers.
+- **Steps 1 and 3 of a filing, and the rewrite of the store file and of the
+  intake by retention,** hold the lock while they run.
+
+`GET /v1/fleet/calls` opens the intake under the lock in the same way and
+reads the waiting records without it. A question asked between step 2 and
+step 3 finds a record both in a file and in the intake, and the answer
+shows it once.
+
+**A stop during a filing.** A center that stops between step 2 and step 3
+leaves the records in the files and in the intake. The next filing, at the
+next start, finds them in the files and files none of them twice. The line
+`filed 0 call record(s) in 0 file(s) of the history store; N were in it
+already` reports that.
+
+**Why a filing reads the intake safely while pushes arrive.** A push adds
+its records after the length that step 1 took, and step 2 reads no byte
+past that length. A push also writes one of the two count slots in the
+file's header, and step 2 does not read the header again: step 1 read it
+while no push was writing. That matters because the center accepts a file
+with one count slot that does not check only when exactly one whole
+addition follows the counted records. A reader that saw a count slot half
+written, with a second push already started, would refuse a file that is
+whole. The filing's reader cannot see that state, so the center does not
+try a refused read again: a refusal is a real one. When retention or a
+repair writes the intake file again, it writes a new file and renames it
+into place. Step 2 keeps the file it opened, which nothing writes to.
+
 ### The files of the history store
 
 **Purpose.** Know what the center writes under `<store>.parquet`, how many
@@ -1474,16 +1653,66 @@ row group of 16.
 What follows from that layout:
 
 - A question for one member opens every file of its window, and the center
-  unseals each of those files whole before it picks the row group. In a
-  release build of 0.5.251, which wrote the files without compression, one
-  member's newest 1,000 heartbeats among 2,000 members came from 1,001
-  files in 2.8 s.
+  unseals each of those files whole before it picks the row group. In the
+  row group it reads the receive time, the member and, for a question that
+  names a call, the Call-ID of every row, and it builds only the rows the
+  question selects: it does not parse the JSON of the other rows.
 - One answer holds at most 1,000 rows (`limit`). A member's 24 hours at one
   heartbeat a minute are 1,440 rows: ask twice, with `from` and `to`.
 - A center that starts without its store file reads the heartbeat files
-  from the newest back, up to 4,096 of them, to rebuild its member list: 25.7
-  s in a release build of 0.5.251, without compression, for 1,440 files of
-  2,000 members. A center that starts with its store file reads one.
+  from the newest back, up to 4,096 of them, to rebuild its member list. A
+  center that starts with its store file reads one.
+
+**What the reads cost.** Measured on 2026-11-14 in a release build (Cargo
+feature set `full`, aarch64, 14 cores, load average about 10) on synthetic
+rows: 1,440 heartbeat files, each with one heartbeat of about 300 bytes of
+inventory for each of 2,000 members, compressed, 78,860,456 sealed bytes in
+the 1,001 files of the first question. Each figure is the range of three
+runs.
+
+| What the center did | Time |
+|---|---|
+| One member's newest 1,000 heartbeats, from 1,001 files (`GET /v1/fleet/members/{id}/history`) | 226 to 230 ms |
+| Of that: reading the 1,001 files from disk | 28 to 43 ms |
+| Of that: unsealing them | 41 to 42 ms |
+| Of that: decoding the one row group of each file that holds the member | 158 to 162 ms |
+| The same decoding as releases 0.5.249 to 0.5.254 did it, building all 128 rows of the row group | 586 to 656 ms |
+
+**What a start without the store file costs.** The center rebuilds its
+member list from the heartbeat files, newest first, and builds a row only
+when it holds no row of that member yet or the row is newer than the one it
+holds. Measured on 2026-11-15 in one release build (Cargo feature set
+`full`, aarch64, 14 cores, load average 23 to 31) on the same kind of
+synthetic store, 1,440 files of 113,477,614 sealed bytes, three runs:
+
+| How the rebuild read the 1,440 files | Rows built | Time |
+|---|---|---|
+| As this release does it | 2,000, one for each member | 1.95 to 1.99 s |
+| As releases 0.5.251 to 0.5.258 did it, in the same binary | 2,880,000, every row | 12.4 to 12.8 s |
+
+The center answers `503` for that time
+([What the center answers while it starts](#what-the-center-answers-while-it-starts)).
+A start with its store file reads one file.
+
+**Which reads build every row, and what a damaged row does.** The center
+seals each file, so a changed file does not open at all. A row whose JSON,
+send time or text does not parse can only come from a defect in the release
+that wrote the file. A question refuses such a file, and names it under
+`refused`, only when it selects that row: a question for another member, for
+another call or for a window that does not hold the row gets its answer
+from the same file. Releases 0.5.249 to 0.5.254 refused the file for every
+question that read the row's row group. The rebuild of the member list at
+start refuses a file only for a damaged row it builds: a damaged row older
+than the row it holds of that member is not built, and the start takes the
+file's other rows. Releases 0.5.251 to 0.5.258 refused the file at start for
+such a row too. One read still builds every row of each file it opens and
+refuses the file for one such row anywhere in it: the check a filing makes
+of the files of the same day that can already hold its rows. Neither read
+opens every file of the store. `sipnab fleet verify` does: it builds every
+row of every file and reports each file it refuses
+([Verify the history store](#verify-the-history-store)). A member id that is not text, or a column
+that the center cannot read, refuses the file for every question that reads
+its row group, as before.
 
 **Reading the files with other tools.** No other tool reads a file as it is
 on disk: the center seals every file under the store key, and the first
@@ -1579,6 +1808,244 @@ center that runs out of them cannot file.
   are the files of release 0.5.249. The center reads them and removes them
   when their day passes the retention.
 
+### Verify the history store
+
+**Purpose.** `sipnab fleet verify` reads every row of every file of the
+history store and reports each file it refuses. A question to the center
+builds only the rows it selects, so a file with a row that does not parse
+goes unnoticed until a question selects that row. This command selects
+every row of every file. Run it after you restore the store from a backup,
+after a disk fault, before you destroy an old store key, and on a schedule
+if you want to know about a refused file before a question finds it.
+
+For each file the command makes these checks in this order, and reports the
+first one that fails:
+
+1. It reads the file.
+2. It opens the sealed layer under a key you gave. The layer must hold every
+   record whole and name the path the file is at.
+3. It reads the Parquet footer. The schema must be the one this build reads,
+   and this build must read the codec of every column.
+4. It builds every row: each JSON value, send time and text must parse.
+5. It compares the rows with the path. Every row's receive time must be on
+   the UTC day of the `date=` directory. The earliest and the latest receive
+   time must be the two times in the name, and the mark in the name must be
+   the mark of the rows. For a file that release 0.5.249 wrote under
+   `member=<id>`, every row must be of that member, and the first row must
+   have the stream and the position in the name.
+
+**What it does not check.** It does not look for a row that two files hold.
+It does not read the store file or the intake of call records. It reads only
+files under the names the store writes: another file in one of the
+directories is not a file of the store, and the center does not read it
+either.
+
+**Prerequisites.**
+
+- A build whose `--version` lists `fleet-store`: the build the center runs.
+  A build without the history store exits `2` and says so.
+- The store key file, and the file of every earlier key that a history file
+  can still be under. A key rotation does not rewrite the history files:
+  each stays under the key that wrote it until retention removes it.
+- Read access to `<store>.parquet`. Run the command as the center's user.
+  A run that root starts reads the key files as root, so they can stay
+  `root` mode 0600. It then lists and reads the history files as `--user`,
+  else `nobody`. "A pass that root starts", below, has the details.
+- Nothing changes on a member or on the center. You do not stop the center:
+  the command creates, changes and removes nothing. When retention removes a
+  file between the command's listing and its read, the command counts the
+  file as `gone` and does not refuse it.
+
+**Steps.**
+
+1. **[center]** Run the pass with the center's `--store` and key:
+
+   ```bash
+   sipnab fleet verify --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey
+   ```
+
+   ```text
+   calls: 20 files, 20 clean, 0 refused, 0 gone, 1080000 rows
+   members: 1440 files, 1440 clean, 0 refused, 0 gone, 2880000 rows
+   ```
+
+   The command prints one line for each class when it ends. `files` is the
+   number of files it listed, and `rows` is the number of rows in the clean
+   files. The outputs on this page are from a test store of synthetic rows
+   for one day: 20 filings of 54,000 call records and one filing a minute
+   of 2,000 members' heartbeats.
+
+2. **[center]** To read less, name a class or a window of UTC days. Both
+   days belong to the window:
+
+   ```bash
+   sipnab fleet verify --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey \
+     --class calls --from 2026-11-01 --to 2026-11-07
+   ```
+
+3. **[center]** After a key rotation, name the earlier key too, as the
+   center does:
+
+   ```bash
+   sipnab fleet verify --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey.2 \
+     --store-old-key-file /etc/sipnab/center.storekey
+   ```
+
+   Run it once without `--store-old-key-file` before you destroy the old
+   key. Each file it then refuses with `was written under key id` is a file
+   that only the old key opens.
+
+4. **[center]** For a script, add `--json`. The command then prints one JSON
+   document on one line and no other line. Here it is through `jq .`, for
+   the test store with one file cut in half:
+
+   ```json
+   {
+     "classes": [
+       {
+         "class": "calls",
+         "clean": 19,
+         "files": 20,
+         "gone": 0,
+         "refused": 1,
+         "rows": 1026000
+       },
+       {
+         "class": "members",
+         "clean": 1440,
+         "files": 1440,
+         "gone": 0,
+         "refused": 0,
+         "rows": 2880000
+       }
+     ],
+     "refused": [
+       {
+         "class": "calls",
+         "file": "calls/date=2026-11-11/1794355200000-1794355253999-h39bb7d2c07e281e0.sealed",
+         "reason": "sealed layer: the file was truncated: it ends before its records do"
+       }
+     ],
+     "result": "refused",
+     "started_at": "2026-11-15T10:36:21Z",
+     "version": "0.5.256"
+   }
+   ```
+
+   `started_at` is when the pass started and `version` is the version of the
+   program that ran it. `result` is `clean` or `refused`.
+
+**Check a backup copy.** The command is also the check of a backup. Restore
+or copy the history directory to any place, keep its name as the name of a
+store file with `.parquet` added, and give that store file's path as
+`--store`. The store file itself need not be there, because the command
+does not read it. The paths under the history directory must be the ones
+the center wrote: the sealed layer of each file names the file's path under
+that directory.
+
+```bash
+sipnab fleet verify --store /mnt/restore/center.store \
+  --store-key-file /etc/sipnab/center.storekey
+```
+
+**A pass that root starts.** The command does not stay root.
+
+- It reads `--store-key-file` and every `--store-old-key-file` as root.
+- Then it runs as `--user`, else `nobody`, and lists and reads the history
+  files as that user. The command reads no configuration file, so
+  `[privilege] user` does not name the user.
+- That user must read `<store>.parquet`, every directory in it and every
+  file in them. When it cannot, the command reads no history file, exits
+  `2` and names the path and three ways out:
+
+  ```text
+  sipnab fleet verify: started as root, this command runs as user 'nobody', and 'nobody' cannot read '/var/lib/sipnab/center.store.parquet' (the history store of --store). Nothing was created. Choose one: chown nobody '/var/lib/sipnab/center.store.parquet'; run it with --user USER, naming a user who can; or pass --no-priv-drop to keep root
+  ```
+
+  For a center's store, take the second way and name the center's user:
+  `--user sipnab`. Do not change the owner of a store that a center uses,
+  because the center must keep its write access.
+- `--no-priv-drop` keeps root for the whole pass and logs one warning line.
+- A pass that root did not start changes in nothing, and `--user` has no
+  effect on it.
+
+**Verify.** The exit status is the verdict:
+
+| Exit status | Meaning |
+|---|---|
+| `0` | The command refused no file. Files that were `gone` do not change this. |
+| `1` | The command refused at least one file. Each has one `refused:` line, or one entry under `refused` with `--json`. |
+| `2` | The pass did not run: the command refused an argument or a key file, it cannot read a directory of the store, the user a run started as root drops to cannot read the store, there is no `<store>.parquet` directory beside `--store`, or the build has no history store. |
+
+A store that has filed nothing yet has the directory and no file: the
+command prints `0 files` for each class and exits `0`.
+
+**How long a pass takes.** Measured on 2026-11-15 with a release build on
+an NVIDIA Jetson AGX Thor (aarch64, 14 processors), with other jobs running
+on the host (load average 17 to 28). The pass read the test store above:
+583,543,021 bytes of call record files and 441,207,414 bytes of heartbeat
+files. Each
+time is one run of the command, from its start to its exit, over three
+rounds:
+
+| Pass | Files | Rows | Time |
+|---|---|---|---|
+| `--class calls` | 20 | 1,080,000 | 2.8 to 6.2 s |
+| `--class members` | 1,440 | 2,880,000 | 4.2 to 9.0 s |
+| Both classes | 1,460 | 3,960,000 | 8.6 to 13.0 s |
+
+The pass reads every file of the classes it checks, whole.
+
+**Troubleshoot.** A refused file has one line, the path and the first
+reason:
+
+```text
+refused: calls/date=2026-11-11/1794355200000-1794355253999-h39bb7d2c07e281e0.sealed: sealed layer: the file was truncated: it ends before its records do
+```
+
+- **`sealed layer: the file was written under key id <id>, which is not
+  loaded`.** The file is under an earlier store key. Give that key's file
+  with `--store-old-key-file`. Start the center with it too, or the center
+  refuses the same file for each question that reads it.
+- **`sealed layer:` with `did not authenticate`, `was truncated` or `was cut
+  at its end`.** The file changed after the center wrote it. Restore the
+  file from a backup and run the command again.
+- **`sealed layer: the file was written as '<path>' and is not at that
+  path`.** Someone moved or renamed the file. Move it back to the path the
+  message gives.
+- **`parquet:` with a row number.** A row does not parse. The center seals
+  each file, so only a defect in the release that wrote the file produces
+  such a row. Keep the file and report the line with the version of the
+  release that wrote the file. The center still answers every question that
+  does not select the row.
+- **`rows:`.** The file opens and every row parses, and the rows are not the
+  rows the path names: a row of another day or member, another earliest or
+  latest time, or another mark. The center seals the path into the file, so
+  only a defect in the release that wrote the file produces this. Keep the
+  file and report the line.
+- **`no history directory '<path>': nothing to verify` and exit `2`.**
+  `--store` does not name the center's store file, or the build that runs
+  the center has no history store. Compare the path with the `--store` of
+  the center's service unit.
+- **`is a pipe or FIFO, not a file of the history store`.** The entry under
+  a history file's name is not a regular file. The message names a
+  character device, a block device or a socket in the same way. The center
+  writes only regular files, and it refuses the same entry for each question
+  that reads it. Neither the command nor the center opens such an entry for
+  reading. Find out who made it, then remove it.
+- **`started as root, this command runs as user` and exit `2`.** Root
+  started the pass, and the user it runs as cannot read the path in the
+  message. Run it with `--user` and the center's user. "A pass that root
+  starts", above, has the other ways.
+- **A file is `gone`.** Retention removed it during the pass. Nothing is
+  wrong.
+
+[Fleet verify](errors.md#fleet-verify-sipnab-fleet-verify) lists each
+message.
+
 ### Upgrade a center to compressed history files
 
 **Purpose.** From this release the center compresses every history file it
@@ -1606,8 +2073,27 @@ record file 10.7%. Text that does not repeat does not shrink.
 The cost is time in each filing and each read. In that second measurement,
 in a release build on aarch64, encoding 2,000 heartbeats took 9.8 ms with
 zstd and 3.7 ms without, and encoding 20,000 call records took 98 ms and 59
-ms. Decoding the 20,000 call records took 17.7 ms and 7.6 ms. The binary is
-655,456 bytes larger (aarch64 gnu, 27,103,168 bytes).
+ms. Decoding the 20,000 call records took 17.7 ms and 7.6 ms.
+
+The codec also makes the binary larger. These are the sizes of the stripped
+binary that each build job of the release workflow printed for 0.5.253 and
+for 0.5.254, the first release with the codec:
+
+| Release build | 0.5.253, bytes | 0.5.254, bytes | Change |
+|---|---|---|---|
+| aarch64 gnu | 27,103,912 | 27,693,832 | +589,920 |
+| x86_64 gnu | 31,853,960 | 32,532,744 | +678,784 |
+| aarch64 musl (static) | 20,944,840 | 20,944,840 | 0 |
+| x86_64 musl (static) | 25,385,600 | 25,389,696 | +4,096 |
+| aarch64 gnu `-noaudio` | 23,433,392 | 23,433,392 | 0 |
+| x86_64 gnu `-noaudio` | 27,588,816 | 27,596,304 | +7,488 |
+
+The static musl builds and the `-noaudio` packages do not link the history
+store, so they do not link the codec. Release 0.5.254 also added regular
+expressions to the MCP tool `search_messages`, and all six builds hold that
+change. No build measured the two changes apart: the 4,096 and 7,488 bytes
+of the x86_64 builds without the store are not the codec's, and the growth
+of the two gnu builds holds both changes.
 
 **Before you start.**
 
@@ -1728,12 +2214,14 @@ would.
   30), 2,000 members with one heartbeat of about 300 bytes each made one
   file of 79,189 bytes in 202 ms, and 1,440 such filings, 24 hours, made
   113,491,120 bytes. Releases 0.5.251 to 0.5.253 wrote the same rows
-  without compression as 887,745,307 bytes. In that debug build, one
-  member's newest 1,000 heartbeats came from 1,001 files in 4.6 s, and the
-  member list was rebuilt without a store file from all 1,440 files in 76.7
-  s. A release build of 0.5.251, without compression, read the 1,001 files
-  in 2.8 s and rebuilt the member list in 25.7 s; a release build with
-  compression is not measured yet. The center answers members while it
+  without compression as 887,745,307 bytes. In a release build on
+  2026-11-14 (aarch64, 14 cores, load average about 10), one member's
+  newest 1,000 heartbeats came from 1,001 such files in 226 to 230 ms. In
+  a release build on 2026-11-15 (load average 23 to 31), the center rebuilt
+  the member list without a store file from all 1,440 files in 1.95 to
+  1.99 s, and answered `503` meanwhile
+  ([The files of the history store](#the-files-of-the-history-store) has
+  the parts of those times). The center answers members while it
   writes a file.
   Heartbeats that wait for a filing are in the store file, and at most
   64 MiB of them wait (`MAX_WAITING_BYTES`).
@@ -1926,9 +2414,127 @@ would.
   list's own record in every build: keep it in the backup. The history
   rebuilds what the file lacks; it does not replace it.
 
+### Run the center as a service
+
+The purpose is a center that starts at boot and never serves as root.
+
+**Before you start**
+
+- The steps above work: the center starts by hand with your key files.
+- The package created the `sipnab` user. Check with `id sipnab`.
+- Nothing changes on a member.
+
+**Steps**
+
+- **[center]** Give the key files to the service's user, and to nobody
+  else:
+
+  ```bash
+  # Run all of these, in order.
+  chown sipnab:sipnab /etc/sipnab/center.signing /etc/sipnab/center.storekey /etc/sipnab/center.key
+  chmod 600 /etc/sipnab/center.signing /etc/sipnab/center.storekey /etc/sipnab/center.key
+  ```
+
+- **[center]** Write `/etc/systemd/system/sipnab-fleet-center.service`. No
+  package ships this unit:
+
+  ```ini
+  [Unit]
+  Description=sipnab fleet center
+  Documentation=https://sipnab.com
+  After=network-online.target
+  Wants=network-online.target
+
+  [Service]
+  Type=simple
+  ExecStart=/usr/bin/sipnab fleet serve --listen 127.0.0.1:8444 \
+    --store /var/lib/sipnab-fleet/center.store \
+    --store-key-file /etc/sipnab/center.storekey \
+    --signing-key-file /etc/sipnab/center.signing \
+    --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key
+  User=sipnab
+  Group=sipnab
+  NoNewPrivileges=true
+  ProtectSystem=strict
+  ProtectHome=true
+  PrivateTmp=true
+  # /var/lib/sipnab-fleet, private to the sipnab user: the store, its
+  # intake and the history store live there.
+  StateDirectory=sipnab-fleet
+  StateDirectoryMode=0700
+  Restart=on-failure
+  RestartSec=5
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+- **[center]** Start it:
+
+  ```bash
+  # Run all of these, in order.
+  systemctl daemon-reload
+  systemctl enable sipnab-fleet-center
+  systemctl start sipnab-fleet-center
+  ```
+
+**Verify**
+
+- **[center]** The service runs as `sipnab`:
+
+  ```bash
+  systemctl show sipnab-fleet-center -p User -p ActiveState
+  ```
+
+  ```text
+  User=sipnab
+  ActiveState=active
+  ```
+
+**A center that root starts**
+
+A unit without `User=`, or `sudo sipnab fleet serve`, starts the center as
+root. Since 0.5.256 it does not stay root.
+
+- It reads the signing key, the store key and the TLS key, and binds
+  `--listen`, as root. So the key files can stay `root` mode 0600, and the
+  center can bind a port below 1024.
+- Then it serves as `--user`, else `nobody`, and says so:
+
+  ```text
+  INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+  ```
+
+- The store, its intake, the history store beside it and their directory
+  must be that user's. A center that ran as root before 0.5.256 left them
+  root's, so its first start after the upgrade refuses. It exits 2 and
+  creates nothing:
+
+  ```text
+  sipnab fleet serve: started as root, this command runs as user 'nobody', and 'nobody' cannot write in '/var/lib/sipnab' (the directory of --store). Nothing was created. Choose one: chown nobody '/var/lib/sipnab'; run it with --user USER, naming a user who can; or pass --no-priv-drop to keep root
+  ```
+
+- Fix it once, for the user the center serves as, on the directory that
+  holds your store:
+
+  ```bash
+  chown -R sipnab /var/lib/sipnab
+  ```
+
+  Then start the center with `--user sipnab`, or with `User=sipnab` in the
+  unit.
+- `--no-priv-drop` keeps root, as before 0.5.256, and logs one warning line.
+- The center reads a `--revoked-file` again each time it changes, so the
+  user the center serves as must be able to read it.
+
 ### Troubleshoot the center
 
 Each output below comes from the same run.
+
+- **The center exits 2 with `started as root, this command runs as user`.**
+  Root started it and the user it serves as cannot use the path the message
+  names. [A center that root starts](#run-the-center-as-a-service) has the
+  three ways out.
 
 - **`401` on the ingest.** The token is not a `fleet-report` token this
   center's key signed, it expired, or its id is in the revocation file. A `full`, `admin` or
@@ -1972,6 +2578,11 @@ Each output below comes from the same run.
   ```text
   sipnab fleet serve: --store 'center.store' can be read or written by other users (mode 0644); chmod 600 it
   ```
+
+- **`503` and `the center is rebuilding its member list from the history
+  store`.** The center has bound its port and not yet opened its store. Ask
+  again after the `Retry-After` seconds
+  ([What the center answers while it starts](#what-the-center-answers-while-it-starts)).
 
 - **A member stays `silent`.** The center has had no heartbeat from it for
   more than `silent_after_missed` of its intervals: the member is down, cannot

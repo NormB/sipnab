@@ -391,6 +391,21 @@ jobs:
           test -s website/public/pagefind/pagefind.js
           test -s website/public/pagefind/pagefind-entry.json
 
+      # What the built download page advertises, as a static file beside the
+      # stamp: the stamp, the release and the page's sha256
+      # (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER). The CDN answers a hosted
+      # runner's read of an HTML page with a browser challenge and its read
+      # of a .txt file with the file, so the `live` job and the daily check
+      # (cert-expiry.yml) judge the release from this file and the stamp.
+      # The page is judged by the rule the live page is judged by
+      # (scripts/verify-site-advertises.sh --classify), for the
+      # published_version the step above wrote; a built page that does not
+      # name it fails the build here. The last step before the upload:
+      # `zola build` recreates the tree, and the sha256 is of the page as it
+      # is uploaded.
+      - name: Record what the built download page advertises
+        run: python3 scripts/pages-live.py advertised --site website/public --config website/config.toml
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
@@ -462,8 +477,21 @@ jobs:
   # reads the stamp the build wrote. When the live stamp is not this run's
   # within 5 minutes, it deploys the same artifact again under a build
   # version GitHub has not seen, prints a warning that says so, and reads the
-  # stamp again. With `expect` it then checks that the download page names
-  # the release (scripts/verify-site-advertises.sh).
+  # stamp again.
+  #
+  # The release is then judged from this run's own artifact
+  # (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER): on 2026-11-14 the 0.5.254
+  # release run ended red twice because the CDN answered this job's read of
+  # the download page with a browser challenge while the site was right. The
+  # job downloads the `github-pages` artifact, as the csp job below does in
+  # every run with the same action and `actions: read`. The script requires
+  # the artifact's stamp and its advertised-release.txt to be this run's,
+  # judges the artifact's download page by the rule a live page is judged by
+  # (scripts/verify-site-advertises.sh --classify), and requires the live
+  # advertised-release.txt to be the artifact's. The live read of the
+  # download page stays as evidence: a page that answers and does not name
+  # the release fails the run; a read the edge refused is a warning with the
+  # edge's answer. An artifact that cannot be read is exit 4, never a pass.
   #
   # A workflow_dispatch run enforces the verdict: a release advertises itself
   # through one, and a withdrawal redeploys through one. A push run prints
@@ -474,8 +502,9 @@ jobs:
   # so no later deploy can replace the site while it reads.
   live:
     # 300 s for the stamp, 600 s for a second deploy's status, 300 s for the
-    # stamp again and 300 s for the release: 25 minutes at the worst.
-    timeout-minutes: 30
+    # stamp again, 300 s for the live advertised-release.txt and 300 s for
+    # the release: 30 minutes at the worst.
+    timeout-minutes: 35
     name: The live site is this deploy
     needs: deploy
     runs-on: ubuntu-24.04
@@ -495,6 +524,16 @@ jobs:
           persist-credentials: false
           sparse-checkout: scripts
 
+      # A failed download does not end the job: the script below ends 4 on
+      # an artifact it cannot read, which a dispatch enforces and a push
+      # prints as an error annotation.
+      - name: Download this run's site artifact
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: github-pages
+          path: site-artifact
+
       - name: Read the stamp back from the live site
         env:
           GH_TOKEN: ${{ github.token }}
@@ -503,9 +542,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$ENFORCE" = true ]; then
-            python3 scripts/pages-live.py verify --expect "$EXPECT" --enforce
+            python3 scripts/pages-live.py verify --expect "$EXPECT" --enforce --artifact site-artifact/artifact.tar
           else
-            python3 scripts/pages-live.py verify --expect "${EXPECT:-}"
+            python3 scripts/pages-live.py verify --expect "${EXPECT:-}" --artifact site-artifact/artifact.tar
           fi
 
   # The production CSP is a Cloudflare transform rule pinning inline-script

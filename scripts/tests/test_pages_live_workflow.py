@@ -155,3 +155,116 @@ def test_edge_the_advertise_jobs_wait_covers_the_live_job():
 
 def test_edge_the_stamp_file_is_not_committed():
     assert not (REPO / "website/static/deploy-stamp.txt").exists()
+
+
+# ── The release verdict from the run's own artifact ────────────────────────
+# CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER: the CDN answers a hosted runner's
+# read of an HTML page with a challenge and its read of a .txt file with the
+# file. scripts/pages-live.py's behavior is tested in
+# test_pages_live_artifact.py; these hold the three workflow texts to it.
+
+CERT = (REPO / ".github/workflows/cert-expiry.yml").read_text()
+ADVERTISED = "python3 scripts/pages-live.py advertised --site website/public --config website/config.toml"
+ARTIFACT = "site-artifact/artifact.tar"
+
+
+def step(src, name):
+    i = src.index(f"- name: {name}")
+    rest = src[i + 1:]
+    j = rest.find("\n      - ")
+    return src[i: i + 1 + (j if j >= 0 else len(rest))]
+
+
+def test_success_the_build_writes_what_its_download_page_advertises():
+    assert ADVERTISED in code(job(PAGES, "build"))
+
+
+def test_success_the_record_is_written_from_the_tree_that_is_uploaded():
+    # `zola build` recreates website/public, and nothing may change the page
+    # between the record and the upload.
+    build = job(PAGES, "build")
+    assert build.index("- name: Build site") < build.index("pagefind --site website/public") < build.index(ADVERTISED)
+    between = build[build.index(ADVERTISED): build.index("- name: Upload Pages artifact")]
+    assert between.count("- name:") == 0
+
+
+def test_success_the_live_job_downloads_this_runs_artifact_before_it_judges():
+    body = job(PAGES, "live")
+    download = step(body, "Download this run's site artifact")
+    assert "name: github-pages" in download and "path: site-artifact" in download
+    assert body.index("- name: Download this run's site artifact") < body.index("pages-live.py verify")
+
+
+def test_success_the_live_job_downloads_with_the_action_the_csp_job_proves_in_every_run():
+    # The csp job downloads `github-pages` with `actions: read` in every
+    # Pages run (run 43595667037, job 132450249502), so the same pin with
+    # the same scope in the live job is a download that is known to work.
+    pin = re.search(r"uses: (actions/download-artifact@[0-9a-f]{40})", job(PAGES, "csp")).group(1)
+    assert f"uses: {pin}" in step(job(PAGES, "live"), "Download this run's site artifact")
+
+
+def test_success_both_branches_of_the_live_check_judge_the_artifact():
+    run = step(job(PAGES, "live"), "Read the stamp back from the live site")
+    lines = [line.strip() for line in run.splitlines() if "pages-live.py verify" in line]
+    assert len(lines) == 2 and all(line.endswith(f"--artifact {ARTIFACT}") for line in lines), lines
+
+
+def test_success_the_daily_check_judges_through_pages_live():
+    body = step(CERT, "The site advertises the release it claims to")
+    assert 'python3 scripts/pages-live.py daily --expect "$published"' in code(body)
+
+
+def test_success_a_change_to_the_check_runs_the_daily_workflow():
+    paths = CERT[CERT.index("    paths:"): CERT.index("permissions:")]
+    assert "- 'scripts/pages-live.py'" in paths and "- 'scripts/verify-site-advertises.sh'" in paths
+
+
+def test_failure_a_failed_download_does_not_end_the_job_before_the_verdict():
+    # pages-live.py ends 4 on an artifact it cannot read, enforced on a
+    # dispatch and an error annotation on a push; a failed step would end a
+    # push run red, and the tag gate refuses a tag on a red merge commit.
+    assert "continue-on-error: true" in step(job(PAGES, "live"), "Download this run's site artifact")
+
+
+def test_failure_the_daily_step_does_not_turn_a_refused_read_into_a_pass_itself():
+    body = code(step(CERT, "The site advertises the release it claims to"))
+    assert "rc=0" not in body and '"$rc" = 6' not in body and "sh scripts/verify-site-advertises.sh" not in body
+
+
+def test_failure_the_daily_step_ends_with_the_checks_own_status():
+    body = code(step(CERT, "The site advertises the release it claims to"))
+    assert body.rstrip().endswith('python3 scripts/pages-live.py daily --expect "$published"')
+    assert "|| true" not in body and "continue-on-error" not in body
+
+
+def test_failure_no_expression_is_expanded_inside_the_daily_steps_script():
+    body = step(CERT, "The site advertises the release it claims to")
+    assert "${{" not in body[body.index("run: |"):]
+
+
+def test_failure_the_artifact_is_not_read_through_the_rest_api():
+    # The zip endpoint with the job's token is not proven; the action is.
+    assert "actions/artifacts" not in (REPO / "scripts/pages-live.py").read_text().replace("actions/runs/", "")
+
+
+def test_edge_the_record_is_not_committed():
+    assert not (REPO / "website/static/advertised-release.txt").exists()
+
+
+def test_edge_the_live_jobs_bound_covers_the_wait_for_the_live_record():
+    # 300 s more than before: the live advertised-release.txt is waited for.
+    m = re.search(r"timeout-minutes: (\d+)", job(PAGES, "live"))
+    assert int(m.group(1)) >= 35
+
+
+def test_edge_the_daily_job_checks_out_the_script():
+    job_text = CERT[CERT.index("  expiry:"):]
+    checkout = job_text[job_text.index("actions/checkout@"): job_text.index("- name:")]
+    assert "sparse-checkout" not in checkout
+
+
+def test_edge_the_daily_jobs_bound_covers_three_static_reads_and_the_page():
+    # Six reads of 20 s at most, two waits of 15 s and one page read of 20 s
+    # are 170 s; the certificate steps come before.
+    m = re.search(r"timeout-minutes: (\d+)", CERT)
+    assert 8 <= int(m.group(1)) <= 30

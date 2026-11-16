@@ -3314,7 +3314,16 @@ mod tests {
     /// configured place.
     #[test]
     fn sessions_with_dead_engines_cost_one_timeout() -> Result<(), TestError> {
-        use crate::test_engines::{FakeEngine, one_timeout};
+        use crate::test_engines::{FakeEngine, all_answered, waited_a_timeout};
+        // Asked at once, not in turn: three engines that answer only when
+        // all three hold a request. No wall time is read for it.
+        let asked = FakeEngine::together_beside_a_live_one(4, 0)?;
+        let (snap, _) = udp_snapshot(&asked)?;
+        assert!(
+            all_answered(&asked),
+            "the engines were asked one after another: {:?}",
+            snap.engines
+        );
         let fakes = [
             FakeEngine::live()?,
             FakeEngine::dead()?,
@@ -3323,8 +3332,8 @@ mod tests {
         ];
         let (snap, took) = udp_snapshot(&fakes)?;
         assert!(
-            one_timeout(took),
-            "one timeout, not three: {took:?}: {:?}",
+            waited_a_timeout(took),
+            "the dead engines were waited for: {took:?}: {:?}",
             snap.engines
         );
         let want: Vec<String> = fakes

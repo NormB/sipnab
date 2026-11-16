@@ -23,6 +23,11 @@ use std::time::{Duration, Instant};
 #[path = "support/fleet_center.rs"]
 mod fleet_center;
 
+/// A real member, for the start that answers `503` while it rebuilds.
+#[cfg(feature = "fleet-store")]
+#[path = "support/server.rs"]
+mod server;
+
 use fleet_center::{Center, TestError, http, store_key_file};
 
 /// The center's signing key.
@@ -57,24 +62,32 @@ fn private_file(dir: &Path, name: &str, text: &str) -> Result<PathBuf, TestError
 /// A center on a port of its own whose store is in `dir`, with `more`
 /// arguments.
 fn center(dir: &Path, more: &[&str]) -> Result<Center, TestError> {
+    let args = center_args(dir, more)?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    Center::start(&args)
+}
+
+/// The arguments of [`center`]: a port of its own, the store in `dir`, its
+/// key files, then `more`.
+fn center_args(dir: &Path, more: &[&str]) -> Result<Vec<String>, TestError> {
     let key = match std::fs::metadata(dir.join("center.signing")) {
         Ok(_) => dir.join("center.signing"),
         Err(_) => private_file(dir, "center.signing", CENTER_KEY)?,
     };
     let store = dir.join("center.store");
     let store_key = store_key_file(dir)?;
-    let mut args = vec![
-        "--listen",
-        "127.0.0.1:0",
-        "--store",
-        store.to_str().ok_or("utf-8")?,
-        "--store-key-file",
-        store_key.to_str().ok_or("utf-8")?,
-        "--signing-key-file",
-        key.to_str().ok_or("utf-8")?,
+    let mut args: Vec<String> = vec![
+        "--listen".to_string(),
+        "127.0.0.1:0".to_string(),
+        "--store".to_string(),
+        store.to_str().ok_or("utf-8")?.to_string(),
+        "--store-key-file".to_string(),
+        store_key.to_str().ok_or("utf-8")?.to_string(),
+        "--signing-key-file".to_string(),
+        key.to_str().ok_or("utf-8")?.to_string(),
     ];
-    args.extend_from_slice(more);
-    Center::start(&args)
+    args.extend(more.iter().map(|arg| (*arg).to_string()));
+    Ok(args)
 }
 
 /// The call record at `seq` of stream `s` as a member writes it.
@@ -399,6 +412,38 @@ mod without_the_store {
         assert!(
             !dir.path().join("center.store.parquet").exists(),
             "failure no history directory is made"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_build_without_the_store_cannot_verify() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let store = dir.path().join("center.store");
+        let key = store_key_file(dir.path())?;
+        // A history directory is there: the refusal is the build's, not a
+        // missing directory's.
+        std::fs::create_dir(dir.path().join("center.store.parquet"))?;
+        let (code, out, err) = fleet_center::sipnab_within(
+            &[
+                "fleet",
+                "verify",
+                "--store",
+                store.to_str().ok_or("utf-8")?,
+                "--store-key-file",
+                key.to_str().ok_or("utf-8")?,
+            ],
+            std::time::Duration::from_secs(40),
+        )?;
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (
+                Some(2),
+                "",
+                "sipnab fleet verify: this build has no history store (Cargo feature \
+                 `fleet-store`): run the command from the build the center runs\n"
+            ),
+            "failure a build without the history store cannot run a pass and says which build can"
         );
         Ok(())
     }
@@ -1137,6 +1182,920 @@ mod with_the_store {
             (Some(2), &serde_json::json!(true)),
             "edge with the earlier key listed, its files are read: {answer}"
         );
+        drop(c);
+        // The next start leaves the earlier key out: the store file is
+        // under the new key by now, the history file is not.
+        let c = start(None)?;
+        let (status, answer) = calls(&c.addr, "")?;
+        assert_eq!(
+            (status, answer["count"].as_u64(), &answer["complete"]),
+            (200, Some(0), &serde_json::json!(false)),
+            "edge without the earlier key the center starts and answers without its files: \
+             {answer}"
+        );
+        assert!(
+            answer["refused"][0]["reason"]
+                .as_str()
+                .is_some_and(|why| why
+                    .starts_with("sealed layer: the file was written under key id ")
+                    && why.ends_with(", which is not loaded")),
+            "edge the refused file names the key it is under: {answer}"
+        );
+        Ok(())
+    }
+
+    // ---- `sipnab fleet verify`, the real binary beside a center ----------
+    //
+    // Every pass runs through `sipnab_within`: one that is still there at
+    // the deadline is killed and fails its test.
+
+    /// The summary line of class `members` in a store that holds no
+    /// heartbeat.
+    const NO_MEMBERS: &str = "members: 0 files, 0 clean, 0 refused, 0 gone, 0 rows\n";
+
+    /// What a reader of the store says of a FIFO under a history file's
+    /// name.
+    const NOT_A_FILE: &str = "is a pipe or FIFO, not a file of the history store";
+
+    /// The summary of a store whose one file of call records holds two
+    /// rows and is clean.
+    fn two_rows_clean() -> String {
+        format!("calls: 1 files, 1 clean, 0 refused, 0 gone, 2 rows\n{NO_MEMBERS}")
+    }
+
+    /// A running center in `dir` that filed two call records into one
+    /// file, and that file's path.
+    fn filed_center(dir: &Path) -> Result<(Center, PathBuf), TestError> {
+        let c = center(dir, &["--calls-flush-secs", "1"])?;
+        push(&c.addr, "edge-a", 1, 2)?;
+        if !wait_until(WAIT, || Ok(history_report(&c.addr)?["rows_filed"] == 2))? {
+            return Err(format!("the center did not file: {}", history_report(&c.addr)?).into());
+        }
+        let files = files_under(&dir.join("center.store.parquet"))?;
+        match files.as_slice() {
+            [(path, _)] => Ok((c, path.clone())),
+            _ => Err(format!("one filing is one file, not {}", files.len()).into()),
+        }
+    }
+
+    /// `sipnab fleet verify` on the store file `store` under the key file
+    /// `key`, with `more` arguments, ended at the deadline.
+    fn verify_at(
+        store: &Path,
+        key: &Path,
+        more: &[&str],
+    ) -> Result<(Option<i32>, String, String), TestError> {
+        let mut args = vec![
+            "fleet",
+            "verify",
+            "--store",
+            store.to_str().ok_or("utf-8")?,
+            "--store-key-file",
+            key.to_str().ok_or("utf-8")?,
+        ];
+        args.extend_from_slice(more);
+        fleet_center::sipnab_within(&args, WAIT)
+    }
+
+    /// `sipnab fleet verify` on the store of the center in `dir`.
+    fn verify(dir: &Path, more: &[&str]) -> Result<(Option<i32>, String, String), TestError> {
+        verify_at(
+            &dir.join("center.store"),
+            &dir.join("center.storekey"),
+            more,
+        )
+    }
+
+    /// Copy the directory `from`, with everything under it, to `to`.
+    fn copy_tree(from: &Path, to: &Path) -> Result<(), TestError> {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            let target = to.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_tree(&entry.path(), &target)?;
+            } else {
+                std::fs::copy(entry.path(), &target)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_pass_beside_a_running_center_is_clean_and_exits_0() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (c, _file) = filed_center(dir.path())?;
+        let history = dir.path().join("center.store.parquet");
+        let before = files_under(&history)?;
+        let (code, out, err) = verify(dir.path(), &[])?;
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (Some(0), two_rows_clean().as_str(), ""),
+            "success a pass beside a running center reads its file and both rows"
+        );
+        assert_eq!(
+            files_under(&history)?,
+            before,
+            "success the pass created and changed nothing in the history directory"
+        );
+        let (status, answer) = calls(&c.addr, "")?;
+        assert_eq!(
+            (status, answer["count"].as_u64(), &answer["complete"]),
+            (200, Some(2), &serde_json::json!(true)),
+            "success the center answers as before the pass: {answer}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_json_of_a_pass_names_the_version_and_the_start() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (_c, file) = filed_center(dir.path())?;
+        let earliest = chrono::Utc::now().timestamp();
+        let (code, out, err) = verify(dir.path(), &["--json"])?;
+        let latest = chrono::Utc::now().timestamp();
+        assert_eq!(
+            (code, err.as_str(), out.lines().count()),
+            (Some(0), "", 1),
+            "success --json prints one document on one line and exits 0: {out}"
+        );
+        let report: serde_json::Value = serde_json::from_str(&out)?;
+        assert_eq!(
+            report["version"],
+            env!("CARGO_PKG_VERSION"),
+            "success the document names the version of the program that ran the pass"
+        );
+        let started = chrono::DateTime::parse_from_rfc3339(
+            report["started_at"].as_str().ok_or("started_at is text")?,
+        )?
+        .timestamp();
+        assert!(
+            (earliest..=latest).contains(&started),
+            "success started_at is the RFC 3339 time the pass started: {} is not in \
+             {earliest}..={latest}",
+            report["started_at"]
+        );
+        assert_eq!(
+            (&report["result"], &report["classes"][0], &report["refused"]),
+            (
+                &serde_json::json!("clean"),
+                &serde_json::json!({
+                    "class": "calls", "files": 1, "clean": 1, "refused": 0, "gone": 0, "rows": 2
+                }),
+                &serde_json::json!([])
+            ),
+            "success the document carries the verdict and the counts of {}",
+            file.display()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_copy_of_the_history_directory_verifies_clean() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (c, _file) = filed_center(dir.path())?;
+        // The copy is made while the center runs, as a backup is.
+        let backup = dir.path().join("backup");
+        copy_tree(
+            &dir.path().join("center.store.parquet"),
+            &backup.join("center.store.parquet"),
+        )?;
+        assert!(
+            !backup.join("center.store").exists(),
+            "success the copy holds the history directory and no store file"
+        );
+        let (code, out, err) = verify_at(
+            &backup.join("center.store"),
+            &dir.path().join("center.storekey"),
+            &[],
+        )?;
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (Some(0), two_rows_clean().as_str(), ""),
+            "success a backup copy of the history directory is verified where it lies"
+        );
+        drop(c);
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_truncated_file_is_refused_with_exit_1() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (c, file) = filed_center(dir.path())?;
+        let bytes = std::fs::read(&file)?;
+        std::fs::write(&file, bytes.get(..bytes.len() / 2).ok_or("half the file")?)?;
+        let rel = file
+            .strip_prefix(dir.path().join("center.store.parquet"))?
+            .to_str()
+            .ok_or("utf-8")?
+            .to_string();
+        let (code, out, err) = verify(dir.path(), &[])?;
+        assert_eq!(
+            (code, err.as_str()),
+            (Some(1), ""),
+            "failure a refused file is exit status 1, and no error of the pass: {out}"
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(
+            matches!(lines.as_slice(), [refused, calls, members]
+                if refused.starts_with(&format!("refused: {rel}: "))
+                    && *calls == "calls: 1 files, 0 clean, 1 refused, 0 gone, 0 rows"
+                    && NO_MEMBERS.trim_end() == *members),
+            "failure one line names the file and its reason, then one line for each class: {out}"
+        );
+        let (code, out, _) = verify(dir.path(), &["--json"])?;
+        let report: serde_json::Value = serde_json::from_str(&out)?;
+        assert_eq!(
+            (code, &report["result"], &report["refused"][0]["file"]),
+            (
+                Some(1),
+                &serde_json::json!("refused"),
+                &serde_json::json!(rel)
+            ),
+            "failure the JSON of the same pass names the file and exits 1: {out}"
+        );
+        drop(c);
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_store_with_no_history_directory_exits_2() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (c, _file) = filed_center(dir.path())?;
+        let other = dir.path().join("other.store");
+        let (code, out, err) = verify_at(&other, &dir.path().join("center.storekey"), &[])?;
+        assert_eq!(
+            (code, out.as_str(), err),
+            (
+                Some(2),
+                "",
+                format!(
+                    "sipnab fleet verify: no history directory '{}.parquet': nothing to verify\n",
+                    other.display()
+                )
+            ),
+            "failure a --store with no history directory beside it is not a clean pass"
+        );
+        assert!(
+            !dir.path().join("other.store.parquet").exists(),
+            "failure the pass did not create the directory it did not find"
+        );
+        drop(c);
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_pass_under_another_key_refuses_the_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (c, _file) = filed_center(dir.path())?;
+        let other = private_file(
+            dir.path(),
+            "other.storekey",
+            "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\n",
+        )?;
+        let (code, out, err) = verify_at(&dir.path().join("center.store"), &other, &[])?;
+        assert_eq!(
+            (code, err.as_str()),
+            (Some(1), ""),
+            "failure a file under a key the pass was not given is a refused file: {out}"
+        );
+        assert!(
+            out.contains("sealed layer: the file was written under key id ")
+                && out.contains("calls: 1 files, 0 clean, 1 refused, 0 gone, 0 rows\n"),
+            "failure the line names the key the file is under: {out}"
+        );
+        drop(c);
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_fifo_in_a_running_centers_store_is_refused_and_not_waited_on()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (c, file) = filed_center(dir.path())?;
+        // A FIFO beside the file, under a name the store writes: the times
+        // of the file's name, and another mark.
+        let name = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("a file name")?;
+        let (times, _mark) = name.rsplit_once("-h").ok_or("a name with a mark")?;
+        let fifo = file.with_file_name(format!("{times}-h0000000000000001.sealed"));
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status()?;
+        assert!(made.success(), "failure mkfifo made the FIFO: {made}");
+        let rel = fifo
+            .strip_prefix(dir.path().join("center.store.parquet"))?
+            .to_str()
+            .ok_or("utf-8")?
+            .to_string();
+        // `http` gives the answer ten seconds: a center that waits on the
+        // FIFO for a writer fails here.
+        let (status, answer) = calls(&c.addr, "")?;
+        assert_eq!(
+            (status, answer["count"].as_u64(), &answer["complete"]),
+            (200, Some(2), &serde_json::json!(false)),
+            "failure the center answers with the rows of the file and says it is not whole: \
+             {answer}"
+        );
+        assert_eq!(
+            (
+                &answer["refused"][0]["file"],
+                &answer["refused"][0]["reason"]
+            ),
+            (&serde_json::json!(rel), &serde_json::json!(NOT_A_FILE)),
+            "failure the FIFO is the refused file, with the reason: {answer}"
+        );
+        let (code, out, err) = verify(dir.path(), &[])?;
+        assert_eq!(
+            (code, err.as_str()),
+            (Some(1), ""),
+            "failure a pass beside that center ends, with exit status 1: {out}"
+        );
+        assert!(
+            out.contains(&format!("refused: {rel}: {NOT_A_FILE}\n"))
+                && out.contains("calls: 2 files, 1 clean, 1 refused, 0 gone, 2 rows\n"),
+            "failure the pass names the FIFO and reads the file beside it: {out}"
+        );
+        let (status, later) = calls(&c.addr, "?call_id=call-1%40example.com")?;
+        assert_eq!(
+            (status, later["count"].as_u64()),
+            (200, Some(1)),
+            "failure the center goes on answering: {later}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_one_class_or_a_window_with_no_file_exits_0() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (c, _file) = filed_center(dir.path())?;
+        let (code, out, err) = verify(dir.path(), &["--class", "members"])?;
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (Some(0), NO_MEMBERS, ""),
+            "edge --class members reads no call record and prints one line"
+        );
+        let (code, out, err) = verify(dir.path(), &["--class", "calls", "--to", "2000-01-01"])?;
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (
+                Some(0),
+                "calls: 0 files, 0 clean, 0 refused, 0 gone, 0 rows\n",
+                ""
+            ),
+            "edge a window that ends before the first day reads no file and is clean"
+        );
+        let (code, out, err) = verify(dir.path(), &["--from", "2000-01-02", "--to", "2000-01-01"])?;
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (
+                Some(2),
+                "",
+                "sipnab fleet verify: --from 2000-01-02 is after --to 2000-01-01\n"
+            ),
+            "edge a window that ends before it starts cannot run"
+        );
+        drop(c);
+        Ok(())
+    }
+
+    /// One filing of heartbeats: a row for each of `members` members named
+    /// `{prefix}-NNNN`, the `filing`-th heartbeat of each, received from `at`
+    /// on, a millisecond apart.
+    fn filing_of_beats(
+        prefix: &str,
+        members: u64,
+        filing: u64,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<sipnab::app::fleet_center::MemberRecord>, TestError> {
+        use sipnab::app::fleet_calls::CallCounts;
+        use sipnab::app::fleet_center::{Cursor, MemberRecord};
+        (0..members)
+            .map(|m| {
+                let member = format!("{prefix}-{m:04}");
+                let received_at = at + chrono::TimeDelta::milliseconds(i64::try_from(m)?);
+                Ok(MemberRecord {
+                    received_at,
+                    peer: "192.0.2.10".to_string(),
+                    heartbeats: filing,
+                    cursor: Cursor {
+                        stream: "s".to_string(),
+                        seq: filing,
+                        sent_at: received_at,
+                    },
+                    heartbeat_secs: 60,
+                    inventory: serde_json::json!({
+                        "schema_version": 1,
+                        "node_name": member,
+                        "digest": varied(filing * 10_000 + m, 240),
+                    }),
+                    call_records: filing,
+                    calls: Some(CallCounts {
+                        selected: filing,
+                        dropped_by_cap: 0,
+                        left_out: 0,
+                        spooled: 0,
+                    }),
+                    member,
+                })
+            })
+            .collect()
+    }
+
+    /// What the center logs when the rebuild at start has taken members
+    /// from the history store: the rebuild has ended.
+    const REBUILT: &str = "were taken from the history store";
+
+    /// Every line `log` holds now, appended to `into`.
+    fn drain(log: &std::sync::mpsc::Receiver<String>, into: &mut Vec<String>) {
+        into.extend(log.try_iter());
+    }
+
+    /// What the center logs once it is bound, before it opens its store,
+    /// followed by the address it answers `503` on.
+    const ANSWERING: &str = "fleet center answering 503 on ";
+
+    /// The cause the center's `503` names while it rebuilds.
+    const REBUILDING: &str = "the center is rebuilding its member list from the history store";
+
+    /// What the center logs once it serves.
+    const SERVING: &str = "fleet center serving";
+
+    /// A center started in `dir` with no store file and `filings` files of
+    /// heartbeats of `members` members in its history, so that its start
+    /// reads every file; returned once it says it answers `503`, with the
+    /// address and the lines it logged. The rebuild has not ended then, or
+    /// the store is too small for this host, and that is an error.
+    fn rebuilding_center(
+        dir: &Path,
+        members: u64,
+        filings: u64,
+    ) -> Result<(fleet_center::Starting, String, Vec<String>), TestError> {
+        let store = history(dir)?;
+        let start = chrono::Utc::now() - chrono::TimeDelta::minutes(i64::try_from(filings)? + 5);
+        for filing in 1..=filings {
+            let at = start + chrono::TimeDelta::minutes(i64::try_from(filing)?);
+            store.file(&filing_of_beats("edge", members, filing, at)?)?;
+        }
+        let mut center = fleet_center::Starting::spawn(&center_args(dir, &[])?)?;
+        let deadline = Instant::now() + Duration::from_secs(300);
+        let mut lines = Vec::new();
+        loop {
+            if let Ok(line) = center.log.recv_timeout(Duration::from_millis(100)) {
+                lines.push(line);
+            }
+            if let Some(line) = lines.iter().find(|l| l.contains(ANSWERING)) {
+                let addr = line
+                    .split(ANSWERING)
+                    .nth(1)
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .ok_or("an address after the 503 line")?
+                    .to_string();
+                drain(&center.log, &mut lines);
+                if lines
+                    .iter()
+                    .any(|l| l.contains(REBUILT) || l.contains(SERVING))
+                {
+                    return Err(format!(
+                        "the rebuild ended before the test could ask (the store is too small \
+                         for this host):\n{lines:#?}"
+                    )
+                    .into());
+                }
+                return Ok((center, addr, lines));
+            }
+            if let Some(status) = center.exited()? {
+                return Err(format!("the center exited at start: {status}\n{lines:#?}").into());
+            }
+            if Instant::now() > deadline {
+                return Err(format!("the center logged no 503 line:\n{lines:#?}").into());
+            }
+        }
+    }
+
+    /// Wait up to `within` for `center` to log a line holding `needle`,
+    /// keeping every line in `lines`.
+    fn logged(
+        center: &fleet_center::Starting,
+        lines: &mut Vec<String>,
+        needle: &str,
+        within: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + within;
+        while !lines.iter().any(|l| l.contains(needle)) {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            if let Ok(line) = center
+                .log
+                .recv_timeout(left.min(Duration::from_millis(100)))
+            {
+                lines.push(line);
+            }
+        }
+        true
+    }
+
+    /// One request of the members during the rebuild at start: it is
+    /// answered at once, `503` with `Retry-After` and a problem body that
+    /// names the rebuild; once the center serves, the same request is
+    /// answered `200` with every member the rebuild took. The time the
+    /// first answer took is printed (`rebuild-503`).
+    #[test]
+    fn edge_a_request_during_the_rebuild_at_start_is_answered_503_with_retry_after()
+    -> Result<(), TestError> {
+        use std::io::Write as _;
+        const MEMBERS: u64 = 500;
+        const FILINGS: u64 = 120;
+        let dir = tempfile::tempdir()?;
+        let (center, addr, mut lines) = rebuilding_center(dir.path(), MEMBERS, FILINGS)?;
+        let reader = token("reader", sipnab::auth::SCOPE_INVENTORY);
+        let sent = Instant::now();
+        let (status, head, body) =
+            fleet_center::http_full(&addr, "GET", "/v1/fleet/members", &reader)?;
+        let took = sent.elapsed();
+        drain(&center.log, &mut lines);
+        assert!(
+            !lines.iter().any(|l| l.contains(SERVING)),
+            "edge the answer came while the center rebuilt:\n{lines:#?}"
+        );
+        assert_eq!(status, 503, "edge 503 during the rebuild: {head}\n{body}");
+        assert!(
+            head.lines()
+                .any(|l| l.eq_ignore_ascii_case("retry-after: 5")),
+            "edge with Retry-After: {head}"
+        );
+        let first = body.clone();
+        let problem: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            (problem["status"].as_u64(), problem["detail"].as_str()),
+            (Some(503), Some(REBUILDING)),
+            "edge a problem body naming the rebuild: {body}"
+        );
+        assert!(
+            logged(&center, &mut lines, SERVING, Duration::from_secs(300)),
+            "edge the center serves after the rebuild:\n{lines:#?}"
+        );
+        let rebuilt = lines.iter().position(|l| l.contains(REBUILT));
+        let serving = lines.iter().position(|l| l.contains(SERVING));
+        assert!(
+            rebuilt.is_some() && rebuilt < serving,
+            "edge it says it serves after the rebuild's end:\n{lines:#?}"
+        );
+        let (status, _, body) =
+            fleet_center::http_full(&addr, "GET", "/v1/fleet/members", &reader)?;
+        assert_eq!(
+            status, 200,
+            "edge then the request is answered: {body:.400}"
+        );
+        let report: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            report["members"].as_array().map(Vec::len),
+            Some(usize::try_from(MEMBERS)?),
+            "edge with every member the rebuild took: {body:.400}"
+        );
+        writeln!(
+            std::io::stderr(),
+            "rebuild-503 files={FILINGS} members={MEMBERS} answered_ms={}\nrebuild-503 sample: \
+             503 {first}\nrebuild-503 sample: {}",
+            took.as_millis(),
+            lines
+                .iter()
+                .find(|l| l.contains(ANSWERING))
+                .ok_or("the 503 line")?
+        )?;
+        Ok(())
+    }
+
+    /// SIGTERM while the center rebuilds at start: the handler is already
+    /// installed, so the center ends the rebuild between two files, says
+    /// so, and exits 0 without serving; the store file and the history then
+    /// verify clean, and the next start opens them and serves every member.
+    #[test]
+    fn success_a_stop_during_the_rebuild_at_start_exits_0_and_the_store_verifies()
+    -> Result<(), TestError> {
+        use std::io::Write as _;
+        const MEMBERS: u64 = 500;
+        const FILINGS: u64 = 120;
+        let dir = tempfile::tempdir()?;
+        let (mut center, _addr, mut lines) = rebuilding_center(dir.path(), MEMBERS, FILINGS)?;
+        center.terminate()?;
+        let status = center.wait_within(Duration::from_secs(60))?;
+        drain(&center.log, &mut lines);
+        assert_eq!(
+            status.code(),
+            Some(0),
+            "success the stop exits 0 through the handler:\n{lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("the stop ended the rebuild of the member list at start")),
+            "success it says the stop ended the rebuild:\n{lines:#?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains(REBUILT) || l.contains(SERVING)),
+            "success the rebuild did not end and the center did not serve:\n{lines:#?}"
+        );
+        let (code, out, err) = verify_at(
+            &dir.path().join("center.store"),
+            &dir.path().join("center.storekey"),
+            &[],
+        )?;
+        assert_eq!(
+            code,
+            Some(0),
+            "success the store verifies clean:\n{out}\n{err}"
+        );
+        for line in lines.iter().filter(|l| l.contains("stop")) {
+            writeln!(std::io::stderr(), "rebuild-stop sample: {line}")?;
+        }
+        let center = center_after_stop(dir.path())?;
+        let report = members_of(&center.addr)?;
+        assert_eq!(
+            report["members"].as_array().map(Vec::len),
+            Some(usize::try_from(MEMBERS)?),
+            "success the next start serves every member"
+        );
+        Ok(())
+    }
+
+    /// A center on a port of its own, of the store in `dir`, once it
+    /// serves.
+    fn center_after_stop(dir: &Path) -> Result<Center, TestError> {
+        let args = center_args(dir, &[])?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        Center::start_within(&args, Duration::from_secs(300))
+    }
+
+    /// The members answer of the center on `addr`.
+    fn members_of(addr: &str) -> Result<serde_json::Value, TestError> {
+        let (status, body) = http(
+            addr,
+            "GET",
+            "/v1/fleet/members",
+            &token("reader", sipnab::auth::SCOPE_INVENTORY),
+            b"",
+        )?;
+        if status != 200 {
+            return Err(format!("members answered {status}: {body:.400}").into());
+        }
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    /// A real member that pushes to a center that is rebuilding at start:
+    /// the center answers its push `503`, the member says so and keeps the
+    /// heartbeat in its spool, and once the center serves, the member
+    /// delivers it: the spooled file is gone, nothing went to the spool's
+    /// failed directory, and the center counts the member's heartbeats.
+    #[test]
+    fn success_a_member_keeps_its_push_through_the_rebuild_and_delivers_it_after()
+    -> Result<(), TestError> {
+        const MEMBERS: u64 = 1000;
+        const FILINGS: u64 = 240;
+        let dir = tempfile::tempdir()?;
+        let (center, addr, mut lines) = rebuilding_center(dir.path(), MEMBERS, FILINGS)?;
+        let member = a_member(dir.path(), "edge-m", &addr)?;
+        let waited = member
+            .srv
+            .wait_for_log("the center answered HTTP 503", Duration::from_secs(120));
+        let pending = sipnab::app::spool::pending(&member.spool)?;
+        drain(&center.log, &mut lines);
+        assert!(
+            waited.is_some(),
+            "success the member was answered 503 and said so:\n{lines:#?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains(SERVING)),
+            "success while the center rebuilt (if not, the store is too small for this \
+             host):\n{lines:#?}"
+        );
+        let first = pending
+            .first()
+            .ok_or("success a heartbeat kept in the spool")?
+            .clone();
+        assert!(
+            logged(&center, &mut lines, SERVING, Duration::from_secs(300)),
+            "success the center serves after the rebuild:\n{lines:#?}"
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let delivered = loop {
+            let heard = members_of(&addr)?["members"]
+                .as_array()
+                .and_then(|rows| rows.iter().find(|r| r["member"] == "edge-m").cloned());
+            let gone = !member.spool.join(&first).exists();
+            if (gone && heard.is_some()) || Instant::now() > deadline {
+                break (gone, heard);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert!(
+            delivered.0,
+            "success the heartbeat that waited left the spool"
+        );
+        let heard = delivered.1.ok_or("success the center has the member")?;
+        assert!(
+            heard["verified"]["heartbeats"].as_u64() >= Some(1),
+            "success and counts its heartbeats: {heard}"
+        );
+        let failed = std::fs::read_dir(member.spool.join("failed"))?.count();
+        assert_eq!(failed, 0, "success nothing was refused into failed/");
+        Ok(())
+    }
+
+    /// The members' own REST API key.
+    const MEMBER_KEY: &str = "fleet-history-e2e-member-key-0123456789abcdef";
+
+    /// A real capture run with the REST API that reports to `center` every
+    /// second as `name`, from its own spool in `dir`.
+    struct Member {
+        srv: server::ApiServer,
+        spool: PathBuf,
+    }
+
+    fn a_member(dir: &Path, name: &str, center: &str) -> Result<Member, TestError> {
+        let tok = private_file(
+            dir,
+            &format!("{name}.token"),
+            &token(name, sipnab::auth::SCOPE_FLEET_REPORT),
+        )?;
+        let spool = dir.join(format!("{name}.spool"));
+        let cfg = dir.join(format!("{name}.toml"));
+        std::fs::write(
+            &cfg,
+            format!(
+                "[fleet]\nreport_url = \"http://{center}\"\nreport_token_file = {:?}\n\
+                 spool_dir = {:?}\nheartbeat_secs = 1\n",
+                tok.to_str().ok_or("utf-8")?,
+                spool.to_str().ok_or("utf-8")?,
+            ),
+        )?;
+        let srv = server::ApiServer::spawn(&[
+            "--api-signing-key",
+            MEMBER_KEY,
+            "--node-name",
+            name,
+            "--config",
+            cfg.to_str().ok_or("utf-8")?,
+        ])?;
+        Ok(Member { srv, spool })
+    }
+
+    /// `len` characters that differ from row to row, so that the codec does
+    /// not remove them: hex digits from a generator seeded with `seed`.
+    fn varied(seed: u64, len: usize) -> String {
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut out = String::with_capacity(len + 16);
+        while out.len() < len {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            out.push_str(&format!("{state:016x}"));
+        }
+        out.truncate(len);
+        out
+    }
+
+    /// The bytes of the sealed files under `dir`.
+    fn sealed_bytes(dir: &Path) -> Result<u64, TestError> {
+        Ok(files_under(dir)?
+            .iter()
+            .filter(|(path, _)| path.extension().is_some_and(|e| e == "sealed"))
+            .map(|(_, bytes)| bytes.len() as u64)
+            .sum())
+    }
+
+    /// One pass of the real binary, timed: what it took and what it printed
+    /// go to the real stderr under `label`, for the how-to.
+    fn measured(
+        label: &str,
+        dir: &Path,
+        more: &[&str],
+        code: Option<i32>,
+    ) -> Result<String, TestError> {
+        use std::io::Write as _;
+        let started = Instant::now();
+        let store = dir.join("center.store");
+        let key = dir.join("center.storekey");
+        let mut args = vec![
+            "fleet",
+            "verify",
+            "--store",
+            store.to_str().ok_or("utf-8")?,
+            "--store-key-file",
+            key.to_str().ok_or("utf-8")?,
+        ];
+        args.extend_from_slice(more);
+        let (got, out, err) = fleet_center::sipnab_within(&args, Duration::from_secs(1800))?;
+        let took = started.elapsed();
+        writeln!(
+            std::io::stderr(),
+            "verify-measure {label} args={more:?} took={took:?} exit={got:?}\n\
+             verify-measure-stdout-begin\n{out}verify-measure-stdout-end\n\
+             verify-measure-stderr-begin\n{err}verify-measure-stderr-end"
+        )?;
+        assert_eq!(got, code, "edge the pass {label} ended as expected: {err}");
+        Ok(out)
+    }
+
+    /// A pass of the real binary over a store of the size of a fleet,
+    /// timed: 20 filings of 54,000 call records of about 1.2 kB, and one day
+    /// of heartbeats of 2,000 members, one filing a minute. Then one file
+    /// is cut in half, and the pass that refuses it is printed as lines and
+    /// as JSON: the how-to's sample outputs are these.
+    ///
+    /// It is a measurement and not a check, so it runs only when asked for
+    /// by name, in a release build (`cargo test --release --features full
+    /// --test fleet_history_test a_pass_of_the_binary_is_measured --
+    /// --ignored --nocapture`), and prints its figures.
+    #[test]
+    #[ignore = "a measurement: run it by name with --ignored in a release build"]
+    fn edge_a_pass_of_the_binary_is_measured_for_a_fleet() -> Result<(), TestError> {
+        use sipnab::app::fleet_calls::CallCounts;
+        use sipnab::app::fleet_center::{Cursor, MemberRecord};
+        use std::io::Write as _;
+        let dir = tempfile::tempdir()?;
+        let store = history(dir.path())?;
+        store_key_file(dir.path())?;
+        let day = chrono::DateTime::parse_from_rfc3339("2026-11-11T00:00:00Z")?
+            .with_timezone(&chrono::Utc);
+        let at = |ms: u64| -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+            Ok(day + chrono::TimeDelta::milliseconds(i64::try_from(ms)?))
+        };
+        for filing in 0..20_u64 {
+            let rows = (0..54_000_u64)
+                .map(|n| {
+                    let seq = filing * 54_000 + n + 1;
+                    let mut row = row_at(
+                        &format!("edge-{:04}", n % 2000),
+                        at(filing * 60_000 + n)?,
+                        seq,
+                    );
+                    row.call["from"] = serde_json::json!("sip:+12025550101@example.com");
+                    row.call["detail"] = serde_json::Value::String(varied(seq, 1000));
+                    Ok(row)
+                })
+                .collect::<Result<Vec<IntakeRecord>, TestError>>()?;
+            store.file(&rows)?;
+        }
+        for minute in 0..1440_u64 {
+            let rows = (0..2000_u64)
+                .map(|m| {
+                    let member = format!("edge-{m:04}");
+                    let received_at = at(minute * 60_000 + m)?;
+                    Ok(MemberRecord {
+                        received_at,
+                        peer: "192.0.2.10".to_string(),
+                        heartbeats: minute + 1,
+                        cursor: Cursor {
+                            stream: "s".to_string(),
+                            seq: minute + 1,
+                            sent_at: received_at,
+                        },
+                        heartbeat_secs: 60,
+                        inventory: serde_json::json!({
+                            "schema_version": 1,
+                            "node_name": member,
+                            "digest": varied(minute * 2000 + m, 240),
+                        }),
+                        call_records: minute + 1,
+                        calls: Some(CallCounts {
+                            selected: minute + 1,
+                            dropped_by_cap: 0,
+                            left_out: 0,
+                            spooled: 0,
+                        }),
+                        member,
+                    })
+                })
+                .collect::<Result<Vec<MemberRecord>, TestError>>()?;
+            store.file(&rows)?;
+        }
+        let history_dir = dir.path().join("center.store.parquet");
+        writeln!(
+            std::io::stderr(),
+            "verify-measure store calls_sealed_bytes={} members_sealed_bytes={}",
+            sealed_bytes(&history_dir.join("calls"))?,
+            sealed_bytes(&history_dir.join("members"))?
+        )?;
+        for round in ["round-0", "round-1", "round-2"] {
+            measured(round, dir.path(), &["--class", "calls"], Some(0))?;
+            measured(round, dir.path(), &["--class", "members"], Some(0))?;
+            measured(round, dir.path(), &[], Some(0))?;
+        }
+        let (file, bytes) = files_under(&history_dir.join("calls"))?
+            .into_iter()
+            .next()
+            .ok_or("a file of call records")?;
+        std::fs::write(&file, bytes.get(..bytes.len() / 2).ok_or("half the file")?)?;
+        let lines = measured("refused", dir.path(), &[], Some(1))?;
+        assert!(
+            lines.starts_with("refused: calls/date=2026-11-11/"),
+            "edge the cut file is the refused one: {lines}"
+        );
+        measured("refused-json", dir.path(), &["--json"], Some(1))?;
         Ok(())
     }
 }

@@ -439,7 +439,14 @@ merged pull request proves the same tree:
 - every check that `main` requires concluded `success` on the head.
 - every workflow run on the head succeeded: the newest of each name, with
   scheduled runs set aside. So the macOS leg, which `CI success` leaves out,
-  still gates the release.
+  still gates the release. The check leaves out two skipped runs, here and on
+  the tagged commit: the `pull_request` run of
+  `.github/workflows/pr-closed.yml`, which skips its only job when a pull
+  request merges, and the `workflow_run` run of
+  `.github/workflows/rerun-not-acquired.yml`, which skips its only job when
+  the CI run it watches succeeded. The script reads the workflow file from
+  GitHub's run record, so a workflow of another file with the same name still
+  counts. A canceled, failed or pending run of those workflows counts too.
 - no run on the tagged commit itself concluded `failure`, `timed_out`,
   `action_required` or `startup_failure`.
 
@@ -1224,7 +1231,8 @@ maintainer writes.
 - **Public claims match the code.** Anything the change says in the README,
   the site or the docs is true of the code as merged.
 - **A changelog entry.** A user-visible change adds an entry under
-  `## [Unreleased]` in [CHANGELOG.md](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md).
+  `## [Unreleased]` in [CHANGELOG.md](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md), in
+  [the format of an entry](https://github.com/NormB/sipnab/blob/main/docs/internals/build-ci-release.md#the-format-of-an-entry).
 - **The contributor agreement.** Everyone who committed to the branch has
   signed the [CLA](#contributor-license-agreement).
 

@@ -160,6 +160,59 @@ fi
 # and a refusal is indistinguishable from a broken site to anything that only
 # reads a status code.
 UA='sipnab-release-check/1.0 (+https://github.com/NormB/sipnab)'
-body=$(curl -sS --max-time 20 --user-agent "$UA" "$URL" 2>/dev/null || true)
-status=$(curl -sS --max-time 20 --user-agent "$UA" -o /dev/null -w '%{http_code}' "$URL" 2>/dev/null || printf '000')
-printf '%s\n%s' "$status" "$body" | classify "$VERSION"
+
+# ONE request: the status, the headers and the body of the same response. Two
+# requests (one for the body, one for the status) could be answered
+# differently, and they doubled what one address sent the edge.
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+status=$(curl -sS --max-time 20 --user-agent "$UA" -D "$WORK/head" -o "$WORK/body" \
+	-w '%{http_code}' "$URL" 2>/dev/null) || true
+case "$status" in
+[0-9][0-9][0-9]) ;;
+*) status=000 ;;
+esac
+[ -f "$WORK/body" ] || : > "$WORK/body"
+
+# The last value of one response header, or "-". Names are matched without
+# regard to case; of several header blocks (a 103 before the answer) the
+# last one's value stands.
+header() {
+	[ -f "$WORK/head" ] || {
+		printf -- '-'
+		return
+	}
+	tr -d '\r' < "$WORK/head" | awk -v name="$1" '
+		BEGIN { value = "-" }
+		/^HTTP\// { value = "-" }
+		{
+			colon = index($0, ":")
+			if (colon > 1 && tolower(substr($0, 1, colon - 1)) == name) {
+				value = substr($0, colon + 1)
+				sub(/^ +/, "", value)
+			}
+		}
+		END { printf "%s", value }'
+}
+
+# What the edge answered, before any verdict. On 2026-11-14 the CDN answered
+# 403 to the release check from a hosted runner and the log held the status
+# alone: which rule refused it could not be read from the run
+# (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER). `cf-mitigated` names a challenge,
+# `cf-ray` is what the CDN's own log is searched by, and the start of a
+# refused answer's body carries the error code.
+printf 'edge: status=%s server=%s cf-ray=%s cf-mitigated=%s content-type=%s\n' \
+	"$status" "$(header server)" "$(header cf-ray)" "$(header cf-mitigated)" "$(header content-type)"
+case "$status" in
+2?? | 000) ;;
+*)
+	if [ -s "$WORK/body" ]; then
+		printf 'edge: first 200 bytes: %s\n' "$(head -c 200 "$WORK/body" | LC_ALL=C tr -c '[:print:]' ' ')"
+	fi
+	;;
+esac
+
+{
+	printf '%s\n' "$status"
+	cat "$WORK/body"
+} | classify "$VERSION"

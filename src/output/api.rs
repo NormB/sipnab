@@ -11510,25 +11510,42 @@ mod tests {
     /// place.
     #[test]
     fn relay_rest_stats_with_dead_engines_cost_one_timeout() -> Result<(), TestError> {
-        use crate::test_engines::{FakeEngine, TIMEOUT, client, one_timeout, routing};
+        use crate::test_engines::{
+            FakeEngine, TIMEOUT, all_answered, client, routing, waited_a_timeout,
+        };
+        let stats =
+            |fakes: &[FakeEngine]| -> Result<(serde_json::Value, std::time::Duration), TestError> {
+                let r = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
+                let rq = RelayRestConfig {
+                    relay: Some(client(r.default_engine(), TIMEOUT)),
+                    permit: Some(live_permit()?),
+                    polled: None,
+                    routing: Some(Arc::new(r)),
+                    holdings_max: None,
+                };
+                let started = std::time::Instant::now();
+                let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
+                Ok((v, started.elapsed()))
+            };
+        // Asked at once, not in turn: three engines that answer only when
+        // all three hold a request. No wall time is read for it.
+        let asked = FakeEngine::together_beside_a_live_one(4, 0)?;
+        let (v, _) = stats(&asked)?;
+        assert!(
+            all_answered(&asked),
+            "the engines were asked one after another: {v}"
+        );
         let fakes = [
             FakeEngine::live()?,
             FakeEngine::dead()?,
             FakeEngine::dead()?,
             FakeEngine::dead()?,
         ];
-        let r = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
-        let rq = RelayRestConfig {
-            relay: Some(client(r.default_engine(), TIMEOUT)),
-            permit: Some(live_permit()?),
-            polled: None,
-            routing: Some(Arc::new(r)),
-            holdings_max: None,
-        };
-        let started = std::time::Instant::now();
-        let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
-        let took = started.elapsed();
-        assert!(one_timeout(took), "one timeout, not three: {took:?}: {v}");
+        let (v, took) = stats(&fakes)?;
+        assert!(
+            waited_a_timeout(took),
+            "the dead engines were waited for: {took:?}: {v}"
+        );
         let engines = v["engines"].as_array().ok_or(format!("engines: {v}"))?;
         let got: Vec<(Value, Value)> = engines
             .iter()
