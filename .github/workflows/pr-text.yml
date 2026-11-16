@@ -177,6 +177,64 @@ jobs:
             exit 1
           fi
 
+  dco:
+    # Every commit carries a DCO sign-off (CONTRIBUTING.md, "Signing off
+    # commits"). scripts/check-dco.py holds the rule: a
+    # `Signed-off-by:` line naming the author's email, which must be a GitHub
+    # noreply address, except for a verified
+    # commit authored and committed by the repository owner, or a verified
+    # commit by a GitHub Bot account. Branch protection does not require this
+    # check yet; the repository owner decides when it replaces `license/cla`.
+    # Like the `commits` job, it runs main's script and reads the pull
+    # request's commits as data. GitHub's commit API is asked once per commit,
+    # because the author's account type and the signature verdict are not in
+    # git; that endpoint needs only `contents: read`.
+    name: DCO
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it.
+          persist-credentials: false
+          # The whole history, so base..head excludes everything main has.
+          fetch-depth: 0
+
+      - name: Check that every commit is signed off
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          dir="$RUNNER_TEMP/dco"
+          mkdir -p "$dir"
+          for v in "$BASE_SHA" "$HEAD_SHA"; do
+            if ! printf '%s\n' "$v" | grep -qxE '[0-9a-f]{40}'; then
+              echo "::error::The event carries no usable commit SHA, so nothing was checked."
+              exit 1
+            fi
+          done
+          if ! printf '%s\n' "$PR_NUMBER" | grep -qxE '[0-9]+'; then
+            echo "::error::The event carries no usable pull request number, so nothing was checked."
+            exit 1
+          fi
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
+          if [ "$(git rev-parse --verify 'refs/remotes/pr/head^{commit}')" != "$HEAD_SHA" ]; then
+            echo "::error::The pull request's head is no longer the commit this run was started for; the run for the newer push checks it."
+            exit 1
+          fi
+          # Not a process substitution: a failed rev-list must end the step.
+          git rev-list --reverse "$BASE_SHA..$HEAD_SHA" > "$dir/shas"
+          : > "$dir/commits.json"
+          while IFS= read -r sha; do
+            gh api "repos/$REPO/commits/$sha" --jq '[.]' >> "$dir/commits.json"
+          done < "$dir/shas"
+          python3 scripts/check-dco.py --owner "$OWNER" "$dir/commits.json"
+
   description:
     name: PR description names no private identity (advisory)
     # Same runner and bound as the `commits` job.
