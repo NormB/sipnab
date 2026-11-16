@@ -1901,7 +1901,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // fleet.md).
     // 2706 -> 2707 (HTTPS-BODY-SHORT-READ-ACCEPTED): docs/errors.md's entry
     // for a --vcon-fetch answer cut short links the list of its forms.
-    const EXPECTED_WIKI_LINKS: usize = 2707;
+    // 2707 -> 2709 (G729-INSTALL-DOWNLOADS-AS-ROOT): docs/cli-reference.md's
+    // `--user` of `sipnab g729 install` and docs/errors.md's entry for a failed
+    // download link "Install as root" in g729.md; least-privilege.md's link to
+    // g729.md became a link to that section (no change).
+    const EXPECTED_WIKI_LINKS: usize = 2709;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
