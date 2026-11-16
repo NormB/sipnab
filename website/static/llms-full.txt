@@ -12914,6 +12914,10 @@ demos/mcp-stdio.sh tests/pcap-samples/sip-problem-call.pcap \
 }
 ```
 
+The helper calls the tool only after the capture has finished loading. It asks
+`capture_status` at most `MCP_MAX_POLLS` times (400 by default), then stops
+with `mcp-stdio: <capture> never finished loading`.
+
 A verdict, not a packet list:
 
 - signaling rather than media,
