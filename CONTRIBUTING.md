@@ -1112,6 +1112,37 @@ To update one:
 - a script's recorded version is not the one the script itself contains,
 - a new minified script under `website/static/js/` has no row yet.
 
+### Updating code adapted from other projects
+
+One source file adapts another project's code, and sipnab compiles it. It
+keeps that project's license and copyright notice in its header,
+and has a row in the "Adapted code" table of
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+| File | What it is | Where it came from |
+|---|---|---|
+| [`src/tui/input_parse.rs`](src/tui/input_parse.rs) | crossterm's Unix input parser, which turns the bytes the TUI reads from its terminal into key, mouse and paste events | `src/event/sys/unix/parse.rs` and the `Parser` of `src/event/source/unix/mio.rs` in [crossterm](https://github.com/crossterm-rs/crossterm) 0.29.0 |
+
+When `Cargo.lock` moves crossterm to a new version:
+
+- Compare the two crossterm files of the new version with the old ones, and
+  carry each change into `src/tui/input_parse.rs`.
+- Record crossterm's events again, then paste the table the run prints over
+  `CROSSTERM_0_29` in `src/tui/input_parse.rs`:
+
+  ```bash
+  cargo test --features tui --lib record_crossterm_events -- --ignored --nocapture
+  ```
+
+- Change the version and commit in the file's header and in `ADAPTED` in
+  [`scripts/build-third-party-notices.py`](scripts/build-third-party-notices.py),
+  then regenerate the notices.
+
+`every_adapted_file_keeps_its_origin_and_license` in
+[`tests/docs_drift_test.rs`](tests/docs_drift_test.rs) fails when a file
+under `src/` says `Adapted from` in its header and has no row, or when its
+header does not carry the row's license notice, version and commit.
+
 ## Commit messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) format:

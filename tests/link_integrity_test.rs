@@ -2060,7 +2060,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // links docs/fleet.md#keep-call-history-at-the-center.
     // 150 -> 151 (changelog outline format): CONTRIBUTING.md's changelog
     // item links docs/internals/build-ci-release.md#the-format-of-an-entry.
-    const EXPECTED_COMMUNITY_LINKS: usize = 151;
+    // 151 -> 152 (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS): the count
+    // the test gave after CONTRIBUTING.md's "Updating code adapted from other projects" was added.
+    const EXPECTED_COMMUNITY_LINKS: usize = 152;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

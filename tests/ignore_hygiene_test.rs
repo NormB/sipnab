@@ -37,6 +37,15 @@ type TestError = Box<dyn std::error::Error>;
 /// tests it excuses.
 const MANUAL_ONLY: &[(&str, &str, &str)] = &[
     (
+        "src/tui/terminal_input.rs",
+        "record_crossterm_events",
+        "a recorder and not a check: it prints the events crossterm's own reader \
+         gives for the input corpus, the table input_parse::CROSSTERM_0_29 holds, \
+         which changes only when crossterm or the corpus does. Run by hand on \
+         Linux with `cargo test --features tui --lib record_crossterm_events -- \
+         --ignored --nocapture`, as CONTRIBUTING.md says.",
+    ),
+    (
         "src/capture/fanout.rs",
         "fanout_applies_to_an_open_pcap_handle",
         "opens a live AF_PACKET socket, which needs CAP_NET_RAW. The GitHub-hosted \
