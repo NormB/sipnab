@@ -2500,7 +2500,7 @@ the center prints.
 |---|---|
 | `ok` | It answered with an inventory. |
 | `refused` | It answered with an HTTP status other than 200, such as `401` for a wrong, expired or narrower token, or `404` for a build without the inventory. |
-| `unreachable` | No answer: no connection, a timeout, a TLS failure, a token file sipnab would not read, or an answer that is not JSON. |
+| `unreachable` | No answer: no connection, a timeout, a TLS failure, a token file sipnab would not read, an answer cut short (the reason names the bytes read, as `the answer ended after 9 of its 40 bytes`), or an answer that is not JSON. |
 | `incompatible` | Its inventory has a `schema_version` newer than this build reads, or none. Upgrade the controller's sipnab. |
 
 **Findings across the fleet:**

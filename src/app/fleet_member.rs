@@ -971,7 +971,7 @@ fn post(
     super::https_client::exchange(url, DELIVERY_TIMEOUT, tls, &request, |reader| {
         let head = super::https_client::read_head(reader, MAX_ANSWER_BYTES, "the center's answer")?;
         let status = super::https_client::status_of(&head)?;
-        let (bytes, _) = super::https_client::read_body(reader, &head, MAX_ANSWER_BYTES);
+        let (bytes, _) = super::https_client::read_quoted_body(reader, &head, MAX_ANSWER_BYTES);
         let text: String = String::from_utf8_lossy(&bytes).chars().take(200).collect();
         Ok((status, text))
     })

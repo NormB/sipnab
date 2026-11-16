@@ -28401,7 +28401,7 @@ The credential line names header `{name}`. The forwarder writes this header itse
 
 ### `{url}: {problem}; nothing was written`
 
-The store's answer from `{url}` was incomplete. `{problem}` says how. sipnab wrote nothing.
+The store's answer from `{url}` was incomplete. `{problem}` says how, in the forms listed under [`{url}: {problem}, so the file is not whole`](#url-problem-so-the-file-is-not-whole): it names the bytes read and, when the answer declared it, the length. sipnab wrote nothing.
 
 **What to do:** Retry, and check the store and the network path.
 
@@ -28886,7 +28886,14 @@ The file a recording names is larger than the limit. `{}` is the limit and `{max
 
 ### `{url}: {problem}, so the file is not whole`
 
-The server that holds a recording's file closed the connection before it sent the length it declared. `{problem}` gives the two lengths. sipnab writes nothing for the recording.
+The file a recording names did not arrive whole. `{problem}` is one of these:
+
+- `the answer ended after {got} of its {n} bytes`: the server closed the connection before it sent the length it declared; a read error, such as a timeout, follows after a colon.
+- `the chunked answer ended after {got} bytes, before its last chunk`: a chunked answer stopped before its last chunk.
+- `a chunk of the answer ended after {read} of its {size} bytes`: one chunk stopped before its size.
+- `reading the answer's body failed after {got} bytes: {e}`: an answer without a length failed to read, for example on a timeout.
+
+sipnab writes nothing for the recording.
 
 **What to do:** Run the command again. If it recurs, check the server.
 
@@ -43837,7 +43844,7 @@ the center prints.
 |---|---|
 | `ok` | It answered with an inventory. |
 | `refused` | It answered with an HTTP status other than 200, such as `401` for a wrong, expired or narrower token, or `404` for a build without the inventory. |
-| `unreachable` | No answer: no connection, a timeout, a TLS failure, a token file sipnab would not read, or an answer that is not JSON. |
+| `unreachable` | No answer: no connection, a timeout, a TLS failure, a token file sipnab would not read, an answer cut short (the reason names the bytes read, as `the answer ended after 9 of its 40 bytes`), or an answer that is not JSON. |
 | `incompatible` | Its inventory has a `schema_version` newer than this build reads, or none. Upgrade the controller's sipnab. |
 
 **Findings across the fleet:**

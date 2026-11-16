@@ -10,6 +10,17 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **sipnab refuses an HTTPS answer cut short instead of using it.**
+  - Was: A body that stopped early, on a timeout, a reset or a close, counted as the whole answer.
+  - Effect: `sipnab fleet`, `--vcon-fetch`, `--vcon-audio-fetch`, `[[vcon.enrich]]` services, SCITT receipts and x5u chains refuse it, naming the bytes read.
+  - Effect: A `sipnab fleet` row reads `the answer ended after 9 of its 40 bytes` where it read `the answer is not JSON`.
+  - Docs: [Errors: so the file is not whole](docs/errors.md#url-problem-so-the-file-is-not-whole).
+- **A signal no longer drops a live RTP datagram or an rtpengine request.**
+  - Was: A signal such as `SIGHUP` during a send counted the datagram as unsent, or failed the relay request with `sending <command> to <relay>`.
+  - Effect: sipnab sends again within the same wait: 20 ms for live RTP, the control timeout for rtpengine.
+
 ### Security
 
 - **A capture run started as root reads no byte of its `-I` files as root.**
