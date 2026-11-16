@@ -13,6 +13,7 @@
 //! then performs the side-effectful part: channel creation, capture start,
 //! readiness hand-shake, chroot, and privilege drop.
 
+use crate::capture::input_set::NamedSet;
 use crate::capture::{self, CaptureConfig, CaptureSource};
 use crate::cli::{self, Cli};
 use crate::config::{Config, LoadedConfig};
@@ -213,15 +214,13 @@ pub struct RunPlan {
     pub output_opts: OutputOptions,
     /// `--on-*` event execution engine.
     pub event_exec: EventExecEngine,
-    /// Every capture file the run will read, resolved and in read order.
+    /// The `-I` set, named and not yet judged; `None` for any other source.
     ///
-    /// `source` is MOVED into `launch`, so anything downstream that needs the
-    /// whole set has to receive it separately — and several things do. Features
-    /// that reached for `cli.primary_input()` got the first `-I` ARGUMENT,
-    /// which after chronological reordering is often not even the first file
-    /// read, and for `-I /pcaps` is a directory. Empty for live and HEP
-    /// sources, which read no files (#48).
-    pub input_files: Vec<std::path::PathBuf>,
+    /// For a file run `source` names the same files, unjudged. The run
+    /// judges the set just before it starts reading it
+    /// ([`resolve_planned_inputs`]). The judged set reaches the rest of the
+    /// run as [`Launched::input_files`].
+    pub inputs: Option<NamedSet>,
     /// Top-level run mode (TUI vs batch vs multi-core file).
     pub mode: RunMode,
     /// Parsed `--metrics` bind address (TUI path only; batch handles its
@@ -625,7 +624,8 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     // Capture source precedence: -I file > -d device > config device >
     // --hep-listen > auto-detect (deferred to launch()).
-    let source = compose_hep_with_live(cli, config, plan_primary_source(cli, config)?)?;
+    let (primary, inputs) = plan_primary_source(cli, config)?;
+    let source = compose_hep_with_live(cli, config, primary)?;
 
     // The last silent `-L` precedence left in the chain, said out loud.
     if let Some(msg) = hep_listen_ignored_warning(cli, source.as_ref()) {
@@ -688,7 +688,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     let mode = select_run_mode(cli);
     #[cfg(feature = "vcon")]
-    warn_live_rtp(&vcon_rules, &mode, source.as_ref());
+    warn_live_rtp(&vcon_rules, &mode);
     refuse_by_mode(cli, config, &mode)?;
 
     // Immediate mode picks the kernel ring format, so it can only be answered
@@ -696,34 +696,26 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // `build_capture_config`, which runs before the mode is decided.
     capture_config.immediate_mode = immediate_mode_for(&mode);
 
-    // Derived from `source` before it moves, so the two cannot disagree about
-    // which files the run reads. Re-resolving here would open every file a
-    // second time and give the two answers a chance to differ.
-    let input_files: Vec<std::path::PathBuf> = match source {
-        Some(CaptureSource::File { ref paths }) => paths.clone(),
-        _ => Vec::new(),
-    };
-
     // An unknown MCP tool or bundle name refuses the run here, in every
     // build, rather than when the MCP server starts.
     mcp_tool_selection(cli, config)?;
 
+    // A file set is counted once it is judged (`resolve_planned_inputs`): an
+    // archive holds more captures than its one name.
     let max_capture_sources = cli.max_capture_sources(config);
-    let hep_senders = if cli.hep_listen(config).is_some() {
-        cli.tracked_peer_capacity(config)
-    } else {
-        0
-    };
-    let inputs = input_files
-        .len()
-        .max(usize::from(cli.capture_args.device.is_some()));
-    if let Some(msg) = capture_source_capacity_refusal(max_capture_sources, inputs, hep_senders) {
+    if inputs.is_none()
+        && let Some(msg) = capture_source_capacity_refusal(
+            max_capture_sources,
+            usize::from(cli.capture_args.device.is_some()),
+            hep_sender_capacity(cli, config),
+        )
+    {
         return Err(PlanError::arg(msg));
     }
 
     Ok(RunPlan {
         source,
-        input_files,
+        inputs,
         capture_config,
         portrange,
         policy: CapturePolicy {
@@ -1158,10 +1150,23 @@ fn refuse_conflicting_sources(cli: &Cli, config: &Config) -> Result<(), PlanErro
 ///
 /// A `PlanError` from resolving `-I` (exit code 1), an output that names an
 /// input, an unusable uprobe target, or a malformed HEP listener setting.
-fn plan_primary_source(cli: &Cli, config: &Config) -> Result<Option<CaptureSource>, PlanError> {
+fn plan_primary_source(
+    cli: &Cli,
+    config: &Config,
+) -> Result<(Option<CaptureSource>, Option<NamedSet>), PlanError> {
     if cli.has_input() {
-        return plan_file_source(cli).map(Some);
+        let (source, named) = plan_file_source(cli, config)?;
+        return Ok((Some(source), Some(named)));
     }
+    plan_other_source(cli, config).map(|source| (source, None))
+}
+
+/// [`plan_primary_source`] for a run with no `-I`.
+///
+/// # Errors
+///
+/// As [`plan_primary_source`].
+fn plan_other_source(cli: &Cli, config: &Config) -> Result<Option<CaptureSource>, PlanError> {
     if let Some(device) = cli
         .capture_args
         .device
@@ -1189,70 +1194,39 @@ fn plan_primary_source(cli: &Cli, config: &Config) -> Result<Option<CaptureSourc
     Ok(None)
 }
 
-/// The `-I` source: every file the inputs resolve to, in capture order, after
-/// refusing an output that names one of them.
+/// The `-I` source as `plan` leaves it: every file the inputs name, opened
+/// when the run will judge them after confining itself, after refusing an
+/// output that names one of them. No file's content is read here; the run
+/// judges the set with [`resolve_planned_inputs`].
 ///
 /// # Errors
 ///
-/// Exit code 1 when `-I` does not resolve; exit code 2 when `-O` or
-/// `--vcon-out` names an input.
-fn plan_file_source(cli: &Cli) -> Result<CaptureSource, PlanError> {
-    // Expand directories, globs and repeated -I into the exact files to
-    // read, ordered by when their packets were captured. Resolution
-    // happens here rather than in the reader so a bad path fails before
-    // any thread starts and the operator sees the count they are about to
-    // analyze.
-    let resolved = match crate::capture::input_set::resolve(
+/// Exit code 1 when `-I` names nothing or a pattern is malformed; exit code 2
+/// when `-O` or `--vcon-out` names an input, or the set does not fit under
+/// the open-file limit.
+fn plan_file_source(cli: &Cli, config: &Config) -> Result<(CaptureSource, NamedSet), PlanError> {
+    // Expand directories, globs and repeated -I into the files they name.
+    // Naming happens here rather than in the reader so a bad path fails
+    // before any thread starts. Reading what the files hold waits for the
+    // run's confinement: see `resolve_planned_inputs`.
+    let named = crate::capture::input_set::name_candidates(
         &cli.capture_args.input,
         &cli.input_resolve_options(),
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            // Every file skipped: `--report` still prints the vCon
-            // containers among them, each with its reason, before the run
-            // fails as it does without `--report`.
-            if e.is::<crate::capture::input_set::NoReadableCaptures>() {
-                let report = super::batch::unread_input_report(cli);
-                if !report.is_empty() {
-                    super::batch::write_stdout(&report);
-                }
-            }
-            return Err(PlanError {
-                exit_code: 1,
-                message: format!("-I/--input: {e:#}"),
-            });
-        }
-    };
-    if resolved.len() > 1 {
-        tracing::info!(
-            "Reading {} capture files in timestamp order (first: '{}')",
-            resolved.len(),
-            resolved[0].name()
-        );
-    }
-    let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(|r| r.path).collect();
-
-    // `--cores` shards captured frames across workers by host pair, and its
-    // readers open captures with libpcap. A stored vCon container holds no
-    // frames, so a set holding one would lose it. Refused before anything is
-    // read, rather than half-read.
-    if cli.limits_args.cores > 1
-        && let Some(container) = paths
-            .iter()
-            .find(|p| crate::capture::vcon_input::is_container_file(p))
-    {
-        return Err(PlanError::arg(format!(
-            "--cores reads capture files in parallel and cannot read the stored vCon \
-             container '{}'. Drop --cores: a vCon is read on one core.",
-            crate::capture::archive::source_name(container)
-        )));
-    }
+    )
+    .map_err(|e| PlanError {
+        exit_code: 1,
+        message: format!("-I/--input: {e:#}"),
+    })?;
+    let paths = named
+        .paths()
+        .map(std::path::Path::to_path_buf)
+        .collect::<Vec<_>>();
 
     // Precondition, not a post-hoc error: an output that names an input is
     // refused here, before any writer exists. `-O` opens with truncation,
     // so a check made after the open has already destroyed the capture —
     // and a capture is routinely the only copy of an incident. Checked
-    // against the whole resolved SET and the directories `-I` named, since
+    // against the whole named SET and the directories `-I` named, since
     // `-I` takes a directory or a glob.
     let protected = crate::capture::output_guard::ProtectedInputs::new(
         &cli.capture_args.input,
@@ -1275,7 +1249,342 @@ fn plan_file_source(cli: &Cli) -> Result<CaptureSource, PlanError> {
             .map_err(PlanError::arg)?;
     }
 
-    Ok(CaptureSource::File { paths })
+    // A run that confines itself before it reads its set opens every file
+    // now, while it can (`opens_set_up_front`).
+    let open_now = opens_inputs_up_front(cli, config);
+    if open_now {
+        fit_set_under_open_file_limit(named.len())?;
+    }
+    Ok((
+        CaptureSource::File { paths },
+        NamedSet::new(named, open_now),
+    ))
+}
+
+/// Judge the `-I` set `plan` named (`plan_file_source`): sniff, unwrap and
+/// probe each file, by path or through the descriptor it was opened with,
+/// and order the captures by first packet. Prints how many files the run
+/// reads, and ends the archive password prompts.
+///
+/// # Errors
+///
+/// Exit code 1 when the set does not resolve, as `-I/--input: <why>`; exit
+/// code 2 when the resolved set needs more capture sources than
+/// `max_capture_sources`, or does not fit under the open-file limit.
+///
+/// # Side effects
+///
+/// Reads every file of the set, writes the archive members it unwraps to the
+/// temporary directory, logs, and prints the `--report` vCon rows when no
+/// file resolved.
+pub fn resolve_planned_inputs(
+    cli: &Cli,
+    config: &Config,
+    named: NamedSet,
+) -> Result<crate::capture::input_set::OpenedSet, PlanError> {
+    let opened = named.is_opened();
+    // A drop user that cannot write the temporary directory cannot unpack:
+    // the set is refused at its first archive, before anything is unpacked.
+    let tmpdir_refusal =
+        this_runs_tmpdir_refusal(effective_chroot(cli, config).map(std::path::Path::new));
+    let resolved = named.resolve(&crate::capture::input_set::ResolveOptions {
+        refuse_unwrap: tmpdir_refusal.is_some(),
+        ..cli.input_resolve_options()
+    });
+    // From here on nothing waits on the terminal for an archive password.
+    end_archive_prompts();
+    let set = match resolved {
+        Ok(set) => set,
+        Err(e) => {
+            if let (Some(refusal), Some(refused)) = (
+                &tmpdir_refusal,
+                e.downcast_ref::<crate::capture::input_set::UnwrapRefused>(),
+            ) {
+                return Err(refusal.at(&refused.path));
+            }
+            // Every file skipped: `--report` still prints the vCon
+            // containers among them, each with its reason, before the run
+            // fails as it does without `--report`.
+            if e.is::<crate::capture::input_set::NoReadableCaptures>() {
+                let report = super::batch::unread_input_report(cli);
+                if !report.is_empty() {
+                    super::batch::write_stdout(&report);
+                }
+            }
+            return Err(PlanError {
+                exit_code: 1,
+                message: format!("-I/--input: {e:#}"),
+            });
+        }
+    };
+    if let Some(line) = reading_count_line(&set.inputs) {
+        tracing::info!("{line}");
+    }
+    warn_decrypted_outputs(cli, &set.paths(), |p| {
+        crate::capture::archive::is_decrypted_member(p)
+    });
+    if let Some(msg) = capture_source_capacity_refusal(
+        cli.max_capture_sources(config),
+        set.inputs.len(),
+        hep_sender_capacity(cli, config),
+    ) {
+        return Err(PlanError::arg(msg));
+    }
+    if opened {
+        fit_set_under_open_file_limit(set.inputs.len())?;
+    }
+    Ok(set)
+}
+
+/// Warn, once per output, that `-O` and `--vcon-out` receive data decrypted
+/// from a password-protected archive, when a judged path (`paths`) is such a
+/// member (`decrypted`). Which members were decrypted is known only once the
+/// set is judged, so `plan`'s check of the outputs cannot say it.
+fn warn_decrypted_outputs(
+    cli: &Cli,
+    paths: &[std::path::PathBuf],
+    decrypted: impl Fn(&std::path::Path) -> bool,
+) {
+    if !paths.iter().any(|p| decrypted(p)) {
+        return;
+    }
+    for (flag, out) in decrypted_output_targets(cli) {
+        crate::capture::archive::warn_decrypted_export(flag, out);
+    }
+}
+
+/// The outputs that write captured data from the `-I` set, each with the flag
+/// that names it: `-O/--output` and `--vcon-out`. Pure.
+fn decrypted_output_targets(cli: &Cli) -> Vec<(&'static str, &std::path::Path)> {
+    let mut targets = Vec::new();
+    if let Some(ref out) = cli.capture_args.output {
+        targets.push(("-O/--output", std::path::Path::new(out.as_str())));
+    }
+    if let Some(ref out) = cli.output_args.vcon_out {
+        targets.push(("--vcon-out", out.as_path()));
+    }
+    targets
+}
+
+/// Whether a run confines itself (the privileged half: secrets, keylog,
+/// chroot, privilege drop) before it judges its `-I` set and starts its
+/// reader: every file run (`file_run`). A `--chroot` run included: the
+/// members it unwraps are written, read and removed by path inside the new
+/// root, under the temporary directory seen there. Pure.
+fn judges_inputs_after_drop(file_run: bool) -> bool {
+    file_run
+}
+
+/// The refusal a run that dropped to `dropped_to` gives at the first archive
+/// or compressed capture of its set, before it unpacks anything, when that
+/// user cannot create files in `tmpdir` (`writable`). `None` for a run that
+/// did not drop, or whose drop user can. Pure.
+fn unwrap_tmpdir_refusal(
+    dropped_to: Option<&str>,
+    tmpdir: &std::path::Path,
+    writable: bool,
+    chroot: Option<&std::path::Path>,
+) -> Option<TmpdirRefusal> {
+    let user = dropped_to?;
+    (!writable).then(|| TmpdirRefusal {
+        user: user.to_string(),
+        tmpdir: tmpdir.to_path_buf(),
+        chroot: chroot.map(std::path::Path::to_path_buf),
+    })
+}
+
+/// A drop user that cannot create files in the temporary directory
+/// ([`unwrap_tmpdir_refusal`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TmpdirRefusal {
+    /// The user the run dropped to.
+    user: String,
+    /// The directory archive members are unpacked into, as the run sees it.
+    tmpdir: std::path::PathBuf,
+    /// The run's `--chroot` directory, when it chrooted: `tmpdir` is then a
+    /// path inside it.
+    chroot: Option<std::path::PathBuf>,
+}
+
+impl TmpdirRefusal {
+    /// The refusal of the run at `input`, the first file that needed
+    /// unpacking: exit 1, naming the file, the directory (and the chroot it
+    /// is inside), the user and both ways out.
+    fn at(&self, input: &std::path::Path) -> PlanError {
+        let user = &self.user;
+        if let Some(dir) = &self.chroot {
+            let dir = dir.display();
+            return PlanError {
+                exit_code: 1,
+                message: format!(
+                    "-I/--input: cannot unpack '{}': user '{user}' cannot create files in the \
+                     temporary directory '{}' inside --chroot '{dir}', where sipnab unpacks an \
+                     archive or a compressed capture after it drops root. Create '{dir}/tmp' \
+                     writable by that user (mode 1777), or set TMPDIR to such a directory inside \
+                     '{dir}'",
+                    input.display(),
+                    self.tmpdir.display()
+                ),
+            };
+        }
+        PlanError {
+            exit_code: 1,
+            message: format!(
+                "-I/--input: cannot unpack '{}': user '{user}' cannot create files in the \
+                 temporary directory '{}', where sipnab unpacks an archive or a compressed \
+                 capture after it drops root. Set TMPDIR to a directory that user can write \
+                 (TMPDIR=/tmp), or pass --user with a user who can write it",
+                input.display(),
+                self.tmpdir.display()
+            ),
+        }
+    }
+}
+
+/// Whether this process may create files in `dir`: write and search
+/// permission for its effective user, by `faccessat(2)`, which creates
+/// nothing. After the drop that is the user dropped to. The check the
+/// output refusals make ([`capture::writer::effective_access`]).
+fn can_create_files_in(dir: &std::path::Path) -> bool {
+    capture::writer::effective_access(dir, capture::writer::AccessWanted::WriteAndSearch).is_ok()
+}
+
+/// The refusal this process gives before it unpacks anything, when it
+/// dropped privileges to a user that cannot write the temporary directory.
+fn this_runs_tmpdir_refusal(chroot: Option<&std::path::Path>) -> Option<TmpdirRefusal> {
+    let tmpdir = std::env::temp_dir();
+    unwrap_tmpdir_refusal(
+        privilege::dropped_to(),
+        &tmpdir,
+        can_create_files_in(&tmpdir),
+        chroot,
+    )
+}
+
+/// A judged `-I` set as the single reader takes it.
+struct JudgedInputs {
+    /// The captures, in read order.
+    paths: Vec<std::path::PathBuf>,
+    /// One open result per path, for a set opened up front.
+    handed: Option<capture::file::OpenResults>,
+}
+
+/// Judge a single-reader run's `-I` set ([`resolve_planned_inputs`]) and say
+/// which of its files leave the process ([`warn_file_transmitters`]).
+///
+/// # Errors
+///
+/// As [`resolve_planned_inputs`].
+fn judge_planned_inputs(
+    cli: &Cli,
+    config: &Config,
+    named: NamedSet,
+    mode: &RunMode,
+    vcon_rules: &[crate::app::batch::VconRule],
+) -> Result<(CaptureSource, JudgedInputs), PlanError> {
+    let up_front = named.is_opened();
+    let (paths, handed) = resolve_planned_inputs(cli, config, named)?.into_reading(up_front);
+    warn_file_transmitters(cli, vcon_rules, mode, &paths);
+    Ok((
+        CaptureSource::File {
+            paths: paths.clone(),
+        },
+        JudgedInputs { paths, handed },
+    ))
+}
+
+/// Judge a `--cores` run's `-I` set ([`resolve_planned_inputs`]), refuse a
+/// stored vCon container in it, and say which of its files leave the
+/// process.
+///
+/// # Errors
+///
+/// As [`resolve_planned_inputs`], and exit code 2 for a vCon container.
+pub fn judge_cores_inputs(
+    cli: &Cli,
+    config: &Config,
+    named: NamedSet,
+    vcon_rules: &[crate::app::batch::VconRule],
+) -> Result<(Vec<std::path::PathBuf>, Option<capture::file::OpenResults>), PlanError> {
+    let up_front = named.is_opened();
+    let (paths, files) = resolve_planned_inputs(cli, config, named)?.into_reading(up_front);
+    // Through the descriptor a file was judged with, when it has one: the
+    // path of a root-only file does not open for the user the run dropped to.
+    refuse_cores_vcon_container(cli.limits_args.cores, &paths, |at, p| {
+        match files.as_ref().and_then(|f| f.get(at)) {
+            Some(Ok(file)) => capture::file::Member::opened(p, file).is_container(),
+            Some(Err(_)) => false,
+            None => crate::capture::vcon_input::is_container_file(p),
+        }
+    })?;
+    warn_file_transmitters(cli, vcon_rules, &RunMode::CoresFile, &paths);
+    Ok((paths, files))
+}
+
+/// The line a run over more than one capture file prints once its set is
+/// judged: how many, and the first read. `None` for one file. Pure.
+fn reading_count_line(resolved: &[crate::capture::input_set::ResolvedInput]) -> Option<String> {
+    let first = resolved.first()?;
+    (resolved.len() > 1).then(|| {
+        format!(
+            "Reading {} capture files in timestamp order (first: '{}')",
+            resolved.len(),
+            first.name()
+        )
+    })
+}
+
+/// Refuse a `--cores` set that holds a stored vCon container, naming it.
+///
+/// `--cores` shards captured frames across workers by host pair, and its
+/// readers open captures with libpcap. A stored vCon container holds no
+/// frames, so a set holding one would lose it. Refused before anything is
+/// read, rather than half-read.
+///
+/// # Errors
+///
+/// Exit code 2 when `cores` is above 1 and `is_container` holds for a path
+/// (given with its index in `paths`).
+fn refuse_cores_vcon_container(
+    cores: usize,
+    paths: &[std::path::PathBuf],
+    is_container: impl Fn(usize, &std::path::Path) -> bool,
+) -> Result<(), PlanError> {
+    if cores > 1
+        && let Some((_, container)) = paths
+            .iter()
+            .enumerate()
+            .find(|(at, p)| is_container(*at, p))
+    {
+        return Err(PlanError::arg(format!(
+            "--cores reads capture files in parallel and cannot read the stored vCon \
+             container '{}'. Drop --cores: a vCon is read on one core.",
+            crate::capture::archive::source_name(container)
+        )));
+    }
+    Ok(())
+}
+
+/// The HEP senders a run must leave room for in its capture-source table:
+/// `[limits] max_tracked_peers` when it listens for HEP, none otherwise.
+fn hep_sender_capacity(cli: &Cli, config: &Config) -> usize {
+    if cli.hep_listen(config).is_some() {
+        cli.tracked_peer_capacity(config)
+    } else {
+        0
+    }
+}
+
+/// Whether this run opens its `-I` set when it plans: when it will drop
+/// privileges or chroot before it judges the set ([`opens_set_up_front`]).
+fn opens_inputs_up_front(cli: &Cli, config: &Config) -> bool {
+    let will_drop = privilege::drop_skip(
+        effective_user(cli, config),
+        cli.no_priv_drop(config),
+        privilege::is_root(),
+    )
+    .is_none();
+    opens_set_up_front(will_drop, effective_chroot(cli, config).is_some())
 }
 
 /// The composite: HEP for signaling, the NIC for media.
@@ -1442,18 +1751,26 @@ fn warn_offline_transmitters(cli: &Cli, config: &Config, source: Option<&Capture
              -d <device> to ask."
         );
     }
+}
 
+/// Say which judged capture files leave this process, once the `-I` set is
+/// judged (`paths`, in read order) and before the capture thread reads any of
+/// them: `--hep-send`'s signaling, and the audio of a `[[vcon.rule]]` with a
+/// `live_rtp` target in a headless run (`mode`).
+fn warn_file_transmitters(
+    cli: &Cli,
+    vcon_rules: &[crate::app::batch::VconRule],
+    mode: &RunMode,
+    paths: &[std::path::PathBuf],
+) {
     // `--hep-send` is the other way a packet leaves, and it is not the same
-    // question. Its destination is one the operator typed, so it is not
-    // refused on a file the way the kill path is — replaying an archive into a
-    // collector is a supported workflow. What it owes them is a sentence:
-    // pointed at `-I customer.pcap`, the flag forwards that capture's
-    // signaling off the machine, and its name says nothing about files.
-    // Emitted here, beside the refusal above, so the operator reads it before
-    // the capture thread opens anything.
+    // question as the kill path. Its destination is one the operator typed,
+    // so it is not refused on a file — replaying an archive into a collector
+    // is a supported workflow. What it owes them is a sentence: pointed at
+    // `-I customer.pcap`, the flag forwards that capture's signaling off the
+    // machine, and its name says nothing about files.
     #[cfg(feature = "hep")]
     if let Some(ref addr) = cli.hep_args.hep_send
-        && let Some(CaptureSource::File { paths }) = source
         && let Some(notice) = crate::capture::hep::file_export_notice(
             &crate::capture::hep::OperatorDestination::from_cli_flag(
                 crate::capture::hep::HEP_SEND_FLAG,
@@ -1464,6 +1781,21 @@ fn warn_offline_transmitters(cli: &Cli, config: &Config, source: Option<&Capture
     {
         tracing::warn!("{notice}");
     }
+    #[cfg(not(feature = "hep"))]
+    let _ = cli;
+    #[cfg(feature = "vcon")]
+    if matches!(mode, RunMode::Batch) {
+        for rule in vcon_rules {
+            if let Some(target) = rule.live_rtp.as_ref()
+                && let Some(notice) =
+                    crate::output::live_rtp::file_notice(&rule.name, target, paths)
+            {
+                tracing::warn!("{notice}");
+            }
+        }
+    }
+    #[cfg(not(feature = "vcon"))]
+    let _ = (vcon_rules, mode, paths);
 }
 
 /// Settle the capture's BPF filter: generate one for a live source that has
@@ -1805,33 +2137,6 @@ fn reads_input_metadata_before_confinement(opened_up_front: bool, mode: &RunMode
     opened_up_front && matches!(mode, RunMode::Batch) && cfg!(feature = "tls")
 }
 
-/// Whether this run opens its `-I` set up front, and room for it under the
-/// open-file limit when it does. `false` for any source but a file set.
-///
-/// # Errors
-///
-/// As [`fit_set_under_open_file_limit`].
-fn set_opened_up_front(
-    cli: &Cli,
-    config: &Config,
-    source: &CaptureSource,
-) -> Result<bool, PlanError> {
-    let CaptureSource::File { paths } = source else {
-        return Ok(false);
-    };
-    let will_drop = privilege::drop_skip(
-        effective_user(cli, config),
-        cli.no_priv_drop(config),
-        privilege::is_root(),
-    )
-    .is_none();
-    if !opens_set_up_front(will_drop, effective_chroot(cli, config).is_some()) {
-        return Ok(false);
-    }
-    fit_set_under_open_file_limit(paths.len())?;
-    Ok(true)
-}
-
 /// The soft and hard limits on open files for this process, or no limit
 /// when they cannot be read.
 fn open_file_limits() -> (u64, u64) {
@@ -1902,41 +2207,57 @@ pub(crate) fn fit_set_under_open_file_limit(files: usize) -> Result<(), PlanErro
     }
 }
 
-/// Open a `--cores` run's input and drop root privileges, in that order.
+/// Drop root privileges, then judge a `--cores` run's `-I` set and open it
+/// for the readers, in that order.
 ///
-/// The single-core read opens its input while privileged and then drops to
-/// `--user` (or `nobody`). The parallel reader opens its files from reader
-/// threads, so a run that will drop opens the whole set first, drops, and
-/// reads from those handles. A run that will not drop (not root, or
-/// `--no-priv-drop`) returns `None` and reads each file by path, as before.
+/// `plan` opened every named file as root when the run will drop. This
+/// drops to `--user` (or `nobody`), judges the set as that user through
+/// those descriptors ([`judge_cores_inputs`]), and opens each capture for
+/// the parallel readers from the descriptor it was judged with: no byte of
+/// an input is read as root (CAPTURE-RESOLVE-AS-ROOT). A run that will not
+/// drop (not root, or `--no-priv-drop`) judges the set and returns no
+/// opened set: its readers open each file by path, as before.
 ///
-/// The directories archive members were extracted into are handed to the
-/// user the run drops to first ([`crate::capture::archive::ExtractionHandover`]),
-/// so the run can still remove them when it ends.
+/// # Returns
+///
+/// The judged set's paths in read order, and the opened set when the run
+/// dropped.
 ///
 /// # Errors
 ///
-/// The set does not fit under the open-file limit (exit 2), the drop failed
-/// (exit 1), or an output is not writable by the user the run dropped to.
+/// The drop failed (exit 1), an output is not writable by the user the run
+/// dropped to, or the set does not judge ([`judge_cores_inputs`]).
 pub fn prepare_cores_inputs(
     cli: &Cli,
     config: &Config,
-    paths: &[std::path::PathBuf],
+    named: NamedSet,
     may_map: bool,
-) -> Result<Option<crate::parallel::PreOpenedSet>, PlanError> {
+    vcon_rules: &[crate::app::batch::VconRule],
+) -> Result<
+    (
+        Vec<std::path::PathBuf>,
+        Option<crate::parallel::PreOpenedSet>,
+    ),
+    PlanError,
+> {
     let Some(target) =
         privilege::resolve_drop_target(effective_user(cli, config), cli.no_priv_drop(config))
             .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?
     else {
-        return Ok(None);
+        let (paths, _) = judge_cores_inputs(cli, config, named, vcon_rules)?;
+        return Ok((paths, None));
     };
-    fit_set_under_open_file_limit(paths.len())?;
-    let set = crate::parallel::pre_open_set(paths, may_map);
-    hand_over_extractions(effective_chroot(cli, config).is_some(), Some(&target));
     privilege::drop_to(&target)
         .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
     unwritable_output_refusal(cli)?;
-    Ok(Some(set))
+    let (paths, files) = judge_cores_inputs(cli, config, named, vcon_rules)?;
+    let set = match files {
+        Some(files) => crate::parallel::pre_open_opened(&paths, files, may_map),
+        // A run that drops opened its set when it planned; a set that was
+        // not is opened here, as the user the run dropped to.
+        None => crate::parallel::pre_open_set(&paths, may_map),
+    };
+    Ok((paths, Some(set)))
 }
 
 /// Hand the directories this run extracted archive members into to what
@@ -2242,6 +2563,15 @@ pub struct Launched {
     pub handle: capture::CaptureHandle,
     /// Receiving side of the packet channel.
     pub rx: capture::channel::PacketRx,
+    /// Every capture file the run reads, judged and in read order.
+    ///
+    /// `source` is MOVED into the capture thread, so anything downstream that
+    /// needs the whole set has to receive it separately — and several things
+    /// do. Features that reached for `cli.primary_input()` got the first `-I`
+    /// ARGUMENT, which after chronological reordering is often not even the
+    /// first file read, and for `-I /pcaps` is a directory. Empty for live and
+    /// HEP sources, which read no files (#48).
+    pub input_files: Vec<std::path::PathBuf>,
     /// The scanner-kill worker process, started in the privileged window when
     /// this run answers scanners (a live source, batch mode, and
     /// `--kill-scanner`, `[security] kill_scanner` or `-K`). It holds every
@@ -3421,8 +3751,10 @@ pub fn launch(
     cli: &Cli,
     config: &Config,
     source: Option<CaptureSource>,
+    inputs: Option<NamedSet>,
     capture_config: &CaptureConfig,
     mode: &RunMode,
+    vcon_rules: &[crate::app::batch::VconRule],
 ) -> Launched {
     // 13a. Feature gates that must fail fast, BEFORE any capture device is
     // opened: without them the flag silently degrades (--mcp used to run a
@@ -3439,7 +3771,37 @@ pub fn launch(
     // Whether this run may put a packet on the network at all — decided from
     // the source that was actually resolved (auto-detection included), before
     // it is moved into the capture thread. See `security::transmit_guard`.
+    // It depends on the kind of source alone, so a file set not yet judged
+    // decides it as the judged set would.
     let transmit_permit = crate::security::transmit_guard::TransmitPermit::for_source(&source);
+
+    // 13b. A file run that will drop privileges confines itself first and
+    //      judges its `-I` set as the user it dropped to: no byte of an input
+    //      is read, unwrapped or parsed as root (CAPTURE-RESOLVE-AS-ROOT).
+    //      Every named file was opened as root when the run planned, so a
+    //      root-only input is still read, through that descriptor. A
+    //      `--chroot` run chroots first too, and unwraps inside the new root.
+    let after_drop = judges_inputs_after_drop(inputs.is_some());
+    let (transmit_permit, privileged) = if after_drop {
+        match confine_privileged(cli, config, mode, transmit_permit, &[]) {
+            Ok(confined) => (None, Some(confined)),
+            Err(e) => e.exit(),
+        }
+    } else {
+        (transmit_permit, None)
+    };
+
+    // 13c. Judge the `-I` set `plan` named: what the capture thread reads.
+    let (source, judged) = match inputs {
+        Some(named) => match judge_planned_inputs(cli, config, named, mode, vcon_rules) {
+            Ok((source, judged)) => (source, Some(judged)),
+            Err(e) => e.exit(),
+        },
+        None => {
+            end_archive_prompts();
+            (source, None)
+        }
+    };
 
     // RE4's startup snapshot, taken from the RESOLVED source for the same
     // reason `may_transmit` is: `-d any` and device auto-detection mean the
@@ -3451,25 +3813,36 @@ pub fn launch(
     // snapshot above is. Prints and returns; the run proceeds.
     report_relay_statistics(cli, config, Some(&source));
 
-    // A run that drops privileges or chroots once its source is open opens
+    // A run that drops privileges or chroots once its source is open opened
     // its whole `-I` set first, so a file it reaches after that is still read
-    // (`CaptureConfig::open_set_up_front`).
+    // (`CaptureConfig::open_set_up_front`): the reader takes those
+    // descriptors (`CaptureConfig::handed_set`).
+    let (input_files, handed) = match judged {
+        Some(JudgedInputs { paths, handed }) => (paths, handed),
+        None => (Vec::new(), None),
+    };
+    let reads_metadata = reads_input_metadata_before_confinement(handed.is_some(), mode);
+    if reads_metadata
+        && after_drop
+        && let Some(files) = &handed
+    {
+        crate::capture::pcapng_meta::read_opened_before_use(&input_files, files);
+    }
     let capture_config = &CaptureConfig {
-        open_set_up_front: match set_opened_up_front(cli, config, &source) {
-            Ok(up_front) => up_front,
-            Err(e) => e.exit(),
-        },
+        open_set_up_front: handed.is_some(),
+        handed_set: handed.map_or_else(
+            capture::file::HandedSet::default,
+            capture::file::HandedSet::new,
+        ),
         ..capture_config.clone()
     };
 
     // The input files whose pcapng metadata, the TLS secrets embedded in it
-    // among it, is read before the run confines itself.
+    // among it, is read before the reader starts: through the descriptors the
+    // set was judged with when the run judged it after the drop, before the
+    // run confines itself otherwise.
     let read_in_advance = match &source {
-        CaptureSource::File { paths }
-            if reads_input_metadata_before_confinement(capture_config.open_set_up_front, mode) =>
-        {
-            paths.clone()
-        }
+        CaptureSource::File { paths } if reads_metadata && !after_drop => paths.clone(),
         _ => Vec::new(),
     };
 
@@ -3477,15 +3850,19 @@ pub fn launch(
     let (capture, (reconfigure_control, reconfigure_outcomes)) =
         start_capture_thread(cli, source, capture_config, reconfigure);
 
-    let confined =
-        match confine_after_capture_start(cli, config, mode, transmit_permit, &read_in_advance) {
-            Ok(c) => c,
-            Err(e) => capture.abort(e),
-        };
+    let confined = match privileged {
+        Some(confined) => confine_unprivileged(cli, config).map(|()| confined),
+        None => confine_after_capture_start(cli, config, mode, transmit_permit, &read_in_advance),
+    };
+    let confined = match confined {
+        Ok(c) => c,
+        Err(e) => capture.abort(e),
+    };
 
     Launched {
         handle: capture.handle,
         rx: capture.rx,
+        input_files,
         kill_worker: confined.kill_worker,
         #[cfg(feature = "tls")]
         keylog_source: confined.keylog_source,
@@ -3515,6 +3892,27 @@ struct Confined {
 /// environment error, 2 for a flag this build cannot honor). The caller stops
 /// the capture thread and exits.
 fn confine_after_capture_start(
+    cli: &Cli,
+    config: &Config,
+    mode: &RunMode,
+    transmit_permit: Option<TransmitPermit>,
+    read_in_advance: &[std::path::PathBuf],
+) -> Result<Confined, PlanError> {
+    let confined = confine_privileged(cli, config, mode, transmit_permit, read_in_advance)?;
+    confine_unprivileged(cli, config)?;
+    Ok(confined)
+}
+
+/// The privileged half of [`confine_after_capture_start`], in order: start
+/// the scanner-kill worker, read the secret files and `read_in_advance`'s
+/// pcapng metadata, hand the extracted members over, chroot, open the keylog,
+/// and drop privileges. A file run that judges its set after the drop runs
+/// this before its capture thread starts ([`judges_inputs_after_drop`]).
+///
+/// # Errors
+///
+/// As [`confine_after_capture_start`].
+fn confine_privileged(
     cli: &Cli,
     config: &Config,
     mode: &RunMode,
@@ -3616,7 +4014,22 @@ fn confine_after_capture_start(
     crate::secret_files::install(secrets);
     #[cfg(not(feature = "tls"))]
     let () = keylog_source;
+    Ok(Confined {
+        kill_worker,
+        #[cfg(feature = "tls")]
+        keylog_source,
+    })
+}
 
+/// The half of [`confine_after_capture_start`] after the drop, in order:
+/// refuse an output the dropped user cannot create and an unreadable
+/// revocation list, start syslog, protect key material, bound the reachable
+/// files, and record syscalls.
+///
+/// # Errors
+///
+/// As [`confine_after_capture_start`].
+fn confine_unprivileged(cli: &Cli, config: &Config) -> Result<(), PlanError> {
     // 16a'. Every output created later must be creatable by the user this
     // process now runs as, or the run ends here rather than at the first
     // packet or the first finished call.
@@ -3689,12 +4102,7 @@ fn confine_after_capture_start(
     let seccomp_status = install_syscall_logging(cli);
     crate::seccomp::requirement_verdict(seccomp_mode(cli), &seccomp_status)
         .map_err(|refusal| PlanError::new(1, refusal))?;
-
-    Ok(Confined {
-        kill_worker,
-        #[cfg(feature = "tls")]
-        keylog_source,
-    })
+    Ok(())
 }
 
 /// What the confinement step hands back: the keylog source opened while
@@ -7347,13 +7755,10 @@ pub(crate) fn vcon_rules(
 /// Only the headless run forks live audio, so in another mode a rule with a
 /// target says that it sends nothing, rather than looking armed. In the
 /// headless run, a target is the operator's, so a file source is not refused;
-/// what it owes them is a sentence saying the file's audio leaves.
+/// what it owes them is a sentence saying the file's audio leaves, which
+/// waits for the judged set ([`warn_file_transmitters`]).
 #[cfg(feature = "vcon")]
-fn warn_live_rtp(
-    rules: &[crate::app::batch::VconRule],
-    mode: &RunMode,
-    source: Option<&CaptureSource>,
-) {
+fn warn_live_rtp(rules: &[crate::app::batch::VconRule], mode: &RunMode) {
     for rule in rules {
         let Some(target) = rule.live_rtp.as_ref() else {
             continue;
@@ -7365,10 +7770,6 @@ fn warn_live_rtp(
                 rule.name,
                 target.as_str()
             );
-        } else if let Some(CaptureSource::File { paths }) = source
-            && let Some(notice) = crate::output::live_rtp::file_notice(&rule.name, target, paths)
-        {
-            tracing::warn!("{notice}");
         }
     }
 }
@@ -7747,6 +8148,8 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         // Decided by `launch` from the source it resolves and whether the run
         // drops privileges or chroots; see `open_set_up_front`.
         open_set_up_front: false,
+        // Filled by `launch` once it has judged the set.
+        handed_set: capture::file::HandedSet::default(),
     })
 }
 
@@ -10082,15 +10485,27 @@ mod tests {
             "tests/fixtures/sip_call.pcap".into(),
             "tests/fixtures/ice_checks.pcap".into(),
         ];
+        // The set is counted once it is judged: an archive holds more
+        // captures than its one name.
         cli.limits_args.max_capture_sources = Some(1);
+        let named = plan(&cli, &Config::default())
+            .map_err(|e| format!("plan names the set: {e:?}"))?
+            .inputs
+            .ok_or("a file run names a set")?;
         assert!(
-            plan(&cli, &Config::default()).is_err(),
+            resolve_planned_inputs(&cli, &Config::default(), named)
+                .is_err_and(|e| e.exit_code == 2),
             "one slot cannot hold two input files"
         );
         cli.limits_args.max_capture_sources = Some(2);
         let p = plan(&cli, &Config::default())
             .map_err(|e| format!("two slots hold two files: {e:?}"))?;
         assert_eq!(p.max_capture_sources, 2);
+        let named = p.inputs.ok_or("a file run names a set")?;
+        assert!(
+            resolve_planned_inputs(&cli, &Config::default(), named).is_ok(),
+            "two slots hold two files"
+        );
         Ok(())
     }
 
@@ -15372,5 +15787,553 @@ mod secret_read_tests {
             None,
             "a list that opens is accepted"
         );
+    }
+}
+
+/// The `-I` set `plan` names and the run judges later
+/// (CAPTURE-RESOLVE-AS-ROOT), as an ordinary user.
+#[cfg(test)]
+mod planned_inputs_tests {
+    use super::*;
+    use clap::Parser as _;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Parse `args` after `sipnab -N`.
+    fn cli_of(args: &[&str]) -> Result<Cli, TestError> {
+        Ok(Cli::try_parse_from(
+            ["sipnab", "-N"].iter().chain(args.iter()),
+        )?)
+    }
+
+    /// A sample capture copied into `dir` as `name`.
+    fn sample_in(dir: &std::path::Path, name: &str) -> Result<std::path::PathBuf, TestError> {
+        let path = dir.join(name);
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/pcap-samples/sip-rtp-g711.pcap"),
+            &path,
+        )?;
+        Ok(path)
+    }
+
+    /// The named set of a plan for `args`.
+    fn planned(args: &[&str]) -> Result<NamedSet, TestError> {
+        let plan = plan(&cli_of(args)?, &Config::default())
+            .map_err(|e| format!("plan must succeed: {}", e.message))?;
+        plan.inputs.ok_or_else(|| "a file run names a set".into())
+    }
+
+    /// One resolved input named `name`.
+    fn resolved(name: &str) -> crate::capture::input_set::ResolvedInput {
+        crate::capture::input_set::ResolvedInput {
+            path: std::path::PathBuf::from(name),
+            first_packet: None,
+            label: None,
+        }
+    }
+
+    #[test]
+    fn success_plan_names_a_file_set_without_reading_it() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let junk = dir.path().join("not-yet-read.pcap");
+        std::fs::write(&junk, b"no capture here")?;
+        let named = planned(&["-I", &junk.to_string_lossy()])?;
+        assert_eq!(
+            named.paths(),
+            std::slice::from_ref(&junk),
+            "plan names the file and does not judge what it holds"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_plan_source_names_the_same_files_as_its_set() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let b = sample_in(dir.path(), "b.pcap")?;
+        let plan = plan(
+            &cli_of(&["-I", &a.to_string_lossy(), "-I", &b.to_string_lossy()])?,
+            &Config::default(),
+        )
+        .map_err(|e| format!("plan must succeed: {}", e.message))?;
+        let Some(CaptureSource::File { paths }) = plan.source else {
+            return Err("a file run plans a file source".into());
+        };
+        let named = plan.inputs.ok_or("a file run names a set")?;
+        assert_eq!(paths, named.paths(), "one list of names");
+        assert_eq!(paths, [a, b], "in naming order until judged");
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_ordinary_users_plan_opens_nothing_up_front() -> Result<(), TestError> {
+        if privilege::is_root() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let named = planned(&["-I", &a.to_string_lossy()])?;
+        assert!(
+            !named.is_opened(),
+            "a run that keeps its user opens each file when it is read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_chroot_plan_opens_its_set_up_front() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let named = planned(&[
+            "-I",
+            &a.to_string_lossy(),
+            "--chroot",
+            &dir.path().to_string_lossy(),
+        ])?;
+        assert!(
+            named.is_opened(),
+            "a run that will chroot opens its set while the paths still resolve"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_judged_set_is_in_packet_order() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let cli = cli_of(&["-I", &a.to_string_lossy()])?;
+        let named = planned(&["-I", &a.to_string_lossy()])?;
+        let set = resolve_planned_inputs(&cli, &Config::default(), named)
+            .map_err(|e| format!("judge: {}", e.message))?;
+        assert_eq!(set.paths(), [a], "the one capture");
+        Ok(())
+    }
+
+    #[test]
+    fn success_two_files_print_the_count_and_the_first() {
+        assert_eq!(
+            reading_count_line(&[resolved("/c/a.pcap"), resolved("/c/b.pcap")]).as_deref(),
+            Some("Reading 2 capture files in timestamp order (first: '/c/a.pcap')"),
+            "the count line, unchanged"
+        );
+    }
+
+    #[test]
+    fn success_cores_reads_a_set_without_a_container() {
+        let paths = [std::path::PathBuf::from("/c/a.pcap")];
+        assert!(
+            refuse_cores_vcon_container(4, &paths, |_, _| false).is_ok(),
+            "no container, no refusal"
+        );
+    }
+
+    #[test]
+    fn success_a_run_that_listens_for_hep_leaves_room_for_its_senders() -> Result<(), TestError> {
+        let cli = cli_of(&["-L", "127.0.0.1:9060"])?;
+        assert!(
+            hep_sender_capacity(&cli, &Config::default()) > 0,
+            "a HEP listener's senders are counted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_plan_refuses_an_input_that_names_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let gone = dir.path().join("gone.pcap");
+        let refused = plan(
+            &cli_of(&["-I", &gone.to_string_lossy()])?,
+            &Config::default(),
+        );
+        let e = refused.err().ok_or("a path that names nothing planned")?;
+        assert_eq!(e.exit_code, 1, "exit 1, as before: {}", e.message);
+        assert!(
+            e.message.starts_with("-I/--input: ") && e.message.contains("does not exist"),
+            "the message is unchanged: {}",
+            e.message
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_named_file_that_is_no_capture_fails_when_judged() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let junk = dir.path().join("junk.pcap");
+        std::fs::write(&junk, b"no capture here")?;
+        let args = ["-I", &*junk.to_string_lossy()].map(str::to_string);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let named = planned(&args)?;
+        let refused = resolve_planned_inputs(&cli_of(&args)?, &Config::default(), named);
+        let e = refused.err().ok_or("a text file judged as a capture")?;
+        assert_eq!(
+            e.exit_code, 1,
+            "exit 1, as when plan judged it: {}",
+            e.message
+        );
+        assert!(
+            e.message.starts_with("-I/--input: cannot read capture")
+                && e.message.contains("named with -I"),
+            "the message is unchanged: {}",
+            e.message
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_judged_set_above_the_source_limit_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let b = sample_in(dir.path(), "b.pcap")?;
+        let args = [
+            "-I",
+            &*a.to_string_lossy(),
+            "-I",
+            &*b.to_string_lossy(),
+            "--max-capture-sources",
+            "1",
+        ]
+        .map(str::to_string);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let named = planned(&args)?;
+        let refused = resolve_planned_inputs(&cli_of(&args)?, &Config::default(), named);
+        let e = refused
+            .err()
+            .ok_or("two files beside a limit of one were read")?;
+        assert_eq!(e.exit_code, 2, "an argument refusal: {}", e.message);
+        Ok(())
+    }
+
+    #[test]
+    fn failure_cores_refuses_a_set_holding_a_vcon_container() -> Result<(), TestError> {
+        let paths = [
+            std::path::PathBuf::from("/c/a.pcap"),
+            std::path::PathBuf::from("/c/call.vcon"),
+        ];
+        let refused = refuse_cores_vcon_container(2, &paths, |_, p| p.ends_with("call.vcon"));
+        let e = refused.err().ok_or("a vCon container read under --cores")?;
+        assert_eq!(e.exit_code, 2, "exit 2, as before");
+        assert!(
+            e.message
+                .contains("cannot read the stored vCon container '/c/call.vcon'"),
+            "the container is named: {}",
+            e.message
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_output_that_names_a_named_input_is_still_refused_at_plan() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let refused = plan(
+            &cli_of(&["-I", &a.to_string_lossy(), "-O", &a.to_string_lossy()])?,
+            &Config::default(),
+        );
+        let e = refused.err().ok_or("an output over its input planned")?;
+        assert_eq!(e.exit_code, 2, "refused before any writer: {}", e.message);
+        Ok(())
+    }
+
+    #[test]
+    fn edge_one_file_prints_no_count_line() {
+        assert_eq!(
+            reading_count_line(&[resolved("/c/a.pcap")]),
+            None,
+            "a run over one file says nothing about a set"
+        );
+        assert_eq!(reading_count_line(&[]), None, "nor does an empty one");
+    }
+
+    #[test]
+    fn edge_the_count_line_names_an_archive_member_by_its_label() {
+        let member = crate::capture::input_set::ResolvedInput {
+            label: Some(std::sync::Arc::from("/c/set.tgz/a.pcap")),
+            ..resolved("/tmp/extracted/a.pcap")
+        };
+        assert_eq!(
+            reading_count_line(&[member, resolved("/c/b.pcap")]).as_deref(),
+            Some("Reading 2 capture files in timestamp order (first: '/c/set.tgz/a.pcap')"),
+            "the member goes by its label"
+        );
+    }
+
+    /// The set `args` names, opened up front as a run that drops opens it.
+    fn opened_set(args: &[&str]) -> Result<NamedSet, TestError> {
+        let cli = cli_of(args)?;
+        let named = crate::capture::input_set::name_candidates(
+            &cli.capture_args.input,
+            &cli.input_resolve_options(),
+        )
+        .map_err(|e| format!("naming: {e:#}"))?;
+        Ok(NamedSet::new(named, true))
+    }
+
+    // A build without `vcon` refuses the container as unreadable before the
+    // `--cores` check, with exit 1: the refusal under test needs the reader.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn failure_cores_refuses_a_container_known_only_through_its_descriptor() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let container = dir.path().join("call.vcon.json");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json"),
+            &container,
+        )?;
+        let args = [
+            "--cores",
+            "2",
+            "--report",
+            "-I",
+            &*container.to_string_lossy(),
+        ]
+        .map(str::to_string);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let named = opened_set(&args)?;
+        // Gone by path, as a root-only file is for the user the run dropped to.
+        std::fs::remove_file(&container)?;
+        let refused = judge_cores_inputs(&cli_of(&args)?, &Config::default(), named, &[]);
+        let e = refused.err().ok_or("a vCon container read under --cores")?;
+        assert_eq!(e.exit_code, 2, "refused as before: {}", e.message);
+        assert!(
+            e.message.contains("cannot read the stored vCon container"),
+            "the container is found through its descriptor: {}",
+            e.message
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_cores_judges_a_set_opened_up_front_and_hands_its_descriptors()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let args = ["--cores", "2", "--report", "-I", &*a.to_string_lossy()].map(str::to_string);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let named = opened_set(&args)?;
+        let (paths, files) = judge_cores_inputs(&cli_of(&args)?, &Config::default(), named, &[])
+            .map_err(|e| format!("judge: {}", e.message))?;
+        assert_eq!(paths, [a], "the one capture");
+        assert!(
+            files.is_some_and(|f| f.len() == 1 && f[0].is_ok()),
+            "the descriptor it was judged with goes to the readers"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_cores_judges_a_set_named_by_path_and_hands_no_descriptors() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let args = ["--cores", "2", "--report", "-I", &*a.to_string_lossy()].map(str::to_string);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let cli = cli_of(&args)?;
+        let named = NamedSet::new(
+            crate::capture::input_set::name_candidates(
+                &cli.capture_args.input,
+                &cli.input_resolve_options(),
+            )
+            .map_err(|e| format!("naming: {e:#}"))?,
+            false,
+        );
+        let (_, files) = judge_cores_inputs(&cli, &Config::default(), named, &[])
+            .map_err(|e| format!("judge: {}", e.message))?;
+        assert!(files.is_none(), "its readers open each file by path");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_one_core_reads_a_vcon_container() {
+        let paths = [std::path::PathBuf::from("/c/call.vcon")];
+        assert!(
+            refuse_cores_vcon_container(1, &paths, |_, _| true).is_ok(),
+            "the single reader reads a container"
+        );
+    }
+
+    #[test]
+    fn edge_a_live_plan_names_no_set() -> Result<(), TestError> {
+        let plan = plan(&cli_of(&["-d", "lo"])?, &Config::default())
+            .map_err(|e| format!("plan must succeed: {}", e.message))?;
+        assert!(plan.inputs.is_none(), "only -I names a set");
+        Ok(())
+    }
+
+    #[test]
+    fn success_both_outputs_of_captured_data_are_named_with_their_flags() -> Result<(), TestError> {
+        let cli = cli_of(&[
+            "-I",
+            "/c/a.zip",
+            "-O",
+            "/o/out.pcap",
+            "--export-vcon",
+            "call-1@example.com",
+            "--vcon-out",
+            "/o/out.vcon",
+        ])?;
+        assert_eq!(
+            decrypted_output_targets(&cli),
+            [
+                ("-O/--output", std::path::Path::new("/o/out.pcap")),
+                ("--vcon-out", std::path::Path::new("/o/out.vcon")),
+            ],
+            "each output the decrypted-data warning names, with its flag"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_run_with_no_output_has_nothing_to_warn_about() -> Result<(), TestError> {
+        let cli = cli_of(&["-I", "/c/a.zip"])?;
+        assert!(
+            decrypted_output_targets(&cli).is_empty(),
+            "no output, no warning"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_tmpdir_the_drop_user_cannot_write_names_it_the_user_and_the_fix() {
+        let refusal = unwrap_tmpdir_refusal(
+            Some("nobody"),
+            std::path::Path::new("/var/folders/xy/T"),
+            false,
+            None,
+        )
+        .map(|r| r.at(std::path::Path::new("/c/a.pcap.gz")));
+        assert_eq!(
+            refusal.as_ref().map(|e| (e.exit_code, e.message.as_str())),
+            Some((
+                1,
+                "-I/--input: cannot unpack '/c/a.pcap.gz': user 'nobody' cannot create files in \
+                 the temporary directory '/var/folders/xy/T', where sipnab unpacks an archive or a \
+                 compressed capture after it drops root. Set TMPDIR to a directory that user can \
+                 write (TMPDIR=/tmp), or pass --user with a user who can write it"
+            )),
+            "exit 1, the file, the directory, the user and both ways out"
+        );
+    }
+
+    #[test]
+    fn success_a_tmpdir_the_drop_user_can_write_gives_no_refusal() {
+        assert_eq!(
+            unwrap_tmpdir_refusal(Some("nobody"), std::path::Path::new("/tmp"), true, None),
+            None,
+            "nothing to refuse"
+        );
+    }
+
+    #[test]
+    fn edge_a_run_that_did_not_drop_gives_no_tmpdir_refusal() {
+        assert_eq!(
+            unwrap_tmpdir_refusal(None, std::path::Path::new("/nowhere"), false, None),
+            None,
+            "a run that keeps its user meets the directory's own error, as before"
+        );
+    }
+
+    #[test]
+    fn success_a_directory_this_user_owns_takes_new_files() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        assert!(
+            can_create_files_in(dir.path()),
+            "its own temporary directory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_directory_without_write_permission_takes_no_new_files() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        if privilege::is_root() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))?;
+        let answer = can_create_files_in(dir.path());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        assert!(!answer, "read and search only: no new file");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_directory_that_does_not_exist_takes_no_new_files() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        assert!(
+            !can_create_files_in(&dir.path().join("gone")),
+            "a missing directory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_file_run_judges_its_set_after_the_drop() {
+        assert!(
+            judges_inputs_after_drop(true),
+            "a file run confines itself before it reads a byte of its inputs"
+        );
+    }
+
+    #[test]
+    fn edge_a_chroot_file_run_judges_after_the_chroot_and_the_drop() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = sample_in(dir.path(), "a.pcap")?;
+        let cli = cli_of(&[
+            "-I",
+            &a.to_string_lossy(),
+            "--chroot",
+            &dir.path().to_string_lossy(),
+        ])?;
+        assert!(
+            judges_inputs_after_drop(cli.has_input()),
+            "a --chroot run unwraps inside the new root, as the drop user"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_chroot_run_names_dir_the_tmpdir_inside_it_the_user_and_the_fix() {
+        let refusal = unwrap_tmpdir_refusal(
+            Some("nobody"),
+            std::path::Path::new("/tmp"),
+            false,
+            Some(std::path::Path::new("/srv/jail")),
+        )
+        .map(|r| r.at(std::path::Path::new("/c/a.tgz")));
+        assert_eq!(
+            refusal.as_ref().map(|e| (e.exit_code, e.message.as_str())),
+            Some((
+                1,
+                "-I/--input: cannot unpack '/c/a.tgz': user 'nobody' cannot create files in the \
+                 temporary directory '/tmp' inside --chroot '/srv/jail', where sipnab unpacks an \
+                 archive or a compressed capture after it drops root. Create '/srv/jail/tmp' \
+                 writable by that user (mode 1777), or set TMPDIR to such a directory inside \
+                 '/srv/jail'"
+            )),
+            "exit 1, the file, DIR, the TMPDIR inside it, the user and both ways out"
+        );
+    }
+
+    #[test]
+    fn edge_a_run_with_no_file_keeps_its_order() {
+        assert!(
+            !judges_inputs_after_drop(false),
+            "a live, HEP or socket source opens it before it confines itself"
+        );
+    }
+
+    #[test]
+    fn edge_a_file_run_without_hep_leaves_no_sender_room() -> Result<(), TestError> {
+        let cli = cli_of(&["-I", "/c/a.pcap"])?;
+        assert_eq!(
+            hep_sender_capacity(&cli, &Config::default()),
+            0,
+            "no listener, no senders"
+        );
+        Ok(())
     }
 }
