@@ -406,15 +406,15 @@ So `quality.yml` has a second job, `coverage-branch`.
   and the job failed 147 s before CodeQL uploaded the analysis, with no alert open.
 - [`test_code_scanning_wait.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_code_scanning_wait.py) holds the rule.
 
-`ci-success` leaves out the macOS leg of Check, the job `check-macos`, on purpose.
+`ci-success` leaves out the macOS jobs, `check-macos`, `test-macos` and `symbol-split-macos`, on purpose.
 
 - On 2026-11-02 GitHub canceled Check (macos-latest) on both runs of pull request #601
   (41510139494 and 41514782896) with "The job was not acquired by Runner of type hosted even after
   multiple attempts".
   The rerun of the second took 27 minutes (20:22:04 to 20:49:15 UTC).
 - So on a pull request, `CI success` neither waits for macOS nor fails when GitHub cancels the macOS leg.
-- `check-macos` still runs on every pull request, which shows its result, and on every push to `main`.
-- On `main`, a failed `check-macos` fails the CI workflow run of that commit.
+- The macOS jobs still run on every pull request, which shows their results, and on every push to `main`.
+- On `main`, a failed macOS job fails the CI workflow run of that commit.
   A failed job fails its run whether or not another job needs it.
   The pre-push hook's tag gate refuses to tag a commit whose CI run is not green,
   so a macOS break on `main` blocks the release.
@@ -424,7 +424,7 @@ So `quality.yml` has a second job, `coverage-branch`.
   - No job `CI success` needs, directly or through another job, runs on macOS only.
   - No job runs on macOS beside another OS: `needs` takes a matrix job whole, so such a job would either block pull requests on macOS or leave its other leg out of the required check.
   - The macOS jobs have no job-level `if:` or `continue-on-error`, and `ci.yml` runs on every push to `main` and every pull request.
-  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
+  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, `test-macos` runs `test`'s through `*test-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
 - The macOS half of the symbol split is `symbol-split-macos`, by the same rule.
   GitHub canceled it for capacity on pull request #631 (run 41725010284).
 
@@ -433,8 +433,7 @@ Their contents are worth spelling out.
 
 - **`check`** (Linux; `check-macos` runs the same steps on macOS):
   - `cargo build --all-features`
-  - On macOS, `cargo test --all-features`, whole.
-    On Linux the suite runs in `test`, below.
+  - The suite runs in `test` and `test-macos`, below, not here.
   - `cargo clippy --workspace --all-features --all-targets -D warnings`
   - [`scripts/check-rustfmt.sh`](https://github.com/NormB/sipnab/blob/main/scripts/check-rustfmt.sh) (the pinned nightly rustfmt)
   - `cargo doc --no-deps --all-features --workspace`
@@ -492,6 +491,7 @@ Their contents are worth spelling out.
     goes green over nothing.
 - **`test`** and **`test-results`**: the `--all-features` suite on Linux, under cargo-nextest, split into shards.
   See [The suite in shards](#the-suite-in-shards).
+- **`test-macos`**: the same suite on macOS, through `test`'s steps (`*test-steps`), in shards by the same rule.
 - **`audit`**: `cargo-audit` and `cargo-deny`.
 - **`fuzz-check`**: the `fuzz/` workspace compiles.
 
@@ -512,9 +512,15 @@ The `test` job runs the Linux suite on two runners at once.
   - The `suite` profile in [`.config/nextest.toml`](https://github.com/NormB/sipnab/blob/main/.config/nextest.toml) stops any one test after three 60-second periods.
   - Every shard also builds the examples, as plain `cargo test` does, because `examples_run_test` runs them.
   - The job installs the pinned cargo-nextest through [`.github/actions/nextest`](https://github.com/NormB/sipnab/blob/main/.github/actions/nextest/action.yml) first.
-- The `shard:` matrix list is the only place that states N.
+- Each job's `shard:` matrix list is the only place that states its N.
   The step reads its index and count from `strategy.job-index` and `strategy.job-total`.
-- Each shard uploads its output, a manifest of what it ran and the YANG exports.
+- `test-macos` runs the macOS suite in shards through the same steps.
+  - The suite ran whole in `check-macos` until main's run 43880888975 (2026-11-16) canceled Check (macos-26) at its 45-minute cap.
+  - In that run the suite step took 38.2 of the job's 45.5 minutes, and Clippy had run 1.8 minutes when the cap ended it.
+  - On the three runs before it the suite step took 22.3 to 32.5 minutes.
+  - Its shards do not upload their outputs: the published test count describes the Linux suite.
+  - [`tests/support/macos_suite.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/macos_suite.rs) holds the layout, and its cap stays at 45 minutes.
+- Each Linux shard uploads its output, a manifest of what it ran and the YANG exports.
 - `test-results` runs once both pass.
   - `parallel-tests.py merge` refuses the set unless every shard reported exactly once and every target ran in exactly one shard.
   - It writes the outputs in shard order as one `test-output.txt`.
