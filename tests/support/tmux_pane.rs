@@ -47,6 +47,27 @@ pub(crate) struct TuiSession {
     pub(crate) sipnab: PaneProcess,
 }
 
+/// A way the TUI tests take a pane's terminal away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalLoss {
+    /// `tmux kill-session`: the server ends the session and its pane.
+    KillSession,
+    /// `tmux kill-server`, as a session's close does.
+    KillServer,
+    /// SIGKILL of the tmux server, as when a test is killed: the way
+    /// MACOS-TUI-NOT-ENDING-AFTER-TMUX-KILL was seen.
+    SigkillServer,
+}
+
+impl TerminalLoss {
+    /// Every way, in a fixed order.
+    pub(crate) const ALL: [TerminalLoss; 3] = [
+        TerminalLoss::KillSession,
+        TerminalLoss::KillServer,
+        TerminalLoss::SigkillServer,
+    ];
+}
+
 /// The process a pane runs, identified by its pid and its start time, so
 /// a pid the kernel has reused for another process is never taken for it
 /// and never signaled.
@@ -296,7 +317,20 @@ impl TuiSession {
         cwd: &str,
         args: &[&str],
     ) -> Result<Self, TestError> {
-        let bin = env!("CARGO_BIN_EXE_sipnab");
+        Self::launch_program(cols, rows, cwd, env!("CARGO_BIN_EXE_sipnab"), args, &[])
+    }
+
+    /// [`TuiSession::launch`] for any `bin`, with each of `env` set for it:
+    /// the terminal-loss probe runs the test binary itself in a pane. The
+    /// pane's process is `bin`, which the launch command `exec`s.
+    pub(crate) fn launch_program(
+        cols: u16,
+        rows: u16,
+        cwd: &str,
+        bin: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<Self, TestError> {
         let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
         let name = format!("sipnab_e2e_{}_{}", std::process::id(), seq);
 
@@ -323,8 +357,12 @@ impl TuiSession {
 
         // tmux runs the command via the shell; cd first so the file browser
         // and any relative paths resolve under the fixture directory.
+        let assignments: String = env
+            .iter()
+            .map(|(key, value)| format!("{key}={} ", shell_quote(value)))
+            .collect();
         let cmd = format!(
-            "cd {} && XDG_CONFIG_HOME={} exec {} {}",
+            "cd {} && XDG_CONFIG_HOME={} {assignments}exec {} {}",
             shell_quote(cwd),
             shell_quote(&cfg_home.to_string_lossy()),
             shell_quote(bin),
@@ -390,6 +428,28 @@ impl TuiSession {
         }
         self.sipnab.kill();
         false
+    }
+
+    /// Take the pane's terminal away in the way `how` names, and return at
+    /// once: the caller measures what the pane's process does next. The
+    /// session's Drop still ends and reaps whatever is left.
+    pub(crate) fn lose_terminal(&mut self, how: TerminalLoss) -> Result<(), TestError> {
+        match how {
+            TerminalLoss::KillSession => {
+                tmux_for(&self.name)
+                    .args(["kill-session", "-t", &self.name])
+                    .status()?;
+            }
+            TerminalLoss::KillServer => {
+                tmux_for(&self.name).arg("kill-server").status()?;
+            }
+            TerminalLoss::SigkillServer => {
+                let mut server = self.server.take().ok_or("the session has no server")?;
+                server.kill()?;
+                server.wait()?;
+            }
+        }
+        Ok(())
     }
 
     /// Default-size launch loading the bundled SIP call fixture.

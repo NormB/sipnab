@@ -51,7 +51,7 @@ mod tui_e2e {
     /// The file that holds the tmux harness, and the test files that drive
     /// it: tmux is started only by the harness's `tmux_for`.
     const TMUX_HARNESS: &str = "tests/support/tmux_pane.rs";
-    const TMUX_USERS: &[&str] = &["tests/tui_e2e_test.rs"];
+    const TMUX_USERS: &[&str] = &["tests/tui_e2e_test.rs", "tests/tui_terminal_loss_test.rs"];
 
     /// Every tmux command goes through [`tmux_for`], so each session runs on
     /// its own tmux server. On one shared server, a test whose session ended
