@@ -404,6 +404,16 @@ jobs:
           tmux -V
           cargo test --features tui --test tui_e2e_test -- --ignored
 
+      # What a pane's process sees after each way the TUI tests lose its
+      # terminal, and how long sipnab takes to end after each, printed under
+      # --nocapture so a passing run carries the numbers
+      # (MACOS-TUI-NOT-ENDING-AFTER-TMUX-KILL was seen only on macOS). The
+      # launch test takes up to six minutes, so it runs here and not in the
+      # pre-push hook; see tests/tui_terminal_loss_test.rs for the pass rules.
+      - name: TUI terminal-loss measurements (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --features tui --test tui_terminal_loss_test -- --ignored --nocapture --test-threads=1
+
       # The workspace's own executables are rebuilt by any change to the
       # sources, so they are removed before the save; see the script. It runs
       # on every run, not only before a save, so each run's log records the

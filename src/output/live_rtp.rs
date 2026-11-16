@@ -236,9 +236,15 @@ impl Sender {
         })
     }
 
-    /// Send one datagram; `false` when it did not leave.
+    /// Send one datagram; `false` when it did not leave within [`POLL`]. A
+    /// signal during the wait for buffer room is not a datagram that did not
+    /// leave: the send is made again with what is left of [`POLL`].
     fn transmit(&self, _permit: &LiveRtpPermit, bytes: &[u8]) -> bool {
-        self.socket.send(bytes).is_ok()
+        crate::timed_io::send_within(POLL, &std::time::Instant::now, |left| {
+            self.socket.set_write_timeout(Some(left))?;
+            self.socket.send(bytes)
+        })
+        .is_ok()
     }
 }
 
@@ -842,6 +848,71 @@ mod tests {
     use super::*;
 
     type TestError = Box<dyn std::error::Error>;
+
+    /// A loopback receiver and a sender connected to it. The receiver is
+    /// held for the test's life, so its port is never released and reused.
+    fn wire_pair() -> Result<(UdpSocket, Sender), TestError> {
+        let receiver = UdpSocket::bind("127.0.0.1:0")?;
+        receiver.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let target = Target::resolve("r", &receiver.local_addr()?.to_string(), false)?;
+        Ok((receiver, Sender::open(&target)?))
+    }
+
+    /// A datagram sent through the retrying send arrives whole. A signal
+    /// cannot be timed onto a blocked loopback send from a test (the send
+    /// waits only while the buffer is full), so the retry itself is driven
+    /// with a scripted send in src/timed_io.rs; this checks the wiring.
+    #[test]
+    fn a_datagram_transmitted_to_a_receiver_arrives() -> Result<(), TestError> {
+        let (receiver, sender) = wire_pair()?;
+        assert!(
+            sender.transmit(&sender.permit, b"rtp-bytes"),
+            "the send reports it left"
+        );
+        let mut buf = [0u8; 64];
+        let n = receiver.recv(&mut buf)?;
+        assert_eq!(
+            &buf[..n],
+            b"rtp-bytes",
+            "the receiver reads the datagram whole"
+        );
+        Ok(())
+    }
+
+    /// A datagram too large for UDP does not leave, and says so at once.
+    #[test]
+    fn a_datagram_too_large_for_udp_is_reported_unsent() -> Result<(), TestError> {
+        let (_receiver, sender) = wire_pair()?;
+        let huge = vec![0u8; 70_000];
+        assert!(
+            !sender.transmit(&sender.permit, &huge),
+            "a 70,000-byte datagram cannot leave"
+        );
+        Ok(())
+    }
+
+    /// Each try sets what is left of [`POLL`] as the write timeout, so a
+    /// socket left with a longer one waits no longer than [`POLL`].
+    #[test]
+    fn a_transmit_leaves_the_write_timeout_within_poll() -> Result<(), TestError> {
+        let (_receiver, sender) = wire_pair()?;
+        sender
+            .socket
+            .set_write_timeout(Some(Duration::from_secs(5)))?;
+        assert!(
+            sender.transmit(&sender.permit, b"x"),
+            "the send reports it left"
+        );
+        let timeout = sender
+            .socket
+            .write_timeout()?
+            .ok_or("no write timeout is set")?;
+        assert!(
+            timeout <= POLL,
+            "the write timeout is within POLL: {timeout:?}"
+        );
+        Ok(())
+    }
 
     /// The header is RTP version 2 with the L16 payload type, the marker
     /// where asked, and the samples big-endian.

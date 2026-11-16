@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use crate::app::vcon_forward::{
     AuthHeader, Endpoint, Envelope, MAX_AUTH_FILE, Members, StoreKind, client_config, exchange,
-    header_value, is_path_uuid, plaintext_warning, read_body, read_head, request_head, status_of,
+    header_value, is_path_uuid, plaintext_warning, read_body_parts, read_head, read_quoted_body,
+    request_head, status_of,
 };
 
 /// What one fetched container's file is named after its uuid.
@@ -1209,7 +1210,8 @@ fn read_answer(
             continue;
         }
         if !(200..300).contains(&status) {
-            let (body, _) = read_body(reader, &head, MAX_QUOTED_BODY.saturating_add(MAX_AUTH_FILE));
+            let (body, _) =
+                read_quoted_body(reader, &head, MAX_QUOTED_BODY.saturating_add(MAX_AUTH_FILE));
             return Ok(Answer {
                 status,
                 body,
@@ -1228,19 +1230,12 @@ fn read_answer(
                 short: None,
             });
         }
-        let (body, more) = read_body(reader, &head, limits.max_size);
-        let short = match declared {
-            Some(n) if !chunked && (body.len() as u64) < n => Some(format!(
-                "the answer ended after {} of its {n} bytes",
-                body.len()
-            )),
-            _ => None,
-        };
+        let body = read_body_parts(reader, &head, limits.max_size);
         return Ok(Answer {
             status,
-            body,
-            oversized: more,
-            short,
+            body: body.bytes,
+            oversized: body.more,
+            short: body.short,
         });
     }
 }
@@ -1564,6 +1559,67 @@ mod tests {
     use std::path::Path;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// The answer read from `wire` with a 64-byte body limit.
+    fn answer_of(wire: &[u8]) -> Result<Answer, String> {
+        let limits = FetchLimits {
+            response_head: 4096,
+            max_size: 64,
+        };
+        read_answer(
+            &mut std::io::BufReader::new(wire),
+            limits,
+            "the test's head limit",
+        )
+    }
+
+    #[test]
+    fn a_whole_chunked_answer_is_not_short() -> TestResult {
+        let got = answer_of(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+        )?;
+        assert_eq!(got.body, b"{}".to_vec(), "the chunks are the body");
+        assert_eq!(got.short, None, "a body with its last chunk is whole");
+        Ok(())
+    }
+
+    #[test]
+    fn a_chunked_answer_without_its_last_chunk_is_short() -> TestResult {
+        let got = answer_of(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n")?;
+        let short = got.short.unwrap_or_default();
+        assert!(
+            short.contains("before its last chunk"),
+            "a cut chunked body is short: {short}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_sized_answer_cut_short_keeps_its_message() -> TestResult {
+        let got = answer_of(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n{}")?;
+        assert_eq!(
+            got.short.as_deref(),
+            Some("the answer ended after 2 of its 10 bytes"),
+            "the message the fetcher printed before is unchanged"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_refusal_cut_short_is_quoted_as_far_as_it_came() -> TestResult {
+        let got = answer_of(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 50\r\n\r\nno token")?;
+        assert_eq!(got.status, 403, "the status is read");
+        assert_eq!(
+            got.body,
+            b"no token".to_vec(),
+            "the refusal text that came is kept"
+        );
+        assert_eq!(
+            got.short, None,
+            "a refusal's body is evidence, not checked for length"
+        );
+        Ok(())
+    }
 
     /// Which way an inline fetch came out, for a test's error: never the
     /// container or the refusal text, which hold the stored uuid.
