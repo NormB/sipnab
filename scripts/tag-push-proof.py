@@ -242,6 +242,9 @@ class Run:
     conclusion: str | None
     event: str
     head_sha: str
+    # The workflow file, as GitHub's run record names it; `gh run list` has
+    # no such field, so `with_paths` reads it, for skipped runs only.
+    path: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -275,11 +278,43 @@ def _describe(r: Run) -> str:
     return f"{r.status}/{r.conclusion or '-'}/{r.name}"
 
 
+# Workflows whose skipped run says nothing about the tree, by file path, each
+# with the one event its excused run comes from
+# (TAG-PROOF-REFUSES-SKIPPED-PR-CLOSED-RUN). The path, not the name, decides:
+# any workflow can take any name.
+# - pr-closed.yml starts on every `closed` event and skips its job on a merge,
+#   so since #816 every merged head carried a skipped run and no head proof
+#   passed.
+# - rerun-not-acquired.yml starts when a CI run ends and skips its job when
+#   that run succeeded, so a merge commit whose CI is green carries a skipped
+#   run and its own runs never passed either.
+# scripts/tests/test_tag_proof_skipped_by_design.py checks that each job of
+# each file listed here carries that skip condition.
+SKIPPED_BY_DESIGN = {
+    ".github/workflows/pr-closed.yml": "pull_request",
+    ".github/workflows/rerun-not-acquired.yml": "workflow_run",
+}
+
+
+def skipped_by_design(r: Run) -> bool:
+    """Whether `r` is a run that does not count: completed as `skipped`, of a
+    workflow file in SKIPPED_BY_DESIGN, from that file's event. Any other run
+    counts, a canceled, failed or pending one of those files too."""
+    return (
+        r.status == "completed"
+        and r.conclusion == "skipped"
+        and r.path in SKIPPED_BY_DESIGN
+        and SKIPPED_BY_DESIGN[r.path] == r.event
+    )
+
+
 def runs_verdict(runs: list | None, sha: str) -> tuple[str, list[str]]:
-    """("green" | "none" | "not_green" | "unreadable", one line per run)."""
+    """("green" | "none" | "not_green" | "unreadable", one line per run).
+    A run skipped by design is set aside before the newest of each name is
+    picked, so it cannot hide an older run of the same name."""
     if runs is None:
         return "unreadable", []
-    mine = latest_runs(runs, sha)
+    mine = latest_runs([r for r in runs if not skipped_by_design(r)], sha)
     if not mine:
         return "none", []
     lines = [_describe(r) for r in mine]
@@ -522,6 +557,22 @@ def _read_runs(run_list, sha: str) -> list | None:
     return parse_runs(out) if rc == 0 else None
 
 
+def with_paths(repo: str, runs: list | None, gh) -> list | None:
+    """`runs` with the workflow file of each completed/skipped run filled in
+    from GitHub's run record; only such a run can be skipped by design. A run
+    whose record does not answer keeps no path, and so still counts."""
+    if runs is None:
+        return None
+    out = []
+    for r in runs:
+        if r.status == "completed" and r.conclusion == "skipped" and r.id:
+            rc, text = gh(f"repos/{repo}/actions/runs/{r.id}", ".path")
+            if rc == 0:
+                r = dataclasses.replace(r, path=text.strip())
+        out.append(r)
+    return out
+
+
 def gather_tag_ci(repo: str | None, commit: str, gh, run_list) -> TagCi:
     """Gather the answers `tag_ci` needs, asking for a head proof only when
     the commit's own runs are not green, then apply it."""
@@ -535,6 +586,9 @@ def gather_tag_ci(repo: str | None, commit: str, gh, run_list) -> TagCi:
         return tag_ci(commit, own, None, None, [], {}, {})
     if repo is None:
         return _fallback(*runs_verdict(own, commit), "origin is not a GitHub repository")
+    own = with_paths(repo, own, gh)
+    if runs_verdict(own, commit)[0] == "green":
+        return tag_ci(commit, own, None, None, [], {}, {})
     required = read_required(repo, gh)
     contains = on_main(repo, commit, gh)
     heads = read_pr_heads(repo, commit, gh)
@@ -542,7 +596,7 @@ def gather_tag_ci(repo: str | None, commit: str, gh, run_list) -> TagCi:
     for _n, h, same in heads:
         if same:
             checks[h] = read_checks(repo, h, gh)
-            head_runs[h] = _read_runs(run_list, h)
+            head_runs[h] = with_paths(repo, _read_runs(run_list, h), gh)
     return tag_ci(commit, own, contains, required, heads, checks, head_runs)
 
 

@@ -1589,6 +1589,44 @@ pub fn pre_open_set(paths: &[std::path::PathBuf], may_map: bool) -> PreOpenedSet
     PreOpenedSet { members }
 }
 
+/// [`pre_open_set`] from the open results a run judged its set with
+/// (`files`, one per path of `paths`, in order), as the user it dropped to:
+/// each capture is opened, and mapped when `may_map`, from its descriptor,
+/// never by its path. An open that failed is kept as its error.
+pub fn pre_open_opened(
+    paths: &[std::path::PathBuf],
+    files: crate::capture::file::OpenResults,
+    may_map: bool,
+) -> PreOpenedSet {
+    let members = paths
+        .iter()
+        .zip(files)
+        .map(|(path, file)| {
+            let opened = file
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to open '{}': {e}",
+                        crate::capture::archive::source_name(path)
+                    )
+                })
+                .and_then(|file| {
+                    crate::capture::file::open_offline_opened(path, &file).map(|member| PreOpened {
+                        member,
+                        mapped: if may_map {
+                            crate::capture::mapped::MappedPcap::from_file(&file)
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        },
+                    })
+                });
+            std::sync::Mutex::new(Some(opened))
+        })
+        .collect();
+    PreOpenedSet { members }
+}
+
 /// Where the readers get each file of a set.
 pub enum Inputs<'a> {
     /// Open each file by its path when its turn comes.
@@ -3378,6 +3416,133 @@ mod tests {
                 "reading by path must fail on an unreadable file"
             );
         }
+        Ok(())
+    }
+
+    /// Two fixture captures copied into `dir`, with their paths.
+    fn two_fixtures(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, TestError> {
+        let fixtures = env!("CARGO_MANIFEST_DIR");
+        let mut paths = Vec::new();
+        for name in ["sip_call.pcap", "opensips-proxy-signaling.pcap"] {
+            let path = dir.join(name);
+            std::fs::copy(format!("{fixtures}/tests/fixtures/{name}"), &path)?;
+            paths.push(path);
+        }
+        Ok(paths)
+    }
+
+    /// The set opened from the descriptors a run judged its inputs with reads
+    /// in full once the paths lead nowhere: what a privilege drop does to a
+    /// root-only capture.
+    #[test]
+    fn success_a_set_opened_from_descriptors_reads_without_its_paths() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_fixtures(dir.path())?;
+        let files = crate::capture::file::open_set_up_front(&paths);
+        for path in &paths {
+            std::fs::remove_file(path)?;
+        }
+        let set = pre_open_opened(&paths, files, true);
+        let cc = crate::capture::CaptureConfig::default();
+        let r = run_offline_parallel_set(&paths, &Inputs::PreOpened(&set), &cc, pcfg(4))
+            .map_err(|e| format!("the descriptors read: {e:?}"))?;
+        assert_eq!(r.dialog_store.len(), 2, "both files' calls were read");
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_set_opened_from_descriptors_maps_when_it_may() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_fixtures(dir.path())?;
+        let set = pre_open_opened(
+            &paths,
+            crate::capture::file::open_set_up_front(&paths),
+            true,
+        );
+        let mapped = set
+            .members
+            .iter()
+            .filter(|m| {
+                m.lock().ok().is_some_and(|m| {
+                    m.as_ref()
+                        .is_some_and(|r| r.as_ref().is_ok_and(|p| p.mapped.is_some()))
+                })
+            })
+            .count();
+        assert_eq!(mapped, 2, "each classic pcap is mapped from its descriptor");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_set_opened_from_descriptors_does_not_map_under_a_filter() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_fixtures(dir.path())?;
+        let set = pre_open_opened(
+            &paths,
+            crate::capture::file::open_set_up_front(&paths),
+            false,
+        );
+        let mapped = set
+            .members
+            .iter()
+            .filter(|m| {
+                m.lock().ok().is_some_and(|m| {
+                    m.as_ref()
+                        .is_some_and(|r| r.as_ref().is_ok_and(|p| p.mapped.is_some()))
+                })
+            })
+            .count();
+        assert_eq!(
+            mapped, 0,
+            "a BPF filter is libpcap's job: nothing is mapped"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_open_that_failed_is_kept_for_its_reader() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_fixtures(dir.path())?;
+        let files = vec![
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            crate::capture::file::open_up_front(&paths[1]),
+        ];
+        let set = pre_open_opened(&paths, files, true);
+        let first = set.members[0]
+            .lock()
+            .map_err(|_| "poisoned")?
+            .take()
+            .ok_or("the first slot is filled")?;
+        let why = format!("{:#}", first.err().ok_or("a failed open became a capture")?);
+        assert!(
+            why.contains("sip_call.pcap") && why.contains("permission denied"),
+            "the open's own error, naming the file: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_descriptor_that_is_no_capture_is_refused_for_its_reader() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let junk = dir.path().join("junk.pcap");
+        std::fs::write(&junk, b"not a capture")?;
+        let paths = vec![junk.clone()];
+        let set = pre_open_opened(
+            &paths,
+            crate::capture::file::open_set_up_front(&paths),
+            true,
+        );
+        let only = set.members[0]
+            .lock()
+            .map_err(|_| "poisoned")?
+            .take()
+            .ok_or("the slot is filled")?;
+        let why = format!("{:#}", only.err().ok_or("a text file opened as a capture")?);
+        assert!(
+            why.contains("junk.pcap"),
+            "libpcap refuses it, and the reader reports that, naming the file: {why}"
+        );
         Ok(())
     }
 

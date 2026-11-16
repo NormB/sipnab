@@ -2320,6 +2320,46 @@ sipnab could not turn the `-I`/`--input` values into a list of capture files to 
 
 **Exit code:** 1.
 
+### `-I/--input: cannot unpack '{}': user '{user}' cannot create files in the temporary directory '{}', where sipnab unpacks an archive or a compressed capture after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), or pass --user with a user who can write it`
+
+A run started as root drops to `{user}` (`--user`, else `[privilege] user`,
+else `nobody`) before it reads its `-I` files, and unpacks an archive or a
+`.pcap.gz` as that user, under `TMPDIR`. The first `{}` is the first file
+that needs unpacking, the second is `TMPDIR`. sipnab stops there, before it
+unpacks anything. On macOS, root's own `TMPDIR` under `/var/folders` is a
+directory `nobody` cannot write.
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.pcap.gz': user 'nobody' cannot create files in the temporary directory '/var/folders/xy/T', where sipnab unpacks an archive or a compressed capture after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), or pass --user with a user who can write it
+```
+
+**What to do:** Run with `TMPDIR=/tmp` before the rest of the command
+(`sudo TMPDIR=/tmp sipnab -N -I a.pcap.gz`), or pass `--user` with a user
+that can write the directory. See
+[Read capture files only root can read](@/docs/least-privilege.md#read-capture-files-only-root-can-read).
+
+**Exit code:** 1.
+
+### `-I/--input: cannot unpack '{}': user '{user}' cannot create files in the temporary directory '{}' inside --chroot '{dir}', where sipnab unpacks an archive or a compressed capture after it drops root. Create '{dir}/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '{dir}'`
+
+The same refusal for a `--chroot` run. Such a run changes its root to
+`{dir}` and drops to `{user}` before it reads its `-I` files, and unpacks an
+archive or a `.pcap.gz` under the temporary directory as seen inside `{dir}`:
+the second `{}`, normally `/tmp`, which is `{dir}/tmp` on the host. sipnab
+stops at the first file that needs unpacking, before it unpacks anything. A
+capture that needs no unpacking reads with an empty `{dir}`.
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.tgz': user 'nobody' cannot create files in the temporary directory '/tmp' inside --chroot '/srv/jail', where sipnab unpacks an archive or a compressed capture after it drops root. Create '/srv/jail/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '/srv/jail'
+```
+
+**What to do:** Create the directory (`sudo mkdir -m 1777 /srv/jail/tmp`),
+or point `TMPDIR` at a directory inside `{dir}` that user can write, named
+as the run sees it after the chroot. See
+[Confine it to a directory](@/docs/least-privilege.md#confine-it-to-a-directory).
+
+**Exit code:** 1.
+
 ### `multi-core reconstruction failed: {e:#}`
 
 The multi-core reader (`--cores N`) failed. `{e:#}` is the error chain.
@@ -5502,8 +5542,12 @@ when the reason changes. `{why}` is `the center did not answer: <reason>` for
 a center that is down, unreachable or not trusted, `the center refused this
 member's token (HTTP 401)` for a token the center does not accept, or `the
 center answered HTTP <status>`. The heartbeats stay in the spool, and the
-member tries again, at most one interval apart. A line
-`the center takes heartbeats again` follows when the spool drains.
+member tries again after 1 s, then 2 s, 4 s and so on, at most one
+`[fleet] heartbeat_secs` apart. A line `the center takes heartbeats again`
+follows when the spool drains. `the center answered HTTP 503` comes, among
+other causes, from a center that is starting and
+[rebuilds its member list](#a-503-while-the-center-starts).
+The member does not read the answer's `Retry-After`.
 
 **What to do:** For a refused token, mint a new one on the center and restart
 the member. Otherwise, bring the center back or let the member reach it.
@@ -5543,7 +5587,29 @@ more of the history while it is away.
 them. [Run a fleet center](@/docs/fleet.md#run-a-fleet-center) describes the command.
 A message that starts with `sipnab fleet serve:` stops the center with exit
 code 2. A message the center answers a member with goes in the `detail` of a
-`400` answer, and the center keeps running.
+`400` or `503` answer, and the center keeps running.
+
+### A `503` while the center starts
+
+`the center is rebuilding its member list from the history store` is the
+`detail` of the `503` answer the center gives every request, on every
+route, from the time it binds its port until it has opened its store and
+rebuilt its member list. The answer carries `Retry-After: 5`. It logs
+`fleet center answering 503 on <address> until it serves: the center is
+rebuilding its member list from the history store` when it binds, and
+`fleet center serving` once it answers again. A start with its store file
+reads one heartbeat file. A start without it reads every heartbeat file of
+`--retention-hours`, which takes seconds for a large fleet
+([The files of the history store](@/docs/fleet.md#the-files-of-the-history-store)).
+A build without the history store answers `the center is opening its store`
+for the same window. A SIGTERM or SIGINT during the rebuild ends it before
+the next file it would read, and the center exits 0: the store file holds
+the members it held before the start, and the center does not open its
+intake.
+
+**What to do:** Nothing. Send the request again after the `Retry-After`
+seconds. A member keeps its heartbeats in its spool and delivers them once
+the center serves.
 
 ### `sipnab fleet serve: {e}`
 

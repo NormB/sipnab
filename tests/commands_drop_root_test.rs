@@ -15,6 +15,8 @@
 
 #![cfg(all(target_os = "linux", feature = "vcon", feature = "api"))]
 
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
 #[path = "support/root_run.rs"]
 mod root_run;
 #[path = "../src/test_scratch.rs"]
@@ -1483,7 +1485,11 @@ mod file_commands {
 
     /// The sample `name` copied to `scratch` as `to`, readable by root only,
     /// compressed when `to` ends in `.gz`.
-    fn root_only_sample(scratch: &Scratch, name: &str, to: &str) -> Result<PathBuf, TestError> {
+    pub(super) fn root_only_sample(
+        scratch: &Scratch,
+        name: &str,
+        to: &str,
+    ) -> Result<PathBuf, TestError> {
         let mut bytes = std::fs::read(sample(name))?;
         if to.ends_with(".gz") {
             bytes = gzip(&bytes)?;
@@ -1495,14 +1501,18 @@ mod file_commands {
     }
 
     /// A directory only `owner` can enter or write.
-    fn private_dir(scratch: &Scratch, name: &str, owner: &str) -> Result<PathBuf, TestError> {
+    pub(super) fn private_dir(
+        scratch: &Scratch,
+        name: &str,
+        owner: &str,
+    ) -> Result<PathBuf, TestError> {
         let path = scratch.dir_of(name, owner)?;
         as_root("chmod", &["700", text(&path)?])?;
         Ok(path)
     }
 
     /// Run sipnab as root with `TMPDIR` set to `tmp`, to its end.
-    fn run_in(tmp: &Path, args: &[&str]) -> Result<(Option<i32>, String), TestError> {
+    pub(super) fn run_in(tmp: &Path, args: &[&str]) -> Result<(Option<i32>, String), TestError> {
         let mut command = root_run::sudo()?;
         command
             .arg("env")
@@ -2138,5 +2148,577 @@ mod file_commands {
         );
         assert!(!out.exists(), "nothing was written");
         Ok(())
+    }
+}
+
+/// A capture run that reads files (`-I`), started as root
+/// (CAPTURE-RESOLVE-AS-ROOT): it opens its inputs as root and judges, unwraps
+/// and reads them only as the user it drops to.
+mod capture_runs {
+    use super::*;
+
+    /// One UDP frame with a SIP-looking payload, `n` bytes of padding long.
+    fn frame(n: usize) -> Vec<u8> {
+        let mut payload = b"OPTIONS sip:probe@example.com SIP/2.0\r\n".to_vec();
+        payload.resize(payload.len() + n, b'x');
+        pcap_build::udp_frame([192, 0, 2, 1], [192, 0, 2, 2], 5060, 5060, &payload)
+    }
+
+    /// A classic pcap of `count` frames, the first `start_usec` after the
+    /// builder's base second, one millisecond apart, readable by root only.
+    fn root_only_pcap(
+        scratch: &Scratch,
+        name: &str,
+        count: usize,
+        start_usec: u64,
+    ) -> Result<PathBuf, TestError> {
+        let one = frame(64);
+        let frames: Vec<(Vec<u8>, u64)> = (0..count as u64)
+            .map(|i| (one.clone(), start_usec + i * 1_000))
+            .collect();
+        let path = scratch.path(name);
+        pcap_build::write_pcap_at(&path, &frames, 1)?;
+        make_root_only(&path)?;
+        Ok(path)
+    }
+
+    /// The position in `log` of the first line holding `part`.
+    fn at(log: &str, part: &str) -> Option<usize> {
+        log.find(part)
+    }
+
+    /// The reader of a two-file set reaches the second file only after it has
+    /// read every record of the first. Started as root, the run logs the
+    /// drop before the reader logs that it moved on: no record of the first
+    /// file is read while the process is still root. Before
+    /// CAPTURE-RESOLVE-AS-ROOT the reader read on while the run confined
+    /// itself (read of the second file's metadata, the drop), so the second
+    /// file's line came first.
+    #[test]
+    fn no_record_of_the_first_file_is_read_before_the_drop() -> Result<(), TestError> {
+        if !sudo_or_skip("no_record_of_the_first_file_is_read_before_the_drop") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("capture-first-member")?;
+        let first = root_only_pcap(&scratch, "a-first.pcap", 3, 0)?;
+        let second = root_only_pcap(&scratch, "b-second.pcap", 60_000, 10_000_000)?;
+        let (code, log) = run(&["-N", "-v", "-I", text(&first)?, "-I", text(&second)?])?;
+        assert_eq!(code, Some(0), "the run reads both files:\n{log}");
+        let dropped = at(&log, "Dropped privileges to user 'nobody'");
+        let moved_on = at(&log, "Reading from 'b-second.pcap'").or_else(|| {
+            at(
+                &log,
+                &format!("Reading from '{}'", text(&second).unwrap_or("")),
+            )
+        });
+        assert!(
+            dropped.is_some() && moved_on.is_some(),
+            "the run logs its drop and the read of the second file:\n{log}"
+        );
+        assert!(
+            dropped < moved_on,
+            "the drop is logged before the reader moves past the first file:\n{log}"
+        );
+        Ok(())
+    }
+
+    /// A capture run with `extra` flags over gzip captures only root can
+    /// read: refused where only root can write the temporary directory, done
+    /// where only `nobody` can. The step that inflates and judges the
+    /// captures ran as `nobody`.
+    fn judged_as_nobody(test: &str, extra: &[&str]) -> Result<(), TestError> {
+        use super::file_commands::{private_dir, root_only_sample, run_in};
+        if !sudo_or_skip(test) {
+            return Ok(());
+        }
+        let scratch = Scratch::new("capture-judge")?;
+        let first = root_only_sample(&scratch, "sip-rtp-g711.pcap", "a.pcap.gz")?;
+        let second = root_only_sample(&scratch, "sip-problem-call.pcap", "b.pcap.gz")?;
+        let roots_tmp = private_dir(&scratch, "tmp-root", "root")?;
+        let nobodys_tmp = private_dir(&scratch, "tmp-nobody", "nobody")?;
+        let mut args = vec!["-N"];
+        args.extend_from_slice(extra);
+        args.extend(["-I", text(&first)?, "-I", text(&second)?]);
+
+        let (code, log) = run_in(&roots_tmp, &args)?;
+        assert_ne!(
+            code,
+            Some(0),
+            "{extra:?} inflated its inputs where only root can write, so it judged them as \
+             root:\n{log}"
+        );
+        let (code, log) = run_in(&nobodys_tmp, &args)?;
+        assert_eq!(
+            code,
+            Some(0),
+            "{extra:?} could not inflate its inputs where only nobody can write:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_single_reader_judges_its_inputs_as_nobody() -> Result<(), TestError> {
+        judged_as_nobody("a_single_reader_judges_its_inputs_as_nobody", &[])
+    }
+
+    #[test]
+    fn a_cores_run_judges_its_inputs_as_nobody() -> Result<(), TestError> {
+        judged_as_nobody(
+            "a_cores_run_judges_its_inputs_as_nobody",
+            &["--cores", "2", "--report"],
+        )
+    }
+
+    #[test]
+    fn success_a_cores_run_counts_its_set_after_the_drop() -> Result<(), TestError> {
+        if !sudo_or_skip("success_a_cores_run_counts_its_set_after_the_drop") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("cores-count-line")?;
+        let first = root_only_pcap(&scratch, "a.pcap", 3, 0)?;
+        let second = root_only_pcap(&scratch, "b.pcap", 3, 10_000_000)?;
+        let (code, log) = run(&[
+            "-N",
+            "-v",
+            "--cores",
+            "2",
+            "--report",
+            "-I",
+            text(&first)?,
+            "-I",
+            text(&second)?,
+        ])?;
+        assert_eq!(code, Some(0), "both root-only files read:\n{log}");
+        assert!(
+            in_order(
+                &log,
+                "Dropped privileges to user 'nobody'",
+                "Reading 2 capture files in timestamp order"
+            ),
+            "the --cores set is judged, and counted, as nobody:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_cores_run_refuses_a_tmpdir_nobody_cannot_write() -> Result<(), TestError> {
+        use super::file_commands::{private_dir, root_only_sample, run_in};
+        if !sudo_or_skip("failure_a_cores_run_refuses_a_tmpdir_nobody_cannot_write") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("cores-tmp-root")?;
+        let gz = root_only_sample(&scratch, "sip-rtp-g711.pcap", "a.pcap.gz")?;
+        let roots_tmp = private_dir(&scratch, "tmp-root", "root")?;
+        let (code, log) = run_in(
+            &roots_tmp,
+            &["-N", "--cores", "2", "--report", "-I", text(&gz)?],
+        )?;
+        assert_eq!(code, Some(1), "refused, exit 1:\n{log}");
+        assert!(
+            log.contains(&format!(
+                "user 'nobody' cannot create files in the temporary directory '{}'",
+                text(&roots_tmp)?
+            )),
+            "the --cores run gives the same refusal as the single reader:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_cores_run_with_no_priv_drop_judges_as_root() -> Result<(), TestError> {
+        use super::file_commands::{private_dir, root_only_sample, run_in};
+        if !sudo_or_skip("edge_a_cores_run_with_no_priv_drop_judges_as_root") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("cores-keep-root")?;
+        let gz = root_only_sample(&scratch, "sip-rtp-g711.pcap", "a.pcap.gz")?;
+        let roots_tmp = private_dir(&scratch, "tmp-root", "root")?;
+        let (code, log) = run_in(
+            &roots_tmp,
+            &[
+                "-N",
+                "--no-priv-drop",
+                "--cores",
+                "2",
+                "--report",
+                "-I",
+                text(&gz)?,
+            ],
+        )?;
+        assert_eq!(
+            code,
+            Some(0),
+            "a --cores run that keeps root unwraps where only root can write:\n{log}"
+        );
+        Ok(())
+    }
+
+    /// A gzip of a classic pcap of `count` frames, `gap_usec` apart, readable
+    /// by root only.
+    fn root_only_gz(
+        scratch: &Scratch,
+        name: &str,
+        count: usize,
+        gap_usec: u64,
+    ) -> Result<PathBuf, TestError> {
+        let one = frame(64);
+        let frames: Vec<(Vec<u8>, u64)> = (0..count as u64)
+            .map(|i| (one.clone(), i * gap_usec))
+            .collect();
+        let plain = scratch.path(&format!("{name}.plain"));
+        pcap_build::write_pcap_at(&plain, &frames, 1)?;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&std::fs::read(&plain)?)?;
+        std::fs::remove_file(&plain)?;
+        let path = scratch.path(name);
+        std::fs::write(&path, enc.finish()?)?;
+        make_root_only(&path)?;
+        Ok(path)
+    }
+
+    /// An empty directory for `--chroot`, owned by root, mode 0755.
+    fn chroot_dir(scratch: &Scratch) -> Result<PathBuf, TestError> {
+        scratch.dir_of("jail", "root")
+    }
+
+    /// `DIR/tmp` owned by root, mode 1777, as a chroot's temporary directory.
+    fn chroot_tmp(dir: &Path) -> Result<PathBuf, TestError> {
+        let tmp = dir.join("tmp");
+        as_root("mkdir", &[text(&tmp)?])?;
+        as_root("chmod", &["1777", text(&tmp)?])?;
+        Ok(tmp)
+    }
+
+    /// Every entry under `dir`, each as `<owner name> <path>`, read as root.
+    fn owners_under(dir: &Path) -> Result<Vec<String>, TestError> {
+        let out = root_run::sudo()?
+            .args(["find", text(dir)?, "-mindepth", "1", "-printf", "%u %p\\n"])
+            .output()?;
+        Ok(String::from_utf8(out.stdout)?
+            .lines()
+            .map(str::to_string)
+            .collect())
+    }
+
+    #[test]
+    fn edge_a_chroot_run_reads_a_plain_capture_with_an_empty_dir() -> Result<(), TestError> {
+        if !sudo_or_skip("edge_a_chroot_run_reads_a_plain_capture_with_an_empty_dir") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("chroot-plain")?;
+        let dir = chroot_dir(&scratch)?;
+        let pcap = root_only_pcap(&scratch, "a.pcap", 3, 0)?;
+        let (code, log) = run(&["-N", "-v", "--chroot", text(&dir)?, "-I", text(&pcap)?])?;
+        assert_eq!(code, Some(0), "an empty DIR still reads a capture:\n{log}");
+        assert!(
+            log.contains("1 of 1 file(s) read in full"),
+            "read through the descriptor opened before the chroot:\n{log}"
+        );
+        assert!(
+            in_order(
+                &log,
+                "Dropped privileges to user 'nobody'",
+                "Reading from '"
+            ),
+            "read after the chroot and the drop:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_chroot_run_unpacks_inside_dir_as_the_drop_user() -> Result<(), TestError> {
+        if !sudo_or_skip("success_a_chroot_run_unpacks_inside_dir_as_the_drop_user") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("chroot-unpack")?;
+        let dir = chroot_dir(&scratch)?;
+        let tmp = chroot_tmp(&dir)?;
+        // Two frames four seconds apart, replayed: the run holds its member
+        // open long enough to look at it.
+        let gz = root_only_gz(&scratch, "a.pcap.gz", 2, 4_000_000)?;
+        let mut live = Run::start(
+            &[
+                "-N",
+                "-v",
+                "--replay",
+                "--chroot",
+                text(&dir)?,
+                "-I",
+                text(&gz)?,
+            ],
+            Path::new(BIN),
+        )?;
+        live.line_with("Replaying from '")?;
+        let owners = owners_under(&tmp)?;
+        let (code, log) = live.finish()?;
+        assert_eq!(code, Some(0), "the member was read:\n{log}");
+        let extracted: Vec<&String> = owners
+            .iter()
+            .filter(|l| l.contains("/sipnab-archive-"))
+            .collect();
+        assert!(
+            !extracted.is_empty(),
+            "the extraction directory is inside DIR/tmp: {owners:?}\n{log}"
+        );
+        assert!(
+            extracted.iter().all(|l| l.starts_with("nobody ")),
+            "the drop user created the directory and every file in it: {owners:?}"
+        );
+        assert!(
+            extracted.iter().any(|l| l.ends_with(".pcap")),
+            "the unpacked member is among them: {owners:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_extraction_inside_dir_is_removed_at_exit() -> Result<(), TestError> {
+        if !sudo_or_skip("success_the_extraction_inside_dir_is_removed_at_exit") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("chroot-cleanup")?;
+        let dir = chroot_dir(&scratch)?;
+        let tmp = chroot_tmp(&dir)?;
+        let gz = root_only_gz(&scratch, "a.pcap.gz", 3, 1_000)?;
+        let (code, log) = run(&["-N", "--chroot", text(&dir)?, "-I", text(&gz)?])?;
+        assert_eq!(code, Some(0), "the member was read:\n{log}");
+        assert_eq!(
+            owners_under(&tmp)?,
+            Vec::<String>::new(),
+            "nothing is left in DIR/tmp when the run ends:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_chroot_run_without_a_writable_tmp_refuses_with_the_whole_text()
+    -> Result<(), TestError> {
+        if !sudo_or_skip("failure_a_chroot_run_without_a_writable_tmp_refuses_with_the_whole_text")
+        {
+            return Ok(());
+        }
+        let scratch = Scratch::new("chroot-no-tmp")?;
+        let dir = chroot_dir(&scratch)?;
+        let gz = root_only_gz(&scratch, "a.pcap.gz", 3, 1_000)?;
+        let (code, log) = run(&["-N", "--chroot", text(&dir)?, "-I", text(&gz)?])?;
+        assert_eq!(code, Some(1), "refused, exit 1:\n{log}");
+        let expected = format!(
+            "-I/--input: cannot unpack '{gz}': user 'nobody' cannot create files in the \
+             temporary directory '/tmp' inside --chroot '{dir}', where sipnab unpacks an archive \
+             or a compressed capture after it drops root. Create '{dir}/tmp' writable by that \
+             user (mode 1777), or set TMPDIR to such a directory inside '{dir}'",
+            gz = text(&gz)?,
+            dir = text(&dir)?
+        );
+        assert!(
+            log.contains(&expected),
+            "the whole refusal, naming DIR, the TMPDIR inside it, the user and the fix:\n{log}"
+        );
+        assert_eq!(
+            owners_under(&dir)?,
+            Vec::<String>::new(),
+            "nothing was created in DIR:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_user_named_with_user_judges_the_inputs_as_that_user() -> Result<(), TestError> {
+        judged_as_nobody(
+            "edge_a_user_named_with_user_judges_the_inputs_as_that_user",
+            &["--user", "nobody"],
+        )
+    }
+
+    /// The position of `later` in `log` is after that of `earlier`, both
+    /// present.
+    fn in_order(log: &str, earlier: &str, later: &str) -> bool {
+        matches!((at(log, earlier), at(log, later)), (Some(a), Some(b)) if a < b)
+    }
+
+    #[test]
+    fn success_the_count_line_is_printed_after_the_drop() -> Result<(), TestError> {
+        if !sudo_or_skip("success_the_count_line_is_printed_after_the_drop") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("capture-count-line")?;
+        let first = root_only_pcap(&scratch, "a.pcap", 3, 0)?;
+        let second = root_only_pcap(&scratch, "b.pcap", 3, 10_000_000)?;
+        let (code, log) = run(&["-N", "-v", "-I", text(&first)?, "-I", text(&second)?])?;
+        assert_eq!(code, Some(0), "both files read:\n{log}");
+        assert!(
+            in_order(
+                &log,
+                "Dropped privileges to user 'nobody'",
+                "Reading 2 capture files in timestamp order"
+            ),
+            "the set is judged, and counted, as nobody:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_one_root_only_file_is_read_after_the_drop() -> Result<(), TestError> {
+        if !sudo_or_skip("success_one_root_only_file_is_read_after_the_drop") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("capture-one-file")?;
+        let only = root_only_pcap(&scratch, "only.pcap", 20_000, 0)?;
+        let (code, log) = run(&["-N", "-v", "-I", text(&only)?])?;
+        assert_eq!(code, Some(0), "a root-only input still reads:\n{log}");
+        assert!(
+            in_order(
+                &log,
+                "Dropped privileges to user 'nobody'",
+                "Reading from '"
+            ),
+            "the reader starts after the drop:\n{log}"
+        );
+        assert!(
+            log.contains("1 of 1 file(s) read in full"),
+            "read in full through the descriptor opened as root:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_directory_only_root_may_enter_is_read_after_the_drop() -> Result<(), TestError> {
+        use super::file_commands::private_dir;
+        if !sudo_or_skip("edge_a_directory_only_root_may_enter_is_read_after_the_drop") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("capture-root-dir")?;
+        let dir = private_dir(&scratch, "ring", "root")?;
+        let staged_a = root_only_pcap(&scratch, "a.pcap", 3, 0)?;
+        let staged_b = root_only_pcap(&scratch, "b.pcap", 3, 10_000_000)?;
+        as_root("mv", &[text(&staged_a)?, text(&staged_b)?, text(&dir)?])?;
+        let (code, log) = run(&["-N", "-v", "-I", text(&dir)?])?;
+        assert_eq!(
+            code,
+            Some(0),
+            "named and opened as root, judged and read as nobody:\n{log}"
+        );
+        assert!(
+            log.contains("2 of 2 file(s) read in full"),
+            "both files of the directory were read:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_named_file_that_is_no_capture_exits_1_as_before() -> Result<(), TestError> {
+        if !sudo_or_skip("failure_a_named_file_that_is_no_capture_exits_1_as_before") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("capture-junk")?;
+        let junk = scratch.path("junk.pcap");
+        std::fs::write(&junk, b"no capture in here")?;
+        make_root_only(&junk)?;
+        let (code, log) = run(&["-N", "-I", text(&junk)?])?;
+        assert_eq!(code, Some(1), "exit 1, as before:\n{log}");
+        assert!(
+            log.contains("-I/--input: cannot read capture") && log.contains("named with -I"),
+            "the message is the one a run judged as root printed:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_named_file_that_does_not_exist_is_refused_before_the_drop() -> Result<(), TestError>
+    {
+        if !sudo_or_skip("failure_a_named_file_that_does_not_exist_is_refused_before_the_drop") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("capture-missing")?;
+        let gone = scratch.path("gone.pcap");
+        let (code, log) = run(&["-N", "-I", text(&gone)?])?;
+        assert_eq!(code, Some(1), "exit 1, as before:\n{log}");
+        assert!(
+            log.contains("-I/--input:") && log.contains("does not exist"),
+            "naming refuses it, as before:\n{log}"
+        );
+        assert!(
+            !log.contains("Dropped privileges"),
+            "a path that names nothing stops the run before it confines itself:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_temporary_directory_nobody_cannot_write_stops_the_run_with_exit_1()
+    -> Result<(), TestError> {
+        use super::file_commands::{private_dir, root_only_sample, run_in};
+        if !sudo_or_skip(
+            "failure_a_temporary_directory_nobody_cannot_write_stops_the_run_with_exit_1",
+        ) {
+            return Ok(());
+        }
+        let scratch = Scratch::new("capture-tmp-root")?;
+        let gz = root_only_sample(&scratch, "sip-rtp-g711.pcap", "a.pcap.gz")?;
+        let roots_tmp = private_dir(&scratch, "tmp-root", "root")?;
+        let (code, log) = run_in(&roots_tmp, &["-N", "-I", text(&gz)?])?;
+        assert_eq!(code, Some(1), "refused, exit 1:\n{log}");
+        let expected = format!(
+            "-I/--input: cannot unpack '{}': user 'nobody' cannot create files in the \
+             temporary directory '{}', where sipnab unpacks an archive or a compressed capture \
+             after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), \
+             or pass --user with a user who can write it",
+            text(&gz)?,
+            text(&roots_tmp)?
+        );
+        assert!(
+            log.contains(&expected),
+            "the message names the input, the directory, the user and the fix:\n{log}"
+        );
+        // Only the refusal's own line is read: an instrumented build (the
+        // coverage job) prints its own `Permission denied` for a profile it
+        // cannot write as nobody.
+        assert!(
+            !log.lines()
+                .any(|l| l.contains("-I/--input:") && l.contains("Permission denied")),
+            "refused before the unpack tried the directory:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_tmpdir_nobody_cannot_write_does_not_stop_a_plain_capture() -> Result<(), TestError> {
+        use super::file_commands::{private_dir, root_only_sample, run_in};
+        if !sudo_or_skip("edge_a_tmpdir_nobody_cannot_write_does_not_stop_a_plain_capture") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("capture-tmp-plain")?;
+        let pcap = root_only_sample(&scratch, "sip-rtp-g711.pcap", "a.pcap")?;
+        let roots_tmp = private_dir(&scratch, "tmp-root", "root")?;
+        let (code, log) = run_in(&roots_tmp, &["-N", "-I", text(&pcap)?])?;
+        assert_eq!(
+            code,
+            Some(0),
+            "a capture that needs no unpacking reads whatever TMPDIR is:\n{log}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_no_priv_drop_judges_the_inputs_as_root() -> Result<(), TestError> {
+        use super::file_commands::{private_dir, root_only_sample, run_in};
+        if !sudo_or_skip("edge_no_priv_drop_judges_the_inputs_as_root") {
+            return Ok(());
+        }
+        let scratch = Scratch::new("capture-keep-root")?;
+        let gz = root_only_sample(&scratch, "sip-rtp-g711.pcap", "a.pcap.gz")?;
+        let roots_tmp = private_dir(&scratch, "tmp-root", "root")?;
+        let (code, log) = run_in(&roots_tmp, &["-N", "--no-priv-drop", "-I", text(&gz)?])?;
+        assert_eq!(
+            code,
+            Some(0),
+            "a run that keeps root unwraps where only root can write:\n{log}"
+        );
+        Ok(())
+    }
+
+    /// Run sipnab as root to its end.
+    fn run(args: &[&str]) -> Result<(Option<i32>, String), TestError> {
+        Run::start(args, Path::new(BIN))?.finish()
     }
 }

@@ -8,6 +8,35 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.259] - 2026-11-16
+
+### Changed
+
+- **A fleet center without its store file rebuilds its member list faster at start.**
+  - Effect: The center builds only the heartbeat rows newer than the one it holds of each member, and starts serving sooner.
+  - Limit: A damaged row older than every row the center holds no longer refuses its file at start; `sipnab fleet verify` reports that file.
+  - Docs: [The files of the history store](docs/fleet.md#the-files-of-the-history-store).
+
+### Fixed
+
+- **A fleet center answers `503` while it rebuilds its member list at start.**
+  - Was: The center bound its port before it opened its store, and a request got no answer until the rebuild ended.
+  - Effect: Every request gets `503` with `Retry-After: 5` and the cause; a member keeps its heartbeats and delivers them after.
+  - Docs: [What the center answers while it starts](docs/fleet.md#what-the-center-answers-while-it-starts).
+- **A stop during a fleet center's start goes through its handler.**
+  - Was: A SIGTERM or SIGINT during the rebuild at start ended the process at once, without the center's handler.
+  - Effect: The center ends the rebuild before its next file and exits `0`; the store file keeps the members it held.
+  - Docs: [What the center answers while it starts](docs/fleet.md#what-the-center-answers-while-it-starts).
+
+### Security
+
+- **A capture run started as root reads no byte of its `-I` files as root.**
+  - Was: The run unpacked, probed and began reading its capture files as root, before it dropped to `--user` or `nobody`.
+  - Effect: It opens each file as root and reads it as the drop user, so root-only files still read; `Reading N capture files` follows the drop.
+  - Do: Give the drop user a writable `TMPDIR` such as `/tmp`, or the run stops at the first archive; other exit codes and messages are unchanged.
+  - Limit: On macOS root's `TMPDIR` is private: archive or `.pcap.gz` input needs `TMPDIR=/tmp` or `--user`; under `--chroot DIR`, it needs `DIR/tmp` (mode 1777).
+  - Docs: [Read capture files only root can read](docs/least-privilege.md#read-capture-files-only-root-can-read).
+
 ## [0.5.258] - 2026-11-15
 
 ### Added
