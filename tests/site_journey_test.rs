@@ -6700,7 +6700,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // step "TUI terminal-loss measurements (macOS)" names
     // `tests/tui_terminal_loss_test.rs`. Measurement: the scan read 294 on
     // fdc3e8ebe and 295 with that step staged.
-    const EXPECTED_REFERENCES: usize = 295;
+    // 295 -> 297 (release apt rule): release.yml's step "Install build deps
+    // (bookworm container)" sources `scripts/release-apt.sh` and its comment
+    // names `scripts/tests/test_release_apt.py`. Measurement: the scan read
+    // 295 on main 665b7f791 and 297 with that step staged.
+    const EXPECTED_REFERENCES: usize = 297;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

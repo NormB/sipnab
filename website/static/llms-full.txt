@@ -89043,6 +89043,15 @@ The gnu targets build inside a `rust:1-bookworm` container, so their glibc floor
 The aarch64 gnu target cross-compiles inside that
 same container via Debian multiarch rather than cross-rs, for the same reason.
 
+The container's package installs go through [`scripts/release-apt.sh`](../../scripts/release-apt.sh).
+
+- `apt_bounded` bounds and retries each `apt-get` run.
+  On a failure it prints one `::error::` line that names the kind: a timeout or a download failure (re-run the job), or a dependency resolution failure (a re-run fails the same way).
+- `multiarch_pins` installs `linux-libc-dev`, `libc6` and `libc6-dev` for amd64 and arm64 at the newest version both architectures' indexes carry.
+  These packages are `Multi-Arch: same`, so both architectures must hold one version.
+  Release run 43881101798 (v0.5.260) failed both aarch64 builds when `bookworm-security` carried `linux-libc-dev` 6.1.192-2 for arm64 and only 6.1.192-1 for amd64.
+- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds both.
+
 Every gnu binary then passes a `readelf -V` gate.
 
 - It fails the build if the binary links a `GLIBC_` symbol newer than 2.36.

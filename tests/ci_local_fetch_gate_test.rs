@@ -608,15 +608,30 @@ fn no_cross_image_instruction_mixes_a_download_with_a_build() -> Result<(), Test
 /// failing because the tag is already public by the time it happens.
 #[test]
 fn every_package_install_in_the_release_workflow_is_bounded() -> Result<(), TestError> {
-    let text = read(".github/workflows/release.yml")?;
+    // Since 2026-11-16 the bounded wrapper lives in scripts/release-apt.sh,
+    // which the release step sources, so both files are read.
+    let workflow = read(".github/workflows/release.yml")?;
+    let helper = read("scripts/release-apt.sh")?;
     assert!(
-        text.contains("apt-get install"),
-        "release.yml no longer installs anything; if the dependency was \
-         deleted rather than bounded, the builds link against whatever the \
-         container happens to carry"
+        workflow.contains(". scripts/release-apt.sh")
+            && workflow.contains("apt_bounded 600 install"),
+        "release.yml no longer installs anything through scripts/release-apt.sh; \
+         if the dependency was deleted rather than bounded, the builds link \
+         against whatever the container happens to carry"
     );
     let mut offenders = Vec::new();
-    for (i, line) in text.lines().enumerate() {
+    let mut apt_calls = 0usize;
+    let lines = workflow
+        .lines()
+        .enumerate()
+        .map(|(i, l)| ("release.yml", i, l))
+        .chain(
+            helper
+                .lines()
+                .enumerate()
+                .map(|(i, l)| ("scripts/release-apt.sh", i, l)),
+        );
+    for (file, i, line) in lines {
         if line.trim_start().starts_with('#') || is_annotation(line) {
             continue;
         }
@@ -632,13 +647,20 @@ fn every_package_install_in_the_release_workflow_is_bounded() -> Result<(), Test
         if !line.contains("apt-get ") || line.contains("command -v apt-get") {
             continue;
         }
-        if !line.contains("timeout ") {
-            offenders.push(format!("release.yml:{}: {}", i + 1, line.trim()));
+        apt_calls += 1;
+        if !line.contains("timeout ") || !line.contains("Acquire::Retries") {
+            offenders.push(format!("{file}:{}: {}", i + 1, line.trim()));
         }
     }
     assert!(
+        apt_calls > 0,
+        "neither release.yml nor scripts/release-apt.sh runs apt-get; the \
+         installs went some other way, unchecked by this gate"
+    );
+    assert!(
         offenders.is_empty(),
-        "these release steps reach the distribution archives unbounded. An \
+        "these release steps reach the distribution archives unbounded or \
+         unretried. An \
          `apt-get install libpcap-dev` that hung for fifteen minutes is what \
          canceled the 0.5.118 CI run; the same call in a release job holds a \
          build that a public tag is waiting on. Wrap it:\n  timeout 600 \

@@ -192,21 +192,11 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          apt_bounded() { # apt_bounded <seconds> <apt args...>
-            local secs="$1"; shift
-            local what="$1"
-            # apt neither retries nor gives up on its own. Acquire::Retries
-            # covers a dropped connection; the Timeouts cover a stalled read;
-            # `timeout` covers the case neither does, a host that keeps the
-            # socket alive and sends nothing.
-            if ! timeout "$secs" apt-get \
-                 -o Acquire::Retries=5 \
-                 -o Acquire::http::Timeout=30 \
-                 -o Acquire::https::Timeout=30 "$@"; then
-              echo "::error::FETCH failure, not a build failure: apt-get $what did not complete within ${secs}s against the Debian archives. No sipnab source was compiled and nothing in this repository is broken — re-run the job."
-              exit 1
-            fi
-          }
+          # apt_bounded (bounded, retried, and a failure named as a timeout,
+          # a download or a resolution failure) and multiarch_pins are
+          # defined and tested in one place; scripts/tests/test_release_apt.py
+          # holds them.
+          . scripts/release-apt.sh
           apt_bounded 300 update
           # cmake builds libopus from the source opusic-sys vendors, for the
           # `opus` feature in `full`. rust:1-bookworm does not carry it. It
@@ -216,7 +206,15 @@ jobs:
           if [ "$TARGET" = "aarch64-unknown-linux-gnu" ]; then
             dpkg --add-architecture arm64
             apt_bounded 300 update
-            apt_bounded 600 install -y gcc-aarch64-linux-gnu libpcap-dev:arm64 libasound2-dev:arm64
+            # The Multi-Arch: same packages the arm64 dev packages pull must
+            # hold one version on both architectures. Release run 43881101798
+            # (v0.5.260) failed both aarch64 builds when bookworm-security
+            # carried linux-libc-dev arm64 6.1.192-2 and amd64 only 6.1.192-1;
+            # both are now installed at the newest version both indexes carry.
+            pins="$(multiarch_pins linux-libc-dev libc6 libc6-dev)"
+            # One `pkg:arch=version` word a line, none with spaces or globs.
+            # shellcheck disable=SC2086
+            apt_bounded 600 install -y $pins gcc-aarch64-linux-gnu libpcap-dev:arm64 libasound2-dev:arm64
           else
             apt_bounded 600 install -y libpcap-dev libasound2-dev
           fi

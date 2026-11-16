@@ -1069,7 +1069,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 889 -> 891 (tag proof, +2): the tag gate's head-proof bullet links
     // .github/workflows/pr-closed.yml and
     // scripts/tests/test_tag_proof_skipped_by_design.py.
-    const EXPECTED_CODE_LINKS: usize = 891;
+    // 891 -> 893 (release apt rule, +2): build-ci-release.md's glibc-floor
+    // section links scripts/release-apt.sh and scripts/tests/test_release_apt.py.
+    const EXPECTED_CODE_LINKS: usize = 893;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
