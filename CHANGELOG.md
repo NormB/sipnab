@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The post-capture JSON flags print JSON only, without the per-message lines.**
+  - Was: `--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` printed the per-message lines first, so `jq` failed without `--no-cli-print`.
+  - Effect: Each implies `--no-cli-print`; `--json`, `--json-pretty`, `-T` or `--fail2ban` beside it still prints the per-message stream.
+  - Docs: [Output formats](docs/output-formats.md).
+
 ## [0.5.259] - 2026-11-16
 
 ### Changed

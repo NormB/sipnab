@@ -1886,6 +1886,10 @@ pub struct OutputArgs {
     /// Suppress the per-message stream (reports still print). Combine
     /// with --report or --call-report for summary-only output:
     /// `sipnab -N -I file.pcap --report --no-cli-print`.
+    ///
+    /// Implied by `--json-dialogs`, `--json-stun`, `--json-analyze` and
+    /// `--yang-analyze`, so their output reaches `jq` alone, unless `--json`,
+    /// `--json-pretty`, `-T` or `--fail2ban` is also given.
     #[arg(help_heading = "Output", long = "no-cli-print")]
     pub no_cli_print: bool,
 
@@ -2021,6 +2025,22 @@ pub struct OutputArgs {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub max_grouped_messages: Option<u64>,
+}
+
+impl OutputArgs {
+    /// Whether a JSON document or stream written after the capture ends is
+    /// asked for: `--json-dialogs`, `--json-stun`, `--json-analyze` or
+    /// `--yang-analyze`.
+    fn writes_post_capture_json(&self) -> bool {
+        self.json_dialogs || self.json_stun || self.json_analyze || self.yang_analyze
+    }
+
+    /// Whether the operator chose a per-message format, rather than leaving
+    /// the default text line in place: `--json`, `--json-pretty`, `-T` or
+    /// `--fail2ban`.
+    fn chose_per_message_format(&self) -> bool {
+        self.json || self.json_pretty || self.text_dump || self.fail2ban
+    }
 }
 
 /// `Dialog` flags.
@@ -8709,6 +8729,17 @@ impl Cli {
         if self.output_args.vcon_digest {
             self.output_args.no_cli_print = true;
         }
+        // The post-capture JSON outputs are documented as pipeable to `jq`,
+        // and the default per-message text line printed ahead of them made
+        // the stream unparseable unless `--no-cli-print` was also typed
+        // (#823). Only that default line goes: a per-message format the
+        // operator chose stays on, since `--json` beside them is still
+        // NDJSON and the others were asked for by name.
+        if self.output_args.writes_post_capture_json()
+            && !self.output_args.chose_per_message_format()
+        {
+            self.output_args.no_cli_print = true;
+        }
     }
 
     /// Why an MCP opt-in cannot be used with the TUI up, if one is set.
@@ -13430,6 +13461,37 @@ mod tests {
             "nothing but the build decides the mode without the flag"
         );
         assert!(!cli.output_args.no_cli_print);
+        Ok(())
+    }
+
+    /// The post-capture JSON outputs own stdout unless a per-message format
+    /// was chosen (#823).
+    ///
+    /// Each of them used to arrive behind the default per-message text line,
+    /// so `sipnab -N -I x.pcap --json-dialogs | jq` failed on the first line.
+    #[test]
+    fn post_capture_json_suppresses_only_the_default_message_line() -> Result<(), TestError> {
+        for flag in [
+            "--json-dialogs",
+            "--json-stun",
+            "--json-analyze",
+            "--yang-analyze",
+        ] {
+            let cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", flag]);
+            assert!(
+                cli.output_args.no_cli_print,
+                "{flag} alone left the text line on stdout ahead of its JSON"
+            );
+
+            for format in ["--json", "--json-pretty", "-T", "--fail2ban"] {
+                let cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", flag, format]);
+                assert!(
+                    !cli.output_args.no_cli_print,
+                    "{flag} with {format} discarded the per-message output the \
+                     operator asked for"
+                );
+            }
+        }
         Ok(())
     }
 

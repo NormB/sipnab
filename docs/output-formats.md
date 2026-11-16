@@ -17,15 +17,19 @@ documents the machine-readable formats the command line writes.
 | One JSON line per SIP message, to pipe into `jq` | `sipnab -N -I capture.pcap --json` | [NDJSON](#ndjson---json) |
 | One readable line per call | `sipnab -N -I capture.pcap --report --no-cli-print` | [Summary-only output](#summary-only-output) |
 | One call explained, as text or JSON | `--call-report "$CALL_ID"`, plus `--json` for JSON | [Summary-only output](#summary-only-output) |
-| One JSON object per call | `--json-dialogs --no-cli-print` | [One object per dialog](#one-object-per-dialog) |
-| Every STUN and TURN exchange | `--json-stun --no-cli-print` | [STUN / TURN JSON](#stun--turn-json---json-stun) |
-| One verdict for the whole capture | `--json-analyze --no-cli-print` | [Capture analysis](#capture-analysis---json-analyze) |
-| The same verdict as YANG-modeled data | `--yang-analyze --no-cli-print` | [YANG export](#yang-export---yang-analyze) |
+| One JSON object per call | `--json-dialogs` | [One object per dialog](#one-object-per-dialog) |
+| Every STUN and TURN exchange | `--json-stun` | [STUN / TURN JSON](#stun--turn-json---json-stun) |
+| One verdict for the whole capture | `--json-analyze` | [Capture analysis](#capture-analysis---json-analyze) |
+| The same verdict as YANG-modeled data | `--yang-analyze` | [YANG export](#yang-export---yang-analyze) |
 | One call as a vCon container | `--export-vcon` | [vCon](#vcon---export-vcon) |
 | The packets, for Wireshark | `-O calls.pcapng --pcapng` | [pcap / pcapng](#pcap--pcapng) |
 | A Wireshark display filter for the capture | `-N --wireshark` | [CLI reference](cli-reference.md#output) |
 | Log lines fail2ban reads | `-N --fail2ban` with `--kill-scanner` | [CLI reference](cli-reference.md#output) |
 | A call's ladder as a Mermaid diagram, or its audio as WAV | the save dialog in the terminal UI (`F2`) | [Save popup](keybindings.md#save-popup) |
+
+`--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` keep
+the per-message lines off stdout by themselves, so their output pipes straight
+into `jq`. Add `--json` or `-T` to get the per-message stream as well.
 
 > **Prerequisites:**
 >
