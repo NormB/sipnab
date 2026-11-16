@@ -47,6 +47,17 @@ IPPROTO_UDP = 17
 
 SIP_PORT = 5060
 RTP_PORT_BASE = 10000
+# Port pairs between RTP_PORT_BASE and 65535. Pair N has its own address pair
+# (10.1.x.y / 10.2.x.y), so the ports repeat from pair RTP_PORT_PAIRS on
+# without two streams sharing a 5-tuple; 65536 address pairs is the limit.
+RTP_PORT_PAIRS = (65536 - RTP_PORT_BASE) // 2
+MAX_STREAM_PAIRS = 1 << 16
+
+
+def rtp_ports(pair):
+    """The (a, b) RTP ports of stream pair `pair`."""
+    a = RTP_PORT_BASE + 2 * (pair % RTP_PORT_PAIRS)
+    return a, a + 1
 
 # G.711 PCMU: 8 kHz, 20 ms packets -> 160 samples, 160 payload bytes.
 RTP_PAYLOAD_TYPE = 0
@@ -247,6 +258,10 @@ def generate(out_path, calls, rtp_per_call, call_id_pool, stream_pairs, concurre
         call_id_pool = calls
     if stream_pairs <= 0:
         stream_pairs = calls
+    if stream_pairs > MAX_STREAM_PAIRS:
+        raise SystemExit(
+            f"{stream_pairs} stream pairs: at most {MAX_STREAM_PAIRS} fit the 10.1.x.y / 10.2.x.y address pairs"
+        )
 
     writer = PcapWriter(out_path)
 
@@ -264,8 +279,7 @@ def generate(out_path, calls, rtp_per_call, call_id_pool, stream_pairs, concurre
     for pair in range(stream_pairs):
         a_ip, b_ip, a_str, b_str = endpoints(pair)
         a_mac, b_mac = mac(pair), mac(pair + (1 << 20))
-        a_rtp = RTP_PORT_BASE + 2 * pair
-        b_rtp = RTP_PORT_BASE + 2 * pair + 1
+        a_rtp, b_rtp = rtp_ports(pair)
         pair_cache[pair] = {
             "a_str": a_str,
             "b_str": b_str,

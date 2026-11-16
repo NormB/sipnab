@@ -10,6 +10,13 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **A datagram that cannot be HEP is turned away without building an error.**
+  - Effect: Testing an RTP packet for HEP no longer costs sipnab an allocation and a backtrace.
+  - Effect: Building that error was 1.13% of CPU samples on a capture with RTP; it is now none.
+  - Limit: The run time of `-N --report -I` did not change beyond the spread between measurement rounds.
+
 ### Fixed
 
 - **A TUI no longer keeps running at full CPU after its terminal closes.**
