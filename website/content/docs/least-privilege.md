@@ -158,12 +158,14 @@ started as root changes in nothing.
 - `--vcon-audio-fetch-local` makes no connection, so it keeps the caller's
   user.
 
+`sipnab g729 install` started as root downloads, checks and unpacks the
+package as `--user`, the config user or `nobody`, and root only checks the
+table file that user sends and writes it in place. That user must be able to
+write in `TMPDIR` and read the CA bundle. `--from PATH` and `--no-priv-drop`
+keep the caller's user ([Install as root](@/docs/g729.md#install-as-root)).
+
 These commands still run as the user that started them, root included:
 
-- `sipnab g729 install`: it writes the table file into a directory root may
-  own. Its download runs as root, and sipnab checks it against a fixed
-  SHA-256 before it unpacks it. `--from DIR` uses no network
-  ([Decode G.729](@/docs/g729.md)).
 - Commands that read no input from outside, or need root: `--setup-caps`,
   `--uprobe-list`, `--mint-token`, `--dump-config`, `--vcon-spool-status`,
   `--journal-show`, `--revert-actions`, `--completions`,

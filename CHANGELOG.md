@@ -8,6 +8,16 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Security
+
+- **`sipnab g729 install` started as root downloads the package as another user.**
+  - Was: The download, its TLS client and the unzip of the ITU-T package ran as root.
+  - Effect: They run as `--user`, else `[privilege] user`, else `nobody`; root only checks the table file and installs it.
+  - Do: Give that user a writable `TMPDIR` and a readable CA bundle and sipnab binary, or pass `--no-priv-drop` to download as root.
+  - Docs: [Install as root](docs/g729.md#install-as-root).
+
 ## [0.5.260] - 2026-11-16
 
 ### Fixed
