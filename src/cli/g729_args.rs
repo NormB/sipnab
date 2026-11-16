@@ -75,7 +75,7 @@ pub enum G729Command {
         #[arg(long, value_name = "USER")]
         user: Option<String>,
         /// Started as root, download and unpack the package as root, as
-        /// before 0.5.260; one warning line says so.
+        /// before 0.5.261; one warning line says so.
         #[arg(long = "no-priv-drop")]
         no_priv_drop: bool,
     },
