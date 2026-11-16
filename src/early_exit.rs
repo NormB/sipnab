@@ -264,7 +264,7 @@ pub const LATE_EXITS: [EarlyExit; 3] = [
         "--cores",
         "8",
         Plan::OwnDrop,
-        "`prepare_cores_inputs` opens the input set as root and drops before a reader starts",
+        "`prepare_cores_inputs` drops, then judges the set `plan` opened as root, before a reader starts",
     ),
 ];
 

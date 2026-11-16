@@ -17,6 +17,15 @@ entry that carries them.
   - Effect: The listener takes its backlog and finishes handshakes for 1 second after it sees the stop, however long the pause.
   - Docs: [What a TCP or TLS listener keeps when the run stops](docs/hep.md#what-a-tcp-or-tls-listener-keeps-when-the-run-stops).
 
+### Security
+
+- **A capture run started as root reads no byte of its `-I` files as root.**
+  - Was: The run unpacked, probed and began reading its capture files as root, before it dropped to `--user` or `nobody`.
+  - Effect: It opens each file as root and reads it as the drop user, so root-only files still read; `Reading N capture files` follows the drop.
+  - Do: Give the drop user a writable `TMPDIR` such as `/tmp`, or the run stops at the first archive; other exit codes and messages are unchanged.
+  - Limit: On macOS root's `TMPDIR` is private: archive or `.pcap.gz` input needs `TMPDIR=/tmp` or `--user`; under `--chroot DIR`, it needs `DIR/tmp` (mode 1777).
+  - Docs: [Read capture files only root can read](docs/least-privilege.md#read-capture-files-only-root-can-read).
+
 ## [0.5.258] - 2026-11-15
 
 ### Added

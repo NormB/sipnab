@@ -127,6 +127,19 @@ pub fn open_offline_with(
     )
 }
 
+/// [`open_offline`] for a file opened up front, read through `file`: `path`
+/// is the name it goes by and is never opened.
+///
+/// # Errors
+///
+/// As [`open_offline`].
+pub(crate) fn open_offline_opened(
+    path: &Path,
+    file: &std::fs::File,
+) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+    open_offline_up_front(path, file, &crate::capture::archive::Limits::for_run())
+}
+
 /// [`open_offline_with`] for a file opened up front, read through `file`:
 /// `path` is the name it goes by and is never opened.
 ///
@@ -595,7 +608,10 @@ pub fn capture_files(
         ..ReadTally::default()
     };
     let mut count: u64 = 0;
-    let up_front = config.open_set_up_front.then(|| open_set_up_front(paths));
+    let up_front = config
+        .handed_set
+        .take()
+        .or_else(|| config.open_set_up_front.then(|| open_set_up_front(paths)));
     let result = read_set(
         paths, up_front, config, &tx, ready_tx, &mut tally, &mut count,
     );
@@ -628,6 +644,32 @@ pub(crate) fn open_set_up_front(
     paths: &[std::path::PathBuf],
 ) -> Vec<std::io::Result<std::fs::File>> {
     paths.iter().map(|path| open_up_front(path)).collect()
+}
+
+/// The descriptors a run opened for its `-I` set before it confined itself,
+/// handed to the reader ([`CaptureConfig::handed_set`]): one open result per
+/// path, in set order.
+///
+/// Shared by every clone of the config and taken once, so the one reader of
+/// the set gets them and nothing else holds a descriptor after it.
+#[derive(Debug, Clone, Default)]
+pub struct HandedSet(std::sync::Arc<parking_lot::Mutex<Option<OpenResults>>>);
+
+/// One open result per path of a set, in set order.
+pub type OpenResults = Vec<std::io::Result<std::fs::File>>;
+
+impl HandedSet {
+    /// Hand `files` to the reader.
+    #[must_use]
+    pub fn new(files: OpenResults) -> Self {
+        Self(std::sync::Arc::new(parking_lot::Mutex::new(Some(files))))
+    }
+
+    /// The handed results, once; `None` when nothing was handed or another
+    /// reader took them.
+    pub(crate) fn take(&self) -> Option<OpenResults> {
+        self.0.lock().take()
+    }
 }
 
 /// Open one file of a set up front. See [`open_set_up_front`].
@@ -3345,5 +3387,98 @@ mod tests {
         capture_files(&paths, &config, tx, None).map_err(|e| format!("read: {e:#}"))?;
         assert_eq!(rx.try_iter().count(), 5, "three frames and two");
         Ok(())
+    }
+
+    /// A config carrying the descriptors `paths` were opened with.
+    fn handed(paths: &[std::path::PathBuf]) -> CaptureConfig {
+        CaptureConfig {
+            handed_set: HandedSet::new(open_set_up_front(paths)),
+            ..CaptureConfig::default()
+        }
+    }
+
+    #[test]
+    fn success_capture_files_reads_the_descriptors_it_was_handed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let config = handed(&paths);
+        // Gone by path: only the handed descriptors reach the files.
+        remove_all(&paths)?;
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&paths, &config, tx, None)
+            .map_err(|e| format!("a handed set must read without its paths: {e:#}"))?;
+        assert_eq!(
+            rx.try_iter().count(),
+            5,
+            "three frames and two, by descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_handed_set_is_read_whether_or_not_the_config_opens_up_front()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let config = CaptureConfig {
+            open_set_up_front: true,
+            ..handed(&paths)
+        };
+        remove_all(&paths)?;
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&paths, &config, tx, None).map_err(|e| format!("read: {e:#}"))?;
+        assert_eq!(
+            rx.try_iter().count(),
+            5,
+            "the handed descriptors are used, not opened again"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_handed_open_error_skips_that_file_and_reads_the_rest() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let config = CaptureConfig {
+            handed_set: HandedSet::new(vec![
+                Err(std::io::Error::other("refused for the test")),
+                open_up_front(&paths[1]),
+            ]),
+            ..CaptureConfig::default()
+        };
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&paths, &config, tx, None).map_err(|e| format!("read: {e:#}"))?;
+        assert_eq!(
+            rx.try_iter().count(),
+            2,
+            "the file whose open failed is skipped, not opened by path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_handed_set_is_taken_once() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let set = HandedSet::new(open_set_up_front(&paths));
+        let copy = set.clone();
+        assert_eq!(
+            set.take().map(|f| f.len()),
+            Some(2),
+            "the first take has both"
+        );
+        assert!(
+            copy.take().is_none(),
+            "a clone shares the one set, so a second reader opens by path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_default_config_hands_no_set() {
+        assert!(
+            CaptureConfig::default().handed_set.take().is_none(),
+            "nothing is handed unless a run opened its set"
+        );
     }
 }

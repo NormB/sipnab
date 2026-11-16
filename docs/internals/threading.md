@@ -140,6 +140,11 @@ The reason is where the thread starts.
   - The chroot.
   - The privilege drop.
 - The reason: the capture source must be open while the process still holds `CAP_NET_RAW`.
+- A file run (`-I`) without `--chroot` is the exception: it drops privileges
+  first and starts the thread after, so the process reads no byte of an
+  input as root. The run opened its files when it planned, and the thread
+  reads them through those descriptors. A failure in the privileged steps of such a run
+  has no thread to stop.
 - Every failure from that point on happens with a capture thread already
   running and holding its source. Such failures include:
   - An unopenable source.
@@ -202,8 +207,8 @@ The privilege drop signals every other thread of the process.
 
 Four calls make a drop.
 
-- `confine_after_capture_start` in [`app/bootstrap.rs`](../../src/app/bootstrap.rs), for a run that starts a capture thread.
-- `prepare_cores_inputs` in the same file, for `--cores`.
+- `confine_privileged` in [`app/bootstrap.rs`](../../src/app/bootstrap.rs), for a run that starts a capture thread: after the thread starts, or before it for a file run without `--chroot`.
+- `prepare_cores_inputs` in the same file, for `--cores`, before it judges the set.
 - `harden` in [`process_isolation/worker_process.rs`](../../src/process_isolation/worker_process.rs), for the scanner-kill worker process.
 - `confine` in [`early_exit.rs`](../../src/early_exit.rs), for the commands that end before the capture launch.
   - [Commands that end before the launch](#commands-that-end-before-the-launch) lists them.
