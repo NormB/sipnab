@@ -404,6 +404,10 @@ pub(crate) fn read_body(
 /// At most `keep` bytes of a body quoted to a person (the text of a refusal),
 /// and whether there was more. A body that ends early or fails to read ends
 /// where it ended: it is evidence for a person, not data anything acts on.
+///
+/// Its callers are the vCon clients and the fleet member, so a build with
+/// `g729` alone (the static release builds' downloader) leaves it out.
+#[cfg(any(feature = "vcon", feature = "api"))]
 pub(crate) fn read_quoted_body(
     reader: &mut (impl BufRead + ?Sized),
     head: &[String],
@@ -672,6 +676,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "vcon", feature = "api"))]
     #[test]
     fn a_quoted_body_that_arrived_whole_is_the_body() {
         let body = bytes(40);
@@ -907,12 +912,14 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "vcon", feature = "api"))]
     #[test]
     fn a_quoted_body_that_closes_early_keeps_what_arrived() {
         let got = read_quoted_body(&mut wire(&bytes(4), None), &sized(100), 1000);
         assert_eq!(got, (bytes(4), false), "evidence keeps the bytes that came");
     }
 
+    #[cfg(any(feature = "vcon", feature = "api"))]
     #[test]
     fn a_quoted_chunked_body_whose_read_fails_keeps_what_arrived() {
         let got = read_quoted_body(
@@ -927,6 +934,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "vcon", feature = "api"))]
     #[test]
     fn a_short_body_declared_past_the_limit_is_short_not_more() {
         let got = read_body_parts(&mut wire(&bytes(5), None), &sized(100), 10);
