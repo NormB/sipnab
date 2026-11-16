@@ -184,6 +184,10 @@ thiserror = "2"
 # Phase 3: TUI
 ratatui = { version = "0.30", optional = true }
 crossterm = { version = "0.29", optional = true }
+# The TUI's SIGWINCH handler, which wakes its terminal wait on a resize.
+# crossterm already depends on this version; its reader, which installed the
+# handler before, is no longer used (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS).
+signal-hook = { version = "0.3.18", optional = true }
 unicode-width = { version = "0.2", optional = true }
 
 # Phase 5: STIR/SHAKEN & analysis
@@ -392,7 +396,7 @@ required-features = ["tui"]
 default = ["native", "tui", "audio", "metrics"]
 # Native platform deps (not available in WASM)
 native = ["dep:pcap", "dep:clap", "dep:clap_complete", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:memmap2", "dep:tracing-subscriber", "dep:tracing-log", "dep:tempfile"]
-tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width", "dep:base64"]
+tui = ["native", "dep:ratatui", "dep:crossterm", "dep:signal-hook", "dep:unicode-width", "dep:base64"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64", "dep:rsa", "dep:libc"]
 # `rustls` and `base64` arrived with `--hep-send-transport tls` /
 # `--hep-listen-transport tls`: the TLS session itself, and the base64 a

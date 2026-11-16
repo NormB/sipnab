@@ -14431,7 +14431,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
 | `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf`, `vcon`, `archive` and `g729`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
-| `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. A build without it has no terminal UI: every run is the run `-N` (`--no-tui`) asks for, so `sipnab -I capture.pcap` prints one line per SIP message, and the output flags need no `-N`. A run that gave neither `-N` nor an output flag says so in one line on standard error when standard error is a terminal. | `native`, `ratatui`, `crossterm`, `unicode-width`, `base64` |
+| `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. A build without it has no terminal UI: every run is the run `-N` (`--no-tui`) asks for, so `sipnab -I capture.pcap` prints one line per SIP message, and the output flags need no `-N`. A run that gave neither `-N` nor an output flag says so in one line on standard error when standard error is a terminal. | `native`, `ratatui`, `crossterm`, `signal-hook`, `unicode-width`, `base64` |
 | `audio` | RTP audio playback in the TUI. WAV export (`--export-audio`) does not need it. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
@@ -17829,6 +17829,16 @@ From 0.5.235, a terminal interface whose terminal is still
 there also stops on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
 0.5.233 and earlier ignored `SIGTERM` and `SIGINT`, and `SIGHUP` ended the
 process at once, with no end-of-run summary.
+
+0.5.235 to 0.5.260 can still keep running in one case: the terminal goes in
+the moment sipnab reads a key from it. The process shows in state `R` and uses
+a full CPU, on macOS and on Linux. In CI on macOS, 1 launch in 60 did this
+after `tmux kill-session`.
+
+- **Fix:** upgrade to the release after 0.5.260. sipnab reads its terminal
+  itself, and a read that finds the terminal gone stops the run, with exit
+  status 129.
+- **On 0.5.235 to 0.5.260:** end the process with `SIGKILL`, as above.
 
 ## A run that ignores SIGTERM while it waits for input
 
@@ -83442,6 +83452,37 @@ To update one:
 - a file's hash is not the one recorded,
 - a script's recorded version is not the one the script itself contains,
 - a new minified script under `website/static/js/` has no row yet.
+
+### Updating code adapted from other projects
+
+One source file adapts another project's code, and sipnab compiles it. It
+keeps that project's license and copyright notice in its header,
+and has a row in the "Adapted code" table of
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+| File | What it is | Where it came from |
+|---|---|---|
+| [`src/tui/input_parse.rs`](src/tui/input_parse.rs) | crossterm's Unix input parser, which turns the bytes the TUI reads from its terminal into key, mouse and paste events | `src/event/sys/unix/parse.rs` and the `Parser` of `src/event/source/unix/mio.rs` in [crossterm](https://github.com/crossterm-rs/crossterm) 0.29.0 |
+
+When `Cargo.lock` moves crossterm to a new version:
+
+- Compare the two crossterm files of the new version with the old ones, and
+  carry each change into `src/tui/input_parse.rs`.
+- Record crossterm's events again, then paste the table the run prints over
+  `CROSSTERM_0_29` in `src/tui/input_parse.rs`:
+
+  ```bash
+  cargo test --features tui --lib record_crossterm_events -- --ignored --nocapture
+  ```
+
+- Change the version and commit in the file's header and in `ADAPTED` in
+  [`scripts/build-third-party-notices.py`](scripts/build-third-party-notices.py),
+  then regenerate the notices.
+
+`every_adapted_file_keeps_its_origin_and_license` in
+[`tests/docs_drift_test.rs`](tests/docs_drift_test.rs) fails when a file
+under `src/` says `Adapted from` in its header and has no row, or when its
+header does not carry the row's license notice, version and commit.
 
 ## Commit messages
 

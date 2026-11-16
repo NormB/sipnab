@@ -10,6 +10,14 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A TUI no longer keeps running at full CPU after its terminal closes.**
+  - Was: On macOS and Linux, a terminal lost while sipnab read a key, such as a killed tmux session, could leave it spinning until killed.
+  - Effect: sipnab reads its terminal itself and stops when a read finds it gone, exiting 129 as on `SIGHUP`.
+  - Effect: The TUI no longer asks the terminal for the cursor position at startup.
+  - Docs: [A terminal interface that outlives its terminal](docs/troubleshooting.md#a-terminal-interface-that-outlives-its-terminal).
+
 ### Security
 
 - **`sipnab g729 install` started as root downloads the package as another user.**

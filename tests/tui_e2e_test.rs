@@ -4,11 +4,11 @@
 //! End-to-end TUI tests that drive the real `sipnab` binary inside a `tmux`
 //! session.
 //!
-//! Why tmux rather than a bare PTY (e.g. expectrl): sipnab's TUI queries the
-//! terminal at startup (crossterm emits `ESC[6n` to read the cursor position).
-//! A bare pseudo-terminal has no terminal emulator behind it, so the query is
-//! never answered and the TUI aborts with "cursor position could not be read".
-//! tmux *is* a terminal emulator — it answers the query, provides a real
+//! Why tmux rather than a bare PTY (e.g. expectrl): up to 0.5.260 sipnab's TUI
+//! queried the terminal at startup (crossterm emits `ESC[6n` to read the
+//! cursor position), and a bare pseudo-terminal, with no terminal emulator
+//! behind it, never answered. tmux *is* a terminal emulator — it answers such
+//! a query, provides a real
 //! window size, and lets us send keys and snapshot the screen with
 //! `capture-pane`. This is the only PTY-style harness that actually runs the
 //! TUI in this environment.

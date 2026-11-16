@@ -4448,6 +4448,7 @@ dependencies = [
  "sevenz-rust2",
  "sha1",
  "sha2 0.11.1",
+ "signal-hook",
  "sipnab-bpf-types",
  "sipnab-g729",
  "smallvec",
