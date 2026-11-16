@@ -46,7 +46,8 @@ pub(crate) use crate::app::spool::{sleep_unless_stopped, write_atomically};
 // The HTTP client lives in `https_client`, shared with `sipnab g729 install`.
 pub use crate::app::https_client::{Endpoint, UrlUse};
 pub(crate) use crate::app::https_client::{
-    client_config, exchange, header_value, read_body, read_head, status_of,
+    client_config, exchange, header_value, read_body, read_body_parts, read_head, read_quoted_body,
+    status_of,
 };
 
 /// The most of a store's answer the stop reason quotes, in bytes.
@@ -1954,7 +1955,7 @@ fn answer(reader: &mut dyn BufRead, limits: ReadLimits) -> Result<Answer, String
                 truncated: false,
             });
         }
-        let (body, truncated) = read_body(reader, &headers, limits.error_body);
+        let (body, truncated) = read_quoted_body(reader, &headers, limits.error_body);
         return Ok(Answer {
             status,
             body,

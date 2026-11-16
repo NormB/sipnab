@@ -1899,7 +1899,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // from it to "The files of the history store"); docs/errors.md 2 (one
     // to its own "A `503` while the center starts", one to that section of
     // fleet.md).
-    const EXPECTED_WIKI_LINKS: usize = 2706;
+    // 2706 -> 2707 (HTTPS-BODY-SHORT-READ-ACCEPTED): docs/errors.md's entry
+    // for a --vcon-fetch answer cut short links the list of its forms.
+    const EXPECTED_WIKI_LINKS: usize = 2707;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

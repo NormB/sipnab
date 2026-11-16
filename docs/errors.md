@@ -4475,7 +4475,7 @@ The credential line names header `{name}`. The forwarder writes this header itse
 
 ### `{url}: {problem}; nothing was written`
 
-The store's answer from `{url}` was incomplete. `{problem}` says how. sipnab wrote nothing.
+The store's answer from `{url}` was incomplete. `{problem}` says how, in the forms listed under [`{url}: {problem}, so the file is not whole`](#url-problem-so-the-file-is-not-whole): it names the bytes read and, when the answer declared it, the length. sipnab wrote nothing.
 
 **What to do:** Retry, and check the store and the network path.
 
@@ -4960,7 +4960,14 @@ The file a recording names is larger than the limit. `{}` is the limit and `{max
 
 ### `{url}: {problem}, so the file is not whole`
 
-The server that holds a recording's file closed the connection before it sent the length it declared. `{problem}` gives the two lengths. sipnab writes nothing for the recording.
+The file a recording names did not arrive whole. `{problem}` is one of these:
+
+- `the answer ended after {got} of its {n} bytes`: the server closed the connection before it sent the length it declared; a read error, such as a timeout, follows after a colon.
+- `the chunked answer ended after {got} bytes, before its last chunk`: a chunked answer stopped before its last chunk.
+- `a chunk of the answer ended after {read} of its {size} bytes`: one chunk stopped before its size.
+- `reading the answer's body failed after {got} bytes: {e}`: an answer without a length failed to read, for example on a timeout.
+
+sipnab writes nothing for the recording.
 
 **What to do:** Run the command again. If it recurs, check the server.
 
