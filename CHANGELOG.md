@@ -20,6 +20,10 @@ entry that carries them.
 - **A signal no longer drops a live RTP datagram or an rtpengine request.**
   - Was: A signal such as `SIGHUP` during a send counted the datagram as unsent, or failed the relay request with `sending <command> to <relay>`.
   - Effect: sipnab sends again within the same wait: 20 ms for live RTP, the control timeout for rtpengine.
+- **A paused TCP or TLS HEP listener keeps waiting senders at a `--duration` stop.**
+  - Was: A listener paused over a second as it reached the deadline could close waiting connections unread, or give up a TLS handshake.
+  - Effect: The listener takes its backlog and finishes handshakes for 1 second after it sees the stop, however long the pause.
+  - Docs: [What a TCP or TLS listener keeps when the run stops](docs/hep.md#what-a-tcp-or-tls-listener-keeps-when-the-run-stops).
 
 ## [0.5.259] - 2026-11-16
 

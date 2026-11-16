@@ -56855,7 +56855,9 @@ keeps a different share of what senders had sent:
 - **`--duration`** keeps what reached sipnab before the deadline. The listener
   reads what its open connections hold, for up to 1 second each. It also
   accepts the connections still waiting in its backlog, for up to 1 second, and completes a TLS handshake under way, for up to 1 second, so a
-  sender that connected just before the deadline is not lost. The run then
+  sender that connected just before the deadline is not lost. Each second
+  counts from when the listener sees the deadline, so a pause across it
+  (Ctrl-Z, a loaded host) does not use them up. The run then
   reads on for up to 3 seconds for the listener to deliver it. A sender that
   goes on sending cannot hold the stop open past these limits.
 - **`--count N`** keeps exactly N packets, however many connections send at
