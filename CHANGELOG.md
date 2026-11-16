@@ -16,6 +16,10 @@ entry that carries them.
   - Was: A listener paused over a second as it reached the deadline could close waiting connections unread, or give up a TLS handshake.
   - Effect: The listener takes its backlog and finishes handshakes for 1 second after it sees the stop, however long the pause.
   - Docs: [What a TCP or TLS listener keeps when the run stops](docs/hep.md#what-a-tcp-or-tls-listener-keeps-when-the-run-stops).
+- **`demos/mcp-stdio.sh` asks a loading capture at most `MCP_MAX_POLLS` times.**
+  - Was: The helper sent one `capture_status` request more than `MCP_MAX_POLLS` before it gave up.
+  - Effect: `MCP_MAX_POLLS=N` now means N requests; the default stays 400.
+  - Docs: [See it work](docs/mcp.md#see-it-work).
 
 ## [0.5.259] - 2026-11-16
 
