@@ -1888,7 +1888,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // errors.md); docs/errors.md 3 (two to that how-to, one to its own "Fleet
     // center"); docs/cli-reference.md 1 and docs/least-privilege.md 1, both
     // to the how-to.
-    const EXPECTED_WIKI_LINKS: usize = 2697;
+    // 2697 -> 2698 (CAPTURE-RESOLVE-AS-ROOT): docs/errors.md's entry for the
+    // TMPDIR refusal links to "Read capture files only root can read" in
+    // least-privilege.md.
+    // 2698 -> 2700 (CAPTURE-RESOLVE-AS-ROOT, --chroot): docs/errors.md's entry
+    // for the --chroot refusal links "Confine it to a directory", and
+    // least-privilege.md's archive bullet links the same section.
+    const EXPECTED_WIKI_LINKS: usize = 2700;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

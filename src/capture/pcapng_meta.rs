@@ -210,11 +210,59 @@ pub fn read_before_confinement(paths: &[std::path::PathBuf]) {
         .extend(read);
 }
 
+/// [`read_before_confinement`] through descriptors: the metadata of each file
+/// of `paths` read through its open result in `files` (same order), for a run
+/// that judges its set after it confined itself, as the user it dropped to.
+/// An open that failed is kept as its error.
+///
+/// # Side effects
+///
+/// As [`read_before_confinement`].
+pub fn read_opened_before_use(
+    paths: &[std::path::PathBuf],
+    files: &[std::io::Result<std::fs::File>],
+) {
+    let read: Vec<(std::path::PathBuf, Advance)> = paths
+        .iter()
+        .zip(files)
+        .map(|(path, file)| {
+            let advance = match file.as_ref().map_err(clone_error).and_then(|file| {
+                crate::capture::file::rewound(file).and_then(|f| read_from(path, f))
+            }) {
+                Ok(meta) => Advance::Read(meta),
+                Err(e) => Advance::Failed {
+                    kind: e.kind(),
+                    text: e.to_string(),
+                },
+            };
+            (path.clone(), advance)
+        })
+        .collect();
+    READ_BEFORE
+        .get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .extend(read);
+}
+
+/// An error of the same kind and text as `e`.
+fn clone_error(e: &std::io::Error) -> std::io::Error {
+    std::io::Error::new(e.kind(), e.to_string())
+}
+
 /// [`read_pcapng_metadata`] from the file on disk.
 fn read_from_disk(path: &Path) -> std::io::Result<PcapngMetadata> {
+    read_from(path, std::fs::File::open(path)?)
+}
+
+/// [`read_pcapng_metadata`] from `file`, read from where it stands, for the
+/// capture `path` names.
+fn read_from(path: &Path, file: std::fs::File) -> std::io::Result<PcapngMetadata> {
+    use std::io::Read as _;
     let mut meta = PcapngMetadata::default();
-    ensure_within_size_cap(std::fs::metadata(path)?.len(), max_metadata_file_bytes())?;
-    let bytes = std::fs::read(path)?;
+    ensure_within_size_cap(file.metadata()?.len(), max_metadata_file_bytes())?;
+    let mut bytes = Vec::new();
+    file.take(max_metadata_file_bytes())
+        .read_to_end(&mut bytes)?;
     // The file-open path hands us the ORIGINAL file, which may be
     // gzip-compressed (the packet loader gunzips separately); inflate so
     // embedded names/secrets survive compression. A corrupt gzip stream is
@@ -819,6 +867,60 @@ mod tests {
             meta.key_log_blocks, 1,
             "the compressed DSB read in advance is kept"
         );
+        Ok(())
+    }
+
+    /// The metadata read through a descriptor is the answer for its path once
+    /// the path leads nowhere: the read a run makes as the user it dropped
+    /// to, through the descriptor it opened as root.
+    #[test]
+    fn success_metadata_read_through_a_descriptor_answers_for_its_path() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = write_pcapng_with(dir.path(), "opened.pcapng", true)?;
+        let file = std::fs::File::open(&path)?;
+        std::fs::remove_file(&path)?;
+        read_opened_before_use(std::slice::from_ref(&path), &[Ok(file)]);
+        let meta = read_pcapng_metadata(&path)?;
+        assert_eq!(
+            meta.key_log_blocks, 1,
+            "the DSB read through the descriptor"
+        );
+        assert_eq!(meta.tls_secrets.len(), 1, "and its key log");
+        Ok(())
+    }
+
+    /// The descriptor is read from its start, whatever its position.
+    #[test]
+    fn edge_a_descriptor_read_past_its_start_is_read_from_its_start() -> Result<(), TestError> {
+        use std::io::Read as _;
+        let dir = tempfile::tempdir()?;
+        let path = write_pcapng_with(dir.path(), "moved.pcapng", true)?;
+        let mut file = std::fs::File::open(&path)?;
+        let mut head = [0u8; 16];
+        file.read_exact(&mut head)?;
+        std::fs::remove_file(&path)?;
+        read_opened_before_use(std::slice::from_ref(&path), &[Ok(file)]);
+        let meta = read_pcapng_metadata(&path)?;
+        assert_eq!(meta.key_log_blocks, 1, "read from the first byte");
+        Ok(())
+    }
+
+    /// A file that did not open is answered with its open's error.
+    #[test]
+    fn failure_a_file_that_did_not_open_is_answered_with_that_error() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("refused.pcapng");
+        read_opened_before_use(
+            std::slice::from_ref(&path),
+            &[Err(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            ))],
+        );
+        write_pcapng_with(dir.path(), "refused.pcapng", true)?;
+        let err = read_pcapng_metadata(&path)
+            .err()
+            .ok_or("the open failed, and that must stand for the path")?;
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{err}");
         Ok(())
     }
 

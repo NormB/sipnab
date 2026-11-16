@@ -8,6 +8,17 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Security
+
+- **A capture run started as root reads no byte of its `-I` files as root.**
+  - Was: The run unpacked, probed and began reading its capture files as root, before it dropped to `--user` or `nobody`.
+  - Effect: It opens each file as root and reads it as the drop user, so root-only files still read; `Reading N capture files` follows the drop.
+  - Do: Give the drop user a writable `TMPDIR` such as `/tmp`, or the run stops at the first archive; other exit codes and messages are unchanged.
+  - Limit: On macOS root's `TMPDIR` is private: archive or `.pcap.gz` input needs `TMPDIR=/tmp` or `--user`; under `--chroot DIR`, it needs `DIR/tmp` (mode 1777).
+  - Docs: [Read capture files only root can read](docs/least-privilege.md#read-capture-files-only-root-can-read).
+
 ## [0.5.258] - 2026-11-15
 
 ### Added

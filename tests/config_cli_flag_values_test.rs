@@ -4190,7 +4190,12 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         Ok(p) => {
             let items = [
                 format!("{:?}", p.source),
-                format!("{:?}", p.input_files),
+                format!(
+                    "{:?}",
+                    p.inputs
+                        .as_ref()
+                        .map(sipnab::capture::input_set::NamedSet::paths)
+                ),
                 format!("{:?}", p.capture_config),
                 format!("{:?}", p.portrange),
                 format!("{:?}", p.policy.split_bytes),
