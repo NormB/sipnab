@@ -1920,6 +1920,13 @@ A hook enforces this rather than merely advising it.
   required check concluded `success` on the head, every workflow run on the head succeeded,
   and no run on the merge commit itself concluded red.
   - The head's runs include the macOS leg, so a macOS break still blocks the release.
+  - Two skipped runs do not count, on the head or on the commit itself: the `pull_request` run
+    of [`pr-closed.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/pr-closed.yml), which skips its only job on a
+    merge, and the `workflow_run` run of `rerun-not-acquired.yml`, which skips its only job
+    when the CI run it watches succeeded. The script reads the workflow file from GitHub's run
+    record (`SKIPPED_BY_DESIGN`), not the name; any other skipped run, and a canceled, failed
+    or pending run of those workflows, still blocks. Tested in
+    [`test_tag_proof_skipped_by_design.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_tag_proof_skipped_by_design.py).
   - The hook prints the pull request and head it used.
   - The rule is `tag_ci` in [`scripts/tag-push-proof.py`](https://github.com/NormB/sipnab/blob/main/scripts/tag-push-proof.py),
     tested in [`test_tag_ci_proof.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_tag_ci_proof.py) and in the

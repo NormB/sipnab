@@ -21,6 +21,26 @@ entry that carries them.
   - Was: A signal such as `SIGHUP` during a send counted the datagram as unsent, or failed the relay request with `sending <command> to <relay>`.
   - Effect: sipnab sends again within the same wait: 20 ms for live RTP, the control timeout for rtpengine.
 
+## [0.5.259] - 2026-11-16
+
+### Changed
+
+- **A fleet center without its store file rebuilds its member list faster at start.**
+  - Effect: The center builds only the heartbeat rows newer than the one it holds of each member, and starts serving sooner.
+  - Limit: A damaged row older than every row the center holds no longer refuses its file at start; `sipnab fleet verify` reports that file.
+  - Docs: [The files of the history store](docs/fleet.md#the-files-of-the-history-store).
+
+### Fixed
+
+- **A fleet center answers `503` while it rebuilds its member list at start.**
+  - Was: The center bound its port before it opened its store, and a request got no answer until the rebuild ended.
+  - Effect: Every request gets `503` with `Retry-After: 5` and the cause; a member keeps its heartbeats and delivers them after.
+  - Docs: [What the center answers while it starts](docs/fleet.md#what-the-center-answers-while-it-starts).
+- **A stop during a fleet center's start goes through its handler.**
+  - Was: A SIGTERM or SIGINT during the rebuild at start ended the process at once, without the center's handler.
+  - Effect: The center ends the rebuild before its next file and exits `0`; the store file keeps the members it held.
+  - Docs: [What the center answers while it starts](docs/fleet.md#what-the-center-answers-while-it-starts).
+
 ### Security
 
 - **A capture run started as root reads no byte of its `-I` files as root.**

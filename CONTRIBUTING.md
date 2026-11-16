@@ -431,7 +431,14 @@ merged pull request proves the same tree:
 - every check that `main` requires concluded `success` on the head.
 - every workflow run on the head succeeded: the newest of each name, with
   scheduled runs set aside. So the macOS leg, which `CI success` leaves out,
-  still gates the release.
+  still gates the release. The check leaves out two skipped runs, here and on
+  the tagged commit: the `pull_request` run of
+  `.github/workflows/pr-closed.yml`, which skips its only job when a pull
+  request merges, and the `workflow_run` run of
+  `.github/workflows/rerun-not-acquired.yml`, which skips its only job when
+  the CI run it watches succeeded. The script reads the workflow file from
+  GitHub's run record, so a workflow of another file with the same name still
+  counts. A canceled, failed or pending run of those workflows counts too.
 - no run on the tagged commit itself concluded `failure`, `timed_out`,
   `action_required` or `startup_failure`.
 

@@ -5549,8 +5549,12 @@ when the reason changes. `{why}` is `the center did not answer: <reason>` for
 a center that is down, unreachable or not trusted, `the center refused this
 member's token (HTTP 401)` for a token the center does not accept, or `the
 center answered HTTP <status>`. The heartbeats stay in the spool, and the
-member tries again, at most one interval apart. A line
-`the center takes heartbeats again` follows when the spool drains.
+member tries again after 1 s, then 2 s, 4 s and so on, at most one
+`[fleet] heartbeat_secs` apart. A line `the center takes heartbeats again`
+follows when the spool drains. `the center answered HTTP 503` comes, among
+other causes, from a center that is starting and
+[rebuilds its member list](#a-503-while-the-center-starts).
+The member does not read the answer's `Retry-After`.
 
 **What to do:** For a refused token, mint a new one on the center and restart
 the member. Otherwise, bring the center back or let the member reach it.
@@ -5590,7 +5594,29 @@ more of the history while it is away.
 them. [Run a fleet center](@/docs/fleet.md#run-a-fleet-center) describes the command.
 A message that starts with `sipnab fleet serve:` stops the center with exit
 code 2. A message the center answers a member with goes in the `detail` of a
-`400` answer, and the center keeps running.
+`400` or `503` answer, and the center keeps running.
+
+### A `503` while the center starts
+
+`the center is rebuilding its member list from the history store` is the
+`detail` of the `503` answer the center gives every request, on every
+route, from the time it binds its port until it has opened its store and
+rebuilt its member list. The answer carries `Retry-After: 5`. It logs
+`fleet center answering 503 on <address> until it serves: the center is
+rebuilding its member list from the history store` when it binds, and
+`fleet center serving` once it answers again. A start with its store file
+reads one heartbeat file. A start without it reads every heartbeat file of
+`--retention-hours`, which takes seconds for a large fleet
+([The files of the history store](@/docs/fleet.md#the-files-of-the-history-store)).
+A build without the history store answers `the center is opening its store`
+for the same window. A SIGTERM or SIGINT during the rebuild ends it before
+the next file it would read, and the center exits 0: the store file holds
+the members it held before the start, and the center does not open its
+intake.
+
+**What to do:** Nothing. Send the request again after the `Retry-After`
+seconds. A member keeps its heartbeats in its spool and delivers them once
+the center serves.
 
 ### `sipnab fleet serve: {e}`
 
