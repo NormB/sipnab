@@ -1224,6 +1224,11 @@ impl Center {
     /// call records the intake holds. Returns the center and the members
     /// removed.
     ///
+    /// The rebuild of the member registry from the history store asks
+    /// `stopped` before each file it reads. When it answers yes, the open
+    /// ends with `None` and writes nothing more: the store file holds the
+    /// records it held, and the intake is not opened.
+    ///
     /// # Errors
     ///
     /// The store or the intake is refused or cannot be rewritten. The
@@ -1233,17 +1238,31 @@ impl Center {
         keys: Arc<crate::app::fleet_seal::Keys>,
         now: DateTime<Utc>,
         retention: chrono::Duration,
-    ) -> Result<(Self, Vec<String>), String> {
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<(Self, Vec<String>)>, String> {
         use super::fleet_intake::{Intake, MAX_INTAKE_BYTES, path_for, replay};
         let (mut file, records) = Store::open(store, Arc::clone(&keys))?;
         let mut registry = Registry::from_records(records.clone());
         #[cfg(not(feature = "fleet-store"))]
-        let filing = FilingCounts::default();
+        let filing = {
+            // Without the history store there is no rebuild to stop.
+            let _ = stopped;
+            FilingCounts::default()
+        };
         #[cfg(feature = "fleet-store")]
         let history = super::fleet_history::History::open(store, Arc::clone(&keys))?;
         #[cfg(feature = "fleet-store")]
         let filing = FilingCounts {
-            members_restored: restore_from_history(&history, &mut registry, now, retention),
+            members_restored: match restore_from_history(
+                &history,
+                &mut registry,
+                now,
+                retention,
+                stopped,
+            ) {
+                Some(restored) => restored,
+                None => return Ok(None),
+            },
             ..FilingCounts::default()
         };
         let gone = registry.expire(now, retention);
@@ -1269,7 +1288,7 @@ impl Center {
         }
         file.compact_with(&registry, &waiting.rows())
             .map_err(|e| format!("--store '{}': {e}", store.display()))?;
-        Ok((
+        Ok(Some((
             Self {
                 registry,
                 store: file,
@@ -1282,7 +1301,7 @@ impl Center {
                 hook: None,
             },
             gone,
-        ))
+        )))
     }
 
     /// File the heartbeat rows that wait into the history store of the
@@ -1569,11 +1588,11 @@ const MAX_TRACKED_PEERS: usize = 4096;
 ///
 /// # Side effects
 ///
-/// Reads the signing key, opens and rewrites the store, binds the listener,
-/// serves until stopped, and logs.
+/// Reads the signing key, binds the listener, answers `503` while it opens
+/// and rewrites the store, serves until stopped, and logs.
 pub fn serve(args: ServeArgs) -> i32 {
     match prepare(&args) {
-        Ok((listener, state, server_config)) => {
+        Ok(plan) => {
             // The runtime's threads start here, after the drop in `prepare`:
             // no thread of the center exists when the process changes user.
             let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -1586,7 +1605,7 @@ pub fn serve(args: ServeArgs) -> i32 {
                     return 2;
                 }
             };
-            runtime.block_on(run(listener, state, server_config))
+            runtime.block_on(run(plan))
         }
         Err(e) => {
             stderr_line!("sipnab fleet serve: {e}");
@@ -1639,21 +1658,13 @@ fn needs_after_the_drop(args: &ServeArgs) -> Vec<crate::early_exit::Need> {
 }
 
 /// Check the arguments, read the keys and bind as the user the center was
-/// started as; drop when that user is root; then open the store and apply
-/// retention as the user the center serves as.
+/// started as; drop when that user is root. The store is opened after,
+/// as the user the center serves as, by [`open_center`] while the listener
+/// answers `503`.
 ///
 /// Nothing is created before the drop, so a start refused there leaves no
 /// file of root behind.
-fn prepare(
-    args: &ServeArgs,
-) -> Result<
-    (
-        (std::net::SocketAddr, crate::output::api::ApiListener),
-        CenterState,
-        crate::output::api::ApiServerConfig,
-    ),
-    String,
-> {
+fn prepare(args: &ServeArgs) -> Result<ServePlan, String> {
     use std::io::Read as _;
     let addr = crate::output::api::parse_bind_addr(&args.listen)
         .map_err(|e| format!("--listen {}: {e}", args.listen))?;
@@ -1708,41 +1719,116 @@ fn prepare(
         &needs_after_the_drop(args),
     )
     .map_err(|e| e.strip_prefix("fleet serve: ").unwrap_or(&e).to_string())?;
-    let (center, gone) = Center::open(
-        &args.store,
+    let opening = Opening {
+        store: args.store.clone(),
         keys,
+        verifier,
+        rate_limit_per_peer: args.rate_limit_per_peer,
+        missed: args.silent_after_missed,
+        retention_hours: args.retention_hours,
+        calls_retention_days: args.calls_retention_days,
+        #[cfg(feature = "fleet-store")]
+        calls_flush_secs: args.calls_flush_secs,
+    };
+    Ok(ServePlan {
+        listener: (addr, listener),
+        server_config,
+        opening,
+    })
+}
+
+/// What `sipnab fleet serve` holds once it is bound and has dropped
+/// privileges: the listener, the server's settings, and what the center is
+/// opened with.
+struct ServePlan {
+    /// The address asked for and the bound listener.
+    listener: (std::net::SocketAddr, crate::output::api::ApiListener),
+    /// The server's settings.
+    server_config: crate::output::api::ApiServerConfig,
+    /// What the center is opened with.
+    opening: Opening,
+}
+
+/// What the center is opened with, as the user it serves as.
+struct Opening {
+    /// `--store`.
+    store: PathBuf,
+    /// The keys of the store.
+    keys: Arc<crate::app::fleet_seal::Keys>,
+    /// The verifier of the tokens.
+    verifier: crate::auth::TokenVerifier,
+    /// `--rate-limit-per-peer`.
+    rate_limit_per_peer: u32,
+    /// `--silent-after-missed`.
+    missed: u32,
+    /// `--retention-hours`.
+    retention_hours: u64,
+    /// `--calls-retention-days`.
+    calls_retention_days: u32,
+    /// `--calls-flush-secs`.
+    #[cfg(feature = "fleet-store")]
+    calls_flush_secs: u64,
+}
+
+/// Open the center as `opening` describes: the store, its intake and its
+/// history, the rebuild of the member registry, then the start's filing
+/// and retention. `stopped` is asked between the rebuild's files; when a
+/// stop was asked for there, the answer is `None` and nothing more is
+/// written. A stop asked for after the rebuild does not end the filing.
+///
+/// # Errors
+///
+/// The store, the intake or the history store is refused.
+fn open_center(
+    opening: Opening,
+    stopped: &dyn Fn() -> bool,
+) -> Result<Option<CenterState>, String> {
+    let Some((center, gone)) = Center::open(
+        &opening.store,
+        opening.keys,
         Utc::now(),
-        retention(args.retention_hours),
-    )?;
+        retention(opening.retention_hours),
+        stopped,
+    )?
+    else {
+        tracing::info!(
+            "fleet center: the stop ended the rebuild of the member list at start; the store was \
+             not rewritten"
+        );
+        return Ok(None);
+    };
     let center = Arc::new(parking_lot::Mutex::new(center));
-    start_history(&center, args.calls_retention_days, args.retention_hours);
+    start_history(
+        &center,
+        opening.calls_retention_days,
+        opening.retention_hours,
+    );
     {
         let center = center.lock();
         tracing::info!(
             "fleet center store '{}': {} member(s), {} past --retention-hours {} removed; {} \
              call record(s) in its intake",
-            args.store.display(),
+            opening.store.display(),
             center.registry.records().len(),
             gone.len(),
-            args.retention_hours,
+            opening.retention_hours,
             center.intake.records()
         );
     }
-    let state = CenterState {
+    Ok(Some(CenterState {
         center,
-        verifier: Arc::new(verifier),
+        verifier: Arc::new(opening.verifier),
         limiter: Arc::new(parking_lot::Mutex::new(
-            crate::output::api::RateLimiter::new(args.rate_limit_per_peer, MAX_TRACKED_PEERS),
+            crate::output::api::RateLimiter::new(opening.rate_limit_per_peer, MAX_TRACKED_PEERS),
         )),
-        missed: args.silent_after_missed,
-        retention_hours: args.retention_hours,
-        calls_retention_days: args.calls_retention_days,
+        missed: opening.missed,
+        retention_hours: opening.retention_hours,
+        calls_retention_days: opening.calls_retention_days,
         #[cfg(feature = "fleet-store")]
-        calls_flush: std::time::Duration::from_secs(args.calls_flush_secs),
+        calls_flush: std::time::Duration::from_secs(opening.calls_flush_secs),
         #[cfg(feature = "fleet-store")]
         filing: Arc::new(parking_lot::Mutex::new(())),
-    };
-    Ok(((addr, listener), state, server_config))
+    }))
 }
 
 /// As the center starts: file what the intake and the store file held
@@ -1791,14 +1877,17 @@ fn file_heartbeats_and_log(center: &parking_lot::Mutex<Center>, gate: &parking_l
 /// registry holds nothing of, or something older, goes into `registry`,
 /// with the member's position moved past the call records the store filed
 /// after that heartbeat. Returns how many members were taken. A file that
-/// cannot be read is logged and restores nothing.
+/// cannot be read is logged and restores nothing. `stopped` is asked
+/// before each file; `None` when it answered yes, and `registry` is then
+/// not to be kept.
 #[cfg(feature = "fleet-store")]
 fn restore_from_history(
     history: &super::fleet_history::History,
     registry: &mut Registry,
     now: DateTime<Utc>,
     retention: chrono::Duration,
-) -> u64 {
+    stopped: &dyn Fn() -> bool,
+) -> Option<u64> {
     let unread = |file: &str, why: &str| {
         tracing::warn!(
             "fleet center: the history store: {file} was not read for the member registry: {why}"
@@ -1810,9 +1899,12 @@ fn restore_from_history(
         .map(|r| (r.member.clone(), r.received_at))
         .collect();
     let oldest = super::fleet_history::oldest_kept_at(now, retention);
-    let Some(found) = newest_in_history(history, oldest, &known, &unread) else {
-        return 0;
+    let Some(found) = newest_in_history(history, oldest, &known, &unread, stopped) else {
+        return Some(0);
     };
+    if found.stopped {
+        return None;
+    }
     // The members taken, each with the receive time of its heartbeat: the
     // call records the store filed after it are read in one pass.
     let mut since = BTreeMap::new();
@@ -1823,14 +1915,16 @@ fn restore_from_history(
         }
     }
     let restored = since.len() as u64;
-    move_past_filed_calls(history, registry, &since, &unread);
+    if !move_past_filed_calls(history, registry, &since, &unread, stopped) {
+        return None;
+    }
     if restored > 0 {
         tracing::info!(
             "fleet center: {restored} member(s) the store file held nothing of, or an older \
              heartbeat of, were taken from the history store"
         );
     }
-    restored
+    Some(restored)
 }
 
 /// The newest heartbeats the history store holds for a registry that
@@ -1845,11 +1939,13 @@ fn newest_in_history(
     oldest: chrono::NaiveDate,
     known: &BTreeMap<String, DateTime<Utc>>,
     unread: &dyn Fn(&str, &str),
+    stopped: &dyn Fn() -> bool,
 ) -> Option<super::fleet_history::Restored> {
-    let found = match history.newest_heartbeats(
+    let found = match history.newest_heartbeats_until(
         oldest,
         known,
         super::fleet_history::MAX_FILES_PER_QUESTION,
+        stopped,
     ) {
         Ok(found) => found,
         Err(e) => {
@@ -1875,16 +1971,19 @@ fn newest_in_history(
 /// from the heartbeat history, past the call records the history store
 /// filed at or after that member's instant, so a record the member sends
 /// again is a duplicate. The files are read in one pass for all of them. A
-/// file that cannot be read goes to `unread` with the reason.
+/// file that cannot be read goes to `unread` with the reason. `stopped` is
+/// asked before each file; false when it answered yes, and nothing moved.
 #[cfg(feature = "fleet-store")]
 fn move_past_filed_calls(
     history: &super::fleet_history::History,
     registry: &mut Registry,
     since: &BTreeMap<String, DateTime<Utc>>,
     unread: &dyn Fn(&str, &str),
-) {
+    stopped: &dyn Fn() -> bool,
+) -> bool {
     let restored = since.len();
-    match history.calls_after(since, super::fleet_history::MAX_FILES_PER_QUESTION) {
+    match history.calls_after_until(since, super::fleet_history::MAX_FILES_PER_QUESTION, stopped) {
+        Ok(calls) if calls.stopped => return false,
         Ok(calls) => {
             super::fleet_intake::replay(registry, &calls.rows);
             for (file, why) in &calls.refused {
@@ -1902,6 +2001,7 @@ fn move_past_filed_calls(
         }
         Err(e) => unread("the call records of the restored members", &e),
     }
+    true
 }
 
 /// File the intake into the history store and log what was filed, or why
@@ -2008,58 +2108,183 @@ fn retention(hours: u64) -> chrono::Duration {
     chrono::Duration::hours(i64::try_from(hours).unwrap_or(i64::MAX / 3600))
 }
 
-/// Serve on the bound `listener`, keep the store, and stop on SIGINT or
-/// SIGTERM.
-async fn run(
-    (addr, listener): (std::net::SocketAddr, crate::output::api::ApiListener),
-    state: CenterState,
-    server_config: crate::output::api::ApiServerConfig,
-) -> i32 {
-    // Before the line that says the center serves: a supervisor that reads
-    // that line and sends SIGTERM at once must reach the handler, not the
-    // default action, which ends the process without the last rewrite of the
-    // store (FLEET-SERVE-STOP-BEFORE-HANDLER).
+/// The cause a request is answered `503` with while the center opens.
+const REBUILDING: &str = if HAS_HISTORY_STORE {
+    "the center is rebuilding its member list from the history store"
+} else {
+    "the center is opening its store"
+};
+
+/// The seconds of `Retry-After` in the `503` a request gets while the
+/// center opens.
+const RETRY_DURING_REBUILD_SECS: u64 = 5;
+
+/// Open the center while the bound listener answers `503`, then serve
+/// until SIGINT or SIGTERM, keeping the store.
+async fn run(plan: ServePlan) -> i32 {
+    // First, before the store is read: a stop during the rebuild at start
+    // must reach the handler, not the default action, which ends the
+    // process at once (FLEET-START-STOP-SIGNAL-BEFORE-HANDLER), and a
+    // supervisor that reads the line below and sends SIGTERM must too
+    // (FLEET-SERVE-STOP-BEFORE-HANDLER).
     let stop = StopSignals::register();
-    let router = routes_behind_the_allowlist(addr, &listener, &state, &server_config);
-    tokio::spawn(upkeep(state.clone()));
-    let code = serve_until_stopped(listener, router, stop).await;
+    let ServePlan {
+        listener: (addr, listener),
+        server_config,
+        opening,
+    } = plan;
+    let bound = listener.local_addr().unwrap_or(addr);
+    let scheme = if listener.is_tls() { "HTTPS" } else { "HTTP" };
+    let hosts = crate::host_allowlist::HostAllowlist::new(bound, &server_config.allowed_hosts);
+    let slot = Arc::new(std::sync::OnceLock::new());
+    let front = crate::output::api::with_host_allowlist(front_router(Arc::clone(&slot)), hosts);
+    tracing::info!("fleet center answering 503 on {bound} until it serves: {REBUILDING}");
+    serve_through_the_rebuild(
+        listener,
+        front,
+        slot,
+        stop.requested(),
+        move |stopped: &dyn Fn() -> bool| open_center(opening, stopped),
+        format!("fleet center serving {scheme} on {bound}"),
+    )
+    .await
+}
+
+/// The routes of the center behind `slot`: each request goes to the
+/// router `slot` holds, or, while it holds none, is answered `503` with
+/// `Retry-After` and [`REBUILDING`].
+fn front_router(slot: Arc<std::sync::OnceLock<axum::Router>>) -> axum::Router {
+    axum::Router::new()
+        .fallback(answer_or_wait)
+        .with_state(slot)
+}
+
+/// The answer of the router `slot` holds, or the `503` of a center that is
+/// not open yet.
+async fn answer_or_wait(
+    axum::extract::State(slot): axum::extract::State<Arc<std::sync::OnceLock<axum::Router>>>,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    use tower::ServiceExt as _;
+    match slot.get() {
+        Some(router) => match router.clone().oneshot(req).await {
+            Ok(answer) => answer,
+            Err(never) => match never {},
+        },
+        None => crate::output::api::Problem::detailed(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            REBUILDING,
+        )
+        .retry_after(RETRY_DURING_REBUILD_SECS)
+        .into_response(),
+    }
+}
+
+/// Serve `front` on `listener` while `open` opens the center in a thread
+/// of its own, then put the center's routes in `slot`, log `serving`, and
+/// serve until the server fails (2) or `stop` resolves (0); the store is
+/// rewritten on the way out.
+///
+/// `open` is given whether a stop was asked for; it answers `None` when
+/// the stop ended its rebuild, and the center then ends with 0 and writes
+/// nothing. A stop asked for after the rebuild waits for `open` to end,
+/// then rewrites. `open` refused or ended in a panic: 2.
+async fn serve_through_the_rebuild<O>(
+    listener: crate::output::api::ApiListener,
+    front: axum::Router,
+    slot: Arc<std::sync::OnceLock<axum::Router>>,
+    stop: impl std::future::Future<Output = ()>,
+    open: O,
+    serving: String,
+) -> i32
+where
+    O: FnOnce(&dyn Fn() -> bool) -> Result<Option<CenterState>, String> + Send + 'static,
+{
+    let served = crate::output::api::serve_router(listener, front);
+    tokio::pin!(served);
+    tokio::pin!(stop);
+    let (state, stop_asked) = match start(open, served.as_mut(), stop.as_mut()).await {
+        Started::Open(state, stop_asked) => (state, stop_asked),
+        Started::Ended(code) => return code,
+    };
+    let code = if stop_asked {
+        0
+    } else {
+        let _ = slot.set(router(state.clone()));
+        tracing::info!("{serving}");
+        tokio::spawn(upkeep(state.clone()));
+        tokio::select! {
+            served = served.as_mut() => exit_code(served),
+            () = stop.as_mut() => {
+                tracing::info!("fleet center stopping: a stop was asked for");
+                0
+            }
+        }
+    };
     rewrite_on_exit(&state);
     code
 }
 
-/// The router for the bound `listener`, behind the `Host` allowlist.
-fn routes_behind_the_allowlist(
-    addr: std::net::SocketAddr,
-    listener: &crate::output::api::ApiListener,
-    state: &CenterState,
-    server_config: &crate::output::api::ApiServerConfig,
-) -> axum::Router {
-    let bound = listener.local_addr().unwrap_or(addr);
-    let hosts = crate::host_allowlist::HostAllowlist::new(bound, &server_config.allowed_hosts);
-    tracing::info!(
-        "fleet center serving {} on {bound}",
-        if listener.is_tls() { "HTTPS" } else { "HTTP" }
-    );
-    crate::output::api::with_host_allowlist(router(state.clone()), hosts)
+/// How the start of a center ended, for [`serve_through_the_rebuild`].
+enum Started {
+    /// The center is open, and whether a stop was asked for while it
+    /// opened.
+    Open(CenterState, bool),
+    /// The center ends with this exit code and writes nothing more.
+    Ended(i32),
 }
 
-/// Serve until the server fails (2) or a stop is asked for (0).
-async fn serve_until_stopped(
-    listener: crate::output::api::ApiListener,
-    router: axum::Router,
-    stop: StopSignals,
-) -> i32 {
-    tokio::select! {
-        served = crate::output::api::serve_router(listener, router) => match served {
-            Ok(()) => 0,
-            Err(e) => {
-                stderr_line!("sipnab fleet serve: {e}");
-                2
-            }
-        },
-        () = stop.requested() => {
-            tracing::info!("fleet center stopping: a stop was asked for");
-            0
+/// Run `open` in a thread of its own while `served` answers, and tell it
+/// when `stop` resolves. The server ending first ends the start too: the
+/// runtime waits for the start's thread as it ends.
+async fn start<O>(
+    open: O,
+    served: std::pin::Pin<&mut impl std::future::Future<Output = Result<(), crate::Error>>>,
+    stop: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
+) -> Started
+where
+    O: FnOnce(&dyn Fn() -> bool) -> Result<Option<CenterState>, String> + Send + 'static,
+{
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let stopping = Arc::new(AtomicBool::new(false));
+    let asked = Arc::clone(&stopping);
+    let mut opening = tokio::task::spawn_blocking(move || open(&|| asked.load(Ordering::SeqCst)));
+    let mut stop_asked = false;
+    let opened = tokio::select! {
+        opened = &mut opening => opened,
+        () = stop => {
+            tracing::info!(
+                "fleet center stopping: a stop was asked for before it served; it ends at the \
+                 next file of the rebuild, or once the start's filing has ended"
+            );
+            stopping.store(true, Ordering::SeqCst);
+            stop_asked = true;
+            (&mut opening).await
+        }
+        served = served => {
+            stopping.store(true, Ordering::SeqCst);
+            let _ = (&mut opening).await;
+            return Started::Ended(exit_code(served));
+        }
+    };
+    match opened.unwrap_or_else(|_| Err("the start ended in a panic".to_string())) {
+        Ok(Some(state)) => Started::Open(state, stop_asked),
+        Ok(None) => Started::Ended(0),
+        Err(e) => {
+            stderr_line!("sipnab fleet serve: {e}");
+            Started::Ended(2)
+        }
+    }
+}
+
+/// The exit code of a server that ended: 0, or 2 with the error printed.
+fn exit_code(served: Result<(), crate::Error>) -> i32 {
+    match served {
+        Ok(()) => 0,
+        Err(e) => {
+            stderr_line!("sipnab fleet serve: {e}");
+            2
         }
     }
 }
@@ -3370,7 +3595,14 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store");
         let keep = chrono::Duration::hours(72);
-        let (mut center, _) = Center::open(&path, test_keys(1), t("2026-11-01T00:00:00Z")?, keep)?;
+        let (mut center, _) = Center::open(
+            &path,
+            test_keys(1),
+            t("2026-11-01T00:00:00Z")?,
+            keep,
+            &|| false,
+        )?
+        .ok_or("a center")?;
         for (member, at) in [
             ("old", "2026-11-01T00:00:00Z"),
             ("new", "2026-11-07T11:00:00Z"),
@@ -3526,7 +3758,9 @@ mod behavior_tests {
             test_keys(1),
             Utc::now(),
             chrono::Duration::hours(72),
-        )?;
+            &|| false,
+        )?
+        .ok_or("a center")?;
         Ok(CenterState {
             center: Arc::new(parking_lot::Mutex::new(center)),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
@@ -5080,7 +5314,15 @@ mod behavior_tests {
     /// The center in `dir` under key 1 as it stands at `now`.
     fn center_at(dir: &Path, now: &str) -> Result<Center, TestError> {
         let keep = chrono::Duration::hours(72);
-        Ok(Center::open(&dir.join("center.store"), test_keys(1), t(now)?, keep)?.0)
+        Ok(Center::open(
+            &dir.join("center.store"),
+            test_keys(1),
+            t(now)?,
+            keep,
+            &|| false,
+        )?
+        .ok_or("a center")?
+        .0)
     }
 
     /// The Call-IDs in the intake of the center in `dir`.
@@ -6328,7 +6570,14 @@ mod heartbeat_rows_tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store");
         let now = t("2026-11-11T12:01:00Z")?;
-        let (mut center, _) = Center::open(&path, test_keys(1), now, chrono::Duration::hours(72))?;
+        let (mut center, _) = Center::open(
+            &path,
+            test_keys(1),
+            now,
+            chrono::Duration::hours(72),
+            &|| false,
+        )?
+        .ok_or("a center")?;
         center
             .store
             .log_mut()
@@ -6529,7 +6778,13 @@ mod heartbeat_rows_tests {
         fn open(dir: &Path, secs: i64) -> Result<Center, TestError> {
             let now = t("2026-11-11T12:00:00Z")? + chrono::Duration::seconds(secs);
             let keep = chrono::Duration::hours(72);
-            Ok(Center::open(&dir.join("center.store"), test_keys(1), now, keep)?.0)
+            Ok(
+                Center::open(&dir.join("center.store"), test_keys(1), now, keep, &|| {
+                    false
+                })?
+                .ok_or("a center")?
+                .0,
+            )
         }
 
         /// Take `batch` as edge-a, `secs` seconds after 12:00.
@@ -7937,5 +8192,684 @@ mod filing_lock_tests {
             "edge the intake is written again with the record that arrived"
         );
         Ok(())
+    }
+}
+
+/// The start of a center while it rebuilds its member registry: every
+/// request is answered `503` with `Retry-After` and the cause, a stop ends
+/// the rebuild through the handler, and a stop after it waits for the
+/// start's filing and rewrites the store.
+#[cfg(test)]
+mod rebuild_window_tests {
+    use super::behavior_tests::{TestError, bearer, member, operator, state};
+    use super::*;
+    use std::sync::OnceLock;
+    use tower::ServiceExt as _;
+
+    /// How long a test waits for an answer or an exit before it fails: a
+    /// bound on a failing run, not a wait of a passing one.
+    const BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// The routes of a center that has not opened yet.
+    fn empty() -> (Arc<OnceLock<axum::Router>>, axum::Router) {
+        let slot = Arc::new(OnceLock::new());
+        let front = front_router(Arc::clone(&slot));
+        (slot, front)
+    }
+
+    /// One request through `front`: status, `Retry-After`, content type and
+    /// body.
+    async fn ask(
+        front: &axum::Router,
+        method: &str,
+        path: &str,
+        auth: Option<&str>,
+    ) -> Result<(u16, Option<String>, Option<String>, String), TestError> {
+        let mut req = axum::http::Request::builder().method(method).uri(path);
+        if let Some(a) = auth {
+            req = req.header("authorization", a);
+        }
+        let mut req = req.body(axum::body::Body::empty())?;
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                40000,
+            ))));
+        let resp = front.clone().oneshot(req).await?;
+        let header = |name: axum::http::HeaderName| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        let retry = header(axum::http::header::RETRY_AFTER);
+        let kind = header(axum::http::header::CONTENT_TYPE);
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await?;
+        Ok((
+            status,
+            retry,
+            kind,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        ))
+    }
+
+    /// A listener on a port of loopback the system picks, kept open.
+    fn listener() -> Result<(crate::output::api::ApiListener, String), TestError> {
+        let verifier = crate::auth::TokenVerifier::new(crate::auth::VerifierConfig {
+            signing_keys: vec![b"fleet-rebuild-window".to_vec()],
+            static_keys: Vec::new(),
+            revoked_file: None,
+            audience: crate::auth::AUDIENCE_API.to_string(),
+        });
+        let listener = crate::output::api::prepare_listener(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            &verifier,
+            &crate::output::api::ApiServerConfig::default(),
+        )?;
+        let addr = listener.local_addr()?.to_string();
+        Ok((listener, addr))
+    }
+
+    /// One HTTP exchange with a server on `addr`: status, the head and the
+    /// body.
+    async fn exchange(
+        addr: &str,
+        path: &str,
+        auth: &str,
+    ) -> Result<(u16, String, String), TestError> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let mut s = tokio::time::timeout(BOUND, tokio::net::TcpStream::connect(addr)).await??;
+        let ask = format!(
+            "GET {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: {auth}\r\nConnection: \
+             close\r\n\r\n"
+        );
+        s.write_all(ask.as_bytes()).await?;
+        let mut raw = Vec::new();
+        tokio::time::timeout(BOUND, s.read_to_end(&mut raw)).await??;
+        let raw = String::from_utf8(raw)?;
+        let (head, body) = raw.split_once("\r\n\r\n").ok_or("an HTTP answer")?;
+        let status = head.split_whitespace().nth(1).ok_or("a status")?.parse()?;
+        Ok((status, head.to_string(), body.to_string()))
+    }
+
+    /// A start a test holds: it says when it began, and waits for the test
+    /// to let it end with the answer the test gives.
+    struct HeldStart {
+        /// Says the start began.
+        began: std::sync::mpsc::Receiver<()>,
+        /// Ends the start with this answer.
+        end: std::sync::mpsc::Sender<Result<Option<CenterState>, String>>,
+    }
+
+    /// An open for [`serve_through_the_rebuild`] held by the test, and
+    /// whether it saw a stop asked for. With `until_stopped` it first asks
+    /// `stopped` until a stop is asked for, as the rebuild does between
+    /// files (an error at [`BOUND`]); then it waits for the test's answer.
+    fn held(until_stopped: bool) -> (HeldStart, Arc<std::sync::atomic::AtomicBool>, Open) {
+        let (began_tx, began) = std::sync::mpsc::channel();
+        let (end, end_rx) = std::sync::mpsc::channel();
+        let saw_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw = Arc::clone(&saw_stop);
+        let open = move |stopped: &dyn Fn() -> bool| {
+            let _ = began_tx.send(());
+            if until_stopped {
+                let deadline = std::time::Instant::now() + BOUND;
+                while !stopped() {
+                    if std::time::Instant::now() > deadline {
+                        return Err("no stop reached the start".to_string());
+                    }
+                    std::thread::yield_now();
+                }
+            }
+            saw.store(stopped(), std::sync::atomic::Ordering::SeqCst);
+            end_rx
+                .recv_timeout(BOUND)
+                .map_err(|e| format!("the test did not end the start: {e}"))?
+        };
+        (HeldStart { began, end }, saw_stop, Box::new(open))
+    }
+
+    /// The open [`serve_through_the_rebuild`] is given.
+    type Open = Box<dyn FnOnce(&dyn Fn() -> bool) -> Result<Option<CenterState>, String> + Send>;
+
+    /// A stop a test asks for, and the future the center waits on.
+    fn stop() -> (
+        tokio::sync::oneshot::Sender<()>,
+        impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        (tx, async move {
+            let _ = rx.await;
+        })
+    }
+
+    /// Wait in a blocking thread for the held start to begin.
+    async fn began(start: HeldStart) -> Result<HeldStart, TestError> {
+        Ok(
+            tokio::task::spawn_blocking(move || start.began.recv_timeout(BOUND).map(|()| start))
+                .await??,
+        )
+    }
+
+    // ── SUCCESS ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn success_before_the_center_opens_a_request_is_answered_503_with_retry_after()
+    -> Result<(), TestError> {
+        let (_slot, front) = empty();
+        let tok = operator(crate::auth::SCOPE_INVENTORY);
+        let (status, retry, _, _) = ask(&front, "GET", "/v1/fleet/members", Some(&tok)).await?;
+        assert_eq!(
+            (status, retry.as_deref()),
+            (503, Some("5")),
+            "success 503 with Retry-After of five seconds"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn success_the_503_is_a_problem_naming_the_rebuild() -> Result<(), TestError> {
+        let (_slot, front) = empty();
+        let (_, _, kind, body) = ask(&front, "POST", "/v1/fleet/ingest", None).await?;
+        let body: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            kind.as_deref(),
+            Some("application/problem+json"),
+            "success a problem body"
+        );
+        assert_eq!(
+            (
+                body["type"].as_str(),
+                body["status"].as_u64(),
+                body["detail"].as_str()
+            ),
+            (
+                Some("https://sipnab.com/problems/unavailable"),
+                Some(503),
+                Some(REBUILDING)
+            ),
+            "success its kind, status and cause: {body}"
+        );
+        assert_eq!(
+            REBUILDING,
+            if HAS_HISTORY_STORE {
+                "the center is rebuilding its member list from the history store"
+            } else {
+                "the center is opening its store"
+            },
+            "success the cause in the user's words"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn success_every_method_and_path_is_answered_503_while_the_center_opens()
+    -> Result<(), TestError> {
+        let (_slot, front) = empty();
+        let paths = [
+            "/v1/fleet/ingest",
+            "/v1/fleet/members",
+            "/v1/fleet/members/edge-a/history",
+            "/v1/fleet/calls?member=edge-a",
+            "/",
+            "/no/such/route",
+        ];
+        for method in ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"] {
+            for path in paths {
+                let (status, retry, _, _) = ask(&front, method, path, None).await?;
+                assert_eq!(
+                    (status, retry.as_deref()),
+                    (503, Some("5")),
+                    "success {method} {path} is answered 503 with Retry-After"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn success_once_the_center_is_open_its_routes_answer() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (slot, front) = empty();
+        slot.set(router(state(dir.path(), 100)?))
+            .map_err(|_| "the slot was empty")?;
+        let tok = operator(crate::auth::SCOPE_INVENTORY);
+        let (status, retry, _, body) = ask(&front, "GET", "/v1/fleet/members", Some(&tok)).await?;
+        assert_eq!(
+            (status, retry),
+            (200, None),
+            "success the members route answers, without Retry-After: {body}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn success_a_request_during_the_rebuild_is_answered_503_on_the_listener()
+    -> Result<(), TestError> {
+        let (listener, addr) = listener()?;
+        let (slot, front) = empty();
+        let (start, _saw, open) = held(false);
+        let (stop_tx, stop) = stop();
+        let served = tokio::spawn(serve_through_the_rebuild(
+            listener,
+            front,
+            slot,
+            stop,
+            open,
+            "serving".to_string(),
+        ));
+        let start = began(start).await?;
+        let (status, head, body) = exchange(&addr, "/v1/fleet/members", "Bearer x").await?;
+        assert_eq!(
+            status, 503,
+            "success 503 during the rebuild: {head}\n{body}"
+        );
+        assert!(
+            head.lines()
+                .any(|l| l.eq_ignore_ascii_case("retry-after: 5")),
+            "success with Retry-After: {head}"
+        );
+        assert!(
+            body.contains(REBUILDING),
+            "success and the cause in the body: {body}"
+        );
+        start.end.send(Ok(None))?;
+        let _ = stop_tx.send(());
+        let code = tokio::time::timeout(BOUND, served).await??;
+        assert_eq!(code, 0, "success and the center ends");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn success_a_stop_during_the_rebuild_is_seen_by_it_and_exits_0() -> Result<(), TestError>
+    {
+        let (listener, _addr) = listener()?;
+        let (slot, front) = empty();
+        let (start, saw_stop, open) = held(true);
+        let (stop_tx, stop) = stop();
+        let served = tokio::spawn(serve_through_the_rebuild(
+            listener,
+            front,
+            slot,
+            stop,
+            open,
+            "serving".to_string(),
+        ));
+        let start = began(start).await?;
+        stop_tx.send(()).map_err(|()| "the center took no stop")?;
+        // The start asks between files until it sees the stop, then ends
+        // as a stopped rebuild does: with no center.
+        start.end.send(Ok(None))?;
+        let code = tokio::time::timeout(BOUND, served).await??;
+        assert_eq!(code, 0, "success a stop during the rebuild exits 0");
+        assert!(
+            saw_stop.load(std::sync::atomic::Ordering::SeqCst),
+            "success and the rebuild was told to stop"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn success_after_the_rebuild_the_routes_answer_and_a_stop_rewrites_the_store()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (listener, addr) = listener()?;
+        let (slot, front) = empty();
+        let (start, _saw, open) = held(false);
+        let (stop_tx, stop) = stop();
+        let served = tokio::spawn(serve_through_the_rebuild(
+            listener,
+            front,
+            slot,
+            stop,
+            open,
+            "serving".to_string(),
+        ));
+        let start = began(start).await?;
+        let st = state(dir.path(), 100)?;
+        let store = dir.path().join("center.store");
+        let before = std::fs::read(&store)?;
+        start.end.send(Ok(Some(st)))?;
+        let tok = operator(crate::auth::SCOPE_INVENTORY);
+        let deadline = std::time::Instant::now() + BOUND;
+        let answered = loop {
+            let (status, _, body) = exchange(&addr, "/v1/fleet/members", &tok).await?;
+            if status != 503 || std::time::Instant::now() > deadline {
+                break (status, body);
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(answered.0, 200, "success the routes answer: {}", answered.1);
+        stop_tx.send(()).map_err(|()| "the center took no stop")?;
+        let code = tokio::time::timeout(BOUND, served).await??;
+        assert_eq!(code, 0, "success a stop exits 0");
+        assert_ne!(
+            std::fs::read(&store)?,
+            before,
+            "success the store is rewritten on the way out"
+        );
+        Ok(())
+    }
+
+    // ── FAILURE ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn failure_once_open_a_request_without_a_token_is_401_not_503() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (slot, front) = empty();
+        slot.set(router(state(dir.path(), 100)?))
+            .map_err(|_| "the slot was empty")?;
+        let (status, retry, _, _) = ask(&front, "GET", "/v1/fleet/members", None).await?;
+        assert_eq!(
+            (status, retry),
+            (401, None),
+            "failure the route's own refusal, not the rebuild's"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failure_once_open_an_unknown_path_is_404_not_503() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (slot, front) = empty();
+        slot.set(router(state(dir.path(), 100)?))
+            .map_err(|_| "the slot was empty")?;
+        let (status, retry, _, _) = ask(&front, "GET", "/no/such/route", None).await?;
+        assert_eq!(
+            (status, retry),
+            (404, None),
+            "failure an unknown path is the router's 404"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failure_a_start_refused_during_the_rebuild_exits_2() -> Result<(), TestError> {
+        let (listener, _addr) = listener()?;
+        let (slot, front) = empty();
+        let (start, _saw, open) = held(false);
+        let (_stop_tx, stop) = stop();
+        let served = tokio::spawn(serve_through_the_rebuild(
+            listener,
+            front,
+            slot,
+            stop,
+            open,
+            "serving".to_string(),
+        ));
+        let start = began(start).await?;
+        start
+            .end
+            .send(Err("--store 'center.store': refused".to_string()))?;
+        let code = tokio::time::timeout(BOUND, served).await??;
+        assert_eq!(code, 2, "failure a refused start exits 2");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failure_a_start_that_panics_exits_2() -> Result<(), TestError> {
+        let (listener, _addr) = listener()?;
+        let (slot, front) = empty();
+        let (_stop_tx, stop) = stop();
+        let open = |_: &dyn Fn() -> bool| -> Result<Option<CenterState>, String> {
+            panic!("a start that panics, by the test")
+        };
+        let code = tokio::time::timeout(
+            BOUND,
+            serve_through_the_rebuild(listener, front, slot, stop, open, "serving".to_string()),
+        )
+        .await?;
+        assert_eq!(code, 2, "failure a start that panics exits 2");
+        Ok(())
+    }
+
+    // ── EDGE ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn edge_a_stop_while_the_start_files_waits_for_it_then_rewrites() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let (listener, _addr) = listener()?;
+        let (slot, front) = empty();
+        let (start, saw_stop, open) = held(true);
+        let (stop_tx, stop) = stop();
+        let served = tokio::spawn(serve_through_the_rebuild(
+            listener,
+            front,
+            slot,
+            stop,
+            open,
+            "serving".to_string(),
+        ));
+        let start = began(start).await?;
+        stop_tx.send(()).map_err(|()| "the center took no stop")?;
+        // The start sees the stop; its rebuild had ended, so what is left of
+        // it (the filing) runs on, and the center does not end before it.
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !served.is_finished(),
+            "edge the center waits for the start it began"
+        );
+        let st = state(dir.path(), 100)?;
+        let store = dir.path().join("center.store");
+        let before = std::fs::read(&store)?;
+        start.end.send(Ok(Some(st)))?;
+        let code = tokio::time::timeout(BOUND, served).await??;
+        assert_eq!(code, 0, "edge a stop exits 0");
+        assert!(
+            saw_stop.load(std::sync::atomic::Ordering::SeqCst),
+            "edge the start was told of the stop"
+        );
+        assert_ne!(
+            std::fs::read(&store)?,
+            before,
+            "edge and the store is rewritten once the start has ended"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn edge_a_query_and_a_trailing_slash_are_answered_503_too() -> Result<(), TestError> {
+        let (_slot, front) = empty();
+        let member_auth = bearer(&member("edge-a"));
+        for path in ["/v1/fleet/members/", "/v1/fleet/calls?from=x&to=y", "//"] {
+            let (status, _, _, body) = ask(&front, "GET", path, Some(&member_auth)).await?;
+            assert_eq!(status, 503, "edge {path} is answered 503: {body}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn edge_the_retry_after_is_a_whole_number_of_seconds() -> Result<(), TestError> {
+        let (_slot, front) = empty();
+        let (_, retry, _, _) = ask(&front, "GET", "/", None).await?;
+        let secs: u64 = retry.ok_or("a Retry-After")?.parse()?;
+        assert!(
+            (1..=60).contains(&secs),
+            "edge between one second and a minute: {secs}"
+        );
+        assert_eq!(
+            secs, RETRY_DURING_REBUILD_SECS,
+            "edge and it is the constant"
+        );
+        Ok(())
+    }
+
+    /// The start itself, with the history store.
+    #[cfg(feature = "fleet-store")]
+    mod with_the_store {
+        use super::*;
+
+        /// 12:00 plus `secs` seconds on 2026-11-11.
+        fn at(secs: i64) -> Result<DateTime<Utc>, TestError> {
+            Ok(
+                DateTime::parse_from_rfc3339("2026-11-11T12:00:00Z")?.with_timezone(&Utc)
+                    + chrono::Duration::seconds(secs),
+            )
+        }
+
+        /// The heartbeat `count` of `member`, received `secs` seconds after
+        /// 12:00.
+        fn beat(member: &str, secs: i64, count: u64) -> Result<MemberRecord, TestError> {
+            Ok(MemberRecord {
+                member: member.to_string(),
+                received_at: at(secs)?,
+                peer: "192.0.2.10".to_string(),
+                heartbeats: count,
+                cursor: Cursor {
+                    stream: "s".to_string(),
+                    seq: count,
+                    sent_at: at(secs)?,
+                },
+                heartbeat_secs: 30,
+                inventory: serde_json::json!({"host": "edge.example.com"}),
+                call_records: 0,
+                calls: None,
+            })
+        }
+
+        /// A store in `dir` with no store file, and three files of
+        /// heartbeats of edge-a and edge-b in its history.
+        fn lost_store_file(dir: &Path) -> Result<PathBuf, TestError> {
+            let store = dir.join("center.store");
+            let history = crate::app::fleet_history::History::open(&store, test_keys(1))?;
+            for filing in 0..3_u64 {
+                let secs = i64::try_from(filing)? * 60;
+                history.file(&[
+                    beat("edge-a", secs, filing + 1)?,
+                    beat("edge-b", secs + 1, filing + 1)?,
+                ])?;
+            }
+            Ok(store)
+        }
+
+        /// The center of `store` opened at 13:00, asking `stopped`.
+        fn open(
+            store: &Path,
+            stopped: &dyn Fn() -> bool,
+        ) -> Result<Option<(Center, Vec<String>)>, TestError> {
+            Ok(Center::open(
+                store,
+                test_keys(1),
+                at(3600)?,
+                chrono::Duration::hours(72),
+                stopped,
+            )?)
+        }
+
+        /// The members the store file holds.
+        fn stored(store: &Path) -> Result<Vec<String>, TestError> {
+            let (_, records) = Store::open(store, test_keys(1))?;
+            Ok(records.into_iter().map(|r| r.member).collect())
+        }
+
+        #[test]
+        fn success_a_start_never_stopped_restores_the_members_of_the_history()
+        -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let store = lost_store_file(dir.path())?;
+            let (center, _) = open(&store, &|| false)?.ok_or("a center")?;
+            assert_eq!(
+                center.filing.members_restored, 2,
+                "success both members taken from the history"
+            );
+            drop(center);
+            assert_eq!(
+                stored(&store)?.len(),
+                2,
+                "success and written to the store file"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn failure_a_start_stopped_during_the_rebuild_opens_no_center() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let store = lost_store_file(dir.path())?;
+            assert!(
+                open(&store, &|| true)?.is_none(),
+                "failure a stopped start gives no center"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn edge_a_stopped_start_writes_no_member_and_no_intake() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let store = lost_store_file(dir.path())?;
+            let asked = std::cell::Cell::new(0_usize);
+            let stopped = || {
+                asked.set(asked.get() + 1);
+                asked.get() > 1
+            };
+            assert!(open(&store, &stopped)?.is_none(), "edge stopped");
+            assert_eq!(
+                stored(&store)?,
+                Vec::<String>::new(),
+                "edge the store file holds what it held: no member"
+            );
+            assert!(
+                !crate::app::fleet_intake::path_for(&store).exists(),
+                "edge and no intake was written"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn edge_a_stop_while_the_positions_are_moved_opens_no_center() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let store = lost_store_file(dir.path())?;
+            let history = crate::app::fleet_history::History::open(&store, test_keys(1))?;
+            history.file(&[crate::app::fleet_intake::IntakeRecord {
+                member: "edge-a".to_string(),
+                received_at: at(300)?,
+                stream: "s".to_string(),
+                seq: 1,
+                sent_at: at(300)?,
+                selected_by: "failed".to_string(),
+                call: serde_json::json!({"call_id": "call-1@example.com"}),
+            }])?;
+            // Three heartbeat files are read; the stop is asked for at the
+            // first file of call records.
+            let asked = std::cell::Cell::new(0_usize);
+            let stopped = || {
+                asked.set(asked.get() + 1);
+                asked.get() > 3
+            };
+            assert!(
+                open(&store, &stopped)?.is_none(),
+                "edge a stop at the call records ends the start too"
+            );
+            assert_eq!(
+                asked.get(),
+                4,
+                "edge at the fourth ask, the first call file"
+            );
+            assert_eq!(
+                stored(&store)?,
+                Vec::<String>::new(),
+                "edge and the store file holds no member"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn edge_a_start_after_a_stopped_one_restores_as_a_first_one() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let store = lost_store_file(dir.path())?;
+            assert!(
+                open(&store, &|| true)?.is_none(),
+                "edge the first is stopped"
+            );
+            let (center, _) = open(&store, &|| false)?.ok_or("a center")?;
+            assert_eq!(
+                center.filing.members_restored, 2,
+                "edge the next start restores both members"
+            );
+            Ok(())
+        }
     }
 }

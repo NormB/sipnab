@@ -51,7 +51,10 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     // src panic 18 -> 19: the probe in src/relay/fan_out.rs's test that a
     // panicking ask is raised again after every other ask has finished. The
     // panic is the input under test, not error handling.
-    ("src", 5, 3, 19),
+    // src panic 19 -> 20: the probe in src/app/fleet_center.rs's test that a
+    // fleet center whose start panics in its own thread exits 2. The panic
+    // is the input under test, not error handling.
+    ("src", 5, 3, 20),
     // tests panic 2 -> 5: the three probes in tests/temp_path_isolation_test.rs
     // that a test directory is removed when its test body panics (TEMP-PATH-
     // GATE-ACCEPTS-PID). The panic is the input under test, not error handling.
