@@ -8,10 +8,47 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.261] - 2026-11-16
+
+### Changed
+
+- **A datagram that cannot be HEP is turned away without building an error.**
+  - Effect: Testing an RTP packet for HEP no longer costs sipnab an allocation and a backtrace.
+  - Effect: Building that error was 1.13% of CPU samples on a capture with RTP; it is now none.
+  - Limit: The run time of `-N --report -I` did not change beyond the spread between measurement rounds.
 
 ### Fixed
 
+- **A TUI no longer keeps running at full CPU after its terminal closes.**
+  - Was: On macOS and Linux, a terminal lost while sipnab read a key, such as a killed tmux session, could leave it spinning until killed.
+  - Effect: sipnab reads its terminal itself and stops when a read finds it gone, exiting 129 as on `SIGHUP`.
+  - Effect: The TUI no longer asks the terminal for the cursor position at startup.
+  - Docs: [A terminal interface that outlives its terminal](docs/troubleshooting.md#a-terminal-interface-that-outlives-its-terminal).
+
+### Security
+
+- **`sipnab g729 install` started as root downloads the package as another user.**
+  - Was: The download, its TLS client and the unzip of the ITU-T package ran as root.
+  - Effect: They run as `--user`, else `[privilege] user`, else `nobody`; root only checks the table file and installs it.
+  - Do: Give that user a writable `TMPDIR` and a readable CA bundle and sipnab binary, or pass `--no-priv-drop` to download as root.
+  - Docs: [Install as root](docs/g729.md#install-as-root).
+
+## [0.5.260] - 2026-11-16
+
+### Fixed
+
+- **The post-capture JSON flags print JSON only, without the per-message lines.**
+  - Was: `--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` printed the per-message lines first, so `jq` failed without `--no-cli-print`.
+  - Effect: Each implies `--no-cli-print`; `--json`, `--json-pretty`, `-T` or `--fail2ban` beside it still prints the per-message stream.
+  - Docs: [Output formats](docs/output-formats.md).
+- **sipnab refuses an HTTPS answer cut short instead of using it.**
+  - Was: A body that stopped early, on a timeout, a reset or a close, counted as the whole answer.
+  - Effect: `sipnab fleet`, `--vcon-fetch`, `--vcon-audio-fetch`, `[[vcon.enrich]]` services, SCITT receipts and x5u chains refuse it, naming the bytes read.
+  - Effect: A `sipnab fleet` row reads `the answer ended after 9 of its 40 bytes` where it read `the answer is not JSON`.
+  - Docs: [Errors: so the file is not whole](docs/errors.md#url-problem-so-the-file-is-not-whole).
+- **A signal no longer drops a live RTP datagram or an rtpengine request.**
+  - Was: A signal such as `SIGHUP` during a send counted the datagram as unsent, or failed the relay request with `sending <command> to <relay>`.
+  - Effect: sipnab sends again within the same wait: 20 ms for live RTP, the control timeout for rtpengine.
 - **A paused TCP or TLS HEP listener keeps waiting senders at a `--duration` stop.**
   - Was: A listener paused over a second as it reached the deadline could close waiting connections unread, or give up a TLS handshake.
   - Effect: The listener takes its backlog and finishes handshakes for 1 second after it sees the stop, however long the pause.

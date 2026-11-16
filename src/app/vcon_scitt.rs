@@ -635,36 +635,38 @@ impl Link<'_> {
         if let Some(body) = body {
             request.extend_from_slice(body);
         }
-        crate::app::vcon_forward::exchange(
-            endpoint,
-            io,
-            self.tls,
-            &request,
-            |reader: &mut dyn BufRead| {
-                use crate::app::vcon_forward::header_value;
-                let head = crate::app::vcon_forward::read_head(
-                    reader,
-                    64 * 1024,
-                    "--vcon-forward-scitt-url",
-                )?;
-                let status = crate::app::vcon_forward::status_of(&head)?;
-                let (body, truncated) = if matches!(status, 202 | 204) {
-                    (Vec::new(), false)
-                } else {
-                    crate::app::vcon_forward::read_body(reader, &head, MAX_RECEIPT)
-                };
-                Ok(Answer {
-                    status,
-                    location: header_value(&head, "location").map(str::to_owned),
-                    retry_after: header_value(&head, "retry-after")
-                        .and_then(|v| retry_after(v, chrono::Utc::now())),
-                    body,
-                    truncated,
-                })
-            },
-        )
-        .map_err(|e| self.scrub(e))
+        crate::app::vcon_forward::exchange(endpoint, io, self.tls, &request, read_answer)
+            .map_err(|e| self.scrub(e))
     }
+}
+
+/// The transparency service's answer, read from `reader`: a `2xx` body is a
+/// receipt and must arrive whole; any other status's body is quoted as far
+/// as it came.
+///
+/// # Errors
+///
+/// The answer is not HTTP, its head is over its limit, or a `2xx` body did
+/// not arrive whole.
+fn read_answer(reader: &mut dyn BufRead) -> Result<Answer, String> {
+    use crate::app::vcon_forward::header_value;
+    let head = crate::app::vcon_forward::read_head(reader, 64 * 1024, "--vcon-forward-scitt-url")?;
+    let status = crate::app::vcon_forward::status_of(&head)?;
+    let (body, truncated) = if matches!(status, 202 | 204) {
+        (Vec::new(), false)
+    } else if (200..300).contains(&status) {
+        crate::app::vcon_forward::read_body(reader, &head, MAX_RECEIPT)?
+    } else {
+        crate::app::vcon_forward::read_quoted_body(reader, &head, MAX_RECEIPT)
+    };
+    Ok(Answer {
+        status,
+        location: header_value(&head, "location").map(str::to_owned),
+        retry_after: header_value(&head, "retry-after")
+            .and_then(|v| retry_after(v, chrono::Utc::now())),
+        body,
+        truncated,
+    })
 }
 
 /// POST `statement` to the service and read what it answered; for a `202`,
@@ -952,6 +954,55 @@ fn argument(body: &[u8], at: &mut usize) -> Option<(u8, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn answer_of(wire: &[u8]) -> Result<Answer, String> {
+        read_answer(&mut std::io::BufReader::new(wire))
+    }
+
+    #[test]
+    fn a_whole_receipt_is_read() -> Result<(), String> {
+        let got = answer_of(b"HTTP/1.1 201 Created\r\nContent-Length: 3\r\n\r\nabc")?;
+        assert_eq!(
+            (got.status, got.body),
+            (201, b"abc".to_vec()),
+            "a whole receipt is kept"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_receipt_cut_short_is_refused() {
+        let got = answer_of(b"HTTP/1.1 200 OK\r\nContent-Length: 30\r\n\r\nabc");
+        let e = got.err().unwrap_or_default();
+        assert!(
+            e.contains("3 of its 30 bytes"),
+            "a short receipt is refused as short: {e}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_cut_short_is_quoted_as_far_as_it_came() -> Result<(), String> {
+        let got = answer_of(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 30\r\n\r\nbad")?;
+        assert_eq!(
+            (got.status, got.body),
+            (400, b"bad".to_vec()),
+            "the refusal text is kept"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_accepted_answer_reads_no_body() -> Result<(), String> {
+        let got =
+            answer_of(b"HTTP/1.1 202 Accepted\r\nContent-Length: 30\r\nLocation: /op/1\r\n\r\n")?;
+        assert_eq!(
+            got.location.as_deref(),
+            Some("/op/1"),
+            "the Location is read"
+        );
+        assert!(got.body.is_empty(), "a 202 carries no body to read");
+        Ok(())
+    }
 
     /// Shortest-form heads, at each width boundary, and negative integers,
     /// as RFC 8949 Appendix A lists them.

@@ -928,6 +928,20 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "tag-ci",
         &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
+    // `cargo test --lib ... -- --ignored --nocapture`, the command that
+    // records crossterm's events in "Updating code adapted from other projects".
+    (
+        "lib",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    (
+        "ignored",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    (
+        "nocapture",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
     // git's `--no-verify`, which skips the commit-msg hook: the pre-push
     // message gate exists for a commit made that way.
     (
@@ -4593,6 +4607,89 @@ fn every_vendored_file_is_recorded_with_its_version() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The rows of THIRD-PARTY-NOTICES.md's "Adapted code" table: each file
+/// with its version and license cells.
+fn adapted_notice_rows(
+    notices: &str,
+) -> Result<std::collections::BTreeMap<String, (String, String)>, TestError> {
+    let section = notices
+        .split("\n## Adapted code")
+        .nth(1)
+        .ok_or("THIRD-PARTY-NOTICES.md has no `## Adapted code` section")?;
+    let section = section.split("\n## ").next().unwrap_or(section);
+    let mut rows = std::collections::BTreeMap::new();
+    for line in section.lines().filter(|l| l.starts_with("| `")) {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 7 {
+            return Err(format!(
+                "adapted row has {} cells, expected File | Adapted from | Version | \
+                 Upstream | License: {line}",
+                cells.len()
+            )
+            .into());
+        }
+        rows.insert(
+            cells[1].trim_matches('`').to_string(),
+            (cells[3].to_string(), cells[5].to_string()),
+        );
+    }
+    Ok(rows)
+}
+
+/// A source file under `src/` whose header says it is adapted from another
+/// project's code has a row in the notices' "Adapted code" table, and its
+/// header names the version and commit the row records and carries that
+/// project's license notice, so a reader of either can find the other and
+/// tell when an update is due (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS
+/// brought the first, crossterm's input parser).
+#[test]
+fn every_adapted_file_keeps_its_origin_and_license() -> Result<(), TestError> {
+    const MARK: &str = "// Adapted from ";
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let notices = std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md"))?;
+    let rows = adapted_notice_rows(&notices)?;
+    let mut adapted = Vec::new();
+    for rel in tracked::ls_files(repo, &["--", "src/*.rs"])? {
+        let text = std::fs::read_to_string(repo.join(&rel))?;
+        let header: String = text.lines().take(40).collect::<Vec<_>>().join("\n");
+        if header.lines().any(|l| l.starts_with(MARK)) {
+            adapted.push((rel, header));
+        }
+    }
+    assert!(
+        !adapted.is_empty(),
+        "no adapted file found under src/; the scan is not seeing src/tui/input_parse.rs"
+    );
+    for (rel, header) in &adapted {
+        let (version, license) = rows.get(rel).ok_or_else(|| {
+            format!(
+                "{rel} says it is adapted from another project and has no row in \
+                 THIRD-PARTY-NOTICES.md's Adapted code table. Add it to ADAPTED in \
+                 scripts/build-third-party-notices.py and regenerate."
+            )
+        })?;
+        assert!(
+            header.contains(&format!("{license} License")),
+            "{rel}: its header must carry the {license} License notice its row records"
+        );
+        for part in version.split(", commit ") {
+            assert!(
+                header.contains(part.trim()),
+                "{rel}: its header must name `{}` from its row's version `{version}`",
+                part.trim()
+            );
+        }
+    }
+    for rel in rows.keys() {
+        assert!(
+            adapted.iter().any(|(path, _)| path == rel),
+            "THIRD-PARTY-NOTICES.md records adapted file {rel}, whose header does not \
+             say `{MARK}`"
+        );
+    }
+    Ok(())
+}
+
 /// The classifier above is what decides which scripts need a row, so it must
 /// tell sipnab's own readable scripts from a minified bundle.
 #[test]
@@ -6570,7 +6667,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // restore): the table of the rebuild's time before and after in
     // docs/fleet.md's "The files of the history store", with its site
     // mirror (+2).
-    const EXPECTED_TABLES: usize = 1512;
+    // 1512 -> 1514 (G729-INSTALL-DOWNLOADS-AS-ROOT): the troubleshooting table
+    // of docs/g729.md's "Install as root", with its site mirror (+2).
+    // 1514 -> 1517 (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS): the
+    // table of adapted files in CONTRIBUTING.md's "Updating code adapted from
+    // other projects", with its site mirror (+2), and the "Adapted code" table
+    // of THIRD-PARTY-NOTICES.md (+1).
+    const EXPECTED_TABLES: usize = 1517;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

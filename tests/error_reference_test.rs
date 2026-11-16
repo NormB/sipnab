@@ -1049,7 +1049,11 @@ const EXPECTED_UNRESOLVED: usize = 87;
 // archive or compressed capture before anything is unpacked.
 // 679 -> 680 (CAPTURE-RESOLVE-AS-ROOT, --chroot): +1 in src/app/bootstrap.rs,
 // the same refusal for a run that chrooted, naming DIR and DIR/tmp.
-const EXPECTED_TEMPLATES: usize = 680;
+// 680 -> 685 (G729-INSTALL-DOWNLOADS-AS-ROOT): +5 in src/app/g729_install.rs,
+// the ends of the download a root install runs as another user: it failed,
+// a signal ended it, it sent more than a table file, it had no output, and a
+// platform with no unix user ids cannot start it.
+const EXPECTED_TEMPLATES: usize = 685;
 
 // ---------------------------------------------------------------------------
 // The page gates

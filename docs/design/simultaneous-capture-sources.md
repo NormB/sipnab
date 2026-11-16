@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" -->), `capture_files`
-([`src/capture/file.rs:599`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L599)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->), `capture_hep` ([`src/capture/hep.rs:3694`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3694)<!-- "/// backpressure);" -->), the
+([`src/capture/file.rs:599`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L599)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->), `capture_hep` ([`src/capture/hep.rs:3709`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3709)<!-- "/// backpressure);" -->), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)<!-- "pub struct Packet" -->) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L216)<!-- "pub struct PacketTx" -->), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -151,7 +151,7 @@ by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 `extract_sdp_links` ([`src/pipeline.rs:1783`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1783)<!-- "/// by returning" -->) resolves each `m=` section's address
 through `effective_address` ([`src/sip/sdp.rs:355`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L355)<!-- "pub fn effective_address(media: &SdpMedia" -->) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
-tuples. `process_packet` ([`src/pipeline.rs:3186`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3186)<!-- "/// Route one" -->) feeds each one to `link_to_dialog_with_sdp`
+tuples. `process_packet` ([`src/pipeline.rs:3188`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3188)<!-- "/// Route one" -->) feeds each one to `link_to_dialog_with_sdp`
 ([`src/rtp/stream_store.rs:1821`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1821)<!-- "pub fn link_to_dialog_with_sdp(" -->), which lands in `link_endpoint_with_ptime`
 ([`src/rtp/stream_store.rs:2004`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2004)<!-- "pub fn link_endpoint_with_ptime(" -->). That function does two things:
 
@@ -256,7 +256,7 @@ compliant proxy keeps an unanswered INVITE transaction alive.
 
 **F4 — Clock disagreement.** A HEP v3 packet's timestamp comes from the
 *sender's* clock, read from the `TS_SEC`/`TS_USEC` chunks by `parse_hep_v3`
-([`src/capture/hep.rs:1167`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1167)<!-- "/// declared length" --> onward) and carried verbatim into `Packet::timestamp`
+([`src/capture/hep.rs:1182`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1182)<!-- "/// declared length" --> onward) and carried verbatim into `Packet::timestamp`
 by `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)<!-- "/// * `hep` —" -->). A live packet's timestamp comes
 from the local kernel (`pcap_ts_to_chrono`, [`src/capture/live.rs:1276`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1276)<!-- "/// [`capture_time`]." -->). Two
 clocks, no discipline between them. Every figure that subtracts a signaling time
@@ -264,7 +264,7 @@ from a media time — post-dial delay against first RTP, ringback analysis,
 one-way-audio onset — inherits the offset.
 
 Two details soften this and one sharpens it. The HEP v1 header that `parse_hep_v12`
-([`src/capture/hep.rs:1509`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1509)<!-- "/// Returns an error when the packet is" -->) reads has no time field, so the listener stamps local
+([`src/capture/hep.rs:1524`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1524)<!-- "/// Returns an error when the packet is" -->) reads has no time field, so the listener stamps local
 receive time, and a v3 packet without a `TS_SEC` chunk is stamped the same way — a
 v1 mirror therefore has *one* clock, not two. A v2 packet carries the sender's time
 in its time header, as v3 does. And when the skew runs the wrong way,
@@ -385,7 +385,7 @@ nothing.
 
 **`--count N` is enforced twice, and the run-level copy is the one that holds.**
 Each reader keeps a thread-local counter and stops at `config.count`
-([`src/capture/hep.rs:3988`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3988)<!-- "let mut count: u64" --> and its check; [`src/capture/live.rs:950`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L950)<!-- "count_limit_reached(self.config.count, self.count)" -->), and the
+([`src/capture/hep.rs:4003`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4003)<!-- "let mut count: u64" --> and its check; [`src/capture/live.rs:950`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L950)<!-- "count_limit_reached(self.config.count, self.count)" -->), and the
 consumer independently breaks at `total_count >= max_count`
 ([`src/app/batch.rs:4958`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4958)<!-- "if let Some(max_count) = capture_config.count && lp.total_count >= max_count" -->). Because each reader gets a clone of the same
 `CaptureConfig`, the per-reader copies are per source, so a member can stop
@@ -558,7 +558,7 @@ disjunctive and cannot be widened by adding a member.
 - No cross-source correlation heuristic. Nothing keyed on timing, nothing keyed
   on Call-ID reaching media. The SDP endpoint map is the whole mechanism.
 - No TUI changes. Two reasons, and the second is the stronger one:
-  `capture_mode` ([`src/tui/mod.rs:248`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L248)<!-- "capture_mode: String," -->) is one display string with no room for a
+  `capture_mode` ([`src/tui/mod.rs:249`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L249)<!-- "capture_mode: String," -->) is one display string with no room for a
   second source, and the TUI never joins the capture handle at all — it drops it
   ([`src/app/tui_mode.rs:853`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L853)<!-- "drop(self.handle);" -->), so a capture thread that failed reports nothing.
   With one source that loses one error; with a composite it loses the answer to
@@ -855,7 +855,7 @@ Things this design could not settle from the code alone.
   [section 5.2, "What breaks"](#52-what-breaks) establishes that nothing counts it. Unmeasured, and this page follows the
   repo's standing rule against upgrading a reasoned claim to a measured one.
 - **What should the TUI show for two sources?** `capture_mode`
-  ([`src/tui/mod.rs:248`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L248)<!-- "capture_mode: String," -->) is one string rendered by
+  ([`src/tui/mod.rs:249`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L249)<!-- "capture_mode: String," -->) is one string rendered by
   [`src/tui/render/status.rs:168`](https://github.com/NormB/sipnab/blob/main/src/tui/render/status.rs#L168)<!-- "let is_online = app.capture_mode.starts_with("Online");" -->, which branches on an `Online`/`Offline` prefix.
   Deferred to stage three rather than guessed at here.
 

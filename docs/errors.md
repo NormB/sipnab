@@ -4475,7 +4475,7 @@ The credential line names header `{name}`. The forwarder writes this header itse
 
 ### `{url}: {problem}; nothing was written`
 
-The store's answer from `{url}` was incomplete. `{problem}` says how. sipnab wrote nothing.
+The store's answer from `{url}` was incomplete. `{problem}` says how, in the forms listed under [`{url}: {problem}, so the file is not whole`](#url-problem-so-the-file-is-not-whole): it names the bytes read and, when the answer declared it, the length. sipnab wrote nothing.
 
 **What to do:** Retry, and check the store and the network path.
 
@@ -4960,7 +4960,14 @@ The file a recording names is larger than the limit. `{}` is the limit and `{max
 
 ### `{url}: {problem}, so the file is not whole`
 
-The server that holds a recording's file closed the connection before it sent the length it declared. `{problem}` gives the two lengths. sipnab writes nothing for the recording.
+The file a recording names did not arrive whole. `{problem}` is one of these:
+
+- `the answer ended after {got} of its {n} bytes`: the server closed the connection before it sent the length it declared; a read error, such as a timeout, follows after a colon.
+- `the chunked answer ended after {got} bytes, before its last chunk`: a chunked answer stopped before its last chunk.
+- `a chunk of the answer ended after {read} of its {size} bytes`: one chunk stopped before its size.
+- `reading the answer's body failed after {got} bytes: {e}`: an answer without a length failed to read, for example on a timeout.
+
+sipnab writes nothing for the recording.
 
 **What to do:** Run the command again. If it recurs, check the server.
 
@@ -5255,6 +5262,55 @@ wrong version, the wrong length, or an entry of the wrong size. `{other}` says
 which.
 
 **What to do:** Copy the file again. A copy cut short is the usual cause.
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' failed (exit {code}); its reason is above. Nothing was installed.`
+
+`sipnab g729 install` started as root downloads the package as `{user}`, in a
+process of its own, and that process failed. The line above this one is its
+reason: the download, the CA bundle or the package check.
+
+**What to do:** Fix what the line above names. A CA bundle that `{user}`
+cannot read says `Permission denied`. See
+[Install as root](g729.md#install-as-root).
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' was ended by a signal. Nothing was installed.`
+
+The process that downloads the package as `{user}` ended on a signal before
+it sent the table file: someone stopped it, or the system ended it.
+
+**What to do:** Run the install again.
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' sent more than {limit} bytes, more than a table file. Nothing was installed.`
+
+The process that downloads the package as `{user}` sent more than one table
+file holds. sipnab reads no more than that and installs nothing.
+
+**What to do:** Run the install again. A sipnab binary that differs from the
+one that started the install is the usual cause: install one sipnab only.
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' has no output`
+
+sipnab started the download as `{user}` but could not read what it sends.
+
+**What to do:** Run the install again.
+
+**Exit code:** 1.
+
+### `{COMMAND}: this platform cannot start the download as user '{user}'; pass --no-priv-drop to download as this user. Nothing was installed.`
+
+A build for a platform without Unix user ids cannot start a process as
+another user.
+
+**What to do:** Pass `--no-priv-drop`, or install with `--from PATH`, which
+opens no connection.
 
 **Exit code:** 1.
 

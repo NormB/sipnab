@@ -1069,7 +1069,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 889 -> 891 (tag proof, +2): the tag gate's head-proof bullet links
     // .github/workflows/pr-closed.yml and
     // scripts/tests/test_tag_proof_skipped_by_design.py.
-    const EXPECTED_CODE_LINKS: usize = 891;
+    // 891 -> 892 (macOS suite in shards, +1): build-ci-release.md's
+    // `test-macos` bullet links tests/support/macos_suite.rs.
+    const EXPECTED_CODE_LINKS: usize = 892;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

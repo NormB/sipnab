@@ -286,23 +286,12 @@ jobs:
       - name: Run and check the G.729 examples
         run: cargo test -p sipnab-g729 --features std --test examples
 
-      # The suite on macOS, whole, in this job. On Linux it runs split into
-      # shards in the `test` job, which is what the required `CI success`
-      # waits for; the macOS leg blocks no pull request (see `check-macos`),
-      # so splitting it would shorten nothing a merge waits for. On main the
-      # tag gate waits for every workflow of the commit, and Quality took
-      # 28.6 minutes on run 41620629650 (2026-11-03) against this job's 22.2.
-      # One job also keeps macOS to the one `cargo-check` cache entry it had,
-      # 4.07 GB of the repository's 10 GB.
-      # scripts/parallel-tests.py runs the suite under the cargo-nextest
-      # version .config/nextest.toml pins, and refuses any other.
-      - name: Install cargo-nextest (macOS)
-        if: runner.os == 'macOS'
-        uses: ./.github/actions/nextest
-
-      - name: Test (macOS, every target)
-        if: runner.os == 'macOS'
-        run: python3 scripts/parallel-tests.py -- --all-features
+      # The suite runs in the `test` job on Linux and in `test-macos` on
+      # macOS, in shards, not here. It ran whole in this job on macOS until
+      # main's run 43880888975 (2026-11-16) canceled Check (macos-26) at
+      # its 45-minute cap: the suite step took 38.2 of the job's 45.5
+      # minutes, and 22.3 to 32.5 on the three runs before it.
+      # tests/support/macos_suite.rs holds the layout.
 
       - name: Test the sipnab-bpf-types crate
         # The test job's Test step covers the sipnab package only, because
@@ -404,6 +393,16 @@ jobs:
           tmux -V
           cargo test --features tui --test tui_e2e_test -- --ignored
 
+      # What a pane's process sees after each way the TUI tests lose its
+      # terminal, and how long sipnab takes to end after each, printed under
+      # --nocapture so a passing run carries the numbers
+      # (MACOS-TUI-NOT-ENDING-AFTER-TMUX-KILL was seen only on macOS). The
+      # launch test takes up to six minutes, so it runs here and not in the
+      # pre-push hook; see tests/tui_terminal_loss_test.rs for the pass rules.
+      - name: TUI terminal-loss measurements (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --features tui --test tui_terminal_loss_test -- --ignored --nocapture --test-threads=1
+
       # The workspace's own executables are rebuilt by any change to the
       # sources, so they are removed before the save; see the script. It runs
       # on every run, not only before a save, so each run's log records the
@@ -422,7 +421,8 @@ jobs:
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # The macOS leg of Check: the same steps as `check`, through the YAML
-  # alias, and on macOS they include the whole suite.
+  # alias. The macOS suite is the job `test-macos`, which follows the same
+  # rule as this one.
   #
   # `CI success`, the one required status check, does not need this job, so
   # a pull request neither waits for macOS nor turns red when GitHub cancels
@@ -438,7 +438,10 @@ jobs:
   # green. the_macos_leg_blocks_main_and_no_pull_request in
   # tests/site_journey_test.rs holds both halves.
   check-macos:
-    # Slowest run measured on GitHub's runners: 27.7 min
+    # Slowest run measured on GitHub's runners: 45.5 min (canceled at the
+    # cap, run 43880888975, 2026-11-16), 38.2 of it the suite, which has
+    # since moved to `test-macos`; the rest of the job took about 6.7 to
+    # 11.3 min on the three completed runs before it.
     timeout-minutes: 45
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-24.04-arm' || 'macos-26' }}
@@ -455,12 +458,12 @@ jobs:
   # scripts/parallel-tests.py --shard-index I --shard-count N is the one rule
   # for which shard runs what: every integration-test target in exactly one
   # shard, and the library and binary unit tests and the doctests in the
-  # first. The `shard:` list is the only place N is written; the step reads
-  # its index and count from `strategy`. Linux only: macOS runs the suite
-  # whole in `check-macos`.
+  # first. Each job's `shard:` list is the only place its N is written; the
+  # step reads its index and count from `strategy`. Linux here; macOS runs
+  # these same steps in `test-macos` below, through the alias *test-steps.
   # scripts/tests/test_parallel_tests_shards.py holds the rule, on this
   # repository's real targets too, and the `test-results` job refuses a set
-  # of outputs that is not every shard with every target exactly once.
+  # of Linux outputs that is not every shard with every target exactly once.
   test:
     # Slowest run measured on GitHub's runners: 27.7 min
     timeout-minutes: 45
@@ -471,7 +474,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         shard: [1, 2]
-    steps:
+    steps: &test-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
@@ -589,6 +592,30 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  # The macOS leg of the suite: the same steps as `test`, through the YAML
+  # alias, in shards by the same rule, so each shard compiles only its own
+  # targets. It ran whole in `check-macos` until that job reached its
+  # 45-minute cap on main's run 43880888975 (2026-11-16), the suite step
+  # taking 38.2 minutes of it. Like `check-macos`, `CI success` does not need
+  # it: a pull request neither waits for macOS nor fails when GitHub cancels
+  # a macOS job for capacity, and on main a failed shard fails the CI run,
+  # which the tag gate refuses. The shards' outputs are not uploaded (that
+  # step is Linux-only): the published test count describes the Linux suite.
+  # the_macos_leg_blocks_main_and_no_pull_request in
+  # tests/site_journey_test.rs and tests/support/macos_suite.rs hold it.
+  test-macos:
+    # Not yet measured in shards; the whole suite took 22.3 to 38.2 min in
+    # one job on the four main runs before the split.
+    timeout-minutes: 45
+    name: Test (${{ matrix.os }}, shard ${{ matrix.shard }})
+    runs-on: ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-24.04-arm' || 'macos-26' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26]
+        shard: [1, 2]
+    steps: *test-steps
 
   # The Linux shards' outputs, put back together and checked as one run.
   test-results:
@@ -1398,7 +1425,8 @@ jobs:
     # "every other job" — so install-sh and deb-package could both fail with
     # the one required check on main still green.
     #
-    # The macOS-only job, check-macos, is left out on purpose, and this list
+    # The macOS-only jobs (check-macos, test-macos, symbol-split-macos) are
+    # left out on purpose, and this list
     # is the one place that rule lives: a pull request neither waits for
     # macOS nor fails when GitHub cancels a macOS job for capacity, and on
     # main a macOS failure still fails the CI run, which the tag gate

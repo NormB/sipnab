@@ -1105,6 +1105,20 @@ pub struct HepPacket {
 
 // ── Parsing ──────────────────────────────────────────────────────────
 
+/// Whether `data` starts the way a HEP packet does: `"HEP3"`, or a first
+/// byte of `0x01` or `0x02`. [`parse_hep`] refuses everything else with this
+/// same test.
+///
+/// For a caller that reads every datagram as a possible HEP packet (RTP
+/// included): asking here first turns away a datagram that cannot be HEP
+/// without building the error value `parse_hep` returns for it, an
+/// allocation and a backtrace capture per packet.
+#[must_use]
+#[inline]
+pub fn looks_like_hep(data: &[u8]) -> bool {
+    data.starts_with(HEP3_MAGIC) || matches!(data.first(), Some(&(HEP1_VERSION | HEP2_VERSION)))
+}
+
 /// Parse a HEP packet from raw bytes.
 ///
 /// Detects the version automatically:
@@ -1116,12 +1130,13 @@ pub struct HepPacket {
 /// Returns an error if the packet is malformed, truncated, or
 /// uses an unrecognized version.
 pub fn parse_hep(data: &[u8]) -> Result<HepPacket> {
-    if data.len() >= 4 && &data[..4] == HEP3_MAGIC {
-        parse_hep_v3(data)
-    } else if !data.is_empty() && (data[0] == HEP1_VERSION || data[0] == HEP2_VERSION) {
-        parse_hep_v12(data)
-    } else {
+    if !looks_like_hep(data) {
         bail!("Not a HEP packet: unrecognized magic/version byte");
+    }
+    if data.starts_with(HEP3_MAGIC) {
+        parse_hep_v3(data)
+    } else {
+        parse_hep_v12(data)
     }
 }
 
@@ -5170,6 +5185,72 @@ mod tests {
         c.extend_from_slice(&chunk(CHUNK_DST_PORT, &5060u16.to_be_bytes()));
         c.extend_from_slice(&chunk(CHUNK_PAYLOAD, b"OPTIONS sip:a@b SIP/2.0"));
         c
+    }
+
+    /// `looks_like_hep` is the test `parse_hep` refuses with, so a caller that
+    /// asks it first turns away nothing `parse_hep` would read.
+    #[test]
+    fn looks_like_hep_names_the_starts_parse_hep_reads() {
+        for (bytes, expected) in [
+            (&b"HEP3"[..], true),
+            (&b"HEP3\x00\x00rest"[..], true),
+            (&[0x01, 0, 0, 0][..], true),
+            (&[0x02][..], true),
+            (&[][..], false),
+            (&b"H"[..], false),
+            (&b"HEP"[..], false),
+            (&b"HEP2rest"[..], false),
+            (&b"hep3rest"[..], false),
+            (&[0x00, 0x01][..], false),
+            (&[0x03][..], false),
+            (&[0x80, 0x00, 0x12, 0x34][..], false),
+            (&b"OPTIONS sip:x SIP/2.0\r\n\r\n"[..], false),
+        ] {
+            assert_eq!(
+                super::looks_like_hep(bytes),
+                expected,
+                "looks_like_hep({bytes:02x?})"
+            );
+        }
+    }
+
+    /// Every first byte: `parse_hep` refuses each one `looks_like_hep`
+    /// refuses, with the refusal it always gave.
+    #[test]
+    fn parse_hep_refuses_every_start_looks_like_hep_refuses() {
+        for first in 0u8..=255 {
+            let mut d = vec![first];
+            d.extend_from_slice(&valid_chunks());
+            if super::looks_like_hep(&d) {
+                assert!(
+                    matches!(first, 0x01 | 0x02),
+                    "first byte {first:#04x} passes"
+                );
+                continue;
+            }
+            let err = super::parse_hep(&d).err().map(|e| e.to_string());
+            assert_eq!(
+                err.as_deref(),
+                Some("Not a HEP packet: unrecognized magic/version byte"),
+                "first byte {first:#04x}"
+            );
+        }
+    }
+
+    /// A well-formed HEP v3 packet still parses, through the same check.
+    #[test]
+    fn a_valid_hep_v3_packet_still_parses() -> Result<(), TestError> {
+        let body = valid_chunks();
+        let mut d = hep3_with_total_len((6 + body.len()) as u16);
+        d.extend_from_slice(&body);
+        assert!(super::looks_like_hep(&d), "starts like HEP");
+        let hep = super::parse_hep(&d)?;
+        assert_eq!(
+            &hep.payload[..],
+            b"OPTIONS sip:a@b SIP/2.0",
+            "the payload is read"
+        );
+        Ok(())
     }
 
     /// Every way a packet can be malformed, with the word its refusal must
