@@ -13519,7 +13519,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.257 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.258 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13542,7 +13542,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.257` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.258` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13731,7 +13731,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.257) | Plugin | `Recommends` |
+| Artifact (0.5.258) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13771,11 +13771,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.257 for the
+it first, in the same shell, to the release you want, e.g. 0.5.258 for the
 latest:
 
 ```bash
-VERSION=0.5.257
+VERSION=0.5.258
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13915,13 +13915,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.257, as in
+you want, e.g. 0.5.258, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.257
+   VERSION=0.5.258
    ```
 
 - Download the package:
@@ -14042,25 +14042,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.257-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.258-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.257-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.258-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.257-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.258-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.257-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.258-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14431,7 +14431,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `audio` | RTP audio playback in the TUI. WAV export (`--export-audio`) does not need it. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
-| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core`, `webpki`, `zeroize` |
+| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core`, `tower`, `webpki`, `zeroize` |
 | `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent, such as Claude Code or Claude Desktop, drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
 | `metrics` | Standalone Prometheus `/metrics` server on a plain TCP listener and threads. Needs neither the `api` feature nor an async runtime. Included by default. | `native`, `base64`, `rustls` |
@@ -14546,14 +14546,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.257
+docker pull ghcr.io/normb/sipnab:0.5.258
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.257` | That release |
+| `0.5.258` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14591,7 +14591,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.257 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.258 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14604,11 +14604,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.257 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.258 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.257` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.257`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.258` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.258`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14806,7 +14806,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.258 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+sipnab 0.5.259 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -15030,7 +15030,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.257
+docker pull ghcr.io/normb/sipnab:0.5.258
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -29460,8 +29460,12 @@ when the reason changes. `{why}` is `the center did not answer: <reason>` for
 a center that is down, unreachable or not trusted, `the center refused this
 member's token (HTTP 401)` for a token the center does not accept, or `the
 center answered HTTP <status>`. The heartbeats stay in the spool, and the
-member tries again, at most one interval apart. A line
-`the center takes heartbeats again` follows when the spool drains.
+member tries again after 1 s, then 2 s, 4 s and so on, at most one
+`[fleet] heartbeat_secs` apart. A line `the center takes heartbeats again`
+follows when the spool drains. `the center answered HTTP 503` comes, among
+other causes, from a center that is starting and
+[rebuilds its member list](#a-503-while-the-center-starts).
+The member does not read the answer's `Retry-After`.
 
 **What to do:** For a refused token, mint a new one on the center and restart
 the member. Otherwise, bring the center back or let the member reach it.
@@ -29501,7 +29505,29 @@ more of the history while it is away.
 them. [Run a fleet center](fleet.md#run-a-fleet-center) describes the command.
 A message that starts with `sipnab fleet serve:` stops the center with exit
 code 2. A message the center answers a member with goes in the `detail` of a
-`400` answer, and the center keeps running.
+`400` or `503` answer, and the center keeps running.
+
+### A `503` while the center starts
+
+`the center is rebuilding its member list from the history store` is the
+`detail` of the `503` answer the center gives every request, on every
+route, from the time it binds its port until it has opened its store and
+rebuilt its member list. The answer carries `Retry-After: 5`. It logs
+`fleet center answering 503 on <address> until it serves: the center is
+rebuilding its member list from the history store` when it binds, and
+`fleet center serving` once it answers again. A start with its store file
+reads one heartbeat file. A start without it reads every heartbeat file of
+`--retention-hours`, which takes seconds for a large fleet
+([The files of the history store](fleet.md#the-files-of-the-history-store)).
+A build without the history store answers `the center is opening its store`
+for the same window. A SIGTERM or SIGINT during the rebuild ends it before
+the next file it would read, and the center exits 0: the store file holds
+the members it held before the start, and the center does not open its
+intake.
+
+**What to do:** Nothing. Send the request again after the `Retry-After`
+seconds. A member keeps its heartbeats in its spool and delivers them once
+the center serves.
 
 ### `sipnab fleet serve: {e}`
 
@@ -37768,7 +37794,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.258 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+   sipnab 0.5.259 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -38470,7 +38496,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.258"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.259"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -39155,7 +39181,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.258",
+  "version": "0.5.259",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -40098,7 +40124,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.258"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.259"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -41973,6 +41999,11 @@ with its REST API on `127.0.0.1:18080`, reporting every 5 seconds.
 - **`the center did not answer`.** The center is down, or a firewall drops
   the member's connections. The heartbeats wait; nothing needs doing on the
   member once the center is back.
+- **`the center answered HTTP 503`.** The center is starting and rebuilds
+  its member list, or its rate limit refused the member. The heartbeats
+  wait, and the member tries again after 1 s, 2 s, 4 s and so on, at most
+  one `heartbeat_secs` apart
+  ([What the center answers while it starts](#what-the-center-answers-while-it-starts)).
 - **`the center did not answer: sending: invalid peer certificate: UnknownIssuer`.**
   The member does not trust the center's certificate. Set `report_ca_file` to
   the certificate of the issuing CA.
@@ -42800,6 +42831,87 @@ answer with this page.
   leaves no trace in the store, as for the store file itself. An answer does
   not include records the intake dropped at its size limit before a filing.
 
+### What the center answers while it starts
+
+**Purpose.** Know what a member, a reader and a supervisor get from a center
+between the time it binds its port and the time it serves, and what a stop
+does in that time.
+
+**Before you start.** Nothing to set: every center does this. Nothing
+changes on a member.
+
+**What the center does at start, in order:**
+
+1. It reads its keys, binds `--listen`, and drops to the user it serves as.
+2. It installs its SIGTERM and SIGINT handlers.
+3. It answers every request, on every route, `503` with `Retry-After: 5`
+   and this problem body, and logs where it does. Both outputs come from a
+   test center with 500 members in 120 heartbeat files and no store file,
+   on a port the system picked:
+
+   ```text
+   503 {"detail":"the center is rebuilding its member list from the history store","status":503,"title":"Service Unavailable","type":"https://sipnab.com/problems/unavailable"}
+   ```
+
+   ```text
+   INFO sipnab::app::fleet_center: fleet center answering 503 on 127.0.0.1:33407 until it serves: the center is rebuilding its member list from the history store
+   ```
+
+4. It opens its store file and its history, rebuilds its member list,
+   files what the intake and the store file held, and applies retention.
+5. It logs `fleet center serving HTTP on <address>` (or `HTTPS`) and
+   answers each request from then on.
+
+A start with its store file reads one heartbeat file in step 4. A start
+without it reads every heartbeat file of `--retention-hours`, newest first
+([The files of the history store](#the-files-of-the-history-store) has the
+time for a fleet). A build without the history store answers `the center is
+opening its store` in step 3.
+
+**What a member does with the `503`.** It keeps the heartbeat or the call
+records in its spool and logs `heartbeats wait in the spool: the center
+answered HTTP 503` once. It tries again after 1 s, then 2 s, 4 s and so on,
+never more than one `[fleet] heartbeat_secs` apart, and delivers the spool
+once the center serves. It does not read `Retry-After`.
+
+**A stop during the start.** A SIGTERM or SIGINT during the rebuild in step
+4 ends the rebuild before the next file it would read. The center logs the
+two lines below and exits 0. It did not rewrite its store file with the
+rebuilt list and did not open its intake, so the store file holds the
+members it held before the start, and the next start rebuilds again:
+
+```text
+INFO sipnab::app::fleet_center: fleet center stopping: a stop was asked for before it served; it ends at the next file of the rebuild, or once the start's filing has ended
+INFO sipnab::app::fleet_center: fleet center: the stop ended the rebuild of the member list at start; the store was not rewritten
+```
+
+A stop after the rebuild, while the start files, waits for that filing to
+end. The center then rewrites its store as it does at any stop, and exits
+0. Releases up to 0.5.258 opened the store before they installed the
+handlers: a SIGTERM during the rebuild ended the process at once, and a
+request waited unanswered until the rebuild ended.
+
+**Verify.** Move a test center's store file aside, start the center with
+a history that holds many heartbeat files, and ask for the members at
+once:
+
+```bash
+curl -s -i -H "Authorization: Bearer $OPS_TOKEN" http://127.0.0.1:8444/v1/fleet/members
+```
+
+The answer is `503` with `Retry-After: 5` until the center logs `fleet
+center serving`, and `200` with every member after it.
+
+**Troubleshoot.**
+
+- **A supervisor marks the center failed during a long start.** Its
+  readiness check gets `503`. Wait for `200`, or for the `fleet center
+  serving` line, before you mark the center up.
+- **The `503` lasts longer than you expect.** The center has no store file,
+  or its store file is older than its newest heartbeat files, so it reads
+  the heartbeat files of the whole window. Keep the store file in your
+  backups with the history.
+
 ### What waits during a filing
 
 **Purpose.** Know which requests the center answers while it files, and
@@ -42936,9 +43048,22 @@ runs.
 | Of that: unsealing them | 41 to 42 ms |
 | Of that: decoding the one row group of each file that holds the member | 158 to 162 ms |
 | The same decoding as releases 0.5.249 to 0.5.254 did it, building all 128 rows of the row group | 586 to 656 ms |
-| Rebuilding the member list at a start without the store file, from all 1,440 files | 10.1 to 11.4 s |
 
-The rebuild builds every row of every file it opens, 2,880,000 rows here.
+**What a start without the store file costs.** The center rebuilds its
+member list from the heartbeat files, newest first, and builds a row only
+when it holds no row of that member yet or the row is newer than the one it
+holds. Measured on 2026-11-15 in one release build (Cargo feature set
+`full`, aarch64, 14 cores, load average 23 to 31) on the same kind of
+synthetic store, 1,440 files of 113,477,614 sealed bytes, three runs:
+
+| How the rebuild read the 1,440 files | Rows built | Time |
+|---|---|---|
+| As this release does it | 2,000, one for each member | 1.95 to 1.99 s |
+| As releases 0.5.251 to 0.5.258 did it, in the same binary | 2,880,000, every row | 12.4 to 12.8 s |
+
+The center answers `503` for that time
+([What the center answers while it starts](#what-the-center-answers-while-it-starts)).
+A start with its store file reads one file.
 
 **Which reads build every row, and what a damaged row does.** The center
 seals each file, so a changed file does not open at all. A row whose JSON,
@@ -42947,12 +43072,15 @@ that wrote the file. A question refuses such a file, and names it under
 `refused`, only when it selects that row: a question for another member, for
 another call or for a window that does not hold the row gets its answer
 from the same file. Releases 0.5.249 to 0.5.254 refused the file for every
-question that read the row's row group. Two reads still build every row of
-each file they open and refuse the file for one such row anywhere in it: the
-rebuild of the member list at a start without the store file, and the check
-a filing makes of the files of the same day that can already hold its rows.
-Neither opens every file of the store. `sipnab fleet verify` does: it
-builds every row of every file and reports each file it refuses
+question that read the row's row group. The rebuild of the member list at
+start refuses a file only for a damaged row it builds: a damaged row older
+than the row it holds of that member is not built, and the start takes the
+file's other rows. Releases 0.5.251 to 0.5.258 refused the file at start for
+such a row too. One read still builds every row of each file it opens and
+refuses the file for one such row anywhere in it: the check a filing makes
+of the files of the same day that can already hold its rows. Neither read
+opens every file of the store. `sipnab fleet verify` does: it builds every
+row of every file and reports each file it refuses
 ([Verify the history store](#verify-the-history-store)). A member id that is not text, or a column
 that the center cannot read, refuses the file for every question that reads
 its row group, as before.
@@ -43459,9 +43587,10 @@ would.
   113,491,120 bytes. Releases 0.5.251 to 0.5.253 wrote the same rows
   without compression as 887,745,307 bytes. In a release build on
   2026-11-14 (aarch64, 14 cores, load average about 10), one member's
-  newest 1,000 heartbeats came from 1,001 such files in 226 to 230 ms, and
-  the center rebuilt the member list without a store file from all 1,440
-  files in 10.1 to 11.4 s
+  newest 1,000 heartbeats came from 1,001 such files in 226 to 230 ms. In
+  a release build on 2026-11-15 (load average 23 to 31), the center rebuilt
+  the member list without a store file from all 1,440 files in 1.95 to
+  1.99 s, and answered `503` meanwhile
   ([The files of the history store](#the-files-of-the-history-store) has
   the parts of those times). The center answers members while it
   writes a file.
@@ -43820,6 +43949,11 @@ Each output below comes from the same run.
   ```text
   sipnab fleet serve: --store 'center.store' can be read or written by other users (mode 0644); chmod 600 it
   ```
+
+- **`503` and `the center is rebuilding its member list from the history
+  store`.** The center has bound its port and not yet opened its store. Ask
+  again after the `Retry-After` seconds
+  ([What the center answers while it starts](#what-the-center-answers-while-it-starts)).
 
 - **A member stays `silent`.** The center has had no heartbeat from it for
   more than `silent_after_missed` of its intervals: the member is down, cannot
@@ -51610,7 +51744,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.258",
+  "version": "0.5.259",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -82511,7 +82645,14 @@ merged pull request proves the same tree:
 - every check that `main` requires concluded `success` on the head.
 - every workflow run on the head succeeded: the newest of each name, with
   scheduled runs set aside. So the macOS leg, which `CI success` leaves out,
-  still gates the release.
+  still gates the release. The check leaves out two skipped runs, here and on
+  the tagged commit: the `pull_request` run of
+  `.github/workflows/pr-closed.yml`, which skips its only job when a pull
+  request merges, and the `workflow_run` run of
+  `.github/workflows/rerun-not-acquired.yml`, which skips its only job when
+  the CI run it watches succeeded. The script reads the workflow file from
+  GitHub's run record, so a workflow of another file with the same name still
+  counts. A canceled, failed or pending run of those workflows counts too.
 - no run on the tagged commit itself concluded `failure`, `timed_out`,
   `action_required` or `startup_failure`.
 
@@ -88479,6 +88620,13 @@ A hook enforces this rather than merely advising it.
   required check concluded `success` on the head, every workflow run on the head succeeded,
   and no run on the merge commit itself concluded red.
   - The head's runs include the macOS leg, so a macOS break still blocks the release.
+  - Two skipped runs do not count, on the head or on the commit itself: the `pull_request` run
+    of [`pr-closed.yml`](../../.github/workflows/pr-closed.yml), which skips its only job on a
+    merge, and the `workflow_run` run of `rerun-not-acquired.yml`, which skips its only job
+    when the CI run it watches succeeded. The script reads the workflow file from GitHub's run
+    record (`SKIPPED_BY_DESIGN`), not the name; any other skipped run, and a canceled, failed
+    or pending run of those workflows, still blocks. Tested in
+    [`test_tag_proof_skipped_by_design.py`](../../scripts/tests/test_tag_proof_skipped_by_design.py).
   - The hook prints the pull request and head it used.
   - The rule is `tag_ci` in [`scripts/tag-push-proof.py`](../../scripts/tag-push-proof.py),
     tested in [`test_tag_ci_proof.py`](../../scripts/tests/test_tag_ci_proof.py) and in the
@@ -92188,6 +92336,7 @@ Each successful run gets a row here.
 | 0.5.255 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-14 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.256 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.257 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.258 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it

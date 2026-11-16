@@ -50,7 +50,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.258"
+version = "0.5.259"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Norm Brandinger"]
@@ -269,6 +269,10 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 hyper = { version = "1", optional = true }
 hyper-util = { version = "0.1", features = ["tokio"], optional = true }
 futures-core = { version = "0.3", optional = true }
+# The fleet center's routes while it opens its store: each request goes to
+# the center's router once it is open (tower's `oneshot`). Already built
+# under `api`, through axum, with the same feature.
+tower = { version = "0.5", default-features = false, features = ["util"], optional = true }
 # OpenAPI 3.1 document for the REST surface, derived from the handlers rather
 # than written beside them. `docs/rest-api.md` is the prose reference and stays
 # hand-written; this is the machine-readable contract the website's Scalar page
@@ -409,7 +413,7 @@ audio = ["dep:libloading", "dep:libc"]
 # (src/output/websocket.rs); rustls already builds it, so it adds no crate.
 # `webpki` reads a verified client certificate's names
 # (`--api-tls-client-ca`); rustls already builds it too.
-api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa", "dep:rustls", "dep:tokio-rustls", "dep:ring", "dep:hyper", "dep:hyper-util", "dep:futures-core", "dep:webpki", "dep:zeroize"]
+api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa", "dep:rustls", "dep:tokio-rustls", "dep:ring", "dep:hyper", "dep:hyper-util", "dep:futures-core", "dep:tower", "dep:webpki", "dep:zeroize"]
 mcp = ["native", "dep:tokio", "dep:rmcp", "dep:base64", "dep:hmac", "dep:sha2"]
 mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
