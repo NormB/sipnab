@@ -1,0 +1,36 @@
+name: Starter task
+description: Describe a small, self-contained change that someone new to the code can make.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A starter task gives someone new to sipnab everything they need to make one change without asking.
+        A maintainer reads each one and adds the newcomer label when it qualifies.
+  - type: textarea
+    id: task
+    attributes:
+      label: What to change
+      description: The behavior or text to change, and why. One change per issue.
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where in the code
+      description: The files, functions or docs pages involved. docs/internals/code-map.md maps the tree.
+    validations:
+      required: true
+  - type: textarea
+    id: test
+    attributes:
+      label: How to test it
+      description: The test to add or change first, and the command that runs it.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: What a reviewer checks to accept the change.
+    validations:
+      required: true

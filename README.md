@@ -585,6 +585,8 @@ We welcome contributions.
   [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
 - [ROADMAP.md](ROADMAP.md) says what we intend to work on over the next year.
   It also says what we have decided not to build.
+- [GOVERNANCE.md](GOVERNANCE.md) says how someone becomes a committer and how
+  the project makes decisions.
 
 ## Security
 

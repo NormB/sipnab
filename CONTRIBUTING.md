@@ -22,6 +22,22 @@ The threading topology and lock discipline live in
 By participating in this project you agree to abide by the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
+[GOVERNANCE.md](GOVERNANCE.md) says who holds which role, how someone becomes
+a committer and how the project makes decisions.
+
+## Your first change
+
+- The
+  [`good first issue` list](https://github.com/NormB/sipnab/labels/good%20first%20issue)
+  holds issues a maintainer has marked as small and self-contained.
+- A starter issue says what to change, where in the code, how to test it and
+  what a reviewer checks. The
+  [starter task form](.github/ISSUE_TEMPLATE/starter_task.yml)
+  (`.github/ISSUE_TEMPLATE/starter_task.yml`) asks for those four things.
+- Comment on the issue before you start, so two people do not make the same
+  change.
+- Then follow [Pull request process](#pull-request-process).
+
 ## Contributor license agreement
 
 Sign the sipnab [Contributor License Agreement](CLA.md) before your first pull

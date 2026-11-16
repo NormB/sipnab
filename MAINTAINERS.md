@@ -26,6 +26,8 @@ has to satisfy. Two things save the most time on both sides:
 
 [ROADMAP.md](ROADMAP.md) states where the project is going over the next year,
 and what it does not intend to do. Check it before proposing something large.
+[GOVERNANCE.md](GOVERNANCE.md) states the roles, the path to commit access and
+how the project makes decisions.
 
 ## The contributor agreement
 
