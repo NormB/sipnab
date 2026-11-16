@@ -161,7 +161,7 @@ installed after the privilege drop, designed in
 ### 2c. Per-process pcap handles — no
 
 Multi-device capture already gives each device its own thread and its own pcap
-handle ([`capture/native.rs:693-752`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L693-L752)<!-- "pub fn start_multi_capture(" -->). Nothing is
+handle ([`capture/native.rs:698-757`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L698-L757)<!-- "pub fn start_multi_capture(" -->). Nothing is
 contended. There is no handle problem to solve.
 
 ### 2d. Bypassing a shared-lock bottleneck — **no, and this is measured**
@@ -198,7 +198,7 @@ Elsewhere, contention is **asserted but never measured**. The oldest claim,
 [`implementation-plan-v6.md:368`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/docs/design/implementation-plan-v6.md#L368), says the store
 lock is *"read-heavy, write-rare, so RwLock contention is minimal"* — which is
 simply stale: the batch loop takes `dialog_store.write()` **once per packet**
-([`batch.rs:4878`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4878)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
+([`batch.rs:4881`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4881)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
 most frequent operation in the process, not a rare one. No benchmark in
 `benches/` acquires a lock; no metric reports contention. *We do not know what
 it costs, and neither does anyone else.*
@@ -211,7 +211,7 @@ Specific to this codebase, not in general.
 
 **The stores are the product, and four surfaces read them in-process.** The
 same `Arc<RwLock<DialogStore>>` / `Arc<RwLock<StreamStore>>` is held by the
-capture loop ([`batch.rs:4029-4034`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4029-L4034)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
+capture loop ([`batch.rs:4032-4037`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4032-L4037)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
 every MCP tool ([`mcp/server.rs`](../../src/mcp/server.rs)), the Prometheus
 exporter and the TUI. Forking the capture away from the servers turns every one
 of those reads into IPC. That is not a refactor; it is a new wire protocol,
@@ -226,7 +226,7 @@ being exceptions and start being a replication problem.
 
 **The TUI depends on being able to *fail* to read.** Every render-side access is
 `try_read()`, and a contended read deliberately skips a frame
-([`threading.md:365-368`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L365-L368)<!-- "**The TUI never blocks:** all render-side store access is `try_read()`." -->). There is no `try_read`
+([`threading.md:370-373`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L370-L373)<!-- "**The TUI never blocks:** all render-side store access is `try_read()`." -->). There is no `try_read`
 over a socket.
 
 **A merged view is the deliverable.** Multi-device capture merges N interfaces

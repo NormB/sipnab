@@ -88,7 +88,7 @@ So a green `--features full` says nothing about whether `--features tls` alone
 compiles.
 That is exactly why CI has a feature matrix.
 
-## The nineteen workflows
+## The twenty workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -107,6 +107,7 @@ That is exactly why CI has a feature matrix.
 | `memcheck.yml` | weekly cron (Wednesdays 07:23 UTC) + manual + on its own path | Runs sipnab under Valgrind across its offline, archive, HEP, MCP and REST paths, built with `--cfg sipnab_tsan` so it allocates through the C library's heap, the only heap Valgrind sees. A definitely or indirectly lost block, or an invalid read, write or free, fails the job ([`scripts/memcheck-verdict.py`](https://github.com/NormB/sipnab/blob/main/scripts/memcheck-verdict.py)), and so does a log with no leak summary. Valgrind must first report a probe program's one known 4,096-byte leak, or the job fails. Runs on the local runners. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `pr-text.yml` | `pull_request_target`: PR opened, edited, reopened or pushed to | Checks the text a pull request publishes for the lab's private identities and for AI attribution with [`scripts/check-message-identity.sh`](https://github.com/NormB/sipnab/blob/main/scripts/check-message-identity.sh), the script the `commit-msg` hook runs. The `Commit messages and PR title name no private identity` job reads the title, the branch name and every commit message in the pull request's range, which is what a merge puts on `main`, and fails on a finding. The `PR description names no private identity (advisory)` job reads the description, which stays on the pull request page, and reports a finding as a warning without failing. Both jobs check out the base branch (no checkout names a ref, which Scorecard's Dangerous-Workflow check would report), so main's workflow, script and test judge the pull request, and the job fetches the pull request's commits from `refs/pull/N/head` as data and never checks them out or runs them; the fetched head must equal the event's head SHA. `contents: read` at the workflow level and no cache, because a `pull_request_target` run otherwise holds a write token and a cache it saves is restorable on main. Every value from the event reaches the shell only through `env:`. The pull request that added the workflow was not checked by it, because main had no `pr-text.yml` yet. Not required by `ci-success`. |
+| `pr-closed.yml` | PR closed or merged | Ends the `CI` run of a closed pull request. `ci.yml` groups a pull request's runs as `ci-CI-<number>`; this workflow enters that group with `cancel-in-progress`, so GitHub cancels the run still in progress. Before it, a closed pull request's run went on to its end and held the self-hosted runners other pull requests waited for. It checks out nothing, calls no action and asks for no permission. A merge also sends `closed`; GitHub creates the run and marks its job skipped (`merged == false`), since a merged pull request's run is already over. GitHub's documentation has not stated whether a skipped job's run still enters the group; the group names only the pull request's number, so it is never main's group `ci-CI-refs/heads/main`. Limit: GitHub runs no `pull_request` workflow for a pull request with a merge conflict, so closing such a pull request leaves its run going. [`scripts/tests/test_ci_cancel_on_close.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_ci_cancel_on_close.py) holds the two group names together. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
@@ -405,15 +406,15 @@ So `quality.yml` has a second job, `coverage-branch`.
   and the job failed 147 s before CodeQL uploaded the analysis, with no alert open.
 - [`test_code_scanning_wait.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_code_scanning_wait.py) holds the rule.
 
-`ci-success` leaves out the macOS leg of Check, the job `check-macos`, on purpose.
+`ci-success` leaves out the macOS jobs, `check-macos`, `test-macos` and `symbol-split-macos`, on purpose.
 
 - On 2026-11-02 GitHub canceled Check (macos-latest) on both runs of pull request #601
   (41510139494 and 41514782896) with "The job was not acquired by Runner of type hosted even after
   multiple attempts".
   The rerun of the second took 27 minutes (20:22:04 to 20:49:15 UTC).
 - So on a pull request, `CI success` neither waits for macOS nor fails when GitHub cancels the macOS leg.
-- `check-macos` still runs on every pull request, which shows its result, and on every push to `main`.
-- On `main`, a failed `check-macos` fails the CI workflow run of that commit.
+- The macOS jobs still run on every pull request, which shows their results, and on every push to `main`.
+- On `main`, a failed macOS job fails the CI workflow run of that commit.
   A failed job fails its run whether or not another job needs it.
   The pre-push hook's tag gate refuses to tag a commit whose CI run is not green,
   so a macOS break on `main` blocks the release.
@@ -423,7 +424,7 @@ So `quality.yml` has a second job, `coverage-branch`.
   - No job `CI success` needs, directly or through another job, runs on macOS only.
   - No job runs on macOS beside another OS: `needs` takes a matrix job whole, so such a job would either block pull requests on macOS or leave its other leg out of the required check.
   - The macOS jobs have no job-level `if:` or `continue-on-error`, and `ci.yml` runs on every push to `main` and every pull request.
-  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
+  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, `test-macos` runs `test`'s through `*test-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
 - The macOS half of the symbol split is `symbol-split-macos`, by the same rule.
   GitHub canceled it for capacity on pull request #631 (run 41725010284).
 
@@ -432,8 +433,7 @@ Their contents are worth spelling out.
 
 - **`check`** (Linux; `check-macos` runs the same steps on macOS):
   - `cargo build --all-features`
-  - On macOS, `cargo test --all-features`, whole.
-    On Linux the suite runs in `test`, below.
+  - The suite runs in `test` and `test-macos`, below, not here.
   - `cargo clippy --workspace --all-features --all-targets -D warnings`
   - [`scripts/check-rustfmt.sh`](https://github.com/NormB/sipnab/blob/main/scripts/check-rustfmt.sh) (the pinned nightly rustfmt)
   - `cargo doc --no-deps --all-features --workspace`
@@ -491,6 +491,7 @@ Their contents are worth spelling out.
     goes green over nothing.
 - **`test`** and **`test-results`**: the `--all-features` suite on Linux, under cargo-nextest, split into shards.
   See [The suite in shards](#the-suite-in-shards).
+- **`test-macos`**: the same suite on macOS, through `test`'s steps (`*test-steps`), in shards by the same rule.
 - **`audit`**: `cargo-audit` and `cargo-deny`.
 - **`fuzz-check`**: the `fuzz/` workspace compiles.
 
@@ -511,9 +512,15 @@ The `test` job runs the Linux suite on two runners at once.
   - The `suite` profile in [`.config/nextest.toml`](https://github.com/NormB/sipnab/blob/main/.config/nextest.toml) stops any one test after three 60-second periods.
   - Every shard also builds the examples, as plain `cargo test` does, because `examples_run_test` runs them.
   - The job installs the pinned cargo-nextest through [`.github/actions/nextest`](https://github.com/NormB/sipnab/blob/main/.github/actions/nextest/action.yml) first.
-- The `shard:` matrix list is the only place that states N.
+- Each job's `shard:` matrix list is the only place that states its N.
   The step reads its index and count from `strategy.job-index` and `strategy.job-total`.
-- Each shard uploads its output, a manifest of what it ran and the YANG exports.
+- `test-macos` runs the macOS suite in shards through the same steps.
+  - The suite ran whole in `check-macos` until main's run 43880888975 (2026-11-16) canceled Check (macos-26) at its 45-minute cap.
+  - In that run the suite step took 38.2 of the job's 45.5 minutes, and Clippy had run 1.8 minutes when the cap ended it.
+  - On the three runs before it the suite step took 22.3 to 32.5 minutes.
+  - Its shards do not upload their outputs: the published test count describes the Linux suite.
+  - [`tests/support/macos_suite.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/macos_suite.rs) holds the layout, and its cap stays at 45 minutes.
+- Each Linux shard uploads its output, a manifest of what it ran and the YANG exports.
 - `test-results` runs once both pass.
   - `parallel-tests.py merge` refuses the set unless every shard reported exactly once and every target ran in exactly one shard.
   - It writes the outputs in shard order as one `test-output.txt`.
@@ -1032,10 +1039,13 @@ The workflow-shape test holds each job's runner.
 - On the `overflow` runners: two groups of the feature combinations.
   On a push to `main` the two groups take any of the four aarch64 runners instead.
   On 2026-11-11 a push to `main` waited 34 and 68 minutes for the two `overflow` runners behind pull request runs.
+  A release pull request takes the four runners too: one whose head branch starts with `release/` and lives in this repository, never a fork's.
+  On 2026-11-14 the 0.5.256 release pull request's two groups queued behind another pull request's job on the `overflow` pair.
+  This adds runners, not priority: GitHub documents no order among queued jobs for self-hosted runners.
   `test_the_workflow_carries_the_rendered_expression` holds the workflow to that rule.
 - On the x86_64 runner: the RPM packaging job.
   The RPM job builds no Rust, and the runner has every package it names, so it installs nothing there.
-- Only the four jobs above, and the feature combinations on a push to `main`, may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
+- Only the four jobs above, and the feature combinations on a push to `main` or a release pull request, may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
   `a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host` holds that, `an_x64_job_refuses_to_start_with_less_than_25_gb_free` the disk floor, and `a_pooled_job_builds_in_its_own_directory_and_removes_it` the build directory.
 - Everything else runs on GitHub's runners. The repository is public, so they cost nothing.
 
@@ -1916,6 +1926,13 @@ A hook enforces this rather than merely advising it.
   required check concluded `success` on the head, every workflow run on the head succeeded,
   and no run on the merge commit itself concluded red.
   - The head's runs include the macOS leg, so a macOS break still blocks the release.
+  - Two skipped runs do not count, on the head or on the commit itself: the `pull_request` run
+    of [`pr-closed.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/pr-closed.yml), which skips its only job on a
+    merge, and the `workflow_run` run of `rerun-not-acquired.yml`, which skips its only job
+    when the CI run it watches succeeded. The script reads the workflow file from GitHub's run
+    record (`SKIPPED_BY_DESIGN`), not the name; any other skipped run, and a canceled, failed
+    or pending run of those workflows, still blocks. Tested in
+    [`test_tag_proof_skipped_by_design.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_tag_proof_skipped_by_design.py).
   - The hook prints the pull request and head it used.
   - The rule is `tag_ci` in [`scripts/tag-push-proof.py`](https://github.com/NormB/sipnab/blob/main/scripts/tag-push-proof.py),
     tested in [`test_tag_ci_proof.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_tag_ci_proof.py) and in the

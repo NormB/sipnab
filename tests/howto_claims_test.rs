@@ -98,6 +98,7 @@ const LOSSY_CALL: &str = "tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap";
 const SESSION_ID: &str = "tests/fixtures/session-id/opensips-4.0-th-session-id.pcap";
 
 const CHECK: &str = "## Check that it worked";
+const HAND_OFF: &str = "## Hand the answer to another tool";
 const TROUBLESHOOT: &str = "## When something does not work";
 
 // The TLS call the suite builds in code, with its keys: no capture checked in
@@ -312,23 +313,25 @@ fn a_call_id_the_capture_lacks_gives_the_message_the_page_quotes() -> Result<(),
 }
 
 #[test]
-fn json_dialogs_without_no_cli_print_is_not_json_alone() -> Result<(), TestError> {
-    // The page says jq reports a parse error because sipnab printed the
-    // per-message lines among the JSON. The first line of such a run is a
-    // message line.
+fn json_dialogs_alone_writes_only_json() -> Result<(), TestError> {
+    // The page says `--json-dialogs` leaves out the per-message lines by
+    // itself, so its output pipes into jq without `--no-cli-print` (#823).
     page_says(
-        section(TRIAGE, TROUBLESHOOT)?,
-        "Add `--no-cli-print`",
+        section(TRIAGE, HAND_OFF)?,
+        "It leaves out the per-message lines by itself",
         "first-cli-triage",
     );
     let run = sipnab(&["-N", "-I", SAMPLE_CALL, "--json-dialogs"])?;
+    exited(&run, 0);
     let out = stdout(&run);
-    let first = out.lines().next().ok_or("no output")?;
-    assert!(
-        serde_json::from_str::<serde_json::Value>(first).is_err(),
-        "the first line parses as JSON, so jq would not fail on it: {first}"
-    );
-    printed(first, "REGISTER");
+    let mut dialogs = 0;
+    for line in out.lines().filter(|line| !line.trim().is_empty()) {
+        serde_json::from_str::<serde_json::Value>(line).map_err(|e| {
+            format!("a stdout line is not JSON, so jq would fail on it ({e}): {line}")
+        })?;
+        dialogs += 1;
+    }
+    assert!(dialogs > 0, "--json-dialogs printed no dialog object");
     Ok(())
 }
 

@@ -91,7 +91,7 @@ const fn row(
 
 /// Every way a run ends before `bootstrap::launch`, in the order of `main`'s
 /// steps.
-pub const EARLY_EXITS: [EarlyExit; 36] = [
+pub const EARLY_EXITS: [EarlyExit; 37] = [
     row(
         "--internal-kill-worker",
         "0",
@@ -101,10 +101,18 @@ pub const EARLY_EXITS: [EarlyExit; 36] = [
     row(
         "g729 install",
         "0b",
+        Plan::OwnDrop,
+        "downloads, checks and unpacks the package in a child started as --user, the config \
+         user or nobody (`app::g729_install::download_table`); root only checks the table file \
+         the child sends and installs it by rename into a directory root may own; `--from` uses \
+         no network, and it and --no-priv-drop keep the caller's privileges",
+    ),
+    row(
+        "g729 internal-fetch",
+        "0b",
         Plan::Keeps,
-        "installs the table file by rename into a directory root may own; the download runs as \
-         root, is checked against a pinned SHA-256 before it is unpacked, and `--from DIR` uses \
-         no network (G729-INSTALL-DOWNLOADS-AS-ROOT)",
+        "refuses to start as root; `sipnab g729 install` starts it as the user it drops to, and \
+         it writes the table file to its standard output",
     ),
     row(
         "g729 status",
@@ -264,7 +272,7 @@ pub const LATE_EXITS: [EarlyExit; 3] = [
         "--cores",
         "8",
         Plan::OwnDrop,
-        "`prepare_cores_inputs` opens the input set as root and drops before a reader starts",
+        "`prepare_cores_inputs` drops, then judges the set `plan` opened as root, before a reader starts",
     ),
 ];
 
@@ -545,8 +553,10 @@ fn entry_of(path: &Path) -> Option<Entry> {
 }
 
 /// Whether the user named `user` is granted `need` by the modes of the path
-/// and of every directory above it.
-fn user_can(user: &str, need: &Need) -> bool {
+/// and of every directory above it. A user that does not exist, or a path
+/// that does not, is granted nothing.
+#[must_use]
+pub fn user_can(user: &str, need: &Need) -> bool {
     let Ok((uid, gid)) = privilege::resolve_user(user) else {
         return false;
     };

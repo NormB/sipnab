@@ -898,7 +898,7 @@ mod reader {
                     if !(200..300).contains(&status) {
                         return Err(format!("x5u {shown:?} answered {status}"));
                     }
-                    let (body, more) = read_body(reader, &head, X5U_MAX_BYTES);
+                    let (body, more) = read_body(reader, &head, X5U_MAX_BYTES)?;
                     if more {
                         return Err(format!(
                             "x5u {shown:?} answered more than {X5U_MAX_BYTES} bytes, more than a \

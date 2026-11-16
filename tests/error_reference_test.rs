@@ -757,7 +757,11 @@ fn lists() -> Result<Lists, TestError> {
 // `--find-in-files` started as root, the open-file limit refusal that
 // `fit_set_under_open_file_limit` of src/app/bootstrap.rs returns (3 -> 4
 // sites of `stderr_line!("{}", e.message)` there).
-const EXPECTED_UNRESOLVED: usize = 86;
+// 86 -> 87 (CAPTURE-RESOLVE-AS-ROOT): the capture-source limit refusal of a
+// file set moved from `plan` to `resolve_planned_inputs`, which judges the
+// set, so src/app/bootstrap.rs holds `PlanError::arg(msg)` at 3 sites (2 ->
+// 3), each passing on `capture_source_capacity_refusal`'s message.
+const EXPECTED_UNRESOLVED: usize = 87;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -1040,7 +1044,16 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // class and the window that `Scope::new` refuses, the history directory
 // that is absent, and the six disagreements of a file's rows with its path
 // (day, earliest and latest receive time, mark, member, first row).
-const EXPECTED_TEMPLATES: usize = 678;
+// 678 -> 679 (CAPTURE-RESOLVE-AS-ROOT): +1 in src/app/bootstrap.rs, the
+// refusal of a run whose drop user cannot write TMPDIR, given at the first
+// archive or compressed capture before anything is unpacked.
+// 679 -> 680 (CAPTURE-RESOLVE-AS-ROOT, --chroot): +1 in src/app/bootstrap.rs,
+// the same refusal for a run that chrooted, naming DIR and DIR/tmp.
+// 680 -> 685 (G729-INSTALL-DOWNLOADS-AS-ROOT): +5 in src/app/g729_install.rs,
+// the ends of the download a root install runs as another user: it failed,
+// a signal ended it, it sent more than a table file, it had no output, and a
+// platform with no unix user ids cannot start it.
+const EXPECTED_TEMPLATES: usize = 685;
 
 // ---------------------------------------------------------------------------
 // The page gates

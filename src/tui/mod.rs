@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use parking_lot::RwLock;
@@ -57,6 +57,7 @@ use crate::config::{KeybindingsConfig, ThemeConfig, parse_color, parse_keycode};
 
 mod clipboard;
 mod controllers;
+mod input_parse;
 mod render;
 mod save;
 mod state;
@@ -2323,8 +2324,12 @@ pub fn run_tui_with_pause(
     let _guard = TerminalGuard;
 
     let backend = CrosstermBackend::new(io::stdout());
+    // No `terminal.clear()`: the screen is cleared above, and a new Terminal
+    // has nothing to reset. ratatui's clear asks the terminal for the cursor
+    // position, which crossterm's reader reads, and that reader never returns
+    // on a terminal that goes while it reads
+    // (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS).
     let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
 
     // Every resolved option reaches the App through one function, which the
     // snapshot suite calls too — an option that arrives here and is never
@@ -2345,9 +2350,10 @@ pub fn run_tui_with_pause(
         app.status_error = Some(first.clone());
     }
 
-    // The terminal the loop waits on itself: crossterm's own wait never
-    // returns once the terminal has hung up (see `terminal_input`).
+    // The terminal the loop waits on and reads itself: crossterm's own read
+    // never returns once the terminal has hung up (see `terminal_input`).
     let input = terminal_input::TerminalInput::open()?;
+    let _resize_wake = terminal_input::ResizeWake::install()?;
     // The loop's errors are terminal reads and writes, and one that fails
     // because the terminal has gone is the same lost terminal, not a failure
     // of the run.
@@ -2389,7 +2395,8 @@ fn event_loop(
     // flag; all terminal I/O stays here).
     let mut mouse_captured = true;
     let mut pasting = false;
-    let mut interest = terminal_input::Interest::Input;
+    // Bytes of a sequence that has not ended yet stay here between waits.
+    let mut parser = input_parse::Parser::new(terminal::is_raw_mode_enabled()?);
 
     loop {
         if app.should_quit {
@@ -2436,25 +2443,23 @@ fn event_loop(
         // the next redraw — a paste or key burst must not be metered out at
         // one event per frame.
         //
-        // The wait is this loop's own, on the terminal, so a terminal that
-        // has gone ends the run; crossterm is asked only for events already
-        // there (a zero timeout), after a check that the terminal is still
-        // there. A lost terminal is the hang-up SIGHUP reports, and the run
-        // stops the way SIGHUP stops it, exiting 129.
-        let found = input.wait(app.poll_timeout(), interest)?;
-        let mut crossterm_had_events = false;
-        while !app.should_quit {
-            // Before every crossterm read, so neither a hang-up the wait
-            // reported nor one during a slow key below (a save, a decode)
-            // reaches crossterm's read, which would never return.
-            if input.gone()? {
-                return Ok(true);
-            }
-            if !event::poll(Duration::ZERO)? {
+        // The wait and the read are this loop's own, on the terminal, so a
+        // terminal that has gone ends the run: the wait reports a hang-up,
+        // and a read of 0 or EIO is one too. crossterm never reads the
+        // terminal; its read loop never returns on one that has gone. A lost
+        // terminal is the hang-up SIGHUP reports, and the run stops the way
+        // SIGHUP stops it, exiting 129.
+        let found = input.wait(app.poll_timeout())?;
+        let terminal_input::Taken::Events(events) =
+            terminal_input::take_input(input, found, &mut parser)?
+        else {
+            return Ok(true);
+        };
+        for event in events {
+            if app.should_quit {
                 break;
             }
-            crossterm_had_events = true;
-            match event::read()? {
+            match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     handle_key_event(app, key);
                 }
@@ -2465,7 +2470,6 @@ fn event_loop(
                 _ => {}
             }
         }
-        interest = terminal_input::next_interest(found, crossterm_had_events);
 
         // Apply an F12 mouse-capture toggle to the terminal. While capture
         // is off the terminal's native drag-to-select works (wheel

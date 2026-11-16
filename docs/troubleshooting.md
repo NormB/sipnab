@@ -1858,6 +1858,16 @@ there also stops on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
 0.5.233 and earlier ignored `SIGTERM` and `SIGINT`, and `SIGHUP` ended the
 process at once, with no end-of-run summary.
 
+0.5.235 to 0.5.260 can still keep running in one case: the terminal goes in
+the moment sipnab reads a key from it. The process shows in state `R` and uses
+a full CPU, on macOS and on Linux. In CI on macOS, 1 launch in 60 did this
+after `tmux kill-session`.
+
+- **Fix:** upgrade to the release after 0.5.260. sipnab reads its terminal
+  itself, and a read that finds the terminal gone stops the run, with exit
+  status 129.
+- **On 0.5.235 to 0.5.260:** end the process with `SIGKILL`, as above.
+
 ## A run that ignores SIGTERM while it waits for input
 
 sipnab 0.5.234 and earlier have a defect: `sipnab --vcon-fetch -` whose

@@ -1888,7 +1888,24 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // errors.md); docs/errors.md 3 (two to that how-to, one to its own "Fleet
     // center"); docs/cli-reference.md 1 and docs/least-privilege.md 1, both
     // to the how-to.
-    const EXPECTED_WIKI_LINKS: usize = 2697;
+    // 2697 -> 2698 (CAPTURE-RESOLVE-AS-ROOT): docs/errors.md's entry for the
+    // TMPDIR refusal links to "Read capture files only root can read" in
+    // least-privilege.md.
+    // 2698 -> 2700 (CAPTURE-RESOLVE-AS-ROOT, --chroot): docs/errors.md's entry
+    // for the --chroot refusal links "Confine it to a directory", and
+    // least-privilege.md's archive bullet links the same section.
+    // 2700 -> 2706 (a center answers 503 while it starts, +6): docs/fleet.md
+    // 4 (three to its new "What the center answers while it starts", one
+    // from it to "The files of the history store"); docs/errors.md 2 (one
+    // to its own "A `503` while the center starts", one to that section of
+    // fleet.md).
+    // 2706 -> 2707 (HTTPS-BODY-SHORT-READ-ACCEPTED): docs/errors.md's entry
+    // for a --vcon-fetch answer cut short links the list of its forms.
+    // 2707 -> 2709 (G729-INSTALL-DOWNLOADS-AS-ROOT): docs/cli-reference.md's
+    // `--user` of `sipnab g729 install` and docs/errors.md's entry for a failed
+    // download link "Install as root" in g729.md; least-privilege.md's link to
+    // g729.md became a link to that section (no change).
+    const EXPECTED_WIKI_LINKS: usize = 2709;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2047,7 +2064,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // links docs/fleet.md#keep-call-history-at-the-center.
     // 150 -> 151 (changelog outline format): CONTRIBUTING.md's changelog
     // item links docs/internals/build-ci-release.md#the-format-of-an-entry.
-    const EXPECTED_COMMUNITY_LINKS: usize = 151;
+    // 151 -> 152 (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS): the count
+    // the test gave after CONTRIBUTING.md's "Updating code adapted from other projects" was added.
+    const EXPECTED_COMMUNITY_LINKS: usize = 152;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

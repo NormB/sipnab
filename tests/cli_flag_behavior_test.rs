@@ -2696,6 +2696,34 @@ fn json_dialogs_emits_one_object_per_dialog() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The post-capture JSON flags write nothing but JSON to stdout (#823).
+///
+/// Each used to arrive behind the default per-message text line, so
+/// `sipnab -N -I x.pcap --json-dialogs | jq` failed on the first line unless
+/// `--no-cli-print` was also typed. Both fixtures carry SIP, so a text line
+/// would appear if the flag stopped implying `--no-cli-print`.
+#[test]
+fn post_capture_json_flags_write_only_json() -> Result<(), TestError> {
+    const SIP: &str = "tests/pcap-samples/sip-488-codec-reject.pcapng";
+    const SIP_AND_STUN: &str = "tests/fixtures/stun_sdp_mismatch.pcap";
+    let cases = [
+        (SIP, "--json-dialogs"),
+        (SIP, "--json-analyze"),
+        (SIP, "--yang-analyze"),
+        (SIP_AND_STUN, "--json-stun"),
+    ];
+    for (input, flag) in cases {
+        let out = run(&["-N", "-I", input, flag, "--quiet"])?;
+        let mut values = 0;
+        for value in serde_json::Deserializer::from_str(&out).into_iter::<serde_json::Value>() {
+            value.map_err(|e| format!("{flag} wrote a non-JSON stdout ({e}):\n{out}"))?;
+            values += 1;
+        }
+        assert!(values > 0, "{flag} on {input} wrote no JSON at all");
+    }
+    Ok(())
+}
+
 // Mints and inspects an MCP token, so it needs the surface that
 // issues one. The file is gated on `api`, which does not imply `mcp`:
 // under `native,tui,tls,hep,api` the mint refuses and the assertion

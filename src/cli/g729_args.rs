@@ -69,7 +69,25 @@ pub enum G729Command {
         /// table file from another host, without opening a connection.
         #[arg(long, value_name = "PATH")]
         from: Option<PathBuf>,
+        /// Started as root, download and unpack the package as this user;
+        /// else `[privilege] user`, else `nobody`. Only the install of the
+        /// table file runs as root.
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+        /// Started as root, download and unpack the package as root, as
+        /// before 0.5.261; one warning line says so.
+        #[arg(long = "no-priv-drop")]
+        no_priv_drop: bool,
     },
     /// Say whether the tables are installed, where, and their values hash.
     Status,
+    /// The download of `install` started as root: run by `install` as the
+    /// user it drops to, never by hand. Writes the table file to standard
+    /// output.
+    #[command(name = "internal-fetch", hide = true)]
+    InternalFetch {
+        /// The user `install` started this as, for the refusals.
+        #[arg(long = "as-user", value_name = "USER")]
+        as_user: String,
+    },
 }

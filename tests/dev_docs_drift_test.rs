@@ -1065,7 +1065,13 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // The text of a release: build-ci-release.md links
     // scripts/release-notes.py, ops/release/platform-table.sh and
     // scripts/tests/test_release_notes.py.
-    const EXPECTED_CODE_LINKS: usize = 888;
+    // The pr-closed.yml row links scripts/tests/test_ci_cancel_on_close.py.
+    // 889 -> 891 (tag proof, +2): the tag gate's head-proof bullet links
+    // .github/workflows/pr-closed.yml and
+    // scripts/tests/test_tag_proof_skipped_by_design.py.
+    // 891 -> 892 (macOS suite in shards, +1): build-ci-release.md's
+    // `test-macos` bullet links tests/support/macos_suite.rs.
+    const EXPECTED_CODE_LINKS: usize = 892;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

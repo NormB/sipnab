@@ -220,7 +220,7 @@ sipnab -N -I sample-call.pcap --json | jq -r --arg id "$CALL_ID" 'select(.call_i
 
 `--json-dialogs` prints one JSON object per call instead.
 
-- It needs `--no-cli-print`, so the per-message lines stay out of the JSON.
+- It leaves out the per-message lines by itself, so its output is JSON only.
 - Its `timing` object carries the numbers from the report, in milliseconds:
 
 ```bash
@@ -279,9 +279,6 @@ under the capture's name. Download it again.
 `nosuch@example.com`. Copy the Call-ID from the first column of the
 `--report` table, and keep the single quotes around it: without them the shell
 reads characters such as `;` or `&` in a Call-ID as its own.
-
-**`jq` prints `parse error`.** sipnab printed the per-message lines among the
-JSON. Add `--no-cli-print` to the `--json-dialogs` command.
 
 **The `--problems` table has a header and no rows.** That is the answer for a
 capture with no failed or impaired call, as

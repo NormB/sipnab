@@ -598,15 +598,22 @@ fn a_server_that_never_answers_ends_the_run() -> Result<(), TestError> {
     Ok(())
 }
 
-/// A capture that never finishes loading ends the run after `MCP_MAX_POLLS`
-/// polls, naming the capture.
+/// A capture that never finishes loading ends the run after exactly
+/// `MCP_MAX_POLLS` polls, naming the capture.
+///
+/// The bound is proved by counting the `capture_status` requests the server
+/// read, not by the run's wall time: on 2026-11-16 a loaded host stretched
+/// this run to 18.3 s and the old `took < 10 s` check failed a correct
+/// script, while the script itself sent one poll more than the bound.
 #[test]
 fn a_capture_that_never_loads_ends_the_run() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
     let fake = executable(dir.path(), "fake", FAKE_SERVER)?;
+    let log = dir.path().join("requests");
     let run = Run::new(&[CAPTURE, "anything"])?
         .bin(&fake)
         .env("FAKE_EXHAUSTED", "false")
+        .env("FAKE_LOG", &log.display().to_string())
         .env("MCP_MAX_POLLS", "3");
     let done = run.finish(run_wait())?;
     assert_eq!(done.code, Some(1), "stdout: {}", done.stdout);
@@ -615,10 +622,13 @@ fn a_capture_that_never_loads_ends_the_run() -> Result<(), TestError> {
         format!("mcp-stdio: {CAPTURE} never finished loading\n"),
         "the one line that says what did not happen"
     );
-    assert!(
-        done.took < test_timeout(10),
-        "MCP_MAX_POLLS=3 was not the bound: the run took {:?}",
-        done.took
+    let polls = std::fs::read_to_string(&log)?
+        .lines()
+        .filter(|l| l.contains("\"capture_status\""))
+        .count();
+    assert_eq!(
+        polls, 3,
+        "MCP_MAX_POLLS=3 must mean exactly 3 capture_status polls"
     );
     Ok(())
 }
@@ -810,26 +820,22 @@ fn the_system_bash_on_macos_is_32() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The macOS leg of CI runs the whole suite, this file included: the step
-/// is there, it runs every target, and it names no target to leave out. That
-/// leg is the one place the script meets bash 3.2.
+include!("support/macos_suite.rs");
+
+/// The macOS leg of CI runs the whole suite, this file included: its shards
+/// run every target with every feature and name no target to leave out
+/// (tests/support/macos_suite.rs is the rule). That leg is the one place the
+/// script meets bash 3.2.
 #[test]
 fn the_macos_leg_of_ci_runs_the_whole_suite() -> Result<(), TestError> {
     let ci = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/ci.yml"),
     )?;
-    let at = ci
-        .find("- name: Test (macOS, every target)")
-        .ok_or("ci.yml has no macOS step that runs every target")?;
-    let step: String = ci[at..].lines().take(3).collect::<Vec<_>>().join("\n");
+    let problems = macos_suite_problems(&ci);
     assert!(
-        step.contains("if: runner.os == 'macOS'")
-            && step.contains("run: python3 scripts/parallel-tests.py -- --all-features"),
-        "the macOS step no longer runs the whole suite with every feature:\n{step}"
-    );
-    assert!(
-        !step.contains("--skip") && !step.contains("-E "),
-        "the macOS step leaves tests out:\n{step}"
+        problems.is_empty(),
+        "the macOS leg no longer runs the whole suite with every feature:\n{}",
+        problems.join("\n")
     );
     Ok(())
 }

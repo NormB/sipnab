@@ -12914,6 +12914,10 @@ demos/mcp-stdio.sh tests/pcap-samples/sip-problem-call.pcap \
 }
 ```
 
+The helper calls the tool only after the capture has finished loading. It asks
+`capture_status` at most `MCP_MAX_POLLS` times (400 by default), then stops
+with `mcp-stdio: <capture> never finished loading`.
+
 A verdict, not a packet list:
 
 - signaling rather than media,
@@ -13519,7 +13523,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.257 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.259 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13542,7 +13546,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.257` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.259` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13731,7 +13735,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.257) | Plugin | `Recommends` |
+| Artifact (0.5.259) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13771,11 +13775,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.257 for the
+it first, in the same shell, to the release you want, e.g. 0.5.259 for the
 latest:
 
 ```bash
-VERSION=0.5.257
+VERSION=0.5.259
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13915,13 +13919,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.257, as in
+you want, e.g. 0.5.259, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.257
+   VERSION=0.5.259
    ```
 
 - Download the package:
@@ -14042,25 +14046,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.257-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.259-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.257-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.259-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.257-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.259-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.257-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.259-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14427,11 +14431,11 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
 | `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf`, `vcon`, `archive` and `g729`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
-| `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. A build without it has no terminal UI: every run is the run `-N` (`--no-tui`) asks for, so `sipnab -I capture.pcap` prints one line per SIP message, and the output flags need no `-N`. A run that gave neither `-N` nor an output flag says so in one line on standard error when standard error is a terminal. | `native`, `ratatui`, `crossterm`, `unicode-width`, `base64` |
+| `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. A build without it has no terminal UI: every run is the run `-N` (`--no-tui`) asks for, so `sipnab -I capture.pcap` prints one line per SIP message, and the output flags need no `-N`. A run that gave neither `-N` nor an output flag says so in one line on standard error when standard error is a terminal. | `native`, `ratatui`, `crossterm`, `signal-hook`, `unicode-width`, `base64` |
 | `audio` | RTP audio playback in the TUI. WAV export (`--export-audio`) does not need it. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
-| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core`, `webpki`, `zeroize` |
+| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core`, `tower`, `webpki`, `zeroize` |
 | `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent, such as Claude Code or Claude Desktop, drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
 | `metrics` | Standalone Prometheus `/metrics` server on a plain TCP listener and threads. Needs neither the `api` feature nor an async runtime. Included by default. | `native`, `base64`, `rustls` |
@@ -14546,14 +14550,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.257
+docker pull ghcr.io/normb/sipnab:0.5.259
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.257` | That release |
+| `0.5.259` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14591,7 +14595,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.257 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.259 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14604,11 +14608,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.257 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.259 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.257` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.257`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.259` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.259`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14806,7 +14810,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.258 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+sipnab 0.5.260 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -15030,7 +15034,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.257
+docker pull ghcr.io/normb/sipnab:0.5.259
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -17825,6 +17829,16 @@ From 0.5.235, a terminal interface whose terminal is still
 there also stops on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
 0.5.233 and earlier ignored `SIGTERM` and `SIGINT`, and `SIGHUP` ended the
 process at once, with no end-of-run summary.
+
+0.5.235 to 0.5.260 can still keep running in one case: the terminal goes in
+the moment sipnab reads a key from it. The process shows in state `R` and uses
+a full CPU, on macOS and on Linux. In CI on macOS, 1 launch in 60 did this
+after `tmux kill-session`.
+
+- **Fix:** upgrade to the release after 0.5.260. sipnab reads its terminal
+  itself, and a read that finds the terminal gone stops the run, with exit
+  status 129.
+- **On 0.5.235 to 0.5.260:** end the process with `SIGKILL`, as above.
 
 ## A run that ignores SIGTERM while it waits for input
 
@@ -21602,7 +21616,7 @@ Multiple diagnostic flags combine with OR.
 |------|-------|---------|-------|-------------|
 | `--json` | -- | off | 0.3.0 | Output as NDJSON (one JSON object per line, schema in [output-formats.md](output-formats.md)). Requires `-N` |
 | `--json-pretty` | -- | off | 0.3.0 | Output each message as pretty-printed multi-line JSON (use `--json` for line-oriented NDJSON). Requires `-N` |
-| `--json-dialogs` | -- | off | 0.5.68 | NDJSON, one object per **dialog**, emitted after capture (needs `-N`; pair with `--no-cli-print` to get only the objects). `--json` is per message: a dialog filter such as `state == 'Failed'` selects dialogs and then emits every message of them, provisional responses included. This is the per-call shape, carrying `final_status_code` and `final_status_reason` so a failed call says which code failed it — those two are the final answer to the dialog's INVITE, or to the `REGISTER`/`OPTIONS`/`SUBSCRIBE`/`PUBLISH` that opened a dialog without one, and are `null` while it has none. |
+| `--json-dialogs` | -- | off | 0.5.68 | NDJSON, one object per **dialog**, emitted after capture (needs `-N`; prints only the objects, as `--no-cli-print` does, unless `--json`, `--json-pretty`, `-T` or `--fail2ban` is also given). `--json` is per message: a dialog filter such as `state == 'Failed'` selects dialogs and then emits every message of them, provisional responses included. This is the per-call shape, carrying `final_status_code` and `final_status_reason` so a failed call says which code failed it — those two are the final answer to the dialog's INVITE, or to the `REGISTER`/`OPTIONS`/`SUBSCRIBE`/`PUBLISH` that opened a dialog without one, and are `null` while it has none. |
 | `--plugin` | `<PATH>` | -- | 0.5.69 | Load a WASM plugin that contributes its own dialog detections; repeatable. Findings appear under `plugin_findings`. Requires the `plugins` Cargo feature (**not** in the default set). A plugin runs with no imports — no filesystem, network or clock — but still sees each message's headers, so loading one is a trust decision. See [wasm-plugin-api.md](design/wasm-plugin-api.md) |
 | `--report` | -- | off | 0.3.0 | Generate summary report after capture completes. Requires `-N`. When the inputs include stored vCon containers, the report adds one row per container, read or skipped with the reason, and their totals; with `--json` or `--json-pretty`, as one JSON object under the key `sipnab_vcon_containers`. See [Read many containers at once](vcon.md#read-many-containers-at-once) |
 | `--call-report` | `<CALL-ID>` | -- | 0.3.0 | Generate a detailed report for a specific Call-ID. Implies non-interactive |
@@ -21636,7 +21650,7 @@ Multiple diagnostic flags combine with OR.
 | `--from-to-mode` | `<MODE>` | `default` | 0.4.4 | Default TUI From/To column display: `default` (user else host:port), `host-port`, `user`, `user-host-port`. Cycle at runtime with `u`. Overrides `[display] from_to`. Config: `[display] from_to` |
 | `--payload-limit` | `<BYTES>` | -- | 0.3.0 | Maximum payload bytes the per-message text printout shows for each message, with `--show-empty` and `--hexdump` too. It does not shorten `--json`, `--json-pretty` or `-T`/`--text-dump` output. Config: `[display] payload_limit` |
 | `-T`, `--text-dump` | -- | off | 0.3.0 | Dump raw SIP message text (like the CLI matcher `-T`) |
-| `--no-cli-print` | -- | off | 0.3.2 | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout) |
+| `--no-cli-print` | -- | off | 0.3.2 | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout). Implied by `--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` unless `--json`, `--json-pretty`, `-T` or `--fail2ban` is also given |
 | `--wireshark` | -- | off | 0.3.0 | Print a display filter for the current capture to paste into Wireshark; use with `-N` |
 | `--tshark-filter` | `<EXPR>` | -- | 0.3.0 | Generate a tshark-compatible display filter string |
 | `--fail2ban` | -- | off | 0.3.0 | Switch the per-message stream to fail2ban-readable log lines. Requires `-N`. It selects a **format**, not a detection: only two events ever reach it, and each needs its own detector armed beside it — `--kill-scanner` (with `--kill-ua` to add User-Agents it matches) produces `scanner_detected`, `--reg-flood` produces `reg_flood`. On its own it emits nothing, and warns on stderr about the coming silence, because an empty jail log reads as "nothing attacked me". Detections carried by HEP input (`--hep-listen`, `--hep-parse`) never reach it without `--hep-allow-kill`: the inner addresses are the sender's claim, a jail line would ban whatever address the sender chose, and the run says so once at startup |
@@ -23793,6 +23807,8 @@ Both commands take these options:
 
 - `--yes`: answer yes to the question before installing, for scripts and Dockerfiles.
 - `--from <PATH>`: install from the package zip, a directory extracted from it, or the table file of another host, without opening a connection.
+- `--user <USER>`: started as root, download and unpack the package as this user; without it, `[privilege] user`, else `nobody`. Root only checks the table file and installs it ([Install as root](g729.md#install-as-root)).
+- `--no-priv-drop`: started as root, download and unpack the package as root, as before 0.5.261; one warning line says so.
 
 **Examples**
 - `sipnab g729 status --g729-tables ./g729-tables.bin` — check one table file. With no tables there it prints `G.729 tables: not installed` and `Table file: ./g729-tables.bin`, and exits `1`
@@ -26238,6 +26254,46 @@ sipnab could not turn the `-I`/`--input` values into a list of capture files to 
 
 **Exit code:** 1.
 
+### `-I/--input: cannot unpack '{}': user '{user}' cannot create files in the temporary directory '{}', where sipnab unpacks an archive or a compressed capture after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), or pass --user with a user who can write it`
+
+A run started as root drops to `{user}` (`--user`, else `[privilege] user`,
+else `nobody`) before it reads its `-I` files, and unpacks an archive or a
+`.pcap.gz` as that user, under `TMPDIR`. The first `{}` is the first file
+that needs unpacking, the second is `TMPDIR`. sipnab stops there, before it
+unpacks anything. On macOS, root's own `TMPDIR` under `/var/folders` is a
+directory `nobody` cannot write.
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.pcap.gz': user 'nobody' cannot create files in the temporary directory '/var/folders/xy/T', where sipnab unpacks an archive or a compressed capture after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), or pass --user with a user who can write it
+```
+
+**What to do:** Run with `TMPDIR=/tmp` before the rest of the command
+(`sudo TMPDIR=/tmp sipnab -N -I a.pcap.gz`), or pass `--user` with a user
+that can write the directory. See
+[Read capture files only root can read](least-privilege.md#read-capture-files-only-root-can-read).
+
+**Exit code:** 1.
+
+### `-I/--input: cannot unpack '{}': user '{user}' cannot create files in the temporary directory '{}' inside --chroot '{dir}', where sipnab unpacks an archive or a compressed capture after it drops root. Create '{dir}/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '{dir}'`
+
+The same refusal for a `--chroot` run. Such a run changes its root to
+`{dir}` and drops to `{user}` before it reads its `-I` files, and unpacks an
+archive or a `.pcap.gz` under the temporary directory as seen inside `{dir}`:
+the second `{}`, normally `/tmp`, which is `{dir}/tmp` on the host. sipnab
+stops at the first file that needs unpacking, before it unpacks anything. A
+capture that needs no unpacking reads with an empty `{dir}`.
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.tgz': user 'nobody' cannot create files in the temporary directory '/tmp' inside --chroot '/srv/jail', where sipnab unpacks an archive or a compressed capture after it drops root. Create '/srv/jail/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '/srv/jail'
+```
+
+**What to do:** Create the directory (`sudo mkdir -m 1777 /srv/jail/tmp`),
+or point `TMPDIR` at a directory inside `{dir}` that user can write, named
+as the run sees it after the chroot. See
+[Confine it to a directory](least-privilege.md#confine-it-to-a-directory).
+
+**Exit code:** 1.
+
 ### `multi-core reconstruction failed: {e:#}`
 
 The multi-core reader (`--cores N`) failed. `{e:#}` is the error chain.
@@ -28361,7 +28417,7 @@ The credential line names header `{name}`. The forwarder writes this header itse
 
 ### `{url}: {problem}; nothing was written`
 
-The store's answer from `{url}` was incomplete. `{problem}` says how. sipnab wrote nothing.
+The store's answer from `{url}` was incomplete. `{problem}` says how, in the forms listed under [`{url}: {problem}, so the file is not whole`](#url-problem-so-the-file-is-not-whole): it names the bytes read and, when the answer declared it, the length. sipnab wrote nothing.
 
 **What to do:** Retry, and check the store and the network path.
 
@@ -28846,7 +28902,14 @@ The file a recording names is larger than the limit. `{}` is the limit and `{max
 
 ### `{url}: {problem}, so the file is not whole`
 
-The server that holds a recording's file closed the connection before it sent the length it declared. `{problem}` gives the two lengths. sipnab writes nothing for the recording.
+The file a recording names did not arrive whole. `{problem}` is one of these:
+
+- `the answer ended after {got} of its {n} bytes`: the server closed the connection before it sent the length it declared; a read error, such as a timeout, follows after a colon.
+- `the chunked answer ended after {got} bytes, before its last chunk`: a chunked answer stopped before its last chunk.
+- `a chunk of the answer ended after {read} of its {size} bytes`: one chunk stopped before its size.
+- `reading the answer's body failed after {got} bytes: {e}`: an answer without a length failed to read, for example on a timeout.
+
+sipnab writes nothing for the recording.
 
 **What to do:** Run the command again. If it recurs, check the server.
 
@@ -29144,6 +29207,55 @@ which.
 
 **Exit code:** 1.
 
+### `{COMMAND}: the download as user '{user}' failed (exit {code}); its reason is above. Nothing was installed.`
+
+`sipnab g729 install` started as root downloads the package as `{user}`, in a
+process of its own, and that process failed. The line above this one is its
+reason: the download, the CA bundle or the package check.
+
+**What to do:** Fix what the line above names. A CA bundle that `{user}`
+cannot read says `Permission denied`. See
+[Install as root](g729.md#install-as-root).
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' was ended by a signal. Nothing was installed.`
+
+The process that downloads the package as `{user}` ended on a signal before
+it sent the table file: someone stopped it, or the system ended it.
+
+**What to do:** Run the install again.
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' sent more than {limit} bytes, more than a table file. Nothing was installed.`
+
+The process that downloads the package as `{user}` sent more than one table
+file holds. sipnab reads no more than that and installs nothing.
+
+**What to do:** Run the install again. A sipnab binary that differs from the
+one that started the install is the usual cause: install one sipnab only.
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' has no output`
+
+sipnab started the download as `{user}` but could not read what it sends.
+
+**What to do:** Run the install again.
+
+**Exit code:** 1.
+
+### `{COMMAND}: this platform cannot start the download as user '{user}'; pass --no-priv-drop to download as this user. Nothing was installed.`
+
+A build for a platform without Unix user ids cannot start a process as
+another user.
+
+**What to do:** Pass `--no-priv-drop`, or install with `--from PATH`, which
+opens no connection.
+
+**Exit code:** 1.
+
 ### `Refused {}: {e}. Nothing was installed.`
 
 The importer could not build the tables from the package. `{}` is the zip or
@@ -29420,8 +29532,12 @@ when the reason changes. `{why}` is `the center did not answer: <reason>` for
 a center that is down, unreachable or not trusted, `the center refused this
 member's token (HTTP 401)` for a token the center does not accept, or `the
 center answered HTTP <status>`. The heartbeats stay in the spool, and the
-member tries again, at most one interval apart. A line
-`the center takes heartbeats again` follows when the spool drains.
+member tries again after 1 s, then 2 s, 4 s and so on, at most one
+`[fleet] heartbeat_secs` apart. A line `the center takes heartbeats again`
+follows when the spool drains. `the center answered HTTP 503` comes, among
+other causes, from a center that is starting and
+[rebuilds its member list](#a-503-while-the-center-starts).
+The member does not read the answer's `Retry-After`.
 
 **What to do:** For a refused token, mint a new one on the center and restart
 the member. Otherwise, bring the center back or let the member reach it.
@@ -29461,7 +29577,29 @@ more of the history while it is away.
 them. [Run a fleet center](fleet.md#run-a-fleet-center) describes the command.
 A message that starts with `sipnab fleet serve:` stops the center with exit
 code 2. A message the center answers a member with goes in the `detail` of a
-`400` answer, and the center keeps running.
+`400` or `503` answer, and the center keeps running.
+
+### A `503` while the center starts
+
+`the center is rebuilding its member list from the history store` is the
+`detail` of the `503` answer the center gives every request, on every
+route, from the time it binds its port until it has opened its store and
+rebuilt its member list. The answer carries `Retry-After: 5`. It logs
+`fleet center answering 503 on <address> until it serves: the center is
+rebuilding its member list from the history store` when it binds, and
+`fleet center serving` once it answers again. A start with its store file
+reads one heartbeat file. A start without it reads every heartbeat file of
+`--retention-hours`, which takes seconds for a large fleet
+([The files of the history store](fleet.md#the-files-of-the-history-store)).
+A build without the history store answers `the center is opening its store`
+for the same window. A SIGTERM or SIGINT during the rebuild ends it before
+the next file it would read, and the center exits 0: the store file holds
+the members it held before the start, and the center does not open its
+intake.
+
+**What to do:** Nothing. Send the request again after the `Retry-After`
+seconds. A member keeps its heartbeats in its spool and delivers them once
+the center serves.
 
 ### `sipnab fleet serve: {e}`
 
@@ -34450,15 +34588,19 @@ documents the machine-readable formats the command line writes.
 | One JSON line per SIP message, to pipe into `jq` | `sipnab -N -I capture.pcap --json` | [NDJSON](#ndjson---json) |
 | One readable line per call | `sipnab -N -I capture.pcap --report --no-cli-print` | [Summary-only output](#summary-only-output) |
 | One call explained, as text or JSON | `--call-report "$CALL_ID"`, plus `--json` for JSON | [Summary-only output](#summary-only-output) |
-| One JSON object per call | `--json-dialogs --no-cli-print` | [One object per dialog](#one-object-per-dialog) |
-| Every STUN and TURN exchange | `--json-stun --no-cli-print` | [STUN / TURN JSON](#stun--turn-json---json-stun) |
-| One verdict for the whole capture | `--json-analyze --no-cli-print` | [Capture analysis](#capture-analysis---json-analyze) |
-| The same verdict as YANG-modeled data | `--yang-analyze --no-cli-print` | [YANG export](#yang-export---yang-analyze) |
+| One JSON object per call | `--json-dialogs` | [One object per dialog](#one-object-per-dialog) |
+| Every STUN and TURN exchange | `--json-stun` | [STUN / TURN JSON](#stun--turn-json---json-stun) |
+| One verdict for the whole capture | `--json-analyze` | [Capture analysis](#capture-analysis---json-analyze) |
+| The same verdict as YANG-modeled data | `--yang-analyze` | [YANG export](#yang-export---yang-analyze) |
 | One call as a vCon container | `--export-vcon` | [vCon](#vcon---export-vcon) |
 | The packets, for Wireshark | `-O calls.pcapng --pcapng` | [pcap / pcapng](#pcap--pcapng) |
 | A Wireshark display filter for the capture | `-N --wireshark` | [CLI reference](cli-reference.md#output) |
 | Log lines fail2ban reads | `-N --fail2ban` with `--kill-scanner` | [CLI reference](cli-reference.md#output) |
 | A call's ladder as a Mermaid diagram, or its audio as WAV | the save dialog in the terminal UI (`F2`) | [Save popup](keybindings.md#save-popup) |
+
+`--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` keep
+the per-message lines off stdout by themselves, so their output pipes straight
+into `jq`. Add `--json` or `-T` to get the per-message stream as well.
 
 > **Prerequisites:**
 >
@@ -37728,7 +37870,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.258 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+   sipnab 0.5.260 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -38430,7 +38572,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.258"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.260"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -39115,7 +39257,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.258",
+  "version": "0.5.260",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -40058,7 +40200,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.258"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.260"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -41933,6 +42075,11 @@ with its REST API on `127.0.0.1:18080`, reporting every 5 seconds.
 - **`the center did not answer`.** The center is down, or a firewall drops
   the member's connections. The heartbeats wait; nothing needs doing on the
   member once the center is back.
+- **`the center answered HTTP 503`.** The center is starting and rebuilds
+  its member list, or its rate limit refused the member. The heartbeats
+  wait, and the member tries again after 1 s, 2 s, 4 s and so on, at most
+  one `heartbeat_secs` apart
+  ([What the center answers while it starts](#what-the-center-answers-while-it-starts)).
 - **`the center did not answer: sending: invalid peer certificate: UnknownIssuer`.**
   The member does not trust the center's certificate. Set `report_ca_file` to
   the certificate of the issuing CA.
@@ -42760,6 +42907,87 @@ answer with this page.
   leaves no trace in the store, as for the store file itself. An answer does
   not include records the intake dropped at its size limit before a filing.
 
+### What the center answers while it starts
+
+**Purpose.** Know what a member, a reader and a supervisor get from a center
+between the time it binds its port and the time it serves, and what a stop
+does in that time.
+
+**Before you start.** Nothing to set: every center does this. Nothing
+changes on a member.
+
+**What the center does at start, in order:**
+
+1. It reads its keys, binds `--listen`, and drops to the user it serves as.
+2. It installs its SIGTERM and SIGINT handlers.
+3. It answers every request, on every route, `503` with `Retry-After: 5`
+   and this problem body, and logs where it does. Both outputs come from a
+   test center with 500 members in 120 heartbeat files and no store file,
+   on a port the system picked:
+
+   ```text
+   503 {"detail":"the center is rebuilding its member list from the history store","status":503,"title":"Service Unavailable","type":"https://sipnab.com/problems/unavailable"}
+   ```
+
+   ```text
+   INFO sipnab::app::fleet_center: fleet center answering 503 on 127.0.0.1:33407 until it serves: the center is rebuilding its member list from the history store
+   ```
+
+4. It opens its store file and its history, rebuilds its member list,
+   files what the intake and the store file held, and applies retention.
+5. It logs `fleet center serving HTTP on <address>` (or `HTTPS`) and
+   answers each request from then on.
+
+A start with its store file reads one heartbeat file in step 4. A start
+without it reads every heartbeat file of `--retention-hours`, newest first
+([The files of the history store](#the-files-of-the-history-store) has the
+time for a fleet). A build without the history store answers `the center is
+opening its store` in step 3.
+
+**What a member does with the `503`.** It keeps the heartbeat or the call
+records in its spool and logs `heartbeats wait in the spool: the center
+answered HTTP 503` once. It tries again after 1 s, then 2 s, 4 s and so on,
+never more than one `[fleet] heartbeat_secs` apart, and delivers the spool
+once the center serves. It does not read `Retry-After`.
+
+**A stop during the start.** A SIGTERM or SIGINT during the rebuild in step
+4 ends the rebuild before the next file it would read. The center logs the
+two lines below and exits 0. It did not rewrite its store file with the
+rebuilt list and did not open its intake, so the store file holds the
+members it held before the start, and the next start rebuilds again:
+
+```text
+INFO sipnab::app::fleet_center: fleet center stopping: a stop was asked for before it served; it ends at the next file of the rebuild, or once the start's filing has ended
+INFO sipnab::app::fleet_center: fleet center: the stop ended the rebuild of the member list at start; the store was not rewritten
+```
+
+A stop after the rebuild, while the start files, waits for that filing to
+end. The center then rewrites its store as it does at any stop, and exits
+0. Releases up to 0.5.258 opened the store before they installed the
+handlers: a SIGTERM during the rebuild ended the process at once, and a
+request waited unanswered until the rebuild ended.
+
+**Verify.** Move a test center's store file aside, start the center with
+a history that holds many heartbeat files, and ask for the members at
+once:
+
+```bash
+curl -s -i -H "Authorization: Bearer $OPS_TOKEN" http://127.0.0.1:8444/v1/fleet/members
+```
+
+The answer is `503` with `Retry-After: 5` until the center logs `fleet
+center serving`, and `200` with every member after it.
+
+**Troubleshoot.**
+
+- **A supervisor marks the center failed during a long start.** Its
+  readiness check gets `503`. Wait for `200`, or for the `fleet center
+  serving` line, before you mark the center up.
+- **The `503` lasts longer than you expect.** The center has no store file,
+  or its store file is older than its newest heartbeat files, so it reads
+  the heartbeat files of the whole window. Keep the store file in your
+  backups with the history.
+
 ### What waits during a filing
 
 **Purpose.** Know which requests the center answers while it files, and
@@ -42896,9 +43124,22 @@ runs.
 | Of that: unsealing them | 41 to 42 ms |
 | Of that: decoding the one row group of each file that holds the member | 158 to 162 ms |
 | The same decoding as releases 0.5.249 to 0.5.254 did it, building all 128 rows of the row group | 586 to 656 ms |
-| Rebuilding the member list at a start without the store file, from all 1,440 files | 10.1 to 11.4 s |
 
-The rebuild builds every row of every file it opens, 2,880,000 rows here.
+**What a start without the store file costs.** The center rebuilds its
+member list from the heartbeat files, newest first, and builds a row only
+when it holds no row of that member yet or the row is newer than the one it
+holds. Measured on 2026-11-15 in one release build (Cargo feature set
+`full`, aarch64, 14 cores, load average 23 to 31) on the same kind of
+synthetic store, 1,440 files of 113,477,614 sealed bytes, three runs:
+
+| How the rebuild read the 1,440 files | Rows built | Time |
+|---|---|---|
+| As this release does it | 2,000, one for each member | 1.95 to 1.99 s |
+| As releases 0.5.251 to 0.5.258 did it, in the same binary | 2,880,000, every row | 12.4 to 12.8 s |
+
+The center answers `503` for that time
+([What the center answers while it starts](#what-the-center-answers-while-it-starts)).
+A start with its store file reads one file.
 
 **Which reads build every row, and what a damaged row does.** The center
 seals each file, so a changed file does not open at all. A row whose JSON,
@@ -42907,12 +43148,15 @@ that wrote the file. A question refuses such a file, and names it under
 `refused`, only when it selects that row: a question for another member, for
 another call or for a window that does not hold the row gets its answer
 from the same file. Releases 0.5.249 to 0.5.254 refused the file for every
-question that read the row's row group. Two reads still build every row of
-each file they open and refuse the file for one such row anywhere in it: the
-rebuild of the member list at a start without the store file, and the check
-a filing makes of the files of the same day that can already hold its rows.
-Neither opens every file of the store. `sipnab fleet verify` does: it
-builds every row of every file and reports each file it refuses
+question that read the row's row group. The rebuild of the member list at
+start refuses a file only for a damaged row it builds: a damaged row older
+than the row it holds of that member is not built, and the start takes the
+file's other rows. Releases 0.5.251 to 0.5.258 refused the file at start for
+such a row too. One read still builds every row of each file it opens and
+refuses the file for one such row anywhere in it: the check a filing makes
+of the files of the same day that can already hold its rows. Neither read
+opens every file of the store. `sipnab fleet verify` does: it builds every
+row of every file and reports each file it refuses
 ([Verify the history store](#verify-the-history-store)). A member id that is not text, or a column
 that the center cannot read, refuses the file for every question that reads
 its row group, as before.
@@ -43419,9 +43663,10 @@ would.
   113,491,120 bytes. Releases 0.5.251 to 0.5.253 wrote the same rows
   without compression as 887,745,307 bytes. In a release build on
   2026-11-14 (aarch64, 14 cores, load average about 10), one member's
-  newest 1,000 heartbeats came from 1,001 such files in 226 to 230 ms, and
-  the center rebuilt the member list without a store file from all 1,440
-  files in 10.1 to 11.4 s
+  newest 1,000 heartbeats came from 1,001 such files in 226 to 230 ms. In
+  a release build on 2026-11-15 (load average 23 to 31), the center rebuilt
+  the member list without a store file from all 1,440 files in 1.95 to
+  1.99 s, and answered `503` meanwhile
   ([The files of the history store](#the-files-of-the-history-store) has
   the parts of those times). The center answers members while it
   writes a file.
@@ -43781,6 +44026,11 @@ Each output below comes from the same run.
   sipnab fleet serve: --store 'center.store' can be read or written by other users (mode 0644); chmod 600 it
   ```
 
+- **`503` and `the center is rebuilding its member list from the history
+  store`.** The center has bound its port and not yet opened its store. Ask
+  again after the `Retry-After` seconds
+  ([What the center answers while it starts](#what-the-center-answers-while-it-starts)).
+
 - **A member stays `silent`.** The center has had no heartbeat from it for
   more than `silent_after_missed` of its intervals: the member is down, cannot
   reach the center, or the center refuses its token. `seconds_since_heartbeat` says
@@ -43797,7 +44047,7 @@ the center prints.
 |---|---|
 | `ok` | It answered with an inventory. |
 | `refused` | It answered with an HTTP status other than 200, such as `401` for a wrong, expired or narrower token, or `404` for a build without the inventory. |
-| `unreachable` | No answer: no connection, a timeout, a TLS failure, a token file sipnab would not read, or an answer that is not JSON. |
+| `unreachable` | No answer: no connection, a timeout, a TLS failure, a token file sipnab would not read, an answer cut short (the reason names the bytes read, as `the answer ended after 9 of its 40 bytes`), or an answer that is not JSON. |
 | `incompatible` | Its inventory has a `schema_version` newer than this build reads, or none. Upgrade the controller's sipnab. |
 
 **Findings across the fleet:**
@@ -51570,7 +51820,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.258",
+  "version": "0.5.260",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -55932,12 +56182,14 @@ started as root changes in nothing.
 - `--vcon-audio-fetch-local` makes no connection, so it keeps the caller's
   user.
 
+`sipnab g729 install` started as root downloads, checks and unpacks the
+package as `--user`, the config user or `nobody`, and root only checks the
+table file that user sends and writes it in place. That user must be able to
+write in `TMPDIR` and read the CA bundle. `--from PATH` and `--no-priv-drop`
+keep the caller's user ([Install as root](g729.md#install-as-root)).
+
 These commands still run as the user that started them, root included:
 
-- `sipnab g729 install`: it writes the table file into a directory root may
-  own. Its download runs as root, and sipnab checks it against a fixed
-  SHA-256 before it unpacks it. `--from DIR` uses no network
-  ([Decode G.729](g729.md)).
 - Commands that read no input from outside, or need root: `--setup-caps`,
   `--uprobe-list`, `--mint-token`, `--dump-config`, `--vcon-spool-status`,
   `--journal-show`, `--revert-actions`, `--completions`,
@@ -56019,20 +56271,27 @@ before it does either, and reads each one through the descriptor it opened
 then. A run that keeps its credentials (not root, or `--no-priv-drop` without
 `--chroot`) opens each file when it reaches it, as before.
 
+Since 0.5.259 a root run that drops privileges reads none of those bytes as
+root: it opens the files, drops, and then unpacks, probes and reads them as
+the user it dropped to. The line `Reading N capture files` comes after
+`Dropped privileges` in the log.
+
 - The run raises its open-file soft limit as far as the hard limit when the
   set needs it. Above the hard limit the run stops before it reads anything, with
   exit `2`.
-- The run unpacks an archive (`.tar.gz`, `.zip`, a `.pcap.gz`) before the
-  drop, as root, into a directory only its owner may enter (`0700`) holding
-  files only its owner may read (`0600`). Before the drop it gives that
-  directory to the user the run drops to, so the run can remove it when it
-  ends. A `--chroot` run removes it before the chroot instead, because no
-  path reaches it afterwards. So does a run whose drop user could not reach
-  it to remove it: a `TMPDIR` inside a directory only another user may
-  enter, such as root's per-user temporary folder on macOS
-  (under `/var/folders`, mode `0700`). Every member is open by then.
+- The run unpacks an archive (`.tar.gz`, `.zip`, a `.pcap.gz`) after the
+  drop, as the drop user, into a directory only its owner may enter (`0700`)
+  holding files only its owner may read (`0600`), under `TMPDIR`. That user
+  must be able to write `TMPDIR`: root's per-user temporary folder on macOS
+  (under `/var/folders`, mode `0700`) is not one it can reach, so set
+  `TMPDIR=/tmp` there.
+- A `--chroot` run changes root and drops first too, and unpacks inside
+  the new root, as the drop user, under `TMPDIR` as seen there (normally
+  `DIR/tmp` on the host). [Confine it to a directory](#confine-it-to-a-directory)
+  says what `DIR` then needs.
 - The run reads the TLS secrets a pcapng carries in a Decryption Secrets
-  Block before the drop too, so a root-only capture still decrypts.
+  Block through the descriptor it opened as root, so a root-only capture
+  still decrypts.
 
 Verify: with `SIPNAB_LOG=info`, the closing line counts every file as read in
 full, and no line says `Skipping`. On 2026-11-08 with sipnab built from source after
@@ -56057,6 +56316,18 @@ first by path after the drop, and skipped a root-only one with
 ending with exit `1` and a line such as `Read 2 packets: 1 of 2 file(s) read in
 full, 1 skipped`.
 
+When the drop user cannot write `TMPDIR`, the run stops with exit `1` at the
+first archive or `.pcap.gz`, before it unpacks anything:
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.pcap.gz': user 'nobody' cannot create files in the temporary directory '/var/folders/xy/T', where sipnab unpacks an archive or a compressed capture after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), or pass --user with a user who can write it
+```
+
+Run with `TMPDIR=/tmp` before the rest of the command
+(`sudo TMPDIR=/tmp sipnab -N -I a.pcap.gz`), or with `--user` naming a user
+that can write the directory. A capture that needs no
+unpacking reads whatever `TMPDIR` is.
+
 ## Confine it to a directory
 
 `--chroot DIR` (or `[privilege] chroot`) changes the root directory to `DIR`
@@ -56066,6 +56337,25 @@ sipnab looks the user up before it changes root, so `DIR` needs no
 `etc/passwd`: an empty directory works. 0.5.233 and earlier looked the user
 up inside `DIR` and stopped with `Failed to drop privileges: User 'nobody' not
 found` unless `DIR` held an `etc/passwd` naming the user.
+
+A file run (`-I`) opens its files before it changes root and reads them
+through those descriptors, so `DIR` needs no copy of them. Since 0.5.259 an
+archive or a `.pcap.gz` unpacks after the chroot, as the drop user, into the
+temporary directory inside `DIR`: create it, writable by that user.
+
+```bash
+sudo mkdir -m 1777 /var/lib/sipnab/jail/tmp
+```
+
+Without it the run stops with exit `1` at the first such file, before it
+unpacks anything:
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.tgz': user 'nobody' cannot create files in the temporary directory '/tmp' inside --chroot '/var/lib/sipnab/jail', where sipnab unpacks an archive or a compressed capture after it drops root. Create '/var/lib/sipnab/jail/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '/var/lib/sipnab/jail'
+```
+
+The run removes what it unpacked from `DIR/tmp` when it ends. A capture that
+needs no unpacking reads with an empty `DIR`.
 
 A TLS client that names no CA file of its own (a `--hep-send-transport tls`
 sender without `--hep-tls-ca`, an HTTPS `[vcon_fetch]` store without `ca`)
@@ -56636,7 +56926,9 @@ keeps a different share of what senders had sent:
 - **`--duration`** keeps what reached sipnab before the deadline. The listener
   reads what its open connections hold, for up to 1 second each. It also
   accepts the connections still waiting in its backlog, for up to 1 second, and completes a TLS handshake under way, for up to 1 second, so a
-  sender that connected just before the deadline is not lost. The run then
+  sender that connected just before the deadline is not lost. Each second
+  counts from when the listener sees the deadline, so a pause across it
+  (Ctrl-Z, a loaded host) does not use them up. The run then
   reads on for up to 3 seconds for the listener to deliver it. A sender that
   goes on sending cannot hold the stop open past these limits.
 - **`--count N`** keeps exactly N packets, however many connections send at
@@ -62912,6 +63204,58 @@ the path:
 sudo sipnab g729 install --yes --g729-tables /srv/sipnab/g729-tables.bin
 ```
 
+## Install as root
+
+Purpose: install the tables into a directory root owns without running the
+download, the TLS client or the unzip as root. Since 0.5.261 an install
+started as root downloads, checks and unpacks the package as another user,
+and root only checks the table file that user sends and writes it in place.
+
+Before you start:
+
+- The download runs as `--user USER`, else `[privilege] user` in the config
+  file, else `nobody`.
+- That user must be able to write in `TMPDIR`, else `/tmp`: sipnab unpacks
+  the package, about 18 MB, in a private directory there.
+- That user must be able to read the host's CA bundle, or the file
+  `SSL_CERT_FILE` names.
+- That user must be able to run the sipnab binary. `nobody` cannot run a
+  binary under a home directory of mode 0700 or 0750: install sipnab where
+  every user can run it, such as `/usr/local/bin`, or name your own user
+  with `--user`.
+- `--from PATH` opens no connection and runs as the user that started it.
+
+Steps:
+
+```sh
+sudo sipnab g729 install --yes --g729-tables /srv/sipnab/g729-tables.bin
+```
+
+To download as a service account:
+
+```sh
+sudo sipnab g729 install --yes --user sipnab --g729-tables /srv/sipnab/g729-tables.bin
+```
+
+The first line the command prints names the URL and the user that downloads
+it, `nobody` or the user you named. The next lines say what it read and where
+it installed the file.
+
+Check: `sipnab g729 status --g729-tables /srv/sipnab/g729-tables.bin` prints
+`G.729 tables: installed`.
+
+`--no-priv-drop`, or `[privilege] no_priv_drop = true`, downloads as root, as
+before 0.5.261, and prints one warning line that says so.
+
+Troubleshoot:
+
+| What you see | Cause | Fix |
+|---|---|---|
+| `runs as user 'nobody', and 'nobody' cannot write in '/root/tmp' (TMPDIR)` | The download user cannot write in `TMPDIR` | Set `TMPDIR=/tmp` for the command, or name a user who can with `--user` |
+| `cannot start the download as user 'nobody': Permission denied` | That user cannot run the sipnab binary | Install sipnab where every user can run it, or name your own user with `--user` |
+| `no user 'sipnab' to download as` | `--user` or `[privilege] user` names a user the host does not have | Create the user, or name another one |
+| `the download as user 'nobody' failed (exit 1); its reason is above` | The download, the CA bundle or the package check failed in the download process | Read the line above it; a CA bundle that user cannot read says `Permission denied` |
+
 ## Check that sipnab finds the tables
 
 ```sh
@@ -65129,7 +65473,7 @@ sipnab -N -I sample-call.pcap --json | jq -r --arg id "$CALL_ID" 'select(.call_i
 
 `--json-dialogs` prints one JSON object per call instead.
 
-- It needs `--no-cli-print`, so the per-message lines stay out of the JSON.
+- It leaves out the per-message lines by itself, so its output is JSON only.
 - Its `timing` object carries the numbers from the report, in milliseconds:
 
 ```bash
@@ -65188,9 +65532,6 @@ under the capture's name. Download it again.
 `nosuch@example.com`. Copy the Call-ID from the first column of the
 `--report` table, and keep the single quotes around it: without them the shell
 reads characters such as `;` or `&` in a Call-ID as its own.
-
-**`jq` prints `parse error`.** sipnab printed the per-message lines among the
-JSON. Add `--no-cli-print` to the `--json-dialogs` command.
 
 **The `--problems` table has a header and no rows.** That is the answer for a
 capture with no failed or impaired call, as
@@ -82431,7 +82772,14 @@ merged pull request proves the same tree:
 - every check that `main` requires concluded `success` on the head.
 - every workflow run on the head succeeded: the newest of each name, with
   scheduled runs set aside. So the macOS leg, which `CI success` leaves out,
-  still gates the release.
+  still gates the release. The check leaves out two skipped runs, here and on
+  the tagged commit: the `pull_request` run of
+  `.github/workflows/pr-closed.yml`, which skips its only job when a pull
+  request merges, and the `workflow_run` run of
+  `.github/workflows/rerun-not-acquired.yml`, which skips its only job when
+  the CI run it watches succeeded. The script reads the workflow file from
+  GitHub's run record, so a workflow of another file with the same name still
+  counts. A canceled, failed or pending run of those workflows counts too.
 - no run on the tagged commit itself concluded `failure`, `timed_out`,
   `action_required` or `startup_failure`.
 
@@ -83104,6 +83452,37 @@ To update one:
 - a file's hash is not the one recorded,
 - a script's recorded version is not the one the script itself contains,
 - a new minified script under `website/static/js/` has no row yet.
+
+### Updating code adapted from other projects
+
+One source file adapts another project's code, and sipnab compiles it. It
+keeps that project's license and copyright notice in its header,
+and has a row in the "Adapted code" table of
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+| File | What it is | Where it came from |
+|---|---|---|
+| [`src/tui/input_parse.rs`](src/tui/input_parse.rs) | crossterm's Unix input parser, which turns the bytes the TUI reads from its terminal into key, mouse and paste events | `src/event/sys/unix/parse.rs` and the `Parser` of `src/event/source/unix/mio.rs` in [crossterm](https://github.com/crossterm-rs/crossterm) 0.29.0 |
+
+When `Cargo.lock` moves crossterm to a new version:
+
+- Compare the two crossterm files of the new version with the old ones, and
+  carry each change into `src/tui/input_parse.rs`.
+- Record crossterm's events again, then paste the table the run prints over
+  `CROSSTERM_0_29` in `src/tui/input_parse.rs`:
+
+  ```bash
+  cargo test --features tui --lib record_crossterm_events -- --ignored --nocapture
+  ```
+
+- Change the version and commit in the file's header and in `ADAPTED` in
+  [`scripts/build-third-party-notices.py`](scripts/build-third-party-notices.py),
+  then regenerate the notices.
+
+`every_adapted_file_keeps_its_origin_and_license` in
+[`tests/docs_drift_test.rs`](tests/docs_drift_test.rs) fails when a file
+under `src/` says `Adapted from` in its header and has no row, or when its
+header does not carry the row's license notice, version and commit.
 
 ## Commit messages
 
@@ -86567,7 +86946,7 @@ So a green `--features full` says nothing about whether `--features tls` alone
 compiles.
 That is exactly why CI has a feature matrix.
 
-## The nineteen workflows
+## The twenty workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -86586,6 +86965,7 @@ That is exactly why CI has a feature matrix.
 | `memcheck.yml` | weekly cron (Wednesdays 07:23 UTC) + manual + on its own path | Runs sipnab under Valgrind across its offline, archive, HEP, MCP and REST paths, built with `--cfg sipnab_tsan` so it allocates through the C library's heap, the only heap Valgrind sees. A definitely or indirectly lost block, or an invalid read, write or free, fails the job ([`scripts/memcheck-verdict.py`](../../scripts/memcheck-verdict.py)), and so does a log with no leak summary. Valgrind must first report a probe program's one known 4,096-byte leak, or the job fails. Runs on the local runners. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `pr-text.yml` | `pull_request_target`: PR opened, edited, reopened or pushed to | Checks the text a pull request publishes for the lab's private identities and for AI attribution with [`scripts/check-message-identity.sh`](../../scripts/check-message-identity.sh), the script the `commit-msg` hook runs. The `Commit messages and PR title name no private identity` job reads the title, the branch name and every commit message in the pull request's range, which is what a merge puts on `main`, and fails on a finding. The `PR description names no private identity (advisory)` job reads the description, which stays on the pull request page, and reports a finding as a warning without failing. Both jobs check out the base branch (no checkout names a ref, which Scorecard's Dangerous-Workflow check would report), so main's workflow, script and test judge the pull request, and the job fetches the pull request's commits from `refs/pull/N/head` as data and never checks them out or runs them; the fetched head must equal the event's head SHA. `contents: read` at the workflow level and no cache, because a `pull_request_target` run otherwise holds a write token and a cache it saves is restorable on main. Every value from the event reaches the shell only through `env:`. The pull request that added the workflow was not checked by it, because main had no `pr-text.yml` yet. Not required by `ci-success`. |
+| `pr-closed.yml` | PR closed or merged | Ends the `CI` run of a closed pull request. `ci.yml` groups a pull request's runs as `ci-CI-<number>`; this workflow enters that group with `cancel-in-progress`, so GitHub cancels the run still in progress. Before it, a closed pull request's run went on to its end and held the self-hosted runners other pull requests waited for. It checks out nothing, calls no action and asks for no permission. A merge also sends `closed`; GitHub creates the run and marks its job skipped (`merged == false`), since a merged pull request's run is already over. GitHub's documentation has not stated whether a skipped job's run still enters the group; the group names only the pull request's number, so it is never main's group `ci-CI-refs/heads/main`. Limit: GitHub runs no `pull_request` workflow for a pull request with a merge conflict, so closing such a pull request leaves its run going. [`scripts/tests/test_ci_cancel_on_close.py`](../../scripts/tests/test_ci_cancel_on_close.py) holds the two group names together. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](../../bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
@@ -86884,15 +87264,15 @@ So `quality.yml` has a second job, `coverage-branch`.
   and the job failed 147 s before CodeQL uploaded the analysis, with no alert open.
 - [`test_code_scanning_wait.py`](../../scripts/tests/test_code_scanning_wait.py) holds the rule.
 
-`ci-success` leaves out the macOS leg of Check, the job `check-macos`, on purpose.
+`ci-success` leaves out the macOS jobs, `check-macos`, `test-macos` and `symbol-split-macos`, on purpose.
 
 - On 2026-11-02 GitHub canceled Check (macos-latest) on both runs of pull request #601
   (41510139494 and 41514782896) with "The job was not acquired by Runner of type hosted even after
   multiple attempts".
   The rerun of the second took 27 minutes (20:22:04 to 20:49:15 UTC).
 - So on a pull request, `CI success` neither waits for macOS nor fails when GitHub cancels the macOS leg.
-- `check-macos` still runs on every pull request, which shows its result, and on every push to `main`.
-- On `main`, a failed `check-macos` fails the CI workflow run of that commit.
+- The macOS jobs still run on every pull request, which shows their results, and on every push to `main`.
+- On `main`, a failed macOS job fails the CI workflow run of that commit.
   A failed job fails its run whether or not another job needs it.
   The pre-push hook's tag gate refuses to tag a commit whose CI run is not green,
   so a macOS break on `main` blocks the release.
@@ -86902,7 +87282,7 @@ So `quality.yml` has a second job, `coverage-branch`.
   - No job `CI success` needs, directly or through another job, runs on macOS only.
   - No job runs on macOS beside another OS: `needs` takes a matrix job whole, so such a job would either block pull requests on macOS or leave its other leg out of the required check.
   - The macOS jobs have no job-level `if:` or `continue-on-error`, and `ci.yml` runs on every push to `main` and every pull request.
-  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
+  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, `test-macos` runs `test`'s through `*test-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
 - The macOS half of the symbol split is `symbol-split-macos`, by the same rule.
   GitHub canceled it for capacity on pull request #631 (run 41725010284).
 
@@ -86911,8 +87291,7 @@ Their contents are worth spelling out.
 
 - **`check`** (Linux; `check-macos` runs the same steps on macOS):
   - `cargo build --all-features`
-  - On macOS, `cargo test --all-features`, whole.
-    On Linux the suite runs in `test`, below.
+  - The suite runs in `test` and `test-macos`, below, not here.
   - `cargo clippy --workspace --all-features --all-targets -D warnings`
   - [`scripts/check-rustfmt.sh`](../../scripts/check-rustfmt.sh) (the pinned nightly rustfmt)
   - `cargo doc --no-deps --all-features --workspace`
@@ -86970,6 +87349,7 @@ Their contents are worth spelling out.
     goes green over nothing.
 - **`test`** and **`test-results`**: the `--all-features` suite on Linux, under cargo-nextest, split into shards.
   See [The suite in shards](#the-suite-in-shards).
+- **`test-macos`**: the same suite on macOS, through `test`'s steps (`*test-steps`), in shards by the same rule.
 - **`audit`**: `cargo-audit` and `cargo-deny`.
 - **`fuzz-check`**: the `fuzz/` workspace compiles.
 
@@ -86990,9 +87370,15 @@ The `test` job runs the Linux suite on two runners at once.
   - The `suite` profile in [`.config/nextest.toml`](../../.config/nextest.toml) stops any one test after three 60-second periods.
   - Every shard also builds the examples, as plain `cargo test` does, because `examples_run_test` runs them.
   - The job installs the pinned cargo-nextest through [`.github/actions/nextest`](../../.github/actions/nextest/action.yml) first.
-- The `shard:` matrix list is the only place that states N.
+- Each job's `shard:` matrix list is the only place that states its N.
   The step reads its index and count from `strategy.job-index` and `strategy.job-total`.
-- Each shard uploads its output, a manifest of what it ran and the YANG exports.
+- `test-macos` runs the macOS suite in shards through the same steps.
+  - The suite ran whole in `check-macos` until main's run 43880888975 (2026-11-16) canceled Check (macos-26) at its 45-minute cap.
+  - In that run the suite step took 38.2 of the job's 45.5 minutes, and Clippy had run 1.8 minutes when the cap ended it.
+  - On the three runs before it the suite step took 22.3 to 32.5 minutes.
+  - Its shards do not upload their outputs: the published test count describes the Linux suite.
+  - [`tests/support/macos_suite.rs`](../../tests/support/macos_suite.rs) holds the layout, and its cap stays at 45 minutes.
+- Each Linux shard uploads its output, a manifest of what it ran and the YANG exports.
 - `test-results` runs once both pass.
   - `parallel-tests.py merge` refuses the set unless every shard reported exactly once and every target ran in exactly one shard.
   - It writes the outputs in shard order as one `test-output.txt`.
@@ -87511,10 +87897,13 @@ The workflow-shape test holds each job's runner.
 - On the `overflow` runners: two groups of the feature combinations.
   On a push to `main` the two groups take any of the four aarch64 runners instead.
   On 2026-11-11 a push to `main` waited 34 and 68 minutes for the two `overflow` runners behind pull request runs.
+  A release pull request takes the four runners too: one whose head branch starts with `release/` and lives in this repository, never a fork's.
+  On 2026-11-14 the 0.5.256 release pull request's two groups queued behind another pull request's job on the `overflow` pair.
+  This adds runners, not priority: GitHub documents no order among queued jobs for self-hosted runners.
   `test_the_workflow_carries_the_rendered_expression` holds the workflow to that rule.
 - On the x86_64 runner: the RPM packaging job.
   The RPM job builds no Rust, and the runner has every package it names, so it installs nothing there.
-- Only the four jobs above, and the feature combinations on a push to `main`, may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
+- Only the four jobs above, and the feature combinations on a push to `main` or a release pull request, may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
   `a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host` holds that, `an_x64_job_refuses_to_start_with_less_than_25_gb_free` the disk floor, and `a_pooled_job_builds_in_its_own_directory_and_removes_it` the build directory.
 - Everything else runs on GitHub's runners. The repository is public, so they cost nothing.
 
@@ -88395,6 +88784,13 @@ A hook enforces this rather than merely advising it.
   required check concluded `success` on the head, every workflow run on the head succeeded,
   and no run on the merge commit itself concluded red.
   - The head's runs include the macOS leg, so a macOS break still blocks the release.
+  - Two skipped runs do not count, on the head or on the commit itself: the `pull_request` run
+    of [`pr-closed.yml`](../../.github/workflows/pr-closed.yml), which skips its only job on a
+    merge, and the `workflow_run` run of `rerun-not-acquired.yml`, which skips its only job
+    when the CI run it watches succeeded. The script reads the workflow file from GitHub's run
+    record (`SKIPPED_BY_DESIGN`), not the name; any other skipped run, and a canceled, failed
+    or pending run of those workflows, still blocks. Tested in
+    [`test_tag_proof_skipped_by_design.py`](../../scripts/tests/test_tag_proof_skipped_by_design.py).
   - The hook prints the pull request and head it used.
   - The rule is `tag_ci` in [`scripts/tag-push-proof.py`](../../scripts/tag-push-proof.py),
     tested in [`test_tag_ci_proof.py`](../../scripts/tests/test_tag_ci_proof.py) and in the
@@ -89709,6 +90105,11 @@ The reason is where the thread starts.
   - The chroot.
   - The privilege drop.
 - The reason: the capture source must be open while the process still holds `CAP_NET_RAW`.
+- A file run (`-I`) without `--chroot` is the exception: it drops privileges
+  first and starts the thread after, so the process reads no byte of an
+  input as root. The run opened its files when it planned, and the thread
+  reads them through those descriptors. A failure in the privileged steps of such a run
+  has no thread to stop.
 - Every failure from that point on happens with a capture thread already
   running and holding its source. Such failures include:
   - An unopenable source.
@@ -89771,8 +90172,8 @@ The privilege drop signals every other thread of the process.
 
 Four calls make a drop.
 
-- `confine_after_capture_start` in [`app/bootstrap.rs`](../../src/app/bootstrap.rs), for a run that starts a capture thread.
-- `prepare_cores_inputs` in the same file, for `--cores`.
+- `confine_privileged` in [`app/bootstrap.rs`](../../src/app/bootstrap.rs), for a run that starts a capture thread: after the thread starts, or before it for a file run without `--chroot`.
+- `prepare_cores_inputs` in the same file, for `--cores`, before it judges the set.
 - `harden` in [`process_isolation/worker_process.rs`](../../src/process_isolation/worker_process.rs), for the scanner-kill worker process.
 - `confine` in [`early_exit.rs`](../../src/early_exit.rs), for the commands that end before the capture launch.
   - [Commands that end before the launch](#commands-that-end-before-the-launch) lists them.
@@ -92099,6 +92500,8 @@ Each successful run gets a row here.
 | 0.5.255 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-14 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.256 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.257 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.258 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.259 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-16 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it

@@ -180,7 +180,8 @@ send '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 
 id=2
 loaded=0
-limit=$(( 2 + ${MCP_MAX_POLLS:-400} ))
+# The polls use ids 2 to limit, both included: MCP_MAX_POLLS of them.
+limit=$(( 1 + ${MCP_MAX_POLLS:-400} ))
 while [ "$id" -le "$limit" ]; do
     send "$(status_call "$id")"
     await "$id" || break
