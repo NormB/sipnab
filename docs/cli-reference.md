@@ -3226,6 +3226,8 @@ Both commands take these options:
 
 - `--yes`: answer yes to the question before installing, for scripts and Dockerfiles.
 - `--from <PATH>`: install from the package zip, a directory extracted from it, or the table file of another host, without opening a connection.
+- `--user <USER>`: started as root, download and unpack the package as this user; without it, `[privilege] user`, else `nobody`. Root only checks the table file and installs it ([Install as root](g729.md#install-as-root)).
+- `--no-priv-drop`: started as root, download and unpack the package as root, as earlier releases did; one warning line says so.
 
 **Examples**
 - `sipnab g729 status --g729-tables ./g729-tables.bin` — check one table file. With no tables there it prints `G.729 tables: not installed` and `Table file: ./g729-tables.bin`, and exits `1`

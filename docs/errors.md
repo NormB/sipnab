@@ -5258,6 +5258,55 @@ which.
 
 **Exit code:** 1.
 
+### `{COMMAND}: the download as user '{user}' failed (exit {code}); its reason is above. Nothing was installed.`
+
+`sipnab g729 install` started as root downloads the package as `{user}`, in a
+process of its own, and that process failed. The line above this one is its
+reason: the download, the CA bundle or the package check.
+
+**What to do:** Fix what the line above names. A CA bundle that `{user}`
+cannot read says `Permission denied`. See
+[Install as root](g729.md#install-as-root).
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' was ended by a signal. Nothing was installed.`
+
+The process that downloads the package as `{user}` ended on a signal before
+it sent the table file: someone stopped it, or the system ended it.
+
+**What to do:** Run the install again.
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' sent more than {limit} bytes, more than a table file. Nothing was installed.`
+
+The process that downloads the package as `{user}` sent more than one table
+file holds. sipnab reads no more than that and installs nothing.
+
+**What to do:** Run the install again. A sipnab binary that differs from the
+one that started the install is the usual cause: install one sipnab only.
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' has no output`
+
+sipnab started the download as `{user}` but could not read what it sends.
+
+**What to do:** Run the install again.
+
+**Exit code:** 1.
+
+### `{COMMAND}: this platform cannot start the download as user '{user}'; pass --no-priv-drop to download as this user. Nothing was installed.`
+
+A build for a platform without Unix user ids cannot start a process as
+another user.
+
+**What to do:** Pass `--no-priv-drop`, or install with `--from PATH`, which
+opens no connection.
+
+**Exit code:** 1.
+
 ### `Refused {}: {e}. Nothing was installed.`
 
 The importer could not build the tables from the package. `{}` is the zip or

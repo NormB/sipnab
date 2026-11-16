@@ -1894,7 +1894,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2698 -> 2700 (CAPTURE-RESOLVE-AS-ROOT, --chroot): docs/errors.md's entry
     // for the --chroot refusal links "Confine it to a directory", and
     // least-privilege.md's archive bullet links the same section.
-    const EXPECTED_WIKI_LINKS: usize = 2700;
+    // 2700 -> 2702 (G729-INSTALL-DOWNLOADS-AS-ROOT): docs/cli-reference.md's
+    // `--user` of `sipnab g729 install` and docs/errors.md's entry for a failed
+    // download link "Install as root" in g729.md; least-privilege.md's link to
+    // g729.md became a link to that section (no change).
+    const EXPECTED_WIKI_LINKS: usize = 2702;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

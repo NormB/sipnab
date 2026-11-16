@@ -70,8 +70,23 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
             return if e.use_stderr() { 2 } else { 0 };
         }
     };
-    let key = match read_config_as_a_run(&cli) {
-        Ok(config) => config.g729.tables,
+    let work_root = std::env::temp_dir();
+    if let G729Command::InternalFetch { as_user } = &cli.command {
+        // The child of an install started as root: it reads no config file,
+        // and its standard output carries the table file.
+        let mut out = std::io::stdout();
+        let mut err = std::io::stderr();
+        return internal_fetch(
+            as_user,
+            crate::privilege::is_root(),
+            &work_root,
+            &download,
+            &mut out,
+            &mut err,
+        );
+    }
+    let config = match read_config_as_a_run(&cli) {
+        Ok(config) => config,
         Err(e) => {
             let _ = writeln!(std::io::stderr(), "{}", e.message);
             return e.exit_code;
@@ -79,8 +94,18 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
     };
     let location = TableLocation {
         flag: cli.g729_tables.clone(),
-        key,
+        key: config.g729.tables.clone(),
         default: crate::rtp::g729_tables::default_table_file_here(),
+    };
+    let exe = std::env::current_exe().ok();
+    let env = InstallEnv {
+        root: crate::privilege::is_root(),
+        config_user: config.privilege.user.as_deref(),
+        // The capture run's rule for the switch; `sipnab g729` has no
+        // `--priv-drop`, and its own `--no-priv-drop` is read in `run`.
+        config_no_priv_drop: crate::cli::switch(false, false, config.privilege.no_priv_drop, false),
+        work_root: &work_root,
+        exe: exe.as_deref(),
     };
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
@@ -91,7 +116,25 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
         out: &mut out,
         err: &mut err,
     };
-    run(&cli.command, &location, &mut io, &download)
+    run(&cli.command, &location, &env, &mut io, &download)
+}
+
+/// What an install needs to know about the process it runs in, beyond the
+/// command line: whether it is root, the `[privilege]` settings, the
+/// directory the download is unpacked in, and the binary a child runs.
+#[derive(Debug, Clone, Copy)]
+pub struct InstallEnv<'a> {
+    /// Whether the process is root.
+    pub root: bool,
+    /// `[privilege] user`.
+    pub config_user: Option<&'a str>,
+    /// `[privilege] no_priv_drop`.
+    pub config_no_priv_drop: bool,
+    /// The directory the package is written and unpacked in: `TMPDIR`, else
+    /// `/tmp`.
+    pub work_root: &'a Path,
+    /// The sipnab binary a child of a root install runs, when known.
+    pub exe: Option<&'a Path>,
 }
 
 /// Read the config file `-f` / `--no-config` name, and check it as a run
@@ -125,12 +168,29 @@ fn read_config_as_a_run(
 pub fn run(
     command: &G729Command,
     location: &TableLocation,
+    env: &InstallEnv<'_>,
     io: &mut Io<'_>,
     fetch: Fetch<'_>,
 ) -> i32 {
     let outcome = match command {
         G729Command::Status => return status(location, io.out),
-        G729Command::Install { yes, from } => install(location, *yes, from.as_deref(), io, fetch),
+        G729Command::InternalFetch { as_user } => {
+            return internal_fetch(as_user, env.root, env.work_root, fetch, io.out, io.err);
+        }
+        G729Command::Install {
+            yes,
+            from,
+            user,
+            no_priv_drop,
+        } => {
+            let who = fetcher(
+                env.root,
+                *no_priv_drop || env.config_no_priv_drop,
+                user.as_deref(),
+                env.config_user,
+            );
+            install(location, *yes, from.as_deref(), who, env, io, fetch)
+        }
     };
     match outcome {
         Ok(Some(done)) => {
@@ -185,6 +245,8 @@ fn install(
     location: &TableLocation,
     yes: bool,
     from: Option<&Path>,
+    who: Fetcher<'_>,
+    env: &InstallEnv<'_>,
     io: &mut Io<'_>,
     fetch: Fetch<'_>,
 ) -> Result<Option<String>, String> {
@@ -204,17 +266,7 @@ fn install(
             let _ = writeln!(io.out, "{}", describe_source(path));
             table
         }
-        None => {
-            let _ = writeln!(io.out, "Downloading {PACKAGE_URL} ...");
-            let package = fetch(PACKAGE_URL)?;
-            let _ = writeln!(
-                io.out,
-                "Read {PACKAGE_URL} ({} bytes, sha256 {})",
-                package.len(),
-                sha256(&package)
-            );
-            table_file_from_download(package, target)?
-        }
+        None => download_table(who, env, io, fetch)?,
     };
     write_table_file(target, &table)?;
     let hash = crate::rtp::g729_tables::values_hash(&table).unwrap_or_default();
@@ -241,7 +293,26 @@ pub fn install_download(location: &TableLocation, fetch: Fetch<'_>) -> Result<St
         out: &mut out,
         err: &mut err,
     };
-    install(location, true, None, &mut io, fetch)?.ok_or_else(|| "Not installed.".to_string())
+    // The terminal UI downloads as the user its run dropped to, in this
+    // process, as before.
+    let work_root = std::env::temp_dir();
+    let env = InstallEnv {
+        root: false,
+        config_user: None,
+        config_no_priv_drop: false,
+        work_root: &work_root,
+        exe: None,
+    };
+    install(
+        location,
+        true,
+        None,
+        Fetcher::ThisProcess,
+        &env,
+        &mut io,
+        fetch,
+    )?
+    .ok_or_else(|| "Not installed.".to_string())
 }
 
 /// What the command prints before it asks: what it reads, what it checks,
@@ -389,24 +460,23 @@ fn create_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// The table file from a downloaded package: the package's hash is checked
-/// first, the bytes go to a temporary file beside `target` for the importer,
-/// and that file is deleted whatever happens.
+/// first, the bytes go to a temporary file in `dir`, the download's private
+/// work directory ([`work_dir`]), for the importer, and that file is deleted
+/// whatever happens.
 ///
 /// # Errors
 ///
 /// A package whose sha256 is not the pinned one, a temporary file that cannot
 /// be written, or the importer's refusal.
-pub fn table_file_from_download(package: Vec<u8>, target: &Path) -> Result<Vec<u8>, String> {
+pub fn table_file_from_download(package: Vec<u8>, dir: &Path) -> Result<Vec<u8>, String> {
     let actual = sha256(&package);
     if actual != PACKAGE_SHA256 {
         return package_refusal(&format!("the download from {PACKAGE_URL}"), &actual);
     }
-    let dir = target_dir(target);
-    create_dir(&dir)?;
     let written = tempfile::Builder::new()
         .prefix(".sipnab-g729-package-")
         .suffix(".zip")
-        .tempfile_in(&dir)
+        .tempfile_in(dir)
         .and_then(|mut temp| {
             temp.write_all(&package)?;
             temp.flush()?;
@@ -453,6 +523,328 @@ pub fn write_table_file(target: &Path, table: &[u8]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The command name the refusals and warnings of a root install give.
+const COMMAND: &str = "sipnab g729 install";
+
+/// Who downloads and unpacks the package (G729-INSTALL-DOWNLOADS-AS-ROOT).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fetcher<'a> {
+    /// This process, as it is: not root, so it has nothing to shed.
+    ThisProcess,
+    /// This process, as root, because `--no-priv-drop` or
+    /// `[privilege] no_priv_drop` said so; one warning line says it.
+    ThisProcessKeptRoot,
+    /// A child process started as this user. Only the install of the table
+    /// file it sends back runs as root.
+    Child(&'a str),
+}
+
+/// Who downloads and unpacks the package for an install started with
+/// these settings.
+///
+/// Root drops to `--user`, else `[privilege] user`, else `nobody`, on every
+/// platform: a download needs no user session, so the macOS exception of a
+/// capture run does not apply.
+#[must_use]
+pub fn fetcher<'a>(
+    root: bool,
+    no_priv_drop: bool,
+    flag_user: Option<&'a str>,
+    config_user: Option<&'a str>,
+) -> Fetcher<'a> {
+    if !root {
+        return Fetcher::ThisProcess;
+    }
+    if no_priv_drop {
+        return Fetcher::ThisProcessKeptRoot;
+    }
+    Fetcher::Child(
+        flag_user
+            .or(config_user)
+            .unwrap_or(crate::privilege::DEFAULT_DROP_USER),
+    )
+}
+
+/// The need the download has: to write in `work_root`, `TMPDIR`.
+#[must_use]
+pub fn work_need(work_root: &Path) -> crate::early_exit::Need {
+    crate::early_exit::Need {
+        path: work_root.to_path_buf(),
+        what: "TMPDIR",
+        access: crate::early_exit::Access::WriteDir,
+    }
+}
+
+/// The refusal of a download run as `user` that cannot write in
+/// `work_root`, in the words of every command that drops
+/// ([`crate::early_exit::refusal`]).
+#[must_use]
+pub fn work_refusal(work_root: &Path, user: &str) -> String {
+    let need = work_need(work_root);
+    let sudo_user = std::env::var("SUDO_USER").ok();
+    let offer = crate::early_exit::sudo_user_offer(sudo_user.as_deref(), user, |other| {
+        crate::early_exit::user_can(other, &need)
+    });
+    crate::early_exit::refusal(COMMAND, &need, user, offer)
+}
+
+/// A new private directory under `work_root` for the download, deleted when
+/// it is dropped.
+///
+/// # Errors
+///
+/// The directory cannot be made: for a download run as `user`, the
+/// [`work_refusal`]; else a line naming the directory and the error.
+pub fn work_dir(work_root: &Path, user: Option<&str>) -> Result<tempfile::TempDir, String> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".sipnab-g729-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir_in(work_root).map_err(|e| match user {
+        Some(user) => work_refusal(work_root, user),
+        None => format!(
+            "Cannot make a work directory for the download in {} (TMPDIR): {e}. Set TMPDIR to \
+             a directory you can write in. Nothing was installed.",
+            work_root.display()
+        ),
+    })
+}
+
+/// The arguments a child of a root install runs the sipnab binary with. The
+/// user goes in the same argument as its flag, so a name that starts with a
+/// dash is still its value.
+#[must_use]
+pub fn child_args(user: &str) -> Vec<String> {
+    vec![
+        "g729".into(),
+        "internal-fetch".into(),
+        format!("--as-user={user}"),
+    ]
+}
+
+/// Read what the child sent: the table file, at most `limit` bytes.
+///
+/// # Errors
+///
+/// The pipe failed, or the child sent more than `limit` bytes.
+pub fn read_answer(
+    reader: &mut dyn std::io::Read,
+    user: &str,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let mut answer = Vec::new();
+    let bound = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    reader
+        .take(bound)
+        .read_to_end(&mut answer)
+        .map_err(|e| format!("{COMMAND}: reading the download as user '{user}': {e}"))?;
+    if answer.len() > limit {
+        return Err(format!(
+            "{COMMAND}: the download as user '{user}' sent more than {limit} bytes, more than a \
+             table file. Nothing was installed."
+        ));
+    }
+    Ok(answer)
+}
+
+/// The table file a child run as `user` sent, once it ended with `code`
+/// (`None` when a signal ended it), checked as `--from` checks a table file.
+///
+/// # Errors
+///
+/// The child did not end with 0, or the bytes are not a table file the
+/// loader accepts.
+pub fn child_table(user: &str, code: Option<i32>, answer: Vec<u8>) -> Result<Vec<u8>, String> {
+    match code {
+        Some(0) => {}
+        Some(code) => {
+            return Err(format!(
+                "{COMMAND}: the download as user '{user}' failed (exit {code}); its reason is \
+                 above. Nothing was installed."
+            ));
+        }
+        None => {
+            return Err(format!(
+                "{COMMAND}: the download as user '{user}' was ended by a signal. Nothing was \
+                 installed."
+            ));
+        }
+    }
+    match g729::Tables::from_bytes(&answer) {
+        Ok(_) => Ok(answer),
+        Err(e) => table_refusal(
+            Path::new(&format!("sent by the download as user '{user}'")),
+            &answer,
+            &e,
+        ),
+    }
+}
+
+/// Download and unpack the package as `who` says, and return the table file.
+///
+/// # Errors
+///
+/// The work directory, the download, the package or the child failed; each
+/// error says which.
+///
+/// # Side effects
+///
+/// Prints progress on `io.out` and a kept-root warning on `io.err`; makes a
+/// connection, here or in a child process it starts and waits for.
+fn download_table(
+    who: Fetcher<'_>,
+    env: &InstallEnv<'_>,
+    io: &mut Io<'_>,
+    fetch: Fetch<'_>,
+) -> Result<Vec<u8>, String> {
+    let user = match who {
+        Fetcher::Child(user) => user,
+        Fetcher::ThisProcess | Fetcher::ThisProcessKeptRoot => {
+            if who == Fetcher::ThisProcessKeptRoot {
+                let _ = writeln!(io.err, "{}", crate::early_exit::kept_root_warning(COMMAND));
+            }
+            let dir = work_dir(env.work_root, None)?;
+            let _ = writeln!(io.out, "Downloading {PACKAGE_URL} ...");
+            let package = fetch(PACKAGE_URL)?;
+            let _ = writeln!(io.out, "{}", read_line(&package));
+            return table_file_from_download(package, dir.path());
+        }
+    };
+    // Everything that can be refused is refused here, as root, before a
+    // child starts or a connection is made.
+    crate::privilege::resolve_user(user)
+        .map_err(|e| format!("{COMMAND}: no user '{user}' to download as: {e:#}"))?;
+    if !crate::early_exit::user_can(user, &work_need(env.work_root)) {
+        return Err(work_refusal(env.work_root, user));
+    }
+    let exe = env.exe.ok_or_else(|| {
+        format!(
+            "{COMMAND}: cannot find the sipnab binary to download as user '{user}' with; pass \
+             --no-priv-drop to download as root. Nothing was installed."
+        )
+    })?;
+    let _ = writeln!(io.out, "Downloading {PACKAGE_URL} as user '{user}' ...");
+    fetch_in_child(exe, user)
+}
+
+/// The line that says what was downloaded.
+fn read_line(package: &[u8]) -> String {
+    format!(
+        "Read {PACKAGE_URL} ({} bytes, sha256 {})",
+        package.len(),
+        sha256(package)
+    )
+}
+
+/// Run `sipnab g729 internal-fetch` as `user`, from `exe`, and return the
+/// table file it sends.
+///
+/// # Errors
+///
+/// The user does not exist, the child cannot be started, or what
+/// [`read_answer`] and [`child_table`] refuse.
+///
+/// # Side effects
+///
+/// Starts a child process with the user's ids, its standard error going to
+/// this process's, and waits for it.
+#[cfg(unix)]
+fn fetch_in_child(exe: &Path, user: &str) -> Result<Vec<u8>, String> {
+    use std::os::unix::process::CommandExt as _;
+    let (uid, gid) = crate::privilege::resolve_user(user)
+        .map_err(|e| format!("{COMMAND}: no user '{user}' to download as: {e:#}"))?;
+    let mut child = std::process::Command::new(exe)
+        .args(child_args(user))
+        .uid(uid)
+        .gid(gid)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| spawn_refusal(exe, user, &e))?;
+    let answer = match child.stdout.take() {
+        Some(mut out) => read_answer(&mut out, user, g729::FILE_LEN),
+        None => Err(format!(
+            "{COMMAND}: the download as user '{user}' has no output"
+        )),
+    };
+    if answer.is_err() {
+        let _ = child.kill();
+    }
+    let status = child
+        .wait()
+        .map_err(|e| format!("{COMMAND}: waiting for the download as user '{user}': {e}"))?;
+    child_table(user, status.code(), answer?)
+}
+
+/// A build for a platform without unix user ids has no child to drop in.
+#[cfg(not(unix))]
+fn fetch_in_child(_exe: &Path, user: &str) -> Result<Vec<u8>, String> {
+    Err(format!(
+        "{COMMAND}: this platform cannot start the download as user '{user}'; pass \
+         --no-priv-drop to download as this user. Nothing was installed."
+    ))
+}
+
+/// The refusal of a child that could not be started.
+#[cfg(unix)]
+fn spawn_refusal(exe: &Path, user: &str, e: &std::io::Error) -> String {
+    format!(
+        "{COMMAND}: cannot start the download as user '{user}': {e}. '{user}' must be able to \
+         run {}; choose one: install sipnab where '{user}' can run it; run it with --user USER, \
+         naming a user who can; or pass --no-priv-drop to keep root. Nothing was installed.",
+        exe.display()
+    )
+}
+
+/// `sipnab g729 internal-fetch`: the child of an install started as root.
+/// Makes its work directory, downloads the package, checks and unpacks it,
+/// and writes the table file to `out`.
+///
+/// # Returns
+///
+/// The exit code: 0 sent, 1 failed (the reason on `err`), 2 refused because
+/// it was started as root.
+pub fn internal_fetch(
+    as_user: &str,
+    root: bool,
+    work_root: &Path,
+    fetch: Fetch<'_>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    if root {
+        let _ = writeln!(
+            err,
+            "sipnab g729 internal-fetch: refused: started as root. `{COMMAND}` starts this \
+             command as the user it drops to; run `{COMMAND}` instead."
+        );
+        return 2;
+    }
+    let outcome = work_dir(work_root, Some(as_user)).and_then(|dir| {
+        let package = fetch(PACKAGE_URL)?;
+        let _ = writeln!(err, "{}", read_line(&package));
+        table_file_from_download(package, dir.path())
+    });
+    match outcome {
+        Ok(table) => match out.write_all(&table).and_then(|()| out.flush()) {
+            Ok(()) => 0,
+            Err(e) => {
+                let _ = writeln!(err, "{COMMAND}: sending the table file: {e}");
+                1
+            }
+        },
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            1
+        }
+    }
 }
 
 /// The package, downloaded over HTTPS with the shared client in
@@ -581,6 +973,25 @@ mod tests {
     }
 
     fn run_with(command: &G729Command, target: &Path, answer: &str, fetch: Fetch<'_>) -> Ran {
+        let work_root = std::env::temp_dir();
+        let env = InstallEnv {
+            root: false,
+            config_user: None,
+            config_no_priv_drop: false,
+            work_root: &work_root,
+            exe: None,
+        };
+        run_in(command, target, answer, fetch, &env)
+    }
+
+    /// [`run_with`] in the process `env` describes.
+    fn run_in(
+        command: &G729Command,
+        target: &Path,
+        answer: &str,
+        fetch: Fetch<'_>,
+        env: &InstallEnv<'_>,
+    ) -> Ran {
         let location = TableLocation {
             flag: Some(target.to_path_buf()),
             key: None,
@@ -592,6 +1003,7 @@ mod tests {
         let code = run(
             command,
             &location,
+            env,
             &mut Io {
                 input: &mut input,
                 out: &mut out,
@@ -610,6 +1022,8 @@ mod tests {
         G729Command::Install {
             yes,
             from: Some(from.to_path_buf()),
+            user: None,
+            no_priv_drop: false,
         }
     }
 
@@ -794,6 +1208,8 @@ mod tests {
         let command = G729Command::Install {
             yes: true,
             from: None,
+            user: None,
+            no_priv_drop: false,
         };
         let ran = run_with(&command, &target, "", &fetch);
         assert_eq!(ran.code, 1);
@@ -812,6 +1228,8 @@ mod tests {
         let command = G729Command::Install {
             yes: false,
             from: None,
+            user: None,
+            no_priv_drop: false,
         };
         let ran = run_with(&command, &target, "n\n", &no_network);
         assert_eq!(ran.code, 1);
@@ -879,5 +1297,968 @@ mod tests {
             "{why}"
         );
         Ok(())
+    }
+
+    /// An install started as root downloads and unpacks the package as
+    /// another user (G729-INSTALL-DOWNLOADS-AS-ROOT).
+    ///
+    /// These run as the test's own user, never as root: whether the process
+    /// is root is a field of [`InstallEnv`], so the decision and every
+    /// refusal before the child starts can be driven here. The child itself
+    /// (its uid, its refusal as root, its work directory as the drop user)
+    /// is driven as root by tests/g729_install_drop_test.rs.
+    mod drops {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        /// A user no host has.
+        const NO_SUCH_USER: &str = "sipnab-test-no-such-user";
+
+        /// A sipnab binary no host has, for a child that cannot start.
+        const NO_SUCH_EXE: &str = "/nonexistent/sipnab-test/sipnab";
+
+        fn install(user: Option<&str>, no_priv_drop: bool) -> G729Command {
+            G729Command::Install {
+                yes: true,
+                from: None,
+                user: user.map(str::to_string),
+                no_priv_drop,
+            }
+        }
+
+        fn env<'a>(root: bool, work_root: &'a Path, exe: Option<&'a Path>) -> InstallEnv<'a> {
+            InstallEnv {
+                root,
+                config_user: None,
+                config_no_priv_drop: false,
+                work_root,
+                exe,
+            }
+        }
+
+        /// A directory this user can list but not write in.
+        fn read_only_dir() -> Result<tempfile::TempDir, TestError> {
+            let dir = tempfile::tempdir()?;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))?;
+            Ok(dir)
+        }
+
+        /// Give `dir` back its write bit, so its `TempDir` can remove it.
+        fn writable_again(dir: &tempfile::TempDir) -> Result<(), TestError> {
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+            Ok(())
+        }
+
+        /// A fetch that hands back bytes that are not the package.
+        fn not_the_package(url: &str) -> Result<Vec<u8>, String> {
+            assert_eq!(url, PACKAGE_URL, "the fetch is asked for the package URL");
+            Ok(b"not the ITU-T package".to_vec())
+        }
+
+        /// A fetch that fails.
+        fn unreachable(url: &str) -> Result<Vec<u8>, String> {
+            Err(format!("Downloading {url} failed: no route (test)"))
+        }
+
+        /// A reader whose read fails.
+        struct Broken;
+
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("the pipe broke (test)"))
+            }
+        }
+
+        fn entries(dir: &Path) -> Result<usize, TestError> {
+            Ok(std::fs::read_dir(dir)?.count())
+        }
+
+        // ---- who downloads: success ----
+
+        /// Success: root with no user named downloads as `nobody`.
+        #[test]
+        fn root_with_no_user_downloads_as_nobody() {
+            assert_eq!(
+                fetcher(true, false, None, None),
+                Fetcher::Child("nobody"),
+                "the default drop user"
+            );
+        }
+
+        /// Success: `--user` names the child's user.
+        #[test]
+        fn root_downloads_as_the_flag_user() {
+            assert_eq!(
+                fetcher(true, false, Some("sipnab"), None),
+                Fetcher::Child("sipnab"),
+                "--user"
+            );
+        }
+
+        /// Success: `[privilege] user` names it when `--user` is absent.
+        #[test]
+        fn root_downloads_as_the_config_user() {
+            assert_eq!(
+                fetcher(true, false, None, Some("svc")),
+                Fetcher::Child("svc"),
+                "[privilege] user"
+            );
+        }
+
+        /// Success: `--user` is read before the config file's user.
+        #[test]
+        fn the_flag_user_wins_over_the_config_user() {
+            assert_eq!(
+                fetcher(true, false, Some("sipnab"), Some("svc")),
+                Fetcher::Child("sipnab"),
+                "--user first"
+            );
+        }
+
+        /// Success: a process that is not root downloads itself.
+        #[test]
+        fn a_process_that_is_not_root_downloads_itself() {
+            assert_eq!(
+                fetcher(false, false, None, None),
+                Fetcher::ThisProcess,
+                "nothing to shed"
+            );
+        }
+
+        /// Success: a user named to a process that is not root changes
+        /// nothing.
+        #[test]
+        fn a_user_named_to_a_process_that_is_not_root_changes_nothing() {
+            assert_eq!(
+                fetcher(false, false, Some("sipnab"), Some("svc")),
+                Fetcher::ThisProcess,
+                "not root: no drop"
+            );
+        }
+
+        // ---- who downloads: root kept ----
+
+        /// Failure of the drop by request: `--no-priv-drop` keeps root.
+        #[test]
+        fn no_priv_drop_keeps_root() {
+            assert_eq!(
+                fetcher(true, true, None, None),
+                Fetcher::ThisProcessKeptRoot,
+                "--no-priv-drop"
+            );
+        }
+
+        /// Failure of the drop by request: `--no-priv-drop` wins over a
+        /// named user.
+        #[test]
+        fn no_priv_drop_wins_over_a_named_user() {
+            assert_eq!(
+                fetcher(true, true, Some("sipnab"), Some("svc")),
+                Fetcher::ThisProcessKeptRoot,
+                "--no-priv-drop with --user"
+            );
+        }
+
+        /// Edge: `--no-priv-drop` without root asks for nothing.
+        #[test]
+        fn no_priv_drop_without_root_is_this_process() {
+            assert_eq!(
+                fetcher(false, true, None, None),
+                Fetcher::ThisProcess,
+                "no root to keep, no warning"
+            );
+        }
+
+        /// Edge: an empty `--user` is passed on and refused when looked up.
+        #[test]
+        fn an_empty_user_is_passed_on() {
+            assert_eq!(
+                fetcher(true, false, Some(""), None),
+                Fetcher::Child(""),
+                "the lookup refuses it"
+            );
+        }
+
+        /// Edge: naming `nobody` is the same as naming no one.
+        #[test]
+        fn naming_nobody_is_the_default() {
+            assert_eq!(
+                fetcher(true, false, Some("nobody"), None),
+                fetcher(true, false, None, None),
+                "nobody either way"
+            );
+        }
+
+        // ---- the work directory ----
+
+        /// Success: the need is to write in TMPDIR.
+        #[test]
+        fn the_need_is_to_write_in_tmpdir() {
+            let need = work_need(Path::new("/var/tmp"));
+            assert_eq!(need.path, Path::new("/var/tmp"), "the path");
+            assert_eq!(need.what, "TMPDIR", "the setting named");
+            assert_eq!(
+                need.access,
+                crate::early_exit::Access::WriteDir,
+                "write in it"
+            );
+        }
+
+        /// Success: the work directory is made inside the root and goes with
+        /// its handle.
+        #[test]
+        fn the_work_directory_is_private_and_removed() -> Result<(), TestError> {
+            let root = tempfile::tempdir()?;
+            let dir = work_dir(root.path(), None)?;
+            assert_eq!(dir.path().parent(), Some(root.path()), "inside TMPDIR");
+            let mode = std::fs::metadata(dir.path())?.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "only its user reads it");
+            drop(dir);
+            assert_eq!(entries(root.path())?, 0, "removed with its handle");
+            Ok(())
+        }
+
+        /// Edge: two downloads get two directories.
+        #[test]
+        fn two_work_directories_are_distinct() -> Result<(), TestError> {
+            let root = tempfile::tempdir()?;
+            let first = work_dir(root.path(), None)?;
+            let second = work_dir(root.path(), None)?;
+            assert_ne!(first.path(), second.path(), "one per download");
+            Ok(())
+        }
+
+        /// Failure: a TMPDIR this process cannot write in names itself.
+        #[test]
+        fn an_unwritable_tmpdir_is_named() -> Result<(), TestError> {
+            if crate::privilege::is_root() {
+                // Root writes in a mode-0500 directory; the root case is
+                // tests/g729_install_drop_test.rs.
+                return Ok(());
+            }
+            let root = read_only_dir()?;
+            let why = work_dir(root.path(), None)
+                .err()
+                .ok_or("an unwritable TMPDIR is refused")?;
+            writable_again(&root)?;
+            assert!(
+                why.contains(&root.path().display().to_string()),
+                "names the directory: {why}"
+            );
+            assert!(why.contains("TMPDIR"), "names the setting: {why}");
+            Ok(())
+        }
+
+        /// Failure: as the drop user, the refusal is the one every dropping
+        /// command gives.
+        #[test]
+        fn an_unwritable_tmpdir_as_the_drop_user_is_the_drop_refusal() -> Result<(), TestError> {
+            if crate::privilege::is_root() {
+                return Ok(());
+            }
+            let root = read_only_dir()?;
+            let why = work_dir(root.path(), Some("nobody"))
+                .err()
+                .ok_or("refused")?;
+            writable_again(&root)?;
+            assert!(
+                why.contains("started as root, this command runs as user 'nobody'"),
+                "the drop refusal: {why}"
+            );
+            assert!(why.contains("cannot write in"), "the access: {why}");
+            assert!(why.contains("(TMPDIR)"), "the setting: {why}");
+            assert!(why.contains("--no-priv-drop"), "the way out: {why}");
+            Ok(())
+        }
+
+        /// Failure: a TMPDIR that does not exist.
+        #[test]
+        fn a_missing_tmpdir_is_refused() -> Result<(), TestError> {
+            let root = tempfile::tempdir()?;
+            let missing = root.path().join("missing");
+            let why = work_dir(&missing, None).err().ok_or("refused")?;
+            assert!(
+                why.contains(&missing.display().to_string()),
+                "names it: {why}"
+            );
+            Ok(())
+        }
+
+        /// Edge: a TMPDIR that is a file.
+        #[test]
+        fn a_tmpdir_that_is_a_file_is_refused() -> Result<(), TestError> {
+            let root = tempfile::tempdir()?;
+            let file = root.path().join("file");
+            std::fs::write(&file, b"x")?;
+            assert!(work_dir(&file, None).is_err(), "a file is not a TMPDIR");
+            Ok(())
+        }
+
+        /// Edge: the refusal names the directory as given.
+        #[test]
+        fn the_refusal_quotes_the_directory() {
+            let why = work_refusal(Path::new("/srv/no-such-tmp"), "nobody");
+            assert!(why.contains("'/srv/no-such-tmp'"), "quoted path: {why}");
+            assert!(why.starts_with(COMMAND), "the command first: {why}");
+        }
+
+        // ---- the child's arguments ----
+
+        /// Success: the child runs the hidden command as the named user.
+        #[test]
+        fn the_child_runs_internal_fetch_as_the_user() {
+            assert_eq!(
+                child_args("nobody"),
+                ["g729", "internal-fetch", "--as-user=nobody"],
+                "the child's arguments"
+            );
+        }
+
+        /// Success: the arguments parse back to the hidden command.
+        #[test]
+        fn the_child_arguments_parse() -> Result<(), TestError> {
+            use clap::Parser as _;
+            let args = std::iter::once("sipnab g729".to_string())
+                .chain(child_args("svc").into_iter().skip(1));
+            let cli = G729Cli::try_parse_from(args)?;
+            assert!(
+                matches!(cli.command, G729Command::InternalFetch { ref as_user } if as_user == "svc"),
+                "parsed: {:?}",
+                cli.command
+            );
+            Ok(())
+        }
+
+        /// Edge: a user whose name starts with a dash still parses as the
+        /// value.
+        #[test]
+        fn a_dash_user_parses_as_the_value() -> Result<(), TestError> {
+            use clap::Parser as _;
+            let args = std::iter::once("sipnab g729".to_string())
+                .chain(child_args("-x").into_iter().skip(1));
+            let cli = G729Cli::try_parse_from(args)?;
+            assert!(
+                matches!(cli.command, G729Command::InternalFetch { ref as_user } if as_user == "-x"),
+                "parsed: {:?}",
+                cli.command
+            );
+            Ok(())
+        }
+
+        /// Success: `--user` and `--no-priv-drop` parse on `install`.
+        #[test]
+        fn install_takes_user_and_no_priv_drop() -> Result<(), TestError> {
+            use clap::Parser as _;
+            let cli = G729Cli::try_parse_from([
+                "sipnab g729",
+                "install",
+                "--user",
+                "svc",
+                "--no-priv-drop",
+            ])?;
+            assert!(
+                matches!(
+                    cli.command,
+                    G729Command::Install { ref user, no_priv_drop: true, .. } if user.as_deref() == Some("svc")
+                ),
+                "parsed: {:?}",
+                cli.command
+            );
+            Ok(())
+        }
+
+        /// Edge: the hidden command is not in the help.
+        #[test]
+        fn internal_fetch_is_not_in_the_help() {
+            use clap::CommandFactory as _;
+            let help = G729Cli::command().render_help().to_string();
+            assert!(!help.contains("internal-fetch"), "hidden: {help}");
+        }
+
+        /// Failure: the hidden command needs its user.
+        #[test]
+        fn internal_fetch_needs_its_user() {
+            use clap::Parser as _;
+            assert!(
+                G729Cli::try_parse_from(["sipnab g729", "internal-fetch"]).is_err(),
+                "--as-user is required"
+            );
+        }
+
+        // ---- what the child sends ----
+
+        /// Success: an answer of exactly the limit is read.
+        #[test]
+        fn an_answer_of_the_limit_is_read() -> Result<(), TestError> {
+            let mut answer = std::io::Cursor::new(vec![7u8; 16]);
+            assert_eq!(
+                read_answer(&mut answer, "nobody", 16)?.len(),
+                16,
+                "all of it"
+            );
+            Ok(())
+        }
+
+        /// Success: a shorter answer is read whole.
+        #[test]
+        fn a_short_answer_is_read() -> Result<(), TestError> {
+            let mut answer = std::io::Cursor::new(vec![7u8; 3]);
+            assert_eq!(
+                read_answer(&mut answer, "nobody", 16)?,
+                [7, 7, 7],
+                "the bytes"
+            );
+            Ok(())
+        }
+
+        /// Failure: one byte past the limit is refused, naming the user.
+        #[test]
+        fn an_answer_past_the_limit_is_refused() -> Result<(), TestError> {
+            let mut answer = std::io::Cursor::new(vec![7u8; 17]);
+            let why = read_answer(&mut answer, "nobody", 16)
+                .err()
+                .ok_or("refused")?;
+            assert!(why.contains("'nobody'"), "names the user: {why}");
+            assert!(why.contains("16"), "names the limit: {why}");
+            Ok(())
+        }
+
+        /// Failure: a pipe that breaks is reported.
+        #[test]
+        fn a_broken_pipe_is_reported() -> Result<(), TestError> {
+            let why = read_answer(&mut Broken, "nobody", 16)
+                .err()
+                .ok_or("refused")?;
+            assert!(why.contains("the pipe broke (test)"), "the error: {why}");
+            Ok(())
+        }
+
+        /// Edge: a child that never stops sending is cut off one byte past
+        /// the limit, not read to the end.
+        #[test]
+        fn an_endless_answer_is_cut_off() -> Result<(), TestError> {
+            let why = read_answer(&mut std::io::repeat(7), "nobody", 1024)
+                .err()
+                .ok_or("refused")?;
+            assert!(why.contains("more than 1024 bytes"), "the refusal: {why}");
+            Ok(())
+        }
+
+        /// Edge: an empty answer is read as empty.
+        #[test]
+        fn an_empty_answer_is_empty() -> Result<(), TestError> {
+            let mut answer = std::io::Cursor::new(Vec::new());
+            assert!(read_answer(&mut answer, "nobody", 16)?.is_empty(), "empty");
+            Ok(())
+        }
+
+        /// Edge: a limit of zero takes no byte.
+        #[test]
+        fn a_zero_limit_takes_no_byte() {
+            let mut answer = std::io::Cursor::new(vec![1u8]);
+            assert!(
+                read_answer(&mut answer, "nobody", 0).is_err(),
+                "one byte is too many"
+            );
+        }
+
+        /// Edge: the limit a root install reads with is one table file.
+        #[test]
+        fn the_limit_is_one_table_file() -> Result<(), TestError> {
+            let table = test_support::table_file()?;
+            assert_eq!(
+                table.len(),
+                g729::FILE_LEN,
+                "a table file is FILE_LEN bytes"
+            );
+            let mut answer = std::io::Cursor::new(table.to_vec());
+            assert_eq!(
+                read_answer(&mut answer, "nobody", g729::FILE_LEN)?.len(),
+                g729::FILE_LEN,
+                "read whole"
+            );
+            Ok(())
+        }
+
+        // ---- the parent's check of the table ----
+
+        /// Success: a child that ended with 0 and sent a table file.
+        #[test]
+        fn a_child_that_sent_a_table_file_installs_it() -> Result<(), TestError> {
+            let table = test_support::table_file()?.to_vec();
+            assert_eq!(
+                child_table("nobody", Some(0), table.clone())?,
+                table,
+                "as sent"
+            );
+            Ok(())
+        }
+
+        /// Failure: a child that ended with 1.
+        #[test]
+        fn a_child_that_failed_is_reported() -> Result<(), TestError> {
+            let why = child_table("nobody", Some(1), Vec::new())
+                .err()
+                .ok_or("refused")?;
+            assert!(why.contains("'nobody'"), "names the user: {why}");
+            assert!(why.contains("exit 1"), "names the exit: {why}");
+            assert!(why.contains("Nothing was installed."), "says so: {why}");
+            Ok(())
+        }
+
+        /// Failure: a child a signal ended.
+        #[test]
+        fn a_child_a_signal_ended_is_reported() -> Result<(), TestError> {
+            let why = child_table("nobody", None, Vec::new())
+                .err()
+                .ok_or("refused")?;
+            assert!(why.contains("signal"), "says a signal: {why}");
+            Ok(())
+        }
+
+        /// Failure: a child that ended with 0 and sent bytes that are not a
+        /// table file.
+        #[test]
+        fn a_child_that_sent_garbage_is_refused() -> Result<(), TestError> {
+            let why = child_table("nobody", Some(0), b"not a table".to_vec())
+                .err()
+                .ok_or("refused")?;
+            assert!(why.contains("Refused the table file"), "the refusal: {why}");
+            assert!(why.contains("Nothing was installed."), "says so: {why}");
+            Ok(())
+        }
+
+        /// Failure: a child that ended with 0 and sent nothing.
+        #[test]
+        fn a_child_that_sent_nothing_is_refused() {
+            assert!(
+                child_table("nobody", Some(0), Vec::new()).is_err(),
+                "an empty answer is not a table file"
+            );
+        }
+
+        /// Failure: one value changed: the values hash refuses it, named.
+        #[test]
+        fn a_child_that_sent_altered_values_is_refused() -> Result<(), TestError> {
+            let mut altered = test_support::table_file()?.to_vec();
+            let last = altered.len() - 1;
+            altered[last] ^= 1;
+            let why = child_table("nobody", Some(0), altered)
+                .err()
+                .ok_or("refused")?;
+            assert!(
+                why.contains(g729::tables::VALUES_SHA256),
+                "names the expected values hash: {why}"
+            );
+            Ok(())
+        }
+
+        /// Edge: a child refused as root ends with 2, reported as an exit.
+        #[test]
+        fn a_child_refused_as_root_is_reported() -> Result<(), TestError> {
+            let why = child_table("root", Some(2), Vec::new())
+                .err()
+                .ok_or("refused")?;
+            assert!(why.contains("exit 2"), "names the exit: {why}");
+            Ok(())
+        }
+
+        // ---- an install as root, up to the child ----
+
+        /// Failure: a user that does not exist is refused before any
+        /// download.
+        #[test]
+        fn a_user_that_does_not_exist_is_refused_before_the_download() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let target = dir.path().join(TABLE_FILE_NAME);
+            let exe = Path::new(NO_SUCH_EXE);
+            let ran = run_in(
+                &install(Some(NO_SUCH_USER), false),
+                &target,
+                "",
+                &no_network,
+                &env(true, Path::new("/tmp"), Some(exe)),
+            );
+            assert_eq!(ran.code, 1, "refused: {}{}", ran.out, ran.err);
+            assert!(
+                ran.err.contains(NO_SUCH_USER),
+                "names the user: {}",
+                ran.err
+            );
+            assert!(
+                !ran.err.contains("a test tried to download"),
+                "no download: {}",
+                ran.err
+            );
+            assert!(!target.exists(), "nothing installed");
+            Ok(())
+        }
+
+        /// Failure: a TMPDIR the drop user cannot write in is refused before
+        /// any download, in the drop refusal's words.
+        #[test]
+        fn a_tmpdir_the_drop_user_cannot_write_is_refused_first() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let work = tempfile::tempdir()?;
+            let target = dir.path().join(TABLE_FILE_NAME);
+            let exe = Path::new(NO_SUCH_EXE);
+            let ran = run_in(
+                &install(Some("nobody"), false),
+                &target,
+                "",
+                &no_network,
+                &env(true, work.path(), Some(exe)),
+            );
+            assert_eq!(ran.code, 1, "refused: {}{}", ran.out, ran.err);
+            assert!(
+                ran.err
+                    .contains("runs as user 'nobody', and 'nobody' cannot write in"),
+                "the drop refusal: {}",
+                ran.err
+            );
+            assert!(
+                !ran.err.contains("a test tried to download"),
+                "no download: {}",
+                ran.err
+            );
+            assert_eq!(entries(work.path())?, 0, "nothing made in TMPDIR");
+            Ok(())
+        }
+
+        /// Failure: no binary to run the child with.
+        #[test]
+        fn no_binary_for_the_child_is_refused() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let target = dir.path().join(TABLE_FILE_NAME);
+            let ran = run_in(
+                &install(Some("nobody"), false),
+                &target,
+                "",
+                &no_network,
+                &env(true, Path::new("/tmp"), None),
+            );
+            assert_eq!(ran.code, 1, "refused: {}{}", ran.out, ran.err);
+            assert!(
+                ran.err.contains("sipnab binary"),
+                "says what is missing: {}",
+                ran.err
+            );
+            assert!(
+                ran.err.contains("--no-priv-drop"),
+                "the way out: {}",
+                ran.err
+            );
+            assert!(
+                !ran.err.contains("a test tried to download"),
+                "no download: {}",
+                ran.err
+            );
+            Ok(())
+        }
+
+        /// Failure: a child that cannot start is refused, naming the binary
+        /// and the user.
+        #[test]
+        fn a_child_that_cannot_start_is_refused() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let target = dir.path().join(TABLE_FILE_NAME);
+            let ran = run_in(
+                &install(Some("nobody"), false),
+                &target,
+                "",
+                &no_network,
+                &env(true, Path::new("/tmp"), Some(Path::new(NO_SUCH_EXE))),
+            );
+            assert_eq!(ran.code, 1, "refused: {}{}", ran.out, ran.err);
+            assert!(
+                ran.err
+                    .contains("cannot start the download as user 'nobody'"),
+                "the refusal: {}",
+                ran.err
+            );
+            assert!(
+                ran.err.contains(NO_SUCH_EXE),
+                "names the binary: {}",
+                ran.err
+            );
+            assert!(!target.exists(), "nothing installed");
+            Ok(())
+        }
+
+        /// Success: the install says which user downloads, before it starts
+        /// the child.
+        #[test]
+        fn the_install_names_the_user_that_downloads() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let target = dir.path().join(TABLE_FILE_NAME);
+            let ran = run_in(
+                &install(None, false),
+                &target,
+                "",
+                &no_network,
+                &env(true, Path::new("/tmp"), Some(Path::new(NO_SUCH_EXE))),
+            );
+            assert!(
+                ran.out
+                    .contains(&format!("Downloading {PACKAGE_URL} as user 'nobody'")),
+                "the progress line: {}",
+                ran.out
+            );
+            Ok(())
+        }
+
+        /// Success: `--no-priv-drop` downloads in this process and says root
+        /// was kept.
+        #[test]
+        fn no_priv_drop_downloads_here_with_a_warning() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let work = tempfile::tempdir()?;
+            let target = dir.path().join(TABLE_FILE_NAME);
+            let ran = run_in(
+                &install(None, true),
+                &target,
+                "",
+                &not_the_package,
+                &env(true, work.path(), Some(Path::new(NO_SUCH_EXE))),
+            );
+            assert_eq!(
+                ran.code, 1,
+                "the package is refused: {}{}",
+                ran.out, ran.err
+            );
+            assert!(
+                ran.err
+                    .contains("running as root because --no-priv-drop was given"),
+                "the warning: {}",
+                ran.err
+            );
+            assert!(
+                ran.err.contains(PACKAGE_SHA256),
+                "fetched here: {}",
+                ran.err
+            );
+            assert_eq!(entries(work.path())?, 0, "the work directory is gone");
+            Ok(())
+        }
+
+        /// Success: `[privilege] no_priv_drop = true` keeps root the same way.
+        #[test]
+        fn config_no_priv_drop_downloads_here_with_a_warning() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let work = tempfile::tempdir()?;
+            let target = dir.path().join(TABLE_FILE_NAME);
+            let mut env = env(true, work.path(), Some(Path::new(NO_SUCH_EXE)));
+            env.config_no_priv_drop = true;
+            let ran = run_in(&install(None, false), &target, "", &not_the_package, &env);
+            assert!(
+                ran.err
+                    .contains("running as root because --no-priv-drop was given"),
+                "the warning: {}",
+                ran.err
+            );
+            assert!(
+                ran.err.contains(PACKAGE_SHA256),
+                "fetched here: {}",
+                ran.err
+            );
+            Ok(())
+        }
+
+        /// Success: the config user names the child's user.
+        #[test]
+        fn the_config_user_names_the_child() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let target = dir.path().join(TABLE_FILE_NAME);
+            let mut env = env(true, Path::new("/tmp"), Some(Path::new(NO_SUCH_EXE)));
+            env.config_user = Some(NO_SUCH_USER);
+            let ran = run_in(&install(None, false), &target, "", &no_network, &env);
+            assert!(
+                ran.err.contains(NO_SUCH_USER),
+                "the config user: {}",
+                ran.err
+            );
+            Ok(())
+        }
+
+        /// Success: not root, the download runs here in a work directory
+        /// under TMPDIR, which is gone afterwards.
+        #[test]
+        fn not_root_downloads_here_in_tmpdir() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let work = tempfile::tempdir()?;
+            let target = dir.path().join(TABLE_FILE_NAME);
+            let ran = run_in(
+                &install(None, false),
+                &target,
+                "",
+                &not_the_package,
+                &env(false, work.path(), None),
+            );
+            assert_eq!(
+                ran.code, 1,
+                "the package is refused: {}{}",
+                ran.out, ran.err
+            );
+            assert!(
+                !ran.err.contains("--no-priv-drop"),
+                "no warning: {}",
+                ran.err
+            );
+            assert_eq!(entries(work.path())?, 0, "the work directory is gone");
+            assert_eq!(entries(dir.path())?, 0, "nothing beside the target");
+            Ok(())
+        }
+
+        /// Edge: `--from` as root starts no child and opens no connection.
+        #[test]
+        fn from_as_root_starts_no_child() -> Result<(), TestError> {
+            let package = test_support::package_dir()?;
+            let dir = tempfile::tempdir()?;
+            let target = dir.path().join(TABLE_FILE_NAME);
+            let command = G729Command::Install {
+                yes: true,
+                from: Some(package),
+                user: Some(NO_SUCH_USER.to_string()),
+                no_priv_drop: false,
+            };
+            let ran = run_in(
+                &command,
+                &target,
+                "",
+                &no_network,
+                &env(true, Path::new("/tmp"), Some(Path::new(NO_SUCH_EXE))),
+            );
+            assert_eq!(ran.code, 0, "installed: {}{}", ran.out, ran.err);
+            assert!(target.exists(), "the table file");
+            Ok(())
+        }
+
+        // ---- the child ----
+
+        /// Failure: the child refuses to start as root, before any download.
+        #[test]
+        fn the_child_refuses_root() -> Result<(), TestError> {
+            let work = tempfile::tempdir()?;
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let code = internal_fetch("nobody", true, work.path(), &no_network, &mut out, &mut err);
+            let err = String::from_utf8_lossy(&err);
+            assert_eq!(code, 2, "refused: {err}");
+            assert!(err.contains("started as root"), "says why: {err}");
+            assert!(
+                !err.contains("a test tried to download"),
+                "no download: {err}"
+            );
+            assert!(out.is_empty(), "nothing sent");
+            Ok(())
+        }
+
+        /// Failure: the child cannot write in TMPDIR: the drop refusal.
+        #[test]
+        fn the_child_refuses_an_unwritable_tmpdir() -> Result<(), TestError> {
+            if crate::privilege::is_root() {
+                return Ok(());
+            }
+            let work = read_only_dir()?;
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let code = internal_fetch("svc", false, work.path(), &no_network, &mut out, &mut err);
+            writable_again(&work)?;
+            let err = String::from_utf8_lossy(&err);
+            assert_eq!(code, 1, "refused: {err}");
+            assert!(err.contains("runs as user 'svc'"), "names the user: {err}");
+            assert!(
+                !err.contains("a test tried to download"),
+                "no download: {err}"
+            );
+            assert!(out.is_empty(), "nothing sent");
+            Ok(())
+        }
+
+        /// Failure: the download fails: its reason, nothing sent.
+        #[test]
+        fn the_child_reports_a_failed_download() -> Result<(), TestError> {
+            let work = tempfile::tempdir()?;
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let code = internal_fetch("svc", false, work.path(), &unreachable, &mut out, &mut err);
+            let err = String::from_utf8_lossy(&err);
+            assert_eq!(code, 1, "failed: {err}");
+            assert!(err.contains("no route (test)"), "the reason: {err}");
+            assert!(out.is_empty(), "nothing sent");
+            assert_eq!(entries(work.path())?, 0, "the work directory is gone");
+            Ok(())
+        }
+
+        /// Failure: a package with another hash: refused, nothing sent, no
+        /// file left.
+        #[test]
+        fn the_child_refuses_another_package() -> Result<(), TestError> {
+            let work = tempfile::tempdir()?;
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let code = internal_fetch(
+                "svc",
+                false,
+                work.path(),
+                &not_the_package,
+                &mut out,
+                &mut err,
+            );
+            let err = String::from_utf8_lossy(&err);
+            assert_eq!(code, 1, "refused: {err}");
+            assert!(err.contains(PACKAGE_SHA256), "names the pinned hash: {err}");
+            assert!(out.is_empty(), "nothing sent");
+            assert_eq!(entries(work.path())?, 0, "nothing left in TMPDIR");
+            Ok(())
+        }
+
+        /// Success: the child says what it read on standard error, so its
+        /// standard output carries only the table file.
+        #[test]
+        fn the_child_reports_what_it_read_on_stderr() -> Result<(), TestError> {
+            let work = tempfile::tempdir()?;
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let _ = internal_fetch(
+                "svc",
+                false,
+                work.path(),
+                &not_the_package,
+                &mut out,
+                &mut err,
+            );
+            let err = String::from_utf8_lossy(&err);
+            assert!(
+                err.contains(&format!("Read {PACKAGE_URL}")),
+                "the read line: {err}"
+            );
+            assert!(out.is_empty(), "stdout is for the table file only");
+            Ok(())
+        }
+
+        // ---- the early-exit rows ----
+
+        /// Success: the install row says the download drops in a child.
+        #[test]
+        fn the_install_row_drops_in_a_child() {
+            let row = crate::early_exit::early_exit("g729 install");
+            assert!(
+                row.is_some_and(|row| row.plan == crate::early_exit::Plan::OwnDrop
+                    && row.reason.contains("child")
+                    && row.reason.contains("--no-priv-drop")),
+                "the row: {row:?}"
+            );
+        }
+
+        /// Success: the child's row says it refuses root.
+        #[test]
+        fn the_child_has_a_row_that_refuses_root() {
+            let row = crate::early_exit::early_exit("g729 internal-fetch");
+            assert!(
+                row.is_some_and(|row| row.reason.contains("refuses to start as root")),
+                "the row: {row:?}"
+            );
+        }
     }
 }

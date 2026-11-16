@@ -365,7 +365,10 @@ mod before_the_launch {
             "worker_process::run_if_requested()",
             &["--internal-kill-worker"],
         ),
-        ("run_g729_command()", &["g729 install", "g729 status"]),
+        (
+            "run_g729_command()",
+            &["g729 install", "g729 internal-fetch", "g729 status"],
+        ),
         (
             "run_fleet_command()",
             &[
@@ -558,7 +561,7 @@ mod before_the_launch {
                 "src/cli/g729_args.rs",
                 "pub enum G729Command {",
                 "g729",
-                vec!["Install", "Status"],
+                vec!["Install", "Status", "InternalFetch"],
             ),
         ] {
             let text = production(rel)?;
@@ -585,7 +588,18 @@ mod before_the_launch {
              sipnab::early_exit and a plan"
             );
             for variant in variants {
-                let name = format!("{prefix} {}", variant.to_ascii_lowercase());
+                // clap names a subcommand in kebab case: `InternalFetch` is
+                // `internal-fetch`.
+                let kebab: String = variant
+                    .chars()
+                    .enumerate()
+                    .flat_map(|(i, c)| {
+                        let dash = (i > 0 && c.is_ascii_uppercase()).then_some('-');
+                        dash.into_iter()
+                            .chain(std::iter::once(c.to_ascii_lowercase()))
+                    })
+                    .collect();
+                let name = format!("{prefix} {kebab}");
                 assert!(
                     sipnab::early_exit::early_exit(&name).is_some(),
                     "`sipnab {name}` has no row in sipnab::early_exit"

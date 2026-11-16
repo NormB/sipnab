@@ -6566,7 +6566,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/fleet.md's "Verify the history store", with its site mirror (+2).
     // 1508 -> 1510 (`sipnab fleet verify`, measured): the table of measured
     // pass times in the same section, with its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1510;
+    // 1510 -> 1512 (G729-INSTALL-DOWNLOADS-AS-ROOT): the troubleshooting table
+    // of docs/g729.md's "Install as root", with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1512;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;
