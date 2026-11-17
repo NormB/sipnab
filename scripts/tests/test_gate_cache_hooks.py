@@ -17,6 +17,7 @@ pre-push sandbox is built here, with its own copy of the hook and stub gates
 for everything that is not the cache under test.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ import shutil
 import signal
 import subprocess
 import time
+import types
 
 import pytest
 from conftest import load
@@ -97,10 +99,26 @@ def write_rustc_stub(harness, version="rustc 1.90.0 (stub)\nhost: aarch64-unknow
     stub.chmod(0o755)
 
 
-@pytest.fixture
-def pc(tmp_path):
+class Ran:
+    """What one hook run did, read once when it ended and kept.
+
+    The tests that share a run hold only this record, never the sandbox, so
+    none of them can change what another one reads.
+    """
+
+    def __init__(self, sb, rc, out):
+        self.rc = rc
+        self.out = out
+        self.cargo = sb.cargo()
+        self.stamps = sb.stamps()
+        self.snapshots = snapshots(sb)
+        calls = sb.harness / "gh-calls"
+        self.gh_calls = calls.read_text() if calls.exists() else ""
+
+
+@contextlib.contextmanager
+def pre_commit_sandbox(harness):
     """The pre-commit sandbox: one passing binary of two tests."""
-    harness = tmp_path / "harness"
     harness.mkdir()
     script = (
         f'REPO_ROOT="{REPO}"; HOOK="{PRE_COMMIT}"; '
@@ -118,8 +136,33 @@ def pc(tmp_path):
     with open(tree / ".git/info/exclude", "a") as f:
         f.write("__pycache__/\n")
     write_rustc_stub(harness)
-    yield Sandbox(tree, harness, PRE_COMMIT)
-    shutil.rmtree(tree, ignore_errors=True)
+    try:
+        yield Sandbox(tree, harness, PRE_COMMIT)
+    finally:
+        shutil.rmtree(tree, ignore_errors=True)
+
+
+@pytest.fixture
+def pc(tmp_path):
+    """A pre-commit sandbox of the test's own: for every test that changes it."""
+    with pre_commit_sandbox(tmp_path / "harness") as sb:
+        yield sb
+
+
+@pytest.fixture(scope="module")
+def pc_shared(tmp_path_factory):
+    """ONE sandbox for the tests that only read what a passing run did.
+
+    `first` is the first run of a new sandbox; `again` is a second run with
+    nothing changed between the two. Each run of the real hook costs seconds
+    of process starts, and these tests asked for the same two runs. A test
+    that changes the sandbox takes `pc`, a sandbox of its own.
+    """
+    with pre_commit_sandbox(tmp_path_factory.mktemp("pc-shared") / "harness") as sb:
+        snapshots(sb)
+        first = Ran(sb, *sb.run())
+        again = Ran(sb, *sb.run())
+        yield types.SimpleNamespace(first=first, again=again)
 
 
 def junit(*cases):
@@ -146,20 +189,30 @@ def passed(sb):
 # ── pre-commit: the stamp is used for exactly the inputs it was written for ──
 
 
-def test_a_rerun_on_an_unchanged_tree_prints_one_line_and_runs_nothing(pc):
-    passed(pc)
-    rc, out = pc.run()
+def test_a_rerun_on_an_unchanged_tree_prints_one_line_and_runs_nothing(pc_shared):
+    assert pc_shared.first.rc == 0, pc_shared.first.out
+    rc, out = pc_shared.again.rc, pc_shared.again.out
     assert rc == 0, out
     skip = [line for line in out.splitlines() if "PASSED before on these exact inputs" in line]
     assert len(skip) == 1 and "stamp " in skip[0] and "SIPNAB_GATE_NO_CACHE=1" in skip[0], out
     assert "Running pre-commit checks" not in out
-    assert pc.cargo() == [], pc.cargo()
+    assert pc_shared.again.cargo == [], pc_shared.again.cargo
 
 
-def test_the_first_pass_stamps_every_cached_step(pc):
-    out = passed(pc)
-    assert pc.stamps() == ["bpf-types", "clippy", "hook", "tests"], pc.stamps()
-    assert "Pass stamp " in out and "written" in out
+def test_the_first_pass_stamps_every_cached_step(pc_shared):
+    first = pc_shared.first
+    assert first.rc == 0, first.out
+    assert first.stamps == ["bpf-types", "clippy", "hook", "tests"], first.stamps
+    assert "Pass stamp " in first.out and "written" in first.out
+
+
+def test_the_shared_first_run_is_a_full_run(pc_shared):
+    """The record the tests above read is of a run that ran the steps, not of
+    a run that found a stamp: a new sandbox has none."""
+    first = pc_shared.first
+    assert "PASSED before" not in first.out and "Running pre-commit checks" in first.out, first.out
+    assert any(c.startswith("clippy") for c in first.cargo), first.cargo
+    assert any(c.startswith("nextest run --profile suite") for c in first.cargo), first.cargo
 
 
 def test_a_stamp_from_tree_a_is_never_used_for_tree_b(pc):
@@ -597,8 +650,7 @@ def test_a_corrupt_failure_record_replays_nothing_and_runs_the_suite(pc):
 # ── pre-push ────────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def pp(tmp_path):
+def pre_push_sandbox(tmp_path):
     """A crate with fuzz/ and bpf/, the tls, api and wasm features, and stub gates."""
     tree = tmp_path / "crate"
     harness = tmp_path / "harness"
@@ -678,7 +730,32 @@ def pp(tmp_path):
     git(tree, "add", "-A")
     git(tree, "commit", "-qm", "base")
     git(tree, "tag", "v0.0.1")
-    yield Sandbox(tree, harness, tree / ".githooks/pre-push")
+    return Sandbox(tree, harness, tree / ".githooks/pre-push")
+
+
+@pytest.fixture
+def pp(tmp_path):
+    """A pre-push sandbox of the test's own: for every test that changes it."""
+    return pre_push_sandbox(tmp_path)
+
+
+@pytest.fixture(scope="module")
+def pp_shared(tmp_path_factory):
+    """ONE sandbox for the tests that only read what a passing push did:
+    `first` is the first push of a new sandbox, `again` a second push of the
+    same tree. A test that changes the sandbox takes `pp`."""
+    sb = pre_push_sandbox(tmp_path_factory.mktemp("pp-shared"))
+    snapshots(sb)
+    first = Ran(sb, *push(sb))
+    again = Ran(sb, *push(sb))
+    return types.SimpleNamespace(first=first, again=again)
+
+
+@pytest.fixture(scope="module")
+def pp_tag_shared(tmp_path_factory):
+    """ONE push of only a tag, in a sandbox of its own, read by two tests."""
+    sb = pre_push_sandbox(tmp_path_factory.mktemp("pp-tag-shared"))
+    return Ran(sb, *push_tag(sb))
 
 
 BUILD_STEPS = ["bpf-clippy", "check-api", "check-tls", "clippy", "clippy-no-default", "cross-arch", "doc",
@@ -692,8 +769,13 @@ def push(sb, **extra):
 
 def cargo_steps(sb):
     """What the last push ran of the cached steps, as the stub logged it."""
+    return steps_in(sb.cargo())
+
+
+def steps_in(lines):
+    """The cached steps a push ran, from the lines the stub logged for it."""
     ran = []
-    for line in sb.cargo():
+    for line in lines:
         where, _, args = line.partition(" ")
         if args.startswith("clippy --workspace"):
             ran.append("clippy")
@@ -718,20 +800,19 @@ def cargo_steps(sb):
     return sorted(ran)
 
 
-def test_the_first_push_runs_and_stamps_every_cached_step(pp):
-    rc, out = push(pp)
-    assert rc == 0, out
-    assert cargo_steps(pp) == sorted(BUILD_STEPS + ["codespell", "vale"]), pp.cargo()
-    assert pp.stamps() == sorted(BUILD_STEPS + ["codespell", "vale"]), pp.stamps()
+def test_the_first_push_runs_and_stamps_every_cached_step(pp_shared):
+    first = pp_shared.first
+    assert first.rc == 0, first.out
+    assert steps_in(first.cargo) == sorted(BUILD_STEPS + ["codespell", "vale"]), first.cargo
+    assert first.stamps == sorted(BUILD_STEPS + ["codespell", "vale"]), first.stamps
 
 
-def test_a_second_push_of_the_same_tree_runs_no_cached_step(pp):
-    push(pp)
-    rc, out = push(pp)
-    assert rc == 0, out
-    assert cargo_steps(pp) == [], pp.cargo()
-    assert out.count("CACHED (passed on these inputs") == len(BUILD_STEPS) + 2, out
-    assert any(line.startswith("crate test --features full --test release_delivery_test") for line in pp.cargo()), (
+def test_a_second_push_of_the_same_tree_runs_no_cached_step(pp_shared):
+    again = pp_shared.again
+    assert again.rc == 0, again.out
+    assert steps_in(again.cargo) == [], again.cargo
+    assert again.out.count("CACHED (passed on these inputs") == len(BUILD_STEPS) + 2, again.out
+    assert any(line.startswith("crate test --features full --test release_delivery_test") for line in again.cargo), (
         "the release-delivery test reads tags and is never cached"
     )
 
@@ -784,12 +865,12 @@ def test_a_failing_build_step_is_never_skipped_on_the_same_tree(pp):
     assert rc != 0 and "Push blocked: clippy" in out, out
 
 
-def test_a_marked_feature_row_is_linted_with_cis_command_and_an_unmarked_one_is_not(pp):
-    rc, out = push(pp)
-    assert rc == 0, out
-    lints = [c for c in pp.cargo() if " clippy --no-default-features --features " in c]
-    assert lints == ["crate clippy --no-default-features --features tls,api --tests -- -D warnings"], pp.cargo()
-    assert "cargo clippy --no-default-features --features tls,api --tests -- -D warnings ... OK" in out, out
+def test_a_marked_feature_row_is_linted_with_cis_command_and_an_unmarked_one_is_not(pp_shared):
+    first = pp_shared.first
+    assert first.rc == 0, first.out
+    lints = [c for c in first.cargo if " clippy --no-default-features --features " in c]
+    assert lints == ["crate clippy --no-default-features --features tls,api --tests -- -D warnings"], first.cargo
+    assert "cargo clippy --no-default-features --features tls,api --tests -- -D warnings ... OK" in first.out, first.out
 
 
 def test_a_marked_feature_row_that_fails_its_lint_blocks_the_push(pp):
@@ -882,19 +963,16 @@ def snapshots(sb):
     return n
 
 
-def test_a_pre_commit_run_takes_one_snapshot_for_its_keys_and_one_for_its_stamps(pc):
+def test_a_pre_commit_run_takes_one_snapshot_for_its_keys_and_one_for_its_stamps(pc_shared):
     """Each snapshot walks the tree and asks every tool its version. One per
     passing step made test-pre-push.sh run past its 180 s test deadline."""
-    snapshots(pc)
-    passed(pc)
-    assert snapshots(pc) == 2
+    assert pc_shared.first.rc == 0, pc_shared.first.out
+    assert pc_shared.first.snapshots == 2
 
 
-def test_a_push_takes_one_snapshot_for_its_keys_and_one_for_its_stamps(pp):
-    snapshots(pp)
-    rc, out = push(pp)
-    assert rc == 0, out
-    assert snapshots(pp) == 2
+def test_a_push_takes_one_snapshot_for_its_keys_and_one_for_its_stamps(pp_shared):
+    assert pp_shared.first.rc == 0, pp_shared.first.out
+    assert pp_shared.first.snapshots == 2
 
 
 
@@ -909,18 +987,18 @@ def push_tag(sb, tag="v0.0.1", also=None, **extra):
     return sb.run(stdin=lines, own=True, **extra)
 
 
-def test_a_tag_only_push_of_a_proven_commit_skips_the_tree_gates(pp):
-    rc, out = push_tag(pp)
+def test_a_tag_only_push_of_a_proven_commit_skips_the_tree_gates(pp_tag_shared):
+    rc, out = pp_tag_shared.rc, pp_tag_shared.out
     assert rc == 0, out
     assert "tag-only push:" in out and "is on origin/main and passed all 2 required checks" in out, out
-    assert cargo_steps(pp) == [], pp.cargo()
+    assert steps_in(pp_tag_shared.cargo) == [], pp_tag_shared.cargo
     assert "scripts/check-rustfmt.sh ..." not in out
 
 
-def test_a_tag_only_push_still_runs_the_tag_gates(pp):
-    rc, out = push_tag(pp)
+def test_a_tag_only_push_still_runs_the_tag_gates(pp_tag_shared):
+    rc, out = pp_tag_shared.rc, pp_tag_shared.out
     assert rc == 0, out
-    log = pp.cargo()
+    log = pp_tag_shared.cargo
     assert any(line.startswith("tagsig ") for line in log), log
     assert "code-scanning" in log, log
     assert any(line.startswith("crate test --features full --test release_delivery_test") for line in log), log
@@ -957,7 +1035,7 @@ def test_no_cache_makes_a_tag_only_push_run_every_gate(pp):
     assert "clippy" in cargo_steps(pp), out
 
 
-def test_a_branch_push_never_asks_github_for_a_proof(pp):
-    push(pp)
-    calls = (pp.harness / "gh-calls").read_text() if (pp.harness / "gh-calls").exists() else ""
+def test_a_branch_push_never_asks_github_for_a_proof(pp_shared):
+    assert pp_shared.first.rc == 0, pp_shared.first.out
+    calls = pp_shared.first.gh_calls
     assert "compare" not in calls and "check-runs" not in calls, calls
