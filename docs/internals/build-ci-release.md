@@ -2245,7 +2245,9 @@ The container's package installs go through [`scripts/release-apt.sh`](../../scr
 - `multiarch_pins` installs `linux-libc-dev`, `libc6` and `libc6-dev` for amd64 and arm64 at the newest version both architectures' indexes carry.
   These packages are `Multi-Arch: same`, so both architectures must hold one version.
   Release run 43881101798 (v0.5.260) failed both aarch64 builds when `bookworm-security` carried `linux-libc-dev` 6.1.192-2 for arm64 and only 6.1.192-1 for amd64.
-- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds both.
+- `pins_line` prints those pins on one `multiarch pins` notice line, the line before the install, so a release record can quote the versions each aarch64 build installed.
+  It refuses a word that is not `package:amd64=version` or `package:arm64=version`, and a package not pinned once for each architecture at one version.
+- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds all three.
 
 Every gnu binary then passes a `readelf -V` gate.
 
