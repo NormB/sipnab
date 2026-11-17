@@ -1156,6 +1156,9 @@ jobs:
           persist-credentials: false
       - name: Shellcheck (bash)
         run: shellcheck -s bash -S warning .githooks/pre-push .githooks/pre-commit .githooks/commit-msg
+      # The pre-push hook runs this helper for every push that holds a tag.
+      - name: Shellcheck (sh, tag proof picker)
+        run: shellcheck -s sh -S warning scripts/pick-tag-proof.sh
 
   # Reduced feature combinations must keep compiling AND lint-clean (lib and
   # test code). --all-features alone let `#[cfg]`-gating rot: at one point 7
