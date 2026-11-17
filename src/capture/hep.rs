@@ -2245,6 +2245,11 @@ pub struct HepListenerOpts<'a> {
     /// warns (`--hep-silence-warn`, default [`HEP_IDLE_WARN_AFTER`]). Zero
     /// disables the warning.
     pub silence_warn_after: Duration,
+    /// How long a TLS peer has to finish its handshake before no stop has
+    /// been seen; `HEP_TLS_HANDSHAKE_TIMEOUT` (10 s) in every run. A field so a
+    /// test can make it longer than any test, and so tell a handshake given
+    /// up at a stop from one given up at this deadline by the outcome alone.
+    pub(crate) tls_handshake_timeout: Duration,
 }
 
 /// How long a stream connection blocks in `read` before the listener rechecks
@@ -2659,6 +2664,8 @@ struct HepStreamShared<'a, 'o> {
     start: Instant,
     /// The address the listener bound, for log lines.
     bind_addr: &'a str,
+    /// [`HepListenerOpts::tls_handshake_timeout`].
+    tls_handshake_timeout: Duration,
 }
 
 /// Read one stream connection to its end, handing whole HEP packets to
@@ -2923,7 +2930,8 @@ impl HepStreamShared<'_, '_> {
             HandshakeStep::Go => false,
             HandshakeStep::DeadlinePassed => {
                 tracing::warn!(
-                    "HEP TLS handshake with {peer} did not finish within {HEP_TLS_HANDSHAKE_TIMEOUT:?}"
+                    "HEP TLS handshake with {peer} did not finish within {:?}",
+                    self.tls_handshake_timeout
                 );
                 true
             }
@@ -3473,6 +3481,7 @@ fn capture_hep_stream(
         config,
         start: Instant::now(),
         bind_addr,
+        tls_handshake_timeout: opts.tls_handshake_timeout,
     };
     let mut fatal: Option<anyhow::Error> = None;
 
@@ -3580,7 +3589,7 @@ fn hep_tls_accept(
         }
     };
     let mut sock = sock;
-    let deadline = Instant::now() + HEP_TLS_HANDSHAKE_TIMEOUT;
+    let deadline = Instant::now() + shared.tls_handshake_timeout;
     let mut stop_seen = None;
     while conn.is_handshaking() {
         if shared.tls_handshake_cut_short(deadline, &mut stop_seen, peer)
@@ -4080,7 +4089,7 @@ use std::net::TcpStream;
 /// A peer that opens a connection and then says nothing would otherwise hold a
 /// listener thread for as long as it liked, and a sender would block startup on
 /// a collector that answers the TCP SYN and nothing else.
-const HEP_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const HEP_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The name a collector's certificate is checked against: the host the
 /// operator dialed, without the port.
@@ -6996,6 +7005,30 @@ mod tests {
         crate::capture::channel::PacketRx,
         std::sync::mpsc::Receiver<std::result::Result<(), String>>,
     ) {
+        start_listener_with_handshake(
+            socket,
+            transport,
+            tls,
+            allowlist,
+            auth_key,
+            config,
+            HEP_TLS_HANDSHAKE_TIMEOUT,
+        )
+    }
+
+    /// [`start_listener`] with a TLS handshake deadline of `handshake`.
+    fn start_listener_with_handshake(
+        socket: HepSocketSource,
+        transport: HepTransport,
+        tls: Option<(std::path::PathBuf, std::path::PathBuf)>,
+        allowlist: Vec<CidrRange>,
+        auth_key: Option<String>,
+        config: CaptureConfig,
+        handshake: Duration,
+    ) -> (
+        crate::capture::channel::PacketRx,
+        std::sync::mpsc::Receiver<std::result::Result<(), String>>,
+    ) {
         use std::sync::mpsc;
         let (tx, rx) = crate::capture::channel::packet_channel(64);
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
@@ -7013,6 +7046,7 @@ mod tests {
                 tls_cert: tls.as_ref().map(|(c, _)| c.as_path()),
                 tls_key: tls.as_ref().map(|(_, k)| k.as_path()),
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
+                tls_handshake_timeout: handshake,
             };
             let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
             let _ = done_tx.send(r.map_err(|e| format!("{e:#}")));
@@ -7131,15 +7165,65 @@ mod tests {
         })
     }
 
-    /// Start a listener on `transport` with a 1.5 s `--duration`, write 300
-    /// packets through the stream `connect` opens, read nothing until the
-    /// deadline has passed, and require all 300.
+    /// Start a listener on `transport` with a 1.5 s `--duration`, write up to
+    /// 300 packets through the stream `connect` opens while the deadline has
+    /// not passed, read nothing until it has, and require every packet
+    /// written.
+    ///
+    /// What is required is COUNTED, not assumed: the test once wrote all 300
+    /// and asserted, as a precondition, that it had done so inside the 1.5 s,
+    /// a bet that a loaded host can lose before a single packet is wrong.
+    /// Now each packet is written, and flushed to the kernel, only while the
+    /// test's own clock is short of the deadline; the listener started after
+    /// that clock did, so every packet counted was sent before the
+    /// listener's deadline. An attempt that wrote nothing in time is no
+    /// evidence and is made again, up to [`BURST_ATTEMPTS`].
     fn duration_stop_delivers_a_burst(
         transport: HepTransport,
         tls: Option<(std::path::PathBuf, std::path::PathBuf)>,
-        connect: impl FnOnce(&str) -> Result<Box<dyn std::io::Write>, TestError>,
+        connect: impl Fn(&str) -> Result<Box<dyn std::io::Write>, TestError>,
     ) -> Result<(), TestError> {
-        const SENT: usize = 300;
+        for _ in 0..BURST_ATTEMPTS {
+            if let Some((got, sent, written, stopped)) =
+                duration_stop_burst_once(transport, tls.clone(), &connect)?
+            {
+                assert!(
+                    (sent..=written).contains(&got),
+                    "every packet sent before the deadline is delivered, and no \
+                     more than were written ({transport}): {got} delivered, {sent} \
+                     sent in time, {written} written"
+                );
+                assert!(stopped, "the listener stops cleanly at the deadline");
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "no packet could be written inside the 1.5 s deadline in {BURST_ATTEMPTS} \
+             attempts ({transport}): this host was too slow to OBSERVE the stop's drain"
+        )
+        .into())
+    }
+
+    /// What opens the peer's stream to a listener's bound address.
+    type BurstPeer<'a> = dyn Fn(&str) -> Result<Box<dyn std::io::Write>, TestError> + 'a;
+
+    /// Attempts of [`duration_stop_delivers_a_burst`] before it gives up.
+    const BURST_ATTEMPTS: usize = 3;
+
+    /// One attempt of [`duration_stop_delivers_a_burst`].
+    ///
+    /// # Returns
+    ///
+    /// `None` when no packet was written before the deadline; else the
+    /// packets delivered, the packets written before the deadline, the
+    /// packets written in all (one more when the last write ended past the
+    /// deadline), and whether the listener stopped cleanly.
+    fn duration_stop_burst_once(
+        transport: HepTransport,
+        tls: Option<(std::path::PathBuf, std::path::PathBuf)>,
+        connect: &BurstPeer<'_>,
+    ) -> Result<Option<(usize, usize, usize, bool)>, TestError> {
+        const MOST: usize = 300;
         let (socket, bind) = loopback_tcp()?;
         let deadline = Duration::from_millis(1500);
         let config = CaptureConfig {
@@ -7147,10 +7231,13 @@ mod tests {
             ..CaptureConfig::default()
         };
         let started = Instant::now();
+        let until = started + deadline;
         let (rx, done) = start_listener(socket, transport, tls, vec![], None, config);
         let mut peer = connect(&bind)?;
         let endpoint = v4_endpoint();
-        for n in 0..SENT {
+        let mut sent = 0usize;
+        let mut written = 0usize;
+        for n in 0..MOST {
             let body = format!("OPTIONS sip:a@b SIP/2.0\r\nCSeq: {n} OPTIONS\r\n\r\n");
             let frame = build_hep_v3(
                 &endpoint,
@@ -7160,30 +7247,31 @@ mod tests {
                 None,
                 body.as_bytes(),
             );
+            if Instant::now() >= until {
+                break;
+            }
             peer.write_all(&frame)?;
+            peer.flush()?;
+            written += 1;
+            if Instant::now() >= until {
+                // Written, but perhaps after the deadline: allowed, not
+                // required. Nothing more is written.
+                break;
+            }
+            sent += 1;
         }
-        peer.flush()?;
-        assert!(
-            started.elapsed() < deadline,
-            "precondition: every packet was sent before the deadline"
+        // Read nothing until the deadline has passed (a lower bound only:
+        // the channel holds 64, so the rest stay unread in the socket).
+        std::thread::sleep(
+            (until + Duration::from_millis(500)).saturating_duration_since(Instant::now()),
         );
-        // Read nothing until the deadline has passed.
-        std::thread::sleep(deadline + Duration::from_millis(500) - started.elapsed());
-        let mut got = 0usize;
-        while rx.recv_timeout(Duration::from_secs(2)).is_ok() {
-            got += 1;
-        }
+        let (got, stopped) = deliveries_until_stopped(&rx, &done);
         // Held open to here: the stop, not the peer, ends the connection.
         drop(peer);
-        assert_eq!(
-            got, SENT,
-            "every packet sent before the deadline is delivered ({transport})"
-        );
-        assert!(
-            matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
-            "the listener stops cleanly at the deadline"
-        );
-        Ok(())
+        if sent == 0 {
+            return Ok(None);
+        }
+        Ok(Some((got, sent, written, stopped)))
     }
 
     /// A HEP v3 frame carrying OPTIONS number `n` between RFC 5737 addresses.
@@ -7458,11 +7546,14 @@ mod tests {
     }
 
     /// A waiting TLS connection whose peer never answers the handshake holds
-    /// the stop for the drain budget, not for the whole
-    /// [`HEP_TLS_HANDSHAKE_TIMEOUT`].
+    /// the stop for the drain budget, not for the whole handshake timeout.
     ///
-    /// The bound asserted is the handshake timeout itself, ten times the
-    /// budget, so a loaded host has nine seconds of slack.
+    /// The handshake timeout is made an hour here, so a stop that waited for
+    /// it would not end inside [`deliveries_until_stopped`]'s bound (twice
+    /// [`MUST_ARRIVE`]), and that bound only ends a hang: no clock is read
+    /// by the test. (It once asserted "under the 10 s
+    /// [`HEP_TLS_HANDSHAKE_TIMEOUT`]", a margin a host under a signal storm
+    /// used up at 14.1 s.)
     #[test]
     fn a_backlogged_tls_peer_that_stalls_its_handshake_cannot_hold_the_stop()
     -> Result<(), TestError> {
@@ -7471,23 +7562,22 @@ mod tests {
         let (socket, bind) = loopback_tcp()?;
         // The ClientHello is sent and the peer then says nothing more.
         let (_conn, sock) = tls_peer_in_backlog(&ca, &bind, b"")?;
-        let begun = Instant::now();
-        let (rx, done) = start_listener(
+        let (rx, done) = start_listener_with_handshake(
             socket,
             HepTransport::Tls,
             Some((cert, key)),
             vec![],
             None,
             stopped_at_start(),
+            Duration::from_secs(3600),
         );
         let (got, stopped) = deliveries_until_stopped(&rx, &done);
-        let took = begun.elapsed();
         drop(sock);
         assert_eq!(got, 0, "a stalled handshake delivers nothing");
-        assert!(stopped, "the listener stops cleanly");
         assert!(
-            took < HEP_TLS_HANDSHAKE_TIMEOUT,
-            "a stalled handshake is given up at the drain budget: {took:?}"
+            stopped,
+            "the listener did not stop: a stalled handshake held the stop past the \
+             drain budget"
         );
         Ok(())
     }
@@ -11428,6 +11518,7 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
+                tls_handshake_timeout: HEP_TLS_HANDSHAKE_TIMEOUT,
             };
             let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
             let _ = done_tx.send(r.is_ok());
@@ -11502,6 +11593,7 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             silence_warn_after: silence,
+            tls_handshake_timeout: HEP_TLS_HANDSHAKE_TIMEOUT,
         }
     }
 
@@ -12117,6 +12209,7 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
+                tls_handshake_timeout: HEP_TLS_HANDSHAKE_TIMEOUT,
             };
             let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
             let _ = done_tx.send(r.is_ok());
@@ -12507,6 +12600,7 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
+                tls_handshake_timeout: HEP_TLS_HANDSHAKE_TIMEOUT,
             }
         }
 
@@ -12598,6 +12692,7 @@ mod tests {
                 config,
                 start: Instant::now(),
                 bind_addr: "127.0.0.1:9060",
+                tls_handshake_timeout: opts.tls_handshake_timeout,
             }
         }
 
@@ -13041,18 +13136,38 @@ mod tests {
 
         /// A peer that never pauses cannot hold a stop: the reader gives up
         /// draining after the budget.
+        ///
+        /// The defect is a reader that drains for ever. The stream is endless
+        /// up to a ceiling far past the budget, where it ends and records
+        /// that it was read that far, so the defect fails the test on the
+        /// record instead of hanging it, and the test reads the clock only
+        /// from below. (It once asserted "under the budget plus 2 s", a
+        /// margin a stalled host can use up.)
         #[test]
         fn a_winding_down_reader_stops_draining_a_peer_that_never_pauses() -> Result<(), TestError>
         {
             use std::sync::atomic::Ordering;
-            /// A stream that always has another whole packet ready.
-            struct Endless(Vec<u8>, usize);
+            /// How long the stream stays endless: thirty budgets.
+            const CEILING: Duration = Duration::from_secs(30);
+            /// A stream that always has another whole packet ready, until
+            /// `CEILING` after its first read; then it ends.
+            struct Endless {
+                packet: Vec<u8>,
+                at: usize,
+                first_read: Option<Instant>,
+                reached_the_ceiling: bool,
+            }
             impl std::io::Read for Endless {
                 fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                    let first = *self.first_read.get_or_insert_with(Instant::now);
+                    if first.elapsed() >= CEILING {
+                        self.reached_the_ceiling = true;
+                        return Ok(0);
+                    }
                     let mut n = 0;
                     while n < out.len() {
-                        out[n] = self.0[self.1 % self.0.len()];
-                        self.1 += 1;
+                        out[n] = self.packet[self.at % self.packet.len()];
+                        self.at += 1;
                         n += 1;
                     }
                     Ok(n)
@@ -13064,7 +13179,12 @@ mod tests {
             // Read on another thread, so the pipeline never fills and blocks.
             let (tx, rx) = crate::capture::channel::packet_channel(1 << 16);
             shared.stop.store(true, Ordering::Relaxed);
-            let mut stream = Endless(stream_packet(), 0);
+            let mut stream = Endless {
+                packet: stream_packet(),
+                at: 0,
+                first_read: None,
+                reached_the_ceiling: false,
+            };
             let begun = Instant::now();
             std::thread::scope(|scope| {
                 scope.spawn(move || while rx.recv_timeout(Duration::from_secs(5)).is_ok() {});
@@ -13077,8 +13197,9 @@ mod tests {
                 "the reader drained for its budget, not less: {took:?}"
             );
             assert!(
-                took < HEP_STREAM_DRAIN_BUDGET + Duration::from_secs(2),
-                "the reader stopped draining at its budget: {took:?}"
+                !stream.reached_the_ceiling,
+                "the reader drained a peer that never pauses for {CEILING:?}, not for its \
+                 {HEP_STREAM_DRAIN_BUDGET:?} budget"
             );
             Ok(())
         }

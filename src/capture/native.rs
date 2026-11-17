@@ -575,6 +575,7 @@ pub fn start_capture(
                         tls_cert: tls_cert.as_deref(),
                         tls_key: tls_key.as_deref(),
                         silence_warn_after,
+                        tls_handshake_timeout: hep::HEP_TLS_HANDSHAKE_TIMEOUT,
                     };
                     hep::capture_hep(&addr, &config, tx, &opts, ready_tx)
                 })

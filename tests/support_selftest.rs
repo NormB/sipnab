@@ -510,23 +510,60 @@ fn drain_closed_returns_by_its_bound_when_the_sender_stays_open() {
 }
 
 /// A sender that has already hung up is read at once: what it sent, and no
-/// wait.
+/// wait for the bound.
+///
+/// The bound is a minute, so "not after the bound" is held by a minute and
+/// not by the 1 s this test once allowed, which a stalled host could use
+/// up: a drain that waited out its bound takes the whole minute.
 #[test]
 fn drain_closed_returns_at_once_when_the_sender_has_hung_up() {
+    let bound = std::time::Duration::from_secs(60);
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send("only".to_string()).unwrap_or_default();
     drop(tx);
     let started = std::time::Instant::now();
     assert_eq!(
-        drain_closed(&rx, test_timeout(10)),
+        drain_closed(&rx, bound),
         ["only"],
         "what the sender sent before hanging up is read"
     );
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(1),
+        started.elapsed() < bound,
         "a hung-up sender is read at once, not after the bound: {:?}",
         started.elapsed()
     );
+}
+
+/// A sender that hung up with nothing sent yields nothing, and the drain
+/// does not wait for the bound.
+#[test]
+fn drain_closed_of_a_sender_that_sent_nothing_returns_empty() {
+    let bound = std::time::Duration::from_secs(60);
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    drop(tx);
+    let started = std::time::Instant::now();
+    assert!(
+        drain_closed(&rx, bound).is_empty(),
+        "a sender that sent nothing yields nothing"
+    );
+    assert!(
+        started.elapsed() < bound,
+        "a hung-up sender is not waited for: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A zero bound reads nothing, even what is queued: the bound is checked
+/// before every read.
+#[test]
+fn drain_closed_with_a_zero_bound_reads_nothing() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send("queued".to_string()).unwrap_or_default();
+    assert!(
+        drain_closed(&rx, std::time::Duration::ZERO).is_empty(),
+        "a zero bound has no time to read"
+    );
+    drop(tx);
 }
 
 // ---------------------------------------------------------------------------

@@ -161,7 +161,7 @@ installed after the privilege drop, designed in
 ### 2c. Per-process pcap handles — no
 
 Multi-device capture already gives each device its own thread and its own pcap
-handle ([`capture/native.rs:698-757`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L698-L757)<!-- "pub fn start_multi_capture(" -->). Nothing is
+handle ([`capture/native.rs:699-758`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L699-L758)<!-- "pub fn start_multi_capture(" -->). Nothing is
 contended. There is no handle problem to solve.
 
 ### 2d. Bypassing a shared-lock bottleneck — **no, and this is measured**
