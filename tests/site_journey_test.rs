@@ -5992,7 +5992,8 @@ fn macos_only_jobs(yaml: &str) -> Result<BTreeSet<String>, TestError> {
 /// so on main a macOS failure fails the CI run, and the pre-push hook's tag
 /// gate refuses to tag a commit whose CI run is not green. And each macOS job
 /// runs the very steps of a Linux job, through a YAML alias, so it checks
-/// what the Linux job checks; check-macos adds the whole suite.
+/// what the Linux job checks; test-macos runs the whole suite in shards, as
+/// the Linux `test` job does (`macos_suite_problems` is that rule).
 ///
 /// No job may have a macOS leg beside a Linux one: `needs` takes a matrix job
 /// whole, so such a job is either required, and blocks pull requests on
@@ -6016,13 +6017,13 @@ fn the_macos_leg_blocks_main_and_no_pull_request() -> Result<(), TestError> {
         "ci.yml job(s) {mixed:?} run on macOS beside another OS; give the macOS leg \
          its own job, through a YAML alias of the steps, that CI success does not need"
     );
-    let want: BTreeSet<String> = ["check-macos", "symbol-split-macos"]
+    let want: BTreeSet<String> = ["check-macos", "symbol-split-macos", "test-macos"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     assert_eq!(
         macos, want,
-        "the macOS-only jobs of ci.yml must be the macOS legs of Check and Symbol split"
+        "the macOS-only jobs of ci.yml must be the macOS legs of Check, Symbol split and Test"
     );
 
     // Not needed by CI success, directly or through any job it needs.
@@ -6078,10 +6079,12 @@ fn the_macos_leg_blocks_main_and_no_pull_request() -> Result<(), TestError> {
         assert_eq!(job_runners(body), vec!["macos-26".to_string()], "{id}");
     }
 
-    // The same steps as a gated Linux job, and on macOS Check runs the suite.
+    // The same steps as a gated Linux job, and on macOS the suite runs in
+    // shards through the Linux suite's own steps.
     for (linux, mac, anchor) in [
         ("check", "check-macos", "check-steps"),
         ("symbol-split", "symbol-split-macos", "symbol-split-steps"),
+        ("test", "test-macos", "test-steps"),
     ] {
         let linux_body = jobs
             .get(linux)
@@ -6099,17 +6102,180 @@ fn the_macos_leg_blocks_main_and_no_pull_request() -> Result<(), TestError> {
             "CI success must still need {linux}, the Linux half of {mac}"
         );
     }
-    let suite = workflow_step_body(".github/workflows/ci.yml", "Test (macOS, every target)")?;
-    for needle in [
-        "if: runner.os == 'macOS'",
-        "python3 scripts/parallel-tests.py -- --all-features",
-    ] {
+    let problems = macos_suite_problems(&yaml);
+    assert!(
+        problems.is_empty(),
+        "ci.yml does not run the whole suite on macOS in shards:\n{}",
+        problems.join("\n")
+    );
+    Ok(())
+}
+
+include!("support/macos_suite.rs");
+
+/// A ci.yml that holds the macOS suite rule; each case below changes one
+/// part of it.
+const MACOS_SUITE_BASE: &str = "name: CI
+jobs:
+  check:
+    timeout-minutes: 45
+    steps: &check-steps
+      - name: Build
+        run: cargo build --all-features --bins --examples
+      - name: Clippy
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+
+  check-macos:
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        os: [macos-26]
+    steps: *check-steps
+
+  test:
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        shard: [1, 2]
+    steps: &test-steps
+      - name: Install cargo-nextest
+        uses: ./.github/actions/nextest
+      - name: Test
+        run: |
+          set -eu
+          python3 scripts/parallel-tests.py --shard-index ${{ strategy.job-index }} --shard-count ${{ strategy.job-total }} \\
+            --manifest \"$RUNNER_TEMP/test-shard/shard.json\" -- --all-features 2>&1 \\
+            | tee \"$RUNNER_TEMP/test-shard/test-output.txt\"
+      - name: Test the sipnab-bpf-types crate
+        run: cargo test -p sipnab-bpf-types --no-fail-fast
+
+  test-macos:
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26]
+        shard: [1, 2]
+    steps: *test-steps
+";
+
+/// Applies one case's change to the base: `from` must occur in it exactly
+/// once (a change that does not apply fails the case rather than testing the
+/// base), or be empty, which replaces the whole text with `to`.
+fn macos_suite_case(from: &str, to: &str) -> Result<String, TestError> {
+    if from.is_empty() {
+        return Ok(to.to_string());
+    }
+    let n = MACOS_SUITE_BASE.matches(from).count();
+    if n != 1 {
+        return Err(
+            format!("the case's text {from:?} occurs {n} times in the base, not once").into(),
+        );
+    }
+    Ok(MACOS_SUITE_BASE.replacen(from, to, 1))
+}
+
+/// One case: the problems of the changed base must be none (`want` empty) or
+/// include one that contains `want`.
+fn macos_suite_expect(from: &str, to: &str, want: &str) -> Result<(), TestError> {
+    let ci = macos_suite_case(from, to)?;
+    let problems = macos_suite_problems(&ci);
+    if want.is_empty() {
         assert!(
-            suite.contains(needle),
-            "the macOS leg's suite step lacks {needle:?}:\n{suite}"
+            problems.is_empty(),
+            "expected no problem, got:\n{}\nfor:\n{ci}",
+            problems.join("\n")
+        );
+    } else {
+        assert!(
+            problems.iter().any(|p| p.contains(want)),
+            "expected a problem containing {want:?}, got {problems:?} for:\n{ci}"
         );
     }
     Ok(())
+}
+
+macro_rules! macos_suite_cases {
+    ($($name:ident: $from:expr => $to:expr, $want:expr;)*) => {$(
+        #[test]
+        fn $name() -> Result<(), TestError> {
+            macos_suite_expect($from, $to, $want)
+        }
+    )*};
+}
+
+const MACOS_SHARDS: &str = "        shard: [1, 2]\n    steps: *test-steps";
+const MACOS_OS: &str = "        os: [macos-26]\n        shard";
+const MACOS_TIMEOUT: &str = "  test-macos:\n    timeout-minutes: 45\n";
+const SUITE_RUN: &str = "--shard-count ${{ strategy.job-total }}";
+
+// Success: the layout holds, in the shapes ci.yml may take.
+macos_suite_cases! {
+    macos_suite_ok_base: "name: CI" => "name: CI", "";
+    macos_suite_ok_three_shards: MACOS_SHARDS => "        shard: [1, 2, 3]\n    steps: *test-steps", "";
+    macos_suite_ok_four_shards: MACOS_SHARDS => "        shard: [1, 2, 3, 4]\n    steps: *test-steps", "";
+    macos_suite_ok_list_without_spaces: MACOS_SHARDS => "        shard: [1,2]\n    steps: *test-steps", "";
+    macos_suite_ok_shorter_timeout: MACOS_TIMEOUT => "  test-macos:\n    timeout-minutes: 30\n", "";
+    macos_suite_ok_another_job_after: "    steps: *test-steps\n" => "    steps: *test-steps\n\n  test-results:\n    needs: [test]\n    steps:\n      - run: true\n", "";
+    macos_suite_ok_comment_in_the_job: MACOS_TIMEOUT => "  test-macos:\n    # The macOS leg of the suite.\n    timeout-minutes: 45\n", "";
+    macos_suite_ok_env_on_the_test_step: "      - name: Test\n        run: |" => "      - name: Test\n        env:\n          SIPNAB_YANG_EXPORT_DIR: ''\n        run: |", "";
+    macos_suite_ok_linux_three_shards: "        os: [ubuntu-24.04]\n        shard: [1, 2]" => "        os: [ubuntu-24.04]\n        shard: [1, 2, 3]", "";
+    macos_suite_ok_without_check_macos: "  check-macos:\n" => "  check-other:\n", "";
+    macos_suite_ok_without_fail_fast: "      fail-fast: false\n      matrix:\n        os: [macos-26]" => "      matrix:\n        os: [macos-26]", "";
+    macos_suite_ok_step_after_test: "      - name: Test the sipnab-bpf-types crate\n" => "      - name: Prune\n        run: true\n      - name: Test the sipnab-bpf-types crate\n", "";
+    macos_suite_ok_job_order_test_macos_first: "" => &MACOS_SUITE_BASE.replace("\n  test-macos:", "\n  zz-moved:").replacen("jobs:\n", "jobs:\n  test-macos:\n    timeout-minutes: 45\n    strategy:\n      matrix:\n        os: [macos-26]\n        shard: [1, 2]\n    steps: *test-steps\n\n", 1).replace("  zz-moved:\n    timeout-minutes: 45\n    strategy:\n      fail-fast: false\n      matrix:\n        os: [macos-26]\n        shard: [1, 2]\n    steps: *test-steps\n", ""), "";
+    macos_suite_ok_timeout_one_minute: MACOS_TIMEOUT => "  test-macos:\n    timeout-minutes: 1\n", "";
+    macos_suite_ok_quoted_os: MACOS_OS => "        os: ['macos-26']\n        shard", "";
+    macos_suite_ok_extra_matrix_key: MACOS_SHARDS => "        shard: [1, 2]\n        include:\n          - shard: 1\n    steps: *test-steps", "";
+}
+
+// Failure: each part of the rule, broken on its own.
+macos_suite_cases! {
+    macos_suite_fails_without_the_job: "  test-macos:\n" => "  test-mac:\n", "no job `test-macos`";
+    macos_suite_fails_on_other_steps: "    steps: *test-steps\n" => "    steps: *check-steps\n", "through *test-steps";
+    macos_suite_fails_without_the_anchor: "    steps: &test-steps\n" => "    steps:\n", "anchor &test-steps";
+    macos_suite_fails_on_a_floating_image: MACOS_OS => "        os: [macos-latest]\n        shard", "macos-26 alone";
+    macos_suite_fails_on_linux: MACOS_OS => "        os: [ubuntu-24.04]\n        shard", "macos-26 alone";
+    macos_suite_fails_on_one_shard: MACOS_SHARDS => "        shard: [1]\n    steps: *test-steps", "at least two shards";
+    macos_suite_fails_without_shards: MACOS_SHARDS => "    steps: *test-steps", "no shard list";
+    macos_suite_fails_on_a_gap: MACOS_SHARDS => "        shard: [1, 3]\n    steps: *test-steps", "1 to N, each once";
+    macos_suite_fails_from_zero: MACOS_SHARDS => "        shard: [0, 1]\n    steps: *test-steps", "1 to N, each once";
+    macos_suite_fails_without_the_index: "--shard-index ${{ strategy.job-index }} " => "", "--shard-index";
+    macos_suite_fails_without_the_count: SUITE_RUN => "--shard-count 2", "--shard-count";
+    macos_suite_fails_without_every_feature: "-- --all-features 2>&1" => "-- --features full 2>&1", "-- --all-features";
+    macos_suite_fails_on_a_skip: "-- --all-features 2>&1" => "-- --all-features --skip tui 2>&1", "--skip";
+    macos_suite_fails_on_a_filter: "--manifest" => "-E 'not test(slow)' --manifest", "-E";
+    macos_suite_fails_on_a_step_condition: "      - name: Test\n" => "      - name: Test\n        if: runner.os == 'Linux'\n", "Test step has an `if:`";
+    macos_suite_fails_when_check_runs_the_suite: "      - name: Clippy\n" => "      - name: Test (macOS, every target)\n        run: python3 scripts/parallel-tests.py -- --all-features\n      - name: Clippy\n", "twice";
+    macos_suite_fails_without_a_timeout: MACOS_TIMEOUT => "  test-macos:\n", "no timeout-minutes";
+    macos_suite_fails_on_a_raised_cap: MACOS_TIMEOUT => "  test-macos:\n    timeout-minutes: 60\n", "45-minute cap";
+    macos_suite_fails_on_a_job_condition: MACOS_TIMEOUT => "  test-macos:\n    if: github.event_name == 'push'\n    timeout-minutes: 45\n", "job-level `if:`";
+    macos_suite_fails_on_continue_on_error: MACOS_TIMEOUT => "  test-macos:\n    continue-on-error: true\n    timeout-minutes: 45\n", "job-level `continue-on-error:`";
+    macos_suite_fails_without_a_test_step: "      - name: Test\n" => "      - name: Run the suite\n", "no step named Test";
+}
+
+// Edge: inputs at the border of what the rule reads.
+macos_suite_cases! {
+    macos_suite_edge_crlf_lines: "" => &MACOS_SUITE_BASE.replace('\n', "\r\n"), "";
+    macos_suite_edge_empty_text: "" => "", "no job `test`";
+    macos_suite_edge_shard_twice: MACOS_SHARDS => "        shard: [1, 1, 2]\n    steps: *test-steps", "each once";
+    macos_suite_edge_trailing_comma: MACOS_SHARDS => "        shard: [1, 2,]\n    steps: *test-steps", "not a list of numbers";
+    macos_suite_edge_shard_names: MACOS_SHARDS => "        shard: [a, b]\n    steps: *test-steps", "not a list of numbers";
+    macos_suite_edge_job_named_in_a_comment: "  test-macos:\n" => "  # test-macos:\n  other:\n", "no job `test-macos`";
+    macos_suite_edge_longer_job_name: "  test-macos:\n" => "  test-macos-extra:\n", "no job `test-macos`";
+    macos_suite_edge_test_is_a_prefix: "      - name: Test\n" => "      - name: Tests\n", "no step named Test";
+    macos_suite_edge_alias_in_a_comment: "    steps: *test-steps\n" => "    # steps: *test-steps\n    steps: *check-steps\n", "through *test-steps";
+    macos_suite_edge_suite_named_in_a_check_comment: "      - name: Clippy\n" => "      # The suite (scripts/parallel-tests.py) runs in `test`.\n      - name: Clippy\n", "";
+    macos_suite_edge_eight_shards: MACOS_SHARDS => "        shard: [1, 2, 3, 4, 5, 6, 7, 8]\n    steps: *test-steps", "";
+    macos_suite_edge_two_images: MACOS_OS => "        os: [macos-26, ubuntu-24.04]\n        shard", "macos-26 alone";
+    macos_suite_edge_timeout_not_a_number: MACOS_TIMEOUT => "  test-macos:\n    timeout-minutes: abc\n", "no timeout-minutes";
+    macos_suite_edge_no_jobs_key: "jobs:\n" => "workflows:\n", "no job `test`";
+    macos_suite_edge_one_line_run: "        run: |\n          set -eu\n          python3" => "        run: python3", "";
+    macos_suite_edge_shards_out_of_order: MACOS_SHARDS => "        shard: [2, 1]\n    steps: *test-steps", "";
+    macos_suite_edge_timeout_at_the_cap: MACOS_TIMEOUT => "  test-macos:\n    timeout-minutes: 45\n", "";
+    macos_suite_edge_next_step_condition_is_its_own: "      - name: Test the sipnab-bpf-types crate\n" => "      - name: Test the sipnab-bpf-types crate\n        if: runner.os == 'Linux'\n", "";
 }
 
 // ---------------------------------------------------------------------------

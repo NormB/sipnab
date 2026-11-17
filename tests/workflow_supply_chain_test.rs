@@ -1191,10 +1191,13 @@ fn nextest_is_installed_through_one_pinned_rule() -> Result<(), TestError> {
             );
         }
     }
+    // Two since 2026-11-16: the macOS suite left `check` for `test-macos`,
+    // which runs `test`'s steps through the alias *test-steps, so its text is
+    // the `test` job's (tests/support/macos_suite.rs holds that).
     assert!(
-        suite_jobs >= 3,
-        "only {suite_jobs} job(s) found running the suite; ci.yml's check (macOS), \
-         test and features jobs all do, so the scan stopped matching"
+        suite_jobs >= 2,
+        "only {suite_jobs} job(s) found running the suite; ci.yml's test and features \
+         jobs both do, so the scan stopped matching"
     );
     Ok(())
 }

@@ -10,6 +10,7 @@ level with its parent (B/A 0.964-1.024 over six pairs): the measurement ran
 while a reproducible build and two local cargo builds held the CPU.
 """
 
+import json
 import os
 import pathlib
 import subprocess
@@ -104,6 +105,25 @@ def run_gate(tmp_path, binary, idle_floor, floor_pct=80):
                           timeout=120)
 
 
+# The stand-in for a binary under the floor. The gate reports 535000 / seconds
+# as pkts/s (bench/regression-gate.sh PACKETS) and fails a figure under 80% of
+# the baseline in bench/baseline.json, that is a run longer than
+# FAIL_SECONDS = 535000 / (0.8 x baseline): 0.19 s at the baseline of
+# 3,520,000 pkts/s. SLOW is 0.3 s a run, 1.6 times that; load on the test host
+# only makes a run longer. Each gate run is a warm-up and five runs, so 0.3 s
+# in place of 0.5 s takes 1.2 s off each of the three tests below.
+GATE_PACKETS = 535_000
+GATE_BASELINE = json.loads((REPO / "bench" / "baseline.json").read_text())["cores_4_pkts_per_s"]
+FAIL_SECONDS = GATE_PACKETS / (0.8 * GATE_BASELINE)
+SLOW = 0.3
+
+
+def test_the_slow_stand_in_is_under_the_floor_by_half_again():
+    # run_gate passes the 80% floor itself; the packet count is the gate's.
+    assert f"PACKETS={GATE_PACKETS}\n" in GATE.read_text()
+    assert SLOW > 1.5 * FAIL_SECONDS, (SLOW, FAIL_SECONDS)
+
+
 def test_the_gate_reports_a_quiet_host_before_measuring(tmp_path):
     # A 1% floor: load on the test host cannot turn this pass into a fail.
     r = run_gate(tmp_path, fake_sipnab(tmp_path, 0.05), 0, floor_pct=1)
@@ -117,20 +137,20 @@ def test_the_gate_reports_a_quiet_host_before_measuring(tmp_path):
 
 def test_a_fail_on_a_busy_host_says_the_host_was_busy(tmp_path):
     # 101% idle cannot happen, so the host is never quiet within the budget.
-    r = run_gate(tmp_path, fake_sipnab(tmp_path, 0.5), 101)
+    r = run_gate(tmp_path, fake_sipnab(tmp_path, SLOW), 101)
     assert r.returncode == 1, r.stdout + r.stderr
     assert "host      NOT quiet" in r.stdout
     assert "measured while the host was busy" in r.stdout
 
 
 def test_a_fail_on_a_quiet_host_does_not_blame_the_host(tmp_path):
-    r = run_gate(tmp_path, fake_sipnab(tmp_path, 0.5), 0)
+    r = run_gate(tmp_path, fake_sipnab(tmp_path, SLOW), 0)
     assert r.returncode == 1, r.stdout + r.stderr
     assert "measured while the host was busy" not in r.stdout
 
 
 def test_a_busy_host_never_turns_a_fail_into_a_pass(tmp_path):
     # Contention is reported, never excused: the exit status is the floor's.
-    r = run_gate(tmp_path, fake_sipnab(tmp_path, 0.5), 101)
+    r = run_gate(tmp_path, fake_sipnab(tmp_path, SLOW), 101)
     assert r.returncode == 1
     assert "FAIL" in r.stdout

@@ -15,8 +15,10 @@
 //! `tests/tui_e2e_test.rs` left such processes behind.
 //!
 //! Each test runs the real binary on a pseudo-terminal this test owns. The
-//! test answers the cursor-position query crossterm sends at startup (a bare
-//! pty has no terminal emulator to answer it), waits until the call list is
+//! test answers any cursor-position query the TUI sends (a bare pty has no
+//! terminal emulator to answer it; up to 0.5.260 the TUI sent one at startup,
+//! and `the_tui_sends_no_cursor_position_query` holds that it sends none
+//! now), waits until the call list is
 //! drawn, and then takes the terminal away or sends the signal. The child is
 //! this test's own, so its exit status is read with `wait`, and a child still
 //! running at the deadline is killed by the pid recorded at spawn: a failing
@@ -70,8 +72,12 @@ struct PtyRun {
     /// The reader thread, which owns the master side.
     reader: Option<thread::JoinHandle<()>>,
     /// The master side of a separate input terminal ([`Self::spawn_split`]),
-    /// held so that terminal stays open when the output terminal hangs up.
-    _input: Option<OwnedFd>,
+    /// held so that terminal stays open when the output terminal hangs up,
+    /// until [`Self::lose_input`].
+    input: Option<OwnedFd>,
+    /// The reader thread's copy of the input terminal's master side, where
+    /// it types the cursor-position answers; taken by [`Self::lose_input`].
+    answers: Arc<Mutex<Option<std::fs::File>>>,
 }
 
 /// Which terminals a run gets.
@@ -84,6 +90,10 @@ enum Terminals {
     /// error on another, which [`PtyRun::hang_up`] hangs up: the terminal
     /// the TUI draws on goes away while the one it reads stays.
     Split,
+    /// The same two ptys, neither of them the session's controlling
+    /// terminal, for [`PtyRun::lose_input`]: the terminal the TUI reads goes
+    /// away, with no SIGHUP, while the one it draws on stays.
+    SplitQuiet,
 }
 
 impl PtyRun {
@@ -107,6 +117,17 @@ impl PtyRun {
     /// ([`Terminals::Split`]). `home` is the run's home directory, where a
     /// crash report would be written.
     fn spawn_split(home: &std::path::Path) -> Result<Self, TestError> {
+        Self::spawn_on(Self::split_command(home), Terminals::Split)
+    }
+
+    /// Start the run [`Self::spawn_split`] starts on [`Terminals::SplitQuiet`].
+    fn spawn_split_quiet(home: &std::path::Path) -> Result<Self, TestError> {
+        Self::spawn_on(Self::split_command(home), Terminals::SplitQuiet)
+    }
+
+    /// The command of a split run: `sipnab -I sip_call.pcap` with `home` as
+    /// its home directory.
+    fn split_command(home: &std::path::Path) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
         cmd.current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"))
             .args(["--no-config", "-I", "sip_call.pcap"])
@@ -114,7 +135,7 @@ impl PtyRun {
             .env("HOME", home)
             .env_remove("XDG_STATE_HOME")
             .env("TERM", "xterm-256color");
-        Self::spawn_on(cmd, Terminals::Split)
+        cmd
     }
 
     /// Start `cmd` on a new 200x50 pty, in a new session, as [`Self::spawn`]
@@ -132,8 +153,11 @@ impl PtyRun {
         let (master, slave) = open_pty(50, 200)?;
         // The input terminal of a split run is the session's controlling
         // terminal, so hanging the output terminal up sends no SIGHUP.
-        let controlling = terminals != Terminals::One { controlling: false };
-        let input = if terminals == Terminals::Split {
+        let controlling = matches!(
+            terminals,
+            Terminals::One { controlling: true } | Terminals::Split
+        );
+        let input = if matches!(terminals, Terminals::Split | Terminals::SplitQuiet) {
             let (input_master, input_slave) = open_pty(50, 200)?;
             cmd.stdin(Stdio::from(input_slave));
             Some(input_master)
@@ -143,10 +167,10 @@ impl PtyRun {
         };
         // Where the cursor-position answers are typed: the terminal sipnab
         // reads.
-        let answers = match &input {
+        let answers = Arc::new(Mutex::new(match &input {
             Some(input) => Some(std::fs::File::from(input.try_clone()?)),
             None => None,
-        };
+        }));
         cmd.stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
         // SAFETY: the closure runs in the forked child before exec and calls
@@ -176,8 +200,9 @@ impl PtyRun {
             let hang_up = Arc::clone(&hang_up);
             let typed = Arc::clone(&typed);
             let stall = Arc::clone(&stall);
+            let answers = Arc::clone(&answers);
             thread::spawn(move || {
-                serve_terminal(master, answers, &output, &hang_up, &typed, &stall);
+                serve_terminal(master, &answers, &output, &hang_up, &typed, &stall);
             })
         };
         Ok(PtyRun {
@@ -187,8 +212,22 @@ impl PtyRun {
             typed,
             stall,
             reader: Some(reader),
-            _input: input,
+            input,
+            answers,
         })
+    }
+
+    /// Close every master side of the input terminal of a split run: the
+    /// terminal the TUI reads goes away, and the one it draws on stays.
+    fn lose_input(&mut self) -> Result<(), TestError> {
+        drop(
+            self.answers
+                .lock()
+                .map_err(|_| "the pty reader thread panicked")?
+                .take(),
+        );
+        drop(self.input.take());
+        Ok(())
     }
 
     /// Type `bytes` into the terminal, in one write.
@@ -404,7 +443,7 @@ static SPAWNING: Mutex<()> = Mutex::new(());
 /// terminal, when there is one.
 fn serve_terminal(
     master: OwnedFd,
-    mut answers: Option<std::fs::File>,
+    answers: &Mutex<Option<std::fs::File>>,
     output: &Mutex<Vec<u8>>,
     hang_up: &AtomicBool,
     typed: &Mutex<Vec<u8>>,
@@ -456,7 +495,8 @@ fn serve_terminal(
             .count();
         drop(out);
         while answered < queries {
-            let _ = match answers.as_mut() {
+            let mut answers = answers.lock().ok();
+            let _ = match answers.as_mut().and_then(|a| a.as_mut()) {
                 Some(input) => input.write_all(CURSOR_ANSWER),
                 None => file.write_all(CURSOR_ANSWER),
             };
@@ -542,6 +582,54 @@ fn a_tui_whose_output_terminal_hangs_up_exits_129() -> Result<(), TestError> {
         crash_reports(home.path()),
         Vec::<std::path::PathBuf>::new(),
         "a lost output terminal is not a crash"
+    );
+    Ok(())
+}
+
+/// The TUI asks its terminal nothing: it sends no cursor-position query
+/// (`ESC [ 6 n`). The answer to one is read through crossterm's reader,
+/// which never returns on a terminal that goes while it reads, and keys typed
+/// before the answer stayed in that reader's queue, which the TUI no longer
+/// reads (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS). ratatui's
+/// `Terminal::clear` sent it at startup.
+#[test]
+fn the_tui_sends_no_cursor_position_query() -> Result<(), TestError> {
+    let mut run = PtyRun::spawn(&[], true)?;
+    run.wait_until_drawn()?;
+    let asked = run
+        .output
+        .lock()
+        .map_err(|_| "the pty reader thread panicked")?
+        .windows(CURSOR_QUERY.len())
+        .filter(|w| *w == CURSOR_QUERY)
+        .count();
+    run.signal(libc::SIGTERM)?;
+    let status = run.wait_for_exit(test_timeout(15), "SIGTERM")?;
+    assert_eq!(
+        asked, 0,
+        "cursor-position queries sent before the first frame"
+    );
+    assert_exit(status, 0, "SIGTERM stops the run");
+    Ok(())
+}
+
+/// The terminal the TUI reads goes away while the one it draws on stays, and
+/// neither is the session's controlling terminal, so no SIGHUP comes and no
+/// frame fails: only the TUI's own wait and read of its terminal can see the
+/// loss (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS). The run ends as a
+/// hang-up, exit 129, and does not spin.
+#[test]
+fn a_tui_whose_input_terminal_goes_without_sighup_exits_129() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let mut run = PtyRun::spawn_split_quiet(home.path())?;
+    run.wait_until_drawn()?;
+    run.lose_input()?;
+    let status = run.wait_for_exit(test_timeout(15), "its input terminal went")?;
+    assert_exit(status, 129, "a lost input terminal is a hang-up");
+    assert_eq!(
+        crash_reports(home.path()),
+        Vec::<std::path::PathBuf>::new(),
+        "a lost input terminal is not a crash"
     );
     Ok(())
 }
@@ -688,8 +776,8 @@ fn sighup_stops_a_tui_and_exits_129() -> Result<(), TestError> {
 /// first complete event, and its own wait is edge-triggered, so the rest
 /// stays in the terminal until more input arrives. The TUI's wait is
 /// level-triggered: it would report that input on every call and the loop
-/// would run flat out, unless the TUI stops waiting on input crossterm did
-/// not read (`terminal_input::next_interest`).
+/// would run flat out. The TUI now reads the terminal itself and takes every
+/// byte queued (`terminal_input::take_input`), so no input stays behind.
 ///
 /// 3,000 bytes is 1,000 focus-in reports (`ESC [ I`), which the TUI ignores,
 /// and fits the terminal's 4,096-byte input buffer, so the write cannot

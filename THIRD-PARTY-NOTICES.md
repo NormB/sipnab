@@ -51,6 +51,14 @@ Files copied into the repository unmodified from another project's release. None
 | `tests/schemas/publisher/vcon_json_schema.json` | vCon JSON schema: `vcon_json_schema.json` of the IETF vCon working group's draft-ietf-vcon-vcon-core repository, unmodified. Test fixture only; it is in no release artifact. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 | `tests/schemas/vcon.schema.json` | vCon JSON schema: the same file as tests/schemas/publisher/vcon_json_schema.json, byte for byte, under the name sipnab's validator reads. Compiled into the binary as the schema the validate_vcon tool and the REST validate route check against. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 
+## Adapted code
+
+Source files adapted from another project's code and compiled into sipnab. Each keeps that project's license and copyright notice in its header. CONTRIBUTING.md, under "Updating code adapted from other projects", says how to follow a new release of the project.
+
+| File | Adapted from | Version | Upstream | License |
+|---|---|---|---|---|
+| `src/tui/input_parse.rs` | crossterm's Unix input parser: `src/event/sys/unix/parse.rs` and the `Parser` of `src/event/source/unix/mio.rs`, changed where the file's documentation says. The TUI reads its terminal itself and parses the bytes with it. | 0.29.0, commit 36d95b26a26e64b0f8c12edfe11f410a6d56a812 | <https://github.com/crossterm-rs/crossterm> | MIT |
+
 ## Rust crates (440)
 
 | Crate | Version | License |

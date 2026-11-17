@@ -8,7 +8,22 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.261] - 2026-11-16
+
+### Changed
+
+- **A datagram that cannot be HEP is turned away without building an error.**
+  - Effect: Testing an RTP packet for HEP no longer costs sipnab an allocation and a backtrace.
+  - Effect: Building that error was 1.13% of CPU samples on a capture with RTP; it is now none.
+  - Limit: The run time of `-N --report -I` did not change beyond the spread between measurement rounds.
+
+### Fixed
+
+- **A TUI no longer keeps running at full CPU after its terminal closes.**
+  - Was: On macOS and Linux, a terminal lost while sipnab read a key, such as a killed tmux session, could leave it spinning until killed.
+  - Effect: sipnab reads its terminal itself and stops when a read finds it gone, exiting 129 as on `SIGHUP`.
+  - Effect: The TUI no longer asks the terminal for the cursor position at startup.
+  - Docs: [A terminal interface that outlives its terminal](docs/troubleshooting.md#a-terminal-interface-that-outlives-its-terminal).
 
 ### Security
 

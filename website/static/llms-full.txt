@@ -13523,7 +13523,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.259 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.260 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13546,7 +13546,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.259` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.260` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13735,7 +13735,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.259) | Plugin | `Recommends` |
+| Artifact (0.5.260) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13775,11 +13775,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.259 for the
+it first, in the same shell, to the release you want, e.g. 0.5.260 for the
 latest:
 
 ```bash
-VERSION=0.5.259
+VERSION=0.5.260
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13919,13 +13919,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.259, as in
+you want, e.g. 0.5.260, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.259
+   VERSION=0.5.260
    ```
 
 - Download the package:
@@ -14046,25 +14046,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.259-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.260-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.259-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.260-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.259-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.260-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.259-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.260-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14431,7 +14431,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
 | `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf`, `vcon`, `archive` and `g729`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
-| `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. A build without it has no terminal UI: every run is the run `-N` (`--no-tui`) asks for, so `sipnab -I capture.pcap` prints one line per SIP message, and the output flags need no `-N`. A run that gave neither `-N` nor an output flag says so in one line on standard error when standard error is a terminal. | `native`, `ratatui`, `crossterm`, `unicode-width`, `base64` |
+| `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. A build without it has no terminal UI: every run is the run `-N` (`--no-tui`) asks for, so `sipnab -I capture.pcap` prints one line per SIP message, and the output flags need no `-N`. A run that gave neither `-N` nor an output flag says so in one line on standard error when standard error is a terminal. | `native`, `ratatui`, `crossterm`, `signal-hook`, `unicode-width`, `base64` |
 | `audio` | RTP audio playback in the TUI. WAV export (`--export-audio`) does not need it. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
@@ -14550,14 +14550,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.259
+docker pull ghcr.io/normb/sipnab:0.5.260
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.259` | That release |
+| `0.5.260` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14595,7 +14595,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.259 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.260 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14608,11 +14608,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.259 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.260 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.259` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.259`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.260` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.260`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14810,7 +14810,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.260 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+sipnab 0.5.261 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -15034,7 +15034,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.259
+docker pull ghcr.io/normb/sipnab:0.5.260
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -17829,6 +17829,16 @@ From 0.5.235, a terminal interface whose terminal is still
 there also stops on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
 0.5.233 and earlier ignored `SIGTERM` and `SIGINT`, and `SIGHUP` ended the
 process at once, with no end-of-run summary.
+
+0.5.235 to 0.5.260 can still keep running in one case: the terminal goes in
+the moment sipnab reads a key from it. The process shows in state `R` and uses
+a full CPU, on macOS and on Linux. In CI on macOS, 1 launch in 60 did this
+after `tmux kill-session`.
+
+- **Fix:** upgrade to the release after 0.5.260. sipnab reads its terminal
+  itself, and a read that finds the terminal gone stops the run, with exit
+  status 129.
+- **On 0.5.235 to 0.5.260:** end the process with `SIGKILL`, as above.
 
 ## A run that ignores SIGTERM while it waits for input
 
@@ -37860,7 +37870,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.260 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+   sipnab 0.5.261 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -38562,7 +38572,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.260"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.261"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -39247,7 +39257,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.260",
+  "version": "0.5.261",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -40190,7 +40200,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.260"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.261"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -51810,7 +51820,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.260",
+  "version": "0.5.261",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -83443,6 +83453,37 @@ To update one:
 - a script's recorded version is not the one the script itself contains,
 - a new minified script under `website/static/js/` has no row yet.
 
+### Updating code adapted from other projects
+
+One source file adapts another project's code, and sipnab compiles it. It
+keeps that project's license and copyright notice in its header,
+and has a row in the "Adapted code" table of
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+| File | What it is | Where it came from |
+|---|---|---|
+| [`src/tui/input_parse.rs`](src/tui/input_parse.rs) | crossterm's Unix input parser, which turns the bytes the TUI reads from its terminal into key, mouse and paste events | `src/event/sys/unix/parse.rs` and the `Parser` of `src/event/source/unix/mio.rs` in [crossterm](https://github.com/crossterm-rs/crossterm) 0.29.0 |
+
+When `Cargo.lock` moves crossterm to a new version:
+
+- Compare the two crossterm files of the new version with the old ones, and
+  carry each change into `src/tui/input_parse.rs`.
+- Record crossterm's events again, then paste the table the run prints over
+  `CROSSTERM_0_29` in `src/tui/input_parse.rs`:
+
+  ```bash
+  cargo test --features tui --lib record_crossterm_events -- --ignored --nocapture
+  ```
+
+- Change the version and commit in the file's header and in `ADAPTED` in
+  [`scripts/build-third-party-notices.py`](scripts/build-third-party-notices.py),
+  then regenerate the notices.
+
+`every_adapted_file_keeps_its_origin_and_license` in
+[`tests/docs_drift_test.rs`](tests/docs_drift_test.rs) fails when a file
+under `src/` says `Adapted from` in its header and has no row, or when its
+header does not carry the row's license notice, version and commit.
+
 ## Commit messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) format:
@@ -87223,15 +87264,15 @@ So `quality.yml` has a second job, `coverage-branch`.
   and the job failed 147 s before CodeQL uploaded the analysis, with no alert open.
 - [`test_code_scanning_wait.py`](../../scripts/tests/test_code_scanning_wait.py) holds the rule.
 
-`ci-success` leaves out the macOS leg of Check, the job `check-macos`, on purpose.
+`ci-success` leaves out the macOS jobs, `check-macos`, `test-macos` and `symbol-split-macos`, on purpose.
 
 - On 2026-11-02 GitHub canceled Check (macos-latest) on both runs of pull request #601
   (41510139494 and 41514782896) with "The job was not acquired by Runner of type hosted even after
   multiple attempts".
   The rerun of the second took 27 minutes (20:22:04 to 20:49:15 UTC).
 - So on a pull request, `CI success` neither waits for macOS nor fails when GitHub cancels the macOS leg.
-- `check-macos` still runs on every pull request, which shows its result, and on every push to `main`.
-- On `main`, a failed `check-macos` fails the CI workflow run of that commit.
+- The macOS jobs still run on every pull request, which shows their results, and on every push to `main`.
+- On `main`, a failed macOS job fails the CI workflow run of that commit.
   A failed job fails its run whether or not another job needs it.
   The pre-push hook's tag gate refuses to tag a commit whose CI run is not green,
   so a macOS break on `main` blocks the release.
@@ -87241,7 +87282,7 @@ So `quality.yml` has a second job, `coverage-branch`.
   - No job `CI success` needs, directly or through another job, runs on macOS only.
   - No job runs on macOS beside another OS: `needs` takes a matrix job whole, so such a job would either block pull requests on macOS or leave its other leg out of the required check.
   - The macOS jobs have no job-level `if:` or `continue-on-error`, and `ci.yml` runs on every push to `main` and every pull request.
-  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
+  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, `test-macos` runs `test`'s through `*test-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
 - The macOS half of the symbol split is `symbol-split-macos`, by the same rule.
   GitHub canceled it for capacity on pull request #631 (run 41725010284).
 
@@ -87250,8 +87291,7 @@ Their contents are worth spelling out.
 
 - **`check`** (Linux; `check-macos` runs the same steps on macOS):
   - `cargo build --all-features`
-  - On macOS, `cargo test --all-features`, whole.
-    On Linux the suite runs in `test`, below.
+  - The suite runs in `test` and `test-macos`, below, not here.
   - `cargo clippy --workspace --all-features --all-targets -D warnings`
   - [`scripts/check-rustfmt.sh`](../../scripts/check-rustfmt.sh) (the pinned nightly rustfmt)
   - `cargo doc --no-deps --all-features --workspace`
@@ -87309,6 +87349,7 @@ Their contents are worth spelling out.
     goes green over nothing.
 - **`test`** and **`test-results`**: the `--all-features` suite on Linux, under cargo-nextest, split into shards.
   See [The suite in shards](#the-suite-in-shards).
+- **`test-macos`**: the same suite on macOS, through `test`'s steps (`*test-steps`), in shards by the same rule.
 - **`audit`**: `cargo-audit` and `cargo-deny`.
 - **`fuzz-check`**: the `fuzz/` workspace compiles.
 
@@ -87329,9 +87370,15 @@ The `test` job runs the Linux suite on two runners at once.
   - The `suite` profile in [`.config/nextest.toml`](../../.config/nextest.toml) stops any one test after three 60-second periods.
   - Every shard also builds the examples, as plain `cargo test` does, because `examples_run_test` runs them.
   - The job installs the pinned cargo-nextest through [`.github/actions/nextest`](../../.github/actions/nextest/action.yml) first.
-- The `shard:` matrix list is the only place that states N.
+- Each job's `shard:` matrix list is the only place that states its N.
   The step reads its index and count from `strategy.job-index` and `strategy.job-total`.
-- Each shard uploads its output, a manifest of what it ran and the YANG exports.
+- `test-macos` runs the macOS suite in shards through the same steps.
+  - The suite ran whole in `check-macos` until main's run 43880888975 (2026-11-16) canceled Check (macos-26) at its 45-minute cap.
+  - In that run the suite step took 38.2 of the job's 45.5 minutes, and Clippy had run 1.8 minutes when the cap ended it.
+  - On the three runs before it the suite step took 22.3 to 32.5 minutes.
+  - Its shards do not upload their outputs: the published test count describes the Linux suite.
+  - [`tests/support/macos_suite.rs`](../../tests/support/macos_suite.rs) holds the layout, and its cap stays at 45 minutes.
+- Each Linux shard uploads its output, a manifest of what it ran and the YANG exports.
 - `test-results` runs once both pass.
   - `parallel-tests.py merge` refuses the set unless every shard reported exactly once and every target ran in exactly one shard.
   - It writes the outputs in shard order as one `test-output.txt`.
@@ -92464,6 +92511,7 @@ Each successful run gets a row here.
 | 0.5.257 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.258 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.259 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-16 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.260 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-16 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it
