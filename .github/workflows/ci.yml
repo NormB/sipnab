@@ -605,8 +605,11 @@ jobs:
   # the_macos_leg_blocks_main_and_no_pull_request in
   # tests/site_journey_test.rs and tests/support/macos_suite.rs hold it.
   test-macos:
-    # Not yet measured in shards; the whole suite took 22.3 to 38.2 min in
-    # one job on the four main runs before the split.
+    # The whole suite took 22.3 to 38.2 min in one job on the four main runs
+    # before the split. In two shards with the Linux unit weight, shard 1
+    # took 17.8 to 23.8 min and shard 2 13.8 to 15.9 on six main runs
+    # (43957731312 to 44024489366); scripts/parallel-tests.py now weighs the
+    # unit tests on macOS from those runs' phases (MACOS-SHARD-BALANCE).
     timeout-minutes: 45
     name: Test (${{ matrix.os }}, shard ${{ matrix.shard }})
     runs-on: ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-24.04-arm' || 'macos-26' }}
