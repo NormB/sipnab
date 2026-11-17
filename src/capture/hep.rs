@@ -2245,11 +2245,6 @@ pub struct HepListenerOpts<'a> {
     /// warns (`--hep-silence-warn`, default [`HEP_IDLE_WARN_AFTER`]). Zero
     /// disables the warning.
     pub silence_warn_after: Duration,
-    /// How long a TLS peer has to finish its handshake before no stop has
-    /// been seen; `HEP_TLS_HANDSHAKE_TIMEOUT` (10 s) in every run. A field so a
-    /// test can make it longer than any test, and so tell a handshake given
-    /// up at a stop from one given up at this deadline by the outcome alone.
-    pub(crate) tls_handshake_timeout: Duration,
 }
 
 /// How long a stream connection blocks in `read` before the listener rechecks
@@ -2664,7 +2659,9 @@ struct HepStreamShared<'a, 'o> {
     start: Instant,
     /// The address the listener bound, for log lines.
     bind_addr: &'a str,
-    /// [`HepListenerOpts::tls_handshake_timeout`].
+    /// How long a TLS peer has to finish its handshake before no stop has
+    /// been seen: [`HEP_TLS_HANDSHAKE_TIMEOUT`] in every run, from
+    /// [`HepListenerStart::tls_handshake_timeout`].
     tls_handshake_timeout: Duration,
 }
 
@@ -3435,6 +3432,7 @@ fn capture_hep_stream(
         opts,
         roster,
         ready_tx,
+        tls_handshake_timeout,
     } = start;
 
     let bound = match source {
@@ -3481,7 +3479,7 @@ fn capture_hep_stream(
         config,
         start: Instant::now(),
         bind_addr,
-        tls_handshake_timeout: opts.tls_handshake_timeout,
+        tls_handshake_timeout,
     };
     let mut fatal: Option<anyhow::Error> = None;
 
@@ -3731,6 +3729,7 @@ pub fn capture_hep(
         tx,
         opts,
         ready_tx,
+        HEP_TLS_HANDSHAKE_TIMEOUT,
     )
 }
 
@@ -3767,6 +3766,7 @@ fn capture_hep_on(
     tx: PacketTx,
     opts: &HepListenerOpts<'_>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    tls_handshake_timeout: Duration,
 ) -> Result<()> {
     let addr = match &socket {
         HepSocketSource::Address => Err(anyhow::anyhow!("capture_hep_on needs a bound socket")),
@@ -3782,7 +3782,15 @@ fn capture_hep_on(
             return Err(e);
         }
     };
-    serve_hep(&addr, socket, config, tx, opts, ready_tx)
+    serve_hep(
+        &addr,
+        socket,
+        config,
+        tx,
+        opts,
+        ready_tx,
+        tls_handshake_timeout,
+    )
 }
 
 /// The body of [`capture_hep`], with the socket's source made explicit.
@@ -3797,6 +3805,7 @@ fn serve_hep(
     tx: PacketTx,
     opts: &HepListenerOpts<'_>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    tls_handshake_timeout: Duration,
 ) -> Result<()> {
     let tls = match hep_listener_preflight(bind_addr, opts) {
         Ok(tls) => tls,
@@ -3822,6 +3831,7 @@ fn serve_hep(
         opts,
         roster,
         ready_tx,
+        tls_handshake_timeout,
     };
     match opts.transport {
         HepTransport::Udp => capture_hep_udp(start, tx),
@@ -3845,6 +3855,12 @@ struct HepListenerStart<'a, 'o> {
     roster: HepRoster,
     /// Receives `Ok(())` once the socket is bound, or the startup failure.
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    /// How long a TLS peer has to finish its handshake before no stop has
+    /// been seen: [`HEP_TLS_HANDSHAKE_TIMEOUT`] from [`capture_hep`]. Not in
+    /// the public [`HepListenerOpts`]: only a test sets another (an hour, so
+    /// a handshake given up at a stop is told from one given up at this
+    /// deadline by the outcome alone).
+    tls_handshake_timeout: Duration,
 }
 
 /// The checks a HEP listener makes before it touches a socket.
@@ -3997,6 +4013,7 @@ fn capture_hep_udp(start: HepListenerStart<'_, '_>, tx: PacketTx) -> Result<()> 
         opts,
         roster,
         ready_tx,
+        tls_handshake_timeout: _,
     } = start;
     let socket = match bind_hep_udp(bind_addr, source) {
         Ok(s) => s,
@@ -4089,7 +4106,7 @@ use std::net::TcpStream;
 /// A peer that opens a connection and then says nothing would otherwise hold a
 /// listener thread for as long as it liked, and a sender would block startup on
 /// a collector that answers the TCP SYN and nothing else.
-pub(crate) const HEP_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const HEP_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The name a collector's certificate is checked against: the host the
 /// operator dialed, without the port.
@@ -7046,9 +7063,8 @@ mod tests {
                 tls_cert: tls.as_ref().map(|(c, _)| c.as_path()),
                 tls_key: tls.as_ref().map(|(_, k)| k.as_path()),
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
-                tls_handshake_timeout: handshake,
             };
-            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
+            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx), handshake);
             let _ = done_tx.send(r.map_err(|e| format!("{e:#}")));
         });
         let ready = ready_rx.recv_timeout(MUST_ARRIVE);
@@ -11518,9 +11534,15 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
-                tls_handshake_timeout: HEP_TLS_HANDSHAKE_TIMEOUT,
             };
-            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
+            let r = capture_hep_on(
+                socket,
+                &config,
+                tx,
+                &opts,
+                Some(ready_tx),
+                HEP_TLS_HANDSHAKE_TIMEOUT,
+            );
             let _ = done_tx.send(r.is_ok());
         });
 
@@ -11593,7 +11615,6 @@ mod tests {
             tls_cert: None,
             tls_key: None,
             silence_warn_after: silence,
-            tls_handshake_timeout: HEP_TLS_HANDSHAKE_TIMEOUT,
         }
     }
 
@@ -12209,9 +12230,15 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
-                tls_handshake_timeout: HEP_TLS_HANDSHAKE_TIMEOUT,
             };
-            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
+            let r = capture_hep_on(
+                socket,
+                &config,
+                tx,
+                &opts,
+                Some(ready_tx),
+                HEP_TLS_HANDSHAKE_TIMEOUT,
+            );
             let _ = done_tx.send(r.is_ok());
         });
 
@@ -12600,7 +12627,6 @@ mod tests {
                 tls_cert: None,
                 tls_key: None,
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
-                tls_handshake_timeout: HEP_TLS_HANDSHAKE_TIMEOUT,
             }
         }
 
@@ -12692,7 +12718,7 @@ mod tests {
                 config,
                 start: Instant::now(),
                 bind_addr: "127.0.0.1:9060",
-                tls_handshake_timeout: opts.tls_handshake_timeout,
+                tls_handshake_timeout: HEP_TLS_HANDSHAKE_TIMEOUT,
             }
         }
 

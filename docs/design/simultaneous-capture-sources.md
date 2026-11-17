@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" -->), `capture_files`
-([`src/capture/file.rs:599`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L599)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->), `capture_hep` ([`src/capture/hep.rs:3718`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3718)<!-- "/// backpressure);" -->), the
+([`src/capture/file.rs:599`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L599)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->), `capture_hep` ([`src/capture/hep.rs:3716`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3716)<!-- "/// backpressure);" -->), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)<!-- "pub struct Packet" -->) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L216)<!-- "pub struct PacketTx" -->), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -122,20 +122,20 @@ parser already tells the two kinds of packet apart:
 ### 2.4 The fan-in that already exists
 
 `--multi-device` is the precedent, and it is close to the shape this feature
-needs. `start_multi_capture` ([`src/capture/native.rs:693`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L693)<!-- "/// once running," -->) validates the device
-list, then `run_multi_capture` ([`src/capture/native.rs:798`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L798)<!-- "fn run_multi_capture<S, K>(" -->) spawns one thread
+needs. `start_multi_capture` ([`src/capture/native.rs:692`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L692)<!-- "/// once running," -->) validates the device
+list, then `run_multi_capture` ([`src/capture/native.rs:797`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L797)<!-- "fn run_multi_capture<S, K>(" -->) spawns one thread
 per device, hands each a `tx.clone()`, drops its own clone so the channel closes
 when the last reader exits, aggregates a per-device readiness signal, tears every
 sibling down when any one fails to open, and joins them all from a coordinator
 thread whose `JoinHandle` becomes the single `CaptureHandle`
-([`src/capture/native.rs:757`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L757)<!-- "Ok(CaptureHandle { thread, source })" -->).
+([`src/capture/native.rs:756`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L756)<!-- "Ok(CaptureHandle { thread, source })" -->).
 
 Every structural question a composite source raises — readiness aggregation,
 one-fails-all teardown, a single join handle, channel close on last producer —
 `run_multi_capture` has already answered. What it does not do is mix *kinds*: it
 is a list of `Live` devices, and the source it reports is one
 `CaptureSource::Live` whose `device` field is the comma-joined string
-([`src/capture/native.rs:734`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L734)<!-- "let source = CaptureSource::Live" -->).
+([`src/capture/native.rs:733`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L733)<!-- "let source = CaptureSource::Live" -->).
 
 ## 3. Correlation
 
@@ -367,7 +367,7 @@ while watching its own NIC is that wedge in its smallest form.
 ### 5.1 Shape
 
 One coordinator thread, one reader thread per member, one `tx.clone()` each —
-`run_multi_capture` ([`src/capture/native.rs:798`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L798)<!-- "fn run_multi_capture<S, K>(" -->) generalized from a device list
+`run_multi_capture` ([`src/capture/native.rs:797`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L797)<!-- "fn run_multi_capture<S, K>(" -->) generalized from a device list
 to a source list. No new concurrency primitive, no new channel, no ordering
 guarantee that does not already hold.
 
@@ -385,7 +385,7 @@ nothing.
 
 **`--count N` is enforced twice, and the run-level copy is the one that holds.**
 Each reader keeps a thread-local counter and stops at `config.count`
-([`src/capture/hep.rs:4012`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4012)<!-- "let mut count: u64" --> and its check; [`src/capture/live.rs:950`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L950)<!-- "count_limit_reached(self.config.count, self.count)" -->), and the
+([`src/capture/hep.rs:4029`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4029)<!-- "let mut count: u64" --> and its check; [`src/capture/live.rs:950`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L950)<!-- "count_limit_reached(self.config.count, self.count)" -->), and the
 consumer independently breaks at `total_count >= max_count`
 ([`src/app/batch.rs:4958`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4958)<!-- "if let Some(max_count) = capture_config.count && lp.total_count >= max_count" -->). Because each reader gets a clone of the same
 `CaptureConfig`, the per-reader copies are per source, so a member can stop
