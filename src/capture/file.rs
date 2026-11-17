@@ -1884,51 +1884,122 @@ mod tests {
         Ok(())
     }
 
+    /// Run `sleep_interruptible(total, ..)` on its own thread with a stop
+    /// that answers `true` from its `stop_at`-th question on (never when
+    /// `stop_at` is 0).
+    ///
+    /// # Returns
+    ///
+    /// Whether the sleep reported a stop, and how many times it asked. Every
+    /// question is counted, so a test proves "the stop is asked once per
+    /// slice" by the count and not by a stopwatch, which a loaded host
+    /// stretches. `None` when the sleep had not returned after `CEILING`: a
+    /// sleep that never asks again holds its thread for the whole `total`,
+    /// and the ceiling ends the TEST, far past any slice, instead of hanging
+    /// it.
+    fn counted_sleep(total: std::time::Duration, stop_at: u32) -> Option<(bool, u32)> {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        const CEILING: std::time::Duration = std::time::Duration::from_secs(60);
+        let asked = Arc::new(AtomicU32::new(0));
+        let counter = Arc::clone(&asked);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let stopped = sleep_interruptible(total, || {
+                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                stop_at != 0 && n >= stop_at
+            });
+            let _ = tx.send(stopped);
+        });
+        let stopped = rx.recv_timeout(CEILING).ok()?;
+        Some((stopped, asked.load(Ordering::SeqCst)))
+    }
+
     /// A huge replay inter-packet delta must not delay shutdown: the sleep is
-    /// sliced and polls the stop signal between slices, so it returns promptly
-    /// once the signal fires instead of blocking for the full duration.
-    /// Regression for the "large delta delays shutdown arbitrarily" gap.
+    /// sliced and polls the stop signal between slices, so it returns once the
+    /// signal fires instead of blocking for the full duration. Regression for
+    /// the "large delta delays shutdown arbitrarily" gap.
+    ///
+    /// Proved by the count of questions: a stop that answers yes on its third
+    /// question ends an hour-long sleep after exactly three, two slices in.
+    /// (This test once asserted "under 2 s" against a stop set by a timer
+    /// thread, a bet on the host's speed.)
     #[test]
     fn sleep_interruptible_returns_promptly_on_stop() -> Result<(), TestError> {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_setter = Arc::clone(&stop);
-        // Fire the stop signal shortly after the (would-be hour-long) sleep starts.
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            stop_setter.store(true, Ordering::SeqCst);
-        });
-
-        let started = std::time::Instant::now();
-        let interrupted = sleep_interruptible(std::time::Duration::from_secs(3600), || {
-            stop.load(Ordering::SeqCst)
-        });
-        let elapsed = started.elapsed();
-
+        let (interrupted, asked) = counted_sleep(std::time::Duration::from_secs(3600), 3).ok_or(
+            "an hour-long sleep whose stop said yes did not return: the stop is not \
+                 asked between slices",
+        )?;
         assert!(
             interrupted,
             "must report that the stop signal interrupted the sleep"
         );
-        assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "sliced sleep must react to the stop signal promptly, took {elapsed:?}"
+        assert_eq!(
+            asked, 3,
+            "the sleep ends at the first yes, the third question"
         );
         Ok(())
     }
 
     /// Without a stop signal the sliced sleep runs to completion and reports
-    /// that it was not interrupted.
+    /// that it was not interrupted: one question before its one slice, and
+    /// one at the end.
     #[test]
     fn sleep_interruptible_runs_to_completion_without_stop() -> Result<(), TestError> {
         let started = std::time::Instant::now();
-        let interrupted = sleep_interruptible(std::time::Duration::from_millis(120), || false);
+        let (interrupted, asked) = counted_sleep(std::time::Duration::from_millis(120), 0)
+            .ok_or("a 120 ms sleep did not return")?;
         assert!(!interrupted, "no stop signal → not interrupted");
+        assert_eq!(asked, 2, "one question per slice and one at the end");
         assert!(
             started.elapsed() >= std::time::Duration::from_millis(100),
             "must actually sleep the requested duration"
         );
+        Ok(())
+    }
+
+    /// The stop is asked before each slice: a sleep of two whole slices and a
+    /// part asks three times on the way and once at the end.
+    #[test]
+    fn sleep_interruptible_asks_once_per_slice() -> Result<(), TestError> {
+        let (interrupted, asked) = counted_sleep(std::time::Duration::from_millis(450), 0)
+            .ok_or("a 450 ms sleep did not return")?;
+        assert!(!interrupted, "no stop signal → not interrupted");
+        assert_eq!(asked, 4, "200 + 200 + 50 ms: three slices, four questions");
+        Ok(())
+    }
+
+    /// A stop already requested is seen before the first slice is slept.
+    #[test]
+    fn sleep_interruptible_sleeps_no_slice_after_an_earlier_stop() -> Result<(), TestError> {
+        let (interrupted, asked) = counted_sleep(std::time::Duration::from_secs(3600), 1)
+            .ok_or("a stop requested before the sleep was not seen")?;
+        assert!(interrupted, "a stop before the sleep interrupts it");
+        assert_eq!(asked, 1, "one question, before any slice");
+        Ok(())
+    }
+
+    /// A zero sleep asks once, sleeps nothing, and is not interrupted.
+    #[test]
+    fn sleep_interruptible_of_zero_asks_once() -> Result<(), TestError> {
+        let (interrupted, asked) =
+            counted_sleep(std::time::Duration::ZERO, 0).ok_or("a zero sleep did not return")?;
+        assert!(!interrupted, "nothing asked for a stop");
+        assert_eq!(asked, 1, "the one question at the end");
+        Ok(())
+    }
+
+    /// A stop that arrives during the last slice is still reported: the end
+    /// of the sleep asks once more.
+    #[test]
+    fn sleep_interruptible_reports_a_stop_seen_at_the_end() -> Result<(), TestError> {
+        let (interrupted, asked) = counted_sleep(std::time::Duration::from_millis(120), 2)
+            .ok_or("a 120 ms sleep did not return")?;
+        assert!(
+            interrupted,
+            "the stop seen by the last question is reported"
+        );
+        assert_eq!(asked, 2, "one question before the slice, one after it");
         Ok(())
     }
 

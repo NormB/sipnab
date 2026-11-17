@@ -32,7 +32,7 @@ use sipnab::security::actions::{
 #[path = "support/fake_tfps.rs"]
 mod fake_tfps;
 
-use fake_tfps::{FakeTfps, T0, TestError, addr, enabled};
+use fake_tfps::{FakeTfps, HOLD_CEILING, Hold, T0, TestError, addr, enabled};
 
 struct Rig {
     _tmp: tempfile::TempDir,
@@ -768,9 +768,14 @@ fn a_stop_does_not_wait_for_an_action_in_flight_and_admits_no_new_one() -> Resul
     // waited for. Its intent stays in doubt and the next start resolves it.
     let tmp = scratch()?;
     let dir = tmp.path().join("journal");
+    // The ban is HELD until this test releases it, so "stop did not wait for
+    // it" is a fact read after stop returns (the ban has not finished), not
+    // a stopwatch reading against a ban that sleeps 2 s. A stop that waits
+    // for the ban waits for the hold's ceiling, and the ban then reads as
+    // outlasted.
     let tfps = Arc::new(FakeTfps {
         journal_dir: dir.clone(),
-        ban_takes: Some(Duration::from_secs(2)),
+        ban_held: true,
         ..FakeTfps::default()
     });
     let t0 = Instant::now();
@@ -793,20 +798,86 @@ fn a_stop_does_not_wait_for_an_action_in_flight_and_admits_no_new_one() -> Resul
     while !tfps.ban_started.load(std::sync::atomic::Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(5));
     }
-    let asked = Instant::now();
     let written = svc.stop(T0 + 1);
+    let finished_at_stop = tfps.ban_finished.load(std::sync::atomic::Ordering::SeqCst);
+    let outlasted_at_stop = tfps.ban_hold.outlasted();
     assert!(
-        asked.elapsed() < Duration::from_millis(500),
-        "stop waited {:?} for the action in flight",
-        asked.elapsed()
+        !finished_at_stop && !outlasted_at_stop,
+        "stop waited for the action in flight (finished {finished_at_stop}, held to \
+         its ceiling {outlasted_at_stop})"
     );
     assert!(!written, "no stop record while an action is in flight");
+    // Released before the next ban: that one waits for the state the ban in
+    // flight holds, and is refused once it has it.
+    tfps.ban_hold.release();
     let err = svc
         .ban(ActionSurface::Rest, "token:ops", addr(21), None, T0 + 1, t0)
         .err()
         .ok_or("stopping")?;
     assert!(matches!(err, ActionError::JournalUnusable(_)), "{err:?}");
     in_flight.join().map_err(|_| "thread panicked")?;
+    assert!(
+        tfps.ban_finished.load(std::sync::atomic::Ordering::SeqCst),
+        "the released ban ran to its end"
+    );
+    Ok(())
+}
+
+/// A held fake call waits for its release, and goes on once released.
+#[test]
+fn a_held_call_waits_for_its_release() -> Result<(), TestError> {
+    let hold = Arc::new(Hold::default());
+    let waiter = {
+        let hold = hold.clone();
+        std::thread::spawn(move || hold.wait(HOLD_CEILING))
+    };
+    hold.release();
+    let opened = waiter.join().map_err(|_| "waiter panicked")?;
+    assert!(opened, "a released hold reports that it was opened");
+    assert!(!hold.outlasted(), "a released hold was not outlasted");
+    Ok(())
+}
+
+/// A hold opened before anyone waits lets every later wait through.
+#[test]
+fn a_hold_released_first_lets_every_wait_through() {
+    let hold = Hold::default();
+    hold.release();
+    assert!(hold.wait(Duration::ZERO), "the first wait goes through");
+    assert!(hold.wait(Duration::ZERO), "and so does the second");
+    assert!(!hold.outlasted(), "nothing waited to its ceiling");
+}
+
+/// A hold nobody releases ends the wait at its ceiling and records it, so a
+/// test sees "waited for" instead of hanging.
+#[test]
+fn a_hold_never_released_is_outlasted_at_its_ceiling() {
+    let hold = Hold::default();
+    let began = Instant::now();
+    assert!(
+        !hold.wait(Duration::from_millis(50)),
+        "an unreleased hold does not report itself opened"
+    );
+    assert!(hold.outlasted(), "the ceiling is recorded");
+    assert!(
+        began.elapsed() >= Duration::from_millis(50),
+        "the wait lasted its ceiling"
+    );
+}
+
+/// A ban that is not held does not wait at all, and marks its end.
+#[test]
+fn a_ban_that_is_not_held_finishes_at_once() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0)?;
+    let _ = ban(&svc, &r, 22, T0)?;
+    assert!(
+        r.tfps
+            .ban_finished
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "an unheld ban runs to its end"
+    );
+    assert!(!r.tfps.ban_hold.outlasted(), "nothing was held");
     Ok(())
 }
 

@@ -191,8 +191,10 @@ fn a_swap_replaces_the_dialogs_and_renames_the_capture() -> Result<(), TestError
 ///
 /// The margin is two orders of magnitude: the branch scenario takes roughly
 /// 150 ms to parse in a debug build and a tool round trip over the pipe takes
-/// about a millisecond. The wall-clock bounds below are a backstop for the
-/// blocking case, not the gate.
+/// about a millisecond. No wall-clock bound is asserted: the two "under 2 s" checks
+/// this test had could not see the defect (a load inside the handler costs
+/// the 150 ms of the parse, not 2 s) and could fail a correct server on a
+/// host that stalled the test for 2 s.
 #[test]
 fn the_load_does_not_block_the_server() -> Result<(), TestError> {
     let root = root_with_second("nonblocking")?;
@@ -205,29 +207,20 @@ fn the_load_does_not_block_the_server() -> Result<(), TestError> {
         ],
     )?;
 
-    let started = std::time::Instant::now();
     let opened =
         ok_payload(&session.call("open_capture", serde_json::json!({"filename": SECOND}))?)?;
-    let call_took = started.elapsed();
-    assert_eq!(opened["status"], "loading");
+    assert_eq!(
+        opened["status"], "loading",
+        "open_capture answers that the load has begun"
+    );
 
     // Another tool answers while the load is in flight, and says so.
-    let probe = std::time::Instant::now();
     let status = ok_payload(&session.call("capture_status", serde_json::json!({}))?)?;
-    let probe_took = probe.elapsed();
 
     assert_eq!(
         status["load"]["done"], false,
         "the load had already finished when open_capture returned, so the read \
          ran inside the handler and every other client waited for it"
-    );
-    assert!(
-        call_took < std::time::Duration::from_secs(2),
-        "open_capture took {call_took:?} — it is reading the file inside the handler"
-    );
-    assert!(
-        probe_took < std::time::Duration::from_secs(2),
-        "a tool call during the load took {probe_took:?} — the runtime thread is blocked"
     );
 
     let done = wait_for_load(&mut session)?;
