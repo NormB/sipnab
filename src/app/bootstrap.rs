@@ -5354,20 +5354,7 @@ pub fn init_logging_at(default_level: &str) {
     // through the same subscriber.
     let env_filter = tracing_subscriber::EnvFilter::try_from_env("SIPNAB_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level));
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_writer(std::io::stderr)
-        // Color only on a terminal with NO_COLOR unset. The subscriber's own
-        // default reads NO_COLOR alone, so journald, `docker logs` and a pipe
-        // stored the escape sequences.
-        .with_ansi(crate::output::cli_print::stderr_log_color())
-        // When a log line cannot be written, the subscriber reports that with
-        // `eprintln!` to the same stderr, which panics if stderr is a pipe
-        // whose reader has gone (`2>&1 | head`). The line is lost either way.
-        .log_internal_errors(false)
-        .with_target(true)
-        .compact()
-        .finish();
+    let subscriber = crate::output::cli_print::stderr_log_subscriber(env_filter);
     let _ = tracing::subscriber::set_global_default(subscriber);
     let _ = tracing_log::LogTracer::init();
 }
