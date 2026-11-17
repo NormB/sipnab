@@ -1071,7 +1071,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/tests/test_tag_proof_skipped_by_design.py.
     // 891 -> 892 (macOS suite in shards, +1): build-ci-release.md's
     // `test-macos` bullet links tests/support/macos_suite.rs.
-    const EXPECTED_CODE_LINKS: usize = 892;
+    // 892 -> 894 (release apt rule, +2): build-ci-release.md's glibc-floor
+    // section links scripts/release-apt.sh and scripts/tests/test_release_apt.py.
+    const EXPECTED_CODE_LINKS: usize = 894;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
