@@ -518,6 +518,13 @@ jobs:
           restore-keys: |
             cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
+      # Every platform's crates, after the cache restore. A build downloads
+      # only its own platform's, and release_pipeline_gate_test runs
+      # `cargo tree --offline --target all`: on main b8700e3f2 a cold macOS
+      # cache failed it. scripts/check-suite-fetch.py holds this step.
+      - name: Fetch every platform's crates
+        run: cargo fetch --locked
+
       # The tools `check` installs before the suite ran there: the pinned
       # rustfmt, Go, Node.js and tshark.
       - name: Install the pinned rustfmt (Linux)
@@ -1246,6 +1253,14 @@ jobs:
       # lint locally.
       # A `suite` combination runs through scripts/parallel-tests.py, under
       # the cargo-nextest version .config/nextest.toml pins.
+      # Every platform's crates first, as in `test`: scripts/check-suite-fetch.py.
+      # A fetch builds nothing; the build directory is set here too so that
+      # no cargo command of this self-hosted job runs without it.
+      - name: Fetch every platform's crates
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
+        run: cargo fetch --locked
+
       - name: Install cargo-nextest
         uses: ./.github/actions/nextest
 
