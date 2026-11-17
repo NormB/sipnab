@@ -590,7 +590,6 @@ CatchUnwindWithoutReason	src/capture/mod.rs	1
 CatchUnwindWithoutReason	src/crash.rs	1
 CatchUnwindWithoutReason	src/tui/render/popups.rs	3
 CatchUnwindWithoutReason	tests/archive_fuzz_replay_test.rs	1
-CatchUnwindWithoutReason	tests/cli_goldens.rs	1
 CatchUnwindWithoutReason	tests/config_cli_flag_values_test.rs	1
 CatchUnwindWithoutReason	tests/fuzz_corpus_replay.rs	1
 CatchUnwindWithoutReason	tests/harness_teardown_test.rs	1

@@ -2,8 +2,15 @@
 # https://embarkstudios.github.io/cargo-deny/
 
 [advisories]
-# Advisories with no explicit ignore are denied by default.
-ignore = []
+# Advisories with no explicit ignore are denied by default. Each ignore names
+# its reason, and vex/sipnab.openvex.json states it (tests/vex_document_test.rs).
+ignore = [
+    # chrono: unmaintained, informational, no patched version; required
+    # non-optionally by rmcp and arrow/parquet in their newest releases;
+    # sipnab's own use migrates under CHRONO-TO-JIFF. Owner's decision,
+    # 2026-11-17: "Ignore + migrate".
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, informational, no patched version; required non-optionally by rmcp and arrow/parquet in their newest releases; sipnab's own use migrates under CHRONO-TO-JIFF" },
+]
 
 [licenses]
 allow = [

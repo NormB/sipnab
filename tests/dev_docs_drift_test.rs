@@ -1078,7 +1078,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 895 -> 898 (Sanitizers path filter, +3): build-ci-release.md's
     // ThreadSanitizer section links src/main.rs, tests/hep_test.rs and
     // tests/sanitizers_paths_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 898;
+    // 898 -> 899 (goldens without trycmd, +1): testing.md's CLI golden row
+    // links tests/support/golden_cases.rs.
+    const EXPECTED_CODE_LINKS: usize = 899;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

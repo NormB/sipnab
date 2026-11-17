@@ -3,7 +3,9 @@
 
 //! CLI golden tests (verification plan M1 — T1.4; M2 — T2.1–T2.11).
 //!
-//! Declarative process snapshots via `trycmd`, in two case groups:
+//! Declarative process snapshots in the `.trycmd` format, run by
+//! `support/golden_cases.rs` (it replaced the `trycmd` crate, whose
+//! `humantime` dependency carries RUSTSEC-2026-0542), in two case groups:
 //! `tests/cli/cmd/*.trycmd` for global flags (`--help`/`--version`/`--dump-config`)
 //! and `tests/cli/out/*.trycmd` for output formats run against
 //! `tests/fixtures/sip_call.pcap`.
@@ -16,7 +18,7 @@
 //! prefix carries the current date + PID; those are matched with `[..]`.
 //!
 //! Volatile substrings (the build's version/commit/feature banner) are matched
-//! with trycmd's `[..]` wildcard rather than pinned, so a version bump or a
+//! with the `[..]` wildcard rather than pinned, so a version bump or a
 //! different feature set does not break the goldens. The exhaustive per-flag
 //! `--help` surface is intentionally NOT pinned here (it is feature-dependent);
 //! that coverage is enforced separately by the "no untested flag" gate (T6.2),
@@ -30,6 +32,8 @@ mod test_scratch;
 
 use support::TestError;
 
+#[path = "support/golden_cases.rs"]
+mod golden_cases;
 #[path = "support/run.rs"]
 mod run_support;
 #[path = "support/mod.rs"]
@@ -91,48 +95,56 @@ fn cli_goldens() -> Result<(), TestError> {
         let _ = std::fs::remove_file(home.join(stray));
     }
 
-    pinned_cases(&home)
-        .case("tests/cli/cmd/*.trycmd")
-        .case("tests/cli/out/*.trycmd")
-        .run();
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = golden_cases::case_files(&repo.join("tests/cli/cmd"))?;
+    files.extend(golden_cases::case_files(&repo.join("tests/cli/out"))?);
+    let failures =
+        pinned_runner(&home, repo).run_files(&files, golden_cases::overwrite_requested());
+    assert!(
+        failures.is_empty(),
+        "{} CLI golden(s) failed:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
 
-    // The cookbook group runs AFTER the one above, in the same test, and that
-    // ordering is load-bearing: it changes the process working directory, and
-    // a second `#[test]` in this binary would run on another thread against
-    // relative globs that no longer resolve.
     cookbook::run(&home)?;
 
     let _ = std::fs::remove_dir_all(&home);
     Ok(())
 }
 
-/// A `trycmd` run pinned to the determinism env every CLI golden shares.
-fn pinned_cases(home: &std::path::Path) -> trycmd::TestCases {
-    // Register the built binary explicitly: with more than one `[[bin]]` in the
-    // package, trycmd's auto-detection won't map the `sipnab` token, and the
-    // cases would be silently *ignored* (a false green) rather than run.
-    let cases = trycmd::TestCases::new();
-    cases
-        .register_bin(
-            "sipnab",
-            std::path::PathBuf::from(env!("CARGO_BIN_EXE_sipnab")),
-        )
-        .default_bin_name("sipnab")
-        .env("TZ", "UTC")
-        .env("NO_COLOR", "1")
-        .env("COLUMNS", support::FIXED_COLS.to_string())
-        .env("LINES", support::FIXED_ROWS.to_string())
-        // trycmd merges stderr; sipnab's tracing logs carry wall-clock
-        // timestamps. Silence them so goldens pin only deterministic stdout.
-        .env("SIPNAB_LOG", "off");
+/// A golden runner pinned to the determinism env every CLI golden shares,
+/// running in `cwd`.
+fn pinned_runner(home: &std::path::Path, cwd: &std::path::Path) -> golden_cases::Runner {
+    let mut env = vec![
+        ("TZ".to_string(), "UTC".to_string()),
+        ("NO_COLOR".to_string(), "1".to_string()),
+        ("COLUMNS".to_string(), support::FIXED_COLS.to_string()),
+        ("LINES".to_string(), support::FIXED_ROWS.to_string()),
+        // stdout and stderr share one pipe; sipnab's tracing logs carry
+        // wall-clock timestamps. Silence them so goldens pin only
+        // deterministic output.
+        ("SIPNAB_LOG".to_string(), "off".to_string()),
+    ];
     // The same pins `run_support::run` applies, from the one list: this copy
     // used to pin HOME and SIPNAB_CONFIG only, so an exported
     // XDG_CONFIG_HOME/sipnab/sipnab.toml still reached every golden.
     for (key, value) in run_support::config_isolation(home) {
-        cases.env(key, value.to_string_lossy().into_owned());
+        env.push((key.to_string(), value.to_string_lossy().into_owned()));
     }
-    cases
+    golden_cases::Runner {
+        // Only the built binary: a case naming any other program is refused.
+        bins: vec![(
+            "sipnab".to_string(),
+            std::path::PathBuf::from(env!("CARGO_BIN_EXE_sipnab")),
+        )],
+        env,
+        cwd: cwd.to_path_buf(),
+        deadline: test_timeout(120),
+    }
 }
+
+include!("support/timeout.rs");
 
 /// EX8: the output of every cookbook command `scripts/check-cookbook.py`
 /// executes, pinned under `tests/cli/cookbook/`.
@@ -194,20 +206,12 @@ mod cookbook {
             }
         }
 
-        let cases: PathBuf = repo.join("tests/cli/cookbook/*.trycmd");
-        let before =
-            std::env::current_dir().map_err(|e| format!("read the working directory: {e}"))?;
-        std::env::set_current_dir(&scratch)
-            .map_err(|e| format!("enter the cookbook scratch dir: {e}"))?;
-        // Run inside a closure so the working directory is restored before
-        // any assertion below can panic.
-        let outcome = std::panic::catch_unwind(|| {
-            super::pinned_cases(home)
-                .case(cases.to_string_lossy().into_owned())
-                .run();
-        });
-        std::env::set_current_dir(before)
-            .map_err(|e| format!("restore the working directory: {e}"))?;
+        // The cases run with the scratch dir as their working directory; the
+        // process's own working directory is not changed.
+        let files: Vec<PathBuf> =
+            super::golden_cases::case_files(&repo.join("tests/cli/cookbook"))?;
+        let failures = super::pinned_runner(home, &scratch)
+            .run_files(&files, super::golden_cases::overwrite_requested());
 
         // Everything a case wrote must be inside its own directory. A write
         // anywhere else means a recipe gained an output flag the checker's
@@ -222,9 +226,12 @@ mod cookbook {
             })
             .collect();
         let _ = std::fs::remove_dir_all(&scratch);
-        if let Err(panic) = outcome {
-            std::panic::resume_unwind(panic);
-        }
+        assert!(
+            failures.is_empty(),
+            "{} cookbook golden(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n\n")
+        );
         assert!(
             strays.is_empty(),
             "a cookbook case wrote outside its own directory: {strays:?}. Add \
