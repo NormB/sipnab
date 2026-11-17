@@ -325,7 +325,9 @@ def test_a_snapshot_reads_the_rows_from_the_tree(tmp_path):
     hook.parent.mkdir()
     hook.write_text("#!/bin/sh\n")
     got = gc.snapshot(str(tmp_path), env, str(hook)).rows
-    assert got == {"lint-native": ROWS["lint-native"]}, got
+    # Every row the hook can lint has a step (PREPUSH-LINTS-3-OF-22-FEATURE-ROWS).
+    assert got == {"lint-native": ROWS["lint-native"],
+                   "lint-tls": "cargo clippy --no-default-features --features tls --tests -- -D warnings"}, got
 
 
 # ── The store ─────────────────────────────────────────────────────────────

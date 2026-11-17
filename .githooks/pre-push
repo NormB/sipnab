@@ -639,7 +639,8 @@ fi
 # self-hosted runners (moved there by Norm), which build all of it on the same
 # machine within minutes of the push, so the hook no longer repeats ALL of it.
 #
-# It lints the rows .github/feature-combos.txt marks `hook`. The pre-commit
+# It lints the rows .github/feature-combos.txt marks `hook`, and the rows the
+# push's changed files pick (below). The pre-commit
 # hook builds only `--features full`, the clippy gate above `--all-features`,
 # and the reduced-combination gate above runs `cargo check`, which reports a
 # warning and passes. In pull request #763 a binding read only under
@@ -664,8 +665,14 @@ fi
 # unused without a feature blocks the push, and an unmarked row is left to CI.
 FEATURE_MATRIX="$(dirname "$0")/../scripts/check-feature-matrix.py"
 if [ -f .github/feature-combos.txt ] && [ -f "$FEATURE_MATRIX" ]; then
-	if ! HOOK_ROWS=$(python3 "$FEATURE_MATRIX" --hook-rows); then
-		printf '  feature sets marked `hook` ... %bFAIL%b\n' "$RED" "$NC"
+	# Which rows (PREPUSH-LINTS-3-OF-22-FEATURE-ROWS): `--push-rows` reads
+	# this push's refs and picks the rows by the feature gates of the changed
+	# files (`rows_for`): the rows marked `hook` always; for a change behind
+	# a feature gate, the rows with the fewest features that compile it; for
+	# any other change, every single-feature row. Its line on standard error
+	# says which and how many combinations stay in CI.
+	if ! HOOK_ROWS=$(printf '%s\n' "$PUSH_REFS" | python3 "$FEATURE_MATRIX" --push-rows); then
+		printf '  feature sets for this push ... %bFAIL%b\n' "$RED" "$NC"
 		printf '%s\n' "$HOOK_ROWS" | sed 's/^/    /'
 		printf '\n'
 		printf '%bPush blocked: .github/feature-combos.txt could not be read.%b\n' "$RED" "$NC"
