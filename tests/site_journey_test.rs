@@ -6873,10 +6873,13 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 297 -> 298 (tag proof picker): ci.yml's step "Shellcheck (sh, tag
     // proof picker)" names `scripts/pick-tag-proof.sh`. Measurement: the scan
     // read 297 on main e15844760 and 298 with that step staged.
-    // 298 -> 299 (macOS shard balance): ci.yml's comment on `test-macos`
-    // names `scripts/parallel-tests.py`. Measurement: the scan read 298 on
-    // main a3ff76e36 and 299 with that comment staged.
-    const EXPECTED_REFERENCES: usize = 299;
+    // 298 -> 315 (Sanitizers path filter): sanitizers.yml's push filter and
+    // its comment name the tests/ files its run step compiles. Measurement:
+    // the scan read 298 on main 5458dea3d and 315 with that file staged.
+    // 315 -> 316 (macOS shard balance): ci.yml's comment on `test-macos`
+    // names `scripts/parallel-tests.py`. Measurement: the scan read 315 on
+    // main 6172f6fdd and 316 on this branch merged with it.
+    const EXPECTED_REFERENCES: usize = 316;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

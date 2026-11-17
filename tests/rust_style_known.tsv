@@ -60,7 +60,7 @@ AssertWithoutMessage	src/capture/hep_rtcp.rs	9
 AssertWithoutMessage	src/capture/input_set.rs	36
 AssertWithoutMessage	src/capture/keylog_source.rs	6
 AssertWithoutMessage	src/capture/libpcap.rs	15
-AssertWithoutMessage	src/capture/live.rs	52
+AssertWithoutMessage	src/capture/live.rs	51
 AssertWithoutMessage	src/capture/mapped.rs	20
 AssertWithoutMessage	src/capture/merged.rs	2
 AssertWithoutMessage	src/capture/mod.rs	78
@@ -148,7 +148,7 @@ AssertWithoutMessage	src/mermaid.rs	14
 AssertWithoutMessage	src/names.rs	69
 AssertWithoutMessage	src/net.rs	12
 AssertWithoutMessage	src/new_file.rs	7
-AssertWithoutMessage	src/output/api.rs	419
+AssertWithoutMessage	src/output/api.rs	418
 AssertWithoutMessage	src/output/call_report.rs	7
 AssertWithoutMessage	src/output/dialog_report.rs	34
 AssertWithoutMessage	src/output/event_exec.rs	27
@@ -440,7 +440,7 @@ AssertWithoutMessage	tests/mcp_diagnostic_tools_test.rs	16
 AssertWithoutMessage	tests/mcp_elicitation_test.rs	7
 AssertWithoutMessage	tests/mcp_expectations_test.rs	2
 AssertWithoutMessage	tests/mcp_lint_tools_test.rs	14
-AssertWithoutMessage	tests/mcp_open_capture_test.rs	7
+AssertWithoutMessage	tests/mcp_open_capture_test.rs	6
 AssertWithoutMessage	tests/mcp_output_injection_test.rs	1
 AssertWithoutMessage	tests/mcp_protocol_features_test.rs	1
 AssertWithoutMessage	tests/mcp_row_cap_test.rs	7
@@ -568,7 +568,7 @@ AssertWithoutMessage	tests/vcon_enrich_test.rs	44
 AssertWithoutMessage	tests/vcon_export_test.rs	15
 AssertWithoutMessage	tests/vcon_fetch_doors_test.rs	2
 AssertWithoutMessage	tests/vcon_fetch_test.rs	51
-AssertWithoutMessage	tests/vcon_forward_test.rs	106
+AssertWithoutMessage	tests/vcon_forward_test.rs	104
 AssertWithoutMessage	tests/vcon_grouping_test.rs	8
 AssertWithoutMessage	tests/vcon_input_test.rs	16
 AssertWithoutMessage	tests/vcon_media_test.rs	8
@@ -590,7 +590,6 @@ CatchUnwindWithoutReason	src/capture/mod.rs	1
 CatchUnwindWithoutReason	src/crash.rs	1
 CatchUnwindWithoutReason	src/tui/render/popups.rs	3
 CatchUnwindWithoutReason	tests/archive_fuzz_replay_test.rs	1
-CatchUnwindWithoutReason	tests/cli_goldens.rs	1
 CatchUnwindWithoutReason	tests/config_cli_flag_values_test.rs	1
 CatchUnwindWithoutReason	tests/fuzz_corpus_replay.rs	1
 CatchUnwindWithoutReason	tests/harness_teardown_test.rs	1

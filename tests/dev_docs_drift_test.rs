@@ -1075,7 +1075,12 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // section links scripts/release-apt.sh and scripts/tests/test_release_apt.py.
     // 894 -> 895 (feature rows a push picks, +1): build-ci-release.md's
     // PREPUSH-LINTS-3-OF-22-FEATURE-ROWS bullet links scripts/check-feature-matrix.py.
-    const EXPECTED_CODE_LINKS: usize = 895;
+    // 895 -> 898 (Sanitizers path filter, +3): build-ci-release.md's
+    // ThreadSanitizer section links src/main.rs, tests/hep_test.rs and
+    // tests/sanitizers_paths_test.rs.
+    // 898 -> 899 (goldens without trycmd, +1): testing.md's CLI golden row
+    // links tests/support/golden_cases.rs.
+    const EXPECTED_CODE_LINKS: usize = 899;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

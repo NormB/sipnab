@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [0.5.262] - 2026-11-17
+
+### Security
+
+- **The VEX document lists chrono's unmaintained advisory as not affecting sipnab.**
+  - Effect: `vex/sipnab.openvex.json` states RUSTSEC-2026-0543 as `not_affected`; `cargo deny` accepts it with that reason.
+  - Limit: chrono stays in the dependency tree, because rmcp and arrow/parquet require it.
+  - Docs: [SECURITY.md](SECURITY.md)
+
 ## [0.5.261] - 2026-11-16
 
 ### Changed

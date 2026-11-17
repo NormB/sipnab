@@ -1745,28 +1745,39 @@ mod tests {
             unsafe { libc::close(fd) };
         }
 
-        /// An idle fd yields `TimedOut` within roughly the timeout — the
-        /// bounded-wait property the old loop lacked.
+        /// An idle fd yields `TimedOut` — the bounded-wait property the old
+        /// loop lacked.
+        ///
+        /// The defect is a wait that never returns, so the wait runs on its
+        /// own thread and this thread waits for its answer up to a ceiling
+        /// far past the 80 ms asked (it once asserted "under 3 s", which a
+        /// stalled host can break). At the ceiling the write end is closed,
+        /// which ends any wait, and the test fails on the answer: a wait that
+        /// ignored its timeout then reports `Readable` (the hang-up), not
+        /// `TimedOut`. The time is held only from below.
         #[test]
         fn times_out_on_idle_fd() -> Result<(), TestError> {
-            // The regression test: nothing is ever written, yet the wait MUST
-            // return (TimedOut) within roughly the timeout — not block forever.
+            const CEILING: Duration = Duration::from_secs(30);
             let (r, w) = make_pipe();
             let start = Instant::now();
-            let res = wait_readable(r, Duration::from_millis(80))
-                .map_err(|e| format!("poll ok: {e:?}"))?;
-            let elapsed = start.elapsed();
-            assert_eq!(res, WaitResult::TimedOut);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let waiter = std::thread::spawn(move || {
+                let res = wait_readable(r, Duration::from_millis(80));
+                let elapsed = start.elapsed();
+                let _ = tx.send(());
+                (res, elapsed)
+            });
+            let answered = rx.recv_timeout(CEILING).is_ok();
+            close(w);
+            let (res, elapsed) = waiter.join().map_err(|_| "the waiter panicked")?;
+            close(r);
+            let res = res.map_err(|e| format!("poll ok: {e:?}"))?;
+            assert!(answered, "the wait did not return within {CEILING:?}");
+            assert_eq!(res, WaitResult::TimedOut, "an idle fd times out");
             assert!(
                 elapsed >= Duration::from_millis(40),
                 "returned too early: {elapsed:?}"
             );
-            assert!(
-                elapsed < Duration::from_secs(3),
-                "did not return promptly: {elapsed:?}"
-            );
-            close(r);
-            close(w);
             Ok(())
         }
 

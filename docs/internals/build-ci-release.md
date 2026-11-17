@@ -94,7 +94,7 @@ That is exactly why CI has a feature matrix.
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |
 | `release.yml` | `v*` tags | The release. See below. |
-| `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
+| `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + a push that changes its own files or a file its suites compile | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
 | `memcheck.yml` | weekly cron (Wednesdays 07:23 UTC) + manual + on its own path | Runs sipnab under Valgrind across its offline, archive, HEP, MCP and REST paths, built with `--cfg sipnab_tsan` so it allocates through the C library's heap, the only heap Valgrind sees. A definitely or indirectly lost block, or an invalid read, write or free, fails the job ([`scripts/memcheck-verdict.py`](../../scripts/memcheck-verdict.py)), and so does a log with no leak summary. Valgrind must first report a probe program's one known 4,096-byte leak, or the job fails. Runs on the local runners. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `pr-text.yml` | `pull_request_target`: PR opened, edited, reopened or pushed to | Checks the text a pull request publishes for the lab's private identities and for AI attribution with [`scripts/check-message-identity.sh`](../../scripts/check-message-identity.sh), the script the `commit-msg` hook runs. The `Commit messages and PR title name no private identity` job reads the title, the branch name and every commit message in the pull request's range, which is what a merge puts on `main`, and fails on a finding. The `PR description names no private identity (advisory)` job reads the description, which stays on the pull request page, and reports a finding as a warning without failing. Both jobs check out the base branch (no checkout names a ref, which Scorecard's Dangerous-Workflow check would report), so main's workflow, script and test judge the pull request, and the job fetches the pull request's commits from `refs/pull/N/head` as data and never checks them out or runs them; the fetched head must equal the event's head SHA. `contents: read` at the workflow level and no cache, because a `pull_request_target` run otherwise holds a write token and a cache it saves is restorable on main. Every value from the event reaches the shell only through `env:`. The pull request that added the workflow was not checked by it, because main had no `pr-text.yml` yet. Not required by `ci-success`. |
@@ -109,6 +109,13 @@ That is exactly why CI has a feature matrix.
 `sanitizers.yml` runs the threaded integration suites under
 `-Zsanitizer=thread`, weekly.
 It exists because nothing else in the suite can see a data race.
+
+It also runs on a push to `main` that changes a file those suites compile.
+
+- The push filter lists every file the run step's `--test` targets compile under `tests/`, through `mod`, `#[path]` and `include!` lines, beside the workflow, `ops/tsan/**` and [`src/main.rs`](../../src/main.rs).
+- Pull request #821 fixed [`tests/hep_test.rs`](../../tests/hep_test.rs), the test this job failed on in 0.5.258, and the filter did not list it, so main's CI never ran this job on that fix.
+- [`tests/sanitizers_paths_test.rs`](../../tests/sanitizers_paths_test.rs) derives the list from the run step. It fails on a file missing from the filter and on a `tests/` path no target compiles.
+- To add a suite, add its `--test` line to the run step, run `cargo test --features full --test sanitizers_paths_test`, and add the paths it names as missing.
 
 - The tests exercise the capture thread, the channel, and the
   processing thread.

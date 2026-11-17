@@ -29,9 +29,34 @@ on:
       # every run reports allocator false positives again. tests/support/server.rs
       # is how a spawned server's death gets reported; it once reported a
       # timeout instead, and the misdiagnosis cost a full investigation cycle.
-      # Both are low-churn, so this does not put the job on the hot path.
+      # Both are low-churn. With the test files below, the filter matched 17 of
+      # the 159 first-parent merges on main from 2026-11-01 to 5458dea3d, against 12
+      # for these four paths alone.
       - 'src/main.rs'
+      # SANITIZERS-PATH-FILTER-SKIPS-COVERED-TESTS: every file the run step's
+      # `--test` targets compile under tests/, followed through `mod`,
+      # `#[path]` and `include!` lines. Pull request #821 fixed tests/hep_test.rs,
+      # the test this job failed on in 0.5.258, and main's CI never ran it.
+      # The test target sanitizers_paths_test derives this list from the run
+      # step and refuses a file missing from it or a tests/ path no target
+      # compiles.
+      - 'tests/api_test.rs'
+      - 'tests/api_token_test.rs'
+      - 'tests/cli_flag_behavior_test.rs'
+      - 'tests/hep_test.rs'
+      - 'tests/mcp_stdio_test.rs'
+      - 'tests/support/capture_probe.rs'
+      - 'tests/support/child_lifetime.rs'
+      - 'tests/support/mod.rs'
+      - 'tests/support/pcap_build.rs'
+      - 'tests/support/ports.rs'
+      - 'tests/support/run.rs'
+      - 'tests/support/schema.rs'
       - 'tests/support/server.rs'
+      - 'tests/support/socket_close.rs'
+      - 'tests/support/teardown.rs'
+      - 'tests/support/timeout.rs'
+      - 'tests/support/tls_pki.rs'
 
 permissions:
   contents: read

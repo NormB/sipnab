@@ -24,6 +24,65 @@ pub fn addr(n: u8) -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(198, 51, 100, n))
 }
 
+/// How long a held call waits for its release at most. It only ends a test
+/// whose release never comes (the code under test waited for the call it
+/// should not have waited for); a released call goes on at once.
+pub const HOLD_CEILING: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A gate a fake call waits at until the test opens it.
+#[derive(Default)]
+pub struct Hold {
+    open: Mutex<bool>,
+    opened: std::sync::Condvar,
+    /// Set when a wait reached its ceiling with the gate still shut.
+    outlasted: std::sync::atomic::AtomicBool,
+}
+
+impl Hold {
+    /// Open the gate: every wait, now and later, returns.
+    pub fn release(&self) {
+        if let Ok(mut open) = self.open.lock() {
+            *open = true;
+        }
+        self.opened.notify_all();
+    }
+
+    /// Wait until the gate is opened, or `ceiling` has passed.
+    ///
+    /// # Returns
+    /// `true` when the gate was opened; `false` at the ceiling, which is
+    /// also recorded for [`Hold::outlasted`].
+    pub fn wait(&self, ceiling: std::time::Duration) -> bool {
+        let Ok(open) = self.open.lock() else {
+            return false;
+        };
+        let opened = self
+            .opened
+            .wait_timeout_while(open, ceiling, |open| !*open)
+            .map(|(open, _)| *open)
+            .unwrap_or(false);
+        if !opened {
+            self.outlasted
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        opened
+    }
+
+    /// Whether a wait ran to its ceiling with the gate shut.
+    pub fn outlasted(&self) -> bool {
+        self.outlasted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Sets its flag when dropped, so every way out of a call sets it.
+struct Finished<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for Finished<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// A TFPS that bans and unbans in memory, records every call, and notes
 /// whether the journal on disk already held the intent when it was called.
 #[derive(Default)]
@@ -36,10 +95,16 @@ pub struct FakeTfps {
     /// Answer every unban `not-blocked`, as TFPS does when the ban went
     /// between listing it and lifting it.
     pub unban_not_blocked: bool,
-    /// How long each ban takes, to catch one in flight.
-    pub ban_takes: Option<std::time::Duration>,
-    /// Set as a ban starts, before it waits `ban_takes`.
+    /// Hold every ban in flight until [`Hold::release`] is called on
+    /// `ban_hold`, to catch one in flight without betting on how long it
+    /// takes.
+    pub ban_held: bool,
+    /// What a held ban waits on.
+    pub ban_hold: Hold,
+    /// Set as a ban starts, before it is held.
     pub ban_started: std::sync::atomic::AtomicBool,
+    /// Set as a ban returns.
+    pub ban_finished: std::sync::atomic::AtomicBool,
     /// Apply every ban, then lose its answer, as a `tfps_ctl` does that
     /// writes the block map and then times out, exits with no result, or
     /// answers in a shape sipnab cannot read.
@@ -84,9 +149,10 @@ impl TfpsActions for FakeTfps {
             .push(journal.contains("\"action_intent\"") && journal.contains(&ip.to_string()));
         self.ban_started
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(d) = self.ban_takes {
-            std::thread::sleep(d);
+        if self.ban_held {
+            self.ban_hold.wait(HOLD_CEILING);
         }
+        let _finished = Finished(&self.ban_finished);
         self.calls
             .lock()
             .map_err(|e| e.to_string())?
