@@ -1002,9 +1002,9 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
 
 `--kill-scanner` sends its responses from a separate worker process, which writes its log lines to the run's stderr.
 
-- Before the release after 0.5.261, the worker ended at its next log line when a write to that stderr failed. Two examples: a pipe whose reader had exited (`2>&1 | head`), and a full disk.
+- Before 0.5.263, the worker ended at its next log line when a write to that stderr failed. Two examples: a pipe whose reader had exited (`2>&1 | head`), and a full disk.
 - From then on the run detected scanners and answered none, and its `DISABLED` warning went to the same lost stderr.
-- Now the worker drops a log line it cannot write, and keeps answering.
+- Since 0.5.263, the worker drops a log line it cannot write, and keeps answering.
 - To keep the log lines themselves, send stderr to a file or to the journal, not to a pipe that can end before the run.
 
 ---
