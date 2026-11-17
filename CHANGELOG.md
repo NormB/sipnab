@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **`--kill-scanner` and `-K` keep answering scanners when stderr can no longer be written.**
+  - Was: A run whose stderr lost its reader (`2>&1 | head`) or hit a full disk stopped answering scanners, with no visible warning.
+  - Effect: The scanner-kill worker drops a log line it cannot write, and keeps answering for the whole run.
+  - Docs: [The run stops answering scanners when stderr goes away](docs/troubleshooting.md#the-run-stops-answering-scanners-when-stderr-goes-away).
+
 ## [0.5.262] - 2026-11-17
 
 ### Security

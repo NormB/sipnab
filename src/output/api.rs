@@ -17812,6 +17812,8 @@ mod archive_password_tests {
             .with_writer(move || LogSink(sink.clone()))
             .with_max_level(tracing::Level::TRACE)
             .with_ansi(false)
+            // The rule for every fmt builder in src (tests/closed_stderr_test.rs).
+            .log_internal_errors(false)
             .finish();
         let _guard = tracing::subscriber::set_default(subscriber);
 

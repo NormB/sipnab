@@ -649,19 +649,16 @@ fn clear_capabilities() -> Result<(), String> {
 
 /// Install the worker's own tracing subscriber: stderr, `SIPNAB_LOG` first,
 /// then the level the parent passed.
+///
+/// It is the run's own stderr subscriber, because the worker shares the
+/// run's stderr: a log line that cannot be written is dropped, never turned
+/// into a panic that would end the worker and with it `--kill-scanner`.
 fn init_tracing(level: &str) {
     let filter = tracing_subscriber::EnvFilter::try_from_env("SIPNAB_LOG").unwrap_or_else(|_| {
         tracing_subscriber::EnvFilter::try_new(level)
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
     });
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        // The parent's rule: it shares the parent's stderr.
-        .with_ansi(crate::output::cli_print::stderr_log_color())
-        .with_target(true)
-        .compact()
-        .finish();
+    let subscriber = crate::output::cli_print::stderr_log_subscriber(filter);
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
