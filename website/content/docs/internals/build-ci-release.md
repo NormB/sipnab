@@ -1000,6 +1000,14 @@ The matrix has moved twice.
   - The pre-commit hook builds only `--features full`. In pull request #763 a binding read only under `#[cfg(feature = "hep")]` passed it and would have failed that command in CI for every set without `hep`.
   - [`scripts/check-feature-matrix.py`](https://github.com/NormB/sipnab/blob/main/scripts/check-feature-matrix.py) `--hook-rows` prints each marked row's stamp step, features and command, and `--lint-row` runs one. The hook and [`scripts/gate-cache.py`](https://github.com/NormB/sipnab/blob/main/scripts/gate-cache.py) both read the rows through that script, so each row has a pass stamp of its own.
   - Measured on the aarch64 development host on 2026-11-12, the three rows together took 49 seconds after a change to the library's root source file alone and 163 seconds the first time after edits to test files, at a load average of about 23.
+- Since PREPUSH-LINTS-3-OF-22-FEATURE-ROWS the push's changed files pick more rows: `rows_for` in [`scripts/check-feature-matrix.py`](https://github.com/NormB/sipnab/blob/main/scripts/check-feature-matrix.py), through `--push-rows`.
+  - Pull request #826 passed every local gate and failed the `g729` row in CI: a function only `vcon` and `api` code called was never used with `g729` alone.
+  - A file's feature gate comes from the `cfg` attributes on the `mod` lines that lead to it, and from the inner `cfg` attribute of a test target. Cargo's `[features]` table says which features a row turns on.
+  - No Rust or Cargo file changed: only the rows marked `hook`.
+  - Every changed Rust file is behind a gate: for each gate, the rows with the fewest features that compile it, and the rows marked `hook`.
+  - Any other change, or changes the script cannot read: every single-feature row the hook can lint (12 today) and the 3 rows marked `hook`. The other 7 combinations stay in CI.
+  - That fallback cannot catch a defect that needs two features in a file outside every gated module. CI still runs every row.
+  - Each row has its own pass stamp, as the marked rows do.
 - Pre-push and CI also run clippy on the library with no features:
   `cargo clippy --no-default-features --lib -- -D warnings`.
   - The main clippy gate runs `--all-features`, so a lint that fires only with every feature off never reaches it.
@@ -1225,7 +1233,7 @@ does not cover:
   [`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml)
 - the release-delivery tests
 - a check of the reduced feature combinations `tls`, `api` and `wasm`
-- CI's clippy command over the feature sets that [`.github/feature-combos.txt`](https://github.com/NormB/sipnab/blob/main/.github/feature-combos.txt) marks `hook`
+- CI's clippy command over the feature sets that [`.github/feature-combos.txt`](https://github.com/NormB/sipnab/blob/main/.github/feature-combos.txt) marks `hook`, and over the rows the push's changed files pick
 - a non-Linux compile of the whole tree
 - a YANG validation of the `sipnab-diagnosis` module
 - a `zola build` of the website

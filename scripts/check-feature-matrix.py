@@ -353,23 +353,378 @@ def print_hook_rows() -> int:
     return 0
 
 
+def lintable(items: list[Combo]) -> list[Combo]:
+    """The rows the hook can lint: those `hook_refusal` accepts, in file order."""
+    return [c for c in items if not hook_refusal(c)]
+
+
 def lint_row(features: str) -> int:
-    """Run one marked row's lint, as the hook's step for it.
+    """Run one row's lint, as the hook's step for it.
 
     In the caller's environment, as the hook's other clippy steps run: the
-    command itself carries `-D warnings`. A row that is not marked is
-    refused, so the hook cannot be pointed at a set the file does not name.
+    command itself carries `-D warnings`. A row the file does not list, or
+    one the hook cannot lint (`hook_refusal`), is refused, so the hook cannot
+    be pointed at a set the file does not name.
     """
     try:
-        rows = read_hook_rows()
+        items = parse_combos(COMBOS.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         print(f"check-feature-matrix: .github/feature-combos.txt: {e}")
         return 2
-    for _step, row, command in rows:
-        if row == features:
+    for combo in lintable(items):
+        if combo.features == features:
+            command = lint_command(features)
             return 1 if subprocess.run(command, cwd=ROOT, check=False).returncode != 0 else 0
-    print(f"check-feature-matrix: {features!r} is not a row marked `hook` in .github/feature-combos.txt")
+    print(f"check-feature-matrix: {features!r} is not a row of .github/feature-combos.txt the hook can lint")
     return 2
+
+
+# ── The rows a push lints (PREPUSH-LINTS-3-OF-22-FEATURE-ROWS) ───────────────
+#
+# Pull request #826 passed every local gate and failed CI's
+# `cargo clippy --no-default-features --features g729 --tests`: a function
+# only vcon/api callers reached was "never used" with g729 alone. The hook
+# linted the 3 rows marked `hook`. `rows_for` picks the rows from the push's
+# changed files and the feature gates on the `mod` lines that lead to them:
+#
+# * no Rust or Cargo file changed: the rows marked `hook`;
+# * every changed Rust file is behind a feature gate: for each gate, the rows
+#   with the fewest features that compile it, plus the rows marked `hook`;
+# * otherwise, or when the changes cannot be read: every single-feature row
+#   the hook can lint, plus the rows marked `hook`. A defect that needs two
+#   features in an ungated file is then left to CI.
+#
+# Each row keeps a pass stamp of its own (scripts/gate-cache.py reads the rows
+# through `lintable`). The rest of the matrix stays in CI.
+
+_CFG_TOKEN = re.compile(r'\s*(?:(?P<word>[A-Za-z_][A-Za-z0-9_]*)|(?P<str>"[^"]*")|(?P<punct>[(),=]))')
+
+
+def _minimal(alternatives) -> list[frozenset[str]]:
+    """Distinct alternatives, none a superset of another, in a stable order."""
+    unique = sorted(set(alternatives), key=lambda s: (len(s), sorted(s)))
+    return [a for a in unique if not any(b < a for b in unique)]
+
+
+def cfg_alternatives(expr: str) -> list[frozenset[str]]:
+    """The feature sets, any one of which compiles code under `cfg(expr)`.
+
+    `[frozenset()]` means no feature is needed. A predicate other than
+    `feature = "..."` (a platform, `test`) needs no feature. `not(...)` is
+    read as needing none: code compiled with a feature off is linted by the
+    fallback, never left out. ValueError when the expression does not parse.
+    """
+    tokens = []
+    pos = 0
+    while pos < len(expr):
+        if expr[pos:].strip() == "":
+            break
+        m = _CFG_TOKEN.match(expr, pos)
+        if not m or m.end() == pos:
+            raise ValueError(f"cannot read cfg({expr})")
+        tokens.append(m.group(m.lastgroup))
+        pos = m.end()
+    at = [0]
+
+    def peek():
+        return tokens[at[0]] if at[0] < len(tokens) else None
+
+    def take(want=None):
+        tok = peek()
+        if tok is None or (want is not None and tok != want):
+            raise ValueError(f"cannot read cfg({expr})")
+        at[0] += 1
+        return tok
+
+    def predicate():
+        word = take()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", word):
+            raise ValueError(f"cannot read cfg({expr})")
+        if word in ("all", "any", "not") and peek() == "(":
+            take("(")
+            parts = []
+            while peek() != ")":
+                parts.append(predicate())
+                if peek() == ",":
+                    take(",")
+                elif peek() != ")":
+                    raise ValueError(f"cannot read cfg({expr})")
+            take(")")
+            if word == "not":
+                if len(parts) != 1:
+                    raise ValueError(f"cannot read cfg({expr})")
+                return [frozenset()]
+            if word == "any":
+                return _minimal([a for part in parts for a in part]) if parts else [frozenset()]
+            out = [frozenset()]
+            for part in parts:
+                out = _minimal([a | b for a in out for b in part])
+            return out
+        if peek() == "=":
+            take("=")
+            value = take()
+            if not value.startswith('"'):
+                raise ValueError(f"cannot read cfg({expr})")
+            return [frozenset({value[1:-1]})] if word == "feature" else [frozenset()]
+        return [frozenset()]
+
+    result = predicate()
+    if peek() is not None:
+        raise ValueError(f"cannot read cfg({expr})")
+    return result
+
+
+def feature_closure(table: dict[str, list[str]], names) -> set[str]:
+    """The features `names` turn on through Cargo's [features] table."""
+    out: set[str] = set()
+    todo = list(names)
+    while todo:
+        name = todo.pop()
+        if name in out:
+            continue
+        out.add(name)
+        todo.extend(e for e in table.get(name, []) if ":" not in e and "/" not in e)
+    return out
+
+
+def cargo_features(manifest: dict) -> dict[str, list[str]]:
+    """The [features] table of a parsed Cargo.toml."""
+    table = manifest.get("features", {})
+    return {k: list(v) for k, v in table.items() if isinstance(v, list)}
+
+
+def _strip_comments(text: str) -> str:
+    return re.sub(r"//[^\n]*", "", text)
+
+
+_ATTR_OR_MOD = re.compile(
+    r"#(?P<inner>!?)\[\s*(?P<name>cfg|path)\b|"
+    r"(?P<mod>(?<![A-Za-z0-9_])(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?P<modname>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<end>[;{]))"
+)
+# An attribute the gate does not read (`#[doc(hidden)]`), between a cfg and its `mod`.
+_OTHER_ATTR = re.compile(r"#\[[^\[\]]*\]")
+
+
+def _bracket(text: str, start: int) -> tuple[str, int]:
+    """The text inside the `[...]` that opens at or after `start`, and the end."""
+    open_at = text.index("[", start)
+    depth = 0
+    for i in range(open_at, len(text)):
+        if text[i] == "[":
+            depth += 1
+        elif text[i] == "]":
+            depth -= 1
+            if depth == 0:
+                return text[open_at + 1:i], i + 1
+    raise ValueError("an attribute is not closed")
+
+
+def _file_items(text: str):
+    """The inner cfg alternatives of a file and its `mod x;` lines as
+    (name, cfg alternatives, #[path] or None)."""
+    text = _strip_comments(text)
+    inner = [frozenset()]
+    mods = []
+    pending_cfg = [frozenset()]
+    pending_path = None
+    pos = 0
+    while True:
+        m = _ATTR_OR_MOD.search(text, pos)
+        if not m:
+            break
+        if _OTHER_ATTR.sub("", text[pos:m.start()]).strip():
+            # Another item came between: the pending attributes were its.
+            pending_cfg = [frozenset()]
+            pending_path = None
+        if m.group("name"):
+            body, pos = _bracket(text, m.start())
+            if m.group("name") == "cfg":
+                inside = body.strip()[len("cfg"):].strip()
+                if not (inside.startswith("(") and inside.endswith(")")):
+                    raise ValueError(f"cannot read #[{body}]")
+                alts = cfg_alternatives(inside[1:-1])
+                if m.group("inner"):
+                    inner = _minimal([a | b for a in inner for b in alts])
+                else:
+                    pending_cfg = _minimal([a | b for a in pending_cfg for b in alts])
+            else:
+                pm = re.search(r'"([^"]*)"', body)
+                pending_path = pm.group(1) if pm else None
+            continue
+        pos = m.end()
+        if m.group("end") == ";":
+            mods.append((m.group("modname"), pending_cfg, pending_path))
+        pending_cfg = [frozenset()]
+        pending_path = None
+    return inner, mods
+
+
+def module_gates(sources: dict[str, str]) -> dict[str, list[frozenset[str]]]:
+    """Each Rust file's feature gate: the alternatives of `cfg_alternatives`
+    that compile it, from the `mod` lines that lead from src/lib.rs and
+    src/main.rs to it, and for a test target (tests/NAME.rs) from its
+    `#![cfg(...)]`. A file no `mod` line reaches is absent: ungated.
+    A file whose attributes do not parse is ungated."""
+    gates: dict[str, list[frozenset[str]]] = {}
+
+    def visit(path: str, outer: list[frozenset[str]]):
+        if path in gates or path not in sources:
+            return
+        try:
+            inner, mods = _file_items(sources[path])
+        except ValueError:
+            gates[path] = [frozenset()]
+            return
+        here = _minimal([a | b for a in outer for b in inner])
+        gates[path] = here
+        directory = path.rsplit("/", 1)[0]
+        stem = path.rsplit("/", 1)[1][:-len(".rs")]
+        child_dir = directory if stem in ("mod", "lib", "main") else f"{directory}/{stem}"
+        for name, cfg, attr_path in mods:
+            gate = _minimal([a | b for a in here for b in cfg])
+            if attr_path is not None:
+                candidates = [f"{directory}/{attr_path}"]
+            else:
+                candidates = [f"{child_dir}/{name}.rs", f"{child_dir}/{name}/mod.rs"]
+            for c in candidates:
+                if c in sources:
+                    visit(c, gate)
+                    break
+
+    for root in ("src/lib.rs", "src/main.rs"):
+        visit(root, [frozenset()])
+    for path, text in sources.items():
+        if re.fullmatch(r"tests/[^/]+\.rs", path):
+            try:
+                inner, _mods = _file_items(text)
+            except ValueError:
+                inner = [frozenset()]
+            gates[path] = inner
+    return gates
+
+
+# Changed paths that can change what a feature row compiles.
+_BUILD_ROOTS = ("src/", "tests/", "benches/", "examples/", ".cargo/")
+_BUILD_FILES = ("Cargo.toml", "Cargo.lock", "build.rs")
+
+
+def _is_build_input(path: str) -> bool:
+    if path in _BUILD_FILES:
+        return True
+    return path.startswith(_BUILD_ROOTS) and (path.endswith(".rs") or path.startswith(".cargo/"))
+
+
+def rows_for(changed, gates, items: list[Combo], table: dict[str, list[str]]) -> tuple[list[Combo], str]:
+    """The rows a push lints and the one line that says why.
+
+    `changed` is the list of changed paths, or None when it could not be
+    read. `gates` is `module_gates`. `table` is Cargo's [features] table."""
+    able = lintable(items)
+    marked = [c for c in items if c.hook]
+    singles = [c for c in able if "," not in c.features]
+    chosen: list[Combo]
+    if changed is None:
+        why = "the pushed changes could not be read"
+        chosen, kind = marked + singles, "fallback"
+    else:
+        build = [p for p in changed if _is_build_input(p)]
+        ungated = [p for p in build if frozenset() in gates.get(p, [frozenset()])]
+        if not build:
+            chosen, kind = list(marked), "none"
+        elif ungated:
+            why = f"a changed file is outside every feature-gated module ({ungated[0]})"
+            chosen, kind = marked + singles, "fallback"
+        else:
+            picked = []
+            needs = sorted({"+".join(sorted(a)) for p in build for a in gates[p]})
+            for p in build:
+                for alt in gates[p]:
+                    able_rows = [c for c in able if alt <= feature_closure(table, c.features.split(","))]
+                    if able_rows:
+                        fewest = min(len(c.features.split(",")) for c in able_rows)
+                        picked += [c for c in able_rows if len(c.features.split(",")) == fewest]
+            chosen, kind = marked + picked, "gated"
+    seen = {id(c) for c in chosen}
+    rows = [c for c in items if id(c) in seen]
+    others = [c for c in items if id(c) not in seen and c.features != "wasm"]
+
+    def n(count, one, many):
+        return f"{count} {one if count == 1 else many}"
+
+    tail = f"the other {n(len(others), 'combination stays', 'combinations stay')} in CI"
+    if any(c.features == "wasm" for c in items):
+        tail += " (`wasm` has its own step)"
+    hook_part = f"the {n(len(marked), 'row', 'rows')} marked `hook`"
+    if kind == "none":
+        note = f"  feature rows: no Rust or Cargo file changed; linting {hook_part}; {tail}"
+    elif kind == "fallback":
+        note = (f"  feature rows: {why}; linting the {n(len(singles), 'single-feature row', 'single-feature rows')} "
+                f"and {hook_part}; {tail}")
+    else:
+        extra = len([c for c in rows if not c.hook])
+        note = (f"  feature rows: every changed Rust file is behind a feature gate ({', '.join(needs)}); "
+                f"linting {n(extra, 'row', 'rows')} that compile them and {hook_part}; {tail}")
+    return rows, note
+
+
+def changed_files(refs_text: str, git) -> list[str] | None:
+    """The paths the pushed commits change, from pre-push's input; `git(*args)`
+    returns standard output or None. None when a line or a range cannot be
+    read: a new branch is measured from origin/main, an update from the
+    remote's commit when this clone has it."""
+    out: list[str] = []
+    for line in refs_text.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split()
+        if len(fields) != 4:
+            return None
+        _local_ref, local, _remote_ref, remote = fields
+        if local == "0" * 40:
+            continue
+        base = None
+        if remote != "0" * 40 and git("cat-file", "-e", f"{remote}^{{commit}}") is not None:
+            base = remote
+        if base is None:
+            base = git("merge-base", local, "refs/remotes/origin/main")
+        if not base:
+            return None
+        diff = git("diff", "--name-only", base, local)
+        if diff is None:
+            return None
+        out += [p for p in diff.splitlines() if p]
+    return list(dict.fromkeys(out))
+
+
+def _git_out(*args) -> str | None:
+    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=False)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def print_push_rows(refs_text: str) -> int:
+    """`--push-rows`: the rows this push lints, as `--hook-rows` prints them;
+    the line that says why goes to standard error."""
+    try:
+        items = parse_combos(COMBOS.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print(f"check-feature-matrix: .github/feature-combos.txt: {e}")
+        return 2
+    try:
+        import tomllib
+        table = cargo_features(tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        table = {}
+    sources = {}
+    for p in list((ROOT / "src").rglob("*.rs")) + list((ROOT / "tests").glob("*.rs")):
+        try:
+            sources[p.relative_to(ROOT).as_posix()] = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    rows, note = rows_for(changed_files(refs_text, _git_out), module_gates(sources), items, table)
+    print(note, file=sys.stderr)
+    for c in rows:
+        print(f"{hook_step(c.features)}\t{c.features}\t{' '.join(lint_command(c.features))}")
+    return 0
 
 
 def group_commands(group: list[Combo]) -> list[list[str]]:
@@ -517,14 +872,18 @@ def main() -> int:
     p.add_argument("--hook-rows", action="store_true",
                    help="print the rows marked `hook`: step, features, command")
     p.add_argument("--lint-row", metavar="FEATURES",
-                   help="lint one row marked `hook`, as .githooks/pre-push does")
+                   help="lint one row the hook can lint, as .githooks/pre-push does")
+    p.add_argument("--push-rows", action="store_true",
+                   help="read pre-push's input; print the rows this push lints")
     a = p.parse_args()
     if (a.group is None) != (a.pool is None):
         p.error("--group and --pool go together")
-    if sum([a.group is not None, a.hook_rows, a.lint_row is not None]) > 1:
-        p.error("--group, --hook-rows and --lint-row are separate modes")
+    if sum([a.group is not None, a.hook_rows, a.lint_row is not None, a.push_rows]) > 1:
+        p.error("--group, --hook-rows, --lint-row and --push-rows are separate modes")
     if a.hook_rows:
         return print_hook_rows()
+    if a.push_rows:
+        return print_push_rows(sys.stdin.read())
     if subprocess.run(["cargo", "--version"], cwd=ROOT,
                       capture_output=True).returncode != 0:
         print("cargo is not on PATH")

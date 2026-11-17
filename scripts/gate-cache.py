@@ -575,15 +575,18 @@ def _matrix():
 
 
 def matrix_rows(root) -> dict[str, str]:
-    """step -> command for each row the tree at `root` marks `hook`.
+    """step -> command for each row of the tree at `root` the hook can lint.
 
+    Since PREPUSH-LINTS-3-OF-22-FEATURE-ROWS a push lints the rows `rows_for`
+    picks, any of the rows `lintable` gives, so each one has a step.
     Empty when the file or the script is missing or the file does not parse:
     the hook then runs no row, or blocks on the file, and neither needs a key.
     """
     try:
         text = pathlib.Path(root, ".github/feature-combos.txt").read_text(encoding="utf-8")
         matrix = _matrix()
-        return {step: " ".join(command) for step, _features, command in matrix.hook_rows(matrix.parse_combos(text))}
+        return {matrix.hook_step(c.features): " ".join(matrix.lint_command(c.features))
+                for c in matrix.lintable(matrix.parse_combos(text))}
     except (OSError, ValueError):
         return {}
 

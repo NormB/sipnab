@@ -326,8 +326,6 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
-            "CONTRIBUTING.md",
-            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -335,6 +333,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    // PREPUSH-LINTS-3-OF-22-FEATURE-ROWS: `--push-rows` reads one pre-push
+    // line and prints the rows that push lints. The script's flag, not sipnab's.
+    (
+        "push-rows",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     // The section on the suite in shards: `scripts/parallel-tests.py

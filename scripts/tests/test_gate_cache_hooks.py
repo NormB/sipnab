@@ -666,9 +666,11 @@ def pre_push_sandbox(tmp_path):
     for name in ("gate-cache.py", "check-hook-prerequisites.py", "fetch-g729-vectors.py",
                  "parallel-tests.py", "check-rustfmt.sh", "tag-push-proof.py", "check-feature-matrix.py"):
         shutil.copy(REPO / "scripts" / name, tree / "scripts" / name)
-    # One row of the feature matrix is marked for the hook, one is not.
+    # One row of the feature matrix is marked for the hook; of the two that are
+    # not, a push with no origin/main to measure from lints the single-feature
+    # row `api` and leaves `api,wasm` to CI (`rows_for`).
     (tree / ".github").mkdir()
-    (tree / ".github/feature-combos.txt").write_text("tls,api hook\napi\n")
+    (tree / ".github/feature-combos.txt").write_text("tls,api hook\napi\napi,wasm\n")
     shutil.copy(REPO / ".rustfmt-toolchain", tree / ".rustfmt-toolchain")
     log = harness / "cargo-invocations"
     stubs = {
@@ -759,7 +761,7 @@ def pp_tag_shared(tmp_path_factory):
 
 
 BUILD_STEPS = ["bpf-clippy", "check-api", "check-tls", "clippy", "clippy-no-default", "cross-arch", "doc",
-               "fuzz-clippy", "lint-tls--api", "non-linux", "wasm"]
+               "fuzz-clippy", "lint-api", "lint-tls--api", "non-linux", "wasm"]
 
 
 def push(sb, **extra):
@@ -865,12 +867,15 @@ def test_a_failing_build_step_is_never_skipped_on_the_same_tree(pp):
     assert rc != 0 and "Push blocked: clippy" in out, out
 
 
-def test_a_marked_feature_row_is_linted_with_cis_command_and_an_unmarked_one_is_not(pp_shared):
+def test_a_marked_row_and_the_single_rows_are_linted_with_cis_command_and_a_multi_row_is_not(pp_shared):
     first = pp_shared.first
     assert first.rc == 0, first.out
     lints = [c for c in first.cargo if " clippy --no-default-features --features " in c]
-    assert lints == ["crate clippy --no-default-features --features tls,api --tests -- -D warnings"], first.cargo
+    assert lints == ["crate clippy --no-default-features --features tls,api --tests -- -D warnings",
+                     "crate clippy --no-default-features --features api --tests -- -D warnings"], first.cargo
     assert "cargo clippy --no-default-features --features tls,api --tests -- -D warnings ... OK" in first.out, first.out
+    assert ("feature rows: the pushed changes could not be read; linting the 1 single-feature row and the "
+            "1 row marked `hook`; the other 1 combination stays in CI") in first.out, first.out
 
 
 def test_a_marked_feature_row_that_fails_its_lint_blocks_the_push(pp):
@@ -899,12 +904,12 @@ def test_marking_another_feature_row_lints_it_on_the_next_push(pp):
     assert {"lint-tls--api", "lint-api"} <= set(pp.stamps()), pp.stamps()
 
 
-def test_a_feature_matrix_with_no_marked_row_lints_none(pp):
+def test_a_feature_matrix_with_no_marked_row_lints_only_the_single_rows(pp):
     (pp.tree / ".github/feature-combos.txt").write_text("tls,api\napi\n")
     git(pp.tree, "commit", "-qam", "unmark")
     rc, out = push(pp)
     assert rc == 0, out
-    assert not [s for s in cargo_steps(pp) if s.startswith("lint-")], pp.cargo()
+    assert [s for s in cargo_steps(pp) if s.startswith("lint-")] == ["lint-api"], pp.cargo()
 
 
 def test_a_crate_without_a_feature_matrix_lints_no_row(pp):

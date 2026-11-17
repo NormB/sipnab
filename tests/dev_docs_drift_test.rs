@@ -1073,10 +1073,12 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // `test-macos` bullet links tests/support/macos_suite.rs.
     // 892 -> 894 (release apt rule, +2): build-ci-release.md's glibc-floor
     // section links scripts/release-apt.sh and scripts/tests/test_release_apt.py.
-    // 894 -> 897 (Sanitizers path filter, +3): build-ci-release.md's
+    // 894 -> 895 (feature rows a push picks, +1): build-ci-release.md's
+    // PREPUSH-LINTS-3-OF-22-FEATURE-ROWS bullet links scripts/check-feature-matrix.py.
+    // 895 -> 898 (Sanitizers path filter, +3): build-ci-release.md's
     // ThreadSanitizer section links src/main.rs, tests/hep_test.rs and
     // tests/sanitizers_paths_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 897;
+    const EXPECTED_CODE_LINKS: usize = 898;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
