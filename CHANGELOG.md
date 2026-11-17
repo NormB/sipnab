@@ -12,9 +12,9 @@ entry that carries them.
 
 ### Fixed
 
-- **`--kill-scanner` keeps answering scanners when stderr can no longer be written.**
-  - Was: With stderr lost (`2>&1 | head`, a full disk), the worker ended at its next log line, and the run answered no scanner.
-  - Effect: The worker drops a log line it cannot write, and keeps answering for the whole run.
+- **`--kill-scanner` and `-K` keep answering scanners when stderr can no longer be written.**
+  - Was: A run whose stderr lost its reader (`2>&1 | head`) or hit a full disk stopped answering scanners, with no visible warning.
+  - Effect: The scanner-kill worker drops a log line it cannot write, and keeps answering for the whole run.
   - Docs: [The run stops answering scanners when stderr goes away](docs/troubleshooting.md#the-run-stops-answering-scanners-when-stderr-goes-away).
 
 ## [0.5.261] - 2026-11-16
