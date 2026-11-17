@@ -6873,7 +6873,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 297 -> 298 (tag proof picker): ci.yml's step "Shellcheck (sh, tag
     // proof picker)" names `scripts/pick-tag-proof.sh`. Measurement: the scan
     // read 297 on main e15844760 and 298 with that step staged.
-    const EXPECTED_REFERENCES: usize = 298;
+    // 298 -> 315 (Sanitizers path filter): sanitizers.yml's push filter and
+    // its comment name the tests/ files its run step compiles. Measurement:
+    // the scan read 298 on main 5458dea3d and 315 with that file staged.
+    const EXPECTED_REFERENCES: usize = 315;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
