@@ -12404,11 +12404,62 @@ mod tests {
         Ok(())
     }
 
+    /// How long a test client waits for the server to close a connection it
+    /// never speaks on. Only a hang reaches it: the timeouts under test are
+    /// 300 ms, or an hour where the test needs one that never passes.
+    const CLOSE_CEILING: Duration = Duration::from_secs(60);
+
+    /// Whether a read by a client that never spoke shows the server closed
+    /// the connection: end of file, or a reset. Bytes, or a read that timed
+    /// out at [`CLOSE_CEILING`], are not a close.
+    fn server_closed(outcome: &std::io::Result<usize>) -> bool {
+        match outcome {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(e) => e.kind() == std::io::ErrorKind::ConnectionReset,
+        }
+    }
+
+    /// Connect to `addr`, say nothing, and read once, up to
+    /// [`CLOSE_CEILING`].
+    ///
+    /// # Returns
+    ///
+    /// The read's outcome, and how long the connection was open.
+    async fn silent_client(
+        addr: SocketAddr,
+    ) -> Result<(std::io::Result<usize>, Duration), TestError> {
+        Ok(tokio::task::spawn_blocking(move || -> Result<_, String> {
+            use std::io::Read;
+            let mut sock =
+                std::net::TcpStream::connect(addr).map_err(|e| format!("connect: {e:?}"))?;
+            let started = std::time::Instant::now();
+            sock.set_read_timeout(Some(CLOSE_CEILING)).ok();
+            // A signal meant for another test in this binary interrupts the
+            // read without saying anything about the connection: retry it.
+            let outcome = loop {
+                match sock.read(&mut [0u8; 16]) {
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    other => break other,
+                }
+            };
+            Ok((outcome, started.elapsed()))
+        })
+        .await
+        .map_err(|e| format!("client task: {e:?}"))??)
+    }
+
     /// A client that never finishes its handshake is dropped once the
     /// handshake timeout passes, rather than holding its task forever.
+    ///
+    /// The close is the event asserted; the time only from below (not before
+    /// the 300 ms). A server that kept the connection is caught at
+    /// [`CLOSE_CEILING`], not by the "under 3 s" this test once asserted,
+    /// which a stalled host could break.
     #[tokio::test(flavor = "multi_thread")]
     async fn api_tls_a_silent_client_is_dropped_after_the_handshake_timeout()
     -> Result<(), TestError> {
+        const HANDSHAKE: Duration = Duration::from_millis(300);
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let (listener, _ca) = tls_listener_for_test(dir.path())?;
         let addr = listener.local_addr().map_err(|e| format!("bound: {e:?}"))?;
@@ -12418,46 +12469,33 @@ mod tests {
             "API TLS",
             tcp,
             tls.ok_or("TLS configured")?,
-            Duration::from_millis(300),
+            HANDSHAKE,
             API_TLS_MAX_HANDSHAKES,
         )
         .map_err(|e| format!("listener: {e:?}"))?;
-        let started = std::time::Instant::now();
-        let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
-            use std::io::Read;
-            let mut sock =
-                std::net::TcpStream::connect(addr).map_err(|e| format!("connect: {e:?}"))?;
-            sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            // A signal meant for another test in this binary interrupts the
-            // read without saying anything about the connection: retry it.
-            Ok(loop {
-                match sock.read(&mut [0u8; 16]) {
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    other => break other,
-                }
-            })
-        })
-        .await
-        .map_err(|e| format!("client task: {e:?}"))??;
-        let closed = match &outcome {
-            Ok(0) => true,
-            Ok(_) => false,
-            Err(e) => e.kind() == std::io::ErrorKind::ConnectionReset,
-        };
+        let (outcome, open_for) = silent_client(addr).await?;
         assert!(
-            closed,
-            "the server must close a silent connection: {outcome:?}"
+            server_closed(&outcome),
+            "the server must close a silent connection: {outcome:?} after {open_for:?}"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "closed after {:?}, not at the 300 ms timeout",
-            started.elapsed()
+            open_for >= HANDSHAKE,
+            "closed after {open_for:?}, before the {HANDSHAKE:?} handshake timeout"
         );
         Ok(())
     }
 
     /// Past the handshake cap a new connection is closed at once, while the
-    /// connection holding the slot is still waiting out its (long) timeout.
+    /// connection holding the slot is still waiting out its (hour-long)
+    /// timeout.
+    ///
+    /// No clock is read: the second connection can only be closed by the
+    /// shedding, because its own handshake timeout is an hour, so a
+    /// listener that did not shed is caught at [`CLOSE_CEILING`]. The holder
+    /// takes the one slot first because the accept loop takes connections
+    /// in the order the kernel completed them and takes a slot as it
+    /// accepts; the 200 ms sleep this test had before the second connect is
+    /// not needed for that.
     #[tokio::test(flavor = "multi_thread")]
     async fn api_tls_sheds_connections_past_the_handshake_cap() -> Result<(), TestError> {
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
@@ -12469,42 +12507,51 @@ mod tests {
             "API TLS",
             tcp,
             tls.ok_or("TLS configured")?,
-            Duration::from_secs(30),
+            Duration::from_secs(3600),
             1,
         )
         .map_err(|e| format!("listener: {e:?}"))?;
         let holder =
             std::net::TcpStream::connect(addr).map_err(|e| format!("holder connect: {e:?}"))?;
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let started = std::time::Instant::now();
-        let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
-            use std::io::Read;
-            let mut sock =
-                std::net::TcpStream::connect(addr).map_err(|e| format!("connect: {e:?}"))?;
-            sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            // A signal meant for another test in this binary interrupts the
-            // read without saying anything about the connection: retry it.
-            Ok(loop {
-                match sock.read(&mut [0u8; 16]) {
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    other => break other,
-                }
-            })
-        })
-        .await
-        .map_err(|e| format!("client task: {e:?}"))??;
-        let closed = match &outcome {
-            Ok(0) => true,
-            Ok(_) => false,
-            Err(e) => e.kind() == std::io::ErrorKind::ConnectionReset,
-        };
+        let (outcome, open_for) = silent_client(addr).await?;
         assert!(
-            closed,
-            "a connection past the cap must be closed: {outcome:?}"
+            server_closed(&outcome),
+            "a connection past the cap must be closed: {outcome:?} after {open_for:?}"
         );
-        assert!(started.elapsed() < Duration::from_secs(3));
         drop(holder);
         Ok(())
+    }
+
+    /// End of file from a client that never spoke is the server's close.
+    #[test]
+    fn a_read_of_nothing_is_the_servers_close() {
+        assert!(server_closed(&Ok(0)), "end of file is a close");
+    }
+
+    /// A reset is the server's close too.
+    #[test]
+    fn a_reset_is_the_servers_close() {
+        assert!(
+            server_closed(&Err(std::io::ErrorKind::ConnectionReset.into())),
+            "a reset is a close"
+        );
+    }
+
+    /// Bytes are not a close: the server answered.
+    #[test]
+    fn bytes_are_not_the_servers_close() {
+        assert!(!server_closed(&Ok(7)), "bytes are an answer, not a close");
+    }
+
+    /// A read that timed out is not a close: the server kept the connection.
+    #[test]
+    fn a_timed_out_read_is_not_the_servers_close() {
+        for kind in [std::io::ErrorKind::WouldBlock, std::io::ErrorKind::TimedOut] {
+            assert!(
+                !server_closed(&Err(kind.into())),
+                "{kind:?} means the connection was kept"
+            );
+        }
     }
 
     /// A matching pair starts: the listener binds and reports its address.

@@ -106,7 +106,6 @@ pub fn read_to_string_unless_stopped<R: Read + AsFd>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
     use std::io::Write as _;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -143,40 +142,105 @@ mod tests {
         Ok(())
     }
 
-    /// A stop while the input is open and idle ends the read with `None`,
-    /// within a few waits: the writer is still open, so the input never ends.
+    /// Read `reader` on its own thread with a stop that answers `true` from
+    /// its `stop_at`-th question on (never when `stop_at` is 0), while this
+    /// thread holds `writer` open.
+    ///
+    /// # Returns
+    ///
+    /// What the read returned and how many times it asked whether to stop.
+    /// A read that does not ask between waits never ends while the writer
+    /// is open; after `CEILING`, far past any wait, the writer is closed so
+    /// the read ends at the end of input and the test fails on the text it
+    /// returns instead of hanging.
+    fn counted_read(
+        mut reader: std::io::PipeReader,
+        writer: std::io::PipeWriter,
+        stop_at: u32,
+    ) -> Result<(Option<String>, u32), Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        const CEILING: Duration = Duration::from_secs(60);
+        let asked = Arc::new(AtomicU32::new(0));
+        let counter = Arc::clone(&asked);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reading = std::thread::spawn(move || {
+            let stopped = || {
+                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                stop_at != 0 && n >= stop_at
+            };
+            let text = read_to_string_unless_stopped(&mut reader, &stopped);
+            let _ = tx.send(());
+            text
+        });
+        let _ = rx.recv_timeout(CEILING);
+        drop(writer);
+        let text = reading.join().map_err(|_| "the reader panicked")??;
+        Ok((text, asked.load(Ordering::SeqCst)))
+    }
+
+    /// A stop while the input is open and idle ends the read with `None`: the
+    /// writer is still open, so the input never ends.
+    ///
+    /// Proved by the count of questions, not by a stopwatch (this test once
+    /// asserted "under ten waits", 2 s, which a loaded host can pass): the
+    /// first wait reads the queued bytes, the second times out, and the
+    /// third question says stop.
     #[test]
     fn a_stop_ends_a_read_of_idle_input() -> TestResult {
-        let (mut reader, mut writer) = std::io::pipe()?;
+        let (reader, mut writer) = std::io::pipe()?;
         writer.write_all(b"partial")?;
-        let asked = Cell::new(0u32);
-        let stopped = || {
-            asked.set(asked.get() + 1);
-            asked.get() > 2
-        };
-        let started = std::time::Instant::now();
-        let text = read_to_string_unless_stopped(&mut reader, &stopped)?;
-        assert_eq!(text, None, "a stopped read returned text");
-        assert!(
-            started.elapsed() < POLL_INTERVAL * 10,
-            "the stop took {:?}",
-            started.elapsed()
+        let (text, asked) = counted_read(reader, writer, 3)?;
+        assert_eq!(
+            text, None,
+            "a stopped read returned text: the stop was not asked between waits"
         );
-        drop(writer);
+        assert_eq!(
+            asked, 3,
+            "the read ends at the first yes, the third question"
+        );
         Ok(())
     }
 
-    /// A stop already requested reads nothing at all.
+    /// The stop is asked before every wait, idle or not: a stop that says yes
+    /// on its fifth question ends the read after exactly five.
+    #[test]
+    fn the_stop_is_asked_before_every_wait() -> TestResult {
+        let (reader, writer) = std::io::pipe()?;
+        let (text, asked) = counted_read(reader, writer, 5)?;
+        assert_eq!(text, None, "a stopped read returned text");
+        assert_eq!(
+            asked, 5,
+            "one question per wait, and the read ends at the yes"
+        );
+        Ok(())
+    }
+
+    /// Input that ends before any stop is read whole, asking once per wait:
+    /// one wait for the bytes and one for the end of input.
+    #[test]
+    fn input_that_ends_first_is_read_whole_asking_once_per_wait() -> TestResult {
+        let (reader, mut writer) = std::io::pipe()?;
+        writer.write_all(b"aaaa-1\n")?;
+        let (_keep, unused) = std::io::pipe()?;
+        drop(writer);
+        let (text, asked) = counted_read(reader, unused, 0)?;
+        assert_eq!(text.as_deref(), Some("aaaa-1\n"), "the whole text");
+        assert_eq!(asked, 2, "one question before each of the two waits");
+        Ok(())
+    }
+
+    /// A stop already requested reads nothing at all, and is asked once.
     #[test]
     fn a_stop_before_the_read_reads_nothing() -> TestResult {
-        let (mut reader, mut writer) = std::io::pipe()?;
+        let (reader, mut writer) = std::io::pipe()?;
         writer.write_all(b"aaaa-1\n")?;
-        drop(writer);
+        let (text, asked) = counted_read(reader, writer, 1)?;
         assert_eq!(
-            read_to_string_unless_stopped(&mut reader, &|| true)?,
-            None,
+            text, None,
             "a stop requested before the read returns no text"
         );
+        assert_eq!(asked, 1, "the first question says stop; no wait follows");
         Ok(())
     }
 

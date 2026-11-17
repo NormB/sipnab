@@ -3617,6 +3617,11 @@ fn probe_metrics_max_conn() -> Result<(String, String), TestError> {
     /// Mirrors the `set_read_timeout` in `src/output/prometheus_server.rs`.
     const METRICS_HANDLER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+    /// Scrapes in a row whose parked connection may give its slot back before
+    /// the probe gives up: each one means only that this host stalled the
+    /// probe past the handler's read timeout.
+    const METRICS_PROBE_ATTEMPTS: u32 = 5;
+
     fn second_scrape_verdict(extra: &[&str]) -> Result<String, TestError> {
         // Both listeners on ports the kernel chose, never on a number picked
         // here and released first (see `support/headless_metrics.rs`).
@@ -3657,46 +3662,75 @@ fn probe_metrics_max_conn() -> Result<(String, String), TestError> {
         }
         assert!(up, "the metrics server never served a scrape on {addr}");
 
-        // Park a connection and PROVE it holds a slot, rather than sleeping and
-        // assuming the accept loop got to it. The two outcomes are
-        // distinguishable on the wire: a REFUSED connection is answered `503`
-        // and closed, while a HELD one receives nothing at all, because its
-        // handler is blocked reading a request line this probe never sends. So
-        // an empty read IS the proof, and a 503 means this attempt took no slot
-        // and must be retried.
+        // A "served" verdict is only evidence about the key if the parked
+        // connection held its slot for the whole scrape. That is checked as
+        // an EVENT, not by a stopwatch: the handler gives the slot back only
+        // by closing the parked socket (at its read timeout), so a parked
+        // socket that still reads as held AFTER the scrape held it
+        // throughout. (This probe once asserted the scrape took less than
+        // METRICS_HANDLER_READ_TIMEOUT, which a host that stalled the test
+        // for five seconds failed while the key worked.) An attempt whose
+        // slot was given back says nothing and is made again.
+        let mut released = 0u32;
+        let status = loop {
+            assert!(
+                released < METRICS_PROBE_ATTEMPTS,
+                "the parked connection gave its slot back during {released} \
+                 scrapes in a row (its handler's read timeout is {:?}), so no \
+                 `served` verdict is evidence about metrics_max_conn. This \
+                 machine was too slow to OBSERVE the key; that is not the same \
+                 as the key being dead, and the limit must not be deleted on \
+                 the strength of it.",
+                METRICS_HANDLER_READ_TIMEOUT
+            );
+            let parked = park_a_metrics_connection(&addr)?;
+            let status = second_scrape_status(&addr);
+            if status == "second-scrape-refused" || still_holds_its_slot(&parked) {
+                break status;
+            }
+            released += 1;
+        };
+
+        let _ = terminate(&mut child);
+        Ok(status)
+    }
+
+    /// Park a connection and PROVE it holds a slot, rather than sleeping and
+    /// assuming the accept loop got to it. The two outcomes are
+    /// distinguishable on the wire: a REFUSED connection is answered `503`
+    /// and closed, while a HELD one receives nothing at all, because its
+    /// handler is blocked reading a request line this probe never sends. So
+    /// an empty read IS the proof, and a 503 means this attempt took no slot
+    /// and must be retried.
+    fn park_a_metrics_connection(addr: &str) -> Result<std::net::TcpStream, TestError> {
         let parked_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        let parked = loop {
+        loop {
             assert!(
                 std::time::Instant::now() < parked_by,
                 "no connection ever held a metrics slot on {addr}, so the \
                  premise this probe rests on was never established. That is a \
                  statement about this machine, not about the key."
             );
-            let s = std::net::TcpStream::connect(&addr)?;
-            let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
-            let mut buf = [0u8; 32];
-            match (&s).read(&mut buf) {
-                // Timed out with no bytes: a handler owns this socket and is
-                // blocked on the request line. The slot is held.
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    break s;
-                }
-                // Anything else -- a `503`, or a close -- means no slot was
-                // taken. Drop it and try again.
-                _ => {}
+            let s = std::net::TcpStream::connect(addr)?;
+            if still_holds_its_slot(&s) {
+                return Ok(s);
             }
-        };
-        // Every measurement below must land inside the handler's read timeout,
-        // or the parked connection releases its slot mid-probe.
-        let held_since = std::time::Instant::now();
+            // A `503`, or a close: no slot was taken. Drop it and try again.
+        }
+    }
 
+    /// Whether the handler of `parked` is still blocked on its request line:
+    /// a short read gets no byte and no close.
+    fn still_holds_its_slot(parked: &std::net::TcpStream) -> bool {
+        let _ = parked.set_read_timeout(Some(std::time::Duration::from_millis(250)));
+        let mut buf = [0u8; 32];
+        holds_a_slot(&(&*parked).read(&mut buf))
+    }
+
+    /// One scrape of `/metrics` on `addr`, as the verdict the gate reads.
+    fn second_scrape_status(addr: &str) -> String {
         let mut status = String::from("no-answer");
-        if let Ok(mut s) = std::net::TcpStream::connect(&addr) {
+        if let Ok(mut s) = std::net::TcpStream::connect(addr) {
             let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
             let _ = write!(
                 s,
@@ -3711,26 +3745,7 @@ fn probe_metrics_max_conn() -> Result<(String, String), TestError> {
                 };
             }
         }
-
-        // A "served" verdict is only evidence about the key if the parked
-        // connection still held its slot throughout. Past the handler's read
-        // timeout it does not, and "served" would then say nothing -- exactly
-        // the reading that would get a working key deleted.
-        let elapsed = held_since.elapsed();
-        assert!(
-            status == "second-scrape-refused" || elapsed < METRICS_HANDLER_READ_TIMEOUT,
-            "the second scrape took {elapsed:?}, past the {:?} the parked \
-             connection holds its slot for, so `{status}` is not evidence \
-             about metrics_max_conn -- the slot was released mid-probe. This \
-             machine was too slow to OBSERVE the key; that is not the same as \
-             the key being dead, and the limit must not be deleted on the \
-             strength of it.",
-            METRICS_HANDLER_READ_TIMEOUT
-        );
-
-        drop(parked);
-        let _ = terminate(&mut child);
-        Ok(status)
+        status
     }
 
     let dir = tempfile::tempdir()?;
@@ -3739,6 +3754,65 @@ fn probe_metrics_max_conn() -> Result<(String, String), TestError> {
         second_scrape_verdict(&["--no-config"])?,
         second_scrape_verdict(&["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
     ))
+}
+
+/// Whether a short read of a parked metrics connection says its handler
+/// still holds the slot: the read timed out with no byte. A byte (a `503`),
+/// a close, or any other error means the connection holds nothing.
+fn holds_a_slot(read: &std::io::Result<usize>) -> bool {
+    matches!(
+        read,
+        Err(e) if matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        )
+    )
+}
+
+/// A read that timed out with nothing is a held slot.
+#[test]
+fn a_parked_read_that_times_out_holds_a_slot() {
+    assert!(
+        holds_a_slot(&Err(std::io::ErrorKind::WouldBlock.into())),
+        "WouldBlock, as Linux reports a read timeout, is a held slot"
+    );
+}
+
+/// macOS and others report a read timeout as `TimedOut`: also held.
+#[test]
+fn a_parked_read_that_reports_timed_out_holds_a_slot() {
+    assert!(
+        holds_a_slot(&Err(std::io::ErrorKind::TimedOut.into())),
+        "TimedOut is a held slot"
+    );
+}
+
+/// A close (a read of 0) is a slot given back: the handler timed out.
+#[test]
+fn a_parked_connection_that_was_closed_holds_no_slot() {
+    assert!(!holds_a_slot(&Ok(0)), "a closed connection holds nothing");
+}
+
+/// Bytes (the start of a `503`) mean the connection was refused a slot.
+#[test]
+fn a_parked_connection_that_was_answered_holds_no_slot() {
+    assert!(
+        !holds_a_slot(&Ok(12)),
+        "an answered connection holds nothing"
+    );
+}
+
+/// A reset, or a read a signal interrupted, proves no hold: the attempt is
+/// made again.
+#[test]
+fn a_parked_read_that_failed_otherwise_holds_no_slot() {
+    for kind in [
+        std::io::ErrorKind::ConnectionReset,
+        std::io::ErrorKind::Interrupted,
+        std::io::ErrorKind::UnexpectedEof,
+    ] {
+        assert!(!holds_a_slot(&Err(kind.into())), "{kind:?} is not a hold");
+    }
 }
 
 /// Placeholder for builds without the metrics server; the gate never calls it.
