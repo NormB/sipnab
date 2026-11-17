@@ -6870,7 +6870,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // (bookworm container)" sources `scripts/release-apt.sh` and its comment
     // names `scripts/tests/test_release_apt.py`. Measurement: the scan read
     // 295 on main 665b7f791 and 297 with that step staged.
-    const EXPECTED_REFERENCES: usize = 297;
+    // 297 -> 298 (tag proof picker): ci.yml's step "Shellcheck (sh, tag
+    // proof picker)" names `scripts/pick-tag-proof.sh`. Measurement: the scan
+    // read 297 on main e15844760 and 298 with that step staged.
+    const EXPECTED_REFERENCES: usize = 298;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

@@ -876,6 +876,75 @@ else
 	sed 's/^/    /' "$TMP/out.log"
 fi
 
+# -- TAG-PUSH-GATE-RUNS-FROM-TAG-COMMIT: origin/main's proof copy judges ------
+# The tagged commit's checkout ran its own tag-push-proof.py, so a gate fix
+# merged after the release merge never reached that tag push (0.5.259). Here
+# origin/main is a child of the tagged commit whose copy refuses every tag
+# while gh reports the commit green: a refusal can only come from main's copy.
+# The child is made with a scratch index, so the crate's tree and index stay.
+MAIN_PROOF="$TMP/main-proof.py"
+printf 'import sys\nprint("main copy judged: " + " ".join(sys.argv[1:]))\nsys.exit(4 if "--tag-ci" in sys.argv else 1)\n' \
+	>"$MAIN_PROOF"
+main_child() { # $1 = parent commit or "" for a root -> prints the new commit
+	( cd "$CRATE" \
+		&& blob=$(git hash-object -w "$MAIN_PROOF") \
+		&& GIT_INDEX_FILE="$TMP/main-proof.idx" git read-tree --empty \
+		&& GIT_INDEX_FILE="$TMP/main-proof.idx" git update-index --add \
+			--cacheinfo "100644,$blob,scripts/tag-push-proof.py" \
+		&& tree=$(GIT_INDEX_FILE="$TMP/main-proof.idx" git write-tree) \
+		&& rm -f "$TMP/main-proof.idx" \
+		&& git -c commit.gpgSign=false commit-tree ${1:+-p "$1"} -m main "$tree" )
+}
+copies_left() { # the copies the hook leaves in the crate's git dir
+	find "$CRATE/.git" -maxdepth 1 -name 'sipnab-tag-proof-main.*' | wc -l | tr -d ' '
+}
+MAIN_CHILD=$(main_child "$TAGGED")
+( cd "$CRATE" && git update-ref refs/remotes/origin/main "$MAIN_CHILD" )
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "a tag on origin/main was ALLOWED although origin/main's proof copy refuses it"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "tag proof: origin/main's scripts/tag-push-proof.py"; then
+	bad "a tag on origin/main: the hook did not say origin/main's proof copy judges it"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "main copy judged: --tag-ci $TAGGED"; then
+	bad "a tag on origin/main: the tag CI gate did not run origin/main's copy"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "main copy judged:" || [ "$(grep -c 'main copy judged:' "$TMP/out.log")" -lt 2 ]; then
+	bad "a tag on origin/main: the tag-only proof did not run origin/main's copy"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "a tag on origin/main is judged by origin/main's proof copy, and its refusal blocks the push"
+fi
+if [ "$(copies_left)" = 0 ]; then
+	ok "the hook removes origin/main's proof copy from the git dir when it exits"
+else
+	bad "the hook left origin/main's proof copy in the git dir"
+	find "$CRATE/.git" -maxdepth 1 -name 'sipnab-tag-proof-main.*' | sed 's/^/    /'
+fi
+
+# A tagged commit that origin/main does not hold (a stale origin/main): the
+# checkout's copy judges, the line says why, and the green commit passes.
+ORPHAN_MAIN=$(main_child "")
+( cd "$CRATE" && git update-ref refs/remotes/origin/main "$ORPHAN_MAIN" )
+if ! PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "a tag off origin/main was BLOCKED although this checkout's copy finds its CI green"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "tag proof: this checkout's scripts/tag-push-proof.py judges this push: the tagged commit"; then
+	bad "a tag off origin/main: the hook did not say this checkout's copy judges it, and why"
+	sed 's/^/    /' "$TMP/out.log"
+elif blocked_for "main copy judged:"; then
+	bad "a tag off origin/main still ran origin/main's copy"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "a tag off origin/main is judged by this checkout's copy, with the line that says why"
+fi
+if [ "$(copies_left)" = 0 ]; then
+	ok "a fallback leaves no proof copy in the git dir"
+else
+	bad "a fallback left a proof copy in the git dir"
+fi
+( cd "$CRATE" && git update-ref -d refs/remotes/origin/main )
+
 # PRE-PUSH-958-PERCENT-B: the phase-one note an allowed tag prints ended with
 # `%%b` in its printf format, which prints a literal `%b` and never uses the
 # color-reset argument, so the yellow it opens ran on into the next line. In

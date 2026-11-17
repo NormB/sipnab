@@ -421,6 +421,31 @@ tag-only push: b255c4f28 (merge of PR #694, head 8ae7313e2, same tree) is on ori
 - `SIPNAB_GATE_NO_CACHE=1` also runs every gate.
 - The rule is `decide` in `scripts/tag-push-proof.py`.
 
+**Which copy of the proof judges a tag push.** The release train checks out
+the merge commit before it pushes the tag. For a push that holds a tag, the
+hook runs `origin/main`'s copy of `scripts/tag-push-proof.py`, so a fix to the
+proof merged after the release merge still judges that release's tag:
+
+- The hook uses `origin/main`'s copy when `origin/main` resolves to a commit,
+  every tagged commit is on it, and the file there is a regular, non-empty
+  file. It writes the copy to the git directory and removes it when the hook
+  exits.
+- Otherwise the hook uses this checkout's copy and prints one line that says
+  why (the example below). Run `git fetch origin main` and push the tag again
+  to use `origin/main`'s copy.
+- The copy it names gives the verdict. A refusal from `origin/main`'s copy
+  blocks the push.
+- This applies only to a tag whose tagged commit holds this hook. The hook of
+  an older commit runs the copy of that commit.
+- To see the choice without pushing, run `sh scripts/pick-tag-proof.sh
+  scripts/tag-push-proof.py <copy path>` with one pre-push line on standard
+  input. The first line it prints is the copy the hook would run. When that is
+  `<copy path>`, delete that file afterwards.
+
+```text
+  tag proof: this checkout's scripts/tag-push-proof.py judges this push: the tagged commit 1a2b3c4d5e6f is not on origin/main 0f1e2d3c4b5a (a stale origin/main? run: git fetch origin main)
+```
+
 **The tag CI gate and the merged pull request's head.** The CI check of a
 tag passes when every workflow run on the tagged commit succeeded. It also
 passes while the runs on the merge commit are still going, when the head of the
