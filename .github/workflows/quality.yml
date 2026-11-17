@@ -237,6 +237,11 @@ jobs:
       # G.729 read the fetched ITU-T package; a missing one fails them.
       - uses: ./.github/actions/g729-vectors
 
+      # Every platform's crates: release_pipeline_gate_test runs `cargo tree
+      # --offline --target all`. scripts/check-suite-fetch.py holds this step.
+      - name: Fetch every platform's crates
+        run: cargo fetch --locked
+
       - name: Collect coverage
         # The skips are the workflow-level COVERAGE_TEST_SKIPS; the comment
         # there says why each one exists.
@@ -360,6 +365,10 @@ jobs:
       # The sipnab-g729 crate's conformance tests and the sipnab tests that decode
       # G.729 read the fetched ITU-T package; a missing one fails them.
       - uses: ./.github/actions/g729-vectors
+
+      # Every platform's crates, as in `coverage`: scripts/check-suite-fetch.py.
+      - name: Fetch every platform's crates
+        run: cargo fetch --locked
 
       - name: Collect branch coverage
         run: |

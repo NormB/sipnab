@@ -8,6 +8,10 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+Not released. CI and test-only changes since 0.5.263 (every suite job fetches every platform's crates first); nothing a user of the released artifacts can see.
+
 ## [0.5.263] - 2026-11-17
 
 ### Fixed

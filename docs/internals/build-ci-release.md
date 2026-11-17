@@ -598,6 +598,34 @@ No run there means the completed run belongs to another workflow.
 
 [`scripts/tests/test_rerun_not_acquired.py`](../../scripts/tests/test_rerun_not_acquired.py) tests the decision against two answers captured from GitHub's API, in [`tests/fixtures/rerun_not_acquired`](../../tests/fixtures/rerun_not_acquired), and against answers built in the same shape.
 
+### Every platform's crates before the suite
+
+**Every job that runs the suite runs `cargo fetch --locked` first.**
+
+- [`tests/release_pipeline_gate_test.rs`](../../tests/release_pipeline_gate_test.rs) runs `cargo tree --offline --locked --target all`.
+  That reads the crates of every platform from the local cargo registry.
+- A build downloads only the crates of the platform it builds for.
+  With a warm cargo cache the registry held the others, so the test passed.
+- On main b8700e3f2 (2026-11-17) the release's new `Cargo.lock` missed the macOS cargo cache.
+  macOS shard 2 then failed with `failed to download alsa v0.11.0` and `--offline was specified`.
+- `cargo fetch --locked` with no `--target` downloads every platform's crates, so the test holds on a cold cache too.
+  It runs after the cache restore, because a restore can replace the registry.
+
+[`scripts/check-suite-fetch.py`](../../scripts/check-suite-fetch.py) holds the rule for every workflow:
+
+- A step runs the suite when it runs [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) (not `merge`), `cargo llvm-cov` (not `report`) or [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py).
+- Its job needs a `cargo fetch --locked` step before the first such step, and after any `actions/cache` restore of `~/.cargo/registry` before it.
+- [`scripts/tests/test_check_suite_fetch.py`](../../scripts/tests/test_check_suite_fetch.py) runs it on every workflow of the repository.
+
+**On your own machine.** The same test fails on a registry that has only your platform's crates.
+Its message then ends with the fix:
+
+```sh
+cargo fetch --locked
+```
+
+Run it once (it needs the network), then run the test again.
+
 ### Dependabot bumps fail on a generated file, not on an API break
 
 **Every Dependabot pull request fails the same way, and it is almost never a

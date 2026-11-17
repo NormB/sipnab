@@ -1080,7 +1080,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/sanitizers_paths_test.rs.
     // 898 -> 899 (goldens without trycmd, +1): testing.md's CLI golden row
     // links tests/support/golden_cases.rs.
-    const EXPECTED_CODE_LINKS: usize = 899;
+    // 899 -> 904 (fetch before the suite, +5): build-ci-release.md's "Every
+    // platform's crates before the suite" links tests/release_pipeline_gate_test.rs,
+    // scripts/check-suite-fetch.py, scripts/tests/test_check_suite_fetch.py,
+    // scripts/parallel-tests.py and scripts/check-feature-matrix.py.
+    const EXPECTED_CODE_LINKS: usize = 904;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
