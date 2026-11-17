@@ -10,7 +10,12 @@ entry that carries them.
 
 ## [Unreleased]
 
-Not released. Test-only and internal changes since 0.5.261 (test time bounds made event-based); nothing a user of the released artifacts can see.
+### Security
+
+- **The VEX document lists chrono's unmaintained advisory as not affecting sipnab.**
+  - Effect: `vex/sipnab.openvex.json` states RUSTSEC-2026-0543 as `not_affected`; `cargo deny` accepts it with that reason.
+  - Limit: chrono stays in the dependency tree, because rmcp and arrow/parquet require it.
+  - Docs: [SECURITY.md](SECURITY.md)
 
 ## [0.5.261] - 2026-11-16
 
