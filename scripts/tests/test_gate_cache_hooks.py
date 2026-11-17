@@ -380,7 +380,7 @@ def test_an_edit_during_the_run_leaves_no_stamp(pc):
     (pc.tree / "src/lib.rs").write_text("pub fn prod() -> u8 { 9 }\n")
     out, _ = proc.communicate(timeout=300)
     assert proc.returncode == 0, out
-    assert "No pass stamp for tests: its inputs changed while it ran." in out, out
+    assert "No pass stamp for tests: its inputs changed while it ran (changed: files)." in out, out
     assert "tests" not in pc.stamps() and "hook" not in pc.stamps(), pc.stamps()
 
 

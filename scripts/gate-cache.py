@@ -64,6 +64,17 @@ in the future, is no stamp. Every write prunes the directory: stamps older
 than MAX_AGE, all but the newest MAX_COUNT, and temporary files older than
 TMP_MAX_AGE.
 
+THE PARTS RECORDS, in PARTS_DIR inside the stamp directory, say why a stamp
+was refused. `keys` records, for each step, a digest of each part of the key
+it printed (for tools and env, a digest of each entry); `pass` compares that
+record with the parts at the end and names the parts that differ:
+"its inputs changed while it ran (changed: tags)". A record holds digests
+only, never a value, because env admits CARGO_* variables, a registry token
+among them. A record that is absent, damaged or expired makes the line say
+the start was not recorded; it never decides whether a step runs. Records are
+pruned with the stamps, counted apart. A script from before the records
+ignores the directory.
+
 SIPNAB_GATE_NO_CACHE=1 makes every lookup miss, so every step runs; a step
 that passes still writes its stamp.
 
@@ -91,6 +102,9 @@ import time
 
 SCHEMA = 1
 STAMP_DIR = "sipnab-gate-pass"
+# Inside STAMP_DIR: a digest of each part of a key as `keys` computed it at the
+# start of a run, so `pass` can name the parts that changed while a step ran.
+PARTS_DIR = "parts"
 # A stamp stands for a week at most, and the directory keeps the newest 256.
 MAX_AGE = 7 * 24 * 3600
 MAX_COUNT = 256
@@ -716,10 +730,98 @@ def valid_stamp(directory, hook: str, step: str, key: str, now: float) -> dict |
     return record
 
 
+def _digest_value(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode(errors="surrogateescape")).hexdigest()
+
+
+def parts_record(parts: dict) -> dict:
+    """The parts of a key as digests only: each part's digest, and for a part
+    that is a dict (tools, env) each entry's digest under its name. No value is
+    kept: env admits CARGO_* variables, a registry token among them."""
+    return {
+        name: {k: _digest_value(v) for k, v in value.items()} if isinstance(value, dict) else _digest_value(value)
+        for name, value in parts.items()
+    }
+
+
+def changed_parts(before: dict, after: dict) -> list[str]:
+    """The sorted names of the parts that differ between two records; an entry
+    of a dict part is named `part.entry` (env.RUSTFLAGS, tools.rustc)."""
+    names = []
+    for name in set(before) | set(after):
+        a, b = before.get(name), after.get(name)
+        if isinstance(a, dict) and isinstance(b, dict):
+            names += [f"{name}.{k}" for k in set(a) | set(b) if a.get(k) != b.get(k)]
+        elif a != b:
+            names.append(name)
+    return sorted(names)
+
+
+def refusal_line(step: str, changed: list[str] | None) -> str:
+    """The line `pass` prints for a step whose key changed while it ran."""
+    head = f"  No pass stamp for {step}: its inputs changed while it ran"
+    if not changed:
+        return f"{head} (its inputs at the start were not recorded)."
+    return f"{head} (changed: {', '.join(changed)})."
+
+
+def write_parts(directory, hook: str, step: str, key: str, parts: dict, now: float) -> pathlib.Path | None:
+    """Record the digests of `parts` for (hook, step, key), atomically, as
+    write_stamp writes a stamp. None when no record was written."""
+    folder = pathlib.Path(directory, PARTS_DIR)
+    folder.mkdir(parents=True, exist_ok=True)
+    record = {
+        "schema": SCHEMA,
+        "hook": hook,
+        "step": step,
+        "key": key,
+        "written": now,
+        "parts": parts_record(parts),
+    }
+    record["check"] = _check(record)
+    final = stamp_path(folder, hook, step, key)
+    tmp = final.with_name(f"{final.name}.tmp-{os.getpid()}-{os.urandom(4).hex()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(record, f, sort_keys=True)
+        os.replace(tmp, final)
+    except FileNotFoundError:
+        return None
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return final
+
+
+def read_parts(directory, hook: str, step: str, key: str, now: float) -> dict | None:
+    """The recorded digests for (hook, step, key) when the record is whole,
+    its own and current; else None."""
+    try:
+        record = json.loads(stamp_path(pathlib.Path(directory, PARTS_DIR), hook, step, key).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("check") != _check(record):
+        return None
+    if (record.get("schema"), record.get("hook"), record.get("step"), record.get("key")) != (SCHEMA, hook, step, key):
+        return None
+    written = record.get("written")
+    if not isinstance(written, (int, float)) or now - written > MAX_AGE or written - now > FUTURE_SLACK:
+        return None
+    parts = record.get("parts")
+    return parts if isinstance(parts, dict) else None
+
+
 def prune(directory, now: float, max_age: float = MAX_AGE, max_count: int = MAX_COUNT) -> list[pathlib.Path]:
     """Remove stamps older than `max_age`, all but the newest `max_count`, and
-    temporary files older than TMP_MAX_AGE. Other files are left alone."""
+    temporary files older than TMP_MAX_AGE; the same, counted apart, for the
+    parts records in PARTS_DIR. Other files are left alone."""
     directory = pathlib.Path(directory)
+    return _prune_files(directory, now, max_age, max_count) + _prune_files(
+        directory / PARTS_DIR, now, max_age, max_count
+    )
+
+
+def _prune_files(directory: pathlib.Path, now: float, max_age: float, max_count: int) -> list[pathlib.Path]:
     if not directory.is_dir():
         return []
     removed = []
@@ -787,8 +889,18 @@ def cmd_keys(args) -> int:
     env = _env()
     root = _root(env)
     snap = snapshot(root, env, args.hook_file or _default_hook_file(args.hook))
+    directory = _stamp_dir(env)
+    now = time.time()
     for step in steps_of(args.hook, snap):
-        print(step, key_of(step_parts(args.hook, step, snap)))
+        parts = step_parts(args.hook, step, snap)
+        key = key_of(parts)
+        print(step, key)
+        # The record only feeds the line `pass` prints when this key changes:
+        # a store that cannot take it costs that line its detail, nothing more.
+        try:
+            write_parts(directory, args.hook, step, key, parts, now)
+        except OSError:
+            pass
     # "info" lines are for the hook to print when it does not skip outright.
     if _no_cache(env):
         print("info   Pass stamps... IGNORED (SIPNAB_GATE_NO_CACHE=1): every step runs")
@@ -847,8 +959,10 @@ def cmd_pass(args) -> int:
     directory = _stamp_dir(env)
     now = time.time()
     for step, key in pairs:
-        if key_of(step_parts(args.hook, step, snap)) != key:
-            print(f"  No pass stamp for {step}: its inputs changed while it ran.")
+        parts = step_parts(args.hook, step, snap)
+        if key_of(parts) != key:
+            before = read_parts(directory, args.hook, step, key, now)
+            print(refusal_line(step, None if before is None else changed_parts(before, parts_record(parts))))
             continue
         write_stamp(directory, args.hook, step, key, now, {"head": snap.head, "index_tree": snap.index_tree})
         if step == "hook":
