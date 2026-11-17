@@ -1884,6 +1884,24 @@ else
 	ok "a row that is not marked hook is left to CI"
 fi
 
+# PREPUSH-LINTS-3-OF-22-FEATURE-ROWS: the same unmarked row, on a pushed branch
+# with no origin/main to measure its changes from. `rows_for` falls back to
+# every single-feature row, so the hook lints `plain`, blocks, and says why.
+ROW_HEAD=$( cd "$CRATE" && git rev-parse HEAD )
+ROW_PUSH="refs/heads/rows $ROW_HEAD refs/heads/rows 0000000000000000000000000000000000000000"
+if run_hook "" "$ROW_PUSH"; then
+	bad "an unmarked single-feature row was not linted when the push's changes could not be read"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "$ROW_BLOCK" || ! blocked_for "    $ROW_LINT"; then
+	bad "an unreadable push blocked, but not at the single-feature row's lint"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "feature rows: the pushed changes could not be read; linting the 2 single-feature rows"; then
+	bad "an unreadable push linted the single-feature rows without the line that says why"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "a push whose changes cannot be read lints every single-feature row and says why"
+fi
+
 # A file the script cannot parse blocks the push: no row would be linted.
 printf 'plain hook hook\nextra\n' >"$CRATE/.github/feature-combos.txt"
 if run_hook ""; then

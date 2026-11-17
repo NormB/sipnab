@@ -219,12 +219,14 @@ def test_lint_row_fails_when_the_lint_fails(tmp_path):
     assert cli(root, "--lint-row", "native", path=bin_dir).returncode == 1
 
 
-def test_lint_row_refuses_a_row_that_is_not_marked(tmp_path):
+def test_lint_row_runs_a_row_that_is_not_marked(tmp_path):
+    # PREPUSH-LINTS-3-OF-22-FEATURE-ROWS: a push may lint any row the hook
+    # can lint (`rows_for`), so the mark no longer limits `--lint-row`.
     root = repo_with(tmp_path, "native hook\ntls\n")
     bin_dir, log = cargo_stub(tmp_path)
     r = cli(root, "--lint-row", "tls", path=bin_dir)
-    assert r.returncode == 2, r.stdout + r.stderr
-    assert "clippy" not in log.read_text(), log.read_text()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "clippy --no-default-features --features tls" in log.read_text(), log.read_text()
 
 
 def test_lint_row_refuses_a_row_that_is_not_listed(tmp_path):
@@ -253,7 +255,7 @@ def test_the_modes_do_not_combine(tmp_path, args):
 
 def test_the_hook_takes_rows_steps_and_commands_from_the_script():
     text = PRE_PUSH.read_text(encoding="utf-8")
-    assert 'python3 "$FEATURE_MATRIX" --hook-rows' in text
+    assert 'python3 "$FEATURE_MATRIX" --push-rows' in text
     assert 'python3 "$FEATURE_MATRIX" --lint-row "$row_features"' in text
     assert 'gate_hit "$row_step"' in text and 'gate_pass "$row_step"' in text
     # The command it prints is the one the script gave it, never a second copy.
@@ -261,15 +263,16 @@ def test_the_hook_takes_rows_steps_and_commands_from_the_script():
     assert "--features native," not in text
 
 
-def test_gate_cache_gives_each_marked_row_a_build_step(tmp_path):
-    root = repo_with(tmp_path, "tls\nnative,tui hook\nnative hook\n")
+def test_gate_cache_gives_each_lintable_row_a_build_step(tmp_path):
+    root = repo_with(tmp_path, "tls\nnative,tui hook\nnative hook\nopus needs=cmake\nwasm\n")
     rows = gc.matrix_rows(root)
     assert rows == {
+        "lint-tls": CLIPPY.format("tls"),
         "lint-native--tui": CLIPPY.format("native,tui"),
         "lint-native": CLIPPY.format("native"),
     }
 
 
-@pytest.mark.parametrize("combos", [None, "tls\napi\n", "opus hook needs=cmake\n", ""])
+@pytest.mark.parametrize("combos", [None, "opus needs=cmake\nwasm\n", "opus hook needs=cmake\n", ""])
 def test_gate_cache_has_no_row_step_without_a_readable_marked_file(tmp_path, combos):
     assert gc.matrix_rows(repo_with(tmp_path, combos)) == {}
