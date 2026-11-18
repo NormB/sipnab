@@ -5078,9 +5078,11 @@ fn inline_script_edits_require_csp_hash_refresh() -> Result<(), TestError> {
             // layout-shift budget. This one is the detection block. Re-pinned
             // the same day when it stopped deriving a CPU from the user agent
             // (frozen to x86_64/Intel by Chromium) and began marking tiles from
-            // the client hint instead.
+            // the client hint instead. Re-pinned 2026-11-18 when a Windows
+            // visitor stopped being sent to the Source tab: the banner now
+            // shows the Linux-and-macOS focus line and marks no choice.
             "download.html",
-            "sha256-0811gxPZE6mwpSjalocobPzF4V6TTo2Rvjoo7jh8hVQ=",
+            "sha256-7sOT+DQ6ya9uw+nOxwDoT+vxEWM2CZ+PieTJ13iwcx4=",
         ),
         (
             // The tab, table-of-contents and copy-button script, which now

@@ -38,7 +38,8 @@
 
   <div class="dl-detect" id="dl-detect" hidden>
     <span class="dl-detect-dot" aria-hidden="true"></span>
-    <span>Detected: <b id="dl-detect-plat"></b> &mdash; the highlighted choice below is the one you want.</span>
+    <span id="dl-detect-match">Detected: <b id="dl-detect-plat"></b> &mdash; the highlighted choice below is the one you want.</span>
+    <span id="dl-detect-unsupported" hidden>sipnab currently focuses on Linux and macOS. Windows is not supported yet. Pull requests that add Windows support are welcome (<a href="{{ get_url(path='@/docs/contributing.md') }}">CONTRIBUTING.md</a>).</span>
     <span class="dl-detect-note" id="dl-detect-note"></span>
     <a href="#all-files">not right? see all files &darr;</a>
   </div>
@@ -82,14 +83,15 @@
     else if (/Ubuntu|Debian/.test(ua)) { os = 'debian'; osName = 'Debian/Ubuntu'; }
     else if (/Fedora|Red Hat|CentOS|AlmaLinux|Rocky/.test(ua)) { os = 'debian'; osName = 'RHEL/Fedora'; }
     else if (/Linux/.test(ua)) { os = 'linux'; osName = 'Linux'; }
-    // Advice belongs in osNote, not osName. Stuffing it into the name rendered
-    // "Detected: Windows — use WSL or build from source · Intel/AMD (x86_64 /
-    // amd64) — the highlighted choice below is the one you want", which reads as
-    // one run-on sentence and buries the actual instruction. The iOS branch above
-    // already had the right shape.
+    // Windows gets no install choice: a Windows build of sipnab has never been
+    // tried. The banner shows the focus line in place of "Detected", sets no
+    // data-os (so no tab is marked and the page keeps its default panel), and
+    // does not ask for the CPU (no tile is marked).
     else if (/Windows/.test(ua)) {
-      os = 'source'; osName = 'Windows';
-      osNote = 'There is no native Windows build — run sipnab under WSL, or build from source.';
+      document.getElementById('dl-detect-match').hidden = true;
+      document.getElementById('dl-detect-unsupported').hidden = false;
+      banner.hidden = false;
+      return;
     }
     document.getElementById('dl-detect-plat').textContent = osName;
     document.getElementById('dl-detect-note').textContent = osNote || '';
