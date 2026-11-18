@@ -26,11 +26,11 @@
 #![cfg(feature = "native")]
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
 use std::process::Command;
 
 #[path = "support/corpus.rs"]
 mod corpus_support;
+use corpus_support::test_prereq;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -142,13 +142,14 @@ fn options_200_sdp_links_no_stream_on_a_real_capture() -> Result<(), TestError> 
         return Ok(());
     };
     let capture = root.join(CAPTURE);
-    if !capture.is_file() {
-        // Another machine's corpus. Written past libtest's capture, as the
-        // shared gate does, so the skip is not mistaken for a pass.
-        let _ = writeln!(
-            std::io::stderr(),
-            "corpus_options_sdp_media_link_test: {CAPTURE} is not under SIPNAB_CORPUS, skipping"
-        );
+    // Another machine's corpus may not hold this capture.
+    if test_prereq::check(
+        "corpus",
+        test_prereq::Need::Optional(corpus_support::CORPUS_REASON),
+        test_prereq::path_exists(&capture),
+    )?
+    .is_none()
+    {
         return Ok(());
     }
     check(&streams(&capture, &[])?, "batch")?;

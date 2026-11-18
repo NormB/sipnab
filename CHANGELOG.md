@@ -8,6 +8,10 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+Not released. Test-only changes since 0.5.264 (a test whose prerequisite is missing now fails, or skips with a notice the suite run counts, through one helper, and CI requires the prerequisites its runners have); nothing a user of the released artifacts can see.
+
 ## [0.5.264] - 2026-11-18
 
 ### Fixed

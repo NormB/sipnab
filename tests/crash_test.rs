@@ -156,6 +156,8 @@ fn backtrace_false_report_says_disabled() -> Result<(), TestError> {
 #[cfg(target_os = "linux")]
 #[path = "support/dbgsym.rs"]
 mod dbgsym;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 
 /// The one crash report written under the default policy, as text.
 fn default_report() -> Result<String, TestError> {
@@ -222,10 +224,7 @@ fn the_report_records_the_image_identity_and_raw_frames() -> Result<(), TestErro
 #[test]
 #[cfg(target_os = "linux")]
 fn the_report_frames_resolve_against_the_published_symbol_file() -> Result<(), TestError> {
-    if !dbgsym::have("llvm-symbolizer") && !dbgsym::have("addr2line") {
-        eprintln!("SKIPPED: neither llvm-symbolizer nor addr2line is installed");
-        return Ok(());
-    }
+    test_prereq::required("addr2line", dbgsym::symbolizer_probe())?;
     let report = default_report()?;
     let frames = executable_frames(&report);
     assert!(!frames.is_empty(), "no executable frames:\n{report}");

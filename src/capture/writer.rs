@@ -1582,8 +1582,7 @@ mod tests {
     #[test]
     fn a_directory_the_effective_user_cannot_write_is_refused() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt as _;
-        if running_as_root() {
-            stderr_line!("skipped: root ignores mode bits, so no refusal can be staged");
+        if !crate::test_prereq::not_root(running_as_root()) {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -2353,15 +2352,24 @@ mod tests {
                 .env("XDG_CONFIG_HOME", dir.path())
                 .env("WIRESHARK_CONFIG_DIR", dir.path())
                 .output();
-            let out = match run {
-                Ok(out) => out,
+            let probe = match run {
+                Ok(out) => Ok(out),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    stderr_line!(
-                        "skipped: no tshark on this host; the pcap-file round trip above still ran"
-                    );
-                    return Ok(());
+                    Err(format!("tshark is not on PATH: {e}"))
                 }
                 Err(e) => return Err(format!("tshark would not start: {e}").into()),
+            };
+            let Some(out) = crate::test_prereq::check(
+                "tshark",
+                crate::test_prereq::Need::Optional(
+                    "tshark comes with Wireshark, which a contributor's host may not have; \
+                     CI's Linux runners install it, and the pcap-file round trip above runs \
+                     either way.",
+                ),
+                probe,
+            )?
+            else {
+                return Ok(());
             };
             assert!(
                 out.status.success(),

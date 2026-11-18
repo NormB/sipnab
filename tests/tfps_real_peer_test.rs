@@ -29,6 +29,9 @@
 
 use std::path::PathBuf;
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use sipnab::security::tfps::{DROPPED_HINT, Reply, TfpsLocator};
 
 type TestError = Box<dyn std::error::Error>;
@@ -37,16 +40,17 @@ type TestError = Box<dyn std::error::Error>;
 const ENV_VAR: &str = "SIPNAB_TFPS_CTL";
 
 /// The named binary, or `None` after saying how to name one.
-fn real_ctl(test: &str) -> Result<Option<PathBuf>, TestError> {
+fn real_ctl(_test: &str) -> Result<Option<PathBuf>, TestError> {
     match std::env::var_os(ENV_VAR).map(PathBuf::from) {
         Some(p) if p.is_file() => Ok(Some(p)),
         Some(p) => Err(format!("{ENV_VAR}={} is not a file", p.display()).into()),
-        None => {
-            eprintln!(
-                "{test}: skipped; set {ENV_VAR}=/path/to/tfps_ctl to run it against a real TFPS"
-            );
-            Ok(None)
-        }
+        None => Ok(test_prereq::check(
+            "tfps-ctl",
+            test_prereq::Need::Optional(
+                "a real TFPS peer is opt-in: set SIPNAB_TFPS_CTL=/path/to/tfps_ctl to run it.",
+            ),
+            Err::<PathBuf, String>(format!("{ENV_VAR} is not set")),
+        )?),
     }
 }
 

@@ -33,6 +33,8 @@ use sipnab::config::{FORWARD_BACKOFF_CAP, FORWARD_BACKOFF_FIRST, FORWARD_MAX_ERR
 
 include!("support/timeout.rs");
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "support/tls_pki.rs"]
 mod tls_pki;
 
@@ -1003,7 +1005,21 @@ fn a_destination_on_another_filesystem_is_refused() -> Result<(), TestError> {
     use std::os::unix::fs::MetadataExt;
     let mut rig = Rig::new("http://127.0.0.1:9/v1/vcons", "Authorization")?;
     let shm = Path::new("/dev/shm");
-    if !shm.is_dir() || std::fs::metadata(shm)?.dev() == std::fs::metadata(rig.spool())?.dev() {
+    let probe = if !shm.is_dir() {
+        Err("/dev/shm is not a directory".to_owned())
+    } else if std::fs::metadata(shm)?.dev() == std::fs::metadata(rig.spool())?.dev() {
+        Err("/dev/shm is on the spool's filesystem".to_owned())
+    } else {
+        Ok(())
+    };
+    if !test_prereq::present(
+        "separate-shm",
+        test_prereq::Need::Optional(
+            "the case needs /dev/shm on a filesystem of its own, which Linux hosts have \
+             and macOS does not.",
+        ),
+        probe,
+    ) {
         return Ok(());
     }
     let elsewhere = tempfile::tempdir_in(shm)?;

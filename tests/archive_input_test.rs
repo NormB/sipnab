@@ -22,6 +22,8 @@ use std::process::Command;
 mod pcap_build;
 #[path = "support/tar_build.rs"]
 mod tar_build;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 
 use tar_build::{Entry, gzip, tar};
 
@@ -464,18 +466,15 @@ fn a_run_that_exits_nonzero_still_removes_what_it_extracted() -> Result<(), Test
 /// writer cannot give.
 #[test]
 fn an_archive_the_system_tar_wrote_reads_like_its_directory() -> Result<(), TestError> {
-    let have_tar = Command::new("tar")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !have_tar {
-        use std::io::Write as _;
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED an_archive_the_system_tar_wrote_reads_like_its_directory: no `tar` on PATH"
-        );
-        return Ok(());
-    }
+    // Every Linux and macOS host has a tar; its absence is a broken host.
+    test_prereq::required(
+        "tar",
+        match Command::new("tar").arg("--version").output() {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(format!("`tar --version` exited with {}", o.status)),
+            Err(e) => Err(format!("`tar --version` did not start: {e}")),
+        },
+    )?;
     let root = tempfile::tempdir()?;
     let tmp = tempfile::tempdir()?;
     let forms = forms(root.path())?;

@@ -672,16 +672,16 @@ more permanently — a filter cannot be removed.
 
 Two pieces of that harness carry over unchanged and must not be reimplemented:
 
-- `CHILD_COMPLETE` on stdout ([`:72`](https://github.com/NormB/sipnab/blob/main/tests/privilege_drop_test.rs#L72)<!-- "const CHILD_COMPLETE:" -->),
+- `CHILD_COMPLETE` on stdout ([`:74`](https://github.com/NormB/sipnab/blob/main/tests/privilege_drop_test.rs#L74)<!-- "const CHILD_COMPLETE:" -->),
   because *"without it a child that took an early return would still exit 0, and
   the parent would read that silence as proof — a gate that cannot fail."*
 - `announce_skip` writing to the **real** stderr
-  ([`:80`](https://github.com/NormB/sipnab/blob/main/tests/privilege_drop_test.rs#L80)<!-- "fn announce_skip(test:" -->), because libtest swallows
+  ([`:82`](https://github.com/NormB/sipnab/blob/main/tests/privilege_drop_test.rs#L82)<!-- "fn announce_skip(test:" -->), because libtest swallows
   `eprintln!` on pass and *"exactly that left nine binaries reporting `ok` while
   proving nothing."*
 
 The existing chroot child role
-([`:771-808`](https://github.com/NormB/sipnab/blob/main/tests/privilege_drop_test.rs#L771-L808)<!-- "/// Chroot into a parent-prepared directory and check the old root is gone." -->) is the closest model: it
+([`:792-829`](https://github.com/NormB/sipnab/blob/main/tests/privilege_drop_test.rs#L792-L829)<!-- "/// Chroot into a parent-prepared directory and check the old root is gone." -->) is the closest model: it
 proves confinement by checking a marker file's visibility rather than by trusting
 a return value.
 

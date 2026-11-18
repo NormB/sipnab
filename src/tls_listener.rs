@@ -1476,8 +1476,8 @@ mod tests {
         let ca = client_ca("unreadable")?;
         let path = std::path::Path::new(&ca.ca_file);
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000))?;
-        if std::fs::read(path).is_ok() {
-            // Running as root: mode 000 does not stop this user reading.
+        // Running as root: mode 000 does not stop this user reading.
+        if !crate::test_prereq::not_root(std::fs::read(path).is_ok()) {
             return Ok(());
         }
         let err = verifier_error(path, ClientAuthMode::Required)?;

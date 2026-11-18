@@ -133,9 +133,11 @@ fn ci_ignored_targets(workflow: &str) -> Vec<String> {
     out
 }
 
-/// Whether `file_src` spawns `test` itself as an `#[ignore]`d child role.
+/// Whether `file_src` spawns `test` itself as an `#[ignore]`d child role, by
+/// its name or (a unit test in the lib's binary) by its module path.
 fn is_self_spawned_child(file_src: &str, test: &str) -> bool {
-    file_src.contains("\"--ignored\"") && file_src.contains(&format!("\"{test}\""))
+    file_src.contains("\"--ignored\"")
+        && (file_src.contains(&format!("\"{test}\"")) || file_src.contains(&format!("::{test}\"")))
 }
 
 /// Why one ignore in `rel` breaks a rule, or `None` when it is clean.
@@ -286,6 +288,28 @@ fn each_runner_clears_a_reasoned_ignore() -> Result<(), TestError> {
     );
     let spawner = format!("{src}run(\"role\");\ncmd.args([\"--exact\", \"--ignored\"]);\n");
     assert_eq!(violation("tests/a_test.rs", &spawner, ig, &[], &[]), None);
+    Ok(())
+}
+
+/// A unit test's child role is spawned by its full module path, which is
+/// the name `--exact` matches in the lib's test binary.
+#[test]
+fn a_child_role_spawned_by_its_module_path_is_run() -> Result<(), TestError> {
+    let src = "#[ignore = \"child\"]\nfn role() {}\n";
+    let ig = &ignores_in(src)[0];
+    let spawner =
+        format!("{src}cmd.args([\"--exact\", \"app::x::tests::role\", \"--ignored\"]);\n");
+    assert_eq!(
+        violation("src/app/x.rs", &spawner, ig, &[], &[]),
+        None,
+        "the role is spawned by its path"
+    );
+    let other =
+        format!("{src}cmd.args([\"--exact\", \"app::x::tests::my_role\", \"--ignored\"]);\n");
+    assert!(
+        violation("src/app/x.rs", &other, ig, &[], &[]).is_some(),
+        "a path that ends in another name does not run this role"
+    );
     Ok(())
 }
 

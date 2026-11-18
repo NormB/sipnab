@@ -26,6 +26,8 @@
 //! new target, a new variant, or a changed `case` arm is covered the day it
 //! lands.
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "../src/test_scratch.rs"]
 mod test_scratch;
 
@@ -956,12 +958,23 @@ const REAL_WITHOUT_NETMAP: &[u8] =
 /// reads it. Returns whether it passed and what it printed. `None` when this
 /// host has no `strings`, which the step itself needs.
 fn backend_record(target: &str, parts: &[&[u8]]) -> Result<Option<(bool, String)>, TestError> {
-    if std::process::Command::new("strings")
+    let probe = match std::process::Command::new("strings")
         .arg("--version")
         .output()
-        .is_err()
     {
-        eprintln!("SKIPPED: no `strings` on this host; the release runner has binutils");
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("`strings` did not start: {e}")),
+    };
+    if test_prereq::check(
+        "strings",
+        test_prereq::Need::Optional(
+            "`strings` ships with binutils, which a non-Linux host may lack; \
+             the release runner and CI's Linux runners have it.",
+        ),
+        probe,
+    )?
+    .is_none()
+    {
         return Ok(None);
     }
     let script = step_script(

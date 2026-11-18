@@ -408,116 +408,6 @@ struct Finding {
 /// runs a cleanup between the two.
 const FOLLOWING_LINES: usize = 3;
 
-/// The byte ranges of `src` that are code: comments, string literals and
-/// character literals are blanked to spaces, newlines kept, so offsets and
-/// line numbers are the file's own.
-fn code_only(src: &str) -> String {
-    let b = src.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    let blank = |c: u8| if c == b'\n' { b'\n' } else { b' ' };
-    while i < b.len() {
-        let c = b[i];
-        if c == b'/' && b.get(i + 1) == Some(&b'/') {
-            while i < b.len() && b[i] != b'\n' {
-                out.push(b' ');
-                i += 1;
-            }
-        } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
-            let mut depth = 0usize;
-            while i < b.len() {
-                if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
-                    depth += 1;
-                    out.extend(b"  ");
-                    i += 2;
-                } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
-                    depth -= 1;
-                    out.extend(b"  ");
-                    i += 2;
-                    if depth == 0 {
-                        break;
-                    }
-                } else {
-                    out.push(blank(b[i]));
-                    i += 1;
-                }
-            }
-        } else if c == b'r'
-            && (b.get(i + 1) == Some(&b'"') || b.get(i + 1) == Some(&b'#'))
-            && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
-        {
-            // A raw string: r"..." or r#"..."#.
-            let mut j = i + 1;
-            let mut hashes = 0;
-            while b.get(j) == Some(&b'#') {
-                hashes += 1;
-                j += 1;
-            }
-            if b.get(j) != Some(&b'"') {
-                out.push(c);
-                i += 1;
-                continue;
-            }
-            out.extend(std::iter::repeat_n(b' ', j + 1 - i));
-            i = j + 1;
-            while i < b.len() {
-                let closes = b[i] == b'"'
-                    && b.len() > i + hashes
-                    && b[i + 1..=i + hashes].iter().all(|&h| h == b'#');
-                if closes {
-                    out.extend(std::iter::repeat_n(b' ', hashes + 1));
-                    i += hashes + 1;
-                    break;
-                }
-                out.push(blank(b[i]));
-                i += 1;
-            }
-        } else if c == b'"' {
-            out.push(b' ');
-            i += 1;
-            while i < b.len() {
-                if b[i] == b'\\' {
-                    out.push(b' ');
-                    if let Some(&n) = b.get(i + 1) {
-                        out.push(blank(n));
-                    }
-                    i += 2;
-                } else if b[i] == b'"' {
-                    out.push(b' ');
-                    i += 1;
-                    break;
-                } else {
-                    out.push(blank(b[i]));
-                    i += 1;
-                }
-            }
-        } else if c == b'\'' {
-            // A character literal ('x', '\n', '\''), or a lifetime ('a).
-            let len = if b.get(i + 1) == Some(&b'\\') {
-                b[i + 2..].iter().position(|&x| x == b'\'').map(|p| p + 3)
-            } else if b.get(i + 2) == Some(&b'\'') {
-                Some(3)
-            } else {
-                None
-            };
-            match len {
-                Some(n) => {
-                    out.extend(std::iter::repeat_n(b' ', n));
-                    i += n;
-                }
-                None => {
-                    out.push(c);
-                    i += 1;
-                }
-            }
-        } else {
-            out.push(c);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// Whether a trimmed line of code exits the process or is the exit code its
 /// block hands back.
 fn is_exit(line: &str) -> bool {
@@ -546,7 +436,7 @@ fn is_exit(line: &str) -> bool {
 /// Every `error!` call in `src` (a Rust file's production part) whose
 /// statement is followed, within the enclosing block, by an exit.
 fn findings(src: &str) -> Vec<Finding> {
-    let code = code_only(src);
+    let code = source_scan::code_only(src);
     let bytes = code.as_bytes();
     let mut found = Vec::new();
     let mut from = 0;

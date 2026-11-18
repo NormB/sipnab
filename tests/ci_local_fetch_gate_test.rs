@@ -45,6 +45,9 @@
 //! command that actually failed — under "The release path" at the bottom of
 //! this file. Caching is what stayed out; ignoring the release path did not.
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::path::Path;
 
 /// Any error a test can return; `?` converts into it.
@@ -144,10 +147,11 @@ fn no_hosted_workflow_installs_system_packages_from_the_archives() -> Result<(),
 /// reachability argument is the part that changes without anyone noticing.
 #[test]
 fn no_local_action_interpolates_an_expression_into_a_shell_script() -> Result<(), TestError> {
-    let dir = repo().join(".github/actions");
-    if !dir.exists() {
-        return Ok(());
-    }
+    // Tracked directories: their absence is a defect of the checkout.
+    let dir = test_prereq::required(
+        "tracked-file",
+        test_prereq::path_exists(&repo().join(".github/actions")),
+    )?;
     let mut offenders = Vec::new();
     let mut scanned = 0usize;
 

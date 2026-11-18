@@ -29,7 +29,9 @@
 #[cfg(target_os = "linux")]
 use sipnab::sandbox::SandboxPaths;
 use sipnab::sandbox::{self, LandlockStatus};
-use std::io::Write as _;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -51,16 +53,19 @@ const OUTSIDE_ENV: &str = "SIPNAB_SANDBOX_OUTSIDE";
 /// 0 and the parent would read that silence as proof.
 const CHILD_COMPLETE: &str = "sipnab-sandbox-child-complete";
 
-/// Announce a skipped gate on this process's real stderr.
-///
-/// NOT `eprintln!`. libtest swaps the print machinery's sink per test and
-/// discards the buffer when the test passes, so a skip announced that way is
-/// read by nobody.
-fn announce_skip(test: &str, reason: &str) {
-    let _ = writeln!(
-        std::io::stderr(),
-        "NOTICE: sandbox gate `{test}` did NOT run — {reason}."
-    );
+/// Whether the running test may use Landlock, decided by
+/// `src/test_prereq.rs`: missing, the test is skipped with a counted notice,
+/// or fails where `SIPNAB_REQUIRE_PREREQS` names `landlock` (CI on Linux).
+fn landlock_or_skip() -> bool {
+    test_prereq::present(
+        "landlock",
+        test_prereq::Need::Optional(
+            "Landlock exists on Linux 5.13 and later only; CI's Linux runners have it.",
+        ),
+        sandbox::kernel_abi()
+            .map(|_| ())
+            .map_err(|e| format!("this kernel has no Landlock: {e:?}")),
+    )
 }
 
 /// Whether this kernel can enforce a Landlock ruleset at all.
@@ -312,11 +317,7 @@ fn child_enforced_denies_a_write_outside_the_ruleset() -> Result<(), TestError> 
 /// The gate: a granted path opens and an ungranted one does not.
 #[test]
 fn a_path_outside_the_ruleset_is_denied_and_one_inside_is_not() -> Result<(), TestError> {
-    if !landlock_available() {
-        announce_skip(
-            "a_path_outside_the_ruleset_is_denied_and_one_inside_is_not",
-            "this kernel has no Landlock",
-        );
+    if !landlock_or_skip() {
         return Ok(());
     }
     let (_tmp, inside, outside) = fixture()?;
@@ -345,11 +346,7 @@ fn without_the_sandbox_the_same_paths_are_reachable() -> Result<(), TestError> {
 /// An install without no-new-privs is refused by name.
 #[test]
 fn an_install_without_no_new_privs_is_refused_by_name() -> Result<(), TestError> {
-    if !landlock_available() {
-        announce_skip(
-            "an_install_without_no_new_privs_is_refused_by_name",
-            "this kernel has no Landlock",
-        );
+    if !landlock_or_skip() {
         return Ok(());
     }
     let (_tmp, inside, outside) = fixture()?;
@@ -365,11 +362,7 @@ fn an_install_without_no_new_privs_is_refused_by_name() -> Result<(), TestError>
 /// An empty plan is refused rather than installed.
 #[test]
 fn an_empty_plan_is_refused_rather_than_confining_the_process() -> Result<(), TestError> {
-    if !landlock_available() {
-        announce_skip(
-            "an_empty_plan_is_refused_rather_than_confining_the_process",
-            "this kernel has no Landlock",
-        );
+    if !landlock_or_skip() {
         return Ok(());
     }
     let (_tmp, inside, outside) = fixture()?;
@@ -385,11 +378,7 @@ fn an_empty_plan_is_refused_rather_than_confining_the_process() -> Result<(), Te
 /// Writes are bounded as well as reads.
 #[test]
 fn a_write_outside_the_ruleset_is_denied() -> Result<(), TestError> {
-    if !landlock_available() {
-        announce_skip(
-            "a_write_outside_the_ruleset_is_denied",
-            "this kernel has no Landlock",
-        );
+    if !landlock_or_skip() {
         return Ok(());
     }
     let (_tmp, inside, outside) = fixture()?;
@@ -440,11 +429,15 @@ fn the_kernel_query_answers_with_an_abi_or_a_reason() -> Result<(), TestError> {
 /// answer is caught on whichever host the suite runs.
 #[test]
 fn the_query_agrees_with_the_kernels_own_lsm_list() -> Result<(), TestError> {
-    let Ok(lsm) = std::fs::read_to_string("/sys/kernel/security/lsm") else {
-        announce_skip(
-            "the_query_agrees_with_the_kernels_own_lsm_list",
-            "this kernel exposes no LSM list to compare against",
-        );
+    let Some(lsm) = test_prereq::check(
+        "lsm-list",
+        test_prereq::Need::Optional(
+            "only a Linux kernel with securityfs lists its LSMs; CI's Linux runners do.",
+        ),
+        std::fs::read_to_string("/sys/kernel/security/lsm")
+            .map_err(|e| format!("/sys/kernel/security/lsm: {e}")),
+    )?
+    else {
         return Ok(());
     };
     let listed = lsm.split(',').any(|s| s.trim() == "landlock");

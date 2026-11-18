@@ -949,7 +949,7 @@ mod tests {
     #[test]
     #[serial_test::serial(sipnab_audio_plugin_env)]
     fn env_override_is_ordered_behind_every_trusted_path() -> Result<(), TestError> {
-        if started_privileged() {
+        if !crate::test_prereq::not_root(started_privileged()) {
             // A privileged process refuses the override outright; that is the
             // subject of `vet_override_refuses_when_privileges_were_gained`.
             return Ok(());
@@ -1000,7 +1000,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn vet_override_accepts_owner_only_file() -> Result<(), TestError> {
-        if started_privileged() {
+        if !crate::test_prereq::not_root(started_privileged()) {
             return Ok(());
         }
         let dir = ScratchDir::new("accept", 0o700)?;
@@ -1015,7 +1015,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn vet_override_refuses_shared_writable_file() -> Result<(), TestError> {
-        if started_privileged() {
+        if !crate::test_prereq::not_root(started_privileged()) {
             return Ok(());
         }
         let dir = ScratchDir::new("mode", 0o700)?;
@@ -1036,7 +1036,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn vet_override_refuses_swappable_location() -> Result<(), TestError> {
-        if started_privileged() {
+        if !crate::test_prereq::not_root(started_privileged()) {
             return Ok(());
         }
         let dir = ScratchDir::new("swappable", 0o777)?;
@@ -1054,7 +1054,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn vet_override_accepts_sticky_shared_directory() -> Result<(), TestError> {
-        if started_privileged() {
+        if !crate::test_prereq::not_root(started_privileged()) {
             return Ok(());
         }
         let dir = ScratchDir::new("sticky", 0o1777)?;
@@ -1068,7 +1068,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn vet_override_refuses_missing_path_and_directory() -> Result<(), TestError> {
-        if started_privileged() {
+        if !crate::test_prereq::not_root(started_privileged()) {
             return Ok(());
         }
         let dir = ScratchDir::new("shape", 0o700)?;

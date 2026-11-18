@@ -23,6 +23,7 @@ type TestError = Box<dyn std::error::Error>;
 
 #[path = "support/corpus.rs"]
 mod corpus_support;
+use corpus_support::test_prereq;
 
 /// Whether `path` is a tar, possibly gzip-compressed: the archives sipnab
 /// reads as a set. Judged by the bytes, as sipnab judges them.
@@ -86,18 +87,15 @@ fn every_corpus_archive_reads_like_its_unpacked_members() -> Result<(), TestErro
     let Some(root) = corpus_support::root() else {
         return Ok(());
     };
-    let have_tar = Command::new("tar")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !have_tar {
-        use std::io::Write as _;
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED every_corpus_archive_reads_like_its_unpacked_members: no `tar` on PATH"
-        );
-        return Ok(());
-    }
+    // Every Linux and macOS host has a tar; its absence is a broken host.
+    test_prereq::required(
+        "tar",
+        match Command::new("tar").arg("--version").output() {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(format!("`tar --version` exited with {}", o.status)),
+            Err(e) => Err(format!("`tar --version` did not start: {e}")),
+        },
+    )?;
     let archives: Vec<_> = corpus_support::walk(&root)
         .into_iter()
         .filter(|p| holds_members(p))

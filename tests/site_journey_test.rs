@@ -28,6 +28,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "support/tracked.rs"]
 mod tracked;
 
@@ -409,12 +411,19 @@ fn demo_tape_fonts_are_installed_monospace() -> Result<(), TestError> {
     // demos`), so the "font must be installed" contract only makes sense
     // there. On macOS/Windows CI the render never happens and fontconfig
     // reports a different family set (Menlo, Courier New, ...) — skip.
-    if !cfg!(target_os = "linux") {
-        eprintln!("demos render on Linux only; skipping installed-font check on this platform");
-        return Ok(());
-    }
-    let Some(installed) = installed_mono_families() else {
-        eprintln!("fc-list unavailable; skipping installed-font verification");
+    let probe = if cfg!(target_os = "linux") {
+        installed_mono_families().ok_or_else(|| "`fc-list :spacing=mono family` failed".to_owned())
+    } else {
+        Err("the demos render on Linux only".to_owned())
+    };
+    let Some(installed) = test_prereq::check(
+        "fc-list",
+        test_prereq::Need::Optional(
+            "the demos render on a Linux host with fontconfig; other hosts list other fonts.",
+        ),
+        probe,
+    )?
+    else {
         return Ok(());
     };
     let missing: Vec<_> = fonts
@@ -9934,7 +9943,8 @@ fn the_twitter_card_relies_on_the_open_graph_fallback() -> Result<(), TestError>
     let has_tw_title = base.contains(r#"<meta name="twitter:title""#);
     let has_tw_desc = base.contains(r#"<meta name="twitter:description""#);
     if !(has_tw_title || has_tw_desc) {
-        return Ok(()); // the documented state: fallback only, nothing to keep in step
+        // not a prerequisite: the documented state, fallback only, has nothing to keep in step
+        return Ok(());
     }
     let mut unpaired = Vec::new();
     for (name, text) in &overriders {
@@ -11816,6 +11826,7 @@ fn every_dimmed_paragraph_on_the_homepage_marks_its_links_without_color() -> Res
     let scss = read("website/sass/style.scss")?;
     let ratio = wcag_contrast(&scss_color(&scss, "link")?, &scss_color(&scss, "text-dim")?)?;
     if ratio >= 3.0 {
+        // not a prerequisite: at 3:1 or more the underline is optional, so the rule holds
         return Ok(());
     }
     // Compiled once, not once per paragraph: clippy's `regex_creation_in_loops`.

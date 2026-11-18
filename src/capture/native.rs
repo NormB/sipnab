@@ -1051,10 +1051,11 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join("udp_5060.pcap");
-        if !fixture.exists() {
-            stderr_line!("Skipping: fixture not found at {}", fixture.display());
-            return Ok(());
-        }
+        // A tracked fixture: its absence is a defect of the checkout.
+        let fixture = crate::test_prereq::required(
+            "tracked-file",
+            crate::test_prereq::path_exists(&fixture),
+        )?;
 
         let (pkt_tx, pkt_rx) = channel::packet_channel(1 << 20);
         let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);

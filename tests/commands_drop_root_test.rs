@@ -19,6 +19,8 @@
 mod pcap_build;
 #[path = "support/root_run.rs"]
 mod root_run;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "../src/test_scratch.rs"]
 mod test_scratch;
 
@@ -128,22 +130,18 @@ fn a_wait_for_a_line_ends_at_the_deadline() -> Result<(), TestError> {
 
 const BIN: &str = env!("CARGO_BIN_EXE_sipnab");
 
-/// Whether `sudo -n` works; when not, say on the real stderr that `test`
-/// did not run.
-fn sudo_or_skip(test: &str) -> bool {
-    let works = root_run::sudo()
-        .and_then(|mut sudo| sudo.arg("true").status())
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !works {
-        // `writeln!` and not `eprintln!`: libtest drops a passing test's
-        // captured output, and a skip nobody reads is a gate that cannot fail.
-        let _ = writeln!(
-            std::io::stderr(),
-            "NOTICE: as-root gate `{test}` did NOT run: passwordless sudo is not available."
-        );
-    }
-    works
+/// Whether `sudo -n` works, decided by `src/test_prereq.rs`: missing, the
+/// test is skipped with a counted notice, or fails where
+/// `SIPNAB_REQUIRE_PREREQS` names `sudo` (CI).
+///
+/// `_test` is kept for the call sites' readability; the helper names the
+/// test by its thread.
+fn sudo_or_skip(_test: &str) -> bool {
+    test_prereq::present(
+        "sudo",
+        test_prereq::Need::Optional(root_run::SUDO_REASON),
+        root_run::sudo_probe(),
+    )
 }
 
 /// Run `program args` as root and require success.
@@ -1430,8 +1428,18 @@ mod verify {
         assert!(made.success(), "edge a key file for this user: {made}");
         let store = scratch.path("center.store");
         std::fs::create_dir(scratch.path("center.store.parquet"))?;
-        if uid_of(&me()?)? == 0 {
-            // As root the flag is read; the other tests hold that.
+        let probe = if uid_of(&me()?)? == 0 {
+            Err("this test process runs as root".to_owned())
+        } else {
+            Ok(())
+        };
+        if !test_prereq::present(
+            "non-root",
+            test_prereq::Need::Optional(
+                "as root the flag is read, which the other tests hold; CI runs the suite as an ordinary user.",
+            ),
+            probe,
+        ) {
             return Ok(());
         }
         let ran = Command::new(BIN)

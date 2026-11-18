@@ -779,6 +779,7 @@ fn the_published_document_is_not_stale() -> Result<(), TestError> {
     if std::env::var_os("SIPNAB_BLESS_OPENAPI").is_some() {
         std::fs::write(&path, &generated)?;
         eprintln!("blessed {ARTIFACT}");
+        // not a prerequisite: the bless mode writes the document instead of checking it
         return Ok(());
     }
 

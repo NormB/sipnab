@@ -20,6 +20,9 @@
 //! documentation fails this test; so does editing the documentation to claim a
 //! protection the API does not report.
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -70,14 +73,26 @@ fn why_gh_cannot_answer() -> String {
     }
 }
 
+/// The live protection, or `None` for a skip decided by
+/// `src/test_prereq.rs` when `gh` cannot read it.
+///
+/// # Errors
+/// Where `SIPNAB_REQUIRE_PREREQS` names `gh` and it cannot answer.
+fn protection_or_skip() -> Result<Option<serde_json::Value>, test_prereq::PrereqError> {
+    test_prereq::check(
+        "gh",
+        test_prereq::Need::Optional(
+            "reading the live protection needs gh with a token and the network; \
+             the suite does not have them everywhere.",
+        ),
+        live_protection().ok_or_else(why_gh_cannot_answer),
+    )
+}
+
 /// 1. The live `enforce_admins` matches what this repository declares.
 #[test]
 fn the_enforce_admins_switch_matches_what_the_repository_declares() -> Result<(), TestError> {
-    let Some(p) = live_protection() else {
-        eprintln!(
-            "branch-protection-drift: cannot read protection — {}",
-            why_gh_cannot_answer()
-        );
+    let Some(p) = protection_or_skip()? else {
         return Ok(());
     };
     let live = p["enforce_admins"]["enabled"].as_bool();
@@ -98,11 +113,7 @@ fn the_enforce_admins_switch_matches_what_the_repository_declares() -> Result<()
 /// 2. The required status check is still the one the release flow depends on.
 #[test]
 fn the_required_status_check_is_still_the_aggregate_ci_gate() -> Result<(), TestError> {
-    let Some(p) = live_protection() else {
-        eprintln!(
-            "branch-protection-drift: cannot read protection — {}",
-            why_gh_cannot_answer()
-        );
+    let Some(p) = protection_or_skip()? else {
         return Ok(());
     };
     let contexts: Vec<String> = p["required_status_checks"]["contexts"]
@@ -126,11 +137,7 @@ fn the_required_status_check_is_still_the_aggregate_ci_gate() -> Result<(), Test
 /// 3. The pull-request requirement matches what is declared.
 #[test]
 fn the_pull_request_requirement_matches_what_is_declared() -> Result<(), TestError> {
-    let Some(p) = live_protection() else {
-        eprintln!(
-            "branch-protection-drift: cannot read protection — {}",
-            why_gh_cannot_answer()
-        );
+    let Some(p) = protection_or_skip()? else {
         return Ok(());
     };
     let live = p.get("required_pull_request_reviews").is_some();
@@ -216,11 +223,7 @@ fn the_cla_check_is_required_and_documented_as_required() -> Result<(), TestErro
              required status check on main since 2026-09-29"
         );
     }
-    let Some(p) = live_protection() else {
-        eprintln!(
-            "branch-protection-drift: cannot read protection — {}",
-            why_gh_cannot_answer()
-        );
+    let Some(p) = protection_or_skip()? else {
         return Ok(());
     };
     let contexts = p["required_status_checks"]["contexts"].to_string();

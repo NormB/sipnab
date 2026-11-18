@@ -369,7 +369,7 @@ fn the_split_step_and_the_strip_check_run_on_a_real_binary() -> Result<(), TestE
     let work = dir.path();
     let rel = work.join("target").join(&host).join("release");
     std::fs::create_dir_all(&rel)?;
-    let fixture = dbgsym::build_fixture(work, None, true)?.ok_or("host fixture")?;
+    let fixture = dbgsym::build_fixture(work, None, true)??;
     let bin = rel.join("sipnab");
     std::fs::copy(&fixture, &bin)?;
     std::fs::create_dir_all(work.join("scripts"))?;
@@ -686,7 +686,7 @@ fn the_ci_proof_step_catches_what_it_must() -> Result<(), TestError> {
         let work = dir.path().to_path_buf();
         let rel = work.join("target").join(&host).join("release");
         std::fs::create_dir_all(&rel)?;
-        let fixture = dbgsym::build_fixture(&work, None, true)?.ok_or("host fixture")?;
+        let fixture = dbgsym::build_fixture(&work, None, true)??;
         let bin = rel.join("sipnab");
         std::fs::copy(&fixture, &bin)?;
         std::fs::create_dir_all(work.join("scripts"))?;

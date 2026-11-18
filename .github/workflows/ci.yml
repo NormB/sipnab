@@ -488,12 +488,12 @@ jobs:
 
       # The packages the suite ran with when it ran in `check`, so every
       # test sees the same machine: yanglint for the YANG tests, cmake for
-      # libopus, tmux for the PTY tests' probes.
+      # libopus, tmux for the PTY tests' probes, groff for the man page.
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         uses: ./.github/actions/system-deps
         with:
-          packages: libpcap-dev libasound2-dev libyang2-tools tmux cmake
+          packages: libpcap-dev libasound2-dev libyang2-tools tmux cmake groff-base
 
       - id: toolchain
         uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
@@ -570,8 +570,19 @@ jobs:
         # binary, so `test-results` counts the shards' outputs together by
         # the rule it applied to one unsharded run, and the exit status is
         # non-zero if any test failed.
+        #
+        # SIPNAB_REQUIRE_PREREQS names the prerequisites these runners have, so
+        # a test that needs one fails here instead of skipping when it goes
+        # missing (src/test_prereq.rs). parallel-tests.py prints how many tests
+        # skipped on a prerequisite that is not named.
         run: |
           set -o pipefail
+          case "$RUNNER_OS" in
+            Linux) SIPNAB_REQUIRE_PREREQS=sudo,non-root,seccomp,landlock,lsm-list,dev-full,proc-maps,separate-shm,ca-bundle,capture-refused,no-new-privs-off,non-loopback-address,editcap,tshark,node,groff,strings,setpriv,git-checkout,git-dir,release-history ;;
+            macOS) SIPNAB_REQUIRE_PREREQS=sudo,non-root,ca-bundle,non-loopback-address,git-checkout,git-dir,release-history ;;
+            *) SIPNAB_REQUIRE_PREREQS= ;;
+          esac
+          export SIPNAB_REQUIRE_PREREQS
           mkdir -p "$RUNNER_TEMP/test-shard"
           python3 scripts/parallel-tests.py --shard-index ${{ strategy.job-index }} --shard-count ${{ strategy.job-total }} \
             --manifest "$RUNNER_TEMP/test-shard/shard.json" -- --all-features 2>&1 \

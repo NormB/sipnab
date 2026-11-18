@@ -37,6 +37,12 @@
 //! what this module exists to prevent.
 #![allow(dead_code)]
 
+// Relative to this file's directory, so every test binary that mounts this
+// module reaches the one helper. Public, so such a binary uses it as
+// `corpus_support::test_prereq` instead of loading the file a second time.
+#[path = "../../src/test_prereq.rs"]
+pub mod test_prereq;
+
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Once;
@@ -53,11 +59,44 @@ pub const ENV_VAR: &str = "SIPNAB_CORPUS";
 /// # Side effects
 /// On the `None` path, writes [`notice_line`] to stderr once per test binary.
 pub fn root() -> Option<PathBuf> {
-    match std::env::var(ENV_VAR) {
-        Ok(dir) => Some(PathBuf::from(dir)),
-        Err(_) => {
+    match decide("corpus", CORPUS_REASON, ENV_VAR) {
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => {
             announce_skipped();
             None
+        }
+    }
+}
+
+/// Why a host may lack the corpus: the `Need::Optional` reason of every
+/// corpus-backed test.
+pub const CORPUS_REASON: &str =
+    "the corpus is real captured traffic that does not leave the machine it was taken on.";
+
+/// Why a host may lack the vCon datasets.
+pub const VCON_DATASETS_REASON: &str =
+    "the vCon datasets are fetched on demand by scripts/fetch-vcon-datasets.py.";
+
+/// The decision of `src/test_prereq.rs` about the corpus variable `var`:
+/// its value, or `None` for a counted skip. This module writes its own
+/// once-per-binary notice, so the helper's per-test notice goes nowhere.
+///
+/// # Panics
+/// Where `SIPNAB_REQUIRE_PREREQS` names `prereq` and `var` is unset: the
+/// helper's verdict is to fail.
+fn decide(prereq: &str, reason: &'static str, var: &str) -> Option<String> {
+    let quiet = test_prereq::check_in(
+        &test_prereq::Context::from_env(),
+        &mut std::io::sink(),
+        prereq,
+        test_prereq::Need::Optional(reason),
+        test_prereq::env(var),
+    );
+    // A failure goes through `decide`, the helper's one failing path.
+    match quiet {
+        Ok(found) => found,
+        Err(e) => {
+            test_prereq::decide::<String>(prereq, test_prereq::Need::Required, Err(e.to_string()))
         }
     }
 }
@@ -116,9 +155,9 @@ pub const VCON_DATASETS_VAR: &str = "SIPNAB_VCON_DATASETS";
 /// On the `None` path, writes [`vcon_datasets_notice_line`] to stderr once per
 /// test binary.
 pub fn vcon_datasets_root() -> Option<PathBuf> {
-    match std::env::var(VCON_DATASETS_VAR) {
-        Ok(dir) => Some(PathBuf::from(dir)),
-        Err(_) => {
+    match decide("vcon-datasets", VCON_DATASETS_REASON, VCON_DATASETS_VAR) {
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => {
             static ONCE: Once = Once::new();
             ONCE.call_once(|| {
                 // NOT eprintln!, for the reason `announce_skipped` gives.

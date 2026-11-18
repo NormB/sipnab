@@ -20,6 +20,9 @@
 //! `--quiet` and NO `SIPNAB_LOG`, which is the configuration under which the
 //! old record did not exist.
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -288,10 +291,9 @@ fn a_second_run_appends_rather_than_replacing_the_file() -> Result<(), TestError
 #[cfg(target_os = "linux")]
 #[test]
 fn a_call_that_cannot_be_recorded_is_refused_rather_than_answered() -> Result<(), TestError> {
-    let dev_full = std::path::Path::new("/dev/full");
-    if !dev_full.exists() {
-        return Ok(());
-    }
+    // Linux always has /dev/full, so on Linux its absence is a broken host.
+    let dev_full = test_prereq::required("dev-full", test_prereq::dev_full())?;
+    let dev_full = dev_full.as_path();
     let responses = session(dev_full, &[("capture_status", serde_json::json!({}))])?;
     let resp = &responses[0];
 

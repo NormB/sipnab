@@ -956,6 +956,7 @@ fn the_marker_is_the_oldest_converted_section() -> Result<(), TestError> {
         }
     }
     let Some(below) = below else {
+        // not a prerequisite: no released section is older than the converted floor
         return Ok(());
     };
     let next = version(below).ok_or("a version")?;

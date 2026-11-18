@@ -30,6 +30,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 /// The error a test returns: any error, boxed, so `?` works on I/O,
 /// parse and JSON errors alike.
 type TestError = Box<dyn std::error::Error>;
@@ -450,13 +453,13 @@ fn the_link_type_fixtures_match_their_generator() -> Result<(), TestError> {
         .arg("--check")
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output();
-    let Ok(out) = out else {
-        // No python3 on this machine: the fixtures are still checked in and
-        // every other test here reads them. Skipping is honest; failing would
-        // report a toolchain gap as a capture defect.
-        eprintln!("skipping: python3 is not available to check fixture drift");
-        return Ok(());
-    };
+    // The hooks and the scripts' own tests run on python3, so a host without
+    // it cannot run this repository's gates at all; the error names the
+    // missing tool rather than a capture defect.
+    let out = test_prereq::required(
+        "python3",
+        out.map_err(|e| format!("`python3` did not start: {e}")),
+    )?;
     assert!(
         out.status.success(),
         "tests/pcap-samples link-type fixtures have drifted from \

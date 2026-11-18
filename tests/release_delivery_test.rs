@@ -33,6 +33,8 @@ use std::process::Command;
 mod release_logic;
 #[path = "support/release_tags.rs"]
 mod release_tags;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "../src/test_scratch.rs"]
 mod test_scratch;
 
@@ -60,7 +62,15 @@ fn read(rel: &str) -> Result<String, TestError> {
 /// local copy — CI included — and a gate that cannot read it must skip rather
 /// than invent a verdict about work it cannot see.
 fn local_backlog() -> Option<String> {
-    std::fs::read_to_string(repo().join("docs/design/backlog.local.md")).ok()
+    test_prereq::decide(
+        "local-backlog",
+        test_prereq::Need::Optional(
+            "the backlog is a private file that is never committed, so only the owner's \
+             checkouts have it.",
+        ),
+        std::fs::read_to_string(repo().join("docs/design/backlog.local.md"))
+            .map_err(|e| format!("docs/design/backlog.local.md: {e}")),
+    )
 }
 
 /// Run a git command in the repository and return stdout, or `None` when git
@@ -143,7 +153,19 @@ fn strict_release_gates() -> bool {
 /// Returns on the skip path so the caller can `return` immediately after.
 fn cannot_tell(what: &str) -> Result<(), TestError> {
     match cannot_tell_verdict(strict_release_gates()) {
-        CannotTell::Skip => eprintln!("SKIP: {what}"),
+        // Outside the push gate, src/test_prereq.rs decides: a counted skip,
+        // or a failure where SIPNAB_REQUIRE_PREREQS names `release-history`
+        // (CI, whose checkout holds every tag).
+        CannotTell::Skip => {
+            test_prereq::check::<()>(
+                "release-history",
+                test_prereq::Need::Optional(
+                    "a shallow clone or a source tarball has no tags or history to judge; \
+                     CI's checkout and the push gate have both.",
+                ),
+                Err(what.to_owned()),
+            )?;
+        }
         CannotTell::Fail => {
             return Err(format!(
                 "{what}. At push time git has everything it needs, so this is a \
@@ -325,9 +347,11 @@ fn code_changed_since_the_last_tag_is_declared_in_the_changelog() -> Result<(), 
         return Ok(());
     };
     if !unreleased_code {
+        // not a prerequisite: no code changed since the tag, so nothing needs declaring
         return Ok(());
     }
     if only_advertises_the_newest_tag()? == Some(true) {
+        // not a prerequisite: phase two of a release, so nothing is waiting to ship
         return Ok(());
     }
     let (_, has_unreleased_heading) = changelog_sections()?;
@@ -357,6 +381,7 @@ fn code_changed_since_the_last_tag_is_declared_in_the_changelog() -> Result<(), 
 #[test]
 fn an_unreleased_section_is_never_an_empty_promise() -> Result<(), TestError> {
     let Some(body) = unreleased_body()? else {
+        // not a prerequisite: with no [Unreleased] section there is no promise to check
         return Ok(());
     };
     let meaningful = body
@@ -380,9 +405,11 @@ fn an_unreleased_section_is_never_an_empty_promise() -> Result<(), TestError> {
 fn an_unreleased_section_exists_only_when_something_is_unreleased() -> Result<(), TestError> {
     let (_, has_unreleased) = changelog_sections()?;
     if !has_unreleased {
+        // not a prerequisite: with no [Unreleased] section there is nothing to justify
         return Ok(());
     }
     let Some(n) = commits_since_newest_tag() else {
+        cannot_tell("git could not count commits since the newest tag")?;
         return Ok(());
     };
     // The commit being made counts too. The pre-commit hook runs this with
@@ -454,6 +481,7 @@ fn a_security_relevant_change_since_the_tag_is_declared() -> Result<(), TestErro
         "SECURITY.md",
     ];
     let Some(changed) = changed_since_newest_tag() else {
+        cannot_tell("git could not report changes since the newest tag")?;
         return Ok(());
     };
     let touched: Vec<&String> = changed
@@ -461,9 +489,11 @@ fn a_security_relevant_change_since_the_tag_is_declared() -> Result<(), TestErro
         .filter(|f| SECURITY_PATHS.iter().any(|p| f.starts_with(p)))
         .collect();
     if touched.is_empty() {
+        // not a prerequisite: no security-relevant path changed since the tag
         return Ok(());
     }
     if only_advertises_the_newest_tag()? == Some(true) {
+        // not a prerequisite: phase two of a release, so nothing is waiting to ship
         return Ok(());
     }
     let (_, has_unreleased) = changelog_sections()?;
@@ -567,6 +597,7 @@ fn the_site_is_at_most_one_release_behind_the_crate() -> Result<(), TestError> {
     if (cm, cn) != (pm, pn) {
         // A minor bump is a different conversation; the patch rule does not
         // apply across it and asserting it would misfire.
+        // not a prerequisite: the patch rule does not apply across a minor bump
         return Ok(());
     }
     assert!(
@@ -782,6 +813,7 @@ fn every_transition_from_committed_to_deployed_has_a_gate() -> Result<(), TestEr
 #[test]
 fn the_crate_version_and_newest_tag_are_in_a_legal_pair() -> Result<(), TestError> {
     let Some(t) = newest_tag() else {
+        cannot_tell("no tags in this checkout")?;
         return Ok(());
     };
     let c = crate_version()?;
@@ -797,10 +829,12 @@ fn the_crate_version_and_newest_tag_are_in_a_legal_pair() -> Result<(), TestErro
 #[test]
 fn a_version_bump_carries_its_changelog_entry() -> Result<(), TestError> {
     let Some(t) = newest_tag() else {
+        cannot_tell("no tags in this checkout")?;
         return Ok(());
     };
     let c = crate_version()?;
     if c == t {
+        // not a prerequisite: the crate is at the newest tag, so there is no bump to declare
         return Ok(());
     }
     let (versions, _) = changelog_sections()?;
@@ -839,16 +873,20 @@ fn a_p0_marked_done_is_released_or_declared() -> Result<(), TestError> {
     let open = p0.lines().filter(|line| line.starts_with("- [ ] ")).count();
     if open > 0 {
         // Open P0s are a different problem and are not this gate's business.
+        // not a prerequisite: an open P0 is another gate's business
         return Ok(());
     }
     let Some(n) = commits_since_newest_tag() else {
+        cannot_tell("git could not count commits since the newest tag")?;
         return Ok(());
     };
     if n == 0 {
+        // not a prerequisite: nothing was committed since the tag
         return Ok(());
     }
     if only_advertises_the_newest_tag()? == Some(true) {
         // Phase two of this very release. Nothing is waiting to ship.
+        // not a prerequisite: phase two of a release, so nothing is waiting to ship
         return Ok(());
     }
     if only_bumps_dependencies() == Some(true) {
@@ -857,12 +895,14 @@ fn a_p0_marked_done_is_released_or_declared() -> Result<(), TestError> {
         // the gate reported every Dependabot pull request as an undeclared
         // release and made all six unmergeable against a branch protection
         // requiring `CI success`.
+        // not a prerequisite: a dependency bump ships nothing a reader needs told about
         return Ok(());
     }
     if only_advertises_beside_dependency_bumps()? == Some(true) {
         // Phase two landing after Dependabot merges: both arms above ask
         // whether every path is of their kind, so the mixture passes neither,
         // though each of its paths would.
+        // not a prerequisite: phase two beside dependency bumps ships nothing new
         return Ok(());
     }
     let (_, has_unreleased) = changelog_sections()?;
@@ -1348,6 +1388,7 @@ fn the_report_keeps_the_spelling_of_the_first_appearance() {
 #[test]
 fn the_unreleased_section_names_each_kind_of_change_once() -> Result<(), TestError> {
     let Some(body) = unreleased_body()? else {
+        // not a prerequisite: with no [Unreleased] section there are no headings to count
         return Ok(());
     };
     let found = release_logic::repeated_headings(&body);
