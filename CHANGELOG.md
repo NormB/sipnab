@@ -10,7 +10,7 @@ entry that carries them.
 
 ## [Unreleased]
 
-Not released. Test-only changes since 0.5.264 (a test whose prerequisite is missing now fails, or skips with a notice the suite run counts, through one helper, and CI requires the prerequisites its runners have); nothing a user of the released artifacts can see.
+Not released. Test and contributor-tooling changes since 0.5.264 (a test whose prerequisite is missing now fails, or skips with a notice the suite run counts, through one helper, and CI requires the prerequisites its runners have; the pre-commit hook's line for a step that gets no pass stamp names the inputs that changed while it ran); nothing a user of the released artifacts can see.
 
 ## [0.5.264] - 2026-11-18
 
