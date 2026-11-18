@@ -21,8 +21,9 @@
 # not at the tag (backlog GATE-SIZE1: the first v0.5.228 Release run failed
 # this step at 22,685,568 bytes against 20 MB, after GHCR had the image).
 #
-# Integer arithmetic only: `bc` is not guaranteed on a runner. Linux only:
-# the musl artifacts are built and measured on Linux runners.
+# Integer arithmetic only: `bc` is not guaranteed on a runner. The musl
+# artifacts are measured on Linux runners; the test suite also runs the
+# release step on macOS, so both GNU and BSD stat are read.
 
 set -euo pipefail
 
@@ -56,7 +57,9 @@ if [ -z "$ceiling" ] || [ "$ceiling" -lt 1 ]; then
 	exit 2
 fi
 
-bytes=$(stat -L -c %s -- "$bin")
+# GNU stat first; BSD stat (macOS, where the suite also runs this) refuses
+# -c and takes -f %z.
+bytes=$(stat -L -c %s -- "$bin" 2>/dev/null || stat -L -f %z -- "$bin")
 if [ "$bytes" -eq 0 ]; then
 	echo "$0: cannot measure '$bin': the file is empty" >&2
 	exit 2

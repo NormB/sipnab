@@ -29,6 +29,7 @@ changes one of the job's paths, including the one that added it.
 import pathlib
 import re
 import subprocess
+import sys
 
 import pytest
 
@@ -223,6 +224,55 @@ def test_a_commented_out_ceiling_above_the_real_one_is_skipped(tmp_path):
     cfg = config(tmp_path, 'binary_size_ceiling_mb = "30"', before='# binary_size_ceiling_mb = "20" (old)\n')
     rc, out, _ = run(binary(tmp_path, 22 * MB), cfg)
     assert rc == 0 and "ceiling 30 MB" in out, out
+
+
+# ---- BSD stat (macOS) ------------------------------------------------------
+#
+# The suite runs the release step on macOS too, where `stat -c` is refused
+# ("stat: illegal option -- c"); the step it replaced fell back to
+# `stat -f%z`. CI run 44258178176 failed the macOS shard on this.
+
+BSD_STAT = """#!{python}
+import os, sys
+args = sys.argv[1:]
+if "-c" in args:
+    sys.stderr.write("stat: illegal option -- c\\n")
+    sys.exit(1)
+assert args[:3] == ["-L", "-f", "%z"], args
+print(os.stat(args[-1]).st_size)
+"""
+
+
+def bsd_path(tmp_path):
+    bin_dir = tmp_path / "bsd-bin"
+    bin_dir.mkdir()
+    stat = bin_dir / "stat"
+    stat.write_text(BSD_STAT.format(python=sys.executable))
+    stat.chmod(0o755)
+    return f"{bin_dir}:/usr/bin:/bin"
+
+
+def run_bsd(tmp_path, *args):
+    p = subprocess.run(["bash", str(SCRIPT), *map(str, args)], capture_output=True, text=True, timeout=60,
+                       cwd=ROOT, env={"PATH": bsd_path(tmp_path)})
+    return p.returncode, p.stdout, p.stderr
+
+
+def test_with_bsd_stat_a_binary_under_the_ceiling_passes(tmp_path):
+    rc, out, err = run_bsd(tmp_path, binary(tmp_path, 2 * MB), config(tmp_path))
+    assert rc == 0 and f"is {2 * MB} bytes" in out, out + err
+
+
+def test_with_bsd_stat_a_binary_over_the_ceiling_fails(tmp_path):
+    rc, out, err = run_bsd(tmp_path, binary(tmp_path, 26 * MB), config(tmp_path))
+    assert rc == 1 and "::error::" in out, out + err
+
+
+def test_with_bsd_stat_a_symlink_is_measured_by_its_file(tmp_path):
+    real = binary(tmp_path, 26 * MB)
+    (tmp_path / "link").symlink_to(real)
+    rc, out, err = run_bsd(tmp_path, tmp_path / "link", config(tmp_path))
+    assert rc == 1 and f"is {26 * MB} bytes" in out, out + err
 
 
 # ---- release.yml: the one rule, at the tag ---------------------------------
