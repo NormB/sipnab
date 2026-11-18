@@ -82978,9 +82978,14 @@ the same.
   `scripts/gate-cache.py` could not read the inputs: the script exited with an
   error, and its message is above that line. Every step runs, so the hook
   skips nothing.
-- `No pass stamp for <step>: its inputs changed while it ran`: a file changed
+- `No pass stamp for <step>: its inputs changed while it ran`: an input changed
   during the run, so the run cannot vouch for the tree as it is now. The next
-  run checks it.
+  run checks it. The text in parentheses names what changed: `files` or
+  `ignored` (a file changed), `index_tree` (the index changed), `head` (a
+  commit), `tags` (someone created or moved a tag), `env.NAME` (an environment
+  variable), `tools.NAME` (a tool version) or `hook_scripts` (the hook or a
+  script under `scripts/` or `.config/`). `its inputs at the start were not
+  recorded` means the start-of-run record was missing or unreadable.
 - A step you expected to skip ran: something in its key differed. Common
   causes are an untracked file, a different `RUSTFLAGS`, a rebuilt toolchain,
   or a file that a tool or test rewrote under `docs/` or `website/data/`.
