@@ -594,6 +594,17 @@ Authentication challenges follow the same rule as `final_status_code` in
 > - Pair `no_media` with the knowledge of where your tap sits. If media does not
 >   traverse it, the question is unanswerable, and sipnab declines to answer it.
 >
+> **`no_media` is false for a call read from a vCon.**
+>
+> - A vCon carries a call's signaling and none of its packets. So the RTP that
+>   other inputs of the same run carry says nothing about that call.
+> - Example: in `sipnab -N -I call.vcon.json -I other.pcap --filter "no_media == true"`,
+>   the vCon's call is not selected, whatever RTP `other.pcap` holds.
+> - sipnab judges a call that any packet input of the run also carried as that
+>   input's call.
+> - Before 0.5.264, such a run reported the vCon's answered call as
+>   `no_media`, and `--analyze` ranked it "No media on an answered call".
+>
 > **`rtp.orphaned` is a parse error, not a field.**
 >
 > - It would ask whether a stream *belonging to this dialog* belongs to no

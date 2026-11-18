@@ -225,7 +225,7 @@ the process that asked for it.
 And the standing rule that already holds across all of it: **every arming flag
 is off by default** — `--kill-scanner`, `-K`, `--hep-allow-kill`, `--fail2ban`,
 `--alert-exec`, `--on-dialog-exec`, `--on-quality-exec`
-([`cli.rs:1988-3170`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1988-L3170)<!-- "pub fail2ban: bool," -->). Nothing in this document proposes
+([`cli.rs:1991-3173`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1991-L3173)<!-- "pub fail2ban: bool," -->). Nothing in this document proposes
 changing that, and nothing should.
 
 ## 6. Three blind spots that make the tiers unverifiable

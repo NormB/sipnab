@@ -412,7 +412,7 @@ No parser change is required, and that is worth stating because it is the part
 people assume is expensive. [`SipMessage.headers`](../../src/sip/message.rs) at
 [`message.rs:48`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L48)<!-- "/// eagerly parsed" --> holds *"All headers in message order,
 with compact forms expanded"*, and [`header()`](../../src/sip/message.rs) at
-[`:309`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L309)<!-- "pub fn header(&self," --> is a case-insensitive lookup over that vector.
+[`:328`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L328)<!-- "pub fn header(&self," --> is a case-insensitive lookup over that vector.
 `msg.header("P-Charging-Vector")` works today and returns the raw value.
 
 The shape, by file:
@@ -441,7 +441,7 @@ value of writing the section.
 
 **Message retention is not a hazard here, which is not obvious.** The header is
 usually on the initial INVITE, and sipnab drops messages in two places. The
-per-dialog cap at [`:2788-2790`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2788-L2790)<!-- "// Record the message (move instead of clone, capped per D17)" --> drops the *newest*
+per-dialog cap at [`:2858-2860`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2858-L2860)<!-- "// Record the message (move instead of clone, capped per D17)" --> drops the *newest*
 message when full, never the first. `compact_idle`'s
 [`retained_indices`](../../src/sip/dialog_store.rs) at
 [`:901`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L901)<!-- "fn retained_indices(" --> treats the opening request as an anchor

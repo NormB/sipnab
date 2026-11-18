@@ -161,6 +161,7 @@ mod tests {
             dscp: None,
             input_origin: None,
             is_retransmission: false,
+            also_seen_by: 0,
         };
 
         // This must not panic — the u16 fields saturate instead of overflowing.

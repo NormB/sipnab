@@ -833,3 +833,545 @@ fn each_breach_is_named_at_its_own_line_in_order() {
         "one finding per breach, at its line, in file order"
     );
 }
+
+// ── No span in src: a span field that fails to format is eprintln!'d ────
+//
+// TRACING-SPAN-FORMAT-ERROR-EPRINTLN. tracing-subscriber 0.3.23,
+// src/fmt/fmt_layer.rs, `on_new_span`: when a NEW SPAN's fields fail to
+// format, it calls `eprintln!("[tracing-subscriber] Unable to format the
+// following event, ignoring: ...")` with no `log_internal_errors` check, so
+// the setting above does not reach it, and that `eprintln!` panics when
+// stderr cannot be written. An EVENT whose fields fail to format is reported
+// only when `log_internal_errors` is true, which the rule above keeps false;
+// `on_record` ignores the error. A field fails to format only when its
+// `Debug`/`Display` impl returns `Err` into a `String`, which never fails.
+//
+// Checked 2026-11-18: no file in `src/` creates a span, and no `Debug` or
+// `Display` impl in `src/` produces `fmt::Error`; the one place that builds
+// it is a `fmt::Write` sink (src/tui/call_list.rs `AddrText`). So no sipnab
+// type can reach that `eprintln!`. The two rules below hold both facts. A
+// span added later has to show that every field it records formats without
+// error, and then be listed here.
+
+/// What kind of span creation [`span_sites`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpanSite {
+    /// `span!`, `trace_span!` to `error_span!`, qualified or not.
+    Macro,
+    /// `#[instrument]` or `#[tracing::instrument]`.
+    Attribute,
+    /// `Span::new`, `Span::new_root` or `Span::child_of`.
+    Constructor,
+}
+
+/// Every place `text` creates a tracing span, as (1-based line, kind), in
+/// file order. Comments and string literals are not code.
+fn span_sites(text: &str) -> Vec<(usize, SpanSite)> {
+    const MACROS: [&str; 6] = [
+        "span",
+        "trace_span",
+        "debug_span",
+        "info_span",
+        "warn_span",
+        "error_span",
+    ];
+    const CONSTRUCTORS: [&str; 3] = ["new", "new_root", "child_of"];
+    let tokens = code_tokens(text);
+    let mut sites = Vec::new();
+    for (i, t) in tokens.iter().enumerate() {
+        let after_dot = i > 0 && tokens[i - 1].text == ".";
+        if MACROS.contains(&t.text.as_str()) && !after_dot && tokens_are(&tokens, i + 1, &["!"]) {
+            sites.push((t.line, SpanSite::Macro));
+        } else if t.text == "#"
+            && (tokens_are(&tokens, i + 1, &["[", "instrument"])
+                || tokens_are(&tokens, i + 1, &["[", "tracing", "::", "instrument"]))
+        {
+            sites.push((t.line, SpanSite::Attribute));
+        } else if t.text == "Span"
+            && tokens_are(&tokens, i + 1, &["::"])
+            && tokens
+                .get(i + 2)
+                .is_some_and(|n| CONSTRUCTORS.contains(&n.text.as_str()))
+            && tokens_are(&tokens, i + 3, &["("])
+        {
+            sites.push((t.line, SpanSite::Constructor));
+        }
+    }
+    sites
+}
+
+/// Every line on which `text` names `fmt::Error` outside the body of an
+/// `impl ... Write for ...` block. Comments and strings are not code.
+fn fmt_error_outside_write_sinks(text: &str) -> Vec<usize> {
+    let tokens = code_tokens(text);
+    let mut found = Vec::new();
+    let mut depth = 0usize;
+    // The brace depth inside which a Write impl's body is open.
+    let mut sink_body: Option<usize> = None;
+    let mut i = 0;
+    while let Some(t) = tokens.get(i) {
+        match t.text.as_str() {
+            "impl" if sink_body.is_none() => {
+                // The header runs to the impl's opening brace.
+                let open = (i..tokens.len()).find(|&k| tokens[k].text == "{");
+                if let Some(open) = open {
+                    let header = &tokens[i..open];
+                    let is_sink = header
+                        .windows(2)
+                        .any(|w| w[0].text == "Write" && w[1].text == "for");
+                    if is_sink {
+                        sink_body = Some(depth + 1);
+                    }
+                }
+            }
+            "{" => depth += 1,
+            "}" => {
+                if sink_body == Some(depth) {
+                    sink_body = None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            "fmt" if sink_body.is_none() && tokens_are(&tokens, i + 1, &["::", "Error"]) => {
+                found.push(t.line);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    found
+}
+
+/// The tracked Rust files under src/.
+fn src_files(root: &std::path::Path) -> Result<Vec<String>, TestError> {
+    Ok(tracked::ls_files(root, &["--", "src/*.rs", "src/**/*.rs"])?
+        .into_iter()
+        .filter(|rel| !rel.is_empty())
+        .collect())
+}
+
+/// Assert `text` creates no span.
+fn assert_no_span(text: &str) {
+    assert_eq!(span_sites(text), Vec::new(), "no span in:\n{text}");
+}
+
+/// Assert `text` creates exactly one span, of `kind`, on line `line`.
+fn assert_one_span(text: &str, line: usize, kind: SpanSite) {
+    assert_eq!(span_sites(text), vec![(line, kind)], "one span in:\n{text}");
+}
+
+// SUCCESS: src/ as it is, and code that is not a span.
+
+/// No file in src/ creates a span, so no span field reaches the `eprintln!`
+/// in `on_new_span`.
+#[test]
+fn no_file_in_src_creates_a_tracing_span() -> Result<(), TestError> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let files = src_files(root)?;
+    assert!(files.len() > 300, "the scan saw only {} files", files.len());
+    let mut found = Vec::new();
+    for rel in &files {
+        for (line, kind) in span_sites(&std::fs::read_to_string(root.join(rel))?) {
+            found.push(format!("{rel}:{line} {kind:?}"));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a span whose field fails to format makes tracing-subscriber call \
+         eprintln!, which panics when stderr is closed, and no setting turns \
+         that off; show that each field formats without error and list the \
+         span in tests/closed_stderr_test.rs: {found:?}"
+    );
+    Ok(())
+}
+
+/// No `Debug` or `Display` impl in src/ produces `fmt::Error`: only a
+/// `fmt::Write` sink does, and nothing formats a field into one.
+#[test]
+fn no_fmt_impl_in_src_produces_fmt_error() -> Result<(), TestError> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    let mut sink_seen = false;
+    for rel in src_files(root)? {
+        let text = std::fs::read_to_string(root.join(&rel))?;
+        sink_seen |= rel == "src/tui/call_list.rs" && text.contains("ok_or(std::fmt::Error)");
+        for line in fmt_error_outside_write_sinks(&text) {
+            found.push(format!("{rel}:{line}"));
+        }
+    }
+    assert!(
+        sink_seen,
+        "the scan must see the AddrText sink that builds fmt::Error"
+    );
+    assert!(
+        found.is_empty(),
+        "a fmt impl that returns fmt::Error makes any span or event field of \
+         its type fail to format: {found:?}"
+    );
+    Ok(())
+}
+
+/// The AddrText sink is inside its `fmt::Write` impl, so it is not flagged.
+#[test]
+fn the_addr_text_sink_is_a_write_impl() -> Result<(), TestError> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("src/tui/call_list.rs"))?;
+    assert_eq!(
+        fmt_error_outside_write_sinks(&text),
+        Vec::<usize>::new(),
+        "AddrText builds fmt::Error only inside impl std::fmt::Write"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_event_macro_is_not_a_span() {
+    assert_no_span("tracing::info!(\"read {} frames\", n);");
+}
+
+#[test]
+fn an_event_with_fields_is_not_a_span() {
+    assert_no_span("tracing::warn!(peer = ?addr, code = %c, \"refused\");");
+}
+
+#[test]
+fn attaching_with_instrument_is_not_creating() {
+    assert_no_span("let f = fut.instrument(current);");
+}
+
+#[test]
+fn a_function_named_span_is_not_a_span() {
+    assert_no_span("fn span(&self) -> Range<u32> { self.line_span.clone() }");
+}
+
+#[test]
+fn the_current_span_is_not_a_new_one() {
+    assert_no_span("let s = tracing::Span::current();");
+}
+
+#[test]
+fn a_disabled_span_has_no_fields() {
+    assert_no_span("let s = tracing::Span::none();");
+}
+
+#[test]
+fn a_variable_named_instrument_is_not_an_attribute() {
+    assert_no_span("let instrument = 3; let x = instrument + 1;");
+}
+
+#[test]
+fn other_attributes_are_not_spans() {
+    assert_no_span("#[test]\n#[derive(Debug)]\n#[cfg(feature = \"instrument\")]\nfn f() {}");
+}
+
+#[test]
+fn a_macro_whose_name_ends_in_span_is_not_one() {
+    assert_no_span("my_span!(x); info_spans!(y);");
+}
+
+#[test]
+fn a_span_in_a_line_comment_is_not_code() {
+    assert_no_span("// let s = tracing::info_span!(\"x\", v = ?v);\nlet a = 1;");
+}
+
+#[test]
+fn a_span_in_a_doc_comment_is_not_code() {
+    assert_no_span("/// Use `#[instrument]` or `debug_span!` here.\nfn f() {}");
+}
+
+#[test]
+fn a_span_in_a_block_comment_is_not_code() {
+    assert_no_span("/* tracing::span!(Level::INFO, \"x\") /* nested */ */ let a = 1;");
+}
+
+#[test]
+fn a_span_in_a_string_is_not_code() {
+    assert_no_span("let s = \"debug_span!(\\\"x\\\")\";");
+}
+
+#[test]
+fn a_span_in_a_raw_string_is_not_code() {
+    assert_no_span("let s = r#\"#[instrument] info_span!(\"x\")\"#;");
+}
+
+#[test]
+fn empty_text_has_no_span() {
+    assert_no_span("");
+}
+
+// FAILURE: every way to create a span is found.
+
+#[test]
+fn a_qualified_info_span_is_found() {
+    assert_one_span(
+        "let s = tracing::info_span!(\"x\", v = ?v);",
+        1,
+        SpanSite::Macro,
+    );
+}
+
+#[test]
+fn a_bare_info_span_is_found() {
+    assert_one_span("let s = info_span!(\"x\");", 1, SpanSite::Macro);
+}
+
+#[test]
+fn a_debug_span_is_found() {
+    assert_one_span("let s = tracing::debug_span!(\"x\");", 1, SpanSite::Macro);
+}
+
+#[test]
+fn a_trace_span_is_found() {
+    assert_one_span("let s = trace_span!(\"x\");", 1, SpanSite::Macro);
+}
+
+#[test]
+fn a_warn_span_is_found() {
+    assert_one_span("let s = warn_span!(\"x\");", 1, SpanSite::Macro);
+}
+
+#[test]
+fn an_error_span_is_found() {
+    assert_one_span("let s = error_span!(\"x\");", 1, SpanSite::Macro);
+}
+
+#[test]
+fn a_qualified_span_macro_is_found() {
+    assert_one_span(
+        "let s = tracing::span!(tracing::Level::INFO, \"x\", id = %id);",
+        1,
+        SpanSite::Macro,
+    );
+}
+
+#[test]
+fn a_bare_span_macro_is_found() {
+    assert_one_span("let s = span!(Level::INFO, \"x\");", 1, SpanSite::Macro);
+}
+
+#[test]
+fn an_instrument_attribute_is_found() {
+    assert_one_span("#[instrument]\nfn f(x: u8) {}", 1, SpanSite::Attribute);
+}
+
+#[test]
+fn a_qualified_instrument_attribute_is_found() {
+    assert_one_span(
+        "#[tracing::instrument(skip_all)]\nasync fn f() {}",
+        1,
+        SpanSite::Attribute,
+    );
+}
+
+#[test]
+fn an_instrument_attribute_with_fields_is_found() {
+    assert_one_span(
+        "#[instrument(fields(peer = ?addr))]\nfn f() {}",
+        1,
+        SpanSite::Attribute,
+    );
+}
+
+#[test]
+fn a_span_constructor_is_found() {
+    assert_one_span(
+        "let s = tracing::Span::new(meta, &values);",
+        1,
+        SpanSite::Constructor,
+    );
+}
+
+#[test]
+fn a_root_span_constructor_is_found() {
+    assert_one_span(
+        "let s = Span::new_root(meta, &values);",
+        1,
+        SpanSite::Constructor,
+    );
+}
+
+#[test]
+fn a_child_span_constructor_is_found() {
+    assert_one_span(
+        "let s = Span::child_of(parent, meta, &values);",
+        1,
+        SpanSite::Constructor,
+    );
+}
+
+#[test]
+fn a_span_in_a_test_module_is_found() {
+    assert_one_span(
+        "#[cfg(test)]\nmod tests {\n    fn t() { let _s = info_span!(\"t\"); }\n}",
+        3,
+        SpanSite::Macro,
+    );
+}
+
+#[test]
+fn fmt_error_in_a_display_impl_is_found() {
+    assert_eq!(
+        fmt_error_outside_write_sinks(
+            "impl fmt::Display for X {\n    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n        Err(fmt::Error)\n    }\n}"
+        ),
+        vec![3],
+        "a Display impl that returns fmt::Error"
+    );
+}
+
+#[test]
+fn std_fmt_error_in_a_debug_impl_is_found() {
+    assert_eq!(
+        fmt_error_outside_write_sinks(
+            "impl std::fmt::Debug for X {\n    fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n        Err(std::fmt::Error)\n    }\n}"
+        ),
+        vec![3],
+        "a Debug impl that returns std::fmt::Error"
+    );
+}
+
+#[test]
+fn core_fmt_error_is_found() {
+    assert_eq!(
+        fmt_error_outside_write_sinks("fn f() -> core::fmt::Result { Err(core::fmt::Error) }"),
+        vec![1],
+        "core::fmt::Error in a free function"
+    );
+}
+
+#[test]
+fn fmt_error_mapped_from_another_error_is_found() {
+    assert_eq!(
+        fmt_error_outside_write_sinks(
+            "impl Display for Y {\n    fn fmt(&self, f: &mut Formatter) -> fmt::Result {\n        let v = self.load().map_err(|_| fmt::Error)?;\n        write!(f, \"{v}\")\n    }\n}"
+        ),
+        vec![3],
+        "a fallible step mapped to fmt::Error"
+    );
+}
+
+// EDGE: positions, nesting and the write-sink exemption.
+
+#[test]
+fn spans_are_reported_at_their_lines_in_order() {
+    assert_eq!(
+        span_sites(
+            "let a = 1;\nlet s = debug_span!(\"a\");\n\n#[instrument]\nfn f() {}\nlet t = Span::new(m, &v);"
+        ),
+        vec![
+            (2, SpanSite::Macro),
+            (4, SpanSite::Attribute),
+            (6, SpanSite::Constructor)
+        ],
+        "every site, at its line, in file order"
+    );
+}
+
+#[test]
+fn a_multi_line_span_is_named_at_its_first_line() {
+    assert_one_span(
+        "let s = tracing::info_span!(\n    \"x\",\n    v = ?v,\n);",
+        1,
+        SpanSite::Macro,
+    );
+}
+
+#[test]
+fn space_before_the_bang_is_still_a_span() {
+    assert_one_span("let s = info_span !(\"x\");", 1, SpanSite::Macro);
+}
+
+#[test]
+fn spaces_inside_the_attribute_are_still_it() {
+    assert_one_span("# [ instrument ]\nfn f() {}", 1, SpanSite::Attribute);
+}
+
+#[test]
+fn a_span_after_a_nested_block_comment_is_found() {
+    assert_one_span(
+        "/* a /* b */ c */\nlet s = trace_span!(\"x\");",
+        2,
+        SpanSite::Macro,
+    );
+}
+
+#[test]
+fn a_span_after_an_escaped_quote_is_found() {
+    assert_one_span(
+        "let q = \"a\\\"b\"; let s = warn_span!(\"x\");",
+        1,
+        SpanSite::Macro,
+    );
+}
+
+#[test]
+fn a_span_after_a_lifetime_is_found() {
+    assert_one_span(
+        "fn f<'a>(x: &'a str) { let s = error_span!(\"x\"); }",
+        1,
+        SpanSite::Macro,
+    );
+}
+
+#[test]
+fn fmt_error_inside_a_write_impl_is_exempt() {
+    assert_eq!(
+        fmt_error_outside_write_sinks(
+            "impl std::fmt::Write for Sink {\n    fn write_str(&mut self, s: &str) -> std::fmt::Result {\n        self.room(s.len()).ok_or(std::fmt::Error)?;\n        Ok(())\n    }\n}"
+        ),
+        Vec::<usize>::new(),
+        "a fmt::Write sink may refuse bytes"
+    );
+}
+
+#[test]
+fn the_exemption_ends_with_the_write_impl() {
+    assert_eq!(
+        fmt_error_outside_write_sinks(
+            "impl fmt::Write for Sink {\n    fn write_str(&mut self, _: &str) -> fmt::Result { Err(fmt::Error) }\n}\nimpl fmt::Display for Z {\n    fn fmt(&self, _: &mut fmt::Formatter) -> fmt::Result { Err(fmt::Error) }\n}"
+        ),
+        vec![5],
+        "only the Display impl after the sink is flagged"
+    );
+}
+
+#[test]
+fn a_write_impl_with_nested_blocks_stays_exempt_to_its_end() {
+    assert_eq!(
+        fmt_error_outside_write_sinks(
+            "impl Write for S {\n    fn write_str(&mut self, s: &str) -> fmt::Result {\n        if s.is_empty() { return Ok(()); }\n        Err(fmt::Error)\n    }\n}\nfn g() -> fmt::Result { Err(fmt::Error) }"
+        ),
+        vec![7],
+        "the free function after the impl is flagged"
+    );
+}
+
+#[test]
+fn fmt_result_and_formatter_are_not_fmt_error() {
+    assert_eq!(
+        fmt_error_outside_write_sinks(
+            "fn f(x: &mut fmt::Formatter) -> fmt::Result { write!(x, \"a\") }"
+        ),
+        Vec::<usize>::new(),
+        "fmt::Result is not fmt::Error"
+    );
+}
+
+#[test]
+fn fmt_error_in_comments_and_strings_is_not_code() {
+    assert_eq!(
+        fmt_error_outside_write_sinks(
+            "// Err(fmt::Error)\n/* fmt::Error */\nlet s = \"fmt::Error\";"
+        ),
+        Vec::<usize>::new(),
+        "comments and strings"
+    );
+}
+
+#[test]
+fn an_io_error_named_error_is_not_fmt_error() {
+    assert_eq!(
+        fmt_error_outside_write_sinks("fn f() -> io::Result<()> { Err(io::Error::other(\"x\")) }"),
+        Vec::<usize>::new(),
+        "io::Error is not fmt::Error"
+    );
+}

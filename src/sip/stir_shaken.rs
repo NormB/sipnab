@@ -762,6 +762,7 @@ mod tests {
             dscp: None,
             input_origin: None,
             is_retransmission: false,
+            also_seen_by: 0,
         };
 
         assert!(msg.stir_shaken().is_none());
@@ -844,6 +845,7 @@ mod tests {
             dscp: None,
             input_origin: None,
             is_retransmission: false,
+            also_seen_by: 0,
         }
     }
 

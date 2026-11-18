@@ -496,6 +496,44 @@ commonest codes sends you:
 - `host unreachable` means nothing reached the host at all. So the capture says
   nothing about its ports.
 
+### Messages two sources delivered: `seen_by`
+
+A run that reads the wire and a HEP feed of the same proxy gets each message
+twice: once from the wire and once from the proxy's HEP report. Examples are
+`sipnab -d any -L 0.0.0.0:9060`, or `-I` of a capture that holds both with
+`--hep-parse`.
+
+- sipnab keeps such a message once. `msg_count` counts it once, and it is not
+  a retransmission.
+- Two copies are one message when their bytes are identical, they belong to
+  the same transaction, and they arrived within 2 seconds of each other.
+- `seen_by` says how many of the dialog's messages each source delivered:
+
+```json
+"seen_by": { "hep": 7, "wire": 7 }
+```
+
+- A source that missed a message shows the smaller count. For example,
+  `"wire": 6` beside `"hep": 7` means the wire never carried one message the
+  proxy reported.
+- `seen_by` is absent when one source delivered every message.
+
+To check a composite run, read each dialog's counts:
+
+```bash
+sipnab -N -I both.pcap --hep-parse --json-dialogs | jq -c '{call_id, msg_count, seen_by, r: .timing.retransmits}'
+```
+
+Troubleshooting:
+
+- Counts twice as high as the call, and as many retransmissions as messages:
+  that was sipnab before 0.5.264. Upgrade.
+- Two copies stay apart when the proxy reported bytes the wire did not carry,
+  or when the HEP sender's clock is more than 2 seconds off the capture host's.
+  Compare the clocks first: `chronyc tracking` on both hosts.
+- The `--json` message stream still prints one line per arrival, each with its
+  own `input_origin`.
+
 ### STUN evidence inside the media diagnosis
 
 `diagnosis.private_media_address` is a warning. It means:
