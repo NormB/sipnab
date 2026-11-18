@@ -12579,9 +12579,14 @@ mod tests {
         fn the_duration_limit_is_reached_once_that_long_has_passed() -> Result<(), TestError> {
             let cfg = limits(None, Some(Duration::from_secs(60)));
             assert_eq!(capture_limit_reached(&cfg, 0, Instant::now()), None);
-            let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(61)) else {
-                // A monotonic clock younger than a minute cannot express the
-                // start; nothing to assert on such a host.
+            // A monotonic clock younger than a minute cannot express the
+            // start.
+            let Some(long_ago) = crate::test_prereq::check(
+                "monotonic-uptime",
+                crate::test_prereq::MONOTONIC_UPTIME,
+                crate::test_prereq::instant_ago(Duration::from_secs(61)),
+            )?
+            else {
                 return Ok(());
             };
             assert_eq!(
@@ -12593,7 +12598,12 @@ mod tests {
 
         #[test]
         fn the_count_is_asked_before_the_duration() -> Result<(), TestError> {
-            let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(61)) else {
+            let Some(long_ago) = crate::test_prereq::check(
+                "monotonic-uptime",
+                crate::test_prereq::MONOTONIC_UPTIME,
+                crate::test_prereq::instant_ago(Duration::from_secs(61)),
+            )?
+            else {
                 return Ok(());
             };
             let cfg = limits(Some(1), Some(Duration::from_secs(60)));

@@ -17,6 +17,24 @@ use sipnab::mcp::server::{TlsLibraryEntry, build_tls_libraries_response, tls_lib
 /// parse and JSON errors alike.
 type TestError = Box<dyn std::error::Error>;
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
+/// Whether this build reads `/proc/*/maps` (`supported`), decided by
+/// `src/test_prereq.rs`: off Linux the list is empty and the test is skipped
+/// with a counted notice; CI on Linux requires `proc-maps`.
+fn proc_maps_or_skip(supported: bool) -> bool {
+    test_prereq::present(
+        "proc-maps",
+        test_prereq::Need::Optional("/proc/*/maps is Linux-only; CI's Linux runners have it."),
+        if supported {
+            Ok(())
+        } else {
+            Err("this build reports supported=false".to_owned())
+        },
+    )
+}
+
 /// A reachable entry, for the branches that need one.
 fn reachable(flavor: &str, symbol: &str, inode: u64) -> TlsLibraryEntry {
     TlsLibraryEntry {
@@ -147,11 +165,8 @@ fn every_entry_pairs_its_flavor_with_the_symbol_that_flavor_exports() -> Result<
              it could not have gathered: {:?}",
             r.libraries
         );
-        eprintln!(
-            "not checked here: /proc/*/maps is Linux-only, so this build \
-             reports supported=false and there is nothing to pair. Enforced \
-             on Linux."
-        );
+    }
+    if !proc_maps_or_skip(r.supported) {
         return Ok(());
     }
     let mut checked = 0usize;
@@ -203,11 +218,7 @@ fn every_entry_carries_the_inode_that_identifies_it() -> Result<(), TestError> {
     let r = tls_libraries_response();
     // Same vacuity as the flavor/symbol pairing above: zero entries off Linux,
     // so the loop asserted nothing and the test reported `ok`.
-    if !r.supported {
-        eprintln!(
-            "not checked here: /proc/*/maps is Linux-only, so there are no \
-             entries to carry an inode. Enforced on Linux."
-        );
+    if !proc_maps_or_skip(r.supported) {
         return Ok(());
     }
     let mut checked = 0usize;

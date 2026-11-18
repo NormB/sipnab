@@ -1496,6 +1496,24 @@ Two things keep it honest.
 - On a non-Linux host it prints `NOT CHECKED` instead of running.
   There, your ordinary `cargo clippy` already is the non-Linux build.
 
+### Tests that need something from the host
+
+Some tests need something the host may lack: `sudo` without a password, Landlock, `editcap`, `/dev/full`.
+One helper, [`src/test_prereq.rs`](https://github.com/NormB/sipnab/blob/main/src/test_prereq.rs), decides what such a test does when that prerequisite is missing.
+
+- A required prerequisite that is missing fails the test and names it.
+- An optional one that is missing skips the test.
+  The skip writes a `NOTICE` line to stderr and one line to the file `SIPNAB_PREREQ_SKIP_LEDGER` names.
+- `SIPNAB_REQUIRE_PREREQS` lists optional prerequisites that this run requires, comma-separated; `all` names every one.
+  CI's `Test` step sets it to what its runners have, one list for Linux and one for macOS.
+- [`scripts/parallel-tests.py`](https://github.com/NormB/sipnab/blob/main/scripts/parallel-tests.py) points the ledger at a file in a temporary directory it removes afterward, and prints the count at the end of the run:
+  `parallel-tests: 3 tests skipped on a missing prerequisite (sudo 2, landlock 1)`.
+  nextest's `suite` profile prints nothing of a passing test, so this line is where a skip shows.
+- [`tests/prereq_skip_gate_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/prereq_skip_gate_test.rs) refuses an early `return Ok(())` or `return;` in a test that the helper did not decide.
+  A return that is no skip (a child role, a state with nothing to check) carries `// not a prerequisite: <reason>`.
+
+To see which tests your host skips, run the suite and read that line, or run one test binary with `SIPNAB_REQUIRE_PREREQS=all`: every skip then fails and names its prerequisite.
+
 ### The corpus gate
 
 The corpus gate differs from the eight hard

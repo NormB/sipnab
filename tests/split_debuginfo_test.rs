@@ -24,10 +24,12 @@ use std::path::Path;
 
 #[path = "support/dbgsym.rs"]
 mod dbgsym;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 
 use dbgsym::TestError;
 
-use dbgsym::{build_fixture, build_id, debuglink, have, sections, split, symbolize, text};
+use dbgsym::{build_fixture, build_id, debuglink, sections, split, symbolize, text};
 
 #[path = "support/executable.rs"]
 mod executable;
@@ -100,7 +102,7 @@ fn assert_split_is_complete(bin: &Path, debug: &Path) -> Result<(), TestError> {
 #[test]
 fn the_split_ships_a_stripped_binary_and_a_matching_symbol_file() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
-    let bin = build_fixture(dir.path(), None, true)?.ok_or("host fixture")?;
+    let bin = build_fixture(dir.path(), None, true)??;
     let before = build_id(&bin)?.ok_or("the linker wrote a build ID")?;
     let out = split(&bin, &dir.path().join("sipnab-dev-host"))?;
     assert!(out.status.success(), "split failed:\n{}", text(&out));
@@ -131,12 +133,20 @@ fn the_split_handles_a_foreign_architecture() -> Result<(), TestError> {
     } else {
         ("aarch64-unknown-linux-gnu", "aarch64-linux-gnu-gcc")
     };
-    if !have(linker) {
-        eprintln!("SKIPPED: no {linker} on this host to link a {triple} fixture");
+    const CROSS: test_prereq::Need = test_prereq::Need::Optional(
+        "a cross linker and the other architecture's Rust standard library are extra installs; \
+         neither CI nor a contributor's host is required to have them.",
+    );
+    if !test_prereq::present("cross-linker", CROSS, dbgsym::tool_probe(linker)) {
         return Ok(());
     }
     let dir = tempfile::tempdir()?;
-    let Some(bin) = build_fixture(dir.path(), Some((triple, linker)), true)? else {
+    let Some(bin) = test_prereq::check(
+        "cross-linker",
+        CROSS,
+        build_fixture(dir.path(), Some((triple, linker)), true)?,
+    )?
+    else {
         return Ok(());
     };
     let out = split(&bin, &dir.path().join(format!("sipnab-dev-{triple}")))?;
@@ -150,7 +160,7 @@ fn the_split_handles_a_foreign_architecture() -> Result<(), TestError> {
 #[test]
 fn the_split_refuses_a_binary_without_a_build_id() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
-    let bin = build_fixture(dir.path(), None, false)?.ok_or("host fixture")?;
+    let bin = build_fixture(dir.path(), None, false)??;
     assert_eq!(
         build_id(&bin)?,
         None,
@@ -176,7 +186,7 @@ fn the_split_refuses_a_binary_without_a_build_id() -> Result<(), TestError> {
 #[test]
 fn the_split_refuses_a_binary_with_no_line_tables() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
-    let bin = build_fixture(dir.path(), None, true)?.ok_or("host fixture")?;
+    let bin = build_fixture(dir.path(), None, true)??;
     let first = split(&bin, &dir.path().join("first"))?;
     assert!(
         first.status.success(),
@@ -207,12 +217,9 @@ fn the_split_refuses_a_binary_with_no_line_tables() -> Result<(), TestError> {
 #[test]
 fn an_address_from_the_stripped_binary_symbolizes_against_the_symbol_file() -> Result<(), TestError>
 {
-    if !have("llvm-symbolizer") && !have("addr2line") {
-        eprintln!("SKIPPED: neither llvm-symbolizer nor addr2line is installed");
-        return Ok(());
-    }
+    test_prereq::required("addr2line", dbgsym::symbolizer_probe())?;
     let dir = tempfile::tempdir()?;
-    let bin = build_fixture(dir.path(), None, true)?.ok_or("host fixture")?;
+    let bin = build_fixture(dir.path(), None, true)??;
     let out = split(&bin, &dir.path().join("sipnab-dev-host"))?;
     assert!(out.status.success(), "split failed:\n{}", text(&out));
     let debug = dir.path().join("sipnab-dev-host.debug");

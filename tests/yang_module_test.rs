@@ -72,6 +72,7 @@ fn the_committed_module_is_what_the_tables_generate() -> Result<(), TestError> {
         std::fs::create_dir_all(path.parent().ok_or("yang/")?)?;
         std::fs::write(&path, &generated)?;
         eprintln!("blessed {}", path.display());
+        // not a prerequisite: the bless mode writes the module instead of checking it
         return Ok(());
     }
     let on_disk = std::fs::read_to_string(&path).map_err(|e| {

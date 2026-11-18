@@ -39,7 +39,9 @@
 
 #![cfg(all(unix, feature = "native"))]
 
-use std::io::Write as _;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::process::Command;
 
 use sipnab::seccomp::{self, SeccompMode, SeccompStatus};
@@ -66,24 +68,26 @@ const EXIT_NOT_REFUSED: i32 = 43;
 /// action, which proves nothing either way.
 const EXIT_WRONG_ERRNO: i32 = 44;
 
-/// Announce a skipped gate on this process's real stderr.
-///
-/// NOT `eprintln!`: libtest swaps the print sink per test and throws the
-/// buffer away when the test passes, so a skip announced that way reaches
-/// nobody.
-fn announce_skip(test: &str, reason: &str) {
-    let _ = writeln!(
-        std::io::stderr(),
-        "NOTICE: seccomp gate `{test}` did NOT run — {reason}."
-    );
-}
-
-/// Whether this build knows an `AUDIT_ARCH` token and runs on Linux.
+/// Whether this build knows an `AUDIT_ARCH` token and runs on Linux, decided
+/// by `src/test_prereq.rs`: missing, the test is skipped with a counted
+/// notice, or fails where `SIPNAB_REQUIRE_PREREQS` names `seccomp` (CI on
+/// Linux).
 ///
 /// Without the token a filter would match nothing, and a logging filter that
 /// matches nothing is silent — which reads exactly like a clean run.
 fn seccomp_possible() -> bool {
-    cfg!(target_os = "linux") && seccomp::audit_arch().is_some()
+    let probe = if !cfg!(target_os = "linux") {
+        Err("this target is not Linux".to_owned())
+    } else if seccomp::audit_arch().is_none() {
+        Err("this build knows no AUDIT_ARCH token for its architecture".to_owned())
+    } else {
+        Ok(())
+    };
+    test_prereq::present(
+        "seccomp",
+        test_prereq::Need::Optional("seccomp exists on Linux only; CI's Linux runners have it."),
+        probe,
+    )
 }
 
 /// Run one `#[ignore]`d child role in a fresh process.
@@ -355,10 +359,6 @@ fn child_sibling_thread_escapes_without_thread_sync() -> Result<(), TestError> {
 #[test]
 fn the_logging_filter_interferes_with_nothing() -> Result<(), TestError> {
     if !seccomp_possible() {
-        announce_skip(
-            "the_logging_filter_interferes_with_nothing",
-            "this target has no seccomp",
-        );
         return Ok(());
     }
     let (ok, out) = run_child("child_logging_filter_denies_nothing")?;
@@ -371,10 +371,6 @@ fn the_logging_filter_interferes_with_nothing() -> Result<(), TestError> {
 #[test]
 fn the_shipped_install_covers_the_capture_thread_shape() -> Result<(), TestError> {
     if !seccomp_possible() {
-        announce_skip(
-            "the_shipped_install_covers_the_capture_thread_shape",
-            "this target has no seccomp",
-        );
         return Ok(());
     }
     let (ok, out) = run_child("child_shipped_install_reaches_a_thread_that_already_existed")?;
@@ -388,10 +384,6 @@ fn the_shipped_install_covers_the_capture_thread_shape() -> Result<(), TestError
 #[test]
 fn a_filter_built_this_way_is_genuinely_loaded() -> Result<(), TestError> {
     if !seccomp_possible() {
-        announce_skip(
-            "a_filter_built_this_way_is_genuinely_loaded",
-            "this target has no seccomp",
-        );
         return Ok(());
     }
     let exe = std::env::current_exe()?;
@@ -436,10 +428,6 @@ fn a_filter_built_this_way_is_genuinely_loaded() -> Result<(), TestError> {
 #[test]
 fn the_two_children_share_everything_but_the_action() -> Result<(), TestError> {
     if !seccomp_possible() {
-        announce_skip(
-            "the_two_children_share_everything_but_the_action",
-            "this target has no seccomp",
-        );
         return Ok(());
     }
     let logging = seccomp::build_program(
@@ -483,10 +471,6 @@ fn the_two_children_share_everything_but_the_action() -> Result<(), TestError> {
 #[test]
 fn thread_sync_is_what_reaches_a_thread_that_already_existed() -> Result<(), TestError> {
     if !seccomp_possible() {
-        announce_skip(
-            "thread_sync_is_what_reaches_a_thread_that_already_existed",
-            "this target has no seccomp",
-        );
         return Ok(());
     }
     let (covered, out) = run_child("child_sibling_thread_is_covered_with_thread_sync")?;
@@ -517,10 +501,6 @@ fn off_is_off_everywhere() -> Result<(), TestError> {
 #[test]
 fn the_flag_installs_the_filter_and_the_capture_still_finishes() -> Result<(), TestError> {
     if !seccomp_possible() {
-        announce_skip(
-            "the_flag_installs_the_filter_and_the_capture_still_finishes",
-            "this target has no seccomp",
-        );
         return Ok(());
     }
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
@@ -841,10 +821,6 @@ fn child_enforcing_filter_does_not_kill_the_work_it_was_derived_for() -> Result<
 #[test]
 fn enforcement_does_not_kill_the_run_it_was_derived_from() -> Result<(), TestError> {
     if !seccomp_possible() {
-        announce_skip(
-            "enforcement_does_not_kill_the_run_it_was_derived_from",
-            "this target has no seccomp",
-        );
         return Ok(());
     }
     let exe = std::env::current_exe()?;
@@ -928,10 +904,6 @@ fn child_a_locally_derived_list_survives_the_work_it_covers() -> Result<(), Test
 #[test]
 fn a_locally_derived_list_survives_the_work_it_covers() -> Result<(), TestError> {
     if !seccomp_possible() {
-        announce_skip(
-            "a_locally_derived_list_survives_the_work_it_covers",
-            "this target has no seccomp",
-        );
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| format!("this test binary: {e:?}"))?;
@@ -1056,10 +1028,6 @@ fn child_enforcement_refuses_a_list_not_derived_for_this_binary() -> Result<(), 
 #[test]
 fn enforcement_refuses_a_list_that_was_not_derived_for_this_binary() -> Result<(), TestError> {
     if !seccomp_possible() {
-        announce_skip(
-            "enforcement_refuses_a_list_that_was_not_derived_for_this_binary",
-            "this target has no seccomp",
-        );
         return Ok(());
     }
     let (ok, out) = run_child("child_enforcement_refuses_a_list_not_derived_for_this_binary")?;
@@ -1321,10 +1289,6 @@ fn the_runner_gate_scan_examines_every_gate_in_this_file() -> Result<(), TestErr
 #[test]
 fn the_shared_runner_carries_no_filter_from_an_earlier_gate() -> Result<(), TestError> {
     if !seccomp_possible() {
-        announce_skip(
-            "the_shared_runner_carries_no_filter_from_an_earlier_gate",
-            "this target has no seccomp",
-        );
         return Ok(());
     }
     assert!(

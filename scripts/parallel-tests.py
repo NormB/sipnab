@@ -68,6 +68,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import typing
 import xml.etree.ElementTree as ET
@@ -520,7 +521,7 @@ def shard_commands(shard: list[str], cargo_args: list[str], jobs: int | None = N
     return commands
 
 
-def run_nextest(cmd: list[str]) -> int:
+def run_nextest(cmd: list[str], env: typing.Mapping[str, str] | None = None) -> int:
     """Run one `cargo nextest run`, then print its report as libtest text."""
     report = report_path(cargo_metadata())
     # A report left by an earlier run must never stand in for this one:
@@ -529,7 +530,7 @@ def run_nextest(cmd: list[str]) -> int:
     sys.stdout.flush()
     # nextest's own progress goes to standard error; standard output carries
     # only the rendered report and the doctests, the text the readers parse.
-    rc = subprocess.run(["cargo", *cmd], stdout=sys.stderr, check=False).returncode
+    rc = subprocess.run(["cargo", *cmd], stdout=sys.stderr, check=False, env=env).returncode
     try:
         text, _passed, failed = render_junit(report.read_text(encoding="utf-8"))
     except OSError:
@@ -545,19 +546,89 @@ def run_nextest(cmd: list[str]) -> int:
     return rc
 
 
+# ── The tests that skipped on a missing prerequisite, counted ────────────
+#
+# src/test_prereq.rs appends one line per skip (binary, test, prerequisite,
+# reason, tab-separated) to the file this variable names. nextest's `suite`
+# profile prints nothing of a passing test, so the skip's own notice is not
+# seen in a suite run; the count printed at the end is.
+
+SKIP_LEDGER_VAR = "SIPNAB_PREREQ_SKIP_LEDGER"
+
+
+def skip_ledger_env(env: typing.Mapping[str, str], target: pathlib.Path) -> tuple[dict[str, str], pathlib.Path]:
+    """The environment for a suite run, with the skip ledger set, and its path.
+
+    A ledger the caller named is used as it is. Otherwise the ledger is
+    `<directory>/prereq-skips.tsv`, emptied, so an earlier run's skips are
+    not counted again. Raises OSError when it cannot be created.
+    """
+    out = dict(env)
+    named = out.get(SKIP_LEDGER_VAR)
+    if named:
+        return out, pathlib.Path(named)
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / "prereq-skips.tsv"
+    path.write_text("", encoding="utf-8")
+    out[SKIP_LEDGER_VAR] = str(path)
+    return out, path
+
+
+def read_skip_ledger(path: pathlib.Path) -> str:
+    """The ledger's text; empty when no test wrote it."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
+
+
+def skip_summary(text: str) -> str:
+    """One line: how many tests skipped, and how many for each prerequisite."""
+    counts: dict[str, int] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        prereq = fields[2] if len(fields) == 4 and fields[2] else "unreadable"
+        counts[prereq] = counts.get(prereq, 0) + 1
+    total = sum(counts.values())
+    noun = "test" if total == 1 else "tests"
+    line = f"parallel-tests: {total} {noun} skipped on a missing prerequisite"
+    if counts:
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        line += " (" + ", ".join(f"{name} {n}" for name, n in ranked) + ")"
+    return line
+
+
 def run_commands(commands: list[list[str]]) -> int:
-    """Run each command in turn, every one even after a failure; 0 if all passed."""
+    """Run each command in turn, every one even after a failure; 0 if all passed.
+
+    The run's skips on a missing prerequisite are counted in a ledger and the
+    count printed at the end.
+    """
+    # Outside the tree: a file the run adds to the tree is an input the
+    # hook's pass stamp sees, so a second, identical run would miss it.
+    with tempfile.TemporaryDirectory(prefix="sipnab-prereq-skips-") as scratch:
+        env, ledger = skip_ledger_env(os.environ, pathlib.Path(scratch))
+        try:
+            return _run_each(commands, env)
+        finally:
+            print(skip_summary(read_skip_ledger(ledger)), file=sys.stderr, flush=True)
+
+
+def _run_each(commands: list[list[str]], env: typing.Mapping[str, str]) -> int:
+    """The loop of `run_commands`, with the ledger set in `env`."""
     rc = 0
     for cmd in commands:
         if cmd[0] == "build":
-            built = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False).returncode
+            built = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False, env=env).returncode
             if built != 0:
                 return built
         elif cmd[0] == "nextest":
-            rc = run_nextest(cmd) or rc
+            rc = run_nextest(cmd, env) or rc
         else:
             sys.stdout.flush()
-            rc = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False).returncode or rc
+            rc = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False, env=env).returncode or rc
     return rc
 
 

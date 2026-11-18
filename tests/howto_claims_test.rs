@@ -106,6 +106,25 @@ const TROUBLESHOOT: &str = "## When something does not work";
 #[cfg(feature = "tls")]
 #[path = "support/encrypted_captures.rs"]
 mod encrypted_captures;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
+/// Whether this test runs unprivileged (`uid` from /proc/self/status), as the
+/// pages' permission messages need, decided by `src/test_prereq.rs`.
+fn not_root_or_skip(uid: &str) -> bool {
+    test_prereq::present(
+        "non-root",
+        test_prereq::Need::Optional(
+            "root is not refused, so it cannot show the refusal the page quotes; \
+             CI runs the suite as an ordinary user.",
+        ),
+        if uid == "0" {
+            Err("this test process runs as root".to_owned())
+        } else {
+            Ok(())
+        },
+    )
+}
 // Also the capture of an rtpproxy control socket and its media, which every
 // build reads.
 #[path = "support/pcap_build.rs"]
@@ -1002,12 +1021,24 @@ fn the_uprobe_capture_without_root_gives_the_message_the_page_quotes() -> Result
         message,
         "uprobe-walkthrough",
     );
-    if uid == "0" {
+    if !not_root_or_skip(&uid) {
         return Ok(());
     }
     let listing = sipnab(&["--uprobe-list"])?;
-    if !stdout(&listing).starts_with("FLAVOR") {
-        // No library to probe: the run stops earlier, with another message.
+    // No library to probe: the run stops earlier, with another message.
+    if test_prereq::check(
+        "tls-library",
+        test_prereq::Need::Optional(
+            "a host with no TLS library for sipnab to list has nothing to attach a probe to.",
+        ),
+        if stdout(&listing).starts_with("FLAVOR") {
+            Ok(())
+        } else {
+            Err("`sipnab --uprobe-list` lists no TLS library".to_owned())
+        },
+    )?
+    .is_none()
+    {
         return Ok(());
     }
     let run = sipnab(&["-N", "--uprobe-tls", "--duration", "1"])?;
@@ -1708,7 +1739,7 @@ fn the_tuning_page_quotes_the_two_messages_of_a_capture_that_does_not_open() -> 
         .find_map(|line| line.strip_prefix("Uid:"))
         .and_then(|rest| rest.split_whitespace().next().map(str::to_owned))
         .ok_or("no Uid line in /proc/self/status")?;
-    if uid == "0" {
+    if !not_root_or_skip(&uid) {
         return Ok(());
     }
     let run = sipnab(&["-N", "-d", "sipnab-none0", "--duration", "1"])?;

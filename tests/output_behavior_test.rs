@@ -11,6 +11,8 @@ type TestError = Box<dyn std::error::Error>;
 
 #[path = "support/run.rs"]
 mod run_support;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 
 /// Crate-root-relative path to the 7-message SIP call fixture.
 const FIXTURE: &str = "tests/fixtures/sip_call.pcap";
@@ -113,8 +115,19 @@ fn an_output_in_a_read_only_directory_names_permission_denied() -> Result<(), Te
     let ro = dir.path().join("ro");
     std::fs::create_dir(&ro)?;
     std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555))?;
-    if std::fs::File::create(ro.join("probe")).is_ok() {
-        eprintln!("skipped: this process can write a 0555 directory (root)");
+    let probe = if std::fs::File::create(ro.join("probe")).is_ok() {
+        Err("this process can write a 0555 directory (it runs as root)".to_owned())
+    } else {
+        Ok(())
+    };
+    if !test_prereq::present(
+        "non-root",
+        test_prereq::Need::Optional(
+            "root writes into a read-only directory, so the case cannot be built as root; \
+             CI runs the suite as an ordinary user.",
+        ),
+        probe,
+    ) {
         return Ok(());
     }
     let out = ro.join("out.pcap");

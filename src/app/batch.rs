@@ -21856,7 +21856,11 @@ mod redaction_map_tests {
     /// The child half of the test below: run under a file-size limit with
     /// SIGXFSZ ignored, so a write past the limit fails with EFBIG part way
     /// through the table, as a full disk would.
+    ///
+    /// `#[ignore]`d: run on its own it has nothing to do and would report a
+    /// pass; only the parent runs it, with `--ignored`.
     #[test]
+    #[ignore = "child role: run by a_write_that_fails_part_way_leaves_no_map"]
     fn redaction_map_fsize_child() -> Result<(), TestError> {
         let Some(dir) = std::env::var_os(CHILD_DIR) else {
             return Ok(());
@@ -21888,6 +21892,7 @@ mod redaction_map_tests {
             .args([
                 "--exact",
                 "app::batch::redaction_map_tests::redaction_map_fsize_child",
+                "--ignored",
                 "--nocapture",
             ])
             .env(CHILD_DIR, dir.path())

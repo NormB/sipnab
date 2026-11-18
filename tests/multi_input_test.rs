@@ -20,6 +20,27 @@ use std::process::Command;
 
 #[path = "support/run.rs"]
 mod run_support;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
+/// Whether `editcap` (Wireshark's) runs here, decided by
+/// `src/test_prereq.rs`: missing, the test is skipped with a counted notice,
+/// or fails where `SIPNAB_REQUIRE_PREREQS` names `editcap` (CI on Linux,
+/// which installs it with tshark).
+fn editcap_or_skip() -> bool {
+    let probe = match Command::new("editcap").arg("--version").output() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("`editcap --version` did not start: {e}")),
+    };
+    test_prereq::present(
+        "editcap",
+        test_prereq::Need::Optional(
+            "editcap comes with Wireshark, which a contributor's host may not have; \
+             CI's Linux runners install it.",
+        ),
+        probe,
+    )
+}
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -155,8 +176,7 @@ fn set_with_a_truncated_middle(dir: &Path) -> Result<PathBuf, TestError> {
 /// files and reported two fragments.
 #[test]
 fn a_call_split_across_two_files_is_stitched_back_together() -> Result<(), TestError> {
-    if Command::new("editcap").arg("--version").output().is_err() {
-        eprintln!("editcap not installed — skipping");
+    if !editcap_or_skip() {
         return Ok(());
     }
     let src = samples().join("sip-rtp-g711.pcap");
@@ -257,8 +277,7 @@ fn the_cores_path_reconstructs_every_leg_of_a_proxied_call() -> Result<(), TestE
 /// stitched dialog from two fragments (see [`dialog_fingerprints`]).
 #[test]
 fn the_cores_path_reads_a_whole_set_and_stitches_across_a_file_boundary() -> Result<(), TestError> {
-    if Command::new("editcap").arg("--version").output().is_err() {
-        eprintln!("editcap not installed — skipping");
+    if !editcap_or_skip() {
         return Ok(());
     }
     let src = samples().join("sip-rtp-g711.pcap");
@@ -1047,8 +1066,7 @@ fn both_readers_report_a_truncated_member_at_the_same_severity() -> Result<(), T
 /// them is inflated.
 #[test]
 fn overlapping_captures_in_one_directory_are_reported() -> Result<(), TestError> {
-    if Command::new("editcap").arg("--version").output().is_err() {
-        eprintln!("editcap not installed — skipping");
+    if !editcap_or_skip() {
         return Ok(());
     }
     let dir = tempfile::tempdir()?;

@@ -26,6 +26,8 @@
 #[path = "../src/test_scratch.rs"]
 mod test_scratch;
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "support/tracked.rs"]
 mod tracked;
 
@@ -57,8 +59,20 @@ const HOOK_LOG_PREFIX: &str = "sipnab-pre-";
 #[test]
 fn the_git_directory_holds_no_stray_logs() -> Result<(), TestError> {
     let gitdir = repo().join(".git");
-    if !gitdir.is_dir() {
-        return Ok(()); // a worktree or a bare checkout: nothing to police
+    let probe = if gitdir.is_dir() {
+        Ok(())
+    } else {
+        Err(format!("{} is not a directory", gitdir.display()))
+    };
+    if !test_prereq::present(
+        "git-dir",
+        test_prereq::Need::Optional(
+            "a linked worktree or a source tarball has no .git directory of its own; \
+             CI's checkout has one.",
+        ),
+        probe,
+    ) {
+        return Ok(());
     }
     let stray = stray_git_files(&gitdir);
     assert!(

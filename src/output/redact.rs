@@ -2225,11 +2225,16 @@ mod tests {
     /// An ephemeral key is drawn from the system and differs per call.
     #[test]
     fn ephemeral_keys_differ() -> Result<(), TestError> {
-        let (Ok(a), Ok(b)) = (RedactionKey::ephemeral(), RedactionKey::ephemeral()) else {
-            // No /dev/urandom is a platform this build does not target; the
-            // supplied-key path is covered above either way.
-            return Ok(());
-        };
+        // Every platform this build targets has an OS random source, so a
+        // failure to draw from it is a defect, not a skip.
+        let a = crate::test_prereq::required(
+            "os-random",
+            RedactionKey::ephemeral().map_err(|e| format!("{e:?}")),
+        )?;
+        let b = crate::test_prereq::required(
+            "os-random",
+            RedactionKey::ephemeral().map_err(|e| format!("{e:?}")),
+        )?;
         assert_eq!(a.mode(), KeyMode::Ephemeral);
         assert_ne!(a.bytes, b.bytes);
         Ok(())

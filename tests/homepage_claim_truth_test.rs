@@ -1209,7 +1209,8 @@ fn homepage_does_not_claim_memory_safety_the_build_does_not_enforce() -> Result<
 fn the_soundness_argument_claim_is_actually_enforced() -> Result<(), TestError> {
     let page = homepage()?;
     if !page.contains("soundness argument") {
-        return Ok(()); // The page no longer makes the claim; nothing to hold it to.
+        // not a prerequisite: the page no longer makes the claim, so there is nothing to hold it to
+        return Ok(());
     }
     // The ASSIGNMENT, not the substring. Renaming the lint to
     // `undocumented_unsafe_blocks_x` left this gate green, because the real

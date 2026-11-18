@@ -15856,7 +15856,7 @@ mod planned_inputs_tests {
 
     #[test]
     fn success_an_ordinary_users_plan_opens_nothing_up_front() -> Result<(), TestError> {
-        if privilege::is_root() {
+        if !crate::test_prereq::not_root(privilege::is_root()) {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -16236,7 +16236,7 @@ mod planned_inputs_tests {
     #[test]
     fn failure_a_directory_without_write_permission_takes_no_new_files() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt as _;
-        if privilege::is_root() {
+        if !crate::test_prereq::not_root(privilege::is_root()) {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;

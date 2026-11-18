@@ -16015,6 +16015,7 @@ mod one_shot_plumbing_tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".config/implies-no-tui.txt");
         if std::env::var_os(BLESS_IMPLIES).is_some() {
             std::fs::write(&path, &want).map_err(|e| format!("write: {e}"))?;
+            // not a prerequisite: the bless mode writes the listing instead of checking it
             return Ok(());
         }
         let have = std::fs::read_to_string(&path).map_err(|e| format!("read: {e}"))?;

@@ -36,6 +36,8 @@ include!("support/child_lifetime.rs");
 
 #[path = "support/root_run.rs"]
 mod root_run;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -610,20 +612,11 @@ fn a_pipe_tied_command_receives_sigterm_before_it_is_killed() -> Result<(), Test
 /// clears the death signal when `sudo` executes.
 #[test]
 fn a_sudo_command_ends_when_its_test_process_is_killed() -> Result<(), TestError> {
-    let sudo_works = root_run::sudo()?
-        .arg("true")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if !sudo_works {
-        use std::io::Write as _;
-        // The real stderr: libtest drops a passing test's captured output.
-        let _ = writeln!(
-            std::io::stderr(),
-            "NOTICE: `a_sudo_command_ends_when_its_test_process_is_killed` did NOT run: \
-             passwordless sudo is not available."
-        );
+    if !test_prereq::present(
+        "sudo",
+        test_prereq::Need::Optional(root_run::SUDO_REASON),
+        root_run::sudo_probe(),
+    ) {
         return Ok(());
     }
     assert_run_ends_with_its_test("sudo", GONE_WITHIN)

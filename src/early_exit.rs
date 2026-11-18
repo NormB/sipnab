@@ -1658,7 +1658,7 @@ mod tests {
     #[test]
     fn failure_this_process_lacks_a_directory_it_cannot_list_or_search() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt as _;
-        if privilege::is_root() {
+        if !crate::test_prereq::not_root(privilege::is_root()) {
             // Root is granted everything; the lack cannot be shown as root.
             return Ok(());
         }
@@ -1791,7 +1791,7 @@ mod tests {
     #[test]
     fn this_process_holds_what_it_made_and_lacks_what_it_closed() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt as _;
-        if privilege::is_root() {
+        if !crate::test_prereq::not_root(privilege::is_root()) {
             // Root is granted everything; the lack cannot be shown as root.
             return Ok(());
         }

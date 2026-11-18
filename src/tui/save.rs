@@ -1481,10 +1481,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_save_that_could_not_be_flushed_is_not_reported_as_saved() -> Result<(), TestError> {
-        if !std::path::Path::new("/dev/full").exists() {
-            stderr_line!("skipped: no /dev/full on this host");
-            return Ok(());
-        }
+        // Linux always has /dev/full, so on Linux its absence is a broken host.
+        crate::test_prereq::required("dev-full", crate::test_prereq::dev_full())?;
         let app = app_with_dialogs()?;
         for pcapng in [false, true] {
             let msg = save_to_pcap_path(&app, "/dev/full", pcapng);

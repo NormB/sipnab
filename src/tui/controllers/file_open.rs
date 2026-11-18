@@ -1321,7 +1321,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         // Root bypasses directory permissions, so this scenario (the sudo /
         // privilege-drop case) only reproduces for an unprivileged user.
-        if crate::privilege::is_root() {
+        if !crate::test_prereq::not_root(crate::privilege::is_root()) {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;

@@ -15,6 +15,8 @@ use std::io::Write;
 
 #[path = "support/markdown.rs"]
 mod markdown;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -281,9 +283,9 @@ fn a_documented_sample_that_names_a_variable_is_actually_expanded() -> Result<()
 /// written, so this stays safe to run beside anything else.
 #[test]
 fn the_default_loader_reads_the_real_environment() -> Result<(), TestError> {
-    let Ok(home) = std::env::var("HOME") else {
-        return Ok(());
-    };
+    // Every login and every CI runner sets HOME; a run without it is a broken
+    // environment, not a skip.
+    let home = test_prereq::required("home", test_prereq::env("HOME"))?;
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("sample.toml");
     std::fs::write(&path, b"[capture]\ndevice = \"${HOME}\"\n")?;
