@@ -1004,9 +1004,20 @@ fn a_message_only_the_mirror_reported_reaches_the_report_and_the_json() -> Resul
     let json = m.dialog_json()?;
     let sd = &json["signaling_diagnosis"]["source_disagreement"];
     assert_eq!(sd["agreed"], 1, "the INVITE reached both witnesses: {sd}");
+    // The ladder holds the INVITE once, with both witnesses merged into it
+    // (DEDUP-1), so the mirrored 200 OK is its second message.
     assert_eq!(
-        sd["mirror_only"][0]["index"], 2,
+        sd["mirror_only"][0]["index"], 1,
         "the mirrored 200 OK, by index into the dialog's own ladder: {sd}"
+    );
+    assert_eq!(
+        json["msg_count"], 2,
+        "the INVITE both witnesses carried is one message: {json}"
+    );
+    assert_eq!(
+        json["seen_by"],
+        serde_json::json!({"hep": 2, "wire": 1}),
+        "HEP delivered both messages, the wire only the INVITE: {json}"
     );
     assert!(
         sd["wire_only"]

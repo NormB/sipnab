@@ -83,6 +83,12 @@ pub struct SipMessage {
     pub transport: TransportProto,
     /// Whether this message is a retransmission of a previously seen message.
     pub(crate) is_retransmission: bool,
+    /// The OTHER sources that delivered this same message, as a set of
+    /// [`origin_bit`]s: a run reading the wire and a HEP feed of one proxy
+    /// gets every message from both, and the second copy is merged into the
+    /// first rather than stored as a message of its own (DEDUP-1). Empty for
+    /// a message only its own source delivered. See [`Self::sources`].
+    pub(crate) also_seen_by: u8,
     /// Pointer back to the frame this message was parsed out of.
     ///
     /// This is where provenance stops being an idea about packets and starts
@@ -136,7 +142,20 @@ pub struct SipMessage {
     pub input_origin: Option<crate::capture::parse::InputOrigin>,
 }
 
+/// The bit that stands for `origin` in a set of sources
+/// ([`SipMessage::sources`]).
+pub(crate) fn origin_bit(origin: crate::capture::parse::InputOrigin) -> u8 {
+    1 << (origin as u8)
+}
+
 impl SipMessage {
+    /// Every source that delivered this message, as a set of [`origin_bit`]s:
+    /// its own origin and those of the copies merged into it. Empty for a
+    /// message that names no origin.
+    pub(crate) fn sources(&self) -> u8 {
+        self.input_origin.map_or(0, origin_bit) | self.also_seen_by
+    }
+
     /// Return the value of the `Call-ID` header, if present.
     pub fn call_id(&self) -> Option<&str> {
         self.header("Call-ID")

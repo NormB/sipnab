@@ -2726,6 +2726,60 @@ fn open_dialog(msg: &SipMessage) -> Option<SipDialog> {
     Some(dialog)
 }
 
+/// How far apart in time two sources' copies of one message may be. A HEP
+/// sender stamps a message with its own clock and the capture with another;
+/// two seconds covers clocks that NTP keeps in step and a HEP batch delay,
+/// and stays under the 4 s a UDP request takes to be retransmitted for the
+/// third time (RFC 3261 timer A: T1, 2·T1, 4·T1).
+pub(crate) const COPY_WINDOW: chrono::TimeDelta = chrono::TimeDelta::seconds(2);
+
+/// How many of a dialog's newest stored messages are searched for the one a
+/// copy copies. Two sources deliver a message close together, so the
+/// original is among the last few; the bound keeps a long dialog's search
+/// from growing with it.
+pub(crate) const COPY_LOOKBACK: usize = 64;
+
+/// The index of the stored message `msg` is a copy of, if it is one.
+///
+/// A copy is the same message delivered by another source: its bytes are
+/// identical (so it is also the same message of the same transaction: the
+/// status, method, CSeq and top-Via branch are read from those bytes), it
+/// came within
+/// [`COPY_WINDOW`] of the original, and no source that delivered `msg`
+/// already delivered the original. The last rule is what keeps a
+/// retransmission one: the wire's second INVITE finds only messages the wire
+/// already gave. Of several candidates, the nearest in time is the original.
+/// A message that names no source is never a copy, and never copied.
+///
+/// # Arguments
+///
+/// * `stored` — the dialog's stored messages, oldest first.
+/// * `msg` — the message arriving.
+///
+/// # Returns
+///
+/// The index in `stored` of the message `msg` copies, or `None`.
+pub(crate) fn copy_of(stored: &[SipMessage], msg: &SipMessage) -> Option<usize> {
+    let sources = msg.sources();
+    if sources == 0 {
+        return None;
+    }
+    let start = stored.len().saturating_sub(COPY_LOOKBACK);
+    stored
+        .iter()
+        .enumerate()
+        .skip(start)
+        .filter(|(_, m)| {
+            let theirs = m.sources();
+            theirs != 0
+                && theirs & sources == 0
+                && m.raw == msg.raw
+                && (m.timestamp - msg.timestamp).abs() <= COPY_WINDOW
+        })
+        .min_by_key(|(_, m)| (m.timestamp - msg.timestamp).abs())
+        .map(|(i, _)| i)
+}
+
 /// Fold one more message into a dialog the store already holds: the rule both
 /// [`DialogStore::process_message`] and [`DialogStore::merge`] apply.
 ///
@@ -2742,6 +2796,22 @@ fn open_dialog(msg: &SipMessage) -> Option<SipDialog> {
 /// `cap` is the most messages the dialog stores, `MAX_MESSAGES_PER_DIALOG`
 /// for every caller but a test.
 fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
+    // A copy of a stored message from another source (DEDUP-1): the wire and
+    // a HEP feed of one proxy deliver every message twice. It changes nothing
+    // but the sources of the message it copies and the two times; above all
+    // it is not a retransmission, which is what the CSeq probe below would
+    // call it.
+    if let Some(i) = copy_of(&dialog.messages, &msg) {
+        let ts = msg.timestamp;
+        if let Some(original) = dialog.messages.get_mut(i) {
+            original.also_seen_by |= msg.sources();
+        }
+        dialog.updated_at = ts;
+        dialog.latest_message_at = dialog.latest_message_at.max(ts);
+        dialog.earliest_message_at = dialog.earliest_message_at.min(ts);
+        return;
+    }
+
     // Retransmission detection: same CSeq identity already seen. O(1) set
     // probe that survives message capping and compaction (the old
     // stored-message scan went amnesiac past the cap). First sighting is
@@ -9448,5 +9518,401 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             "the unkept message at 1 s is the oldest; the kept ones start at 5 s"
         );
         Ok(())
+    }
+}
+
+/// DEDUP-1: which arriving message is a copy of a stored one, and what a
+/// copy does to its dialog.
+#[cfg(test)]
+mod copy_tests {
+    use super::*;
+    use crate::capture::parse::InputOrigin;
+    use crate::net::TransportProto;
+    use crate::sip::message::origin_bit;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A message of call `c@example.com`: `first_line`, CSeq `cseq`, top-Via
+    /// branch `branch`, `extra` appended to the headers.
+    fn msg(
+        first_line: &str,
+        cseq: &str,
+        branch: &str,
+        extra: &str,
+        origin: Option<InputOrigin>,
+        ms: i64,
+    ) -> Result<SipMessage, TestError> {
+        let raw = format!(
+            "{first_line}\r\nVia: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK{branch}\r\n\
+             From: <sip:a@example.com>;tag=f\r\nTo: <sip:b@example.com>\r\n\
+             Call-ID: c@example.com\r\nCSeq: {cseq}\r\n{extra}Content-Length: 0\r\n\r\n"
+        );
+        let ts = chrono::DateTime::from_timestamp_millis(1_700_000_000_000 + ms).ok_or("ts")?;
+        let ip = std::net::IpAddr::from([192, 0, 2, 1]);
+        let mut m = crate::sip::parser::parse_sip(
+            raw.as_bytes(),
+            ts,
+            ip,
+            ip,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("parse: {e:?}"))?;
+        m.input_origin = origin;
+        Ok(m)
+    }
+
+    /// The INVITE of these tests from `origin` at `ms`.
+    fn invite(origin: Option<InputOrigin>, ms: i64) -> Result<SipMessage, TestError> {
+        msg(
+            "INVITE sip:b@example.com SIP/2.0",
+            "1 INVITE",
+            "x1",
+            "",
+            origin,
+            ms,
+        )
+    }
+
+    /// Its 200 OK.
+    fn ok(origin: Option<InputOrigin>, ms: i64) -> Result<SipMessage, TestError> {
+        msg("SIP/2.0 200 OK", "1 INVITE", "x1", "", origin, ms)
+    }
+
+    const W: Option<InputOrigin> = Some(InputOrigin::Wire);
+    const H: Option<InputOrigin> = Some(InputOrigin::Hep);
+
+    /// A dialog opened by `first`, with `rest` advanced into it in order.
+    fn dialog(first: SipMessage, rest: Vec<SipMessage>) -> Result<SipDialog, TestError> {
+        let mut d = open_dialog(&first).ok_or("opens")?;
+        for m in rest {
+            advance_dialog(&mut d, m, DEFAULT_MAX_MESSAGES_PER_DIALOG);
+        }
+        Ok(d)
+    }
+
+    // SUCCESS
+
+    #[test]
+    fn a_hep_report_of_a_wire_message_is_a_copy() -> Result<(), TestError> {
+        assert_eq!(copy_of(&[invite(W, 0)?], &invite(H, 1)?), Some(0), "copy");
+        Ok(())
+    }
+
+    #[test]
+    fn a_wire_capture_of_a_hep_report_is_a_copy() -> Result<(), TestError> {
+        assert_eq!(copy_of(&[invite(H, 0)?], &invite(W, 1)?), Some(0), "copy");
+        Ok(())
+    }
+
+    #[test]
+    fn a_response_copy_is_found() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(W, 0)?, ok(W, 50)?], &ok(H, 51)?),
+            Some(1),
+            "the 200"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_nearest_original_in_time_is_chosen() -> Result<(), TestError> {
+        let stored = [invite(W, 0)?, invite(W, 500)?];
+        assert_eq!(
+            copy_of(&stored, &invite(H, 480)?),
+            Some(1),
+            "the nearer one"
+        );
+        assert_eq!(copy_of(&stored, &invite(H, 20)?), Some(0), "the nearer one");
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_adds_its_source_to_the_original() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![invite(H, 1)?])?;
+        assert_eq!(d.messages.len(), 1, "one message stored");
+        assert_eq!(
+            d.messages[0].sources(),
+            origin_bit(InputOrigin::Wire) | origin_bit(InputOrigin::Hep),
+            "both sources"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_is_not_a_retransmission() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![invite(H, 1)?])?;
+        assert_eq!(d.timing.total_retransmits(), 0, "no retransmission");
+        assert!(!d.messages[0].is_retransmission, "not marked");
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_moves_the_dialogs_times() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![invite(H, 700)?])?;
+        assert_eq!(
+            d.latest_message_at,
+            d.messages[0].timestamp + chrono::TimeDelta::milliseconds(700),
+            "latest"
+        );
+        assert_eq!(d.updated_at, d.latest_message_at, "activity");
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_that_came_first_moves_the_earliest_time() -> Result<(), TestError> {
+        let d = dialog(invite(W, 500)?, vec![invite(H, 100)?])?;
+        assert_eq!(
+            d.earliest_message_at,
+            d.messages[0].timestamp - chrono::TimeDelta::milliseconds(400),
+            "earliest"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_of_the_answer_does_not_answer_twice() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![ok(W, 50)?, ok(H, 51)?])?;
+        assert_eq!(d.messages.len(), 2, "INVITE and one 200");
+        assert_eq!(d.final_status_code(), Some(200), "answered");
+        Ok(())
+    }
+
+    // FAILURE: not copies
+
+    #[test]
+    fn the_same_source_twice_is_not_a_copy() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(W, 0)?], &invite(W, 500)?),
+            None,
+            "a retransmission"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_same_source_twice_stays_a_retransmission() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![invite(W, 500)?])?;
+        assert_eq!(d.messages.len(), 2, "both stored");
+        assert_eq!(d.timing.total_retransmits(), 1, "one retransmission");
+        Ok(())
+    }
+
+    #[test]
+    fn different_bytes_are_not_a_copy() -> Result<(), TestError> {
+        let changed = msg(
+            "INVITE sip:b@example.com SIP/2.0",
+            "1 INVITE",
+            "x1",
+            "Max-Forwards: 69\r\n",
+            H,
+            1,
+        )?;
+        assert_eq!(copy_of(&[invite(W, 0)?], &changed), None, "a rewrite");
+        Ok(())
+    }
+
+    #[test]
+    fn another_branch_is_not_a_copy() -> Result<(), TestError> {
+        let other = msg(
+            "INVITE sip:b@example.com SIP/2.0",
+            "1 INVITE",
+            "x2",
+            "",
+            H,
+            1,
+        )?;
+        assert_eq!(
+            copy_of(&[invite(W, 0)?], &other),
+            None,
+            "another transaction"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn another_cseq_is_not_a_copy() -> Result<(), TestError> {
+        let other = msg(
+            "INVITE sip:b@example.com SIP/2.0",
+            "2 INVITE",
+            "x1",
+            "",
+            H,
+            1,
+        )?;
+        assert_eq!(copy_of(&[invite(W, 0)?], &other), None, "another request");
+        Ok(())
+    }
+
+    #[test]
+    fn another_status_is_not_a_copy() -> Result<(), TestError> {
+        let ringing = msg("SIP/2.0 180 Ringing", "1 INVITE", "x1", "", H, 51)?;
+        assert_eq!(copy_of(&[ok(W, 50)?], &ringing), None, "another response");
+        Ok(())
+    }
+
+    #[test]
+    fn a_report_outside_the_window_is_not_a_copy() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(W, 0)?], &invite(H, 2_001)?),
+            None,
+            "too late"
+        );
+        assert_eq!(
+            copy_of(&[invite(W, 2_001)?], &invite(H, 0)?),
+            None,
+            "too early"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_message_without_an_origin_is_never_a_copy() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(W, 0)?], &invite(None, 1)?),
+            None,
+            "unknown source"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stored_message_without_an_origin_is_never_copied() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(None, 0)?], &invite(H, 1)?),
+            None,
+            "unknown original"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_original_both_sources_gave_takes_no_third_copy() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![invite(H, 1)?, invite(H, 2)?])?;
+        assert_eq!(d.messages.len(), 2, "the third is HEP's retransmission");
+        assert_eq!(d.timing.total_retransmits(), 1, "one retransmission");
+        Ok(())
+    }
+
+    // EDGE
+
+    #[test]
+    fn exactly_at_the_window_is_a_copy() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(W, 0)?], &invite(H, 2_000)?),
+            Some(0),
+            "at 2 s"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_same_instant_is_a_copy() -> Result<(), TestError> {
+        assert_eq!(copy_of(&[invite(W, 0)?], &invite(H, 0)?), Some(0), "at 0 s");
+        Ok(())
+    }
+
+    #[test]
+    fn each_copy_of_a_retransmission_finds_its_own_original() -> Result<(), TestError> {
+        let d = dialog(
+            invite(W, 0)?,
+            vec![invite(H, 1)?, invite(W, 500)?, invite(H, 501)?],
+        )?;
+        assert_eq!(d.messages.len(), 2, "two INVITEs, each with both sources");
+        assert_eq!(d.timing.total_retransmits(), 1, "one retransmission");
+        let both = origin_bit(InputOrigin::Wire) | origin_bit(InputOrigin::Hep);
+        assert!(
+            d.messages.iter().all(|m| m.sources() == both),
+            "both sources each"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_merged_message_is_not_copied_by_a_source_it_holds() -> Result<(), TestError> {
+        let mut merged = invite(W, 0)?;
+        merged.also_seen_by = origin_bit(InputOrigin::Hep);
+        assert_eq!(
+            copy_of(&[merged.clone()], &invite(H, 1)?),
+            None,
+            "HEP already gave it"
+        );
+        assert_eq!(
+            copy_of(&[merged], &invite(W, 1)?),
+            None,
+            "the wire already gave it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_replayed_merged_message_merges_all_its_sources() -> Result<(), TestError> {
+        // The parallel merge replays a fragment's stored messages; one that
+        // already holds a copy brings both of its sources.
+        let mut replayed = invite(H, 1)?;
+        replayed.also_seen_by = origin_bit(InputOrigin::Uprobe);
+        let d = dialog(invite(W, 0)?, vec![replayed])?;
+        assert_eq!(d.messages.len(), 1, "merged");
+        assert_eq!(
+            d.messages[0].sources(),
+            origin_bit(InputOrigin::Wire)
+                | origin_bit(InputOrigin::Hep)
+                | origin_bit(InputOrigin::Uprobe),
+            "every source"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_original_beyond_the_lookback_is_not_found() -> Result<(), TestError> {
+        let mut stored = vec![invite(W, 0)?];
+        for i in 0..COPY_LOOKBACK {
+            stored.push(msg(
+                "SIP/2.0 100 Trying",
+                "1 INVITE",
+                &format!("y{i}"),
+                "",
+                W,
+                1,
+            )?);
+        }
+        assert_eq!(copy_of(&stored, &invite(H, 2)?), None, "too far back");
+        stored.remove(1);
+        assert_eq!(copy_of(&stored, &invite(H, 2)?), Some(0), "just inside");
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_dialog_has_nothing_to_copy() -> Result<(), TestError> {
+        assert_eq!(copy_of(&[], &invite(H, 0)?), None, "nothing stored");
+        Ok(())
+    }
+
+    #[test]
+    fn sources_names_its_own_origin_and_its_copies() -> Result<(), TestError> {
+        let mut m = invite(W, 0)?;
+        assert_eq!(m.sources(), origin_bit(InputOrigin::Wire), "own origin");
+        m.also_seen_by = origin_bit(InputOrigin::Hep);
+        assert_eq!(
+            m.sources(),
+            origin_bit(InputOrigin::Wire) | origin_bit(InputOrigin::Hep),
+            "and a copy"
+        );
+        m.input_origin = None;
+        m.also_seen_by = 0;
+        assert_eq!(m.sources(), 0, "none");
+        Ok(())
+    }
+
+    #[test]
+    fn every_origin_has_its_own_bit() {
+        let bits: Vec<u8> = InputOrigin::ALL.iter().map(|&o| origin_bit(o)).collect();
+        let union = bits.iter().fold(0u8, |acc, b| acc | b);
+        assert_eq!(
+            union.count_ones() as usize,
+            InputOrigin::ALL.len(),
+            "distinct bits: {bits:?}"
+        );
     }
 }

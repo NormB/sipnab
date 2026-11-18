@@ -424,6 +424,43 @@ impl CaptureMedia {
             CaptureMedia::Observed
         }
     }
+
+    /// The fact for ONE dialog, from the run's fact `run`.
+    ///
+    /// A dialog rebuilt from a vCon container brings its signaling and none
+    /// of its packets, so the RTP this run captured from other inputs is no
+    /// evidence about that call's media: for it the answer is
+    /// [`Absent`](Self::Absent). A run reading `-I call.vcon.json -I
+    /// other.pcap` called the vCon's answered call `no_media` because the
+    /// pcap carried RTP.
+    ///
+    /// "Rebuilt from a vCon" means every message whose origin is known came
+    /// from a vCon, and at least one did; a dialog with no messages left is
+    /// read by its own origin. A dialog with any message from the wire, HEP
+    /// or a uprobe keeps `run`: that part of the call was this run's to see,
+    /// and a composite run takes the signaling from HEP and the RTP from the
+    /// wire. A dialog that names no origin at all keeps `run` too, because
+    /// unknown is not "from a vCon".
+    ///
+    /// # Arguments
+    ///
+    /// * `dialog` — the dialog the fact is wanted for.
+    /// * `run` — whether the run's capture recorded any RTP
+    ///   ([`of_store`](Self::of_store)).
+    pub fn for_dialog_of(dialog: &SipDialog, run: Self) -> Self {
+        use crate::capture::parse::InputOrigin;
+        let mut known = dialog
+            .messages
+            .iter()
+            .filter_map(|m| m.input_origin)
+            .peekable();
+        let from_vcon = if known.peek().is_some() {
+            known.all(|o| o == InputOrigin::Vcon)
+        } else {
+            dialog.messages.is_empty() && dialog.input_origin == Some(InputOrigin::Vcon)
+        };
+        if from_vcon { Self::Absent } else { run }
+    }
 }
 
 /// The media a dialog negotiated, reduced to what the diagnosis needs.
@@ -532,7 +569,7 @@ impl MediaContext {
     /// Read a dialog's negotiation, paired with what the capture could see.
     pub fn for_dialog(dialog: &SipDialog, capture: CaptureMedia) -> Self {
         let mut ctx = MediaContext {
-            capture,
+            capture: CaptureMedia::for_dialog_of(dialog, capture),
             established: matches!(dialog.final_status_code(), Some(200..=299)),
             dialog_start: dialog.messages.first().map(|m| m.timestamp),
             ..MediaContext::default()
@@ -2064,6 +2101,349 @@ mod tests {
         Ok(())
     }
 
+    // ── A dialog rebuilt from a vCon is not this run's capture ──────────
+    //
+    // The "mixed pcaps and vCons" no_media item: `-I call.vcon.json -I
+    // other.pcap` reported the vCon's answered call `no_media`, because the
+    // pcap's RTP made the RUN's capture `Observed`. A vCon brings the call's
+    // signaling and none of its packets, so this run's RTP says nothing about
+    // that call's media.
+
+    use crate::capture::parse::InputOrigin;
+
+    /// `dialog` with every message, and the dialog itself, from `origin`.
+    fn from_origin(mut dialog: SipDialog, origin: Option<InputOrigin>) -> SipDialog {
+        for m in &mut dialog.messages {
+            m.input_origin = origin;
+        }
+        dialog.input_origin = origin;
+        dialog
+    }
+
+    /// The answered call of these tests, from `origin`.
+    fn answered_from(origin: Option<InputOrigin>) -> Result<SipDialog, TestError> {
+        Ok(from_origin(
+            answered_dialog_with_sdp("sendrecv", "10.0.0.1", 20000)?,
+            origin,
+        ))
+    }
+
+    /// The per-dialog capture fact for `dialog` under a run fact of `run`.
+    fn capture_of(dialog: &SipDialog, run: CaptureMedia) -> CaptureMedia {
+        MediaContext::for_dialog(dialog, run).capture
+    }
+
+    #[test]
+    fn a_vcon_dialog_in_a_run_with_rtp_has_no_capture_of_its_media() -> Result<(), TestError> {
+        let d = answered_from(Some(InputOrigin::Vcon))?;
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Absent,
+            "a vCon's call was not captured by this run"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_vcon_dialog_is_not_no_media_in_a_run_with_rtp() -> Result<(), TestError> {
+        let d = answered_from(Some(InputOrigin::Vcon))?;
+        let diag = diagnose_media(&[], &MediaContext::for_dialog(&d, CaptureMedia::Observed));
+        assert!(!diag.no_media, "hints were {:?}", diag.hints);
+        assert!(
+            !diag.hints.iter().any(|h| h.contains("no RTP was observed")),
+            "no no-RTP hint: {:?}",
+            diag.hints
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_wire_dialog_keeps_the_run_fact() -> Result<(), TestError> {
+        let d = answered_from(Some(InputOrigin::Wire))?;
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Observed,
+            "wire"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_wire_dialog_without_rtp_is_still_no_media() -> Result<(), TestError> {
+        let d = answered_from(Some(InputOrigin::Wire))?;
+        let diag = diagnose_media(&[], &MediaContext::for_dialog(&d, CaptureMedia::Observed));
+        assert!(
+            diag.no_media,
+            "the wire call is still judged: {:?}",
+            diag.hints
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_hep_dialog_keeps_the_run_fact() -> Result<(), TestError> {
+        // A composite run takes signaling from HEP and RTP from the wire:
+        // the wire's RTP is evidence about the HEP call.
+        let d = answered_from(Some(InputOrigin::Hep))?;
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Observed,
+            "hep"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_hep_dialog_without_rtp_is_still_no_media() -> Result<(), TestError> {
+        let d = answered_from(Some(InputOrigin::Hep))?;
+        let diag = diagnose_media(&[], &MediaContext::for_dialog(&d, CaptureMedia::Observed));
+        assert!(
+            diag.no_media,
+            "the HEP call is still judged: {:?}",
+            diag.hints
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_uprobe_dialog_keeps_the_run_fact() -> Result<(), TestError> {
+        let d = answered_from(Some(InputOrigin::Uprobe))?;
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Observed,
+            "uprobe"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_dialog_with_no_origin_keeps_the_run_fact() -> Result<(), TestError> {
+        // Hand-built or synthesized: nobody said where it came from, and
+        // "unknown" is not "from a vCon".
+        let d = answered_from(None)?;
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Observed,
+            "none"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_vcon_dialog_in_a_run_without_rtp_stays_absent() -> Result<(), TestError> {
+        let d = answered_from(Some(InputOrigin::Vcon))?;
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Absent),
+            CaptureMedia::Absent,
+            "absent"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_wire_dialog_in_a_run_without_rtp_stays_absent() -> Result<(), TestError> {
+        let d = answered_from(Some(InputOrigin::Wire))?;
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Absent),
+            CaptureMedia::Absent,
+            "absent"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_dialog_also_seen_on_the_wire_keeps_the_run_fact() -> Result<(), TestError> {
+        // One message of it was captured by this run: that part of the call
+        // was within reach of the run's capture.
+        let mut d = answered_from(Some(InputOrigin::Vcon))?;
+        let last = d.messages.last_mut().ok_or("a message")?;
+        last.input_origin = Some(InputOrigin::Wire);
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Observed,
+            "mixed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_vcon_dialog_with_one_unlabeled_message_is_still_a_vcon() -> Result<(), TestError> {
+        let mut d = answered_from(Some(InputOrigin::Vcon))?;
+        let first = d.messages.first_mut().ok_or("a message")?;
+        first.input_origin = None;
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Absent,
+            "an unlabeled message names no other input"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_vcon_dialog_with_no_messages_left_reads_the_dialog_origin() -> Result<(), TestError> {
+        let mut d = answered_from(Some(InputOrigin::Vcon))?;
+        d.messages.clear();
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Absent,
+            "empty"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_dialog_with_no_messages_and_no_origin_keeps_the_run_fact() -> Result<(), TestError> {
+        let mut d = answered_from(None)?;
+        d.messages.clear();
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Observed,
+            "empty"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_wire_dialog_that_opened_on_a_vcon_message_is_still_captured() -> Result<(), TestError> {
+        // The dialog's own origin is its FIRST message's; later wire messages
+        // still put the call within reach.
+        let mut d = answered_from(Some(InputOrigin::Wire))?;
+        d.input_origin = Some(InputOrigin::Vcon);
+        if let Some(first) = d.messages.first_mut() {
+            first.input_origin = Some(InputOrigin::Vcon);
+        }
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Observed,
+            "later wire"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_rest_of_the_vcon_context_is_unchanged() -> Result<(), TestError> {
+        let wire = MediaContext::for_dialog(
+            &answered_from(Some(InputOrigin::Wire))?,
+            CaptureMedia::Observed,
+        );
+        let vcon = MediaContext::for_dialog(
+            &answered_from(Some(InputOrigin::Vcon))?,
+            CaptureMedia::Observed,
+        );
+        assert_eq!(vcon.negotiated, wire.negotiated, "negotiated");
+        assert_eq!(vcon.established, wire.established, "established");
+        assert_eq!(vcon.expects_media, wire.expects_media, "expects media");
+        assert_eq!(
+            vcon.advertised_endpoints(),
+            wire.advertised_endpoints(),
+            "endpoints"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_rule_reads_the_dialog_alone() -> Result<(), TestError> {
+        assert_eq!(
+            CaptureMedia::for_dialog_of(
+                &answered_from(Some(InputOrigin::Vcon))?,
+                CaptureMedia::Observed
+            ),
+            CaptureMedia::Absent,
+            "the rule in its one place"
+        );
+        assert_eq!(
+            CaptureMedia::for_dialog_of(
+                &answered_from(Some(InputOrigin::Wire))?,
+                CaptureMedia::Observed
+            ),
+            CaptureMedia::Observed,
+            "and its control"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn only_a_vcon_origin_withdraws_the_run_fact() -> Result<(), TestError> {
+        for origin in InputOrigin::ALL {
+            let expected = if origin == InputOrigin::Vcon {
+                CaptureMedia::Absent
+            } else {
+                CaptureMedia::Observed
+            };
+            assert_eq!(
+                capture_of(&answered_from(Some(origin))?, CaptureMedia::Observed),
+                expected,
+                "{origin:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_vcon_dialog_with_a_hep_message_keeps_the_run_fact() -> Result<(), TestError> {
+        let mut d = answered_from(Some(InputOrigin::Vcon))?;
+        d.messages.last_mut().ok_or("a message")?.input_origin = Some(InputOrigin::Hep);
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Observed,
+            "hep"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_vcon_dialog_with_an_uprobe_message_keeps_the_run_fact() -> Result<(), TestError> {
+        let mut d = answered_from(Some(InputOrigin::Vcon))?;
+        d.messages.first_mut().ok_or("a message")?.input_origin = Some(InputOrigin::Uprobe);
+        assert_eq!(
+            capture_of(&d, CaptureMedia::Observed),
+            CaptureMedia::Observed,
+            "uprobe"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_context_without_a_dialog_keeps_the_run_fact() {
+        assert_eq!(
+            MediaContext::without_dialog(CaptureMedia::Observed).capture,
+            CaptureMedia::Observed,
+            "no dialog, nothing to withdraw it for"
+        );
+    }
+
+    #[test]
+    fn a_vcon_dialog_in_a_run_without_rtp_is_not_no_media() -> Result<(), TestError> {
+        let d = answered_from(Some(InputOrigin::Vcon))?;
+        let diag = diagnose_media(&[], &MediaContext::for_dialog(&d, CaptureMedia::Absent));
+        assert!(!diag.no_media, "hints were {:?}", diag.hints);
+        Ok(())
+    }
+
+    #[test]
+    fn an_unanswered_vcon_dialog_is_not_no_media() -> Result<(), TestError> {
+        let mut d = answered_from(Some(InputOrigin::Vcon))?;
+        d.messages.retain(|m| m.is_request);
+        let diag = diagnose_media(&[], &MediaContext::for_dialog(&d, CaptureMedia::Observed));
+        assert!(!diag.no_media, "hints were {:?}", diag.hints);
+        Ok(())
+    }
+
+    #[test]
+    fn a_vcon_dialog_with_its_own_streams_is_judged_by_them() -> Result<(), TestError> {
+        // Streams the dialog does carry are evidence whatever the capture
+        // fact says: no_media is about a call with NONE.
+        let d = answered_from(Some(InputOrigin::Vcon))?;
+        let s = make_stream([10, 0, 0, 2], [10, 0, 0, 1], 30000, 20000)?;
+        let diag = diagnose_media(&[&s], &MediaContext::for_dialog(&d, CaptureMedia::Observed));
+        assert!(
+            !diag.no_media,
+            "a call with a stream has media: {:?}",
+            diag.hints
+        );
+        Ok(())
+    }
+
     /// The same call on a capture that recorded no RTP at all does not flag
     /// `no_media`: the capture cannot answer the question it is being asked.
     #[test]
@@ -2273,6 +2653,7 @@ mod tests {
             dscp: None,
             input_origin: None,
             is_retransmission: false,
+            also_seen_by: 0,
         };
         let mut d = SipDialog::new(&invite).ok_or("dialog from INVITE")?;
         d.timing.invite_sent = Some(ts()?);

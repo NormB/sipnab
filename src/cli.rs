@@ -1057,6 +1057,9 @@ pub struct CaptureArgs {
     /// 100 MiB. Both `filesize` conditions counted decimal megabytes before
     /// and stopped 4.9 % early; a capture that stopped short looks exactly
     /// like one that stopped when asked, so nothing reported the difference.
+    ///
+    /// With `--split`, `filesize` counts the output of every split file
+    /// together, the files `--split-keep` deleted included.
     #[arg(help_heading = "Capture", long, value_name = "CONDITION")]
     pub autostop: Option<String>,
 

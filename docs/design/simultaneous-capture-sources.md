@@ -320,7 +320,7 @@ operator discount a suspicious attribution instead of trusting it.
 **Provenance: build on it, and it needs one small extension.**
 [`docs/design/packet-provenance.md`](https://github.com/NormB/sipnab/blob/main/docs/design/packet-provenance.md) shipped in five stages. `FrameRef`
 ([`src/capture/packet.rs:765`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L765)<!-- "pub struct FrameRef" -->) resolves a fact to the bytes behind it, and
-`SipMessage::frame` ([`src/sip/message.rs:100`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L100)<!-- "pub frame: Option<crate::capture::packet::FrameRef>," -->), `SipDialog`
+`SipMessage::frame` ([`src/sip/message.rs:106`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L106)<!-- "pub frame: Option<crate::capture::packet::FrameRef>," -->), `SipDialog`
 ([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)<!-- "#[derive(Debug)]" -->), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:452`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L452)<!-- "#[derive(Debug, Clone)] pub struct RtpStream {" -->) carries the same field at line 323
 carry it downstream.
 
@@ -447,7 +447,7 @@ Ethernet, no IP, no UDP. That absence is deliberate and documented at
 read `INVITE`'s leading `0x49` as an IPv4 header with IHL 9 and drop every HEP
 message silently. So the bytes are honest and unwritable, not an oversight to
 patch. Classic pcap refuses the second member outright
-([`src/capture/writer.rs:619`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L619)<!-- "if packet.link_type" -->), and *which* member gets refused depends on which
+([`src/capture/writer.rs:624`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L624)<!-- "if packet.link_type" -->), and *which* member gets refused depends on which
 packet arrives first, so the run fails non-deterministically. pcapng is worse:
 it appends a second interface and writes the bare SIP text as if it were a frame
 of the declared link type, producing an export that decodes into something nobody
