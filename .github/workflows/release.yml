@@ -212,7 +212,11 @@ jobs:
             # carried linux-libc-dev arm64 6.1.192-2 and amd64 only 6.1.192-1;
             # both are now installed at the newest version both indexes carry.
             pins="$(multiarch_pins linux-libc-dev libc6 libc6-dev)"
-            # One `pkg:arch=version` word a line, none with spaces or globs.
+            # One `pkg:arch=version` word a line, none with spaces or globs;
+            # pins_line refuses any other word and prints the pins as one
+            # "multiarch pins" notice, the versions this build installs.
+            # shellcheck disable=SC2086
+            pins_line $pins
             # shellcheck disable=SC2086
             apt_bounded 600 install -y $pins gcc-aarch64-linux-gnu libpcap-dev:arm64 libasound2-dev:arm64
           else

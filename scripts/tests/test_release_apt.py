@@ -325,6 +325,198 @@ def test_multiarch_pins_stops_at_the_first_package_it_cannot_pin(tmp_path):
     assert "libc6" in r.stderr, r.stderr
 
 
+# --- pins_line ----------------------------------------------------------------
+#
+# RELEASE-APT-PINS-NOT-PRINTED: the 0.5.262 release computed the pins and
+# passed them to apt, but no line of the job log named them, so nobody could
+# say which version the aarch64 builds installed. `pins_line` prints them as
+# one `::notice` line (a line of the log and an annotation of the job) and
+# refuses words that are not one version for both architectures.
+
+PREFIX = "::notice title=multiarch pins::"
+
+PINS_OK = [
+    ("one package",
+     ["linux-libc-dev:amd64=6.1.192-1", "linux-libc-dev:arm64=6.1.192-1"]),
+    ("the three the release pins",
+     ["linux-libc-dev:amd64=6.1.192-1", "linux-libc-dev:arm64=6.1.192-1",
+      "libc6:amd64=2.36-9+deb12u10", "libc6:arm64=2.36-9+deb12u10",
+      "libc6-dev:amd64=2.36-9+deb12u10", "libc6-dev:arm64=2.36-9+deb12u10"]),
+    ("an epoch in the version",
+     ["libfoo:amd64=1:2.3-4", "libfoo:arm64=1:2.3-4"]),
+    ("a tilde in the version",
+     ["libfoo:amd64=2.0~rc1-1", "libfoo:arm64=2.0~rc1-1"]),
+    ("arm64 named first",
+     ["libfoo:arm64=1.0-1", "libfoo:amd64=1.0-1"]),
+    ("plus signs and dots in the package name",
+     ["libstdc++6:amd64=12.2.0-14", "libstdc++6:arm64=12.2.0-14"]),
+    ("two packages at different versions",
+     ["liba:amd64=1-1", "liba:arm64=1-1", "libb:amd64=2-2", "libb:arm64=2-2"]),
+    ("packages interleaved",
+     ["liba:amd64=1-1", "libb:amd64=2-2", "liba:arm64=1-1", "libb:arm64=2-2"]),
+    ("a one-character version",
+     ["x1:amd64=1", "x1:arm64=1"]),
+    ("ten packages",
+     [f"lib{n}:{a}={n}.0-1" for n in range(10) for a in ("amd64", "arm64")]),
+    ("a version with letters and dots",
+     ["libfoo:amd64=1.2.3a.b-1ubuntu2", "libfoo:arm64=1.2.3a.b-1ubuntu2"]),
+    ("a two-character package name",
+     ["gc:amd64=1:8.2.2-3", "gc:arm64=1:8.2.2-3"]),
+]
+
+
+@pytest.mark.parametrize("kind,words", PINS_OK, ids=[k for k, _ in PINS_OK])
+def test_pins_line_prints_the_pins_on_one_notice_line(kind, words):
+    r = run("pins_line", *words)
+    assert r.returncode == 0, f"{kind}: {r.stderr}"
+    assert r.stdout == PREFIX + " ".join(words) + "\n", f"{kind}: {r.stdout!r}"
+    assert r.stderr == "", f"{kind}: {r.stderr!r}"
+
+
+PINS_BAD = [
+    ("no equals sign", ["libfoo:amd64", "libfoo:arm64=1-1"], "libfoo:amd64"),
+    ("no architecture", ["libfoo=1-1", "libfoo:arm64=1-1"], "libfoo=1-1"),
+    ("another architecture", ["libfoo:i386=1-1", "libfoo:arm64=1-1"], "libfoo:i386=1-1"),
+    ("an empty version", ["libfoo:amd64=", "libfoo:arm64=1-1"], "libfoo:amd64="),
+    ("an empty package", [":amd64=1-1", ":arm64=1-1"], ":amd64=1-1"),
+    ("a glob", ["libfoo*:amd64=1-1", "libfoo*:arm64=1-1"], "libfoo*:amd64=1-1"),
+    ("an upper-case package", ["LibFoo:amd64=1-1", "LibFoo:arm64=1-1"], "LibFoo:amd64=1-1"),
+    ("a space in a word", ["libfoo:amd64=1 -1", "libfoo:arm64=1-1"], "libfoo:amd64=1 -1"),
+    ("an empty word", ["", "libfoo:amd64=1-1", "libfoo:arm64=1-1"], "''"),
+    ("a version with a slash", ["libfoo:amd64=1/2", "libfoo:arm64=1/2"], "libfoo:amd64=1/2"),
+    ("a package starting with a dash", ["-libfoo:amd64=1", "-libfoo:arm64=1"], "-libfoo:amd64=1"),
+    ("an equals sign in the version", ["libfoo:amd64=1=2", "libfoo:arm64=1=2"], "libfoo:amd64=1=2"),
+]
+
+
+@pytest.mark.parametrize("kind,words,named", PINS_BAD, ids=[k for k, _, _ in PINS_BAD])
+def test_pins_line_refuses_a_word_that_is_not_a_pin(kind, words, named):
+    r = run("pins_line", *words)
+    assert r.returncode == 1, f"{kind}: rc {r.returncode}"
+    assert r.stdout == "", f"{kind}: a refused pin must print no notice: {r.stdout!r}"
+    assert "::error::pins_line:" in r.stderr, f"{kind}: {r.stderr!r}"
+    assert named in r.stderr, f"{kind}: the message must name {named!r}: {r.stderr!r}"
+
+
+PINS_UNPAIRED = [
+    ("only amd64", ["libfoo:amd64=1-1"], "libfoo"),
+    ("only arm64", ["libfoo:arm64=1-1"], "libfoo"),
+    ("versions differ", ["libfoo:amd64=1-1", "libfoo:arm64=1-2"], "libfoo"),
+    ("one architecture twice", ["libfoo:amd64=1-1", "libfoo:amd64=1-1"], "libfoo"),
+    ("a second package unpaired",
+     ["liba:amd64=1-1", "liba:arm64=1-1", "libb:amd64=2-2"], "libb"),
+    ("a package named twice for one architecture",
+     ["libfoo:amd64=1-1", "libfoo:arm64=1-1", "libfoo:amd64=1-1"], "libfoo"),
+    ("a package named twice for arm64",
+     ["libfoo:amd64=1-1", "libfoo:arm64=1-1", "libfoo:arm64=1-1"], "more than once for arm64"),
+    ("a package pinned twice at two versions",
+     ["libfoo:amd64=1-1", "libfoo:arm64=1-1", "libfoo:amd64=2-2", "libfoo:arm64=2-2"], "libfoo"),
+    ("epochs differ", ["libfoo:amd64=1:2-3", "libfoo:arm64=2-3"], "libfoo"),
+    ("arm64 newer, the defect of v0.5.260",
+     ["linux-libc-dev:amd64=6.1.192-1", "linux-libc-dev:arm64=6.1.192-2"], "linux-libc-dev"),
+    ("a prefix of the other version", ["libfoo:amd64=1-1", "libfoo:arm64=1-10"], "libfoo"),
+    ("a package whose name is a prefix of another",
+     ["liba:amd64=1", "liba-dev:arm64=1"], "liba"),
+    ("the last package unpaired",
+     ["liba:amd64=1", "liba:arm64=1", "libb:amd64=1", "libb:arm64=1", "libc:arm64=1"], "libc"),
+]
+
+
+@pytest.mark.parametrize("kind,words,named", PINS_UNPAIRED, ids=[k for k, _, _ in PINS_UNPAIRED])
+def test_pins_line_refuses_pins_that_are_not_one_version_for_both(kind, words, named):
+    r = run("pins_line", *words)
+    assert r.returncode == 1, f"{kind}: rc {r.returncode}"
+    assert r.stdout == "", f"{kind}: {r.stdout!r}"
+    assert "::error::pins_line:" in r.stderr, f"{kind}: {r.stderr!r}"
+    assert named in r.stderr, f"{kind}: the message must name {named!r}: {r.stderr!r}"
+
+
+PINS_EDGE = [
+    ("a trailing newline in a word", ["libfoo:amd64=1\n", "libfoo:arm64=1"], False),
+    ("a tab in a word", ["libfoo:amd64=1\t", "libfoo:arm64=1"], False),
+    ("a carriage return in a version", ["libfoo:amd64=1\r", "libfoo:arm64=1\r"], False),
+    ("a one-character package, which Debian does not allow", ["a:amd64=1", "a:arm64=1"], False),
+    ("a non-ASCII letter in the package", ["libfoö:amd64=1", "libfoö:arm64=1"], False),
+    ("a lone double dash", ["--", "libfoo:amd64=1", "libfoo:arm64=1"], False),
+    ("a version of 200 characters", ["libfoo:amd64=" + "1" * 200, "libfoo:arm64=" + "1" * 200], True),
+    ("a version that is only 0", ["libfoo:amd64=0", "libfoo:arm64=0"], True),
+    ("an architecture in upper case", ["libfoo:AMD64=1", "libfoo:arm64=1"], False),
+    ("an architecture suffix after the name", ["libfoo:amd64x=1", "libfoo:arm64=1"], False),
+    ("a version that starts with a letter", ["libfoo:amd64=a1", "libfoo:arm64=a1"], False),
+    ("a dollar sign in the version", ["libfoo:amd64=$x", "libfoo:arm64=$x"], False),
+]
+
+
+@pytest.mark.parametrize("kind,words,ok", PINS_EDGE, ids=[k for k, _, _ in PINS_EDGE])
+def test_pins_line_at_the_edges_of_a_pin(kind, words, ok):
+    r = run("pins_line", *words)
+    if ok:
+        assert r.returncode == 0, f"{kind}: {r.stderr!r}"
+        assert r.stdout == PREFIX + " ".join(words) + "\n", f"{kind}: {r.stdout!r}"
+    else:
+        assert r.returncode == 1, f"{kind}: rc {r.returncode}, {r.stdout!r}"
+        assert r.stdout == "", f"{kind}: {r.stdout!r}"
+        assert "::error::pins_line:" in r.stderr, f"{kind}: {r.stderr!r}"
+
+
+def test_pins_line_of_no_pin_is_refused():
+    r = run("pins_line")
+    assert r.returncode == 1, r.returncode
+    assert r.stdout == "", r.stdout
+    assert "::error::pins_line: no pin named" in r.stderr, r.stderr
+
+
+def test_pins_line_refuses_the_pins_passed_as_one_quoted_word():
+    # `pins_line "$pins"` hands it one word with newlines in it; the step
+    # passes $pins unquoted so that each pin is its own word.
+    r = run("pins_line", "libfoo:amd64=1-1\nlibfoo:arm64=1-1\n")
+    assert r.returncode == 1, r.returncode
+    assert r.stdout == "", r.stdout
+    assert "::error::pins_line:" in r.stderr, r.stderr
+
+
+def test_pins_line_prints_exactly_one_line():
+    words = [f"lib{n}:{a}=1" for n in range(30) for a in ("amd64", "arm64")]
+    r = run("pins_line", *words)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.count("\n") == 1 and r.stdout.endswith("\n"), r.stdout
+
+
+def test_pins_line_keeps_the_order_it_was_given():
+    words = ["libz:arm64=1", "liba:amd64=2", "libz:amd64=1", "liba:arm64=2"]
+    r = run("pins_line", *words)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout[len(PREFIX):].split() == words, r.stdout
+
+
+def test_pins_line_prints_what_multiarch_pins_computed(tmp_path):
+    env = fake_madison(tmp_path, {"linux-libc-dev:amd64": MADISON_AMD64, "linux-libc-dev:arm64": MADISON_ARM64})
+    pins = run("multiarch_pins", "linux-libc-dev", env=env)
+    assert pins.returncode == 0, pins.stderr
+    r = run("pins_line", *pins.stdout.split())
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == PREFIX + "linux-libc-dev:amd64=6.1.192-1 linux-libc-dev:arm64=6.1.192-1\n", r.stdout
+
+
+def test_pins_line_leaves_no_file_behind(tmp_path):
+    env = dict(os.environ, RUNNER_TEMP=str(tmp_path), TMPDIR=str(tmp_path))
+    run("pins_line", "libfoo:amd64=1", "libfoo:arm64=1", env=env)
+    run("pins_line", "libfoo:amd64=1", env=env)
+    assert list(tmp_path.iterdir()) == [], list(tmp_path.iterdir())
+
+
+def test_pins_line_refuses_with_one_error_line():
+    r = run("pins_line", "bad", "libfoo:amd64=1", "libfoo:arm64=1")
+    assert r.returncode == 1, r.returncode
+    assert r.stderr.count("::error::") == 1, f"one refusal line, not one per word: {r.stderr!r}"
+
+
+def test_pins_line_refuses_before_it_prints_anything_for_a_late_bad_word():
+    r = run("pins_line", "liba:amd64=1", "liba:arm64=1", "libb:amd64=1", "libb:arm64=1", "Bad:amd64=1")
+    assert r.returncode == 1, r.returncode
+    assert r.stdout == "", f"the notice is printed only for pins that all hold: {r.stdout!r}"
+
+
 # --- apt_bounded --------------------------------------------------------------
 
 
@@ -423,3 +615,30 @@ def test_the_other_targets_install_without_pins():
     other = step[step.index("else", at):]
     assert "apt_bounded 600 install -y libpcap-dev libasound2-dev" in other, other
     assert "multiarch_pins" not in other, other
+    assert "pins_line" not in other, other
+
+
+def aarch64_branch():
+    step = install_step()
+    at = step.index('if [ "$TARGET" = "aarch64-unknown-linux-gnu" ]; then')
+    return step[at:step.index("else", at)]
+
+
+def test_the_aarch64_install_prints_its_pins_on_the_line_before_the_install():
+    lines = [ln.strip() for ln in aarch64_branch().splitlines()]
+    code = [ln for ln in lines if ln and not ln.startswith("#")]
+    install = next(i for i, ln in enumerate(code) if ln.startswith("apt_bounded 600 install"))
+    assert code[install - 1] == "pins_line $pins", (
+        f"the command before the install must print the pins it applies: {code[install - 1]!r}")
+
+
+def test_the_aarch64_install_prints_the_pins_after_computing_them():
+    branch = aarch64_branch()
+    assert branch.index('pins="$(multiarch_pins') < branch.index("pins_line $pins"), branch
+
+
+def test_the_aarch64_install_applies_the_pins_it_printed():
+    branch = aarch64_branch()
+    install = branch[branch.index("apt_bounded 600 install"):]
+    assert install.startswith("apt_bounded 600 install -y $pins "), install.splitlines()[0]
+    assert branch.count("$pins") == 2, "the pins are printed once and installed once"

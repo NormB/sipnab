@@ -83344,6 +83344,11 @@ The reviewer checks the rest:
   - It reports findings as code scanning alerts.
   - [`osv-scanner.toml`](osv-scanner.toml) lists the accepted advisories, each
     with its reason.
+  - OSV-Scanner and OpenSSF Scorecard read only the `osv-scanner.toml` in a
+    lock file's own directory. So each directory with a lock file holds an
+    exact copy of the root file. Edit the root file, then copy it over each
+    copy. [`tests/osv_config_copies_test.rs`](tests/osv_config_copies_test.rs)
+    fails on a missing, changed or stray copy.
 
 When you add or update a dependency, run the same checks CI runs before you
 push. Install the tools once with `cargo install cargo-audit cargo-deny`.
@@ -87405,7 +87410,11 @@ The `test` job runs the Linux suite on two runners at once.
     A split of the run alone would save little.
 - [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) `--shard-index I --shard-count N` is the one rule for what each shard runs.
   - It asks `cargo metadata` for the package's integration-test targets.
-  - `partition` puts the library and binary unit tests and the doctests in shard 0, weighed as `UNIT_WEIGHT` test binaries.
+  - `partition` puts the library and binary unit tests and the doctests in shard 0, weighed as test binaries: `UNIT_WEIGHTS` for the platform `platform.system()` names, 40 on Linux.
+  - On macOS the weight is `measured_unit_weight` over `MACOS_SHARD_RECORDS`, the phases of six main runs read from their job logs: 198 binaries.
+    In those runs shard 1's `test` build, which compiles the library's unit-test binary, took 6m29s to 9m45s and shard 2's 2m32s to 4m07s, while their nextest phases were about equal.
+    The rule takes a target's cost from the shard without the unit tests and the unit tests' cost from the remainder of the shard with them.
+    To measure again, add the new runs' records and run `python3 -m pytest scripts/tests/test_parallel_tests_macos_weight.py`.
   - It gives each target, in name order, to the shard with the least weight so far.
   - The shard runs `cargo nextest run --profile suite --all-features` with one `--test NAME` for each target it holds, and shard 0 adds `--lib --bins` and a `cargo test --doc` run.
   - The `suite` profile in [`.config/nextest.toml`](../../.config/nextest.toml) stops any one test after three 60-second periods.
@@ -87499,6 +87508,34 @@ A run there whose one job did not start means the completed run concluded `succe
 No run there means the completed run belongs to another workflow.
 
 [`scripts/tests/test_rerun_not_acquired.py`](../../scripts/tests/test_rerun_not_acquired.py) tests the decision against two answers captured from GitHub's API, in [`tests/fixtures/rerun_not_acquired`](../../tests/fixtures/rerun_not_acquired), and against answers built in the same shape.
+
+### Every platform's crates before the suite
+
+**Every job that runs the suite runs `cargo fetch --locked` first.**
+
+- [`tests/release_pipeline_gate_test.rs`](../../tests/release_pipeline_gate_test.rs) runs `cargo tree --offline --locked --target all`.
+  That reads the crates of every platform from the local cargo registry.
+- A build downloads only the crates of the platform it builds for.
+  With a warm cargo cache the registry held the others, so the test passed.
+- On main b8700e3f2 (2026-11-17) the release's new `Cargo.lock` missed the macOS cargo cache.
+  macOS shard 2 then failed with `failed to download alsa v0.11.0` and `--offline was specified`.
+- `cargo fetch --locked` with no `--target` downloads every platform's crates, so the test holds on a cold cache too.
+  It runs after the cache restore, because a restore can replace the registry.
+
+[`scripts/check-suite-fetch.py`](../../scripts/check-suite-fetch.py) holds the rule for every workflow:
+
+- A step runs the suite when it runs [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) (not `merge`), `cargo llvm-cov` (not `report`) or [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py).
+- Its job needs a `cargo fetch --locked` step before the first such step, and after any `actions/cache` restore of `~/.cargo/registry` before it.
+- [`scripts/tests/test_check_suite_fetch.py`](../../scripts/tests/test_check_suite_fetch.py) runs it on every workflow of the repository.
+
+**On your own machine.** The same test fails on a registry that has only your platform's crates.
+Its message then ends with the fix:
+
+```sh
+cargo fetch --locked
+```
+
+Run it once (it needs the network), then run the test again.
 
 ### Dependabot bumps fail on a generated file, not on an API break
 
@@ -89151,7 +89188,9 @@ The container's package installs go through [`scripts/release-apt.sh`](../../scr
 - `multiarch_pins` installs `linux-libc-dev`, `libc6` and `libc6-dev` for amd64 and arm64 at the newest version both architectures' indexes carry.
   These packages are `Multi-Arch: same`, so both architectures must hold one version.
   Release run 43881101798 (v0.5.260) failed both aarch64 builds when `bookworm-security` carried `linux-libc-dev` 6.1.192-2 for arm64 and only 6.1.192-1 for amd64.
-- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds both.
+- `pins_line` prints those pins on one `multiarch pins` notice line, the line before the install, so a release record can quote the versions each aarch64 build installed.
+  It refuses a word that is not `package:amd64=version` or `package:arm64=version`, and a package not pinned once for each architecture at one version.
+- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds all three.
 
 Every gnu binary then passes a `readelf -V` gate.
 

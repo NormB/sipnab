@@ -66,6 +66,10 @@ jobs:
       # the root one, so a scan of the root alone silently skips it -- the same
       # gap ci.yml's second `cargo audit` invocation exists to close.
       #
+      # No `--config`: OSV-Scanner then reads the osv-scanner.toml beside each
+      # lockfile, as OpenSSF Scorecard does, so this job reports what
+      # Scorecard reports. tests/osv_config_copies_test.rs holds the copies.
+      #
       # `|| true` so a finding does not fail the job before the SARIF is
       # uploaded. The upload step below is what surfaces it, and the report is
       # the deliverable here: cargo audit already blocks the merge on Rust
@@ -79,7 +83,6 @@ jobs:
           scan-args: |-
             --format=sarif
             --output=osv.sarif
-            --config=osv-scanner.toml
             --lockfile=./Cargo.lock
             --lockfile=./fuzz/Cargo.lock
             --recursive
