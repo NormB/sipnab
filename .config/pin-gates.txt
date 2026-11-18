@@ -42,6 +42,7 @@ link_type_fixtures_test
 lint_suppression_test
 mcp_tool_descriptions_test
 minimatch_advisory_test
+osv_config_copies_test
 pipefail_early_exit_test
 private_identity_test
 repo_hygiene_test
