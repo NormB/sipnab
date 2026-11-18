@@ -1002,6 +1002,11 @@ The reviewer checks the rest:
   - It reports findings as code scanning alerts.
   - [`osv-scanner.toml`](https://github.com/NormB/sipnab/blob/main/osv-scanner.toml) lists the accepted advisories, each
     with its reason.
+  - OSV-Scanner and OpenSSF Scorecard read only the `osv-scanner.toml` in a
+    lock file's own directory. So each directory with a lock file holds an
+    exact copy of the root file. Edit the root file, then copy it over each
+    copy. [`tests/osv_config_copies_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/osv_config_copies_test.rs)
+    fails on a missing, changed or stray copy.
 
 When you add or update a dependency, run the same checks CI runs before you
 push. Install the tools once with `cargo install cargo-audit cargo-deny`.

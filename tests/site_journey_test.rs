@@ -6885,7 +6885,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // b8700e3f2 and 319 with those steps staged.
     // 319 -> 320 (both): the macOS shard balance branch merged with main
     // 2062140b1. Measurement: the scan read 320 on that merge.
-    const EXPECTED_REFERENCES: usize = 320;
+    // 320 -> 321 (OSV config copies): the comment of osv-scanner.yml's step
+    // "Scan every lockfile" names tests/osv_config_copies_test.rs.
+    // Measurement: the scan read 321 on main c2f0ce6a0 merged with it.
+    const EXPECTED_REFERENCES: usize = 321;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
