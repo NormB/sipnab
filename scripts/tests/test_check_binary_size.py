@@ -31,7 +31,6 @@ import re
 import subprocess
 
 import pytest
-import yaml
 
 from conftest import SCRIPTS
 
@@ -229,9 +228,59 @@ def test_a_commented_out_ceiling_above_the_real_one_is_skipped(tmp_path):
 # ---- release.yml: the one rule, at the tag ---------------------------------
 
 
+def steps_of(text, job):
+    """The steps of `job`, read from the workflow text: each a dict of its
+    `name`, `id`, `if`, `uses` (comment dropped), `run` (a block's lines,
+    stripped, comment lines left out) and `env` (a dict). CI's Python has no
+    YAML library, so the shape these tests read is parsed here, and
+    test_the_step_reader_reads_every_kind_of_key holds it."""
+    lines = text.splitlines()
+    start = lines.index(f"  {job}:")
+    at = next(k for k in range(start + 1, len(lines)) if lines[k] == "    steps:")
+    out, cur, key = [], None, None
+    for line in lines[at + 1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent < 6:
+            break
+        if indent == 6 and stripped.startswith("- "):
+            cur = {}
+            out.append(cur)
+            stripped, indent = stripped[2:], 8
+        if indent == 8:
+            key, _, value = stripped.partition(":")
+            value = value.strip()
+            if key == "env":
+                cur["env"] = {}
+            elif value in ("|", ">"):
+                cur[key] = ""
+            else:
+                cur[key] = value.split(" # ")[0].strip() if key == "uses" else value
+        elif key == "env":
+            k, _, v = stripped.partition(":")
+            cur["env"][k] = v.strip()
+        elif key in ("run",) and isinstance(cur.get(key), str):
+            cur[key] += stripped + "\n"
+    return out
+
+
 def release_steps():
-    wf = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
-    return wf["jobs"]["build"]["steps"]
+    return steps_of((ROOT / ".github/workflows/release.yml").read_text(), "build")
+
+
+def test_the_step_reader_reads_every_kind_of_key():
+    text = ("jobs:\n  j:\n    runs-on: x\n    steps:\n"
+            "      - uses: a/b@0123 # v1\n        with:\n          k: v\n"
+            "      - name: One\n        id: one\n        if: always()\n        env:\n          A: '1'\n"
+            "        run: |\n          echo a\n          # note\n          echo b\n"
+            "      - name: Two\n        run: echo c\n  next:\n    steps:\n      - name: Other\n")
+    assert steps_of(text, "j") == [
+        {"uses": "a/b@0123", "with": ""},
+        {"name": "One", "id": "one", "if": "always()", "env": {"A": "'1'"}, "run": "echo a\necho b\n"},
+        {"name": "Two", "run": "echo c"},
+    ]
 
 
 def test_the_release_size_step_runs_the_script_on_the_musl_artifact():
@@ -248,17 +297,18 @@ def test_the_release_size_step_holds_no_rule_of_its_own():
 # ---- binary-size.yml: the same rule, on pull requests ----------------------
 
 
-def size_workflow():
-    return yaml.safe_load((ROOT / ".github/workflows/binary-size.yml").read_text())
+def size_text():
+    return (ROOT / ".github/workflows/binary-size.yml").read_text()
 
 
 def size_steps():
-    return size_workflow()["jobs"]["binary-size"]["steps"]
+    return steps_of(size_text(), "binary-size")
 
 
-def triggers():
-    wf = size_workflow()
-    return wf.get("on", wf.get(True))
+def pr_paths():
+    text = size_text()
+    block = text[text.index("\n  pull_request:\n"):text.index("\npermissions:")]
+    return re.findall(r"^      - '([^']+)'$", block, re.M)
 
 
 @pytest.mark.parametrize("path", ["Cargo.toml", "Cargo.lock", "build.rs", "build_script/**", ".cargo/**",
@@ -267,12 +317,13 @@ def triggers():
                                   "scripts/split-debuginfo.sh", ".github/workflows/binary-size.yml",
                                   ".github/workflows/release.yml"])
 def test_a_pull_request_that_changes_what_the_size_depends_on_runs_the_job(path):
-    assert path in triggers()["pull_request"]["paths"], triggers()["pull_request"]
+    assert path in pr_paths(), pr_paths()
 
 
 def test_the_job_also_runs_weekly_and_on_demand_for_growth_in_the_source():
-    t = triggers()
-    assert "workflow_dispatch" in t and t["schedule"][0]["cron"], t
+    text = size_text()
+    assert "\n  workflow_dispatch:\n" in text, text
+    assert re.search(r"^    - cron: '[0-9*,/ -]{9,}'$", text, re.M), "a weekly schedule"
 
 
 def test_the_job_builds_the_x86_64_musl_target_with_cross_as_the_release_does():
@@ -310,8 +361,8 @@ def test_every_action_the_job_uses_is_pinned_by_a_full_commit():
 
 
 def test_the_job_runs_on_a_github_hosted_runner_only():
-    runs_on = size_workflow()["jobs"]["binary-size"]["runs-on"]
-    assert runs_on == "ubuntu-24.04", f"a GitHub-hosted label, never a self-hosted one: {runs_on!r}"
+    runs_on = re.findall(r"^\s+runs-on:\s*(.+)$", size_text(), re.M)
+    assert runs_on == ["ubuntu-24.04"], f"a GitHub-hosted label, never a self-hosted one: {runs_on!r}"
 
 
 def test_the_job_builds_the_feature_set_release_yml_ships_for_musl():
@@ -336,4 +387,5 @@ def test_the_job_uses_the_release_toolchain_pin():
 
 
 def test_the_job_reads_the_repository_and_nothing_more():
-    assert size_workflow()["permissions"] == {"contents": "read"}
+    grants = re.findall(r"^( *)permissions:\n((?:\1  .+\n)+)", size_text(), re.M)
+    assert grants and all(body.split() == ["contents:", "read"] for _, body in grants), grants
