@@ -6876,11 +6876,16 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 298 -> 315 (Sanitizers path filter): sanitizers.yml's push filter and
     // its comment name the tests/ files its run step compiles. Measurement:
     // the scan read 298 on main 5458dea3d and 315 with that file staged.
+    // 315 -> 316 (macOS shard balance): ci.yml's comment on `test-macos`
+    // names `scripts/parallel-tests.py`. Measurement: the scan read 315 on
+    // main 6172f6fdd and 316 on this branch merged with it.
     // 315 -> 319 (fetch before the suite): the comments of the four
     // "Fetch every platform's crates" steps (ci.yml twice, quality.yml twice)
     // name scripts/check-suite-fetch.py. Measurement: the scan read 315 on main
     // b8700e3f2 and 319 with those steps staged.
-    const EXPECTED_REFERENCES: usize = 319;
+    // 319 -> 320 (both): the macOS shard balance branch merged with main
+    // 2062140b1. Measurement: the scan read 320 on that merge.
+    const EXPECTED_REFERENCES: usize = 320;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
