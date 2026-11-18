@@ -16,20 +16,6 @@
 # tests/osv_config_copies_test.rs refuses a missing, differing or stray copy.
 
 [[IgnoredVulns]]
-id = "GHSA-hp3w-g68c-fv3c"
-# Also filed as CVE-2026-97058.
-reason = """
-sprintf-js denial of service through unbounded precision specifiers in a \
-FORMAT STRING. Reached only from e2e/package-lock.json, the dev tooling for \
-the site's Lighthouse CI step (@lhci/cli -> @lhci/utils -> js-yaml 3 -> \
-argparse 1 -> sprintf-js 1.0.3). argparse formats its own help templates \
-with it; no attacker-supplied text becomes a format string, and nothing in \
-e2e/ ships with sipnab or runs outside CI. osv.dev lists no fixed release: \
-every version through 1.1.3, the latest, is affected, so there is no upgrade \
-to take. Re-evaluate when sprintf-js publishes a fix or @lhci drops js-yaml 3.\
-"""
-
-[[IgnoredVulns]]
 id = "RUSTSEC-2026-0543"
 # The owner's decision, 2026-11-17: "Ignore + migrate". deny.toml accepts it
 # with the same reason; the review date makes the scanner report it again.

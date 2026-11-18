@@ -3,27 +3,10 @@
   "@id": "https://github.com/NormB/sipnab/blob/main/vex/sipnab.openvex.json",
   "author": "sipnab maintainers <n.brandinger@gmail.com>",
   "role": "Project maintainer",
-  "timestamp": "2026-11-17T00:00:00Z",
-  "version": 10,
-  "tooling": "Hand-written; held to deny.toml and osv-scanner.toml by tests/vex_document_test.rs",
+  "timestamp": "2026-11-18T00:00:00Z",
+  "version": 11,
+  "tooling": "Hand-written; held to deny.toml and osv-scanner.toml by tests/vex_document_test.rs, and to the tracked lockfiles by tests/osv_config_copies_test.rs",
   "statements": [
-    {
-      "vulnerability": {
-        "name": "GHSA-hp3w-g68c-fv3c",
-        "aliases": [
-          "CVE-2026-97058"
-        ],
-        "description": "sprintf-js denial of service through unbounded precision specifiers in a format string"
-      },
-      "products": [
-        {
-          "@id": "pkg:cargo/sipnab"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "component_not_present",
-      "impact_statement": "sprintf-js is not part of sipnab: no binary, package or crate the project ships contains it. It appears only in e2e/package-lock.json, the dev tooling for the website's Lighthouse CI step (@lhci/cli -> @lhci/utils -> js-yaml 3 -> argparse 1 -> sprintf-js 1.0.3), where argparse formats its own help templates and no attacker-supplied text becomes a format string. osv.dev lists no fixed release (every version through 1.1.3 is affected). Re-evaluate when a fix is published or @lhci drops js-yaml 3."
-    },
     {
       "vulnerability": {
         "name": "RUSTSEC-2026-0543",
@@ -31,7 +14,12 @@
       },
       "products": [
         {
-          "@id": "pkg:cargo/sipnab"
+          "@id": "pkg:cargo/sipnab",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/chrono"
+            }
+          ]
         }
       ],
       "status": "not_affected",
