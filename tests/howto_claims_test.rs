@@ -110,7 +110,9 @@ mod encrypted_captures;
 mod test_prereq;
 
 /// Whether this test runs unprivileged (`uid` from /proc/self/status), as the
-/// pages' permission messages need, decided by `src/test_prereq.rs`.
+/// pages' permission messages need, decided by `src/test_prereq.rs`. Linux
+/// only, as its callers are: the uid it takes is read from /proc.
+#[cfg(target_os = "linux")]
 fn not_root_or_skip(uid: &str) -> bool {
     test_prereq::present(
         "non-root",
