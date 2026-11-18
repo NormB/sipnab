@@ -8,9 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+Not released. Test-only changes since 0.5.264 (a test whose prerequisite is missing now fails, or skips with a notice the suite run counts, through one helper, and CI requires the prerequisites its runners have); nothing a user of the released artifacts can see.
+
 ## [0.5.264] - 2026-11-18
 
-Not released. CI and test-only changes since 0.5.263 (every suite job fetches every platform's crates first, and each lockfile has a copy of osv-scanner.toml beside it that the OSV workflow reads as Scorecard does, and the stale sprintf-js advisory exception is gone; the code-scanning gate reads the open alerts again when an answer is unreadable or not yet re-evaluated, the Since check dates an untagged release's flags while pull requests land before its tag, and a pull request that changes the manifests or build scripts builds the x86_64 musl binary and checks its size; a test whose prerequisite is missing now fails, or skips with a notice the suite run counts, through one helper, and CI requires the prerequisites its runners have); nothing a user of the released artifacts can see.
 ### Fixed
 
 - **`--autostop filesize` stops a run that also uses `--split`.**
