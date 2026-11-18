@@ -79,7 +79,7 @@ So a green `--features full` says nothing about whether `--features tls` alone
 compiles.
 That is exactly why CI has a feature matrix.
 
-## The twenty workflows
+## The twenty-one workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -101,6 +101,7 @@ That is exactly why CI has a feature matrix.
 | `pr-closed.yml` | PR closed or merged | Ends the `CI` run of a closed pull request. `ci.yml` groups a pull request's runs as `ci-CI-<number>`; this workflow enters that group with `cancel-in-progress`, so GitHub cancels the run still in progress. Before it, a closed pull request's run went on to its end and held the self-hosted runners other pull requests waited for. It checks out nothing, calls no action and asks for no permission. A merge also sends `closed`; GitHub creates the run and marks its job skipped (`merged == false`), since a merged pull request's run is already over. GitHub's documentation has not stated whether a skipped job's run still enters the group; the group names only the pull request's number, so it is never main's group `ci-CI-refs/heads/main`. Limit: GitHub runs no `pull_request` workflow for a pull request with a merge conflict, so closing such a pull request leaves its run going. [`scripts/tests/test_ci_cancel_on_close.py`](../../scripts/tests/test_ci_cancel_on_close.py) holds the two group names together. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](../../bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
+| `binary-size.yml` | weekly cron (Fridays 05:17 UTC), manual, and PRs touching the manifests, the lockfile, the build scripts or the ceiling | Builds the x86_64 musl release binary the way `release.yml` does, splits its symbols, and fails when it exceeds `binary_size_ceiling_mb`, through [`scripts/check-binary-size.sh`](../../scripts/check-binary-size.sh), the script `release.yml`'s size step runs. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
 | `rerun-not-acquired.yml` | when a `CI` or `Release` run completes without success; manual, which prints the decision for one run and re-runs nothing | Re-runs the failed jobs of a run in which every job that did not succeed has the conclusion `skipped` or never started, because no hosted runner took it. See [A job no runner took](#a-job-no-runner-took). |
 
@@ -571,6 +572,11 @@ The script leaves these cases for a person:
 The workflow's one job holds `actions: write` and no other permission.
 GitHub runs the workflow file of the default branch for a `workflow_run` event, and the checkout names no ref.
 The script that runs is the one on `main`, also when the completed run belongs to a pull request.
+
+The release train reads a canceled check through the same rule, `rerun_coming` in the script.
+A job the script re-runs counts as pending, not failed, while its run is in progress and for 600 seconds after the run completed.
+The 0.5.262 and 0.5.263 trains stopped at `ci-failed` on such a job, and a person restarted each one.
+The script's `WORKFLOWS` names the watched workflows, and a test holds it equal to the workflow file's `workflows:` list.
 
 **See what the script answers for one run.**
 Start the workflow by hand with the run's number.
@@ -1764,6 +1770,11 @@ in the release commit itself.
   It sets `Cargo.toml` to the same version.
   From then on the flag reads `x.y.z`.
 - Tagging the commit changes nothing, because the tag's history gives the same `x.y.z`.
+- Pull requests that land before the tag reaches GitHub put a new `[Unreleased]` above `[x.y.z]`.
+  - Until the tag exists, the commit that added `## [x.y.z]` to `CHANGELOG.md` stands in for it.
+  - A flag that commit declares reads `x.y.z`; a flag added later reads `Unreleased`.
+  - Reading only the first heading made every flag of the release read `Unreleased` on every pull
+    request until the tag reached GitHub (2026-10-27, `0.5.231`).
 - So run `python3 scripts/flag-since.py --write` in the release commit,
   after the rename and the version bump.
 - If you forget, `the_since_column_is_what_tagged_history_says` in
@@ -2277,7 +2288,9 @@ The container's package installs go through [`scripts/release-apt.sh`](../../scr
 - `multiarch_pins` installs `linux-libc-dev`, `libc6` and `libc6-dev` for amd64 and arm64 at the newest version both architectures' indexes carry.
   These packages are `Multi-Arch: same`, so both architectures must hold one version.
   Release run 43881101798 (v0.5.260) failed both aarch64 builds when `bookworm-security` carried `linux-libc-dev` 6.1.192-2 for arm64 and only 6.1.192-1 for amd64.
-- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds both.
+- `pins_line` prints those pins on one `multiarch pins` notice line, the line before the install, so a release record can quote the versions each aarch64 build installed.
+  It refuses a word that is not `package:amd64=version` or `package:arm64=version`, and a package not pinned once for each architecture at one version.
+- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds all three.
 
 Every gnu binary then passes a `readelf -V` gate.
 
@@ -2558,6 +2571,9 @@ To close it by hand:
 
 - `no-pr`: GitHub lists no pull request for the branch `release/<version>`, or GitHub closed it without merging.
 - `ci-failed: <names>`: fix the checks, push, and run the train again.
+- `awaits a re-run: <names>`: no hosted runner took those jobs, and `rerun-not-acquired.yml` runs them again when their run completes.
+  The train keeps waiting and keeps the release window closed.
+  When the re-run has not started 600 seconds after the run completed, the train stops at `ci-failed`: re-run the jobs by hand, then run the train again.
 - After an exit of 3 or 4 the train does not run the post checks again. To retry them, add `--retry-post`.
 - `the local tag v<version> is on <sha>, not the merge commit <sha>`: delete the stale local tag, then run the train again.
 - `this checkout is at <sha>, not the merge commit <sha>, and it has uncommitted changes`: commit the changes or set them aside, run the printed `git checkout --detach` command, then run the train again.

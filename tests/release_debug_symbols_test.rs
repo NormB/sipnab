@@ -474,6 +474,12 @@ fn the_size_gate_measures_only_the_shipped_binary() -> Result<(), TestError> {
             repo().join("website/config.toml"),
             w.join("website/config.toml"),
         )?;
+        // The step runs the repository's size check, which reads the ceiling.
+        std::fs::create_dir_all(w.join("scripts"))?;
+        std::fs::copy(
+            repo().join("scripts/check-binary-size.sh"),
+            w.join("scripts/check-binary-size.sh"),
+        )?;
         let rel = w.join("target").join(target).join("release");
         std::fs::create_dir_all(&rel)?;
         std::fs::create_dir_all(w.join("dist"))?;
@@ -495,9 +501,11 @@ fn the_size_gate_measures_only_the_shipped_binary() -> Result<(), TestError> {
         text(&small)
     );
     let big = run(over)?;
-    assert!(
-        !big.status.success(),
-        "a binary over the ceiling passed, so the gate is not measuring it:\n{}",
+    assert_eq!(
+        big.status.code(),
+        Some(1),
+        "a binary over the ceiling must fail with the check's own exit 1 (2 is \
+         \"cannot measure\", 127 a missing script), so the gate measures it:\n{}",
         text(&big)
     );
     Ok(())
