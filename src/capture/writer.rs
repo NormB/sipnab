@@ -199,6 +199,10 @@ pub struct PcapWriter {
     sequence: u32,
     /// Bytes written to the current file.
     bytes_written: u64,
+    /// Bytes written to the files this writer opened and rotation closed,
+    /// each counted as `bytes_written` counted it; see
+    /// [`run_bytes_written`](Self::run_bytes_written).
+    closed_files_bytes: u64,
     /// When the current file was opened.
     file_opened_at: std::time::Instant,
     /// Rotate when file exceeds this size in bytes (from `--split filesize:N`).
@@ -439,6 +443,7 @@ impl PcapWriter {
             use_pcapng: pcapng,
             sequence: 0,
             bytes_written: header_bytes,
+            closed_files_bytes: 0,
             file_opened_at: std::time::Instant::now(),
             max_file_bytes,
             max_file_duration,
@@ -893,6 +898,17 @@ impl PcapWriter {
         self.bytes_written
     }
 
+    /// Return the bytes this writer has written to every file it opened, the
+    /// files rotation closed and `--split-keep` deleted included, counted as
+    /// [`bytes_written`](Self::bytes_written) counts each one.
+    ///
+    /// `--autostop filesize` reads this. It read the per-file counter, which
+    /// [`rotate`](Self::rotate) sets back to the new file's header size, so
+    /// with a `--split` smaller than the limit the stop never came (FILE-1).
+    pub fn run_bytes_written(&self) -> u64 {
+        self.closed_files_bytes.saturating_add(self.bytes_written)
+    }
+
     /// Flush buffered output to disk, surfacing any deferred write error.
     ///
     /// The PCAP-NG backend buffers through a `BufWriter`, whose `Drop`
@@ -1016,6 +1032,9 @@ impl PcapWriter {
             )
         };
         self.backend = backend;
+        // Only once the new file exists: a rotation that failed above left
+        // the old file open, still counted by `bytes_written` alone.
+        self.closed_files_bytes = self.closed_files_bytes.saturating_add(self.bytes_written);
         self.bytes_written = header_bytes;
         self.dsb_written = false;
         self.file_opened_at = std::time::Instant::now();
@@ -3738,6 +3757,368 @@ mod raw_pcap_writer_tests {
             drop(writer);
             assert_ne!(std::fs::read(&path)?, b"old contents", "pcapng={pcapng}");
         }
+        Ok(())
+    }
+}
+
+/// FILE-1: `--autostop filesize` read the per-file counter, which rotation
+/// resets, so with `--split` the stop never came. The run total
+/// ([`PcapWriter::run_bytes_written`]) is what the stop reads now; these tests
+/// hold that it counts every file the writer opened, the deleted ones
+/// included, and nothing twice.
+#[cfg(test)]
+mod run_total_tests {
+    use super::*;
+    use crate::capture::packet::Packet;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A classic pcap record of a `len`-byte packet: 16 header bytes + data.
+    fn record(len: usize) -> u64 {
+        16 + len as u64
+    }
+
+    /// A `len`-byte packet filled with `byte`, stamped "now".
+    fn pkt(byte: u8, len: usize) -> Packet {
+        Packet::new(chrono::Utc::now(), vec![byte; len], len, len, None, 1)
+    }
+
+    /// A writer of either format with an optional size split.
+    fn writer(path: &Path, pcapng: bool, split: Option<u64>) -> Result<PcapWriter, TestError> {
+        Ok(PcapWriter::with_format(
+            path,
+            1,
+            split,
+            None,
+            pcapng,
+            PcapExportMode::Raw,
+        )?)
+    }
+
+    /// The summed size of every regular file in `dir`, and how many there are.
+    fn on_disk(dir: &Path) -> Result<(u64, u64), TestError> {
+        let mut total = 0;
+        let mut files = 0;
+        for entry in std::fs::read_dir(dir)? {
+            let meta = entry?.metadata()?;
+            if meta.is_file() {
+                total += meta.len();
+                files += 1;
+            }
+        }
+        Ok((total, files))
+    }
+
+    // ── SUCCESS ──────────────────────────────────────────────────────────
+
+    /// Before any rotation the run total is the open file's counter.
+    #[test]
+    fn without_rotation_the_run_total_is_the_file_counter() -> Result<(), TestError> {
+        for pcapng in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let mut w = writer(&dir.path().join("a.pcap"), pcapng, None)?;
+            for i in 0..7u8 {
+                w.write(&pkt(i, 60))?;
+            }
+            assert_eq!(
+                w.run_bytes_written(),
+                w.bytes_written(),
+                "pcapng={pcapng}: one file, one count"
+            );
+        }
+        Ok(())
+    }
+
+    /// One explicit rotation keeps the closed file's bytes in the run total
+    /// while the file counter starts again.
+    #[test]
+    fn an_explicit_rotation_keeps_the_closed_file_in_the_total() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(&dir.path().join("a.pcap"), false, None)?;
+        w.write(&pkt(0, 50))?;
+        w.rotate()?;
+        assert_eq!(w.bytes_written(), 0, "the new file counter starts at 0");
+        assert_eq!(
+            w.run_bytes_written(),
+            record(50),
+            "the closed file's record stays counted"
+        );
+        Ok(())
+    }
+
+    /// pcapng: the run total holds the first file and the new file's header.
+    #[test]
+    fn a_pcapng_rotation_counts_both_files() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(&dir.path().join("a.pcapng"), true, None)?;
+        w.write(&pkt(0, 50))?;
+        let first = w.bytes_written();
+        w.rotate()?;
+        let header = w.bytes_written();
+        assert!(header > 0, "a pcapng file starts with its SHB and IDB");
+        assert_eq!(
+            w.run_bytes_written(),
+            first + header,
+            "the total is the closed file plus the new header"
+        );
+        Ok(())
+    }
+
+    /// Size-triggered rotations: the classic total is every record written.
+    #[test]
+    fn size_rotations_keep_every_record_in_the_total() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(&dir.path().join("a.pcap"), false, Some(80))?;
+        for i in 0..9u8 {
+            w.write(&pkt(i, 50))?;
+        }
+        assert!(
+            dir.path().join("a_00003.pcap").exists(),
+            "the 80-byte split rotated several times"
+        );
+        assert_eq!(w.run_bytes_written(), 9 * record(50), "nine records in all");
+        Ok(())
+    }
+
+    /// pcapng counts headers too, so the total is the bytes on disk.
+    #[test]
+    fn a_split_pcapng_total_is_the_bytes_on_disk() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(&dir.path().join("a.pcapng"), true, Some(300))?;
+        for i in 0..12u8 {
+            w.write(&pkt(i, 90))?;
+        }
+        w.finish()?;
+        let total = w.run_bytes_written();
+        drop(w);
+        let (disk, files) = on_disk(dir.path())?;
+        assert!(files > 2, "the 300-byte split rotated: {files} files");
+        assert_eq!(total, disk, "the run total is the size of every file");
+        Ok(())
+    }
+
+    /// Classic pcap leaves each file's 24-byte global header uncounted, as
+    /// `--split` always has; the total is the disk size less those headers.
+    #[test]
+    fn a_split_classic_total_is_the_disk_less_the_global_headers() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(&dir.path().join("a.pcap"), false, Some(200))?;
+        for i in 0..10u8 {
+            w.write(&pkt(i, 70))?;
+        }
+        w.finish()?;
+        let total = w.run_bytes_written();
+        drop(w);
+        let (disk, files) = on_disk(dir.path())?;
+        assert!(files > 2, "the 200-byte split rotated: {files} files");
+        assert_eq!(total + 24 * files, disk, "records only, every file");
+        Ok(())
+    }
+
+    /// Files the `--split-keep` bound deleted were still output of the run.
+    #[test]
+    fn deleted_split_files_stay_in_the_total() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(&dir.path().join("a.pcap"), false, Some(80))?.keep_last_splits(Some(1));
+        for i in 0..8u8 {
+            w.write(&pkt(i, 50))?;
+        }
+        assert!(w.splits_deleted > 0, "the bound of 1 deleted older files");
+        assert_eq!(w.run_bytes_written(), 8 * record(50), "deleted files count");
+        Ok(())
+    }
+
+    /// Several explicit rotations: the total is the sum of the counter each
+    /// file had when it closed, plus the open one.
+    #[test]
+    fn the_total_is_the_sum_of_each_files_counter() -> Result<(), TestError> {
+        for pcapng in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let mut w = writer(&dir.path().join("a.pcap"), pcapng, None)?;
+            let mut closed = 0;
+            for round in 0..5u8 {
+                for i in 0..=round {
+                    w.write(&pkt(i, 40 + usize::from(round)))?;
+                }
+                closed += w.bytes_written();
+                w.rotate()?;
+            }
+            assert_eq!(
+                w.run_bytes_written(),
+                closed + w.bytes_written(),
+                "pcapng={pcapng}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The total never goes down, across writes and rotations alike.
+    #[test]
+    fn the_total_never_decreases() -> Result<(), TestError> {
+        for pcapng in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let mut w = writer(&dir.path().join("a.pcap"), pcapng, Some(150))?;
+            let mut last = w.run_bytes_written();
+            for i in 0..30u8 {
+                w.write(&pkt(i, 33))?;
+                let now = w.run_bytes_written();
+                assert!(now > last, "pcapng={pcapng}: write {i} added bytes");
+                last = now;
+                if i % 7 == 0 {
+                    w.rotate()?;
+                    let after = w.run_bytes_written();
+                    assert!(
+                        after >= last,
+                        "pcapng={pcapng}: rotation {i} kept the total"
+                    );
+                    last = after;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ── EDGE ─────────────────────────────────────────────────────────────
+
+    /// A fresh classic writer has written no counted bytes.
+    #[test]
+    fn a_fresh_classic_writer_totals_zero() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let w = writer(&dir.path().join("a.pcap"), false, None)?;
+        assert_eq!(w.run_bytes_written(), 0, "the global header is not counted");
+        Ok(())
+    }
+
+    /// A fresh pcapng writer already counts its section header.
+    #[test]
+    fn a_fresh_pcapng_writer_counts_its_header() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let w = writer(&dir.path().join("a.pcapng"), true, None)?;
+        assert!(w.run_bytes_written() > 0, "the SHB is counted");
+        assert_eq!(w.run_bytes_written(), w.bytes_written(), "one file so far");
+        Ok(())
+    }
+
+    /// Rotating an empty classic file adds nothing to the total.
+    #[test]
+    fn rotating_an_empty_classic_file_adds_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(&dir.path().join("a.pcap"), false, None)?;
+        w.write(&pkt(1, 20))?;
+        w.rotate()?;
+        w.rotate()?;
+        w.rotate()?;
+        assert_eq!(w.run_bytes_written(), record(20), "empty files add 0");
+        Ok(())
+    }
+
+    /// A pcapng rotation before the first packet writes the closing file's
+    /// IDB; those bytes belong to the run too.
+    #[test]
+    fn a_pcapng_rotation_before_any_packet_counts_the_idb() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(&dir.path().join("a.pcapng"), true, None)?;
+        w.rotate()?;
+        w.finish()?;
+        let total = w.run_bytes_written();
+        drop(w);
+        let (disk, files) = on_disk(dir.path())?;
+        assert_eq!(files, 2, "the first file and its rotation");
+        assert_eq!(
+            total, disk,
+            "SHB, the IDB the rotation added and the new header"
+        );
+        Ok(())
+    }
+
+    /// A zero-length packet still writes a 16-byte record, in every file.
+    #[test]
+    fn zero_length_packets_count_their_record_headers() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(&dir.path().join("a.pcap"), false, Some(16))?;
+        for _ in 0..5 {
+            w.write(&pkt(0, 0))?;
+        }
+        assert_eq!(w.run_bytes_written(), 5 * record(0), "five bare records");
+        Ok(())
+    }
+
+    /// A bound of exactly one keeps one file on disk and the whole run in
+    /// the total, which is then more than what the disk holds.
+    #[test]
+    fn with_one_file_kept_the_total_exceeds_the_disk() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w =
+            writer(&dir.path().join("a.pcapng"), true, Some(200))?.keep_last_splits(Some(1));
+        for i in 0..20u8 {
+            w.write(&pkt(i, 80))?;
+        }
+        w.finish()?;
+        let total = w.run_bytes_written();
+        drop(w);
+        let (disk, files) = on_disk(dir.path())?;
+        assert_eq!(files, 1, "the bound keeps one file");
+        assert!(
+            total > disk,
+            "the total {total} counts deleted files, disk {disk}"
+        );
+        Ok(())
+    }
+
+    // ── FAILURE ──────────────────────────────────────────────────────────
+
+    /// A rotation that cannot create its file leaves the total as it was:
+    /// the old file stays open and is not counted twice.
+    #[test]
+    fn a_failed_rotation_leaves_the_total_unchanged() -> Result<(), TestError> {
+        for pcapng in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let base = dir.path().join("a.pcap");
+            let mut w = writer(&base, pcapng, None)?;
+            w.write(&pkt(3, 50))?;
+            let before = w.run_bytes_written();
+            std::fs::create_dir(rotated_path(&base, 1))?;
+            assert!(
+                w.rotate().is_err(),
+                "pcapng={pcapng}: the split name is a directory"
+            );
+            assert_eq!(
+                w.run_bytes_written(),
+                before,
+                "pcapng={pcapng}: nothing new was written"
+            );
+            w.write(&pkt(4, 50))?;
+            assert_eq!(
+                w.run_bytes_written(),
+                w.bytes_written(),
+                "pcapng={pcapng}: still one file's worth, counted once"
+            );
+        }
+        Ok(())
+    }
+
+    /// A write that fails (a full disk, /dev/full) adds nothing to the
+    /// total: it counts the writes that succeeded and no others.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_write_adds_nothing() -> Result<(), TestError> {
+        let mut w = writer(Path::new("/dev/full"), false, None)?;
+        let mut accepted = 0u64;
+        let mut failed = false;
+        // The buffer holds well under 100 000 records of 1 000 bytes.
+        for _ in 0..100_000 {
+            if w.write(&pkt(9, 1000)).is_err() {
+                failed = true;
+                break;
+            }
+            accepted += 1;
+        }
+        assert!(failed, "a write to /dev/full fails once the buffer fills");
+        assert_eq!(
+            w.run_bytes_written(),
+            accepted * record(1000),
+            "only the {accepted} accepted writes count"
+        );
         Ok(())
     }
 }

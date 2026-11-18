@@ -342,6 +342,7 @@ pub fn parse_sip_bytes(
         dst_port,
         transport,
         is_retransmission: false,
+        also_seen_by: 0,
     })
 }
 

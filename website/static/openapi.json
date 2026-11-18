@@ -397,6 +397,23 @@
             },
             "type": "array"
           },
+          "seen_by": {
+            "additionalProperties": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "description": "How many of the dialog's messages each capture source delivered, by origin name. A message the wire and a HEP feed both delivered is stored once, counted once in msg_count and once under each source here. Absent when one source, or none, delivered every message.",
+            "minProperties": 2,
+            "propertyNames": {
+              "enum": [
+                "wire",
+                "hep",
+                "uprobe",
+                "vcon"
+              ]
+            },
+            "type": "object"
+          },
           "signaling_diagnosis": {
             "$ref": "#/components/schemas/CallReport_signaling_diagnosis"
           },

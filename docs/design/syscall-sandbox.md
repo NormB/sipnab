@@ -225,7 +225,7 @@ configuration**. Enumerated from the code, everything below runs after
 | Drop stats | `cap.stats()`, [`src/capture/live.rs:925`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L925)<!-- "match cap.stats()" -->; *"a `getsockopt` on Linux"*, [`:1193`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1193)<!-- "/// `pcap_stats`" --> | `getsockopt` |
 | Fanout join | [`src/capture/live.rs:808`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L808)<!-- "if let Err(e) = super::fanout::join_fanout_group(cap.as_raw_fd()," --> | `setsockopt` |
 | Output pcap, created **lazily on the first packet** | [`src/app/batch.rs:4613-4618`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4613-L4618)<!-- "// Lazily initialize the writer on first packet" --> → [`src/capture/writer.rs:112-115`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L112-L115)<!-- "fn create(path: &Path, link_type: i32, mode: crate::new_file::CreateMode)" --> | file create + write |
-| `--split` rotation, mid-run | [`src/capture/writer.rs:1000-1017`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L1000-L1017)<!-- "// Drop the old backend (flushes and closes) by replacing it" --> | more file creates |
+| `--split` rotation, mid-run | [`src/capture/writer.rs:1016-1033`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L1016-L1033)<!-- "// Drop the old backend (flushes and closes) by replacing it" --> | more file creates |
 | REST API listener bind | [`src/app/servers.rs:833`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L833)<!-- "let listener = api::prepare_listener(bind," --> | socket/bind/listen/accept |
 | Metrics listener, raw TCP + threads | [`src/app/servers.rs:584`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L584)<!-- "let (_bound, _handle)" --> | the same, plus thread creation |
 | MCP over stdio | [`src/mcp/transport.rs:73-82`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L73-L82)<!-- "pub async fn serve_stdio(server:" --> | read/write on fds 0 and 1 |
@@ -423,7 +423,7 @@ actually ships, plus the paths CI never reaches:
   builds, and the matrix combinations are the ones users get.
 - Live capture on a real interface (CI reads files).
 - `-O` writing, including a `--split` rotation, because the second file is
-  created mid-run at [`src/capture/writer.rs:1000-1017`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L1000-L1017)<!-- "// Drop the old backend (flushes and closes) by replacing it" -->.
+  created mid-run at [`src/capture/writer.rs:1016-1033`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L1016-L1033)<!-- "// Drop the old backend (flushes and closes) by replacing it" -->.
 - `--api`, `--mcp` over stdio, and `--mcp-http`.
 - Audio playback, which is the only `dlopen` sipnab performs deliberately.
 - `--keylog-watch`, which re-opens a file every sweep.

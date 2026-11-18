@@ -912,16 +912,17 @@ fn detect_source_disagreement(messages: &[SipMessage], diag: &mut SignalingDiagn
     // all says nothing here.
     let mut saw_mirror = false;
     let mut saw_wire = false;
+    // A message both sources delivered is stored once with both in its
+    // `sources` (DEDUP-1), so each witness is read off that set. Uprobe has no
+    // counterpart to be compared against — `-d` beats `--uprobe-tls` and
+    // `--uprobe-tls` beats `-L`, so it never composes with another source —
+    // and an absent origin is "nobody said" rather than "the same source as
+    // the last one".
+    let hep_bit = crate::sip::message::origin_bit(InputOrigin::Hep);
+    let wire_bit = crate::sip::message::origin_bit(InputOrigin::Wire);
     for m in messages {
-        match m.input_origin {
-            Some(InputOrigin::Hep) => saw_mirror = true,
-            Some(InputOrigin::Wire) => saw_wire = true,
-            // Uprobe has no counterpart to be compared against — `-d` beats
-            // `--uprobe-tls` and `--uprobe-tls` beats `-L`, so it never
-            // composes with another source — and an absent origin is "nobody
-            // said" rather than "the same source as the last one".
-            _ => {}
-        }
+        saw_mirror |= m.sources() & hep_bit != 0;
+        saw_wire |= m.sources() & wire_bit != 0;
         if saw_mirror && saw_wire {
             break;
         }
@@ -938,12 +939,17 @@ fn detect_source_disagreement(messages: &[SipMessage], diag: &mut SignalingDiagn
     let mut paired: std::collections::HashMap<MessageIdentity<'_>, (Vec<usize>, Vec<usize>)> =
         std::collections::HashMap::new();
     for (i, m) in messages.iter().enumerate() {
-        let entry = match m.input_origin {
-            Some(InputOrigin::Hep) => &mut paired.entry(message_identity(m)).or_default().0,
-            Some(InputOrigin::Wire) => &mut paired.entry(message_identity(m)).or_default().1,
-            _ => continue,
-        };
-        entry.push(i);
+        let sources = m.sources();
+        if sources & (hep_bit | wire_bit) == 0 {
+            continue;
+        }
+        let entry = paired.entry(message_identity(m)).or_default();
+        if sources & hep_bit != 0 {
+            entry.0.push(i);
+        }
+        if sources & wire_bit != 0 {
+            entry.1.push(i);
+        }
     }
 
     let mut agreed = 0usize;
@@ -3189,6 +3195,82 @@ mod tests {
             vec![2],
             "the report surfaces render evidence with the machinery the other \
              eight detections use; an empty one renders nothing"
+        );
+        Ok(())
+    }
+
+    /// `from_source` with the copies of `also` merged into it, as the dialog
+    /// store keeps a message both witnesses delivered (DEDUP-1).
+    fn merged(
+        raw: &str,
+        origin: crate::capture::parse::InputOrigin,
+        also: crate::capture::parse::InputOrigin,
+    ) -> Result<SipMessage, TestError> {
+        let mut m = from_source(raw, origin)?;
+        m.also_seen_by = crate::sip::message::origin_bit(also);
+        Ok(m)
+    }
+
+    /// A message stored once for both witnesses, HEP first, pairs: only the
+    /// 200 the wire never carried is mirror-only.
+    #[test]
+    fn a_merged_message_from_hep_first_counts_for_both_witnesses() -> Result<(), TestError> {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            merged(&invite("z9hG4bK1", 1), InputOrigin::Hep, InputOrigin::Wire)?,
+            from_source(&response(200, "OK", ""), InputOrigin::Hep)?,
+        ]);
+        let s = d
+            .source_disagreement
+            .ok_or("the mirrored 200 is the finding")?;
+        assert_eq!(s.agreed, 1, "the merged INVITE is on both witnesses");
+        assert_eq!(s.mirror_only.len(), 1, "only the 200");
+        assert!(
+            s.wire_only.is_empty(),
+            "the wire missed nothing: {:?}",
+            s.wire_only
+        );
+        Ok(())
+    }
+
+    /// The same, wire first: only the 200 the mirror never reported is
+    /// wire-only.
+    #[test]
+    fn a_merged_message_from_the_wire_first_counts_for_both_witnesses() -> Result<(), TestError> {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            merged(&invite("z9hG4bK1", 1), InputOrigin::Wire, InputOrigin::Hep)?,
+            from_source(&response(200, "OK", ""), InputOrigin::Wire)?,
+        ]);
+        let s = d
+            .source_disagreement
+            .ok_or("the unreported 200 is the finding")?;
+        assert_eq!(s.agreed, 1, "the merged INVITE is on both witnesses");
+        assert_eq!(s.wire_only.len(), 1, "only the 200");
+        assert!(
+            s.mirror_only.is_empty(),
+            "the mirror missed nothing: {:?}",
+            s.mirror_only
+        );
+        Ok(())
+    }
+
+    /// Every message merged: the witnesses agree on all of them.
+    #[test]
+    fn merged_messages_alone_leave_no_gap() -> Result<(), TestError> {
+        use crate::capture::parse::InputOrigin;
+        let d = diagnose_signaling(&[
+            merged(&invite("z9hG4bK1", 1), InputOrigin::Hep, InputOrigin::Wire)?,
+            merged(
+                &response(200, "OK", ""),
+                InputOrigin::Wire,
+                InputOrigin::Hep,
+            )?,
+        ]);
+        assert!(
+            d.source_disagreement
+                .is_none_or(|s| s.mirror_only.is_empty() && s.wire_only.is_empty()),
+            "no message is on one witness only"
         );
         Ok(())
     }
