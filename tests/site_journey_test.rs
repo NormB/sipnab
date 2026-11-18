@@ -6880,7 +6880,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // "Fetch every platform's crates" steps (ci.yml twice, quality.yml twice)
     // name scripts/check-suite-fetch.py. Measurement: the scan read 315 on main
     // b8700e3f2 and 319 with those steps staged.
-    const EXPECTED_REFERENCES: usize = 319;
+    // 319 -> 320 (OSV config copies): the comment of osv-scanner.yml's step
+    // "Scan every lockfile" names tests/osv_config_copies_test.rs.
+    // Measurement: the scan read 320 with that comment staged.
+    const EXPECTED_REFERENCES: usize = 320;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

@@ -1,0 +1,42 @@
+# OSV-Scanner configuration.
+#
+# This exists so the dependency scanners agree: an advisory the project
+# accepts is accepted here, in deny.toml when `cargo deny` reports it too, and
+# in vex/sipnab.openvex.json, each with the same reason
+# (tests/vex_document_test.rs holds the three to one list). A permanently
+# open alert that everyone has learned to scroll past is worse than no alert,
+# because it hides the next real one.
+#
+# OSV-Scanner reads `osv-scanner.toml` only from the directory of the lockfile
+# it scans, never from a parent directory. OpenSSF Scorecard scans with the
+# same library and takes no configuration option. So every directory that
+# holds a lockfile carries a byte-identical copy of this file, and the OSV
+# workflow passes no `--config`, so it reads the copies as Scorecard does.
+# Edit the root file only, then copy it over each copy;
+# tests/osv_config_copies_test.rs refuses a missing, differing or stray copy.
+
+[[IgnoredVulns]]
+id = "GHSA-hp3w-g68c-fv3c"
+# Also filed as CVE-2026-97058.
+reason = """
+sprintf-js denial of service through unbounded precision specifiers in a \
+FORMAT STRING. Reached only from e2e/package-lock.json, the dev tooling for \
+the site's Lighthouse CI step (@lhci/cli -> @lhci/utils -> js-yaml 3 -> \
+argparse 1 -> sprintf-js 1.0.3). argparse formats its own help templates \
+with it; no attacker-supplied text becomes a format string, and nothing in \
+e2e/ ships with sipnab or runs outside CI. osv.dev lists no fixed release: \
+every version through 1.1.3, the latest, is affected, so there is no upgrade \
+to take. Re-evaluate when sprintf-js publishes a fix or @lhci drops js-yaml 3.\
+"""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+# The owner's decision, 2026-11-17: "Ignore + migrate". deny.toml accepts it
+# with the same reason; the review date makes the scanner report it again.
+ignoreUntil = 2027-02-15
+reason = """
+chrono: unmaintained, informational, no patched version; required \
+non-optionally by rmcp and arrow/parquet in their newest releases; sipnab's \
+own use migrates under CHRONO-TO-JIFF.\
+"""
+
