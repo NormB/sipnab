@@ -174,6 +174,7 @@ fn the_full_workflow_set_is_accounted_for() -> Result<(), TestError> {
     // original mistake was made in the first place.
     const KNOWN: &[&str] = &[
         "bench.yml",
+        "binary-size.yml",
         "ci.yml",
         "cert-expiry.yml",
         "clusterfuzzlite.yml",
