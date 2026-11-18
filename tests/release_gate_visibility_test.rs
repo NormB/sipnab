@@ -85,12 +85,17 @@ const RELEASE_ONLY_GATES: &[(&str, &str)] = &[
     ),
     (
         "Enforce published binary size (musl targets)",
-        "KNOWN GAP, accepted deliberately and now cost a SECOND release: it \
-         failed 0.5.139 for 35,016 bytes and 0.5.160 for 19,208, both against \
-         a green `main`. Moving it earlier still costs a full cross-compiled \
-         release build per commit, which is the most expensive thing in the \
-         release and would be paid on every push to catch a boundary crossed \
-         roughly once a hundred releases. What changed is the mitigation. It \
+        "measures the artifact that ships, built from the tag. It failed \
+         0.5.139 for 35,016 bytes and 0.5.160 for 19,208, both against a \
+         green `main`, and 0.5.228 for 1,714,048 (22,685,568 bytes against \
+         20 MB, run 39928581504). The same rule, \
+         scripts/check-binary-size.sh, now also runs earlier, in \
+         .github/workflows/binary-size.yml: on a pull request that changes \
+         the manifests, the lockfile, the build scripts or the ceiling, and \
+         weekly for growth in src/. A full cross-compiled release build on \
+         every push would be the most expensive job in CI, so a change to \
+         src/ alone can still first be measured here. The second mitigation \
+         is the ceiling's record. It \
          used to be the ceiling's comment in `website/config.toml` recording \
          the size behind every MOVE, and that could not report headroom \
          between moves: it still described 0.5.138 while three releases went \
@@ -558,10 +563,18 @@ fn the_release_workflow_scan_found_a_plausible_workflow() -> Result<(), TestErro
         gates.len() < steps.len(),
         "every step matched as a gate, so the verb filter is not filtering"
     );
+    // release.yml reads the ceiling through scripts/check-binary-size.sh,
+    // the rule binary-size.yml runs on pull requests too.
+    let script = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/check-binary-size.sh"),
+    )
+    .map_err(|e| format!("read scripts/check-binary-size.sh: {e}"))?;
     assert!(
-        src.contains("binary_size_ceiling_mb"),
-        "release.yml no longer reads the ceiling; the gate this file is about \
-         has moved and these declarations describe a workflow that is gone"
+        src.contains("bash scripts/check-binary-size.sh ")
+            && script.contains("binary_size_ceiling_mb"),
+        "release.yml no longer reads the ceiling through \
+         scripts/check-binary-size.sh; the gate this file is about has moved \
+         and these declarations describe a workflow that is gone"
     );
     Ok(())
 }

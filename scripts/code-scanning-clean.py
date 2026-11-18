@@ -21,6 +21,9 @@ How long it waits follows the CodeQL workflow run of the commit (--head-sha,
   the run has completed              wait --settle-secs more for the upload
   no run of the commit is listed,    wait --wait-secs from the start
   or the list cannot be read
+The open alerts are then read up to --alerts-attempts times, --poll-secs
+apart, while the answer is unreadable or names an open alert last seen on an
+older commit; one such read used to be final (backlog GATE-CSRETRY1).
 
 Exit codes -- a gate that cannot see must say so, never pass:
   exit 0  an analysis of --sha exists and no alert is open
@@ -192,6 +195,41 @@ def wait_for_analysis(fetch_analyses, fetch_runs, sha, category, *, wait_secs, m
         sleep(poll_secs)
 
 
+def alerts_judgeable(alerts, sha):
+    """Whether an open-alerts answer can be judged on `sha`: it was readable,
+    and no open alert in it was last seen on another commit."""
+    return alerts is not None and all(instance_on(a, sha) for a in open_alerts(alerts))
+
+
+def read_alerts(fetch_alerts, sha, *, attempts, poll_secs, sleep):
+    """Read the open alerts up to `attempts` times, `poll_secs` apart, until
+    the answer can be judged. Returns (the last answer, reads made).
+
+    Both ways an answer cannot be judged pass with time: an unreadable one
+    (a GitHub 5xx, a dropped connection) and one whose alerts GitHub has not
+    yet re-evaluated on the commit. One read of either used to be final and
+    turned the gate red (backlog GATE-CSRETRY1). The last answer is returned
+    as it is, so the verdict on it still fails closed."""
+    reads = 0
+    while True:
+        alerts = fetch_alerts()
+        reads += 1
+        if alerts_judgeable(alerts, sha) or reads >= attempts:
+            return alerts, reads
+        sleep(poll_secs)
+
+
+def attempt_count(text):
+    """argparse type for --alerts-attempts: a whole number of at least 1."""
+    try:
+        n = int(text)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number of at least 1")
+    return n
+
+
 def no_analysis_message(sha, category, codeql, waited):
     """Why there is no verdict when the analysis of the commit is missing."""
     what = f"CodeQL analysis of {sha[:8]} in {category}"
@@ -212,14 +250,18 @@ def no_analysis_message(sha, category, codeql, waited):
     return f"code scanning: no {what} exists yet -- refusing to judge"
 
 
-def judge(alerts, analyses, sha, category, codeql=None, waited=None):
+def judge(alerts, analyses, sha, category, codeql=None, waited=None, alert_reads=None):
     """(exit code, message) for the given API answers.
 
     `codeql` is the (state, detail) of the commit's CodeQL runs when the
     caller knows it. It only words the message for a missing analysis: once
-    the analysis exists, the alerts decide, whatever the runs say."""
+    the analysis exists, the alerts decide, whatever the runs say.
+    `alert_reads` is how many times the open alerts were read, when the
+    caller read them more than once; it only words the refusals."""
+    reads = ("" if alert_reads is None else
+             f" after {alert_reads} read{'' if alert_reads == 1 else 's'} of the open alerts")
     if alerts is None or analyses is None:
-        return 2, "code scanning: the API answer could not be read (not JSON) -- refusing to judge"
+        return 2, f"code scanning: the API answer could not be read (not JSON){reads} -- refusing to judge"
     if not analysis_covers(analyses, sha, category):
         return 2, no_analysis_message(sha, category, codeql, waited)
     bad = open_alerts(alerts)
@@ -229,7 +271,8 @@ def judge(alerts, analyses, sha, category, codeql=None, waited=None):
         # instance is on an older one: the scanner has not re-evaluated them
         # here. Judging them now is judging the previous commit -- the exact
         # mistake this script's first run made. Wait, do not fail.
-        return 2, f"code scanning: {len(stale)} open alert(s) not yet re-evaluated on {sha[:8]} -- refusing to judge"
+        return 2, (f"code scanning: {len(stale)} open alert(s) not yet re-evaluated on {sha[:8]}{reads}"
+                   " -- refusing to judge")
     if bad:
         lines = "\n".join(describe(a) for a in bad)
         return 1, f"code scanning: {len(bad)} open alert(s) on {sha[:8]}:\n{lines}"
@@ -251,6 +294,9 @@ def main():
     ap.add_argument("--settle-secs", type=int, default=120,
                     help="live mode: wait this long for the upload after the CodeQL run completed")
     ap.add_argument("--poll-secs", type=float, default=30, help="live mode: seconds between reads")
+    ap.add_argument("--alerts-attempts", type=attempt_count, default=6,
+                    help="live mode: read the open alerts up to this many times, --poll-secs apart, while the "
+                    "answer is unreadable or not yet re-evaluated on --sha")
     ap.add_argument("--category", default="/language:rust", help="the analysis category whose alerts are judged")
     ap.add_argument("--alerts-json", help="fixture mode: read alerts from this file")
     ap.add_argument("--analyses-json", help="fixture mode: read analyses from this file")
@@ -272,8 +318,12 @@ def main():
             a.sha, a.category, wait_secs=a.wait_secs, max_wait_secs=a.max_wait_secs,
             settle_secs=a.settle_secs, poll_secs=a.poll_secs, now=time.monotonic, sleep=time.sleep,
         )
-        alerts = gh_paginated(f"repos/{a.repo}/code-scanning/alerts?state=open&ref={a.ref}&per_page=100")
-        rc, msg = judge(alerts, analyses, a.sha, a.category, codeql=(state, detail), waited=waited)
+        alerts, reads = read_alerts(
+            lambda: gh_paginated(f"repos/{a.repo}/code-scanning/alerts?state=open&ref={a.ref}&per_page=100"),
+            a.sha, attempts=a.alerts_attempts, poll_secs=a.poll_secs, sleep=time.sleep,
+        )
+        rc, msg = judge(alerts, analyses, a.sha, a.category, codeql=(state, detail), waited=waited,
+                        alert_reads=reads)
     print(msg)
     sys.exit(rc)
 

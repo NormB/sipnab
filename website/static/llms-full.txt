@@ -86985,7 +86985,7 @@ So a green `--features full` says nothing about whether `--features tls` alone
 compiles.
 That is exactly why CI has a feature matrix.
 
-## The twenty workflows
+## The twenty-one workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -87007,6 +87007,7 @@ That is exactly why CI has a feature matrix.
 | `pr-closed.yml` | PR closed or merged | Ends the `CI` run of a closed pull request. `ci.yml` groups a pull request's runs as `ci-CI-<number>`; this workflow enters that group with `cancel-in-progress`, so GitHub cancels the run still in progress. Before it, a closed pull request's run went on to its end and held the self-hosted runners other pull requests waited for. It checks out nothing, calls no action and asks for no permission. A merge also sends `closed`; GitHub creates the run and marks its job skipped (`merged == false`), since a merged pull request's run is already over. GitHub's documentation has not stated whether a skipped job's run still enters the group; the group names only the pull request's number, so it is never main's group `ci-CI-refs/heads/main`. Limit: GitHub runs no `pull_request` workflow for a pull request with a merge conflict, so closing such a pull request leaves its run going. [`scripts/tests/test_ci_cancel_on_close.py`](../../scripts/tests/test_ci_cancel_on_close.py) holds the two group names together. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](../../bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
+| `binary-size.yml` | weekly cron (Fridays 05:17 UTC), manual, and PRs touching the manifests, the lockfile, the build scripts or the ceiling | Builds the x86_64 musl release binary the way `release.yml` does, splits its symbols, and fails when it exceeds `binary_size_ceiling_mb`, through [`scripts/check-binary-size.sh`](../../scripts/check-binary-size.sh), the script `release.yml`'s size step runs. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
 | `rerun-not-acquired.yml` | when a `CI` or `Release` run completes without success; manual, which prints the decision for one run and re-runs nothing | Re-runs the failed jobs of a run in which every job that did not succeed has the conclusion `skipped` or never started, because no hosted runner took it. See [A job no runner took](#a-job-no-runner-took). |
 
@@ -88675,6 +88676,11 @@ in the release commit itself.
   It sets `Cargo.toml` to the same version.
   From then on the flag reads `x.y.z`.
 - Tagging the commit changes nothing, because the tag's history gives the same `x.y.z`.
+- Pull requests that land before the tag reaches GitHub put a new `[Unreleased]` above `[x.y.z]`.
+  - Until the tag exists, the commit that added `## [x.y.z]` to `CHANGELOG.md` stands in for it.
+  - A flag that commit declares reads `x.y.z`; a flag added later reads `Unreleased`.
+  - Reading only the first heading made every flag of the release read `Unreleased` on every pull
+    request until the tag reached GitHub (2026-10-27, `0.5.231`).
 - So run `python3 scripts/flag-since.py --write` in the release commit,
   after the rename and the version bump.
 - If you forget, `the_since_column_is_what_tagged_history_says` in
@@ -94073,10 +94079,15 @@ audio playback. [`tests/site_journey_test.rs`](../../tests/site_journey_test.rs)
 
 ### The published binary size ceiling
 
-The "Enforce published binary size (musl targets)" step in `release.yml` reads
+The "Enforce published binary size (musl targets)" step in `release.yml` runs
+[`scripts/check-binary-size.sh`](../../scripts/check-binary-size.sh), which reads
 `binary_size_ceiling_mb` from
 [`website/config.toml`](../../website/config.toml) and fails the release when a
-musl binary exceeds it. The install page, the build page and the homepage all
+musl binary exceeds it.
+[`binary-size.yml`](../../.github/workflows/binary-size.yml) runs the same script on an
+x86_64 musl build of each pull request that changes the manifests, the lockfile,
+the build scripts or the ceiling, and weekly, so a change that grows the binary
+fails before the tag. The install page, the build page and the homepage all
 quote the same value, and [`tests/site_journey_test.rs`](../../tests/site_journey_test.rs) holds each quote to the
 config key.
 
