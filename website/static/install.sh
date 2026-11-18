@@ -30,11 +30,17 @@ set -u
 err() { printf 'sipnab-install: error: %s\n' "$1" >&2; exit 1; }
 info() { printf 'sipnab-install: %s\n' "$1"; }
 
+# `uname -s` on Windows: Git for Windows and MSYS2 print MINGW64_NT-...,
+# MINGW32_NT-... or MSYS_NT-..., Cygwin prints CYGWIN_NT-..., and some ports
+# print Windows_NT. A Windows build of sipnab has never been tried, so the
+# message offers no workaround.
 detect_os() {
   case "${1:-}" in
     Linux)  echo linux ;;
     Darwin) echo darwin ;;
-    *) printf 'sipnab-install: error: unsupported OS "%s" (Linux and macOS only; on Windows use WSL or build from source)\n' "${1:-}" >&2; return 1 ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+      printf 'sipnab-install: error: unsupported OS "%s": sipnab currently focuses on Linux and macOS. Windows is not supported yet. Pull requests that add Windows support are welcome: https://github.com/%s/blob/main/CONTRIBUTING.md\n' "$1" "$SIPNAB_REPO" >&2; return 1 ;;
+    *) printf 'sipnab-install: error: unsupported OS "%s" (sipnab currently focuses on Linux and macOS)\n' "${1:-}" >&2; return 1 ;;
   esac
 }
 
