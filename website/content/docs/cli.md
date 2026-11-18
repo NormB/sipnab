@@ -217,6 +217,15 @@ Keep only the newest four of those files. Then a long capture fits a fixed amoun
 sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --split-keep 4
 ```
 
+Stop the capture after 200 MiB of output in all. `--autostop filesize` counts every split file together, the files `--split-keep` deleted included, so this run writes four 50 MiB files and stops:
+
+```bash
+sipnab -N -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --autostop filesize:200
+```
+
+- Verify: the run ends by itself, and `ls -l /var/captures` shows `sip.pcapng` and `sip_00001.pcapng` to `sip_00003.pcapng`, about 200 MiB together.
+- Troubleshoot: before 0.5.264, `--autostop filesize` read only the size of the open file, which each rotation starts again, so with a `--split` smaller than the limit the run never stopped. Upgrade, or stop that run with `--duration` or Ctrl-C.
+
 **The drop user creates the output files.** Run as root, sipnab does this:
 
 - It opens the capture device.
@@ -304,7 +313,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--capture-tunnels` | `[<PORTS>]` | off | 0.5.80 | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default: it takes every packet on those ports, which on a mobile core is the entire user plane, because a BPF filter cannot reach the inner port behind a GTP-U extension-header chain. Ignored when you supply your own filter |
 | `-n`, `--count` | `<N>` | -- | 0.3.0 | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth). At least 1: sipnab refuses `0` |
 | `--duration` | `<DURATION>` | -- | 0.3.0 | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2`. At the deadline sipnab stops capturing and still reports what had already arrived: a TCP or TLS `--hep-listen` reads what its open connections hold, for up to 1 second, and accepts the connections still waiting in its backlog, completing a TLS handshake under way, for up to 1 second more, and the run reads on for up to 3 seconds for the capture to deliver it. 0.5.233 and earlier dropped it, and 0.5.240 and earlier also lost every packet on a connection not yet accepted at the deadline |
-| `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use |
+| `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use. With `--split` it counts all split files together |
 | `--split` | `<CONDITION>` | -- | 0.3.0 | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | 0.5.100 | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
 | `--replay` | -- | off | 0.3.0 | Replay packets from a pcap file at original timing |

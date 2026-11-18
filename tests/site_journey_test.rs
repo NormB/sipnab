@@ -28,6 +28,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "support/tracked.rs"]
 mod tracked;
 
@@ -118,6 +120,27 @@ fn assert_step_fails_on_bad_input(
     subs: &[(&str, &str)],
     setup: &dyn Fn(&std::path::Path) -> Result<(), TestError>,
 ) -> Result<(), TestError> {
+    let out = run_step_script(workflow, step_name, subs, setup)?;
+    assert!(
+        !out.status.success(),
+        "{workflow} step {step_name:?} exited 0 on input its check should reject. \
+         It runs, it may even annotate the problem, and the build stays green — \
+         which is the state this gate exists to prevent.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}
+
+/// The `run:` block of a workflow step, executed by bash in a scratch
+/// directory that `setup` prepares; its output. See
+/// [`assert_step_fails_on_bad_input`] for how the block is read.
+fn run_step_script(
+    workflow: &str,
+    step_name: &str,
+    subs: &[(&str, &str)],
+    setup: &dyn Fn(&std::path::Path) -> Result<(), TestError>,
+) -> Result<std::process::Output, TestError> {
     let body = workflow_step_body(workflow, step_name)?;
     // Take the run: block only, stopping at the next YAML key at run:'s own
     // indent. Reading to the end of the step handed bash whatever followed —
@@ -178,16 +201,7 @@ fn assert_step_fails_on_bad_input(
         .output()
         .map_err(|e| format!("run step script: {e}"))?;
     let _ = std::fs::remove_dir_all(&dir);
-
-    assert!(
-        !out.status.success(),
-        "{workflow} step {step_name:?} exited 0 on input its check should reject. \
-         It runs, it may even annotate the problem, and the build stays green — \
-         which is the state this gate exists to prevent.\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Ok(())
+    Ok(out)
 }
 
 /// A named workflow step still fails the build when its check fails.
@@ -218,6 +232,20 @@ fn assert_step_enforces(
     workflow: &str,
     step_name: &str,
     guard: Option<&str>,
+) -> Result<(), TestError> {
+    assert_step_shape(workflow, step_name, guard, "exit 1")
+}
+
+/// [`assert_step_enforces`] for a step whose verdict is `verdict` in its body:
+/// `exit 1` for a step that holds its own check, or the command of the script
+/// that holds it. A step that delegates has no `exit 1` of its own to find;
+/// its caller also runs the step on good and bad input
+/// ([`run_step_script`]), which is what shows the script's exit reaches it.
+fn assert_step_shape(
+    workflow: &str,
+    step_name: &str,
+    guard: Option<&str>,
+    verdict: &str,
 ) -> Result<(), TestError> {
     let body = workflow_step_body(workflow, step_name)?;
     let step: Vec<&str> = body.lines().collect();
@@ -291,8 +319,8 @@ fn assert_step_enforces(
         );
     }
     assert!(
-        body.contains("exit 1"),
-        "{workflow} step {step_name:?} no longer exits non-zero on failure"
+        body.contains(verdict),
+        "{workflow} step {step_name:?} no longer exits non-zero on failure: its body has no `{verdict}`"
     );
 
     let actual_guard = step
@@ -383,12 +411,19 @@ fn demo_tape_fonts_are_installed_monospace() -> Result<(), TestError> {
     // demos`), so the "font must be installed" contract only makes sense
     // there. On macOS/Windows CI the render never happens and fontconfig
     // reports a different family set (Menlo, Courier New, ...) — skip.
-    if !cfg!(target_os = "linux") {
-        eprintln!("demos render on Linux only; skipping installed-font check on this platform");
-        return Ok(());
-    }
-    let Some(installed) = installed_mono_families() else {
-        eprintln!("fc-list unavailable; skipping installed-font verification");
+    let probe = if cfg!(target_os = "linux") {
+        installed_mono_families().ok_or_else(|| "`fc-list :spacing=mono family` failed".to_owned())
+    } else {
+        Err("the demos render on Linux only".to_owned())
+    };
+    let Some(installed) = test_prereq::check(
+        "fc-list",
+        test_prereq::Need::Optional(
+            "the demos render on a Linux host with fontconfig; other hosts list other fonts.",
+        ),
+        probe,
+    )?
+    else {
         return Ok(());
     };
     let missing: Vec<_> = fonts
@@ -1724,37 +1759,58 @@ fn published_binary_size_matches_the_enforced_ceiling() -> Result<(), TestError>
     // Same reasoning as the test-count gate: the identifying string sits in
     // the step body, so its presence says nothing about whether the step still
     // fails the build.
-    assert_step_enforces(
+    assert_step_shape(
         ".github/workflows/release.yml",
         "Enforce published binary size (musl targets)",
         Some("contains(matrix.target, '-linux-musl')"),
+        "bash scripts/check-binary-size.sh ",
     )?;
-    // And prove it: a 1 MB ceiling against a 2 MB binary must fail.
-    assert_step_fails_on_bad_input(
-        ".github/workflows/release.yml",
-        "Enforce published binary size (musl targets)",
-        &[("${{ matrix.target }}", "x86_64-unknown-linux-musl")],
-        &|dir| {
-            std::fs::write(dir.join("website/config.toml"), "")
-                .or_else(|_| {
-                    std::fs::create_dir_all(dir)
-                        .and_then(|()| std::fs::write(dir.join("website/config.toml"), ""))
-                })
-                .ok();
+    // And prove it: the step, run with the repository's own
+    // scripts/check-binary-size.sh, passes a 2 MB binary under a 3 MB ceiling
+    // and fails it, with the check's own exit 1, under a 1 MB ceiling. The
+    // pass is what makes the failure mean something: a step that cannot find
+    // its script exits 127, which "exited non-zero" alone would accept.
+    let step = "Enforce published binary size (musl targets)";
+    let subs = [("${{ matrix.target }}", "x86_64-unknown-linux-musl")];
+    let seeded = |ceiling_mb: u32| {
+        move |dir: &std::path::Path| -> Result<(), TestError> {
             std::fs::create_dir_all(dir.join("website"))
                 .map_err(|e| format!("mkdir website: {e}"))?;
             std::fs::write(
                 dir.join("website/config.toml"),
-                "binary_size_ceiling_mb = \"1\"\n",
+                format!("binary_size_ceiling_mb = \"{ceiling_mb}\"\n"),
             )
             .map_err(|e| format!("write config: {e}"))?;
+            std::fs::create_dir_all(dir.join("scripts"))
+                .map_err(|e| format!("mkdir scripts: {e}"))?;
+            std::fs::write(
+                dir.join("scripts/check-binary-size.sh"),
+                read("scripts/check-binary-size.sh")?,
+            )
+            .map_err(|e| format!("copy the size script: {e}"))?;
             let bin = dir.join("target/x86_64-unknown-linux-musl/release");
             std::fs::create_dir_all(&bin).map_err(|e| format!("mkdir target: {e}"))?;
             std::fs::write(bin.join("sipnab"), vec![0u8; 2 * 1024 * 1024])
                 .map_err(|e| format!("write binary: {e}"))?;
             Ok(())
-        },
-    )?;
+        }
+    };
+    let good = run_step_script(".github/workflows/release.yml", step, &subs, &seeded(3))?;
+    assert!(
+        good.status.success() && String::from_utf8_lossy(&good.stdout).contains("bytes under"),
+        "the size step must pass a 2 MB binary under a 3 MB ceiling:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&good.stdout),
+        String::from_utf8_lossy(&good.stderr)
+    );
+    let bad = run_step_script(".github/workflows/release.yml", step, &subs, &seeded(1))?;
+    assert_eq!(
+        bad.status.code(),
+        Some(1),
+        "the size step must fail a 2 MB binary over a 1 MB ceiling with the check's own \
+         exit 1:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&bad.stdout),
+        String::from_utf8_lossy(&bad.stderr)
+    );
     Ok(())
 }
 
@@ -6876,7 +6932,27 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 298 -> 315 (Sanitizers path filter): sanitizers.yml's push filter and
     // its comment name the tests/ files its run step compiles. Measurement:
     // the scan read 298 on main 5458dea3d and 315 with that file staged.
-    const EXPECTED_REFERENCES: usize = 315;
+    // 315 -> 316 (macOS shard balance): ci.yml's comment on `test-macos`
+    // names `scripts/parallel-tests.py`. Measurement: the scan read 315 on
+    // main 6172f6fdd and 316 on this branch merged with it.
+    // 315 -> 319 (fetch before the suite): the comments of the four
+    // "Fetch every platform's crates" steps (ci.yml twice, quality.yml twice)
+    // name scripts/check-suite-fetch.py. Measurement: the scan read 315 on main
+    // b8700e3f2 and 319 with those steps staged.
+    // 319 -> 320 (both): the macOS shard balance branch merged with main
+    // 2062140b1. Measurement: the scan read 320 on that merge.
+    // 320 -> 321 (OSV config copies): the comment of osv-scanner.yml's step
+    // "Scan every lockfile" names tests/osv_config_copies_test.rs.
+    // Measurement: the scan read 321 on main c2f0ce6a0 merged with it.
+    // 321 -> 334 (binary size on pull requests): binary-size.yml is new and
+    // names 14 paths (its paths filter and its steps; the two globs are not
+    // counted), and release.yml's size step, now a call of
+    // scripts/check-binary-size.sh, names one fewer. Measurement: the scan
+    // read 334 with the change staged on e7986d1a7.
+    // 334 -> 335 (cross pinned): release.yml's comment on "Install cross
+    // (Linux)" names scripts/check-binary-size.sh. Measurement: the scan read
+    // 335 with it staged.
+    const EXPECTED_REFERENCES: usize = 335;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -9867,7 +9943,8 @@ fn the_twitter_card_relies_on_the_open_graph_fallback() -> Result<(), TestError>
     let has_tw_title = base.contains(r#"<meta name="twitter:title""#);
     let has_tw_desc = base.contains(r#"<meta name="twitter:description""#);
     if !(has_tw_title || has_tw_desc) {
-        return Ok(()); // the documented state: fallback only, nothing to keep in step
+        // not a prerequisite: the documented state, fallback only, has nothing to keep in step
+        return Ok(());
     }
     let mut unpaired = Vec::new();
     for (name, text) in &overriders {
@@ -11749,6 +11826,7 @@ fn every_dimmed_paragraph_on_the_homepage_marks_its_links_without_color() -> Res
     let scss = read("website/sass/style.scss")?;
     let ratio = wcag_contrast(&scss_color(&scss, "link")?, &scss_color(&scss, "text-dim")?)?;
     if ratio >= 3.0 {
+        // not a prerequisite: at 3:1 or more the underline is optional, so the rule holds
         return Ok(());
     }
     // Compiled once, not once per paragraph: clippy's `regex_creation_in_loops`.

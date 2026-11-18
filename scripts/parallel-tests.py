@@ -63,11 +63,14 @@ import argparse
 import json
 import os
 import pathlib
+import platform
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
+import typing
 import xml.etree.ElementTree as ET
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -251,6 +254,122 @@ def cargo_metadata() -> dict:
 UNIT_TESTS = "<lib, bins and doctests>"
 # The unit tests' cost in integration-test binaries, for balancing.
 UNIT_WEIGHT = 40
+
+
+# ── The macOS unit weight (MACOS-SHARD-BALANCE) ──────────────────────────────
+#
+# With 40 on both platforms, main's macOS shard 1 took 16.8 to 22.4 min in
+# its Test step and shard 2 12.6 to 14.8. Their nextest phases were already
+# about equal; shard 1's `test` build, which compiles the library's unit-test
+# binary, took 6m29s to 9m45s against shard 2's 2m32s to 4m07s. The weight is
+# measured from the phases of those runs, not typed.
+
+
+class ShardRecord(typing.NamedTuple):
+    """One shard of one CI run, as its job log reports it: the integration
+    targets it ran, whether it held the unit tests, and the seconds of its
+    `test` build, its nextest run and its doctests.
+
+    A NamedTuple, not a dataclass: scripts/pin-gates.py and
+    scripts/check-hook-prerequisites.py load this file without putting it in
+    sys.modules, and a dataclass with string annotations looks itself up
+    there."""
+
+    run: int
+    index: int
+    targets: int
+    unit: bool
+    build: float
+    nextest: float
+    doc: float = 0.0
+
+    def seconds(self) -> float:
+        return self.build + self.nextest + self.doc
+
+
+# The macOS shards of main's CI runs on 2026-11-16 and 2026-11-17, read from
+# each job's log: the "parallel-tests: shard I of 2: N of 510 items" line, the
+# `test` profile's "Finished ... in" time, nextest's Summary seconds, and the
+# doctests from the "Doc-tests" line to the last "test result" line.
+MACOS_SHARD_RECORDS = (
+    ShardRecord(44024489366, 0, 235, True, 389, 489.067, 9.577),
+    ShardRecord(44024489366, 1, 274, False, 247, 484.097),
+    ShardRecord(44000978907, 0, 235, True, 491, 470.824, 9.84),
+    ShardRecord(44000978907, 1, 274, False, 170, 470.266),
+    ShardRecord(43990003757, 0, 235, True, 534, 650.164, 19.172),
+    ShardRecord(43990003757, 1, 274, False, 203, 465.402),
+    ShardRecord(43979745498, 0, 235, True, 585, 525.117, 21.941),
+    ShardRecord(43979745498, 1, 274, False, 152, 493.903),
+    ShardRecord(43970589902, 0, 235, True, 508, 551.127, 13.067),
+    ShardRecord(43970589902, 1, 274, False, 166, 500.761),
+    ShardRecord(43957731312, 0, 235, True, 539, 485.496, 11.894),
+    ShardRecord(43957731312, 1, 274, False, 188, 486.187),
+)
+
+
+def _median(values: list[float]) -> float:
+    s = sorted(values)
+    mid = len(s) // 2
+    return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+
+
+def _costs(records) -> tuple[float, float]:
+    """(seconds per target, seconds of the unit tests) from `records`: the
+    median per-target time of the shards without the unit tests, and the
+    median remainder of the shards with them. ValueError when either kind
+    is missing or a record cannot be a measurement."""
+    seen = set()
+    for r in records:
+        if (r.run, r.index) in seen:
+            raise ValueError(f"run {r.run} shard {r.index} is recorded twice")
+        seen.add((r.run, r.index))
+        if r.targets < 0:
+            raise ValueError(f"run {r.run} shard {r.index}: negative targets")
+        if min(r.build, r.nextest, r.doc) < 0:
+            raise ValueError(f"run {r.run} shard {r.index}: a negative phase")
+        if not r.unit and r.doc:
+            raise ValueError(f"run {r.run} shard {r.index}: doctests on a shard without the unit tests")
+    plain = [r for r in records if not r.unit]
+    unit = [r for r in records if r.unit]
+    if not plain:
+        raise ValueError("no shard without the unit tests to measure a target by")
+    if not unit:
+        raise ValueError("no shard with the unit tests to measure them by")
+    for r in plain:
+        if r.targets == 0:
+            raise ValueError(f"run {r.run} shard {r.index}: no targets to measure a target by")
+        if r.seconds() == 0:
+            raise ValueError(f"run {r.run} shard {r.index}: no time recorded")
+    per = _median([r.seconds() / r.targets for r in plain])
+    return per, _median([r.seconds() - r.targets * per for r in unit])
+
+
+def measured_unit_weight(records) -> int:
+    """The unit tests' cost in targets on the platform `records` measured:
+    the unit remainder divided by a target's cost, rounded, at least 1."""
+    per, unit = _costs(records)
+    return max(1, round(unit / per))
+
+
+def predicted_seconds(records, targets: int, unit: bool) -> float:
+    """A shard's build, nextest and doctest seconds on the platform `records`
+    measured, by the same model `measured_unit_weight` uses."""
+    per, unit_cost = _costs(records)
+    return targets * per + (unit_cost if unit else 0.0)
+
+
+# The weight per `platform.system()`. A platform not listed keeps UNIT_WEIGHT.
+UNIT_WEIGHTS = {"Linux": UNIT_WEIGHT, "Darwin": measured_unit_weight(MACOS_SHARD_RECORDS)}
+
+
+def unit_weight_for(system: str) -> int:
+    return UNIT_WEIGHTS.get(system, UNIT_WEIGHT)
+
+
+def shard_plan(targets: list[str], count: int, system: str) -> list[list[str]]:
+    """The partition a shard on `system` runs by: `partition` with that
+    platform's unit weight."""
+    return partition(targets, count, unit_weight_for(system))
 PACKAGE = "sipnab"
 SHARD_MANIFEST = "shard.json"
 SHARD_OUTPUT = "test-output.txt"
@@ -402,7 +521,7 @@ def shard_commands(shard: list[str], cargo_args: list[str], jobs: int | None = N
     return commands
 
 
-def run_nextest(cmd: list[str]) -> int:
+def run_nextest(cmd: list[str], env: typing.Mapping[str, str] | None = None) -> int:
     """Run one `cargo nextest run`, then print its report as libtest text."""
     report = report_path(cargo_metadata())
     # A report left by an earlier run must never stand in for this one:
@@ -411,7 +530,7 @@ def run_nextest(cmd: list[str]) -> int:
     sys.stdout.flush()
     # nextest's own progress goes to standard error; standard output carries
     # only the rendered report and the doctests, the text the readers parse.
-    rc = subprocess.run(["cargo", *cmd], stdout=sys.stderr, check=False).returncode
+    rc = subprocess.run(["cargo", *cmd], stdout=sys.stderr, check=False, env=env).returncode
     try:
         text, _passed, failed = render_junit(report.read_text(encoding="utf-8"))
     except OSError:
@@ -427,19 +546,89 @@ def run_nextest(cmd: list[str]) -> int:
     return rc
 
 
+# ── The tests that skipped on a missing prerequisite, counted ────────────
+#
+# src/test_prereq.rs appends one line per skip (binary, test, prerequisite,
+# reason, tab-separated) to the file this variable names. nextest's `suite`
+# profile prints nothing of a passing test, so the skip's own notice is not
+# seen in a suite run; the count printed at the end is.
+
+SKIP_LEDGER_VAR = "SIPNAB_PREREQ_SKIP_LEDGER"
+
+
+def skip_ledger_env(env: typing.Mapping[str, str], target: pathlib.Path) -> tuple[dict[str, str], pathlib.Path]:
+    """The environment for a suite run, with the skip ledger set, and its path.
+
+    A ledger the caller named is used as it is. Otherwise the ledger is
+    `<directory>/prereq-skips.tsv`, emptied, so an earlier run's skips are
+    not counted again. Raises OSError when it cannot be created.
+    """
+    out = dict(env)
+    named = out.get(SKIP_LEDGER_VAR)
+    if named:
+        return out, pathlib.Path(named)
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / "prereq-skips.tsv"
+    path.write_text("", encoding="utf-8")
+    out[SKIP_LEDGER_VAR] = str(path)
+    return out, path
+
+
+def read_skip_ledger(path: pathlib.Path) -> str:
+    """The ledger's text; empty when no test wrote it."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
+
+
+def skip_summary(text: str) -> str:
+    """One line: how many tests skipped, and how many for each prerequisite."""
+    counts: dict[str, int] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        prereq = fields[2] if len(fields) == 4 and fields[2] else "unreadable"
+        counts[prereq] = counts.get(prereq, 0) + 1
+    total = sum(counts.values())
+    noun = "test" if total == 1 else "tests"
+    line = f"parallel-tests: {total} {noun} skipped on a missing prerequisite"
+    if counts:
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        line += " (" + ", ".join(f"{name} {n}" for name, n in ranked) + ")"
+    return line
+
+
 def run_commands(commands: list[list[str]]) -> int:
-    """Run each command in turn, every one even after a failure; 0 if all passed."""
+    """Run each command in turn, every one even after a failure; 0 if all passed.
+
+    The run's skips on a missing prerequisite are counted in a ledger and the
+    count printed at the end.
+    """
+    # Outside the tree: a file the run adds to the tree is an input the
+    # hook's pass stamp sees, so a second, identical run would miss it.
+    with tempfile.TemporaryDirectory(prefix="sipnab-prereq-skips-") as scratch:
+        env, ledger = skip_ledger_env(os.environ, pathlib.Path(scratch))
+        try:
+            return _run_each(commands, env)
+        finally:
+            print(skip_summary(read_skip_ledger(ledger)), file=sys.stderr, flush=True)
+
+
+def _run_each(commands: list[list[str]], env: typing.Mapping[str, str]) -> int:
+    """The loop of `run_commands`, with the ledger set in `env`."""
     rc = 0
     for cmd in commands:
         if cmd[0] == "build":
-            built = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False).returncode
+            built = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False, env=env).returncode
             if built != 0:
                 return built
         elif cmd[0] == "nextest":
-            rc = run_nextest(cmd) or rc
+            rc = run_nextest(cmd, env) or rc
         else:
             sys.stdout.flush()
-            rc = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False).returncode or rc
+            rc = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False, env=env).returncode or rc
     return rc
 
 
@@ -570,7 +759,7 @@ def check_nextest() -> int:
 
 
 def run_shard(index: int, count: int, manifest: str, cargo_args: list[str], jobs: int | None) -> int:
-    shards = partition(test_targets(cargo_metadata()), count)
+    shards = shard_plan(test_targets(cargo_metadata()), count, platform.system())
     if not 0 <= index < count:
         sys.exit(f"parallel-tests: shard index {index} is outside 0..{count - 1}")
     if check_nextest():

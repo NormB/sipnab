@@ -369,7 +369,7 @@ fn the_split_step_and_the_strip_check_run_on_a_real_binary() -> Result<(), TestE
     let work = dir.path();
     let rel = work.join("target").join(&host).join("release");
     std::fs::create_dir_all(&rel)?;
-    let fixture = dbgsym::build_fixture(work, None, true)?.ok_or("host fixture")?;
+    let fixture = dbgsym::build_fixture(work, None, true)??;
     let bin = rel.join("sipnab");
     std::fs::copy(&fixture, &bin)?;
     std::fs::create_dir_all(work.join("scripts"))?;
@@ -474,6 +474,12 @@ fn the_size_gate_measures_only_the_shipped_binary() -> Result<(), TestError> {
             repo().join("website/config.toml"),
             w.join("website/config.toml"),
         )?;
+        // The step runs the repository's size check, which reads the ceiling.
+        std::fs::create_dir_all(w.join("scripts"))?;
+        std::fs::copy(
+            repo().join("scripts/check-binary-size.sh"),
+            w.join("scripts/check-binary-size.sh"),
+        )?;
         let rel = w.join("target").join(target).join("release");
         std::fs::create_dir_all(&rel)?;
         std::fs::create_dir_all(w.join("dist"))?;
@@ -495,9 +501,11 @@ fn the_size_gate_measures_only_the_shipped_binary() -> Result<(), TestError> {
         text(&small)
     );
     let big = run(over)?;
-    assert!(
-        !big.status.success(),
-        "a binary over the ceiling passed, so the gate is not measuring it:\n{}",
+    assert_eq!(
+        big.status.code(),
+        Some(1),
+        "a binary over the ceiling must fail with the check's own exit 1 (2 is \
+         \"cannot measure\", 127 a missing script), so the gate measures it:\n{}",
         text(&big)
     );
     Ok(())
@@ -678,7 +686,7 @@ fn the_ci_proof_step_catches_what_it_must() -> Result<(), TestError> {
         let work = dir.path().to_path_buf();
         let rel = work.join("target").join(&host).join("release");
         std::fs::create_dir_all(&rel)?;
-        let fixture = dbgsym::build_fixture(&work, None, true)?.ok_or("host fixture")?;
+        let fixture = dbgsym::build_fixture(&work, None, true)??;
         let bin = rel.join("sipnab");
         std::fs::copy(&fixture, &bin)?;
         std::fs::create_dir_all(work.join("scripts"))?;

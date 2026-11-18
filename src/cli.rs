@@ -1057,6 +1057,9 @@ pub struct CaptureArgs {
     /// 100 MiB. Both `filesize` conditions counted decimal megabytes before
     /// and stopped 4.9 % early; a capture that stopped short looks exactly
     /// like one that stopped when asked, so nothing reported the difference.
+    ///
+    /// With `--split`, `filesize` counts the output of every split file
+    /// together, the files `--split-keep` deleted included.
     #[arg(help_heading = "Capture", long, value_name = "CONDITION")]
     pub autostop: Option<String>,
 
@@ -16015,6 +16018,7 @@ mod one_shot_plumbing_tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".config/implies-no-tui.txt");
         if std::env::var_os(BLESS_IMPLIES).is_some() {
             std::fs::write(&path, &want).map_err(|e| format!("write: {e}"))?;
+            // not a prerequisite: the bless mode writes the listing instead of checking it
             return Ok(());
         }
         let have = std::fs::read_to_string(&path).map_err(|e| format!("read: {e}"))?;

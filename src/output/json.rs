@@ -644,8 +644,35 @@ struct DialogJson {
     /// Omitted, never null, when the opening message carried no origin.
     #[serde(skip_serializing_if = "Option::is_none")]
     input_origin: Option<&'static str>,
+    /// How many of the dialog's messages each source delivered, by origin
+    /// name, when more than one source delivered any (DEDUP-1).
+    ///
+    /// A message the wire and a HEP feed both delivered is counted once in
+    /// `msg_count` and once under each source here, so a source that missed
+    /// a message shows as the smaller count. Omitted when one source, or
+    /// none, delivered every message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seen_by: Option<std::collections::BTreeMap<&'static str, usize>>,
     /// Associated RTP streams.
     streams: Vec<StreamJson>,
+}
+
+/// How many of `messages` each source delivered, by origin name, or `None`
+/// when fewer than two sources delivered any. A message stored once with
+/// copies merged into it counts under each source that delivered it.
+fn seen_by(
+    messages: &[crate::sip::SipMessage],
+) -> Option<std::collections::BTreeMap<&'static str, usize>> {
+    use crate::capture::parse::InputOrigin;
+    let mut counts = std::collections::BTreeMap::new();
+    for origin in InputOrigin::ALL {
+        let bit = crate::sip::message::origin_bit(origin);
+        let n = messages.iter().filter(|m| m.sources() & bit != 0).count();
+        if n > 0 {
+            counts.insert(origin.as_str(), n);
+        }
+    }
+    (counts.len() > 1).then_some(counts)
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -946,6 +973,7 @@ pub fn dialog_to_json(
         // From the same message `frame` came from, so the two cannot name
         // different packets.
         input_origin: dialog.input_origin.map(|o| o.as_str()),
+        seen_by: seen_by(&dialog.messages),
         streams: stream_jsons,
     };
 

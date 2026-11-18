@@ -232,6 +232,7 @@ fn the_clusterfuzzlite_image_installs_what_the_fuzz_targets_link() -> Result<(),
         .find(|l| l.trim_start().starts_with("sipnab = "))
         .ok_or("fuzz/Cargo.toml must depend on sipnab")?;
     if !sipnab_dep.contains("\"native\"") {
+        // not a prerequisite: fuzz targets without `native` link no libpcap to install
         return Ok(());
     }
     let dockerfile = read(".clusterfuzzlite/Dockerfile")?;
@@ -318,6 +319,7 @@ fn batch_fuzzing_is_paired_with_corpus_pruning() -> Result<(), TestError> {
         }
     }
     if batch.is_empty() {
+        // not a prerequisite: with no batch fuzzing there is nothing to pair with pruning
         return Ok(());
     }
     assert!(

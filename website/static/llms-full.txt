@@ -13523,7 +13523,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.260 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.263 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13546,7 +13546,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.260` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.263` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13735,7 +13735,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.260) | Plugin | `Recommends` |
+| Artifact (0.5.263) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13775,11 +13775,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.260 for the
+it first, in the same shell, to the release you want, e.g. 0.5.263 for the
 latest:
 
 ```bash
-VERSION=0.5.260
+VERSION=0.5.263
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13919,13 +13919,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.260, as in
+you want, e.g. 0.5.263, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.260
+   VERSION=0.5.263
    ```
 
 - Download the package:
@@ -14046,25 +14046,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.260-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.263-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.260-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.263-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.260-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.263-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.260-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.263-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14550,14 +14550,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.260
+docker pull ghcr.io/normb/sipnab:0.5.263
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.260` | That release |
+| `0.5.263` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14595,7 +14595,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.260 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.263 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14608,11 +14608,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.260 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.263 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.260` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.260`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.263` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.263`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14810,7 +14810,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.261 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+sipnab 0.5.264 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -15034,7 +15034,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.260
+docker pull ghcr.io/normb/sipnab:0.5.263
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -16969,6 +16969,15 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
   - sipnab warns on stderr when you ask for the format with no scanner detector armed.
 - For broader detection, combine flags: `sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood --alert syslog`
 - Use `--digest-leak` to check if any endpoints are leaking credentials in cleartext.
+
+### The run stops answering scanners when stderr goes away
+
+`--kill-scanner` sends its responses from a separate worker process, which writes its log lines to the run's stderr.
+
+- Before 0.5.263, the worker ended at its next log line when a write to that stderr failed. Two examples: a pipe whose reader had exited (`2>&1 | head`), and a full disk.
+- From then on the run detected scanners and answered none, and its `DISABLED` warning went to the same lost stderr.
+- Since 0.5.263, the worker drops a log line it cannot write, and keeps answering.
+- To keep the log lines themselves, send stderr to a file or to the journal, not to a pipe that can end before the run.
 
 ---
 
@@ -20790,6 +20799,15 @@ Keep only the newest four of those files. Then a long capture fits a fixed amoun
 sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --split-keep 4
 ```
 
+Stop the capture after 200 MiB of output in all. `--autostop filesize` counts every split file together, the files `--split-keep` deleted included, so this run writes four 50 MiB files and stops:
+
+```bash
+sipnab -N -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --autostop filesize:200
+```
+
+- Verify: the run ends by itself, and `ls -l /var/captures` shows `sip.pcapng` and `sip_00001.pcapng` to `sip_00003.pcapng`, about 200 MiB together.
+- Troubleshoot: before 0.5.264, `--autostop filesize` read only the size of the open file, which each rotation starts again, so with a `--split` smaller than the limit the run never stopped. Upgrade, or stop that run with `--duration` or Ctrl-C.
+
 **The drop user creates the output files.** Run as root, sipnab does this:
 
 - It opens the capture device.
@@ -20877,7 +20895,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--capture-tunnels` | `[<PORTS>]` | off | 0.5.80 | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default: it takes every packet on those ports, which on a mobile core is the entire user plane, because a BPF filter cannot reach the inner port behind a GTP-U extension-header chain. Ignored when you supply your own filter |
 | `-n`, `--count` | `<N>` | -- | 0.3.0 | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth). At least 1: sipnab refuses `0` |
 | `--duration` | `<DURATION>` | -- | 0.3.0 | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2`. At the deadline sipnab stops capturing and still reports what had already arrived: a TCP or TLS `--hep-listen` reads what its open connections hold, for up to 1 second, and accepts the connections still waiting in its backlog, completing a TLS handshake under way, for up to 1 second more, and the run reads on for up to 3 seconds for the capture to deliver it. 0.5.233 and earlier dropped it, and 0.5.240 and earlier also lost every packet on a connection not yet accepted at the deadline |
-| `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use |
+| `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use. With `--split` it counts all split files together |
 | `--split` | `<CONDITION>` | -- | 0.3.0 | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | 0.5.100 | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
 | `--replay` | -- | off | 0.3.0 | Replay packets from a pcap file at original timing |
@@ -32955,6 +32973,17 @@ Authentication challenges follow the same rule as `final_status_code` in
 > - Pair `no_media` with the knowledge of where your tap sits. If media does not
 >   traverse it, the question is unanswerable, and sipnab declines to answer it.
 >
+> **`no_media` is false for a call read from a vCon.**
+>
+> - A vCon carries a call's signaling and none of its packets. So the RTP that
+>   other inputs of the same run carry says nothing about that call.
+> - Example: in `sipnab -N -I call.vcon.json -I other.pcap --filter "no_media == true"`,
+>   the vCon's call is not selected, whatever RTP `other.pcap` holds.
+> - sipnab judges a call that any packet input of the run also carried as that
+>   input's call.
+> - Before 0.5.264, such a run reported the vCon's answered call as
+>   `no_media`, and `--analyze` ranked it "No media on an answered call".
+>
 > **`rtp.orphaned` is a parse error, not a field.**
 >
 > - It would ask whether a stream *belonging to this dialog* belongs to no
@@ -35066,6 +35095,44 @@ commonest codes sends you:
   packet. The peer may be perfectly healthy, and the fix is the filter.
 - `host unreachable` means nothing reached the host at all. So the capture says
   nothing about its ports.
+
+### Messages two sources delivered: `seen_by`
+
+A run that reads the wire and a HEP feed of the same proxy gets each message
+twice: once from the wire and once from the proxy's HEP report. Examples are
+`sipnab -d any -L 0.0.0.0:9060`, or `-I` of a capture that holds both with
+`--hep-parse`.
+
+- sipnab keeps such a message once. `msg_count` counts it once, and it is not
+  a retransmission.
+- Two copies are one message when their bytes are identical, they belong to
+  the same transaction, and they arrived within 2 seconds of each other.
+- `seen_by` says how many of the dialog's messages each source delivered:
+
+```json
+"seen_by": { "hep": 7, "wire": 7 }
+```
+
+- A source that missed a message shows the smaller count. For example,
+  `"wire": 6` beside `"hep": 7` means the wire never carried one message the
+  proxy reported.
+- `seen_by` is absent when one source delivered every message.
+
+To check a composite run, read each dialog's counts:
+
+```bash
+sipnab -N -I both.pcap --hep-parse --json-dialogs | jq -c '{call_id, msg_count, seen_by, r: .timing.retransmits}'
+```
+
+Troubleshooting:
+
+- Counts twice as high as the call, and as many retransmissions as messages:
+  that was sipnab before 0.5.264. Upgrade.
+- Two copies stay apart when the proxy reported bytes the wire did not carry,
+  or when the HEP sender's clock is more than 2 seconds off the capture host's.
+  Compare the clocks first: `chronyc tracking` on both hosts.
+- The `--json` message stream still prints one line per arrival, each with its
+  own `input_origin`.
 
 ### STUN evidence inside the media diagnosis
 
@@ -37870,7 +37937,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.261 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+   sipnab 0.5.264 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -38572,7 +38639,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.261"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.264"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -39257,7 +39324,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.261",
+  "version": "0.5.264",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -40200,7 +40267,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.261"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.264"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -51820,7 +51887,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.261",
+  "version": "0.5.264",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -83340,6 +83407,11 @@ The reviewer checks the rest:
   - It reports findings as code scanning alerts.
   - [`osv-scanner.toml`](osv-scanner.toml) lists the accepted advisories, each
     with its reason.
+  - OSV-Scanner and OpenSSF Scorecard read only the `osv-scanner.toml` in a
+    lock file's own directory. So each directory with a lock file holds an
+    exact copy of the root file. Edit the root file, then copy it over each
+    copy. [`tests/osv_config_copies_test.rs`](tests/osv_config_copies_test.rs)
+    fails on a missing, changed or stray copy.
 
 When you add or update a dependency, run the same checks CI runs before you
 push. Install the tools once with `cargo install cargo-audit cargo-deny`.
@@ -86976,7 +87048,7 @@ So a green `--features full` says nothing about whether `--features tls` alone
 compiles.
 That is exactly why CI has a feature matrix.
 
-## The twenty workflows
+## The twenty-one workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -86998,6 +87070,7 @@ That is exactly why CI has a feature matrix.
 | `pr-closed.yml` | PR closed or merged | Ends the `CI` run of a closed pull request. `ci.yml` groups a pull request's runs as `ci-CI-<number>`; this workflow enters that group with `cancel-in-progress`, so GitHub cancels the run still in progress. Before it, a closed pull request's run went on to its end and held the self-hosted runners other pull requests waited for. It checks out nothing, calls no action and asks for no permission. A merge also sends `closed`; GitHub creates the run and marks its job skipped (`merged == false`), since a merged pull request's run is already over. GitHub's documentation has not stated whether a skipped job's run still enters the group; the group names only the pull request's number, so it is never main's group `ci-CI-refs/heads/main`. Limit: GitHub runs no `pull_request` workflow for a pull request with a merge conflict, so closing such a pull request leaves its run going. [`scripts/tests/test_ci_cancel_on_close.py`](../../scripts/tests/test_ci_cancel_on_close.py) holds the two group names together. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](../../bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
+| `binary-size.yml` | weekly cron (Fridays 05:17 UTC), manual, and PRs touching the manifests, the lockfile, the build scripts or the ceiling | Builds the x86_64 musl release binary the way `release.yml` does, splits its symbols, and fails when it exceeds `binary_size_ceiling_mb`, through [`scripts/check-binary-size.sh`](../../scripts/check-binary-size.sh), the script `release.yml`'s size step runs. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
 | `rerun-not-acquired.yml` | when a `CI` or `Release` run completes without success; manual, which prints the decision for one run and re-runs nothing | Re-runs the failed jobs of a run in which every job that did not succeed has the conclusion `skipped` or never started, because no hosted runner took it. See [A job no runner took](#a-job-no-runner-took). |
 
@@ -87401,7 +87474,11 @@ The `test` job runs the Linux suite on two runners at once.
     A split of the run alone would save little.
 - [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) `--shard-index I --shard-count N` is the one rule for what each shard runs.
   - It asks `cargo metadata` for the package's integration-test targets.
-  - `partition` puts the library and binary unit tests and the doctests in shard 0, weighed as `UNIT_WEIGHT` test binaries.
+  - `partition` puts the library and binary unit tests and the doctests in shard 0, weighed as test binaries: `UNIT_WEIGHTS` for the platform `platform.system()` names, 40 on Linux.
+  - On macOS the weight is `measured_unit_weight` over `MACOS_SHARD_RECORDS`, the phases of six main runs read from their job logs: 198 binaries.
+    In those runs shard 1's `test` build, which compiles the library's unit-test binary, took 6m29s to 9m45s and shard 2's 2m32s to 4m07s, while their nextest phases were about equal.
+    The rule takes a target's cost from the shard without the unit tests and the unit tests' cost from the remainder of the shard with them.
+    To measure again, add the new runs' records and run `python3 -m pytest scripts/tests/test_parallel_tests_macos_weight.py`.
   - It gives each target, in name order, to the shard with the least weight so far.
   - The shard runs `cargo nextest run --profile suite --all-features` with one `--test NAME` for each target it holds, and shard 0 adds `--lib --bins` and a `cargo test --doc` run.
   - The `suite` profile in [`.config/nextest.toml`](../../.config/nextest.toml) stops any one test after three 60-second periods.
@@ -87465,6 +87542,11 @@ The workflow's one job holds `actions: write` and no other permission.
 GitHub runs the workflow file of the default branch for a `workflow_run` event, and the checkout names no ref.
 The script that runs is the one on `main`, also when the completed run belongs to a pull request.
 
+The release train reads a canceled check through the same rule, `rerun_coming` in the script.
+A job the script re-runs counts as pending, not failed, while its run is in progress and for 600 seconds after the run completed.
+The 0.5.262 and 0.5.263 trains stopped at `ci-failed` on such a job, and a person restarted each one.
+The script's `WORKFLOWS` names the watched workflows, and a test holds it equal to the workflow file's `workflows:` list.
+
 **See what the script answers for one run.**
 Start the workflow by hand with the run's number.
 This prints the decision and re-runs nothing:
@@ -87490,6 +87572,34 @@ A run there whose one job did not start means the completed run concluded `succe
 No run there means the completed run belongs to another workflow.
 
 [`scripts/tests/test_rerun_not_acquired.py`](../../scripts/tests/test_rerun_not_acquired.py) tests the decision against two answers captured from GitHub's API, in [`tests/fixtures/rerun_not_acquired`](../../tests/fixtures/rerun_not_acquired), and against answers built in the same shape.
+
+### Every platform's crates before the suite
+
+**Every job that runs the suite runs `cargo fetch --locked` first.**
+
+- [`tests/release_pipeline_gate_test.rs`](../../tests/release_pipeline_gate_test.rs) runs `cargo tree --offline --locked --target all`.
+  That reads the crates of every platform from the local cargo registry.
+- A build downloads only the crates of the platform it builds for.
+  With a warm cargo cache the registry held the others, so the test passed.
+- On main b8700e3f2 (2026-11-17) the release's new `Cargo.lock` missed the macOS cargo cache.
+  macOS shard 2 then failed with `failed to download alsa v0.11.0` and `--offline was specified`.
+- `cargo fetch --locked` with no `--target` downloads every platform's crates, so the test holds on a cold cache too.
+  It runs after the cache restore, because a restore can replace the registry.
+
+[`scripts/check-suite-fetch.py`](../../scripts/check-suite-fetch.py) holds the rule for every workflow:
+
+- A step runs the suite when it runs [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) (not `merge`), `cargo llvm-cov` (not `report`) or [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py).
+- Its job needs a `cargo fetch --locked` step before the first such step, and after any `actions/cache` restore of `~/.cargo/registry` before it.
+- [`scripts/tests/test_check_suite_fetch.py`](../../scripts/tests/test_check_suite_fetch.py) runs it on every workflow of the repository.
+
+**On your own machine.** The same test fails on a registry that has only your platform's crates.
+Its message then ends with the fix:
+
+```sh
+cargo fetch --locked
+```
+
+Run it once (it needs the network), then run the test again.
 
 ### Dependabot bumps fail on a generated file, not on an API break
 
@@ -88346,6 +88456,24 @@ Two things keep it honest.
 - On a non-Linux host it prints `NOT CHECKED` instead of running.
   There, your ordinary `cargo clippy` already is the non-Linux build.
 
+### Tests that need something from the host
+
+Some tests need something the host may lack: `sudo` without a password, Landlock, `editcap`, `/dev/full`.
+One helper, [`src/test_prereq.rs`](../../src/test_prereq.rs), decides what such a test does when that prerequisite is missing.
+
+- A required prerequisite that is missing fails the test and names it.
+- An optional one that is missing skips the test.
+  The skip writes a `NOTICE` line to stderr and one line to the file `SIPNAB_PREREQ_SKIP_LEDGER` names.
+- `SIPNAB_REQUIRE_PREREQS` lists optional prerequisites that this run requires, comma-separated; `all` names every one.
+  CI's `Test` step sets it to what its runners have, one list for Linux and one for macOS.
+- [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) points the ledger at a file in a temporary directory it removes afterward, and prints the count at the end of the run:
+  `parallel-tests: 3 tests skipped on a missing prerequisite (sudo 2, landlock 1)`.
+  nextest's `suite` profile prints nothing of a passing test, so this line is where a skip shows.
+- [`tests/prereq_skip_gate_test.rs`](../../tests/prereq_skip_gate_test.rs) refuses an early `return Ok(())` or `return;` in a test that the helper did not decide.
+  A return that is no skip (a child role, a state with nothing to check) carries `// not a prerequisite: <reason>`.
+
+To see which tests your host skips, run the suite and read that line, or run one test binary with `SIPNAB_REQUIRE_PREREQS=all`: every skip then fails and names its prerequisite.
+
 ### The corpus gate
 
 The corpus gate differs from the eight hard
@@ -88629,6 +88757,11 @@ in the release commit itself.
   It sets `Cargo.toml` to the same version.
   From then on the flag reads `x.y.z`.
 - Tagging the commit changes nothing, because the tag's history gives the same `x.y.z`.
+- Pull requests that land before the tag reaches GitHub put a new `[Unreleased]` above `[x.y.z]`.
+  - Until the tag exists, the commit that added `## [x.y.z]` to `CHANGELOG.md` stands in for it.
+  - A flag that commit declares reads `x.y.z`; a flag added later reads `Unreleased`.
+  - Reading only the first heading made every flag of the release read `Unreleased` on every pull
+    request until the tag reached GitHub (2026-10-27, `0.5.231`).
 - So run `python3 scripts/flag-since.py --write` in the release commit,
   after the rename and the version bump.
 - If you forget, `the_since_column_is_what_tagged_history_says` in
@@ -89142,7 +89275,9 @@ The container's package installs go through [`scripts/release-apt.sh`](../../scr
 - `multiarch_pins` installs `linux-libc-dev`, `libc6` and `libc6-dev` for amd64 and arm64 at the newest version both architectures' indexes carry.
   These packages are `Multi-Arch: same`, so both architectures must hold one version.
   Release run 43881101798 (v0.5.260) failed both aarch64 builds when `bookworm-security` carried `linux-libc-dev` 6.1.192-2 for arm64 and only 6.1.192-1 for amd64.
-- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds both.
+- `pins_line` prints those pins on one `multiarch pins` notice line, the line before the install, so a release record can quote the versions each aarch64 build installed.
+  It refuses a word that is not `package:amd64=version` or `package:arm64=version`, and a package not pinned once for each architecture at one version.
+- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds all three.
 
 Every gnu binary then passes a `readelf -V` gate.
 
@@ -89423,6 +89558,9 @@ To close it by hand:
 
 - `no-pr`: GitHub lists no pull request for the branch `release/<version>`, or GitHub closed it without merging.
 - `ci-failed: <names>`: fix the checks, push, and run the train again.
+- `awaits a re-run: <names>`: no hosted runner took those jobs, and `rerun-not-acquired.yml` runs them again when their run completes.
+  The train keeps waiting and keeps the release window closed.
+  When the re-run has not started 600 seconds after the run completed, the train stops at `ci-failed`: re-run the jobs by hand, then run the train again.
 - After an exit of 3 or 4 the train does not run the post checks again. To retry them, add `--retry-post`.
 - `the local tag v<version> is on <sha>, not the merge commit <sha>`: delete the stale local tag, then run the train again.
 - `this checkout is at <sha>, not the merge commit <sha>, and it has uncommitted changes`: commit the changes or set them aside, run the printed `git checkout --detach` command, then run the train again.
@@ -92557,6 +92695,9 @@ Each successful run gets a row here.
 | 0.5.258 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-15 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.259 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-16 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.260 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-16 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.261 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-17 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.262 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-17 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.263 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-18 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it
@@ -94020,10 +94161,15 @@ audio playback. [`tests/site_journey_test.rs`](../../tests/site_journey_test.rs)
 
 ### The published binary size ceiling
 
-The "Enforce published binary size (musl targets)" step in `release.yml` reads
+The "Enforce published binary size (musl targets)" step in `release.yml` runs
+[`scripts/check-binary-size.sh`](../../scripts/check-binary-size.sh), which reads
 `binary_size_ceiling_mb` from
 [`website/config.toml`](../../website/config.toml) and fails the release when a
-musl binary exceeds it. The install page, the build page and the homepage all
+musl binary exceeds it.
+[`binary-size.yml`](../../.github/workflows/binary-size.yml) runs the same script on an
+x86_64 musl build of each pull request that changes the manifests, the lockfile,
+the build scripts or the ceiling, and weekly, so a change that grows the binary
+fails before the tag. The install page, the build page and the homepage all
 quote the same value, and [`tests/site_journey_test.rs`](../../tests/site_journey_test.rs) holds each quote to the
 config key.
 

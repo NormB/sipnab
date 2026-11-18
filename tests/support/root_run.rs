@@ -207,6 +207,27 @@ pub fn sudo() -> std::io::Result<Command> {
     tie(cmd)
 }
 
+/// Why a host may lack passwordless sudo: the `Need::Optional` reason of
+/// every as-root test (`src/test_prereq.rs`). CI's runners have it, and CI
+/// requires it through `SIPNAB_REQUIRE_PREREQS`.
+pub const SUDO_REASON: &str =
+    "a contributor's host may not grant passwordless sudo; CI's runners do, and CI requires it.";
+
+/// Whether `sudo -n true` works here: the probe of the `sudo` prerequisite.
+///
+/// # Errors
+/// What `sudo -n true` did instead of succeeding.
+///
+/// # Side effects
+/// Spawns `sudo -n true`.
+pub fn sudo_probe() -> Result<(), String> {
+    match sudo().and_then(|mut cmd| cmd.arg("true").status()) {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("`sudo -n true` exited with {status}")),
+        Err(e) => Err(format!("`sudo -n true` did not start: {e}")),
+    }
+}
+
 /// A command that runs what the caller appends (program, then arguments) as
 /// the current user, tied to this test process. It is the same `sh` program
 /// [`sudo`] uses, so its rules can be tested where there is no `sudo`.

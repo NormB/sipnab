@@ -1436,8 +1436,7 @@ mod tests {
     /// root to reach (`set_uid`); a non-root test process cannot drive it.
     #[test]
     fn a_skipped_drop_records_no_user() -> Result<(), TestError> {
-        if is_root() {
-            stderr_line!("skipped: running as root, a drop would really happen");
+        if !crate::test_prereq::not_root(is_root()) {
             return Ok(());
         }
         assert!(drop_privileges(None, true).is_ok());
@@ -1778,11 +1777,9 @@ mod tests {
     fn do_chroot_without_root_fails_and_names_the_directory() -> Result<(), TestError> {
         // chroot(2) requires CAP_SYS_CHROOT; as a normal user this must error
         // rather than silently succeed (covers the error path of do_chroot).
-        if is_root() {
-            skip_loudly(
-                "do_chroot_without_root_fails_and_names_the_directory",
-                "the process IS root, so chroot(2) succeeds; this gate asserts the unprivileged failure path",
-            );
+        // As root chroot(2) succeeds; this gate asserts the unprivileged
+        // failure path.
+        if !crate::test_prereq::not_root(is_root()) {
             return Ok(());
         }
         let result = do_chroot(std::path::Path::new("/tmp"));
@@ -1805,21 +1802,6 @@ mod tests {
     // unprivileged because "cannot do this" is precisely the unprivileged
     // case. Turning any `bail!` in this module into a `tracing::warn!` fails
     // one of them.
-
-    /// Announce a skipped root-gated test on the real stderr.
-    ///
-    /// Not `eprintln!`: libtest replaces the print machinery's sink per test
-    /// and discards the buffer when the test passes, so a skip announced that
-    /// way is emitted and never seen — which is how a suite ends up green
-    /// while proving nothing. See `tests/support/corpus.rs` for the same
-    /// defect and the same fix.
-    fn skip_loudly(test: &str, reason: &str) {
-        use std::io::Write as _;
-        let _ = writeln!(
-            std::io::stderr(),
-            "NOTICE: privilege test `{test}` did NOT run — {reason}."
-        );
-    }
 
     /// Names the one test a child process of this binary is to run; see
     /// [`in_own_process`].
@@ -2017,11 +1999,8 @@ mod tests {
         in_own_process(
             "drop_supplementary_groups_reports_failure_instead_of_returning_ok",
             || -> Result<(), TestError> {
-                if is_root() {
-                    skip_loudly(
-                        "drop_supplementary_groups_reports_failure_instead_of_returning_ok",
-                        "the process IS root, so setgroups(2) succeeds; this gate asserts the failure path",
-                    );
+                // As root setgroups(2) succeeds; this asserts the failure path.
+                if !crate::test_prereq::not_root(is_root()) {
                     return Ok(());
                 }
                 let msg = drop_supplementary_groups()
@@ -2047,11 +2026,8 @@ mod tests {
         in_own_process(
             "set_gid_reports_a_refused_setgid_rather_than_returning_ok",
             || -> Result<(), TestError> {
-                if is_root() {
-                    skip_loudly(
-                        "set_gid_reports_a_refused_setgid_rather_than_returning_ok",
-                        "the process IS root, so setgid(0) succeeds; this gate asserts the failure path",
-                    );
+                // As root setgid(0) succeeds; this asserts the failure path.
+                if !crate::test_prereq::not_root(is_root()) {
                     return Ok(());
                 }
                 let msg = set_gid(0)
@@ -2073,11 +2049,8 @@ mod tests {
         in_own_process(
             "set_uid_reports_a_refused_setuid_rather_than_returning_ok",
             || -> Result<(), TestError> {
-                if is_root() {
-                    skip_loudly(
-                        "set_uid_reports_a_refused_setuid_rather_than_returning_ok",
-                        "the process IS root, so setuid(0) succeeds; this gate asserts the failure path",
-                    );
+                // As root setuid(0) succeeds; this asserts the failure path.
+                if !crate::test_prereq::not_root(is_root()) {
                     return Ok(());
                 }
                 let msg = set_uid(0)
@@ -2239,11 +2212,9 @@ mod tests {
         in_own_process(
             "group_credentials_are_surrendered_supplementary_list_first",
             || -> Result<(), TestError> {
-                if is_root() {
-                    skip_loudly(
-                        "group_credentials_are_surrendered_supplementary_list_first",
-                        "the process IS root, so setgroups(2) succeeds; this gate asserts which step refuses first",
-                    );
+                // As root setgroups(2) succeeds; this asserts which step
+                // refuses first.
+                if !crate::test_prereq::not_root(is_root()) {
                     return Ok(());
                 }
                 let msg = drop_group_credentials(0)

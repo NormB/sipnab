@@ -488,12 +488,12 @@ jobs:
 
       # The packages the suite ran with when it ran in `check`, so every
       # test sees the same machine: yanglint for the YANG tests, cmake for
-      # libopus, tmux for the PTY tests' probes.
+      # libopus, tmux for the PTY tests' probes, groff for the man page.
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         uses: ./.github/actions/system-deps
         with:
-          packages: libpcap-dev libasound2-dev libyang2-tools tmux cmake
+          packages: libpcap-dev libasound2-dev libyang2-tools tmux cmake groff-base
 
       - id: toolchain
         uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
@@ -517,6 +517,13 @@ jobs:
           key: cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
+
+      # Every platform's crates, after the cache restore. A build downloads
+      # only its own platform's, and release_pipeline_gate_test runs
+      # `cargo tree --offline --target all`: on main b8700e3f2 a cold macOS
+      # cache failed it. scripts/check-suite-fetch.py holds this step.
+      - name: Fetch every platform's crates
+        run: cargo fetch --locked
 
       # The tools `check` installs before the suite ran there: the pinned
       # rustfmt, Go, Node.js and tshark.
@@ -563,8 +570,19 @@ jobs:
         # binary, so `test-results` counts the shards' outputs together by
         # the rule it applied to one unsharded run, and the exit status is
         # non-zero if any test failed.
+        #
+        # SIPNAB_REQUIRE_PREREQS names the prerequisites these runners have, so
+        # a test that needs one fails here instead of skipping when it goes
+        # missing (src/test_prereq.rs). parallel-tests.py prints how many tests
+        # skipped on a prerequisite that is not named.
         run: |
           set -o pipefail
+          case "$RUNNER_OS" in
+            Linux) SIPNAB_REQUIRE_PREREQS=sudo,non-root,seccomp,landlock,lsm-list,dev-full,proc-maps,separate-shm,ca-bundle,capture-refused,no-new-privs-off,non-loopback-address,editcap,tshark,node,groff,strings,setpriv,git-checkout,git-dir,release-history ;;
+            macOS) SIPNAB_REQUIRE_PREREQS=sudo,non-root,ca-bundle,non-loopback-address,git-checkout,git-dir,release-history ;;
+            *) SIPNAB_REQUIRE_PREREQS= ;;
+          esac
+          export SIPNAB_REQUIRE_PREREQS
           mkdir -p "$RUNNER_TEMP/test-shard"
           python3 scripts/parallel-tests.py --shard-index ${{ strategy.job-index }} --shard-count ${{ strategy.job-total }} \
             --manifest "$RUNNER_TEMP/test-shard/shard.json" -- --all-features 2>&1 \
@@ -605,8 +623,11 @@ jobs:
   # the_macos_leg_blocks_main_and_no_pull_request in
   # tests/site_journey_test.rs and tests/support/macos_suite.rs hold it.
   test-macos:
-    # Not yet measured in shards; the whole suite took 22.3 to 38.2 min in
-    # one job on the four main runs before the split.
+    # The whole suite took 22.3 to 38.2 min in one job on the four main runs
+    # before the split. In two shards with the Linux unit weight, shard 1
+    # took 17.8 to 23.8 min and shard 2 13.8 to 15.9 on six main runs
+    # (43957731312 to 44024489366); scripts/parallel-tests.py now weighs the
+    # unit tests on macOS from those runs' phases (MACOS-SHARD-BALANCE).
     timeout-minutes: 45
     name: Test (${{ matrix.os }}, shard ${{ matrix.shard }})
     runs-on: ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-24.04-arm' || 'macos-26' }}
@@ -1246,6 +1267,14 @@ jobs:
       # lint locally.
       # A `suite` combination runs through scripts/parallel-tests.py, under
       # the cargo-nextest version .config/nextest.toml pins.
+      # Every platform's crates first, as in `test`: scripts/check-suite-fetch.py.
+      # A fetch builds nothing; the build directory is set here too so that
+      # no cargo command of this self-hosted job runs without it.
+      - name: Fetch every platform's crates
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
+        run: cargo fetch --locked
+
       - name: Install cargo-nextest
         uses: ./.github/actions/nextest
 

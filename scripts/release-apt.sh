@@ -125,6 +125,69 @@ multiarch_pins() {
 	printf '%s' "$out"
 }
 
+# pins_line <pin>...: prints the pins multiarch_pins computed as one
+# `::notice title=multiarch pins::` line, a line of the job log and an
+# annotation of the job, so a release can quote the versions it installed
+# (RELEASE-APT-PINS-NOT-PRINTED: 0.5.262 applied the pins and no line named
+# them). Refuses (exit 1, one `::error::` line on stderr, nothing on stdout)
+# a word that is not `package:amd64=version` or `package:arm64=version`, and
+# a package that is not pinned exactly once for each architecture at one
+# version. The character classes are spelled out so that no locale widens
+# them.
+pins_line() {
+	if [ "$#" -eq 0 ]; then
+		echo "::error::pins_line: no pin named" >&2
+		return 1
+	fi
+	local word pkg arch ver i found
+	local -a names=() amd=() arm=()
+	local lower='abcdefghijklmnopqrstuvwxyz0123456789'
+	local re="^([${lower}][${lower}.+-]+):(amd64|arm64)=([0123456789][${lower}ABCDEFGHIJKLMNOPQRSTUVWXYZ.+~:-]*)\$"
+	for word in "$@"; do
+		if ! [[ "$word" =~ $re ]]; then
+			echo "::error::pins_line: '$word' is not a pin of the form package:amd64=version or package:arm64=version" >&2
+			return 1
+		fi
+		pkg="${BASH_REMATCH[1]}"
+		arch="${BASH_REMATCH[2]}"
+		ver="${BASH_REMATCH[3]}"
+		found=""
+		for i in "${!names[@]}"; do
+			if [ "${names[$i]}" = "$pkg" ]; then
+				found="$i"
+				break
+			fi
+		done
+		if [ -z "$found" ]; then
+			found="${#names[@]}"
+			names+=("$pkg")
+			amd+=("")
+			arm+=("")
+		fi
+		if [ "$arch" = amd64 ]; then
+			if [ -n "${amd[$found]}" ]; then
+				echo "::error::pins_line: $pkg is pinned more than once for amd64" >&2
+				return 1
+			fi
+			amd[found]="$ver"
+		else
+			if [ -n "${arm[$found]}" ]; then
+				echo "::error::pins_line: $pkg is pinned more than once for arm64" >&2
+				return 1
+			fi
+			arm[found]="$ver"
+		fi
+	done
+	# Each entry holds at least one version, so a missing one differs too.
+	for i in "${!names[@]}"; do
+		if [ "${amd[$i]}" != "${arm[$i]}" ]; then
+			echo "::error::pins_line: ${names[$i]} is not pinned at one version for both architectures (amd64: ${amd[$i]:-none}, arm64: ${arm[$i]:-none}); Multi-Arch: same needs one" >&2
+			return 1
+		fi
+	done
+	printf '::notice title=multiarch pins::%s\n' "$*"
+}
+
 # apt_bounded <seconds> <apt args...>: apt-get, bounded and retried, with
 # apt's own lines in the job log and, on failure, the one line that says
 # which kind of failure it was; exits the shell with 1 on failure.

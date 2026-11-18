@@ -304,6 +304,38 @@ pub fn stderr_log_color() -> bool {
     )
 }
 
+/// The one tracing subscriber that writes sipnab's log lines to stderr, for
+/// the run and for its scanner-kill worker process, which shares the run's
+/// stderr.
+///
+/// `log_internal_errors(false)` is the reason this is one function. When a
+/// log line cannot be written, tracing-subscriber's `fmt()` builder reports
+/// that by default with `eprintln!` to the same stderr, and `eprintln!`
+/// panics when its own write fails: a stderr pipe whose reader has gone
+/// (`2>&1 | head`) or a full disk turned the first log line after that into
+/// a crash. The line is lost either way. tests/closed_stderr_test.rs refuses
+/// any tracing fmt builder in `src/` that does not set it.
+///
+/// # Arguments
+///
+/// * `filter` — which events reach stderr.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn stderr_log_subscriber(
+    filter: tracing_subscriber::EnvFilter,
+) -> impl tracing::Subscriber + Send + Sync + 'static {
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        // Color only on a terminal with NO_COLOR unset. The subscriber's own
+        // default reads NO_COLOR alone, so journald, `docker logs` and a pipe
+        // stored the escape sequences.
+        .with_ansi(stderr_log_color())
+        .log_internal_errors(false)
+        .with_target(true)
+        .compact()
+        .finish()
+}
+
 /// Whether a `NO_COLOR` value asks for no color: set and not empty
 /// (<https://no-color.org>). `NO_COLOR=` is the same as unset.
 ///

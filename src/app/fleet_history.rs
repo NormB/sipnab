@@ -9407,7 +9407,8 @@ mod layout_tests {
         let listed = history.list(CLASS_CALLS, &query);
         let all = history.list(CLASS_CALLS, &Query::all());
         std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700))?;
-        if can_read_anyway {
+        // Root reads a mode-0000 directory, so the case cannot be built as root.
+        if !crate::test_prereq::not_root(can_read_anyway) {
             return Ok(());
         }
         assert!(

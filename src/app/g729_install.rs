@@ -1531,7 +1531,7 @@ mod tests {
         /// Failure: a TMPDIR this process cannot write in names itself.
         #[test]
         fn an_unwritable_tmpdir_is_named() -> Result<(), TestError> {
-            if crate::privilege::is_root() {
+            if !crate::test_prereq::not_root(crate::privilege::is_root()) {
                 // Root writes in a mode-0500 directory; the root case is
                 // tests/g729_install_drop_test.rs.
                 return Ok(());
@@ -1553,7 +1553,7 @@ mod tests {
         /// command gives.
         #[test]
         fn an_unwritable_tmpdir_as_the_drop_user_is_the_drop_refusal() -> Result<(), TestError> {
-            if crate::privilege::is_root() {
+            if !crate::test_prereq::not_root(crate::privilege::is_root()) {
                 return Ok(());
             }
             let root = read_only_dir()?;
@@ -2156,7 +2156,7 @@ mod tests {
         /// Failure: the child cannot write in TMPDIR: the drop refusal.
         #[test]
         fn the_child_refuses_an_unwritable_tmpdir() -> Result<(), TestError> {
-            if crate::privilege::is_root() {
+            if !crate::test_prereq::not_root(crate::privilege::is_root()) {
                 return Ok(());
             }
             let work = read_only_dir()?;

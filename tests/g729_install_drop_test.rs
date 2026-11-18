@@ -17,8 +17,9 @@
 
 #[path = "support/root_run.rs"]
 mod root_run;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 
-use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -126,19 +127,33 @@ fn me() -> Result<String, TestError> {
     Ok(name)
 }
 
-/// Whether passwordless sudo works here.
-fn sudo_available() -> bool {
-    root_run::sudo()
-        .and_then(|mut sudo| sudo.arg("true").stdout(Stdio::null()).status())
-        .is_ok_and(|s| s.success())
+/// Whether the running test may use passwordless sudo, decided by
+/// `src/test_prereq.rs`: missing, the test is skipped with a counted notice,
+/// or fails where `SIPNAB_REQUIRE_PREREQS` names `sudo` (CI).
+fn sudo_or_skip() -> bool {
+    test_prereq::present(
+        "sudo",
+        test_prereq::Need::Optional(root_run::SUDO_REASON),
+        root_run::sudo_probe(),
+    )
 }
 
-/// Say on stderr that `test` did not run, and why.
-fn skipped(test: &str) {
-    let _ = writeln!(
-        std::io::stderr(),
-        "NOTICE: `{test}` did NOT run: no passwordless sudo here."
-    );
+/// Whether the running test runs unprivileged, as a case root cannot build
+/// needs, decided by `src/test_prereq.rs`.
+fn not_root_or_skip() -> bool {
+    let probe = if root_run_is_root() {
+        Err("this test process runs as root".to_owned())
+    } else {
+        Ok(())
+    };
+    test_prereq::present(
+        "non-root",
+        test_prereq::Need::Optional(
+            "root writes into a directory it cannot write, so the case cannot be built as root; \
+             CI runs the suite as an ordinary user.",
+        ),
+        probe,
+    )
 }
 
 /// Run `cmd`, in a process group of its own, for at most [`RUN_LIMIT`].
@@ -196,8 +211,7 @@ fn text(bytes: &[u8]) -> String {
 /// it cannot read the CA file root could read, and nothing is installed.
 #[test]
 fn a_root_install_downloads_as_the_named_user() -> Result<(), TestError> {
-    if !sudo_available() {
-        skipped("a_root_install_downloads_as_the_named_user");
+    if !sudo_or_skip() {
         return Ok(());
     }
     let scene = Scene::new()?;
@@ -235,8 +249,7 @@ fn a_root_install_downloads_as_the_named_user() -> Result<(), TestError> {
 /// command, offering the sudo user who can.
 #[test]
 fn a_root_install_refuses_a_tmpdir_nobody_cannot_write() -> Result<(), TestError> {
-    if !sudo_available() {
-        skipped("a_root_install_refuses_a_tmpdir_nobody_cannot_write");
+    if !sudo_or_skip() {
         return Ok(());
     }
     let scene = Scene::new()?;
@@ -262,8 +275,7 @@ fn a_root_install_refuses_a_tmpdir_nobody_cannot_write() -> Result<(), TestError
 /// Success: `--no-priv-drop` downloads as root, as before, and says so.
 #[test]
 fn no_priv_drop_downloads_as_root_with_a_warning() -> Result<(), TestError> {
-    if !sudo_available() {
-        skipped("no_priv_drop_downloads_as_root_with_a_warning");
+    if !sudo_or_skip() {
         return Ok(());
     }
     let scene = Scene::new()?;
@@ -290,8 +302,7 @@ fn no_priv_drop_downloads_as_root_with_a_warning() -> Result<(), TestError> {
 /// Failure: the hidden child command refuses to start as root.
 #[test]
 fn the_child_command_refuses_root() -> Result<(), TestError> {
-    if !sudo_available() {
-        skipped("the_child_command_refuses_root");
+    if !sudo_or_skip() {
         return Ok(());
     }
     let scene = Scene::new()?;
@@ -339,7 +350,7 @@ fn the_child_command_sends_nothing_when_it_fails() -> Result<(), TestError> {
 /// words of every dropping command, before the download.
 #[test]
 fn the_child_command_refuses_an_unwritable_tmpdir() -> Result<(), TestError> {
-    if root_run_is_root() {
+    if !not_root_or_skip() {
         return Ok(());
     }
     let scene = Scene::new()?;

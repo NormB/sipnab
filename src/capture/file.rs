@@ -2065,11 +2065,11 @@ mod tests {
     fn reads_gzip_compressed_pcap() -> Result<(), TestError> {
         use std::io::Write;
 
-        let sample = sample_pcap();
-        if !sample.exists() {
-            stderr_line!("Skipping: sample not found at {}", sample.display());
-            return Ok(());
-        }
+        // A tracked sample: its absence is a defect of the checkout.
+        let sample = crate::test_prereq::required(
+            "tracked-file",
+            crate::test_prereq::path_exists(&sample_pcap()),
+        )?;
         let baseline = count_packets(&sample)?;
         assert!(baseline > 0, "sample should contain packets");
 
@@ -2503,12 +2503,11 @@ mod tests {
     /// the file it was read from.
     #[test]
     fn read_fixture_pcap() -> Result<(), TestError> {
-        let path = fixture_path();
-        if !path.exists() {
-            // Skip if fixture not yet generated
-            stderr_line!("Skipping: fixture not found at {}", path.display());
-            return Ok(());
-        }
+        // A tracked fixture: its absence is a defect of the checkout.
+        let path = crate::test_prereq::required(
+            "tracked-file",
+            crate::test_prereq::path_exists(&fixture_path()),
+        )?;
 
         let (tx, rx) = packet_channel(TEST_CAP);
         let config = CaptureConfig::default();
@@ -2839,12 +2838,15 @@ mod tests {
     /// wrong origin for the whole of the second file.
     #[test]
     fn each_file_of_a_set_stamps_its_own_source() -> Result<(), TestError> {
-        let a = sample("register-invite-reinvite-bye.pcap");
-        let b = sample("sip-rtp-g711.pcap");
-        if !a.exists() || !b.exists() {
-            stderr_line!("Skipping: samples not found");
-            return Ok(());
-        }
+        // Tracked samples: their absence is a defect of the checkout.
+        let a = crate::test_prereq::required(
+            "tracked-file",
+            crate::test_prereq::path_exists(&sample("register-invite-reinvite-bye.pcap")),
+        )?;
+        let b = crate::test_prereq::required(
+            "tracked-file",
+            crate::test_prereq::path_exists(&sample("sip-rtp-g711.pcap")),
+        )?;
 
         let (tx, rx) = packet_channel(4096);
         capture_files(&[a.clone(), b.clone()], &CaptureConfig::default(), tx, None)

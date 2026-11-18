@@ -9251,6 +9251,7 @@ mod tests {
     fn the_capture_host_does_not_survive_in_prose() -> Result<(), TestError> {
         let node = crate::provenance::node_name();
         if node.is_empty() {
+            // not a prerequisite: node_name falls back to `unknown`; an empty name has no prose to find
             return Ok(());
         }
         let json = redacted_container()?;

@@ -1080,7 +1080,18 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/sanitizers_paths_test.rs.
     // 898 -> 899 (goldens without trycmd, +1): testing.md's CLI golden row
     // links tests/support/golden_cases.rs.
-    const EXPECTED_CODE_LINKS: usize = 899;
+    // 899 -> 904 (fetch before the suite, +5): build-ci-release.md's "Every
+    // platform's crates before the suite" links tests/release_pipeline_gate_test.rs,
+    // scripts/check-suite-fetch.py, scripts/tests/test_check_suite_fetch.py,
+    // scripts/parallel-tests.py and scripts/check-feature-matrix.py.
+    // 904 -> 907 (binary size on pull requests, +3): operator-guide-notes.md's
+    // "The published binary size ceiling" links scripts/check-binary-size.sh
+    // and .github/workflows/binary-size.yml, and build-ci-release.md's
+    // workflow table row for binary-size.yml links scripts/check-binary-size.sh.
+    // 907 -> 910 (VACUOUS-PREREQ-SKIPS, +3): build-ci-release.md's "Tests
+    // that need something from the host" links src/test_prereq.rs,
+    // scripts/parallel-tests.py and tests/prereq_skip_gate_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 910;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1943,7 +1954,7 @@ fn every_site_operator_page_is_in_the_docs_nav_list() -> Result<(), TestError> {
 /// half until `scorecard.yml` became the ninth.
 #[test]
 fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
-    const WORDS: [&str; 21] = [
+    const WORDS: [&str; 22] = [
         "zero",
         "one",
         "two",
@@ -1965,6 +1976,7 @@ fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
         "eighteen",
         "nineteen",
         "twenty",
+        "twenty-one",
     ];
     let dir = repo().join(".github/workflows");
     let mut names: Vec<String> = std::fs::read_dir(&dir)?

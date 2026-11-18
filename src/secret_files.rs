@@ -811,8 +811,9 @@ mod tests {
     #[test]
     fn an_unreadable_credential_reports_why_with_its_setting() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
-        if crate::privilege::current_uid() == 0 {
-            return Ok(()); // root reads a 0000 file; the case cannot arise.
+        // Root reads a 0000 file; the case cannot arise.
+        if !crate::test_prereq::not_root(crate::privilege::current_uid() == 0) {
+            return Ok(());
         }
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("locked.auth");

@@ -10,6 +10,37 @@ entry that carries them.
 
 ## [Unreleased]
 
+Not released. Test-only changes since 0.5.264 (a test whose prerequisite is missing now fails, or skips with a notice the suite run counts, through one helper, and CI requires the prerequisites its runners have); nothing a user of the released artifacts can see.
+
+## [0.5.264] - 2026-11-18
+
+### Fixed
+
+- **`--autostop filesize` stops a run that also uses `--split`.**
+  - Was: With a `--split` size below the limit, the run never stopped and wrote its whole input.
+  - Effect: The limit counts all split files together, the files `--split-keep` deleted included.
+  - Docs: [Command-line reference](docs/cli-reference.md)
+- **A call read from a vCon is not reported `no_media` beside a pcap's RTP.**
+  - Was: `-I call.vcon.json -I other.pcap` flagged the vCon's answered call, and `--analyze` ranked it critical.
+  - Effect: A vCon holds no packets, so the run's RTP from other inputs is not judged against its call.
+  - Docs: [Filter DSL](docs/filter-dsl.md)
+- **A message both the wire and a HEP feed delivered counts once.**
+  - Was: A run reading both sources counted each message twice, the second copy as a retransmission.
+  - Effect: `msg_count` and retransmissions count each message once; the new `seen_by` field counts per source.
+  - Limit: Copies merge only when their bytes are identical and they arrive within 2 seconds.
+  - Docs: [Messages two sources delivered](docs/output-formats.md#messages-two-sources-delivered-seen_by)
+
+## [0.5.263] - 2026-11-17
+
+### Fixed
+
+- **`--kill-scanner` and `-K` keep answering scanners when stderr can no longer be written.**
+  - Was: A run whose stderr lost its reader (`2>&1 | head`) or hit a full disk stopped answering scanners, with no visible warning.
+  - Effect: The scanner-kill worker drops a log line it cannot write, and keeps answering for the whole run.
+  - Docs: [The run stops answering scanners when stderr goes away](docs/troubleshooting.md#the-run-stops-answering-scanners-when-stderr-goes-away).
+
+## [0.5.262] - 2026-11-17
+
 ### Security
 
 - **The VEX document lists chrono's unmaintained advisory as not affecting sipnab.**

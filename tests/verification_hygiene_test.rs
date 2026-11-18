@@ -58,6 +58,9 @@
 
 #![cfg(feature = "full")]
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -146,7 +149,14 @@ fn repo() -> PathBuf {
 
 /// The local backlog, or `None` where this clone has none.
 fn backlog_text() -> Option<String> {
-    std::fs::read_to_string(repo().join(BACKLOG)).ok()
+    test_prereq::decide(
+        "local-backlog",
+        test_prereq::Need::Optional(
+            "the backlog is a private file that is never committed, so only the owner's \
+             checkouts have it.",
+        ),
+        std::fs::read_to_string(repo().join(BACKLOG)).map_err(|e| format!("{BACKLOG}: {e}")),
+    )
 }
 
 /// A byte range of `text`, widened to the nearest character boundaries.

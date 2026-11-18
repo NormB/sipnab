@@ -4984,14 +4984,14 @@ impl BatchRunner {
             return true;
         }
 
-        // Check --autostop filesize
-        if let Some(max_bytes) = self.policy.autostop_filesize_bytes
-            && let Some(ref w) = self.writer
-            && w.bytes_written() >= max_bytes
-        {
+        // Check --autostop filesize, against what the run wrote to EVERY file
+        // (FILE-1).
+        let written = self.writer.as_ref().map(PcapWriter::run_bytes_written);
+        if filesize_autostop_reached(self.policy.autostop_filesize_bytes, written) {
             tracing::info!(
                 "Autostop: filesize limit reached ({} MiB)",
-                max_bytes / crate::capture::writer::BYTES_PER_MIB
+                self.policy.autostop_filesize_bytes.unwrap_or_default()
+                    / crate::capture::writer::BYTES_PER_MIB
             );
             return true;
         }
@@ -5389,6 +5389,21 @@ enum LimitStop {
 /// drains for at most `HEP_STREAM_DRAIN_BUDGET` (1 s) after its own deadline,
 /// and its deadline comes first, because its clock started first.
 const DURATION_FINISH_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether `--autostop filesize` has been reached.
+///
+/// # Arguments
+///
+/// * `limit` — the limit in bytes, `None` without `--autostop filesize`.
+/// * `written` — the bytes the run wrote to all its `-O` files together
+///   ([`PcapWriter::run_bytes_written`]), `None` without `-O`.
+///
+/// # Returns
+///
+/// `true` once `written` reaches `limit`; `false` when either is absent.
+fn filesize_autostop_reached(limit: Option<u64>, written: Option<u64>) -> bool {
+    matches!((limit, written), (Some(limit), Some(written)) if written >= limit)
+}
 
 /// The receive loop's next step after `--duration` was reached at or before
 /// `now`: go on reading until [`DURATION_FINISH_GRACE`] after the first time
@@ -21856,7 +21871,11 @@ mod redaction_map_tests {
     /// The child half of the test below: run under a file-size limit with
     /// SIGXFSZ ignored, so a write past the limit fails with EFBIG part way
     /// through the table, as a full disk would.
+    ///
+    /// `#[ignore]`d: run on its own it has nothing to do and would report a
+    /// pass; only the parent runs it, with `--ignored`.
     #[test]
+    #[ignore = "child role: run by a_write_that_fails_part_way_leaves_no_map"]
     fn redaction_map_fsize_child() -> Result<(), TestError> {
         let Some(dir) = std::env::var_os(CHILD_DIR) else {
             return Ok(());
@@ -21888,6 +21907,7 @@ mod redaction_map_tests {
             .args([
                 "--exact",
                 "app::batch::redaction_map_tests::redaction_map_fsize_child",
+                "--ignored",
                 "--nocapture",
             ])
             .env(CHILD_DIR, dir.path())
@@ -21924,6 +21944,62 @@ mod redaction_map_tests {
 }
 
 /// CAP-2: a `--duration` stop finishes the input the source already queued.
+/// FILE-1: the `--autostop filesize` comparison.
+#[cfg(test)]
+mod filesize_autostop_tests {
+    use super::filesize_autostop_reached as reached;
+
+    /// Below the limit: go on.
+    #[test]
+    fn below_the_limit_goes_on() {
+        assert!(!reached(Some(100), Some(99)), "99 of 100 bytes goes on");
+    }
+
+    /// At the limit exactly: stop.
+    #[test]
+    fn at_the_limit_stops() {
+        assert!(reached(Some(100), Some(100)), "100 of 100 bytes stops");
+    }
+
+    /// Past the limit: stop.
+    #[test]
+    fn past_the_limit_stops() {
+        assert!(reached(Some(100), Some(5000)), "5000 of 100 bytes stops");
+    }
+
+    /// No limit set: never stop, however much was written.
+    #[test]
+    fn no_limit_never_stops() {
+        assert!(!reached(None, Some(u64::MAX)), "no limit, no stop");
+    }
+
+    /// No `-O`: nothing to measure, no stop.
+    #[test]
+    fn no_output_never_stops() {
+        assert!(!reached(Some(1), None), "no writer, no stop");
+    }
+
+    /// Neither: no stop.
+    #[test]
+    fn neither_never_stops() {
+        assert!(!reached(None, None), "neither set");
+    }
+
+    /// The smallest limit, before and after the first byte.
+    #[test]
+    fn a_one_byte_limit_stops_at_the_first_byte() {
+        assert!(!reached(Some(1), Some(0)), "0 bytes goes on");
+        assert!(reached(Some(1), Some(1)), "1 byte stops");
+    }
+
+    /// The largest values compare without overflow.
+    #[test]
+    fn the_largest_values_compare() {
+        assert!(reached(Some(u64::MAX), Some(u64::MAX)), "equal at the top");
+        assert!(!reached(Some(u64::MAX), Some(u64::MAX - 1)), "one short");
+    }
+}
+
 #[cfg(test)]
 mod duration_finish_tests {
     use super::*;

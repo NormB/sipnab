@@ -26,6 +26,8 @@
 //! new target, a new variant, or a changed `case` arm is covered the day it
 //! lands.
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "../src/test_scratch.rs"]
 mod test_scratch;
 
@@ -956,12 +958,23 @@ const REAL_WITHOUT_NETMAP: &[u8] =
 /// reads it. Returns whether it passed and what it printed. `None` when this
 /// host has no `strings`, which the step itself needs.
 fn backend_record(target: &str, parts: &[&[u8]]) -> Result<Option<(bool, String)>, TestError> {
-    if std::process::Command::new("strings")
+    let probe = match std::process::Command::new("strings")
         .arg("--version")
         .output()
-        .is_err()
     {
-        eprintln!("SKIPPED: no `strings` on this host; the release runner has binutils");
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("`strings` did not start: {e}")),
+    };
+    if test_prereq::check(
+        "strings",
+        test_prereq::Need::Optional(
+            "`strings` ships with binutils, which a non-Linux host may lack; \
+             the release runner and CI's Linux runners have it.",
+        ),
+        probe,
+    )?
+    .is_none()
+    {
         return Ok(None);
     }
     let script = step_script(
@@ -1225,41 +1238,182 @@ fn the_musl_size_ceiling_is_unchanged_and_covers_musl_alone() -> Result<(), Test
     Ok(())
 }
 
-/// A package cargo resolves for a feature list, by name, from `cargo tree`.
+/// `cargo tree --offline --locked --target all --prefix none <args>`, its
+/// standard output.
 ///
-/// `--offline --locked` reads Cargo.lock and the local registry index and
-/// reaches no network. `--target all` so that a dependency of any platform
-/// counts.
-fn resolved_packages(features: &str) -> Result<BTreeSet<String>, TestError> {
+/// `--offline --locked` reads Cargo.lock and the local registry and reaches no
+/// network. `--target all` so that a dependency of any platform counts, which
+/// needs every platform's crates in the local registry: a build downloads only
+/// its own platform's. CI runs `cargo fetch --locked` before the suite
+/// (scripts/check-suite-fetch.py holds that); on a cold registry elsewhere
+/// the failure says to run it ([`tree_failure_message`]).
+fn offline_tree(args: &[&str]) -> Result<String, TestError> {
     let out = std::process::Command::new(env!("CARGO"))
         .args([
             "tree",
             "--offline",
             "--locked",
-            "--edges",
-            "normal,build",
             "--target",
             "all",
             "--prefix",
             "none",
-            "--no-default-features",
-            "--features",
-            features,
         ])
+        .args(args)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()?;
     if !out.status.success() {
-        return Err(format!(
-            "cargo tree --features {features} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        )
-        .into());
+        return Err(
+            tree_failure_message(&args.join(" "), &String::from_utf8_lossy(&out.stderr)).into(),
+        );
     }
-    Ok(String::from_utf8(out.stdout)?
-        .lines()
-        .filter_map(|l| l.split_whitespace().next())
-        .map(str::to_string)
-        .collect())
+    Ok(String::from_utf8(out.stdout)?)
+}
+
+/// What cargo prints when `--offline` keeps it from downloading a crate.
+const OFFLINE_REFUSAL: &str = "--offline was specified";
+
+/// The error for a failed `cargo tree <what>`: cargo's own text, and, when
+/// cargo could not download a crate offline, what to run.
+fn tree_failure_message(what: &str, stderr: &str) -> String {
+    let mut msg = format!("cargo tree {what} failed: {stderr}");
+    if stderr.contains(OFFLINE_REFUSAL) {
+        msg.push_str(
+            "\nThe local cargo registry lacks a crate of another platform. Run \
+             `cargo fetch --locked` (no `--target`, so every platform's crates \
+             are downloaded), then run the test again.",
+        );
+    }
+    msg
+}
+
+/// A package cargo resolves for a feature list, by name, from `cargo tree`.
+fn resolved_packages(features: &str) -> Result<BTreeSet<String>, TestError> {
+    Ok(offline_tree(&[
+        "--edges",
+        "normal,build",
+        "--no-default-features",
+        "--features",
+        features,
+    ])?
+    .lines()
+    .filter_map(|l| l.split_whitespace().next())
+    .map(str::to_string)
+    .collect())
+}
+
+/// cargo's stderr from macOS shard 2 of CI run 44155082565, attempt 2.
+const COLD_ALSA: &str = "error: failed to download `alsa v0.11.0`\n\nCaused by:\n  \
+                         attempting to make an HTTP request, but --offline was specified\n";
+/// The same run's other failure, with the color escapes the log held.
+const COLD_ANDROID: &str = "\u{1b}\u{1b}error\u{1b}: failed to download `android_system_properties \
+                            v0.1.5`\n\nCaused by:\n  attempting to make an HTTP request, but \
+                            --offline was specified\n";
+const HINT: &str = "cargo fetch --locked";
+
+#[test]
+fn success_a_cold_registry_failure_says_to_fetch() {
+    let msg = tree_failure_message("--package sipnab-audio", COLD_ALSA);
+    assert!(msg.contains(HINT), "the message names the fix: {msg}");
+}
+
+#[test]
+fn success_a_colored_cold_registry_failure_says_to_fetch() {
+    let msg = tree_failure_message("--features native", COLD_ANDROID);
+    assert!(
+        msg.contains(HINT),
+        "escapes in cargo's text do not hide the cause: {msg}"
+    );
+}
+
+#[test]
+fn success_the_hint_keeps_cargos_own_text() {
+    let msg = tree_failure_message("--package sipnab-audio", COLD_ALSA);
+    assert!(
+        msg.contains("failed to download `alsa v0.11.0`"),
+        "cargo's text stays: {msg}"
+    );
+}
+
+#[test]
+fn success_the_message_names_the_command() {
+    let msg = tree_failure_message("--package sipnab-audio", COLD_ALSA);
+    assert!(
+        msg.starts_with("cargo tree --package sipnab-audio failed"),
+        "the command: {msg}"
+    );
+}
+
+#[test]
+fn success_the_hint_says_not_to_narrow_the_fetch() {
+    let msg = tree_failure_message("--package sipnab-audio", COLD_ALSA);
+    assert!(
+        msg.contains("no `--target`"),
+        "a narrowed fetch would not help: {msg}"
+    );
+}
+
+#[test]
+fn failure_a_stale_lock_gets_no_fetch_hint() {
+    let err = "error: the lock file Cargo.lock needs to be updated but --locked was passed to prevent this\n";
+    let msg = tree_failure_message("--features native", err);
+    assert!(
+        !msg.contains(HINT),
+        "fetching does not fix a stale lock: {msg}"
+    );
+}
+
+#[test]
+fn failure_an_unknown_feature_gets_no_fetch_hint() {
+    let err = "error: none of the selected packages contains these features: nosuch\n";
+    let msg = tree_failure_message("--features nosuch", err);
+    assert!(
+        !msg.contains(HINT),
+        "fetching does not fix a feature name: {msg}"
+    );
+}
+
+#[test]
+fn failure_a_network_error_gets_no_fetch_hint() {
+    let err = "error: failed to download `alsa v0.11.0`\n\nCaused by:\n  [6] Couldn't resolve host name\n";
+    let msg = tree_failure_message("--package sipnab-audio", err);
+    assert!(
+        !msg.contains(HINT),
+        "only the offline refusal names the fetch: {msg}"
+    );
+}
+
+#[test]
+fn failure_other_errors_keep_cargos_text() {
+    let err = "error: none of the selected packages contains these features: nosuch\n";
+    let msg = tree_failure_message("--features nosuch", err);
+    assert!(msg.contains(err), "cargo's text stays: {msg}");
+}
+
+#[test]
+fn edge_an_empty_stderr_names_the_command_and_no_hint() {
+    let msg = tree_failure_message("--package sipnab-audio", "");
+    assert_eq!(
+        msg, "cargo tree --package sipnab-audio failed: ",
+        "nothing invented"
+    );
+}
+
+#[test]
+fn edge_offline_mentioned_without_the_refusal_gets_no_hint() {
+    let err =
+        "warning: --offline is set, using the cached index\nerror: no matching package named `x`\n";
+    let msg = tree_failure_message("--package x", err);
+    assert!(
+        !msg.contains(HINT),
+        "only cargo's refusal text counts: {msg}"
+    );
+}
+
+#[test]
+fn edge_two_offline_refusals_give_one_hint() {
+    let both = format!("{COLD_ALSA}{COLD_ANDROID}");
+    let msg = tree_failure_message("--features native", &both);
+    assert_eq!(msg.matches(HINT).count(), 1, "the hint once: {msg}");
 }
 
 /// The sound packages: a binary that resolves one of them links, or loads,
@@ -1343,28 +1497,7 @@ fn the_gnu_noaudio_feature_list_resolves_no_sound_package() -> Result<(), TestEr
 /// prints.
 #[test]
 fn the_sound_package_names_match_what_the_playback_plugin_resolves() -> Result<(), TestError> {
-    let out = std::process::Command::new(env!("CARGO"))
-        .args([
-            "tree",
-            "--offline",
-            "--locked",
-            "--edges",
-            "normal",
-            "--target",
-            "all",
-            "--prefix",
-            "none",
-            "--package",
-            "sipnab-audio",
-        ])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()?;
-    assert!(
-        out.status.success(),
-        "cargo tree --package sipnab-audio failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let text = String::from_utf8(out.stdout)?;
+    let text = offline_tree(&["--edges", "normal", "--package", "sipnab-audio"])?;
     let names: BTreeSet<&str> = text
         .lines()
         .filter_map(|l| l.split_whitespace().next())

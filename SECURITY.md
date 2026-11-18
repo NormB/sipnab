@@ -154,6 +154,9 @@ OpenVEX form.
 - [`deny.toml`](deny.toml) and [`osv-scanner.toml`](osv-scanner.toml)
   configure the same exceptions with the same reasons.
 - A test holds all three to one list.
+- Each statement names the affected package by its package URL. A second
+  test fails when no tracked lock file holds that package, because the
+  exception then matches nothing.
 
 ## Verifying a release
 

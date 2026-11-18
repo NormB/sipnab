@@ -29,6 +29,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 type TestError = Box<dyn std::error::Error>;
 
 fn repo() -> &'static Path {
@@ -114,8 +117,17 @@ fn site_js() -> Vec<PathBuf> {
 #[test]
 fn the_sites_javascript_parses() -> Result<(), TestError> {
     let files = site_js();
-    if Command::new("node").arg("--version").output().is_err() {
-        eprintln!("node not available — skipping the JavaScript parse check");
+    let probe = match Command::new("node").arg("--version").output() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("`node --version` did not start: {e}")),
+    };
+    if !test_prereq::present(
+        "node",
+        test_prereq::Need::Optional(
+            "Node.js is needed only for the site's JavaScript; CI's Linux runners install it.",
+        ),
+        probe,
+    ) {
         return Ok(());
     }
     let mut broken = Vec::new();
@@ -174,6 +186,7 @@ fn the_full_workflow_set_is_accounted_for() -> Result<(), TestError> {
     // original mistake was made in the first place.
     const KNOWN: &[&str] = &[
         "bench.yml",
+        "binary-size.yml",
         "ci.yml",
         "cert-expiry.yml",
         "clusterfuzzlite.yml",

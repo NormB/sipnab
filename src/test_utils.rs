@@ -393,6 +393,9 @@ pub fn capture_logs(level: tracing::Level, f: impl FnOnce()) -> String {
         .with_max_level(level)
         .with_ansi(false)
         .with_writer(buf.clone())
+        // The rule for every fmt builder in src (tests/closed_stderr_test.rs):
+        // a line it cannot write is dropped, never reported with eprintln!.
+        .log_internal_errors(false)
         .finish();
     tracing::subscriber::with_default(subscriber, || {
         tracing::callsite::rebuild_interest_cache();

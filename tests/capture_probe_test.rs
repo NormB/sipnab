@@ -74,6 +74,7 @@ fn the_probe_agrees_with_what_the_binary_actually_does() -> Result<(), TestError
             "a real attempt neither opened nor was refused, so the probe must \
              say it cannot tell, not {answer:?}.\nstderr:\n{stderr}"
         );
+        // not a prerequisite: the ambiguous outcome was asserted just above
         return Ok(());
     }
 

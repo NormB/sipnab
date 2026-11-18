@@ -188,6 +188,7 @@ fn a_path_sipnab_is_visible_and_overridable() -> Result<(), TestError> {
     let found = sipnab_on_path();
 
     if found.is_empty() {
+        // not a prerequisite: with no `sipnab` on PATH there is no binary to shadow the tree's
         println!("no `sipnab` on PATH; tree builds {tree}");
         return Ok(());
     }

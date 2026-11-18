@@ -54,7 +54,11 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     // src panic 19 -> 20: the probe in src/app/fleet_center.rs's test that a
     // fleet center whose start panics in its own thread exits 2. The panic
     // is the input under test, not error handling.
-    ("src", 5, 3, 20),
+    // src panic 20 -> 21: `test_prereq::decide` (src/test_prereq.rs, compiled
+    // for tests only), the one place a missing prerequisite fails a test that
+    // has no error to return (an `if` guard, a helper returning `Option`).
+    // Every such failure routes through it instead of a panic per test file.
+    ("src", 5, 3, 21),
     // tests panic 2 -> 5: the three probes in tests/temp_path_isolation_test.rs
     // that a test directory is removed when its test body panics (TEMP-PATH-
     // GATE-ACCEPTS-PID). The panic is the input under test, not error handling.

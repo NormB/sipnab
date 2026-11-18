@@ -21,6 +21,27 @@
 
 use std::process::{Command, Stdio};
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
+/// Whether the capture on `lo` was refused, as the cases about the refusal's
+/// wording need, decided by `src/test_prereq.rs`: a process that may capture
+/// has no refusal to read.
+fn refused_or_skip(stderr: &str) -> bool {
+    test_prereq::present(
+        "capture-refused",
+        test_prereq::Need::Optional(
+            "a host that lets this process capture on lo has no refusal to read; \
+             CI's runners refuse it.",
+        ),
+        if stderr.contains(REFUSED) {
+            Ok(())
+        } else {
+            Err(format!("the capture on lo was not refused: {stderr}"))
+        },
+    )
+}
+
 /// The error a test returns.
 type TestError = Box<dyn std::error::Error>;
 
@@ -68,13 +89,23 @@ fn capture_lo(prefix: &[&str]) -> Result<String, TestError> {
 /// must not blame NoNewPrivs.
 #[test]
 fn a_refusal_started_without_no_new_privs_does_not_blame_it() -> Result<(), TestError> {
-    if own_no_new_privs()? != "0" {
-        eprintln!("this test process already runs under NoNewPrivs; nothing to drive");
+    let nnp = own_no_new_privs()?;
+    if !test_prereq::present(
+        "no-new-privs-off",
+        test_prereq::Need::Optional(
+            "a test process started under NoNewPrivs cannot show a run started without it; \
+             CI's runners start it without.",
+        ),
+        if nnp == "0" {
+            Ok(())
+        } else {
+            Err(format!("this test process runs with NoNewPrivs {nnp}"))
+        },
+    ) {
         return Ok(());
     }
     let stderr = capture_lo(&[])?;
-    if !stderr.contains(REFUSED) {
-        eprintln!("the capture on lo was not refused here; nothing to read:\n{stderr}");
+    if !refused_or_skip(&stderr) {
         return Ok(());
     }
     assert!(
@@ -88,13 +119,19 @@ fn a_refusal_started_without_no_new_privs_does_not_blame_it() -> Result<(), Test
 /// `NoNewPrivileges=yes` does), a refused capture names it.
 #[test]
 fn a_refusal_started_under_no_new_privs_names_it() -> Result<(), TestError> {
-    if !std::path::Path::new("/usr/bin/setpriv").exists() {
-        eprintln!("no /usr/bin/setpriv on this host; nothing to drive");
+    if test_prereq::check(
+        "setpriv",
+        test_prereq::Need::Optional(
+            "setpriv ships with util-linux on Linux only; CI's Linux runners have it.",
+        ),
+        test_prereq::path_exists(std::path::Path::new("/usr/bin/setpriv")),
+    )?
+    .is_none()
+    {
         return Ok(());
     }
     let stderr = capture_lo(&["/usr/bin/setpriv", "--no-new-privs"])?;
-    if !stderr.contains(REFUSED) {
-        eprintln!("the capture on lo was not refused here; nothing to read:\n{stderr}");
+    if !refused_or_skip(&stderr) {
         return Ok(());
     }
     assert!(stderr.contains(NNP), "{stderr}");

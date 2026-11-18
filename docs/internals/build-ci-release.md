@@ -79,7 +79,7 @@ So a green `--features full` says nothing about whether `--features tls` alone
 compiles.
 That is exactly why CI has a feature matrix.
 
-## The twenty workflows
+## The twenty-one workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -101,6 +101,7 @@ That is exactly why CI has a feature matrix.
 | `pr-closed.yml` | PR closed or merged | Ends the `CI` run of a closed pull request. `ci.yml` groups a pull request's runs as `ci-CI-<number>`; this workflow enters that group with `cancel-in-progress`, so GitHub cancels the run still in progress. Before it, a closed pull request's run went on to its end and held the self-hosted runners other pull requests waited for. It checks out nothing, calls no action and asks for no permission. A merge also sends `closed`; GitHub creates the run and marks its job skipped (`merged == false`), since a merged pull request's run is already over. GitHub's documentation has not stated whether a skipped job's run still enters the group; the group names only the pull request's number, so it is never main's group `ci-CI-refs/heads/main`. Limit: GitHub runs no `pull_request` workflow for a pull request with a merge conflict, so closing such a pull request leaves its run going. [`scripts/tests/test_ci_cancel_on_close.py`](../../scripts/tests/test_ci_cancel_on_close.py) holds the two group names together. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](../../bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
+| `binary-size.yml` | weekly cron (Fridays 05:17 UTC), manual, and PRs touching the manifests, the lockfile, the build scripts or the ceiling | Builds the x86_64 musl release binary the way `release.yml` does, splits its symbols, and fails when it exceeds `binary_size_ceiling_mb`, through [`scripts/check-binary-size.sh`](../../scripts/check-binary-size.sh), the script `release.yml`'s size step runs. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
 | `rerun-not-acquired.yml` | when a `CI` or `Release` run completes without success; manual, which prints the decision for one run and re-runs nothing | Re-runs the failed jobs of a run in which every job that did not succeed has the conclusion `skipped` or never started, because no hosted runner took it. See [A job no runner took](#a-job-no-runner-took). |
 
@@ -504,7 +505,11 @@ The `test` job runs the Linux suite on two runners at once.
     A split of the run alone would save little.
 - [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) `--shard-index I --shard-count N` is the one rule for what each shard runs.
   - It asks `cargo metadata` for the package's integration-test targets.
-  - `partition` puts the library and binary unit tests and the doctests in shard 0, weighed as `UNIT_WEIGHT` test binaries.
+  - `partition` puts the library and binary unit tests and the doctests in shard 0, weighed as test binaries: `UNIT_WEIGHTS` for the platform `platform.system()` names, 40 on Linux.
+  - On macOS the weight is `measured_unit_weight` over `MACOS_SHARD_RECORDS`, the phases of six main runs read from their job logs: 198 binaries.
+    In those runs shard 1's `test` build, which compiles the library's unit-test binary, took 6m29s to 9m45s and shard 2's 2m32s to 4m07s, while their nextest phases were about equal.
+    The rule takes a target's cost from the shard without the unit tests and the unit tests' cost from the remainder of the shard with them.
+    To measure again, add the new runs' records and run `python3 -m pytest scripts/tests/test_parallel_tests_macos_weight.py`.
   - It gives each target, in name order, to the shard with the least weight so far.
   - The shard runs `cargo nextest run --profile suite --all-features` with one `--test NAME` for each target it holds, and shard 0 adds `--lib --bins` and a `cargo test --doc` run.
   - The `suite` profile in [`.config/nextest.toml`](../../.config/nextest.toml) stops any one test after three 60-second periods.
@@ -568,6 +573,11 @@ The workflow's one job holds `actions: write` and no other permission.
 GitHub runs the workflow file of the default branch for a `workflow_run` event, and the checkout names no ref.
 The script that runs is the one on `main`, also when the completed run belongs to a pull request.
 
+The release train reads a canceled check through the same rule, `rerun_coming` in the script.
+A job the script re-runs counts as pending, not failed, while its run is in progress and for 600 seconds after the run completed.
+The 0.5.262 and 0.5.263 trains stopped at `ci-failed` on such a job, and a person restarted each one.
+The script's `WORKFLOWS` names the watched workflows, and a test holds it equal to the workflow file's `workflows:` list.
+
 **See what the script answers for one run.**
 Start the workflow by hand with the run's number.
 This prints the decision and re-runs nothing:
@@ -593,6 +603,34 @@ A run there whose one job did not start means the completed run concluded `succe
 No run there means the completed run belongs to another workflow.
 
 [`scripts/tests/test_rerun_not_acquired.py`](../../scripts/tests/test_rerun_not_acquired.py) tests the decision against two answers captured from GitHub's API, in [`tests/fixtures/rerun_not_acquired`](../../tests/fixtures/rerun_not_acquired), and against answers built in the same shape.
+
+### Every platform's crates before the suite
+
+**Every job that runs the suite runs `cargo fetch --locked` first.**
+
+- [`tests/release_pipeline_gate_test.rs`](../../tests/release_pipeline_gate_test.rs) runs `cargo tree --offline --locked --target all`.
+  That reads the crates of every platform from the local cargo registry.
+- A build downloads only the crates of the platform it builds for.
+  With a warm cargo cache the registry held the others, so the test passed.
+- On main b8700e3f2 (2026-11-17) the release's new `Cargo.lock` missed the macOS cargo cache.
+  macOS shard 2 then failed with `failed to download alsa v0.11.0` and `--offline was specified`.
+- `cargo fetch --locked` with no `--target` downloads every platform's crates, so the test holds on a cold cache too.
+  It runs after the cache restore, because a restore can replace the registry.
+
+[`scripts/check-suite-fetch.py`](../../scripts/check-suite-fetch.py) holds the rule for every workflow:
+
+- A step runs the suite when it runs [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) (not `merge`), `cargo llvm-cov` (not `report`) or [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py).
+- Its job needs a `cargo fetch --locked` step before the first such step, and after any `actions/cache` restore of `~/.cargo/registry` before it.
+- [`scripts/tests/test_check_suite_fetch.py`](../../scripts/tests/test_check_suite_fetch.py) runs it on every workflow of the repository.
+
+**On your own machine.** The same test fails on a registry that has only your platform's crates.
+Its message then ends with the fix:
+
+```sh
+cargo fetch --locked
+```
+
+Run it once (it needs the network), then run the test again.
 
 ### Dependabot bumps fail on a generated file, not on an API break
 
@@ -1449,6 +1487,24 @@ Two things keep it honest.
 - On a non-Linux host it prints `NOT CHECKED` instead of running.
   There, your ordinary `cargo clippy` already is the non-Linux build.
 
+### Tests that need something from the host
+
+Some tests need something the host may lack: `sudo` without a password, Landlock, `editcap`, `/dev/full`.
+One helper, [`src/test_prereq.rs`](../../src/test_prereq.rs), decides what such a test does when that prerequisite is missing.
+
+- A required prerequisite that is missing fails the test and names it.
+- An optional one that is missing skips the test.
+  The skip writes a `NOTICE` line to stderr and one line to the file `SIPNAB_PREREQ_SKIP_LEDGER` names.
+- `SIPNAB_REQUIRE_PREREQS` lists optional prerequisites that this run requires, comma-separated; `all` names every one.
+  CI's `Test` step sets it to what its runners have, one list for Linux and one for macOS.
+- [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) points the ledger at a file in a temporary directory it removes afterward, and prints the count at the end of the run:
+  `parallel-tests: 3 tests skipped on a missing prerequisite (sudo 2, landlock 1)`.
+  nextest's `suite` profile prints nothing of a passing test, so this line is where a skip shows.
+- [`tests/prereq_skip_gate_test.rs`](../../tests/prereq_skip_gate_test.rs) refuses an early `return Ok(())` or `return;` in a test that the helper did not decide.
+  A return that is no skip (a child role, a state with nothing to check) carries `// not a prerequisite: <reason>`.
+
+To see which tests your host skips, run the suite and read that line, or run one test binary with `SIPNAB_REQUIRE_PREREQS=all`: every skip then fails and names its prerequisite.
+
 ### The corpus gate
 
 The corpus gate differs from the eight hard
@@ -1732,6 +1788,11 @@ in the release commit itself.
   It sets `Cargo.toml` to the same version.
   From then on the flag reads `x.y.z`.
 - Tagging the commit changes nothing, because the tag's history gives the same `x.y.z`.
+- Pull requests that land before the tag reaches GitHub put a new `[Unreleased]` above `[x.y.z]`.
+  - Until the tag exists, the commit that added `## [x.y.z]` to `CHANGELOG.md` stands in for it.
+  - A flag that commit declares reads `x.y.z`; a flag added later reads `Unreleased`.
+  - Reading only the first heading made every flag of the release read `Unreleased` on every pull
+    request until the tag reached GitHub (2026-10-27, `0.5.231`).
 - So run `python3 scripts/flag-since.py --write` in the release commit,
   after the rename and the version bump.
 - If you forget, `the_since_column_is_what_tagged_history_says` in
@@ -2245,7 +2306,9 @@ The container's package installs go through [`scripts/release-apt.sh`](../../scr
 - `multiarch_pins` installs `linux-libc-dev`, `libc6` and `libc6-dev` for amd64 and arm64 at the newest version both architectures' indexes carry.
   These packages are `Multi-Arch: same`, so both architectures must hold one version.
   Release run 43881101798 (v0.5.260) failed both aarch64 builds when `bookworm-security` carried `linux-libc-dev` 6.1.192-2 for arm64 and only 6.1.192-1 for amd64.
-- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds both.
+- `pins_line` prints those pins on one `multiarch pins` notice line, the line before the install, so a release record can quote the versions each aarch64 build installed.
+  It refuses a word that is not `package:amd64=version` or `package:arm64=version`, and a package not pinned once for each architecture at one version.
+- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds all three.
 
 Every gnu binary then passes a `readelf -V` gate.
 
@@ -2526,6 +2589,9 @@ To close it by hand:
 
 - `no-pr`: GitHub lists no pull request for the branch `release/<version>`, or GitHub closed it without merging.
 - `ci-failed: <names>`: fix the checks, push, and run the train again.
+- `awaits a re-run: <names>`: no hosted runner took those jobs, and `rerun-not-acquired.yml` runs them again when their run completes.
+  The train keeps waiting and keeps the release window closed.
+  When the re-run has not started 600 seconds after the run completed, the train stops at `ci-failed`: re-run the jobs by hand, then run the train again.
 - After an exit of 3 or 4 the train does not run the post checks again. To retry them, add `--retry-post`.
 - `the local tag v<version> is on <sha>, not the merge commit <sha>`: delete the stale local tag, then run the train again.
 - `this checkout is at <sha>, not the merge commit <sha>, and it has uncommitted changes`: commit the changes or set them aside, run the printed `git checkout --detach` command, then run the train again.

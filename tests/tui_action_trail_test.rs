@@ -22,6 +22,8 @@
 // scope so the `#[path]` resolves against `tests/`.
 #[path = "support/tui_fixtures.rs"]
 mod fixtures;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -488,7 +490,7 @@ fn no_record_is_written_when_no_trail_is_attached() -> Result<(), TestError> {
 /// the evidence in order to protect the record of it.
 #[test]
 fn a_refused_write_does_not_stop_the_session_and_says_so_loudly() -> Result<(), TestError> {
-    if !Path::new("/dev/full").exists() {
+    if test_prereq::check("dev-full", test_prereq::DEV_FULL, test_prereq::dev_full())?.is_none() {
         return Ok(());
     }
     let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
@@ -535,7 +537,7 @@ fn a_refused_write_does_not_stop_the_session_and_says_so_loudly() -> Result<(), 
 /// — which is silently dropping records, the one option the entry ruled out.
 #[test]
 fn a_refused_write_still_consumes_its_sequence_number() -> Result<(), TestError> {
-    if !Path::new("/dev/full").exists() {
+    if test_prereq::check("dev-full", test_prereq::DEV_FULL, test_prereq::dev_full())?.is_none() {
         return Ok(());
     }
     // The mechanism, asserted on the sink itself: a write that failed must

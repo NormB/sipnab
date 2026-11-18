@@ -2090,7 +2090,7 @@ mod tests {
         std::fs::set_permissions(&paths[1], std::fs::Permissions::from_mode(0o000))
             .map_err(|e| format!("chmod: {e:?}"))?;
         // Root opens a 0000 file; the skip is what an ordinary user sees.
-        if std::fs::File::open(&paths[1]).is_ok() {
+        if !crate::test_prereq::not_root(std::fs::File::open(&paths[1]).is_ok()) {
             return Ok(());
         }
         let set = named_set(&[spec(root.path())], true)?
