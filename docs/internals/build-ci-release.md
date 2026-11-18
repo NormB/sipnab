@@ -572,6 +572,11 @@ The workflow's one job holds `actions: write` and no other permission.
 GitHub runs the workflow file of the default branch for a `workflow_run` event, and the checkout names no ref.
 The script that runs is the one on `main`, also when the completed run belongs to a pull request.
 
+The release train reads a canceled check through the same rule, `rerun_coming` in the script.
+A job the script re-runs counts as pending, not failed, while its run is in progress and for 600 seconds after the run completed.
+The 0.5.262 and 0.5.263 trains stopped at `ci-failed` on such a job, and a person restarted each one.
+The script's `WORKFLOWS` names the watched workflows, and a test holds it equal to the workflow file's `workflows:` list.
+
 **See what the script answers for one run.**
 Start the workflow by hand with the run's number.
 This prints the decision and re-runs nothing:
@@ -2560,6 +2565,9 @@ To close it by hand:
 
 - `no-pr`: GitHub lists no pull request for the branch `release/<version>`, or GitHub closed it without merging.
 - `ci-failed: <names>`: fix the checks, push, and run the train again.
+- `awaits a re-run: <names>`: no hosted runner took those jobs, and `rerun-not-acquired.yml` runs them again when their run completes.
+  The train keeps waiting and keeps the release window closed.
+  When the re-run has not started 600 seconds after the run completed, the train stops at `ci-failed`: re-run the jobs by hand, then run the train again.
 - After an exit of 3 or 4 the train does not run the post checks again. To retry them, add `--retry-post`.
 - `the local tag v<version> is on <sha>, not the merge commit <sha>`: delete the stale local tag, then run the train again.
 - `this checkout is at <sha>, not the merge commit <sha>, and it has uncommitted changes`: commit the changes or set them aside, run the printed `git checkout --detach` command, then run the train again.
