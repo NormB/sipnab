@@ -82,7 +82,7 @@ const LANDINGS: &[Landing] = &[
     ),
     (
         "@/docs/mcp-tools.md",
-        "79 MCP tools",
+        "80 MCP tools",
         &["tool", "lint", "evidence", "correlat"],
     ),
     // Trust.

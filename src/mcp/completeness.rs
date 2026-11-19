@@ -115,6 +115,7 @@ const COMPLETE_KEY: &str = "complete";
 ///   of the file root, likewise.
 /// - `list_captures` lists files on disk, and `vcon_spool_status` counts
 ///   the files in the vCon export spool.
+/// - `list_named_filters` lists the `[filters]` table from the config file.
 /// - `server_capabilities` describes the binary, and `fleet_inventory` the
 ///   process.
 ///
@@ -142,6 +143,10 @@ pub const SOURCE_INDEPENDENT_TOOLS: &[&str] = &[
     // capture has been read says nothing about what another system holds.
     "fetch_vcon",
     "list_captures",
+    // The `[filters]` table the run resolved at startup, from the config
+    // file. It reads no capture store, and `GET /v1/filters` returns the same
+    // answer from the same builder; a stamp here would make the two differ.
+    "list_named_filters",
     // Answers from the RELAY, not from the capture store. Stamping it with how
     // much of the capture has been read would attach a fact about sipnab's
     // reading to a statement made by another process.

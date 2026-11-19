@@ -420,7 +420,7 @@ it does these things:
 It does for this surface what <https://sipnab.com/api-reference/> does for the
 [REST API](rest-api.md).
 
-sipnab registers 79 MCP tools. That is more than anyone reads in a table. The
+sipnab registers 80 MCP tools. That is more than anyone reads in a table. The
 Tools tab is the fastest way to find the one you want.
 
 The MCP project maintains Inspector, not sipnab. When a tool
@@ -616,7 +616,7 @@ true
 
 The test suite runs this check on each build: it sends the three messages of
 the fence above to the binary and reads the same two fields. On Ubuntu 24.04
-(Linux 6.8, aarch64) the full build answered `sipnab` and listed 79 tools,
+(Linux 6.8, aarch64) the full build answered `sipnab` and listed 80 tools,
 `triage_call` among them. The suite reads the answers in Rust, not with `jq`.
 
 ## When something does not work

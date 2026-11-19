@@ -177,6 +177,17 @@ const WITHOUT_IDENTITY: &[(&str, &str)] = &[
          build can do, not what the capture holds",
     ),
     (
+        "/v1/filters",
+        "the MCP `list_named_filters` tool is source-independent and answers \
+         the same document: the [filters] table read from the config file at \
+         startup, not what the capture holds",
+    ),
+    (
+        "/v1/filters/validate",
+        "compiles the expression the caller sent and reads no store: whether \
+         it parses does not depend on what the capture holds",
+    ),
+    (
         "/v1/captures/compare",
         "the MCP `compare_captures` tool is source-independent: it reads two \
          files off the file root, not the loaded capture",
@@ -276,8 +287,11 @@ const WITHOUT_IDENTITY: &[(&str, &str)] = &[
 /// The MCP counterparts [`WITHOUT_IDENTITY`] cites as carrying no identity,
 /// with arguments that make each answer.
 #[cfg(feature = "hep")]
-const COUNTERPARTS_WITHOUT: &[(&str, &str)] =
-    &[("hep_senders", r#"{}"#), ("fleet_inventory", r#"{}"#)];
+const COUNTERPARTS_WITHOUT: &[(&str, &str)] = &[
+    ("hep_senders", r#"{}"#),
+    ("fleet_inventory", r#"{}"#),
+    ("list_named_filters", r#"{}"#),
+];
 
 /// Every GET path the published document declares, as the router serves it.
 fn documented_gets() -> Result<BTreeSet<String>, TestError> {

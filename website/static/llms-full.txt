@@ -7918,12 +7918,13 @@ List all tracked SIP dialogs with optional filtering and pagination.
 | `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Canceled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
 | `from`    | string | --      | Filter by From user (regex pattern). sipnab ignores a pattern that is not a valid regular expression: the page is the one you get without `from`. Check the `total` against a run without it |
 | `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == INVITE` or `rtp.loss > 2.0`, or a [named alias](filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value may be bare or quoted, so `method == 'INVITE'` is the same filter. URL-encode it. A value that is neither is a `400` naming the position, never an unfiltered page. ANDed with `state` and `from` |
+| `named`   | string | --      | The name of one [`[filters]` entry](filter-dsl.md#named-filters) or named alias, in place of `filter`: `named=sales` selects what `filter=@sales` selects, with or without a leading `@`. [`GET /v1/filters`](#get-v1filters) lists the entries. `filter` and `named` together are a `400`, and so is a name nothing defines; its detail lists the defined names |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
 | `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
 | `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
 
-`state`, `from`, `filter`, `after` and `before` combine with AND. `total`
+`state`, `from`, `filter` (or `named`), `after` and `before` combine with AND. `total`
 counts the dialogs that pass all of them, before `offset` and `limit` page them.
 
 **curl:**
@@ -11329,6 +11330,8 @@ answered over the store rather than the model.
 - `filter` (optional) — a DSL expression or named alias narrowing which
   dialogs the count includes, what `/v1/dialogs?filter=` accepts. A value that
   is neither is a `400`.
+- `named` (optional) — the name of a `[filters]` entry or named alias, in
+  place of `filter`, what `/v1/dialogs?named=` accepts.
 - `top_n` (optional) — keep the largest N buckets. The rest fold into
   `other_count`.
 
@@ -11583,6 +11586,8 @@ the MCP `group_dialogs` tool computes.
 - `filter` (optional) — a DSL expression or named alias narrowing which
   dialogs the route groups, what `/v1/dialogs?filter=` accepts. A value that is
   neither is a `400`.
+- `named` (optional) — the name of a `[filters]` entry or named alias, in
+  place of `filter`, what `/v1/dialogs?named=` accepts.
 - `top_n` (optional) — keep the largest N groups by dialog count. The rest fold
   into `other_count`. Clamped to the server's row cap.
 
@@ -11657,6 +11662,8 @@ dialed number's leading digits).
 - `filter` (optional) — a DSL expression or named alias narrowing which
   dialogs count, what `/v1/dialogs?filter=` accepts. A value that is neither is
   a `400`.
+- `named` (optional) — the name of a `[filters]` entry or named alias, in
+  place of `filter`, what `/v1/dialogs?named=` accepts.
 - `limit` (optional) — the most rows to return, clamped to the server's row cap.
 - `prefix_digits` (optional) — leading digits that make one `prefix` bucket
   (default 4). Zero is a `400`. Ignored for every other `by`.
@@ -11706,6 +11713,194 @@ A `ua` key is a banner a stranger typed. It comes back verbatim. So a program
 that renders it treats it as untrusted text.
 
 ---
+
+### GET /v1/filters
+
+The [named filters](filter-dsl.md#named-filters) this run started with: each
+`[filters]` entry's name and its definition as the config file writes it.
+The `named` parameter of `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates`
+and `/v1/talkers` takes one of these names, and a `filter` expression refers
+to one as `@name`. The route takes no parameters and reads no dialog.
+
+sipnab resolves the table once, when it starts, so the answer does not change
+while the server runs. An empty `filters` list means the config defines none.
+The MCP tool [`list_named_filters`](mcp-tools-signaling.md#list_named_filters)
+returns the same answer.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/filters | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "filters": [
+    {
+      "name": "lab-failed",
+      "definition": "@lab-net AND state == 'Failed'"
+    },
+    {
+      "name": "lab-net",
+      "definition": "src.ip in_subnet '192.0.2.0/24'"
+    }
+  ]
+}
+```
+
+### GET /v1/filters/validate
+
+Compiles a filter expression the way every `filter` parameter compiles one,
+with the same aliases, `@name` references and thresholds, and says whether it
+compiled. It reads no dialog.
+
+| Parameter | Meaning |
+|-----------|---------|
+| `expr` | The expression, percent-encoded. Required: without it the route answers `400` |
+
+An expression that does not compile is still a `200`:
+
+- `valid` is `false`.
+- `error` holds the parser's message, the text a `filter` parameter's `400`
+  carries after `filter: `.
+- `position` is where the parser stopped: the 0-based character column in
+  the expression with its leading and trailing whitespace removed, the
+  number `error` prints after `at position`.
+
+`position` is `null` when the expression compiled, when the parser names no
+place (an empty expression, an undefined `@name`, a depth or size limit), and
+when the error is inside the expansion of an alias or an `@name`, whose
+columns are not columns of the text you sent. The MCP tool
+[`validate_filter`](mcp-tools-signaling.md#validate_filter) reports the same
+`position`.
+
+**curl:**
+
+```bash
+curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/filters/validate \
+  --data-urlencode "expr=state == Failed AND response_code = 486" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "expr": "state == Failed AND response_code = 486",
+  "valid": false,
+  "error": "unexpected input at position 34: '='\n  state == Failed AND response_code = 486\n                                    ^\nvalid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
+  "position": 34
+}
+```
+
+### Select dialogs with a named filter
+
+Write a filter once in the config file and use it by name from a REST client
+or an MCP agent, instead of sending the whole expression with every request.
+
+**Prerequisites.**
+
+- sipnab: a build with the `api` feature, which the release packages carry,
+  started with `--api` and a key, and a config file with a
+  [`[filters]`](config-reference.md#filters) table. sipnab reads the table
+  when it starts; a change to the file takes effect at the next start.
+- Nothing changes on any other system.
+
+This example's `sipnab.toml`:
+
+```toml
+[filters]
+lab-net    = "src.ip in_subnet '192.0.2.0/24'"
+lab-failed = "@lab-net AND state == 'Failed'"
+```
+
+**Steps.**
+
+1. Start sipnab with the config file. This example reads
+   [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap):
+
+   ```bash
+   sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config sipnab.toml --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY" --no-cli-print --quiet
+   ```
+
+2. In a second shell, list the names, then select dialogs by one of them:
+
+   ```bash
+   # Run all of these, in order.
+   curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/filters | jq -c '[.filters[].name]'
+   curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dialogs?named=lab-failed" | jq -c '{total, ids: [.dialogs[].call_id]}'
+   ```
+
+**Verify.** The list names both entries, and `named=lab-failed` selects the
+two failed calls from `192.0.2.0/24`:
+
+```text
+["lab-failed","lab-net"]
+{"total":2,"ids":["busy-3a2b1c@192.0.2.30","unavail-4e5f60@192.0.2.50"]}
+```
+
+`filter=%40lab-failed` (the expression `@lab-failed`) selects the same two
+dialogs. The same `named` parameter works on `/v1/aggregate`,
+`/v1/dialogs/rates` and `/v1/talkers`.
+
+**Troubleshoot.**
+
+- **`400` with `named: '@lab-busy' is not a defined filter`.** The config
+  defines no entry of that name. The detail lists the names it does define:
+
+  ```text
+  named: '@lab-busy' is not a defined filter. Defined in [filters]: lab-failed, lab-net. Built-in aliases: problems, slow-setup, short-calls, one-way, nat-issues, codec-asym, ptime-asym, payload-asym, duration-asym, late-media
+  ```
+
+- **`400` with `` `filter` and `named` are alternatives ``.** The request
+  gave both. Give one, or write the name into the expression:
+  `filter=@lab-failed AND response_code == 486`.
+- **`GET /v1/filters` lists nothing.** The run did not read the file: check
+  the `--config` path, and that the table's heading reads `[filters]`.
+- **sipnab does not start, naming a `[filters]` entry.** The table has a bad
+  name, a reference to an undefined name, a loop or an expression that does
+  not parse. [`[filters]`](config-reference.md#filters) lists what sipnab
+  refuses.
+
+### Check a filter expression before using it
+
+Find out whether an expression compiles, and where it stops when it does not,
+before using it on `/v1/dialogs` or in a dashboard.
+
+**Prerequisites.** The ones for
+[Select dialogs with a named filter](#select-dialogs-with-a-named-filter). Only
+an expression that uses `@name` needs a `[filters]` table.
+
+**Steps.** Send the expression with `curl -G --data-urlencode`, which encodes
+its spaces, quotes and `=` signs:
+
+```bash
+# Run all of these, in order.
+curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/filters/validate --data-urlencode "expr=@lab-failed AND response_code == 486" | jq -c '{valid, position}'
+curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/filters/validate --data-urlencode "expr=state == Failed AND response_code = 486" | jq -c '{valid, position}'
+```
+
+**Verify.** The first expression compiles. The second stops at column 34,
+the single `=`:
+
+```text
+{"valid":true,"position":null}
+{"valid":false,"position":34}
+```
+
+**Troubleshoot.**
+
+- **`400` with `expr: give the expression to validate`.** The request has no
+  `expr` parameter.
+- **`valid: false` and `position: null`.** The parser names no column: the
+  expression is empty, it uses an `@name` nothing defines, it is past the
+  depth or size limit, or the error is inside an alias or `@name` expansion.
+  `error` says which.
+- **The position differs from a byte offset.** It counts characters, not
+  bytes, from 0, in the expression without its leading whitespace.
 
 ### GET /v1/endpoints
 
@@ -13223,7 +13418,7 @@ it does these things:
 It does for this surface what <https://sipnab.com/api-reference/> does for the
 [REST API](rest-api.md).
 
-sipnab registers 79 MCP tools. That is more than anyone reads in a table. The
+sipnab registers 80 MCP tools. That is more than anyone reads in a table. The
 Tools tab is the fastest way to find the one you want.
 
 The MCP project maintains Inspector, not sipnab. When a tool
@@ -13419,7 +13614,7 @@ true
 
 The test suite runs this check on each build: it sends the three messages of
 the fence above to the binary and reads the same two fields. On Ubuntu 24.04
-(Linux 6.8, aarch64) the full build answered `sipnab` and listed 79 tools,
+(Linux 6.8, aarch64) the full build answered `sipnab` and listed 80 tools,
 `triage_call` among them. The suite reads the answers in Rust, not with `jq`.
 
 ## When something does not work
@@ -33376,6 +33571,11 @@ sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'I
 - sipnab refuses a filter given at run time that names something undefined.
   - This applies on the command line or through REST or MCP.
   - sipnab lists the defined names.
+- REST and MCP list the table and take a name on its own:
+  [`GET /v1/filters`](rest-api.md#get-v1filters) and the MCP tool
+  [`list_named_filters`](mcp-tools-signaling.md#list_named_filters) list it,
+  and a `named` parameter selects one entry in place of `filter`. See
+  [Select dialogs with a named filter](rest-api.md#select-dialogs-with-a-named-filter).
 
 For example, with this `sipnab.toml`:
 
@@ -44530,7 +44730,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | Bundle | Tools | What its tools answer |
 |---|---|---|
 | [`core`](mcp-tools-core.md) | 9 | The smallest set that answers what happened on one call, and whether the fault was in signaling or media, from listing the calls to the bytes that prove it. |
-| [`signaling`](mcp-tools-signaling.md) | 21 | Follow-up questions about SIP signaling: single messages, call flows, SDP negotiation, related call legs, RFC conformance, time windows, and reproducing a call. |
+| [`signaling`](mcp-tools-signaling.md) | 22 | Follow-up questions about SIP signaling: single messages, call flows, SDP negotiation, related call legs, RFC conformance, time windows, and reproducing a call. |
 | [`captures`](mcp-tools-captures.md) | 11 | Capture files in the file root: listing, searching, comparing, opening and exporting them, and the evidence that ties a finding to captured bytes. |
 | [`security`](mcp-tools-security.md) | 6 | Who sent what: scanner and fraud findings, the busiest sources, one endpoint's activity, registration problems, pass/fail expectations, and fail2ban rules. |
 | [`media`](mcp-tools-media.md) | 4 | Where a call's media endpoints came from, why a stream has no dialog, the facts under a quality score, and audio export. |
@@ -44610,17 +44810,17 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,648 | 62,047 |
-| signaling | 21 | 23,524 | 78,739 |
+| core | 9 | 12,959 | 62,358 |
+| signaling | 22 | 24,046 | 80,515 |
 | captures | 11 | 12,723 | 30,259 |
-| security | 6 | 9,954 | 9,954 |
+| security | 6 | 10,046 | 10,046 |
 | media | 4 | 3,480 | 16,122 |
 | relay | 5 | 4,988 | 39,164 |
 | tfps | 7 | 5,717 | 16,267 |
 | server | 6 | 5,976 | 38,359 |
-| vcon | 7 | 10,714 | 34,582 |
+| vcon | 7 | 10,806 | 34,674 |
 | tls | 3 | 2,903 | 5,009 |
-| full | 79 | 92,627 | 330,502 |
+| full | 80 | 93,644 | 332,773 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
@@ -44680,6 +44880,7 @@ links to its section on the bundle's page.
 | [`lint_dialog`](mcp-tools-signaling.md#lint_dialog) | [signaling](mcp-tools-signaling.md) | Conformance findings for one call, declaration against observation included, each with its RFC and section |
 | [`list_captures`](mcp-tools-captures.md#list_captures) | [captures](mcp-tools-captures.md) | Capture files and stored vCon containers in `--mcp-file-root`, with sizes and each one's kind |
 | [`list_dialogs`](mcp-tools-core.md#list_dialogs) | [core](mcp-tools-core.md) | A page of dialog summaries, with the total behind it |
+| [`list_named_filters`](mcp-tools-signaling.md#list_named_filters) | [signaling](mcp-tools-signaling.md) | The operator's named filters from the `[filters]` table, each name with its definition as written |
 | [`list_tls_libraries`](mcp-tools-tls.md#list_tls_libraries) | [tls](mcp-tools-tls.md) | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 | [`media_diagnostics`](mcp-tools-media.md#media_diagnostics) | [media](mcp-tools-media.md) | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
 | [`open_capture`](mcp-tools-captures.md#open_capture) | [captures](mcp-tools-captures.md) | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
@@ -44712,7 +44913,7 @@ links to its section on the bundle's page.
 | [`timeline`](mcp-tools-signaling.md#timeline) | [signaling](mcp-tools-signaling.md) | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
 | [`top_talkers`](mcp-tools-security.md#top_talkers) | [security](mcp-tools-security.md) | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
 | [`triage_call`](mcp-tools-core.md#triage_call) | [core](mcp-tools-core.md) | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
-| [`validate_filter`](mcp-tools-signaling.md#validate_filter) | [signaling](mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
+| [`validate_filter`](mcp-tools-signaling.md#validate_filter) | [signaling](mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message and position when it does not, and how many dialogs it selects — with no rows |
 | [`validate_message`](mcp-tools-signaling.md#validate_message) | [signaling](mcp-tools-signaling.md) | Conformance findings for one message, read alone |
 | [`validate_vcon`](mcp-tools-vcon.md#validate_vcon) | [vcon](mcp-tools-vcon.md) | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
 | [`vcon_directory_report`](mcp-tools-vcon.md#vcon_directory_report) | [vcon](mcp-tools-vcon.md) | Every stored container in a directory of the file root: per container its status, form, schema finding count, calls, dispositions and duration, or why sipnab skipped it, then the totals. The report `-I <dir> --report` prints |
@@ -44939,10 +45140,12 @@ When `source_exhausted` is `false`, `total_matched` counts only what had
 loaded. Repeat the call, or poll `capture_status` until `source_exhausted`
 reads `true`, before treating a count as final.
 
-Twenty-three tools are the exception, because their answer cannot move with
+Twenty-four tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
-- Fourteen read something other than the capture store:
+- Fifteen read something other than the capture store:
+  - `list_named_filters`, which lists the named filters the run read from
+    its config file at startup;
   - `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
     `show_evidence`, `list_captures`, `list_tls_libraries`,
     `server_capabilities`;
@@ -45319,9 +45522,9 @@ the other bundles and finds any tool by name.
 |---|---|---|
 | [`capture_status`](#capture_status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | [`get_capture_report`](#get_capture_report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
-| [`list_dialogs`](#list_dialogs) | `filter?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialog summaries, with the total behind it |
-| [`aggregate_dialogs`](#aggregate_dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
-| [`find_problems`](#find_problems) | `kinds?`, `filter?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialogs matching one or more diagnostic alias names |
+| [`list_dialogs`](#list_dialogs) | `filter?`, `named?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialog summaries, with the total behind it |
+| [`aggregate_dialogs`](#aggregate_dialogs) | `group_by`, `filter?`, `named?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
+| [`find_problems`](#find_problems) | `kinds?`, `filter?`, `named?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialogs matching one or more diagnostic alias names |
 | [`search_messages`](#search_messages) | `query`, `regex?`, `limit?`, `cursor?`, `max_response_bytes?` | A page of the messages that hold a substring or match a regular expression, with the total behind it |
 | [`triage_call`](#triage_call) | `call_id` | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
 | [`get_dialog`](#get_dialog) | `call_id`, `max_messages?`, `cursor?`, `max_response_bytes?` | Paginated dialog with full SIP messages |
@@ -45684,6 +45887,7 @@ Returns one page of dialog summaries from the live capture store.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `filter?` | string? | A diagnostic alias name — `problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` — **or** a raw [filter DSL](filter-dsl.md) expression, which may use a [named filter](filter-dsl.md#named-filters) as `@name`. A value may be bare or quoted: `method == INVITE` and `method == 'INVITE'` are the same filter. Anything else fails with `invalid_params` naming the position it stopped parsing at, or, for an undefined `@name`, listing the names the run defines. | Every dialog in the store matches. |
+| `named?` | string? | The name of one [`[filters]` entry](filter-dsl.md#named-filters) or diagnostic alias, in place of `filter`: `"sales"` selects what `filter: "@sales"` selects, with or without a leading `@`. [`list_named_filters`](mcp-tools-signaling.md#list_named_filters) lists the entries. With `filter` it fails with `conflicting_params`; a name nothing defines fails with `invalid_choice`, the accepted names in `valid_values`. | `filter` decides. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 unless the operator changed it). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor?` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog. |
 | `fields?` | string[]? | Field names to keep on each row, plus `call_id`, which survives whether or not you list it. An unknown name fails with `invalid_params` naming both the typo and the fields a row carries. See [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
@@ -45844,6 +46048,7 @@ fetching pages and counting rows.
 |---|---|---|---|
 | `group_by` | string | One of `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. Anything else fails with `invalid_params` naming the legal set. | Required. |
 | `filter?` | string? | Alias or DSL, applied before grouping. | No filter — the whole store. |
+| `named?` | string? | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](#list_dialogs) takes it. | `filter` decides. |
 | `top_n?` | integer? | Bounded by `--mcp-max-rows`, the same setting that bounds dialog rows. `other_count` counts the groups past it. | The same default as any row limit. |
 
 **Returns** `group_by` (echoed), `buckets` (each `{ value, count }`, largest
@@ -45899,6 +46104,7 @@ the optional `filter`.
 |---|---|---|---|
 | `kinds?` | string[]? | One or more of the ten diagnostic aliases listed under [`list_dialogs`](#list_dialogs), OR-ed together. An unknown name fails with `invalid_params`. An empty array behaves as omitted. | `["problems"]`. |
 | `filter?` | string? | An alias name or a raw [DSL](filter-dsl.md) expression, **ANDed** with the alias match. | The alias match alone decides the page. |
+| `named?` | string? | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](#list_dialogs) takes it. | `filter` decides. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor?` | string? | The previous response's `next_cursor`, verbatim. | Starts at the oldest match. |
 | `fields?` | string[]? | Field names to keep on each row, plus `call_id`. Same rules as [`list_dialogs`](#list_dialogs) — see [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
@@ -46751,9 +46957,10 @@ the other bundles and finds any tool by name.
 | Tool | Parameters | Returns |
 |---|---|---|
 | [`timeline`](#timeline) | `bucket_seconds?` | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
-| [`group_dialogs`](#group_dialogs) | `by`, `metrics?`, `filter?`, `top_n?` | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
-| [`search_by_time`](#search_by_time) | `start`, `end?`, `filter?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) window |
-| [`validate_filter`](#validate_filter) | `expr` | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
+| [`group_dialogs`](#group_dialogs) | `by`, `metrics?`, `filter?`, `named?`, `top_n?` | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
+| [`search_by_time`](#search_by_time) | `start`, `end?`, `filter?`, `named?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) window |
+| [`validate_filter`](#validate_filter) | `expr` | Whether a filter DSL expression parses, the parser's message and position when it does not, and how many dialogs it selects — with no rows |
+| [`list_named_filters`](#list_named_filters) | (none) | The operator's named filters from the `[filters]` table, each name with its definition as written |
 | [`tail_dialogs`](#tail_dialogs) | `cursor?`, `limit?`, `fields?`, `max_response_bytes?` | Cursor-based incremental dialog fetch |
 | [`await_condition`](#await_condition) | `filter`, `timeout_seconds?`, `poll_interval_ms?` | Waits until a filter matches or a deadline passes, whichever is first, so a live capture costs one call instead of a polling loop |
 | [`find_correlated`](#find_correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
@@ -46859,6 +47066,7 @@ rests on.
 | `by` | string | ONE of `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`, `to_domain`, `hour`, `next_hop`. Anything else — including two names in one string, such as `"src.ip,hour"` — fails with `invalid_params` naming all twelve. | Required. |
 | `metrics?` | string[]? | Any of `count`, `asr`, `ner`, `acd`, `pdd_p50`, `pdd_p95`, `mos_p10`, `retransmit_rate`. The tool sorts and de-duplicates the list, so the key order in the answer never depends on the order you wrote. An unknown name fails naming all eight. | All eight. |
 | `filter?` | string? | Alias or DSL, applied before grouping — the same vocabulary [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes. | No filter — the whole store. |
+| `named?` | string? | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes it. | `filter` decides. |
 | `top_n?` | integer? | Bounded by `--mcp-max-rows`, the same knob that bounds dialog rows. Everything past it lands in `other_count` rather than disappearing. | 50, the same default as any row limit. |
 
 The example runs against
@@ -46993,6 +47201,7 @@ Returns dialogs whose first message falls in the window, oldest first.
 | `start` | string | An inclusive RFC 3339 instant, such as `"2026-07-31T14:00:00Z"`. A malformed one fails with `start 'x' is not RFC 3339`. | Required — the call fails. |
 | `end?` | string? | An exclusive RFC 3339 instant after `start`. At or before `start` fails with `invalid_params` (-32602). | Everything from `start` onward. |
 | `filter?` | string? | An alias name or a raw [DSL](filter-dsl.md) expression, ANDed with the window. | The window alone decides the page. |
+| `named?` | string? | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes it. | `filter` decides. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor?` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog in the window. |
 | `fields?` | string[]? | Field names to keep on each row, plus `call_id`. The row here is already narrow, so name one of the four below — see [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
@@ -47079,6 +47288,15 @@ with `invalid_params`. This one answers `valid: false` with the parser's own
 text in `error`, position, caret and hint included. It raises a JSON-RPC
 error only for an internal failure.
 
+`position` is the place the parser stopped as a number: the 0-based
+character column in `expr` with its leading and trailing whitespace removed,
+the number `error` prints after `at position`. It is `null` when the
+expression parsed, when the parser names no place (an empty expression, an
+undefined `@name`, a depth or size limit), and when the error is inside the
+expansion of an alias or an `@name`. [`GET
+/v1/filters/validate`](rest-api.md#get-v1filtersvalidate) reports the same
+`position` over REST.
+
 ```jsonc
 // validate_filter { "expr": "state = Failed" }
 {
@@ -47086,6 +47304,7 @@ error only for an internal failure.
   "expr": "state = Failed",
   "valid": false,
   "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
+  "position": 6,
   "total_matched": null,
   "total_dialogs": 2,
   "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
@@ -47107,6 +47326,7 @@ cursor and no truncation. The example runs against
   "expr": "state == 'Completed' and rtp.mos < 4.5",
   "valid": true,
   "error": null,
+  "position": null,
   "total_matched": 1,
   "total_dialogs": 2,
   "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
@@ -47124,6 +47344,71 @@ Aliases expand here as they do in every other tool, and this tool uses the
 same filter compiler, so `list_dialogs` accepts an expression that validates
 here. The response carries no provenance note, because it contains
 nothing read from the capture.
+
+### `list_named_filters`
+
+Lists the [named filters](filter-dsl.md#named-filters) the operator defined
+in the config file's `[filters]` table: each name and its definition as
+written. It takes no arguments and reads no dialog. The answer is the one
+[`GET /v1/filters`](rest-api.md#get-v1filters) serializes.
+
+Every tool that takes `filter` also takes `named`: the name of one entry, or
+of a diagnostic alias, in place of `filter`. `named: "lab-failed"` selects
+what `filter: "@lab-failed"` selects, and sipnab accepts a leading `@`. The
+tools are [`list_dialogs`](mcp-tools-core.md#list_dialogs),
+[`aggregate_dialogs`](mcp-tools-core.md#aggregate_dialogs),
+[`find_problems`](mcp-tools-core.md#find_problems),
+[`search_by_time`](#search_by_time), [`group_dialogs`](#group_dialogs),
+[`top_talkers`](mcp-tools-security.md#top_talkers) and
+[`export_vcon`](mcp-tools-vcon.md#export_vcon).
+
+**Prerequisites.** A config file with a
+[`[filters]`](config-reference.md#filters) table, passed with `--config` to
+the run that serves MCP. sipnab reads the table when it starts. Nothing
+changes on any other system.
+
+**Steps.** With this `sipnab.toml`:
+
+```toml
+[filters]
+lab-net    = "src.ip in_subnet '192.0.2.0/24'"
+lab-failed = "@lab-net AND state == 'Failed'"
+```
+
+serve MCP over
+[`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap)
+with `sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config
+sipnab.toml --mcp`, then call:
+
+```jsonc
+// list_named_filters {}
+{
+  "schema_version": 1,
+  "filters": [
+    { "name": "lab-failed", "definition": "@lab-net AND state == 'Failed'" },
+    { "name": "lab-net", "definition": "src.ip in_subnet '192.0.2.0/24'" }
+  ]
+}
+```
+
+**Verify.** `list_dialogs { "named": "lab-failed" }` returns the two failed
+calls from `192.0.2.0/24`, `busy-3a2b1c@192.0.2.30` and
+`unavail-4e5f60@192.0.2.50`, the dialogs `filter: "@lab-failed"` returns.
+
+**Troubleshoot.**
+
+- **`invalid_choice` on `named`.** No entry or alias has that name. The
+  message lists the defined names, and `data.valid_values` carries every name
+  `named` accepts, the `[filters]` names first:
+
+  ```json
+  {"param": "named", "reason": "invalid_choice", "valid_values": ["lab-failed", "lab-net", "problems", "slow-setup", "short-calls", "one-way", "nat-issues", "codec-asym", "ptime-asym", "payload-asym", "duration-asym", "late-media"]}
+  ```
+
+- **`conflicting_params`.** The call gave `filter` and `named` together. Give
+  one, or write the name into the expression as `@name`.
+- **An empty `filters` list.** The run read no `[filters]` table: check the
+  `--config` path.
 
 ### `tail_dialogs`
 
@@ -49793,7 +50078,7 @@ the other bundles and finds any tool by name.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`top_talkers`](#top_talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
+| [`top_talkers`](#top_talkers) | `by`, `limit?`, `filter?`, `named?`, `prefix_digits?` | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
 | [`describe_endpoint`](#describe_endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
 | [`diagnose_registration`](#diagnose_registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | [`evaluate_expectations`](#evaluate_expectations) | `rules?`, `rules_toml?`, `suppression_file?` | A pass/fail verdict per rule plus an exit code for a build. A rule whose population is empty fails rather than passing quietly |
@@ -49818,6 +50103,7 @@ credits both ends of a dialog.
 | `by` | string | `ip`, `ua` or `prefix`. Anything else fails with `invalid_params`, `reason: invalid_choice`, and the legal set in `valid_values`. | Required. |
 | `limit?` | integer? | Bounded by `--mcp-max-rows`. | The usual row default. |
 | `filter?` | string? | Alias or DSL, the same vocabulary every other tool takes. | The whole store. |
+| `named?` | string? | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes it. | `filter` decides. |
 | `prefix_digits?` | integer? | How many leading digits make a prefix bucket. `0` fails with `reason: invalid_value`, `param: prefix_digits`. | 4. |
 
 **Returns:**
@@ -52418,7 +52704,7 @@ the other bundles and finds any tool by name.
 | Tool | Parameters | Returns |
 |---|---|---|
 | [`siprec_metadata`](#siprec_metadata) | `call_id` | The SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html)) recording metadata a call carried: session id, mode, participants with AOR and display name, and the recorded streams, each naming its `m=` line label and the participant that sends it |
-| [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
+| [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `named?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
 | [`analyze_vcon`](#analyze_vcon) | `container?`, `container_base64?`, `limit?` (one of the first two) | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
 | [`fetch_vcon`](#fetch_vcon) | `uuid` | **Connects, off by default.** One container from the operator's `[vcon_fetch]` store by uuid, returned inline with the checks it passed. Needs `--mcp-allow-vcon-fetch`; the store and its keys come from operator configuration only |
@@ -52559,23 +52845,26 @@ container inline and is `readOnlyHint: true`.
 |---|---|---|---|
 | `call_id?` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Give `filter` instead. |
 | `filter?` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes. The `--export-vcon-when` flag takes the same vocabulary, aliases included. Every matching dialog comes back. | Give `call_id` instead. |
+| `named?` | string | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes it. With `call_id` it fails with `conflicting_params`. | Give `call_id` or `filter` instead. |
 | `limit?` | integer | 1 to `--mcp-max-rows` (1000 by default). | 50. |
 | `cursor?` | string | The previous response's `next_cursor`, passed back verbatim. It is the `<RFC 3339 created_at>\|<Call-ID>` cursor [`list_dialogs`](mcp-tools-core.md#list_dialogs) uses. A cursor whose time half is not [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) fails with `invalid_params` (-32602). | The first page. |
 | `media?` | string | `inline`: audio the run retained travels inline in a `recording` Dialog Object. `omit`: the exporter considers no audio, and each container records `media: "not-considered"`. sipnab refuses any other value before the tool runs, with an error result that names `inline` and `omit`. | `inline`. |
 
-Give `call_id` or `filter`, never both. The CLI refuses the same pair. Both
-fail with `invalid_params`:
+Give `call_id`, `filter` or `named`: one of the three. The CLI refuses the
+same pair. `call_id` with `filter` fails with `invalid_params`, and
+`call_id` with `named` fails the same way with `named` in place of `filter`:
 
 ```text
 `call_id` and `filter` are alternatives, not a pair: one names a dialog, the
 other names a rule for choosing them. Give one
 ```
 
-Neither fails with `invalid_params` too:
+None of the three fails with `invalid_params` too:
 
 ```text
 give `call_id` for one dialog, or `filter` for every dialog it selects -- for
-example "response_code >= 400"
+example "response_code >= 400" -- or `named` for every dialog a named filter
+selects
 ```
 
 **Export a set in one call.** To export every failed call, pass a `filter`
@@ -54326,8 +54615,8 @@ lines on stdin, the way a client does.
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content. They
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 79 carry MCP annotations, so a host
-  can decide what to call without asking. Sixty-six are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 80 carry MCP annotations, so a host
+  can decide what to call without asking. Sixty-seven are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the thirteen that
   are not.
 
@@ -54781,7 +55070,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions. There,
 
 ## What the write verbs do
 
-Sixty-six of the 79 tools are `readOnlyHint: true`. These thirteen are not.
+Sixty-seven of the 80 tools are `readOnlyHint: true`. These thirteen are not.
 Each declares what kind of change it makes, so a host can decide which need
 confirmation:
 

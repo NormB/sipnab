@@ -5020,9 +5020,13 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // the newest reading of this run's own --relay-stats-interval poll. It
     // sends nothing and changes nothing, so the split moves to 66 read-only
     // of 79 and the thirteen write-capable tools are unchanged.
+    // 79 -> 80 by `list_named_filters` (src/mcp/tools/inspect.rs), which lists
+    // the `[filters]` table the run read at startup. It reads and changes
+    // nothing else, so the split moves to 67 read-only of 80 and the thirteen
+    // write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        79,
+        80,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -6718,7 +6722,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1518 -> 1519 (TUI-FILTER-EXPRESSION, #841): the table of the typed
     // expressions' rebuild times in benches/BASELINES.md's 2026-11-19 entry,
     // which has no site mirror (+1).
-    const EXPECTED_TABLES: usize = 1519;
+    // 1519 -> 1521 (named filters over REST and MCP): the parameter table of
+    // `GET /v1/filters/validate` in docs/rest-api.md, with its site mirror
+    // website/content/docs/api.md (+2).
+    // 1521 -> 1522 (named filters over REST and MCP): the "List the named
+    // filters" capability in docs/design/surface-capability-matrix.md, which
+    // has no site mirror (+1).
+    const EXPECTED_TABLES: usize = 1522;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

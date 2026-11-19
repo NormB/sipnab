@@ -3404,6 +3404,47 @@
         ],
         "type": "object"
       },
+      "FilterValidation": {
+        "description": "Whether a filter expression compiles, and where it stopped when it did\nnot.",
+        "properties": {
+          "error": {
+            "description": "The parser's message when it did not; the text a `filter` parameter's\n`400` carries after `filter: `. Null when it compiled.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expr": {
+            "description": "The expression as submitted, echoed verbatim.",
+            "type": "string"
+          },
+          "position": {
+            "description": "Where the parser stopped: the 0-based character column in the\nexpression with its leading and trailing whitespace removed, the number\n`error` prints after `at position`. Null when it compiled, when the\nparser names no place (an empty expression, an undefined `@name`, a\ndepth or size limit), and when the error is inside the expansion of an\nalias or an `@name`.",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "valid": {
+            "description": "Whether the expression compiled.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_version",
+          "expr",
+          "valid"
+        ],
+        "type": "object"
+      },
       "HepListenerInfo": {
         "description": "The HEP listener's senders, by address only.",
         "properties": {
@@ -4257,6 +4298,48 @@
         "required": [
           "method",
           "count"
+        ],
+        "type": "object"
+      },
+      "NamedFilterList": {
+        "description": "The `[filters]` table this run started with.",
+        "properties": {
+          "filters": {
+            "description": "Every entry, in name order. Empty when the config defines none.",
+            "items": {
+              "$ref": "#/components/schemas/NamedFilterRow"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "filters"
+        ],
+        "type": "object"
+      },
+      "NamedFilterRow": {
+        "description": "One `[filters]` entry.",
+        "properties": {
+          "definition": {
+            "description": "The definition as the config file writes it, `@name` references\nincluded.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The entry's name: what `named` takes and what `@name` refers to.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "definition"
         ],
         "type": "object"
       },
@@ -8625,6 +8708,15 @@
             }
           },
           {
+            "description": "The name of one `[filters]` entry or diagnostic alias, in place of\n`filter`, what `/v1/dialogs?named=` accepts. Both is a 400.",
+            "in": "query",
+            "name": "named",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "Keep the largest N buckets; the rest fold into `other_count`. Clamped to\nthe server's row cap.",
             "in": "query",
             "name": "top_n",
@@ -9107,6 +9199,15 @@
             }
           },
           {
+            "description": "The name of one `[filters]` entry or diagnostic alias, in place of\n`filter`: `named=sales` selects what `filter=@sales` selects. A\nleading `@` is accepted. `GET /v1/filters` lists the entries. Give\n`filter` or `named`, not both: both is a 400, and so is a name nothing\ndefines, whose detail lists the names that are defined.",
+            "in": "query",
+            "name": "named",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "Only dialogs whose first message is at or after this RFC 3339 instant\n(e.g. `2026-09-15T12:00:00Z`). A timestamp that does not parse is a 400.",
             "in": "query",
             "name": "after",
@@ -9282,6 +9383,15 @@
             "description": "A DSL expression or diagnostic alias name narrowing which dialogs are\ngrouped, what `/v1/dialogs?filter=` accepts. A value that is neither an\nalias nor an expression that parses is a 400.",
             "in": "query",
             "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The name of one `[filters]` entry or diagnostic alias, in place of\n`filter`, what `/v1/dialogs?named=` accepts. Both is a 400.",
+            "in": "query",
+            "name": "named",
             "required": false,
             "schema": {
               "type": "string"
@@ -10034,6 +10144,121 @@
         "summary": "Everything one endpoint did",
         "tags": [
           "dialogs"
+        ]
+      }
+    },
+    "/v1/filters": {
+      "get": {
+        "description": "The `[filters]` table this run started with: each entry's name, which the `named` parameter takes and `@name` refers to, and its definition as the config file writes it. The table is resolved once at startup and does not change while the server runs.\n\nThe MCP `list_named_filters` tool returns the same answer.",
+        "operationId": "get_named_filters",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamedFilterList"
+                }
+              }
+            },
+            "description": "Every entry, in name order; an empty list when the config defines none."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List the named filters",
+        "tags": [
+          "filters"
+        ]
+      }
+    },
+    "/v1/filters/validate": {
+      "get": {
+        "description": "Compiles an expression the way every `filter` parameter is compiled, with the same aliases, `@name` references and thresholds, and reports whether it compiled. An expression that does not compile is a `200` with `valid: false`, the parser's message in `error` (the text a `filter` parameter's `400` carries after `filter: `) and, when the parser stopped at a place in the text as sent, that place in `position`.\n\nThe MCP `validate_filter` tool reports the same `error` and `position`.",
+        "operationId": "get_filter_validation",
+        "parameters": [
+          {
+            "description": "The expression to compile: a DSL expression or a diagnostic alias\nname, with `@name` references, what a `filter` parameter accepts.\nPercent-encode it. Required; an absent `expr` is a 400.",
+            "in": "query",
+            "name": "expr",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilterValidation"
+                }
+              }
+            },
+            "description": "Whether it compiled; the message and position when it did not."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No `expr` parameter."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Validate a filter expression",
+        "tags": [
+          "filters"
         ]
       }
     },
@@ -11217,6 +11442,15 @@
             }
           },
           {
+            "description": "The name of one `[filters]` entry or diagnostic alias, in place of\n`filter`, what `/v1/dialogs?named=` accepts. Both is a 400.",
+            "in": "query",
+            "name": "named",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "Maximum rows to return, clamped to the server's row cap. `distinct_talkers`\nstill counts every talker, so a page is never mistaken for the whole rank.",
             "in": "query",
             "name": "limit",
@@ -12298,6 +12532,10 @@
     {
       "description": "The capture as a whole",
       "name": "capture"
+    },
+    {
+      "description": "The `[filters]` table this run started with, and filter expression validation",
+      "name": "filters"
     },
     {
       "description": "Liveness, metrics, and the persistence gate",

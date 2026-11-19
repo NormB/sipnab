@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Added
 
+- **REST and MCP list the named filters and select dialogs by name.**
+  - Effect: `GET /v1/filters` and the MCP `list_named_filters` tool list each `[filters]` name and its definition as written.
+  - Effect: `named=<name>` selects a named filter on `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates`, `/v1/talkers` and every MCP tool that takes `filter`.
+  - Limit: `filter` and `named` together are refused, and so is a name nothing defines; the refusal lists the defined names.
+  - Docs: [Select dialogs with a named filter](docs/rest-api.md#select-dialogs-with-a-named-filter)
+- **A filter expression can be checked before use, with the position of an error.**
+  - Effect: `GET /v1/filters/validate?expr=` answers `valid`, the parser's message and the character position where it stopped.
+  - Effect: The MCP `validate_filter` tool reports the same `position`.
+  - Docs: [Check a filter expression before using it](docs/rest-api.md#check-a-filter-expression-before-using-it)
 - **The TUI filter dialog saves its filter as a named filter.**
   - Effect: `F2` in the dialog asks for a name and adds the filter to `[filters]` in your config file, keeping its comments.
   - Effect: The name is listed beside Named filter at once; a duplicate or invalid name is refused with the reason.
