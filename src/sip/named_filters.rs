@@ -12,14 +12,18 @@
 //! Every definition is resolved once, at startup ([`NamedFilters::resolve`]):
 //! references are expanded, cycles and unknown names are refused, and each
 //! expansion must parse. A run therefore either starts with every name usable
-//! or does not start, and the error names the filter at fault.
+//! or does not start, and the error names the filter at fault. The terminal
+//! UI's `F2` save adds a name to the running process's table
+//! ([`publish`]); it is checked the same way before it is added.
 //!
 //! The expansion is textual. `@name` outside a quoted string becomes the
 //! parenthesized expansion, so `@a AND @b` keeps the precedence each
 //! definition was written with.
 
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+
+use parking_lot::RwLock;
 
 use super::dsl::{AliasThresholds, DIAGNOSTIC_ALIASES, FilterExpr, expand_alias};
 
@@ -376,23 +380,75 @@ pub fn unknown_reference_message(name: &str, filters: &NamedFilters) -> String {
     )
 }
 
-/// The process's resolved `[filters]`, installed once at startup.
-static INSTALLED: OnceLock<NamedFilters> = OnceLock::new();
-
-/// Install the run's resolved `[filters]`. The first call wins; a later call
-/// returns `false` and changes nothing, so a filter cannot change meaning
-/// partway through a run.
-pub fn install(filters: NamedFilters) -> bool {
-    INSTALLED.set(filters).is_ok()
+/// A run's live `[filters]` table: installed at startup, replaced whole
+/// when the terminal UI saves a name with `F2`, read as an `Arc` snapshot.
+#[derive(Debug, Default)]
+pub struct LiveTable {
+    /// The current table; `None` until installed.
+    slot: RwLock<Option<Arc<NamedFilters>>>,
 }
 
-/// The run's resolved `[filters]`, or an empty table when none was installed.
+impl LiveTable {
+    /// An empty, uninstalled table.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            slot: RwLock::new(None),
+        }
+    }
+
+    /// Install the startup table. The first call wins (a publish counts);
+    /// a later call returns `false` and changes nothing.
+    pub fn install(&self, filters: NamedFilters) -> bool {
+        let mut slot = self.slot.write();
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(Arc::new(filters));
+        true
+    }
+
+    /// Replace the table whole. Snapshots already taken keep the table they
+    /// were taken from; a filter already compiled keeps its meaning.
+    pub fn publish(&self, filters: NamedFilters) {
+        *self.slot.write() = Some(Arc::new(filters));
+    }
+
+    /// The current table: one read lock and one reference-count increment,
+    /// taken when a filter is compiled, never per packet.
+    #[must_use]
+    pub fn snapshot(&self) -> Arc<NamedFilters> {
+        static EMPTY: OnceLock<Arc<NamedFilters>> = OnceLock::new();
+        self.slot.read().as_ref().map_or_else(
+            || Arc::clone(EMPTY.get_or_init(|| Arc::new(NamedFilters::default()))),
+            Arc::clone,
+        )
+    }
+}
+
+/// The process's resolved `[filters]`: installed at startup, replaced when
+/// the terminal UI saves a name.
+static LIVE: LiveTable = LiveTable::new();
+
+/// Install the run's resolved `[filters]`. The first call wins; a later call
+/// returns `false` and changes nothing.
+pub fn install(filters: NamedFilters) -> bool {
+    LIVE.install(filters)
+}
+
+/// Replace the run's table: the terminal UI's `F2` save calls it with the
+/// table that holds the new name, so a filter compiled after it (by the
+/// REST API, the MCP server or the terminal UI of this process) resolves
+/// the name. A filter compiled before it is unchanged.
+pub fn publish(filters: NamedFilters) {
+    LIVE.publish(filters);
+}
+
+/// The run's resolved `[filters]` as it is now, or an empty table when none
+/// was installed.
 #[must_use]
-pub fn installed() -> &'static NamedFilters {
-    static EMPTY: OnceLock<NamedFilters> = OnceLock::new();
-    INSTALLED
-        .get()
-        .unwrap_or_else(|| EMPTY.get_or_init(NamedFilters::default))
+pub fn installed() -> Arc<NamedFilters> {
+    LIVE.snapshot()
 }
 
 #[cfg(test)]
@@ -969,6 +1025,113 @@ mod adding_tests {
     fn a_digit_only_name_is_accepted() -> Result<(), TestError> {
         let added = table()?.with_added("5060", "src.port == 5060", &t())?;
         assert!(added.expansion("5060").is_some(), "digits only");
+        Ok(())
+    }
+}
+
+/// [`LiveTable`]: the one table the terminal UI, the REST API and the MCP
+/// server of a run read, driven on local instances (the process's own is
+/// global, and a test that changed it would change every other test's).
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A table defining each of `names` as `msg_count > 1`.
+    fn table(names: &[&str]) -> Result<NamedFilters, TestError> {
+        let defs: BTreeMap<String, String> = names
+            .iter()
+            .map(|n| ((*n).to_owned(), "msg_count > 1".to_owned()))
+            .collect();
+        Ok(NamedFilters::resolve(&defs, &AliasThresholds::default())?)
+    }
+
+    fn names(t: &NamedFilters) -> Vec<String> {
+        t.names().map(str::to_owned).collect()
+    }
+
+    /// Uninstalled, the table is empty.
+    #[test]
+    fn an_uninstalled_table_is_empty() {
+        let live = LiveTable::new();
+        assert!(names(&live.snapshot()).is_empty(), "empty");
+    }
+
+    /// The installed table is what a snapshot holds.
+    #[test]
+    fn install_sets_the_table() -> Result<(), TestError> {
+        let live = LiveTable::new();
+        assert!(live.install(table(&["big"])?), "first install");
+        assert_eq!(names(&live.snapshot()), ["big"], "installed");
+        Ok(())
+    }
+
+    /// A second install is refused and changes nothing.
+    #[test]
+    fn a_second_install_changes_nothing() -> Result<(), TestError> {
+        let live = LiveTable::new();
+        live.install(table(&["big"])?);
+        assert!(!live.install(table(&["other"])?), "refused");
+        assert_eq!(names(&live.snapshot()), ["big"], "unchanged");
+        Ok(())
+    }
+
+    /// Publish replaces the table: a later snapshot holds the new name.
+    #[test]
+    fn publish_replaces_the_table() -> Result<(), TestError> {
+        let live = LiveTable::new();
+        live.install(table(&["big"])?);
+        live.publish(table(&["big", "large"])?);
+        assert_eq!(names(&live.snapshot()), ["big", "large"], "published");
+        Ok(())
+    }
+
+    /// A snapshot taken before a publish keeps the table it was taken from.
+    #[test]
+    fn an_earlier_snapshot_is_unchanged_by_a_publish() -> Result<(), TestError> {
+        let live = LiveTable::new();
+        live.install(table(&["big"])?);
+        let before = live.snapshot();
+        live.publish(table(&["big", "large"])?);
+        assert_eq!(names(&before), ["big"], "the old snapshot");
+        Ok(())
+    }
+
+    /// A publish before any install counts as installed.
+    #[test]
+    fn publish_before_install_counts_as_installed() -> Result<(), TestError> {
+        let live = LiveTable::new();
+        live.publish(table(&["large"])?);
+        assert!(!live.install(table(&["big"])?), "install refused");
+        assert_eq!(names(&live.snapshot()), ["large"], "the published table");
+        Ok(())
+    }
+
+    /// Two snapshots without a publish share one table.
+    #[test]
+    fn snapshots_share_the_table() -> Result<(), TestError> {
+        let live = LiveTable::new();
+        live.install(table(&["big"])?);
+        assert!(
+            Arc::ptr_eq(&live.snapshot(), &live.snapshot()),
+            "one allocation"
+        );
+        Ok(())
+    }
+
+    /// Snapshots taken on other threads see a publish.
+    #[test]
+    fn other_threads_see_a_publish() -> Result<(), TestError> {
+        let live = Arc::new(LiveTable::new());
+        live.install(table(&["big"])?);
+        live.publish(table(&["big", "large"])?);
+        let seen = std::thread::scope(|s| {
+            s.spawn(|| names(&live.snapshot()))
+                .join()
+                .map_err(|_| "the reader thread panicked")
+        })?;
+        assert_eq!(seen, ["big", "large"], "seen elsewhere");
         Ok(())
     }
 }

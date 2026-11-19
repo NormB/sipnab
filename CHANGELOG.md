@@ -15,10 +15,16 @@ entry that carries them.
 - **The TUI filter dialog saves its filter as a named filter.**
   - Effect: `F2` in the dialog asks for a name and adds the filter to `[filters]` in your config file, keeping its comments.
   - Effect: The name is listed beside Named filter at once; a duplicate or invalid name is refused with the reason.
-  - Limit: The REST API and MCP server of a running session see the name after a restart.
+  - Effect: The REST API and MCP server of the same session resolve the new `@name` at once.
+  - Effect: With no config file sipnab may write, sipnab keeps the name for the session and shows the `[filters]` line to add; `F3` copies it.
   - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
 
 ### Fixed
+
+- **A TUI save no longer replaces a config file you may not write.**
+  - Was: Saving the column layout or name edits replaced a read-only file, or another user's, when its folder was writable.
+  - Effect: sipnab leaves the file unchanged, and the message names the file, the cause, and `--config <writable file>` or `$SIPNAB_CONFIG`.
+  - Docs: [Error reference](docs/errors.md), entry `cannot {action} {path}: {source}. {advice}`
 
 - **A filter parse error lists `in_subnet` among the valid operators.**
   - Was: The `valid operators:` line of every filter error omitted `in_subnet`, which the parser accepts.

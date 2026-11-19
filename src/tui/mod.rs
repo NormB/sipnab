@@ -161,6 +161,11 @@ pub struct App {
     /// `@name` references read. The table installed at startup, held here so
     /// a test can give the app any table.
     pub(crate) named_filters: crate::sip::named_filters::NamedFilters,
+    /// Where an `F2` save publishes the run's new table, so the REST API
+    /// and MCP server of this process resolve the name at once: the
+    /// process's live table in a real session (`TuiOptions::into_app`),
+    /// `None` in a test app, which must not change the process's table.
+    pub(crate) filter_publisher: Option<fn(crate::sip::named_filters::NamedFilters)>,
     /// The thresholds a built-in alias referenced as `@name` compares against:
     /// the run's, set by the TUI launcher.
     pub(crate) alias_thresholds: crate::sip::dsl::AliasThresholds,
@@ -547,7 +552,8 @@ impl App {
             filter_dialog: FilterDialogState::default(),
             expression_history: expression_history::ExpressionHistory::default(),
             capture_source: Vec::new(),
-            named_filters: crate::sip::named_filters::installed().clone(),
+            named_filters: (*crate::sip::named_filters::installed()).clone(),
+            filter_publisher: None,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             settings_dialog: SettingsDialogState::default(),
             active_filter: None,
@@ -2686,6 +2692,20 @@ mod tests {
             ..TuiOptions::default()
         };
         assert_eq!(options.into_app(d, s).column_config_path, Ok(target));
+        Ok(())
+    }
+
+    /// A real session publishes F2 saves to the process's live table; the
+    /// test app (`App::new` alone) does not.
+    #[test]
+    fn a_session_publishes_saved_names_and_a_test_app_does_not() -> Result<(), TestError> {
+        let (d, s) = stores();
+        let app = TuiOptions::default().into_app(d, s);
+        assert!(app.filter_publisher.is_some(), "a session publishes");
+        assert!(
+            App::new_test().filter_publisher.is_none(),
+            "a test app does not"
+        );
         Ok(())
     }
 

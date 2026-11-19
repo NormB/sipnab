@@ -1921,7 +1921,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // (the filter popup's `F2` row links "Save the dialog's filter under a
     // name"); docs/errors.md 1 (the `[filters] already defines` entry links
     // that section).
-    const EXPECTED_WIKI_LINKS: usize = 2722;
+    // 2722 -> 2723 (F2-SAVE-UNWRITABLE, +1): docs/keybindings.md 1 (the
+    // filter dialog's F2/F3 paragraph links "Save the dialog's filter under
+    // a name").
+    const EXPECTED_WIKI_LINKS: usize = 2723;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

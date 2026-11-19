@@ -147,6 +147,7 @@ pub(in crate::tui) fn open_filter_dialog(app: &mut App) {
     app.filter_dialog.error = None;
     app.filter_dialog.save_name = None;
     app.filter_dialog.notice = None;
+    app.filter_dialog.session_note = None;
     app.filter_dialog.known_names = app.named_filters.names().map(str::to_owned).collect();
     app.filter_dialog.show_help = false;
     app.expression_history.end_walk();
@@ -190,6 +191,7 @@ fn expression_to_save(
 /// be saved.
 fn start_save_prompt(app: &mut App) {
     app.filter_dialog.notice = None;
+    app.filter_dialog.session_note = None;
     match expression_to_save(&app.filter_dialog, &app.alias_thresholds) {
         Ok(_) => {
             app.filter_dialog.error = None;
@@ -199,18 +201,33 @@ fn start_save_prompt(app: &mut App) {
     }
 }
 
+/// Where an `F2` save put the name.
+#[derive(Debug)]
+enum Saved {
+    /// Written to this config file.
+    File(std::path::PathBuf),
+    /// In the run's table only: no config file may be written.
+    Session(crate::tui::state::SessionNote),
+}
+
 /// Save the dialog's filter under `typed` (one leading `@` and surrounding
 /// spaces dropped): the new table is built and checked first, then the
 /// config file is written, and only then does the run's table change.
 ///
+/// When no file may be written (no save target, or a permission failure
+/// at any step), the name still goes into the run's table, for this
+/// session only, and the note says why and what line to add to a file.
+///
 /// # Returns
-/// The name saved and the file written.
+/// The name saved and where it went.
 ///
 /// # Errors
 /// The reason, for the dialog: the filter cannot be saved, the name is not
-/// usable or already defined, the expression does not resolve or parse, no
-/// file may be written, or the write failed. Nothing changes on an error.
-fn save_named_filter(app: &mut App, typed: &str) -> Result<(String, std::path::PathBuf), String> {
+/// usable or already defined (in the run or in the file), the expression
+/// does not resolve or parse, the file is not valid TOML or its `[filters]`
+/// is not a table, or the file cannot be read or written for a reason that
+/// is not permission. Nothing changes on an error.
+fn save_named_filter(app: &mut App, typed: &str) -> Result<(String, Saved), String> {
     let name = typed.trim();
     let name = name.strip_prefix('@').unwrap_or(name);
     let expr = expression_to_save(&app.filter_dialog, &app.alias_thresholds)?;
@@ -218,15 +235,82 @@ fn save_named_filter(app: &mut App, typed: &str) -> Result<(String, std::path::P
         .named_filters
         .with_added(name, &expr, &app.alias_thresholds)
         .map_err(|e| e.to_string())?;
-    let path = app
-        .column_config_path
-        .clone()
-        .map_err(|why| format!("Named filter {why}"))?;
-    crate::config::write_named_filter_file(&path, name, &expr)
-        .map_err(|e| format!("Save failed: {e}"))?;
+    let saved = match app.column_config_path.clone() {
+        Err(why) => Saved::Session(session_note(name, &expr, &[capitalized(&why)])?),
+        Ok(path) => match crate::config::write_named_filter_file(&path, name, &expr) {
+            Ok(()) => Saved::File(path),
+            Err(crate::Error::ConfigUnwritable {
+                action,
+                path,
+                source,
+            }) => {
+                let mut why = vec![format!("Not saved: cannot {action} {path}: {source}.")];
+                if action == "read" {
+                    why.push(
+                        "An entry of the same name in that file could not be checked.".to_owned(),
+                    );
+                }
+                Saved::Session(session_note(name, &expr, &why)?)
+            }
+            Err(e) => return Err(format!("Save failed: {e}")),
+        },
+    };
+    if let Some(publish) = app.filter_publisher {
+        publish(table.clone());
+    }
     app.named_filters = table;
     app.filter_dialog.known_names = app.named_filters.names().map(str::to_owned).collect();
-    Ok((name.to_owned(), path))
+    Ok((name.to_owned(), saved))
+}
+
+/// `text` with its first letter in upper case, for a reason that starts a
+/// line.
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// The note for `name` kept for this session only: what happened, `why`,
+/// what to do, and the `[filters]` entry to add.
+///
+/// # Errors
+/// The entry line cannot be built (see
+/// [`crate::config::named_filter_entry_line`]).
+fn session_note(
+    name: &str,
+    definition: &str,
+    why: &[String],
+) -> Result<crate::tui::state::SessionNote, String> {
+    let entry =
+        crate::config::named_filter_entry_line(name, definition).map_err(|e| e.to_string())?;
+    let mut lines = vec![format!(
+        "Kept @{name} for this session only: it is in no config file."
+    )];
+    lines.extend(why.iter().cloned());
+    lines.push(format!(
+        "{}, and add this entry to that file:",
+        crate::config::SAVE_ADVICE
+    ));
+    lines.push("[filters]".to_owned());
+    lines.extend(entry.lines().map(str::to_owned));
+    Ok(crate::tui::state::SessionNote { lines, entry })
+}
+
+/// `F3` with a session-only note shown: copy its `[filters]` entry line,
+/// with `copy` doing the copy (tests pass one that never reaches a
+/// clipboard). Without a note, nothing happens.
+fn copy_session_entry_with(app: &mut App, copy: fn(&str) -> crate::tui::StatusMessage) {
+    let Some(note) = app.filter_dialog.session_note.as_ref() else {
+        return;
+    };
+    crate::tui::clipboard::spawn_copy_worker(
+        note.entry.clone(),
+        std::sync::Arc::clone(&app.async_messages),
+        copy,
+    );
+    app.status_error = Some("Copying the [filters] entry to the clipboard\u{2026}".to_owned());
 }
 
 /// Keys while the "Save as" prompt is open: text edits the name, Enter
@@ -240,10 +324,16 @@ fn handle_save_prompt_key(app: &mut App, code: KeyCode) {
         KeyCode::Enter => {
             let typed = app.filter_dialog.save_name.clone().unwrap_or_default();
             match save_named_filter(app, &typed) {
-                Ok((name, path)) => {
+                Ok((name, saved)) => {
                     app.filter_dialog.save_name = None;
                     app.filter_dialog.error = None;
-                    app.filter_dialog.notice = Some(format!("Saved @{name} to {}", path.display()));
+                    match saved {
+                        Saved::File(path) => {
+                            app.filter_dialog.notice =
+                                Some(format!("Saved @{name} to {}", path.display()));
+                        }
+                        Saved::Session(note) => app.filter_dialog.session_note = Some(note),
+                    }
                 }
                 Err(why) => app.filter_dialog.error = Some(why),
             }
@@ -504,9 +594,15 @@ pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
 
     match key.code {
         KeyCode::F(2) => start_save_prompt(app),
+        // The clipboard transmits, so tests drive `copy_session_entry_with`.
+        KeyCode::F(3) => copy_session_entry_with(app, crate::tui::clipboard::copy_to_clipboard),
         KeyCode::Esc if app.filter_dialog.show_help => {
             // The help goes first; a second Esc cancels the dialog.
             app.filter_dialog.show_help = false;
+        }
+        KeyCode::Esc if app.filter_dialog.session_note.is_some() => {
+            // A session-only note goes before the dialog.
+            app.filter_dialog.session_note = None;
         }
         KeyCode::Esc => {
             // Cancel without applying
@@ -3249,22 +3345,26 @@ mod save_named_tests {
         Ok(())
     }
 
-    /// With no file to save to, the reason is shown and the table is
-    /// unchanged.
+    /// With no file to save to, the name is kept for this session, and the
+    /// note gives the reason.
     #[test]
-    fn no_save_target_is_refused() -> Result<(), TestError> {
+    fn no_save_target_keeps_the_name_for_the_session() -> Result<(), TestError> {
         let (mut app, _dir, _) = saving_app()?;
         app.column_config_path = Err("not saved: no config file for this session".into());
         app.filter_dialog.expression = "msg_count > 5".into();
         save_as(&mut app, "large");
-        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(app.filter_dialog.error.is_none(), "not refused");
+        let note = app.filter_dialog.session_note.clone().ok_or("no note")?;
         assert!(
-            err.contains("no config file for this session"),
-            "reason: {err}"
+            note.lines
+                .join("\n")
+                .contains("no config file for this session"),
+            "reason: {note:?}"
         );
-        assert!(
-            app.named_filters.expansion("large").is_none(),
-            "not in the table"
+        assert_eq!(
+            app.named_filters.expansion("large"),
+            Some("msg_count > 5"),
+            "in the table"
         );
         Ok(())
     }
@@ -3483,5 +3583,874 @@ mod save_named_tests {
         assert_eq!(shown(&mut app), before, "list unchanged");
         assert!(app.active_filter.is_none(), "no filter in force");
         Ok(())
+    }
+
+    /// `F2` where no config file may be written: the name is kept for this
+    /// session only, the note says why and how to keep it, and every refusal
+    /// that is not about where to write still refuses with nothing added.
+    #[cfg(unix)]
+    mod session_only {
+        use super::*;
+        use crate::config::save_permission_tests::{Locked, chmod_probe, temp_files};
+        use crate::tui::StatusMessage;
+
+        /// `true` to run: a mode the case sets denies this process (see
+        /// `chmod_probe`; CI requires `non-root`, so it never skips there).
+        fn denied() -> bool {
+            crate::test_prereq::present("non-root", crate::test_prereq::NON_ROOT, chmod_probe())
+        }
+
+        /// [`saving_app`] saving into a directory of mode 0500: the file
+        /// cannot be made. The guard restores the mode on drop.
+        fn locked_app() -> Result<(App, tempfile::TempDir, Locked, std::path::PathBuf), TestError> {
+            let (mut app, dir, _) = saving_app()?;
+            let locked = Locked::new(dir.path().join("conf"), 0o500, true)?;
+            let path = locked.path.join("sipnab.toml");
+            app.column_config_path = Ok(path.clone());
+            Ok((app, dir, locked, path))
+        }
+
+        /// [`saving_app`] with `text` in a read-only file.
+        fn read_only_app(
+            text: &str,
+        ) -> Result<(App, tempfile::TempDir, Locked, std::path::PathBuf), TestError> {
+            let (app, dir, path) = saving_app()?;
+            std::fs::write(&path, text)?;
+            let locked = Locked::new(path.clone(), 0o444, false)?;
+            Ok((app, dir, locked, path))
+        }
+
+        /// The note's lines, joined, or a test error.
+        fn note_text(app: &App) -> Result<String, TestError> {
+            Ok(app
+                .filter_dialog
+                .session_note
+                .as_ref()
+                .ok_or("no session note")?
+                .lines
+                .join("\n"))
+        }
+
+        /// Asserts a refusal: the reason shown, nothing added, no note, no
+        /// notice.
+        fn assert_refused(app: &App, name: &str, reason: &str) -> Result<(), TestError> {
+            let err = app.filter_dialog.error.clone().ok_or("no error")?;
+            assert!(err.contains(reason), "reason {reason:?}: {err}");
+            assert!(
+                app.named_filters.expansion(name).is_none(),
+                "{name} not in the table"
+            );
+            assert!(
+                !app.filter_dialog.known_names.iter().any(|n| n == name),
+                "{name} not listed"
+            );
+            assert!(app.filter_dialog.session_note.is_none(), "no session note");
+            assert!(app.filter_dialog.notice.is_none(), "no notice");
+            Ok(())
+        }
+
+        static COPIED: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+        /// A copy that records the text, never touching a clipboard.
+        fn fake_copy(text: &str) -> StatusMessage {
+            COPIED.lock().push(text.to_owned());
+            StatusMessage::info(format!("Copied {} bytes (test)", text.len()))
+        }
+
+        // ── success ────────────────────────────────────────────────────
+
+        /// A directory that cannot be created: the name is in the run's
+        /// table.
+        #[test]
+        fn an_unwritable_ancestor_keeps_the_name() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, dir, _) = saving_app()?;
+            let _locked = Locked::new(dir.path().join("home"), 0o500, true)?;
+            let path = dir.path().join("home/.config/sipnab/sipnab.toml");
+            app.column_config_path = Ok(path.clone());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert!(
+                app.filter_dialog.error.is_none(),
+                "not refused: {:?}",
+                app.filter_dialog.error
+            );
+            assert_eq!(
+                app.named_filters.expansion("large"),
+                Some("msg_count > 5"),
+                "in the table"
+            );
+            assert!(!dir.path().join("home/.config").exists(), "nothing created");
+            Ok(())
+        }
+
+        /// The kept name is listed beside Named filter at once.
+        #[test]
+        fn the_kept_name_is_listed_at_once() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, _dir, _locked, _) = locked_app()?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_eq!(app.filter_dialog.known_names, ["big", "large"], "listed");
+            Ok(())
+        }
+
+        /// The kept name works as `@large`, selecting what its definition
+        /// selects.
+        #[test]
+        fn the_kept_name_works_as_a_reference() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, _dir, _locked, _) = locked_app()?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            super::super::expression_tests::apply_typed(&mut app, "msg_count > 5");
+            let want = shown(&mut app);
+            super::super::expression_tests::apply_typed(&mut app, "@large");
+            assert!(
+                app.filter_dialog.error.is_none(),
+                "resolved: {:?}",
+                app.filter_dialog.error
+            );
+            assert_eq!(shown(&mut app), want, "same calls as the definition");
+            Ok(())
+        }
+
+        /// A directory that exists but may not be written: kept, no file,
+        /// no temp file.
+        #[test]
+        fn an_unwritable_directory_keeps_the_name_and_leaves_nothing() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, _dir, locked, path) = locked_app()?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_eq!(
+                app.named_filters.expansion("large"),
+                Some("msg_count > 5"),
+                "kept"
+            );
+            assert!(!path.exists(), "no file");
+            assert!(temp_files(&locked.path)?.is_empty(), "no temp file");
+            Ok(())
+        }
+
+        /// A read-only file: kept for the session, the file byte-for-byte
+        /// as it was.
+        #[test]
+        fn a_read_only_file_is_unchanged_and_the_name_kept() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, dir, _locked, path) = read_only_app("# mine\n")?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_eq!(
+                std::fs::read_to_string(&path)?,
+                "# mine\n",
+                "file unchanged"
+            );
+            assert!(temp_files(dir.path())?.is_empty(), "no temp file");
+            assert_eq!(
+                app.named_filters.expansion("large"),
+                Some("msg_count > 5"),
+                "kept"
+            );
+            Ok(())
+        }
+
+        /// A symlink to a read-only file: kept, the link and its target as
+        /// they were.
+        #[test]
+        fn a_symlink_to_a_read_only_file_is_unchanged() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, dir, _) = saving_app()?;
+            let target = dir.path().join("shared.toml");
+            std::fs::write(&target, "# shared\n")?;
+            let _locked = Locked::new(target.clone(), 0o444, false)?;
+            let link = dir.path().join("link.toml");
+            std::os::unix::fs::symlink(&target, &link)?;
+            app.column_config_path = Ok(link.clone());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert!(
+                std::fs::symlink_metadata(&link)?.file_type().is_symlink(),
+                "still a link"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&target)?,
+                "# shared\n",
+                "target unchanged"
+            );
+            assert!(
+                app.filter_dialog.session_note.is_some(),
+                "kept for the session"
+            );
+            Ok(())
+        }
+
+        /// A file that cannot be read for permission: kept, and the note
+        /// says a same-named entry there could not be checked.
+        #[test]
+        fn an_unreadable_file_keeps_the_name_with_a_warning() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, _dir, path) = saving_app()?;
+            std::fs::write(&path, "")?;
+            let _locked = Locked::new(path.clone(), 0o000, false)?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            let text = note_text(&app)?;
+            assert!(text.contains("could not be checked"), "{text}");
+            assert_eq!(
+                app.named_filters.expansion("large"),
+                Some("msg_count > 5"),
+                "kept"
+            );
+            Ok(())
+        }
+
+        /// The note says plainly that the name is kept for this session
+        /// only, with the path and the cause.
+        #[test]
+        fn the_note_names_the_session_the_path_and_the_cause() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, _dir, _locked, path) = locked_app()?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            let text = note_text(&app)?;
+            assert!(text.contains("Kept @large for this session only"), "{text}");
+            assert!(text.contains(&path.display().to_string()), "path: {text}");
+            assert!(
+                text.to_lowercase().contains("permission denied"),
+                "cause: {text}"
+            );
+            assert!(!text.contains(".sipnab-tmp-"), "no temp name: {text}");
+            Ok(())
+        }
+
+        /// The note says how to keep it.
+        #[test]
+        fn the_note_says_how_to_keep_it() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, _dir, _locked, _) = locked_app()?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            let text = note_text(&app)?;
+            for needle in [
+                "--config <writable file>",
+                "$SIPNAB_CONFIG",
+                "fix the permissions",
+            ] {
+                assert!(text.contains(needle), "{needle}: {text}");
+            }
+            Ok(())
+        }
+
+        /// The note shows the exact `[filters]` entry to add.
+        #[test]
+        fn the_note_shows_the_entry_to_add() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, _dir, _locked, _) = locked_app()?;
+            app.filter_dialog.expression = "to.user == '7000'".into();
+            save_as(&mut app, "sales");
+            let note = app.filter_dialog.session_note.clone().ok_or("no note")?;
+            assert!(note.lines.iter().any(|l| l == "[filters]"), "{note:?}");
+            assert!(
+                note.lines
+                    .iter()
+                    .any(|l| l == "sales = \"to.user == '7000'\""),
+                "{note:?}"
+            );
+            assert_eq!(note.entry, "sales = \"to.user == '7000'\"", "the entry");
+            Ok(())
+        }
+
+        /// The system file refusal keeps the name and gives its reason.
+        #[test]
+        fn the_system_file_keeps_the_name_for_the_session() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = crate::config::save_target(
+                Some(std::path::Path::new(crate::config::SYSTEM_CONFIG_PATH)),
+                None,
+            );
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            let text = note_text(&app)?;
+            assert!(text.contains(crate::config::SYSTEM_CONFIG_PATH), "{text}");
+            assert!(text.contains("--config <writable file>"), "{text}");
+            assert_eq!(
+                app.named_filters.expansion("large"),
+                Some("msg_count > 5"),
+                "kept"
+            );
+            Ok(())
+        }
+
+        /// No `$HOME`: kept, and the note says why.
+        #[test]
+        fn no_home_keeps_the_name_for_the_session() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = crate::config::save_target(None, None);
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            let text = note_text(&app)?;
+            assert!(text.contains("$HOME"), "{text}");
+            assert_eq!(
+                app.named_filters.expansion("large"),
+                Some("msg_count > 5"),
+                "kept"
+            );
+            Ok(())
+        }
+
+        /// `F3` copies the entry line, and the status line says so.
+        #[test]
+        fn f3_copies_the_entry_line() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "to.user == '7001'".into();
+            save_as(&mut app, "copyme");
+            copy_session_entry_with(&mut app, fake_copy);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while app.async_messages.lock().is_empty() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the copy worker never reported"
+                );
+                std::thread::yield_now();
+            }
+            assert!(
+                COPIED
+                    .lock()
+                    .iter()
+                    .any(|t| t == "copyme = \"to.user == '7001'\""),
+                "copied: {:?}",
+                COPIED.lock()
+            );
+            let status = app.status_error.clone().unwrap_or_default();
+            assert!(status.contains("Copying"), "status: {status}");
+            Ok(())
+        }
+
+        /// The note is drawn in the dialog.
+        #[test]
+        fn the_note_is_drawn() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            let text = screen(&mut app, 100, 40)?;
+            assert!(
+                row_with(&text, "Kept @large for this session only").is_some(),
+                "{text}"
+            );
+            assert!(
+                row_with(&text, "large = \"msg_count > 5\"").is_some(),
+                "{text}"
+            );
+            assert!(row_with(&text, "F3 copies").is_some(), "{text}");
+            Ok(())
+        }
+
+        /// A writable file still saves to the file, with no session note.
+        #[test]
+        fn a_writable_file_still_saves_without_a_note() -> Result<(), TestError> {
+            let (mut app, _dir, path) = saving_app()?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert!(app.filter_dialog.session_note.is_none(), "no note");
+            assert_eq!(
+                saved(&path)?.get("large").map(String::as_str),
+                Some("msg_count > 5"),
+                "written to the file"
+            );
+            Ok(())
+        }
+
+        // ── failure ────────────────────────────────────────────────────
+
+        /// A session-only save is not a success: no "Saved" notice.
+        #[test]
+        fn a_session_only_save_shows_no_success_notice() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert!(
+                app.filter_dialog.notice.is_none(),
+                "no notice: {:?}",
+                app.filter_dialog.notice
+            );
+            assert!(app.filter_dialog.session_note.is_some(), "the note instead");
+            Ok(())
+        }
+
+        /// A name that is not usable is refused even with nowhere to write.
+        #[test]
+        fn an_unusable_name_is_refused() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "my calls");
+            assert_refused(&app, "my calls", "not usable")
+        }
+
+        /// A name the run defines is refused with nowhere to write.
+        #[test]
+        fn a_duplicate_is_refused_with_nowhere_to_write() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "big");
+            let err = app.filter_dialog.error.clone().ok_or("no error")?;
+            assert!(err.contains("already defines 'big'"), "{err}");
+            assert_eq!(
+                app.named_filters.expansion("big"),
+                Some("msg_count > 5"),
+                "big unchanged"
+            );
+            assert!(app.filter_dialog.session_note.is_none(), "no note");
+            Ok(())
+        }
+
+        /// A second save of a session-only name is a duplicate.
+        #[test]
+        fn a_second_save_of_a_kept_name_is_a_duplicate() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            app.filter_dialog.expression = "msg_count > 1".into();
+            save_as(&mut app, "large");
+            let err = app.filter_dialog.error.clone().ok_or("no error")?;
+            assert!(err.contains("already defines 'large'"), "{err}");
+            assert_eq!(
+                app.named_filters.expansion("large"),
+                Some("msg_count > 5"),
+                "first kept"
+            );
+            Ok(())
+        }
+
+        /// An expression that does not parse is refused with nowhere to
+        /// write.
+        #[test]
+        fn a_bad_expression_is_refused() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count >".into();
+            save_as(&mut app, "large");
+            assert_refused(&app, "large", "not a valid filter expression")
+        }
+
+        /// Nothing to save is refused with nowhere to write.
+        #[test]
+        fn nothing_to_save_is_refused_with_nowhere_to_write() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            press(&mut app, KeyCode::F(2));
+            assert!(app.filter_dialog.save_name.is_none(), "no prompt");
+            assert!(app.filter_dialog.session_note.is_none(), "no note");
+            Ok(())
+        }
+
+        /// A config file that is not valid TOML is refused: nothing kept.
+        #[test]
+        fn an_invalid_file_is_refused() -> Result<(), TestError> {
+            let (mut app, _dir, path) = saving_app()?;
+            std::fs::write(&path, "[filters\n")?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_refused(&app, "large", "not valid TOML")?;
+            assert_eq!(
+                std::fs::read_to_string(&path)?,
+                "[filters\n",
+                "file unchanged"
+            );
+            Ok(())
+        }
+
+        /// `filters` that is not a table is refused: nothing kept.
+        #[test]
+        fn filters_not_a_table_is_refused() -> Result<(), TestError> {
+            let (mut app, _dir, path) = saving_app()?;
+            std::fs::write(&path, "filters = 3\n")?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_refused(&app, "large", "[filters] is not a table")
+        }
+
+        /// A read-only file that already holds the name is a duplicate, not
+        /// a session-only save.
+        #[test]
+        fn a_read_only_file_holding_the_name_is_refused() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, _dir, _locked, path) =
+                read_only_app("[filters]\nlarge = \"msg_count > 9\"\n")?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_refused(&app, "large", "already defines 'large'")?;
+            assert_eq!(
+                std::fs::read_to_string(&path)?,
+                "[filters]\nlarge = \"msg_count > 9\"\n",
+                "file unchanged"
+            );
+            Ok(())
+        }
+
+        /// A read-only invalid file is refused as invalid, not kept.
+        #[test]
+        fn a_read_only_invalid_file_is_refused() -> Result<(), TestError> {
+            if !denied() {
+                return Ok(());
+            }
+            let (mut app, _dir, _locked, _) = read_only_app("[filters\n")?;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_refused(&app, "large", "not valid TOML")
+        }
+
+        /// A time window is refused with nowhere to write.
+        #[test]
+        fn a_time_window_is_refused_with_nowhere_to_write() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            app.filter_dialog.time_before = "2026-01-01T00:00:00Z".into();
+            press(&mut app, KeyCode::F(2));
+            let err = app.filter_dialog.error.clone().ok_or("no error")?;
+            assert!(err.contains("After and Before"), "{err}");
+            assert!(app.filter_dialog.session_note.is_none(), "no note");
+            Ok(())
+        }
+
+        /// A refusal keeps the expression as typed and the prompt open.
+        #[test]
+        fn a_refusal_keeps_the_expression_and_the_prompt() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count >".into();
+            save_as(&mut app, "large");
+            assert_eq!(app.filter_dialog.expression, "msg_count >", "as typed");
+            assert_eq!(
+                app.filter_dialog.save_name.as_deref(),
+                Some("large"),
+                "prompt kept"
+            );
+            Ok(())
+        }
+
+        /// A directory at the path is still refused, not kept.
+        #[test]
+        fn a_directory_at_the_path_is_refused() -> Result<(), TestError> {
+            let (mut app, dir, _) = saving_app()?;
+            app.column_config_path = Ok(dir.path().to_path_buf());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_refused(&app, "large", "Refusing to save")
+        }
+
+        // ── edge ───────────────────────────────────────────────────────
+
+        /// The expression stays as typed after a session-only save.
+        #[test]
+        fn the_expression_stays_as_typed() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_eq!(app.filter_dialog.expression, "msg_count > 5", "as typed");
+            Ok(())
+        }
+
+        /// The prompt closes after a session-only save.
+        #[test]
+        fn the_prompt_closes() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert!(app.filter_dialog.save_name.is_none(), "prompt closed");
+            Ok(())
+        }
+
+        /// Esc closes the note first; a second Esc cancels the dialog.
+        #[test]
+        fn esc_closes_the_note_first() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            press(&mut app, KeyCode::Esc);
+            assert!(app.filter_dialog.session_note.is_none(), "note closed");
+            assert_eq!(app.active_popup, Some(Popup::FilterDialog), "dialog open");
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(app.active_popup, None, "then the dialog closes");
+            Ok(())
+        }
+
+        /// Opening the dialog again drops the note; the name stays listed.
+        #[test]
+        fn reopening_drops_the_note_and_keeps_the_name() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            open_filter_dialog(&mut app);
+            assert!(app.filter_dialog.session_note.is_none(), "note dropped");
+            assert_eq!(
+                app.filter_dialog.known_names,
+                ["big", "large"],
+                "still listed"
+            );
+            Ok(())
+        }
+
+        /// A kept name is not written by a later save that can write.
+        #[test]
+        fn a_kept_name_is_not_written_later() -> Result<(), TestError> {
+            let (mut app, _dir, path) = saving_app()?;
+            let reachable = app.column_config_path.clone();
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            app.column_config_path = reachable;
+            app.filter_dialog.expression = "msg_count > 2".into();
+            save_as(&mut app, "medium");
+            let file = saved(&path)?;
+            assert_eq!(
+                file.keys().collect::<Vec<_>>(),
+                ["medium"],
+                "only the new name: {file:?}"
+            );
+            Ok(())
+        }
+
+        /// A save that writes after a session-only one drops the note and
+        /// shows the success notice.
+        #[test]
+        fn a_later_written_save_replaces_the_note() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            let reachable = app.column_config_path.clone();
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            app.column_config_path = reachable;
+            app.filter_dialog.expression = "msg_count > 2".into();
+            save_as(&mut app, "medium");
+            assert!(app.filter_dialog.session_note.is_none(), "note dropped");
+            assert!(
+                app.filter_dialog
+                    .notice
+                    .as_deref()
+                    .is_some_and(|n| n.contains("@medium")),
+                "the success notice: {:?}",
+                app.filter_dialog.notice
+            );
+            Ok(())
+        }
+
+        /// F2 again drops the note while the prompt is open.
+        #[test]
+        fn f2_drops_the_note() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            press(&mut app, KeyCode::F(2));
+            assert!(app.filter_dialog.session_note.is_none(), "note dropped");
+            assert_eq!(
+                app.filter_dialog.save_name.as_deref(),
+                Some(""),
+                "prompt open"
+            );
+            Ok(())
+        }
+
+        /// F3 with no note copies nothing and queues no message.
+        #[test]
+        fn f3_without_a_note_copies_nothing() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            copy_session_entry_with(&mut app, fake_copy);
+            assert!(app.async_messages.lock().is_empty(), "no copy started");
+            assert!(
+                app.status_error.is_none(),
+                "no status: {:?}",
+                app.status_error
+            );
+            Ok(())
+        }
+
+        /// The entry line round-trips a definition with both quote kinds.
+        #[test]
+        fn the_entry_round_trips_quotes() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            let def = r#"from.user == "it's" OR to.user == 'say "hi"'"#;
+            app.filter_dialog.expression = def.into();
+            save_as(&mut app, "quoted");
+            let note = app
+                .filter_dialog
+                .session_note
+                .clone()
+                .ok_or_else(|| format!("no note; error {:?}", app.filter_dialog.error))?;
+            let doc: toml::Table = toml::from_str(&note.entry)?;
+            let back = doc.get("quoted").and_then(toml::Value::as_str);
+            assert_eq!(
+                back,
+                app.named_filters.expansion("quoted"),
+                "{}",
+                note.entry
+            );
+            Ok(())
+        }
+
+        /// The note's entry is the line a config file would hold.
+        #[test]
+        fn the_entry_is_the_config_line() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            let note = app.filter_dialog.session_note.clone().ok_or("no note")?;
+            assert_eq!(
+                note.entry,
+                crate::config::named_filter_entry_line("large", "msg_count > 5")?,
+                "one rule"
+            );
+            Ok(())
+        }
+
+        /// A session-only save does not apply the filter.
+        #[test]
+        fn a_session_only_save_does_not_apply_the_filter() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            let before = shown(&mut app);
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_eq!(shown(&mut app), before, "list unchanged");
+            assert!(app.active_filter.is_none(), "no filter in force");
+            Ok(())
+        }
+
+        static PUBLISHED: parking_lot::Mutex<Vec<Vec<String>>> =
+            parking_lot::Mutex::new(Vec::new());
+
+        /// A publisher that records the names of each table it is handed,
+        /// never touching the process's live table.
+        fn fake_publish(table: crate::sip::named_filters::NamedFilters) {
+            PUBLISHED
+                .lock()
+                .push(table.names().map(str::to_owned).collect());
+        }
+
+        /// Whether some recorded publish held exactly `names`.
+        fn was_published(names: &[&str]) -> bool {
+            PUBLISHED
+                .lock()
+                .iter()
+                .any(|t| t.iter().map(String::as_str).eq(names.iter().copied()))
+        }
+
+        /// A save to the file publishes the run's new table.
+        #[test]
+        fn a_file_save_publishes_the_table() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.filter_publisher = Some(fake_publish);
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "pubfile");
+            assert!(
+                was_published(&["big", "pubfile"]),
+                "published: {:?}",
+                PUBLISHED.lock()
+            );
+            Ok(())
+        }
+
+        /// A session-only save publishes the run's new table too.
+        #[test]
+        fn a_session_only_save_publishes_the_table() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_publisher = Some(fake_publish);
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "pubsession");
+            assert!(
+                was_published(&["big", "pubsession"]),
+                "published: {:?}",
+                PUBLISHED.lock()
+            );
+            Ok(())
+        }
+
+        /// A refused save publishes nothing.
+        #[test]
+        fn a_refused_save_publishes_nothing() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.filter_publisher = Some(fake_publish);
+            app.filter_dialog.expression = "msg_count >".into();
+            save_as(&mut app, "pubrefused");
+            assert!(
+                !PUBLISHED
+                    .lock()
+                    .iter()
+                    .any(|t| t.iter().any(|n| n == "pubrefused")),
+                "not published: {:?}",
+                PUBLISHED.lock()
+            );
+            Ok(())
+        }
+
+        /// With no publisher (a test app) a save still works.
+        #[test]
+        fn a_save_without_a_publisher_still_works() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.filter_publisher = None;
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            assert_eq!(
+                app.named_filters.expansion("large"),
+                Some("msg_count > 5"),
+                "saved"
+            );
+            Ok(())
+        }
+
+        /// Two session-only saves are both kept; the note is the second's.
+        #[test]
+        fn two_session_only_saves_are_both_kept() -> Result<(), TestError> {
+            let (mut app, _dir, _) = saving_app()?;
+            app.column_config_path = Err("not saved: test".into());
+            app.filter_dialog.expression = "msg_count > 5".into();
+            save_as(&mut app, "large");
+            app.filter_dialog.expression = "msg_count > 2".into();
+            save_as(&mut app, "medium");
+            assert_eq!(
+                app.filter_dialog.known_names,
+                ["big", "large", "medium"],
+                "both"
+            );
+            assert!(note_text(&app)?.contains("@medium"), "the second's note");
+            Ok(())
+        }
     }
 }

@@ -4600,6 +4600,102 @@ pub fn upsert_named_filter(
     Ok(doc.to_string())
 }
 
+/// What an operator can do when a save from the terminal UI cannot write its
+/// config file. Every such message ends with it.
+pub const SAVE_ADVICE: &str = "To save, run with `--config <writable file>` or set \
+     `$SIPNAB_CONFIG`, or fix the permissions";
+
+/// The `[filters]` entry line for `name` and `definition`, as
+/// [`upsert_named_filter`] writes it into a file: `name = "definition"`,
+/// quoted by `toml_edit`. Shown, and copied, when a name could not be saved.
+///
+/// # Errors
+/// As [`upsert_named_filter`] on an empty document.
+pub fn named_filter_entry_line(name: &str, definition: &str) -> Result<String, crate::Error> {
+    let doc = upsert_named_filter("", name, definition)?;
+    // The document is the `[filters]` header and the entry; a definition
+    // with a line break makes the entry a multi-line string, kept whole.
+    Ok(doc
+        .split_once('\n')
+        .map_or(doc.as_str(), |(_, entry)| entry)
+        .trim_end()
+        .to_owned())
+}
+
+/// `e` without the path context a wrapper added: `tempfile` wraps its OS
+/// error with the temp file's path (and drops the OS number), and a
+/// message must not name a temp file that was never made. Such an error
+/// keeps its kind.
+fn without_temp_path(e: std::io::Error) -> std::io::Error {
+    match e.raw_os_error() {
+        Some(n) => std::io::Error::from_raw_os_error(n),
+        None if e.get_ref().is_some() => std::io::Error::from(e.kind()),
+        None => e,
+    }
+}
+
+/// The error for an I/O failure of a TUI save at `step` (`read`, `create` or
+/// `write`) of `path`: [`crate::Error::ConfigUnwritable`] when the cause is
+/// permission or a read-only file system, which choosing another file or
+/// fixing the mode cures; else an ordinary refusal naming step and path.
+///
+/// The OS error is rebuilt from its number when it has one, so a message
+/// does not name the temp file the failed write would have made.
+fn save_io_error(step: &'static str, path: &Path, e: std::io::Error) -> crate::Error {
+    let e = without_temp_path(e);
+    match e.kind() {
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+            crate::Error::ConfigUnwritable {
+                action: step,
+                path: path.display().to_string(),
+                source: e,
+            }
+        }
+        // The read step reports its other failures itself
+        // ([`read_existing_sipnabrc`]), so only these two steps reach here.
+        _ if step == "create" => {
+            crate::Error::ConfigInvalid(format!("create {}: {e}", path.display()))
+        }
+        _ => crate::Error::ConfigInvalid(format!("write {}: {e}", path.display())),
+    }
+}
+
+/// The one path every save from the terminal UI takes: read the file (only
+/// a missing one counts as empty), apply `update` to its text, create the
+/// parent directory, refuse a file this process may not write, then write
+/// atomically.
+///
+/// The writability check exists because the atomic write is a rename: a
+/// directory this user may write lets the rename replace a file the user
+/// may not write (read-only, or another user's), silently. A regular file
+/// at `path`, or the file a symlink there points to, must open for writing;
+/// nothing is written through that open. A re-read catches a name another
+/// session saved before this read; a write by another process between the
+/// read and the rename is still lost (the rename replaces it).
+///
+/// # Errors
+/// As [`read_existing_sipnabrc`] and `update`; a directory that cannot be
+/// created, a file that may not be written, or a failed write (see
+/// [`save_io_error`]). On every error the file is unchanged and no temp
+/// file is left.
+fn update_sipnabrc_file(
+    path: &Path,
+    update: impl FnOnce(&str) -> Result<String, crate::Error>,
+) -> Result<(), crate::Error> {
+    let existing = read_existing_sipnabrc(path)?;
+    let updated = update(&existing)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| save_io_error("create", parent, e))?;
+    }
+    if std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|e| save_io_error("write", path, e))?;
+    }
+    write_sipnabrc_atomic(path, &updated)
+}
+
 /// Add one `[filters]` entry to the sipnabrc at `path`, keeping the rest of
 /// the file (see [`upsert_named_filter`]). Creates the file and its parent
 /// directory when needed.
@@ -4617,14 +4713,9 @@ pub fn write_named_filter_file(
     name: &str,
     definition: &str,
 ) -> Result<(), crate::Error> {
-    let existing = read_existing_sipnabrc(path)?;
-    let updated = upsert_named_filter(&existing, name, definition)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            crate::Error::ConfigInvalid(format!("create {}: {e}", parent.display()))
-        })?;
-    }
-    write_sipnabrc_atomic(path, &updated)
+    update_sipnabrc_file(path, |existing| {
+        upsert_named_filter(existing, name, definition)
+    })
 }
 
 /// Write `contents` to the sipnabrc at `path` atomically (native builds) so an
@@ -4649,7 +4740,7 @@ fn write_sipnabrc_atomic(path: &Path, contents: &str) -> Result<(), crate::Error
             std::fs::write(path, contents)
         }
     };
-    result.map_err(|e| crate::Error::ConfigInvalid(format!("write {}: {e}", path.display())))
+    result.map_err(|e| save_io_error("write", path, e))
 }
 
 /// Read an existing sipnabrc for a surgical update, or an empty string when
@@ -4666,6 +4757,10 @@ fn read_existing_sipnabrc(path: &Path) -> Result<String, crate::Error> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        // Permission: nothing is written, and the save can name the cure.
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(save_io_error("read", path, e))
+        }
         Err(e) => Err(crate::Error::ConfigInvalid(format!(
             "read {}: {e}. Refusing to save, because writing what was merged \
              into an empty file would replace the existing configuration",
@@ -4688,14 +4783,7 @@ fn read_existing_sipnabrc(path: &Path) -> Result<String, crate::Error> {
 /// directory, and rewrites the file atomically (temp-in-dir + rename via
 /// [`crate::capture::atomic::write_atomic`] in native builds).
 pub fn write_display_columns_file(path: &Path, columns: &[String]) -> Result<(), crate::Error> {
-    let existing = read_existing_sipnabrc(path)?;
-    let updated = upsert_display_columns(&existing, columns)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            crate::Error::ConfigInvalid(format!("create {}: {e}", parent.display()))
-        })?;
-    }
-    write_sipnabrc_atomic(path, &updated)
+    update_sipnabrc_file(path, |existing| upsert_display_columns(existing, columns))
 }
 
 /// The user's config file: `$XDG_CONFIG_HOME/sipnab/sipnab.toml`, else
@@ -4838,14 +4926,7 @@ pub fn write_manual_mappings_file(
     path: &Path,
     entries: &[(String, String)],
 ) -> Result<(), crate::Error> {
-    let existing = read_existing_sipnabrc(path)?;
-    let updated = upsert_manual_mappings(&existing, entries)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            crate::Error::ConfigInvalid(format!("create {}: {e}", parent.display()))
-        })?;
-    }
-    write_sipnabrc_atomic(path, &updated)
+    update_sipnabrc_file(path, |existing| upsert_manual_mappings(existing, entries))
 }
 
 /// Unit tests for config loading, TOML parsing, surgical sipnabrc
@@ -8014,6 +8095,687 @@ mod named_filter_write_tests {
             std::fs::read_to_string(&victim)?,
             "# do not touch\n",
             "the link target is untouched"
+        );
+        Ok(())
+    }
+}
+
+/// A save from the terminal UI where the config file may not be written:
+/// the three writers share one read-check-write path, and every failure
+/// that is about permission is [`crate::Error::ConfigUnwritable`], naming
+/// the path, the cause and what to do; nothing is written or left behind.
+#[cfg(all(test, unix, feature = "native"))]
+pub(crate) mod save_permission_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The probe of the `non-root` prerequisite for these cases: whether a
+    /// mode the case sets denies this process. Root, or a process holding
+    /// `CAP_DAC_OVERRIDE`, writes into a mode 0500 directory anyway, so the
+    /// case cannot be built.
+    ///
+    /// # Errors
+    /// When the process wrote where the mode denies it.
+    pub(crate) fn chmod_probe() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| format!("probe dir: {e}"))?;
+        let locked = Locked::new(dir.path().join("locked"), 0o500, true)
+            .map_err(|e| format!("probe chmod: {e}"))?;
+        let wrote = std::fs::write(locked.path.join("probe"), "x").is_ok();
+        drop(locked);
+        if wrote {
+            Err(
+                "this test process wrote into a mode 0500 directory: it runs as root \
+                 or holds CAP_DAC_OVERRIDE, so the permission the case denies is granted"
+                    .to_owned(),
+            )
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The `if` form: `true` to run.
+    fn denied() -> bool {
+        crate::test_prereq::present("non-root", crate::test_prereq::NON_ROOT, chmod_probe())
+    }
+
+    /// A file or directory set to a mode for one case; owner rwx (dirs) or
+    /// rw (files) again on drop, so the temp directory can be removed.
+    pub(crate) struct Locked {
+        /// The locked path.
+        pub(crate) path: PathBuf,
+        /// Whether it is a directory.
+        dir: bool,
+    }
+
+    impl Locked {
+        /// Create `path` (a directory when `dir`, else keep the existing
+        /// file) and set its mode.
+        pub(crate) fn new(path: PathBuf, mode: u32, dir: bool) -> std::io::Result<Self> {
+            if dir && !path.exists() {
+                std::fs::create_dir(&path)?;
+            }
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+            Ok(Self { path, dir })
+        }
+    }
+
+    impl Drop for Locked {
+        fn drop(&mut self) {
+            let mode = if self.dir { 0o700 } else { 0o600 };
+            let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(mode));
+        }
+    }
+
+    /// The names in `dir` that a write left behind as temp files.
+    pub(crate) fn temp_files(dir: &Path) -> Result<Vec<String>, TestError> {
+        let mut left = Vec::new();
+        for entry in std::fs::read_dir(dir)? {
+            let name = entry?.file_name().to_string_lossy().into_owned();
+            if name.starts_with(".sipnab-tmp-") {
+                left.push(name);
+            }
+        }
+        Ok(left)
+    }
+
+    /// The step and path of an unwritable error, or a test error naming
+    /// what came back.
+    fn unwritable(
+        result: Result<(), crate::Error>,
+    ) -> Result<(&'static str, String, std::io::ErrorKind), TestError> {
+        match result {
+            Err(crate::Error::ConfigUnwritable {
+                action,
+                path,
+                source,
+            }) => Ok((action, path, source.kind())),
+            other => Err(format!("expected ConfigUnwritable, got {other:?}").into()),
+        }
+    }
+
+    /// A writer under test, by name.
+    type Writer = fn(&Path) -> Result<(), crate::Error>;
+
+    fn filters_writer(p: &Path) -> Result<(), crate::Error> {
+        write_named_filter_file(p, "sales", "to.user == '7000'")
+    }
+    fn columns_writer(p: &Path) -> Result<(), crate::Error> {
+        write_display_columns_file(p, &["from".to_owned()])
+    }
+    fn names_writer(p: &Path) -> Result<(), crate::Error> {
+        write_manual_mappings_file(p, &[("192.0.2.1".to_owned(), "pbx".to_owned())])
+    }
+
+    const WRITERS: [(&str, Writer); 3] = [
+        ("filters", filters_writer),
+        ("columns", columns_writer),
+        ("names", names_writer),
+    ];
+
+    // ── failure ────────────────────────────────────────────────────────
+
+    /// An ancestor that may not be written: the directory cannot be
+    /// created, and the error names it.
+    #[test]
+    fn an_unwritable_ancestor_is_unwritable_at_create() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let _locked = Locked::new(dir.path().join("home"), 0o500, true)?;
+        let path = dir.path().join("home/.config/sipnab/sipnab.toml");
+        let (action, at, kind) = unwritable(filters_writer(&path))?;
+        assert_eq!(action, "create", "the directory step failed");
+        assert_eq!(
+            at,
+            dir.path().join("home/.config/sipnab").display().to_string(),
+            "names the directory"
+        );
+        assert_eq!(kind, std::io::ErrorKind::PermissionDenied, "the cause");
+        assert!(!dir.path().join("home/.config").exists(), "nothing created");
+        Ok(())
+    }
+
+    /// A directory that exists but may not be written: no temp file can be
+    /// made, and none is left.
+    #[test]
+    fn an_unwritable_directory_is_unwritable_at_write() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let locked = Locked::new(dir.path().join("conf"), 0o500, true)?;
+        let path = locked.path.join("sipnab.toml");
+        let (action, at, _) = unwritable(filters_writer(&path))?;
+        assert_eq!(action, "write", "the write step failed");
+        assert_eq!(at, path.display().to_string(), "names the file");
+        assert!(!path.exists(), "no file");
+        assert!(temp_files(&locked.path)?.is_empty(), "no temp file");
+        Ok(())
+    }
+
+    /// A read-only file in a writable directory is not replaced by the
+    /// rename, which the directory's mode alone would allow.
+    #[test]
+    fn a_read_only_file_is_not_replaced() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "# mine\n")?;
+        let _locked = Locked::new(path.clone(), 0o400, false)?;
+        let (action, at, _) = unwritable(filters_writer(&path))?;
+        assert_eq!(action, "write", "refused before the rename");
+        assert_eq!(at, path.display().to_string(), "names the file");
+        assert_eq!(
+            std::fs::read_to_string(&path)?,
+            "# mine\n",
+            "file unchanged"
+        );
+        assert!(temp_files(dir.path())?.is_empty(), "no temp file");
+        Ok(())
+    }
+
+    /// The refusal leaves the read-only file's mode as it was.
+    #[test]
+    fn a_read_only_file_keeps_its_mode() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "")?;
+        let _locked = Locked::new(path.clone(), 0o444, false)?;
+        unwritable(filters_writer(&path))?;
+        let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o444, "mode unchanged");
+        Ok(())
+    }
+
+    /// A symlink to a file this user may not write is not replaced, and the
+    /// file it points to is unchanged.
+    #[test]
+    fn a_symlink_to_a_read_only_file_is_not_replaced() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let target = dir.path().join("shared.toml");
+        std::fs::write(&target, "# shared\n")?;
+        let _locked = Locked::new(target.clone(), 0o444, false)?;
+        let link = dir.path().join("sipnab.toml");
+        std::os::unix::fs::symlink(&target, &link)?;
+        let (action, _, _) = unwritable(filters_writer(&link))?;
+        assert_eq!(action, "write", "refused before the rename");
+        assert!(
+            std::fs::symlink_metadata(&link)?.file_type().is_symlink(),
+            "still a link"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target)?,
+            "# shared\n",
+            "target unchanged"
+        );
+        assert!(temp_files(dir.path())?.is_empty(), "no temp file");
+        Ok(())
+    }
+
+    /// A file this user may not read is unwritable at the read step: what
+    /// it holds cannot be merged, so nothing is written.
+    #[test]
+    fn an_unreadable_file_is_unwritable_at_read() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "[filters]\nsales = \"x == 1\"\n")?;
+        let locked = Locked::new(path.clone(), 0o000, false)?;
+        let (action, at, kind) = unwritable(filters_writer(&path))?;
+        assert_eq!(action, "read", "the read step failed");
+        assert_eq!(at, path.display().to_string(), "names the file");
+        assert_eq!(kind, std::io::ErrorKind::PermissionDenied, "the cause");
+        drop(locked);
+        assert_eq!(
+            std::fs::read_to_string(&path)?,
+            "[filters]\nsales = \"x == 1\"\n",
+            "file unchanged"
+        );
+        Ok(())
+    }
+
+    /// A writable file in a directory that may not be written: the temp
+    /// file cannot be made, the file is unchanged.
+    #[test]
+    fn a_writable_file_in_an_unwritable_directory_is_unwritable() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let conf = dir.path().join("conf");
+        std::fs::create_dir(&conf)?;
+        let path = conf.join("sipnab.toml");
+        std::fs::write(&path, "# mine\n")?;
+        let locked = Locked::new(conf, 0o500, true)?;
+        let (action, _, _) = unwritable(filters_writer(&path))?;
+        assert_eq!(action, "write", "the temp file step failed");
+        assert_eq!(
+            std::fs::read_to_string(&path)?,
+            "# mine\n",
+            "file unchanged"
+        );
+        assert!(temp_files(&locked.path)?.is_empty(), "no temp file");
+        Ok(())
+    }
+
+    /// The column layout and the names saves share the path: a read-only
+    /// file is not replaced by either.
+    #[test]
+    fn every_writer_leaves_a_read_only_file() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        for (label, writer) in WRITERS {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("sipnab.toml");
+            std::fs::write(&path, "# mine\n")?;
+            let _locked = Locked::new(path.clone(), 0o444, false)?;
+            let (action, _, _) = unwritable(writer(&path)).map_err(|e| format!("{label}: {e}"))?;
+            assert_eq!(action, "write", "{label}: refused before the rename");
+            assert_eq!(
+                std::fs::read_to_string(&path)?,
+                "# mine\n",
+                "{label}: unchanged"
+            );
+        }
+        Ok(())
+    }
+
+    /// Every writer reports an unwritable ancestor the same way.
+    #[test]
+    fn every_writer_reports_an_unwritable_ancestor() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        for (label, writer) in WRITERS {
+            let dir = tempfile::tempdir()?;
+            let _locked = Locked::new(dir.path().join("home"), 0o500, true)?;
+            let path = dir.path().join("home/sipnab/sipnab.toml");
+            let (action, _, _) = unwritable(writer(&path)).map_err(|e| format!("{label}: {e}"))?;
+            assert_eq!(action, "create", "{label}: the directory step");
+        }
+        Ok(())
+    }
+
+    /// Every writer reports an unwritable directory, and leaves no temp.
+    #[test]
+    fn every_writer_reports_an_unwritable_directory() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        for (label, writer) in WRITERS {
+            let dir = tempfile::tempdir()?;
+            let locked = Locked::new(dir.path().join("conf"), 0o500, true)?;
+            let path = locked.path.join("sipnab.toml");
+            let (action, _, _) = unwritable(writer(&path)).map_err(|e| format!("{label}: {e}"))?;
+            assert_eq!(action, "write", "{label}: the write step");
+            assert!(
+                temp_files(&locked.path)?.is_empty(),
+                "{label}: no temp file"
+            );
+        }
+        Ok(())
+    }
+
+    /// A read-only file that already holds the name is a duplicate, not an
+    /// unwritable file: the name is taken.
+    #[test]
+    fn a_read_only_file_holding_the_name_is_a_duplicate() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "[filters]\nsales = \"x == 1\"\n")?;
+        let _locked = Locked::new(path.clone(), 0o444, false)?;
+        let err = filters_writer(&path).err().ok_or("refused")?;
+        assert!(
+            matches!(&err, crate::Error::ConfigInvalid(m) if m.contains("already defines 'sales'")),
+            "a duplicate: {err:?}"
+        );
+        Ok(())
+    }
+
+    /// A read-only file that is not valid TOML is refused as invalid.
+    #[test]
+    fn a_read_only_invalid_file_is_refused_as_invalid() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "[filters\n")?;
+        let _locked = Locked::new(path.clone(), 0o444, false)?;
+        let err = filters_writer(&path).err().ok_or("refused")?;
+        assert!(
+            matches!(&err, crate::Error::ConfigInvalid(m) if m.contains("not valid TOML")),
+            "invalid TOML: {err:?}"
+        );
+        Ok(())
+    }
+
+    /// The message names the path, the cause, and what to do.
+    #[test]
+    fn the_message_names_the_path_the_cause_and_what_to_do() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let locked = Locked::new(dir.path().join("conf"), 0o500, true)?;
+        let path = locked.path.join("sipnab.toml");
+        let text = filters_writer(&path).err().ok_or("refused")?.to_string();
+        assert!(text.contains(&path.display().to_string()), "path: {text}");
+        assert!(
+            text.to_lowercase().contains("permission denied"),
+            "cause: {text}"
+        );
+        assert!(
+            text.contains("--config <writable file>"),
+            "--config: {text}"
+        );
+        assert!(text.contains("$SIPNAB_CONFIG"), "env: {text}");
+        assert!(text.contains("fix the permissions"), "permissions: {text}");
+        assert!(!text.contains(".sipnab-tmp-"), "no temp file name: {text}");
+        Ok(())
+    }
+
+    // ── edge ───────────────────────────────────────────────────────────
+
+    /// Permission denied is a permission failure.
+    #[test]
+    fn permission_denied_is_unwritable() -> Result<(), TestError> {
+        let e = save_io_error(
+            "write",
+            Path::new("/x/sipnab.toml"),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert!(
+            matches!(
+                e,
+                crate::Error::ConfigUnwritable {
+                    action: "write",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        Ok(())
+    }
+
+    /// A read-only file system is a permission failure.
+    #[test]
+    fn a_read_only_file_system_is_unwritable() -> Result<(), TestError> {
+        let e = save_io_error(
+            "create",
+            Path::new("/x"),
+            std::io::Error::from(std::io::ErrorKind::ReadOnlyFilesystem),
+        );
+        assert!(
+            matches!(
+                e,
+                crate::Error::ConfigUnwritable {
+                    action: "create",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        Ok(())
+    }
+
+    /// A full disk is not about permission: it stays an ordinary failure.
+    #[test]
+    fn a_full_disk_is_not_unwritable() -> Result<(), TestError> {
+        let e = save_io_error(
+            "write",
+            Path::new("/x/sipnab.toml"),
+            std::io::Error::from(std::io::ErrorKind::StorageFull),
+        );
+        assert!(
+            matches!(&e, crate::Error::ConfigInvalid(m) if m.starts_with("write /x/sipnab.toml:")),
+            "{e:?}"
+        );
+        Ok(())
+    }
+
+    /// Any other I/O failure stays an ordinary failure naming step and path.
+    #[test]
+    fn other_io_failures_are_not_unwritable() -> Result<(), TestError> {
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::Other,
+            std::io::ErrorKind::IsADirectory,
+        ] {
+            let e = save_io_error("create", Path::new("/x"), std::io::Error::from(kind));
+            assert!(
+                matches!(&e, crate::Error::ConfigInvalid(m) if m.starts_with("create /x:")),
+                "{kind:?}: {e:?}"
+            );
+            let e = save_io_error("write", Path::new("/x"), std::io::Error::from(kind));
+            assert!(
+                matches!(&e, crate::Error::ConfigInvalid(m) if m.starts_with("write /x:")),
+                "{kind:?}: {e:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The I/O error is reachable as the source.
+    #[test]
+    fn the_cause_is_the_source() -> Result<(), TestError> {
+        let e = save_io_error(
+            "write",
+            Path::new("/x"),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        let source = std::error::Error::source(&e).ok_or("no source")?;
+        assert!(source.to_string().contains("ermission denied"), "{source}");
+        Ok(())
+    }
+
+    /// A directory at the path is still refused as unreadable, not as a
+    /// permission failure.
+    #[test]
+    fn a_directory_at_the_path_is_not_unwritable() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let err = filters_writer(dir.path()).err().ok_or("refused")?;
+        assert!(
+            matches!(&err, crate::Error::ConfigInvalid(m) if m.contains("Refusing to save")),
+            "{err:?}"
+        );
+        Ok(())
+    }
+
+    /// A dangling symlink is replaced by the new file, as before.
+    #[test]
+    fn a_dangling_symlink_is_replaced() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let link = dir.path().join("sipnab.toml");
+        std::os::unix::fs::symlink(dir.path().join("gone.toml"), &link)?;
+        filters_writer(&link)?;
+        assert!(
+            std::fs::symlink_metadata(&link)?.is_file(),
+            "a regular file now"
+        );
+        assert!(
+            !dir.path().join("gone.toml").exists(),
+            "the link target is not created"
+        );
+        Ok(())
+    }
+
+    /// The advice names both ways to choose a file and the permissions.
+    #[test]
+    fn the_advice_names_every_remedy() -> Result<(), TestError> {
+        for needle in [
+            "--config <writable file>",
+            "$SIPNAB_CONFIG",
+            "fix the permissions",
+        ] {
+            assert!(SAVE_ADVICE.contains(needle), "{needle}: {SAVE_ADVICE}");
+        }
+        Ok(())
+    }
+
+    /// The entry line round-trips definitions that need escaping.
+    #[test]
+    fn the_entry_line_round_trips_every_definition() -> Result<(), TestError> {
+        for def in [
+            "to.user == '7000'",
+            r#"from.user == "alice""#,
+            r"payload ~ 'a\\d+'",
+            "from.display == 'Zoë'",
+            "x == 'tab\there'",
+            "a == 'it''s' && b == \"q\\\"\"",
+        ] {
+            let line = named_filter_entry_line("sales", def)?;
+            let doc: toml::Table = toml::from_str(&line)?;
+            assert_eq!(
+                doc.get("sales").and_then(toml::Value::as_str),
+                Some(def),
+                "{def:?} as {line:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A name that TOML must quote round-trips as the key.
+    #[test]
+    fn the_entry_line_quotes_a_name_that_needs_it() -> Result<(), TestError> {
+        let line = named_filter_entry_line("a.b", "x == 1")?;
+        let doc: toml::Table = toml::from_str(&line)?;
+        assert_eq!(
+            doc.get("a.b").and_then(toml::Value::as_str),
+            Some("x == 1"),
+            "{line:?}"
+        );
+        Ok(())
+    }
+
+    // ── success ────────────────────────────────────────────────────────
+
+    /// The entry line is the one line a `[filters]` table holds.
+    #[test]
+    fn the_entry_line_is_name_equals_quoted_definition() -> Result<(), TestError> {
+        assert_eq!(
+            named_filter_entry_line("sales", "to.user == '7000'")?,
+            "sales = \"to.user == '7000'\"",
+            "one line, no header"
+        );
+        Ok(())
+    }
+
+    /// Under `[filters]` the entry line loads as the definition.
+    #[test]
+    fn the_entry_line_loads_under_filters() -> Result<(), TestError> {
+        let line = named_filter_entry_line("sales", "to.user == '7000'")?;
+        let config: Config = toml::from_str(&format!("[filters]\n{line}\n"))?;
+        assert_eq!(
+            config.filters.get("sales").map(String::as_str),
+            Some("to.user == '7000'"),
+            "loads"
+        );
+        Ok(())
+    }
+
+    /// A definition holding a line break (the dialog's field cannot type
+    /// one; a `[filters]` entry can) still round-trips: the entry is every
+    /// line the file would hold, not only the first.
+    #[test]
+    fn a_definition_with_a_line_break_round_trips() -> Result<(), TestError> {
+        let line = named_filter_entry_line("sales", "a == 'x'\n|| b == 'y'")?;
+        assert!(!line.starts_with('['), "no header: {line:?}");
+        let doc: toml::Table = toml::from_str(&line)?;
+        assert_eq!(
+            doc.get("sales").and_then(toml::Value::as_str),
+            Some("a == 'x'\n|| b == 'y'"),
+            "{line:?}"
+        );
+        Ok(())
+    }
+
+    /// A writable existing file is still updated, by every writer.
+    #[test]
+    fn every_writer_updates_a_writable_file() -> Result<(), TestError> {
+        for (label, writer) in WRITERS {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("sipnab.toml");
+            std::fs::write(&path, "# mine\n")?;
+            writer(&path).map_err(|e| format!("{label}: {e}"))?;
+            let text = std::fs::read_to_string(&path)?;
+            assert!(
+                text.contains("# mine\n"),
+                "{label}: kept the comment: {text}"
+            );
+            assert!(text.len() > "# mine\n".len(), "{label}: added: {text}");
+            assert!(temp_files(dir.path())?.is_empty(), "{label}: no temp file");
+        }
+        Ok(())
+    }
+
+    /// A missing file in a writable directory is created, by every writer.
+    #[test]
+    fn every_writer_creates_a_missing_file() -> Result<(), TestError> {
+        for (label, writer) in WRITERS {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("a/b/sipnab.toml");
+            writer(&path).map_err(|e| format!("{label}: {e}"))?;
+            assert!(path.is_file(), "{label}: created");
+        }
+        Ok(())
+    }
+
+    /// An owner-only file is the user's: it is updated.
+    #[test]
+    fn an_owner_only_file_is_updated() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        filters_writer(&path)?;
+        assert!(std::fs::read_to_string(&path)?.contains("sales"), "written");
+        Ok(())
+    }
+
+    /// A symlink to a writable file is replaced by a regular file and the
+    /// target is untouched, as before the writability check.
+    #[test]
+    fn a_symlink_to_a_writable_file_is_still_replaced() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let target = dir.path().join("shared.toml");
+        std::fs::write(&target, "# shared\n")?;
+        let link = dir.path().join("sipnab.toml");
+        std::os::unix::fs::symlink(&target, &link)?;
+        filters_writer(&link)?;
+        assert!(std::fs::symlink_metadata(&link)?.is_file(), "replaced");
+        assert_eq!(
+            std::fs::read_to_string(&target)?,
+            "# shared\n",
+            "target untouched"
+        );
+        Ok(())
+    }
+
+    /// The probe itself runs: this process can make and lock a directory.
+    #[test]
+    fn the_probe_answers() -> Result<(), TestError> {
+        let answer = chmod_probe();
+        assert!(
+            answer.is_ok() || answer.as_ref().is_err_and(|why| why.contains("root")),
+            "{answer:?}"
         );
         Ok(())
     }
