@@ -7995,7 +7995,7 @@ instead of hyphen) answers:
 filter: unexpected input at position 0: 'slow_setup'
   slow_setup
   ^
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 
@@ -11791,7 +11791,7 @@ curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/f
   "schema_version": 1,
   "expr": "state == Failed AND response_code = 486",
   "valid": false,
-  "error": "unexpected input at position 34: '='\n  state == Failed AND response_code = 486\n                                    ^\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
+  "error": "unexpected input at position 34: '='\n  state == Failed AND response_code = 486\n                                    ^\nvalid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
   "position": 34
 }
 ```
@@ -19025,6 +19025,73 @@ count of calls.
 - **The new session shows more calls.** The run used an option the command
   does not carry, such as a capture filter. Add it to the command.
 
+### Save the dialog's filter under a name
+
+`F2` in the filter dialog saves the dialog's filter as a `[filters]` entry
+of your config file. The name is then listed beside **Named filter**, and
+`@name` works wherever sipnab takes a filter: `--filter`, the REST `filter`
+parameter, an MCP tool's `filter`, and the dialog itself.
+
+**What you need:**
+
+- A config file the session may write: the file the run loaded, or, when it
+  loaded none, `~/.config/sipnab/sipnab.toml` (sipnab creates it). The same
+  file `F10` saves the column layout to. A run that loaded
+  `/etc/sipnab/sipnab.toml` cannot save.
+- Nothing changes on any other system.
+
+**Steps:**
+
+1. Press `F7` and fill the fields, the Named filter, or the Expression, as
+   above. After and Before stay empty: an entry holds an expression only.
+2. Press `F2`. The key line becomes a prompt:
+
+   ```text
+   Save as: @▁ · Enter save · Esc back
+   ```
+
+3. Type the name, for example `alice-big`, and press `Enter`. The dialog
+   shows `Saved @alice-big to` and the file's path, and the name joins the
+   list beside Named filter.
+4. Press `Esc` to close the dialog, or `Enter` to apply the filter as well.
+   Saving does not apply it.
+
+A name is 1 to 64 ASCII letters, digits, `-` or `_`, starting with a letter
+or digit. sipnab drops a leading `@` you type. The entry is the expression the
+dialog builds, with each `@name` and the Named filter kept as references, so
+it follows the entries it names. sipnab saves a built-in alias typed as the
+whole Expression, such as `problems`, as `@problems`. sipnab adds the one
+line to `[filters]` and keeps every comment and other setting of the file:
+
+```toml
+[filters]
+alice-big = "from.user =~ 'alice' AND (msg_count > 5)"
+```
+
+**Check that it worked:** open the file and find the line under
+`[filters]`. Then type the name in Named filter and press `Enter`: the call
+list shows the calls the dialog's filter selected. A new session lists the
+name beside Named filter too.
+
+**When it does not work:**
+
+- **`Nothing to save`.** Every field is empty, or the dialog has no SIP
+  method checked. Fill a field, or check a method.
+- **`A named filter holds no time window`.** Clear After and Before, then
+  press `F2` again.
+- **`already defines 'name'`.** The run, or the file, already has that
+  name. Choose another name, or edit the entry in the file. A save never
+  replaces an entry.
+- **`is not usable`** or **`is a built-in alias`.** The name breaks the
+  rule above or is one of the built-in aliases. Choose another name.
+- **`is not a valid filter expression`.** The Expression does not parse.
+  `Esc` closes the prompt; correct the field and press `F2` again.
+- **`Named filter not saved`.** The session has no file it may write. Start
+  sipnab with `--config` naming a file you own.
+- **The REST API or MCP server of the same session does not know the
+  name.** They read `[filters]` when the run starts. Restart sipnab to use
+  the name there.
+
 ## Find the calls sipnab diagnosed
 
 The Call List marks a call sipnab diagnosed as broken. Open
@@ -20065,6 +20132,7 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 | Left / Right | Move within checkboxes or text cursor |
 | Space | Toggle checkbox / activate button |
 | F1 | Show or hide the Filter DSL field names and operators in place of the method boxes. Esc hides them first |
+| F2 | Save the dialog's filter as a `[filters]` entry: type the name, Enter saves, Esc closes the prompt. See [Save the dialog's filter under a name](tui-walkthrough.md#save-the-dialogs-filter-under-a-name) |
 | F9 | Clear all fields, the Expression field included, and the active filter, close popup |
 | Backspace / Delete | Text editing in focused text field |
 | Home / End | Jump to start/end of text field |
@@ -25469,6 +25537,30 @@ You saved the column layout from the terminal UI (the `s` action in the F10 colu
 **What to do:** Correct the pattern so it is a valid regular expression, or remove the key. Characters such as `(`, `[` and `+` have a special meaning and need a `\` before them to match literally.
 
 **Exit code:** 1.
+
+### `[filters] already defines '{name}'; choose another name, or edit that entry in the config file`
+
+You pressed `F2` in the terminal UI filter dialog and typed a name. The run's named filters, or the `[filters]` table of the configuration file, already hold `{name}`.
+
+- A save never replaces an entry. The file's own `[filters]` can hold a name the run lacks when someone edited the file after sipnab started.
+- sipnab writes nothing, and the named filters of the run stay as they were.
+- The dialog shows the line, after `Save failed: invalid config value: ` when the file holds the name.
+
+**What to do:** Type another name, or edit that entry in the configuration file. See [Save the dialog's filter under a name](tui-walkthrough.md#save-the-dialogs-filter-under-a-name).
+
+**Exit code:** None. sipnab shows the error in the filter dialog, and the run continues.
+
+### `[filters] is not a table`
+
+You pressed `F2` in the terminal UI filter dialog to save a named filter. sipnab could not add the entry to the configuration file.
+
+- The reason: the file defines `filters` as a plain value instead of a `[filters]` table (section).
+- sipnab writes nothing.
+- The dialog shows `Save failed: invalid config value: [filters] is not a table`.
+
+**What to do:** Edit the configuration file so `filters` is a `[filters]` section, then save again.
+
+**Exit code:** None. sipnab shows the error in the filter dialog, and the run continues.
 
 ### `ignoring invalid [display] from_to = {s:?}`
 
@@ -33777,7 +33869,7 @@ sipnab -N -I capture.pcap --filter 'method == INVITE extra'
 Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
   method == INVITE extra
             ^
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 
@@ -33793,7 +33885,7 @@ Invalid --filter expression: unexpected input at position 0: 'nosuch'
   ^
 hint: unknown field 'nosuch'
 valid fields: from.user, to.user, from.host, to.host, from.uri, to.uri, ruri, pai.user, method, ua, call_id, payload, src.ip, dst.ip, src.port, dst.port, state, duration, msg_count, response_code, final_status_code, response_class, pdd, setup_time, retransmits, rtp.mos, rtp.jitter, rtp.loss, rtp.packets, rtp.codec, rtp.codecs, rtp.ssrc, side, endpoint, one_way, nat_mismatch, no_media, codec_asymmetry, ptime_asymmetry, payload_asymmetry, duration_asymmetry, late_media, time, header.<name>
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 
@@ -47211,7 +47303,7 @@ expansion of an alias or an `@name`. [`GET
   "schema_version": 1,
   "expr": "state = Failed",
   "valid": false,
-  "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
+  "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
   "position": 6,
   "total_matched": null,
   "total_dialogs": 2,

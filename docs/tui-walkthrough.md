@@ -363,6 +363,73 @@ count of calls.
 - **The new session shows more calls.** The run used an option the command
   does not carry, such as a capture filter. Add it to the command.
 
+### Save the dialog's filter under a name
+
+`F2` in the filter dialog saves the dialog's filter as a `[filters]` entry
+of your config file. The name is then listed beside **Named filter**, and
+`@name` works wherever sipnab takes a filter: `--filter`, the REST `filter`
+parameter, an MCP tool's `filter`, and the dialog itself.
+
+**What you need:**
+
+- A config file the session may write: the file the run loaded, or, when it
+  loaded none, `~/.config/sipnab/sipnab.toml` (sipnab creates it). The same
+  file `F10` saves the column layout to. A run that loaded
+  `/etc/sipnab/sipnab.toml` cannot save.
+- Nothing changes on any other system.
+
+**Steps:**
+
+1. Press `F7` and fill the fields, the Named filter, or the Expression, as
+   above. After and Before stay empty: an entry holds an expression only.
+2. Press `F2`. The key line becomes a prompt:
+
+   ```text
+   Save as: @▁ · Enter save · Esc back
+   ```
+
+3. Type the name, for example `alice-big`, and press `Enter`. The dialog
+   shows `Saved @alice-big to` and the file's path, and the name joins the
+   list beside Named filter.
+4. Press `Esc` to close the dialog, or `Enter` to apply the filter as well.
+   Saving does not apply it.
+
+A name is 1 to 64 ASCII letters, digits, `-` or `_`, starting with a letter
+or digit. sipnab drops a leading `@` you type. The entry is the expression the
+dialog builds, with each `@name` and the Named filter kept as references, so
+it follows the entries it names. sipnab saves a built-in alias typed as the
+whole Expression, such as `problems`, as `@problems`. sipnab adds the one
+line to `[filters]` and keeps every comment and other setting of the file:
+
+```toml
+[filters]
+alice-big = "from.user =~ 'alice' AND (msg_count > 5)"
+```
+
+**Check that it worked:** open the file and find the line under
+`[filters]`. Then type the name in Named filter and press `Enter`: the call
+list shows the calls the dialog's filter selected. A new session lists the
+name beside Named filter too.
+
+**When it does not work:**
+
+- **`Nothing to save`.** Every field is empty, or the dialog has no SIP
+  method checked. Fill a field, or check a method.
+- **`A named filter holds no time window`.** Clear After and Before, then
+  press `F2` again.
+- **`already defines 'name'`.** The run, or the file, already has that
+  name. Choose another name, or edit the entry in the file. A save never
+  replaces an entry.
+- **`is not usable`** or **`is a built-in alias`.** The name breaks the
+  rule above or is one of the built-in aliases. Choose another name.
+- **`is not a valid filter expression`.** The Expression does not parse.
+  `Esc` closes the prompt; correct the field and press `F2` again.
+- **`Named filter not saved`.** The session has no file it may write. Start
+  sipnab with `--config` naming a file you own.
+- **The REST API or MCP server of the same session does not know the
+  name.** They read `[filters]` when the run starts. Restart sipnab to use
+  the name there.
+
 ## Find the calls sipnab diagnosed
 
 The Call List marks a call sipnab diagnosed as broken. Open

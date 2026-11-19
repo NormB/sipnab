@@ -1096,6 +1096,30 @@ You saved the column layout from the terminal UI (the `s` action in the F10 colu
 
 **Exit code:** 1.
 
+### `[filters] already defines '{name}'; choose another name, or edit that entry in the config file`
+
+You pressed `F2` in the terminal UI filter dialog and typed a name. The run's named filters, or the `[filters]` table of the configuration file, already hold `{name}`.
+
+- A save never replaces an entry. The file's own `[filters]` can hold a name the run lacks when someone edited the file after sipnab started.
+- sipnab writes nothing, and the named filters of the run stay as they were.
+- The dialog shows the line, after `Save failed: invalid config value: ` when the file holds the name.
+
+**What to do:** Type another name, or edit that entry in the configuration file. See [Save the dialog's filter under a name](@/docs/tui.md#save-the-dialog-s-filter-under-a-name).
+
+**Exit code:** None. sipnab shows the error in the filter dialog, and the run continues.
+
+### `[filters] is not a table`
+
+You pressed `F2` in the terminal UI filter dialog to save a named filter. sipnab could not add the entry to the configuration file.
+
+- The reason: the file defines `filters` as a plain value instead of a `[filters]` table (section).
+- sipnab writes nothing.
+- The dialog shows `Save failed: invalid config value: [filters] is not a table`.
+
+**What to do:** Edit the configuration file so `filters` is a `[filters]` section, then save again.
+
+**Exit code:** None. sipnab shows the error in the filter dialog, and the run continues.
+
 ### `ignoring invalid [display] from_to = {s:?}`
 
 `[display] from_to` holds a value that names no From/To column mode, and sipnab ignores it. sipnab refuses such a value when it loads the config file, with the message `[display] from_to must be one of default, host-port, user, user-host-port`. sipnab reaches this warning only for a configuration built without loading a file.

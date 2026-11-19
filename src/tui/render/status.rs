@@ -543,6 +543,7 @@ pub(in crate::tui) fn fkey_bar_items(
                     ("Esc", "Cancel"),
                     ("F9", "Clear"),
                     ("F1", "Fields"),
+                    ("F2", "Save as"),
                 ]
             }
             Popup::SettingsDialog => {
@@ -2074,6 +2075,17 @@ mod tests {
         }
         assert!(row.contains("Format"));
         Ok(())
+    }
+
+    /// The filter dialog's bar names F2, which saves the dialog's filter
+    /// under a name.
+    #[test]
+    fn the_filter_dialog_bar_names_f2() {
+        let items = fkey_bar_items(&View::CallList, &Some(Popup::FilterDialog), 120, false);
+        assert!(
+            items.contains(&("F2", "Save as")),
+            "the bar lists F2: {items:?}"
+        );
     }
 
     /// The file-open dialog's bar names the keys of the mode it is in. It

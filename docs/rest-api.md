@@ -930,7 +930,7 @@ instead of hyphen) answers:
 filter: unexpected input at position 0: 'slow_setup'
   slow_setup
   ^
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 
@@ -4726,7 +4726,7 @@ curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/f
   "schema_version": 1,
   "expr": "state == Failed AND response_code = 486",
   "valid": false,
-  "error": "unexpected input at position 34: '='\n  state == Failed AND response_code = 486\n                                    ^\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
+  "error": "unexpected input at position 34: '='\n  state == Failed AND response_code = 486\n                                    ^\nvalid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
   "position": 34
 }
 ```

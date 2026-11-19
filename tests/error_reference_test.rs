@@ -1053,7 +1053,10 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // the ends of the download a root install runs as another user: it failed,
 // a signal ended it, it sent more than a table file, it had no output, and a
 // platform with no unix user ids cannot start it.
-const EXPECTED_TEMPLATES: usize = 685;
+// 685 -> 687 (TUI-FILTER-FOLLOWUPS, F2 save as a named filter): +2 in
+// src/config.rs, a `[filters]` that already holds the name and a `filters`
+// that is not a table.
+const EXPECTED_TEMPLATES: usize = 687;
 
 // ---------------------------------------------------------------------------
 // The page gates

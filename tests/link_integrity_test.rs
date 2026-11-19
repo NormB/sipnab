@@ -1917,7 +1917,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // same filter from a shell" links the "Copying text" section of
     // keybindings.md); docs/keybindings.md 1 (the call list's `Y` row links
     // "Run the same filter from a shell").
-    // 2720 -> 2753 (named filters over REST and MCP, +33): docs/rest-api.md
+    // 2720 -> 2722 (TUI-FILTER-FOLLOWUPS, F2 save, +2): docs/keybindings.md 1
+    // (the filter popup's `F2` row links "Save the dialog's filter under a
+    // name"); docs/errors.md 1 (the `[filters] already defines` entry links
+    // that section).
+    // 2722 -> 2755 (named filters over REST and MCP, +33): docs/rest-api.md
     // 8 (the `named` row, the two route sections and two how-tos; its sample
     // capture link is not intra-docs); docs/mcp-tools-signaling.md 14 (the
     // `list_named_filters` section and row, `validate_filter`'s position
@@ -1925,7 +1929,7 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/mcp-tools-core.md 4, docs/filter-dsl.md 3, docs/mcp-tools.md 2,
     // docs/mcp-tools-security.md 1 and docs/mcp-tools-vcon.md 1 (the `named`
     // rows and the index row).
-    const EXPECTED_WIKI_LINKS: usize = 2753;
+    const EXPECTED_WIKI_LINKS: usize = 2755;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

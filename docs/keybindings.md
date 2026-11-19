@@ -710,6 +710,7 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 | Left / Right | Move within checkboxes or text cursor |
 | Space | Toggle checkbox / activate button |
 | F1 | Show or hide the Filter DSL field names and operators in place of the method boxes. Esc hides them first |
+| F2 | Save the dialog's filter as a `[filters]` entry: type the name, Enter saves, Esc closes the prompt. See [Save the dialog's filter under a name](tui-walkthrough.md#save-the-dialogs-filter-under-a-name) |
 | F9 | Clear all fields, the Expression field included, and the active filter, close popup |
 | Backspace / Delete | Text editing in focused text field |
 | Home / End | Jump to start/end of text field |

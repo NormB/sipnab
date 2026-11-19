@@ -1188,6 +1188,12 @@ pub struct FilterDialogState {
     /// Whether `F1` has put the Filter DSL's field help in the lower part of
     /// the dialog. Off each time the dialog opens.
     pub(in crate::tui) show_help: bool,
+    /// The name typed into the `F2` "Save as" prompt; `Some` while the
+    /// prompt is open, when the dialog's other keys wait for it.
+    pub(in crate::tui) save_name: Option<String>,
+    /// The line a successful save leaves in the dialog: the name and the
+    /// file it went to. Cleared when the dialog opens.
+    pub(in crate::tui) notice: Option<String>,
 }
 
 impl Default for FilterDialogState {
@@ -1213,6 +1219,8 @@ impl Default for FilterDialogState {
             cursor_pos: 0,
             error: None,
             show_help: false,
+            save_name: None,
+            notice: None,
         }
     }
 }

@@ -22,7 +22,7 @@ expression: output
   │  INFO      [*]                       UPDATE    [*]                       │
   │     [ Filter ]                           [ Cancel ]                      │
   │                                                                          │
-  │  Tab move · Enter apply · Esc cancel · F1 fields                         │
+  │  Tab move · Enter apply · Esc cancel · F1 fields · F2 save               │
   │                                                                          │
   └──────────────────────────────────────────────────────────────────────────┘
-Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear  F1 Fields
+Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear  F1 Fields  F2 Save as
