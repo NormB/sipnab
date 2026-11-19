@@ -16,8 +16,9 @@
 //! route and tool call to report the parser's message and position.
 //!
 //! The `[filters]` table is an argument everywhere here, so every function
-//! can be driven with any table. The surfaces pass the table the run
-//! installed at startup ([`super::named_filters::installed`]).
+//! can be driven with any table. The surfaces pass the run's live table as
+//! it is when the request arrives ([`super::named_filters::installed`]): the
+//! startup table, plus each name the terminal UI saved since.
 
 use super::dsl::{AliasThresholds, DIAGNOSTIC_ALIASES, FilterExpr};
 use super::named_filters::NamedFilters;

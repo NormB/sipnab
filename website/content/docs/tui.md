@@ -377,14 +377,16 @@ count of calls.
 `F2` in the filter dialog saves the dialog's filter as a `[filters]` entry
 of your config file. The name is then listed beside **Named filter**, and
 `@name` works wherever sipnab takes a filter: `--filter`, the REST `filter`
-parameter, an MCP tool's `filter`, and the dialog itself.
+parameter, an MCP tool's `filter`, and the dialog itself. The REST API and
+MCP server of the same session resolve the name at once, with no restart.
 
 **What you need:**
 
 - A config file the session may write: the file the run loaded, or, when it
   loaded none, `~/.config/sipnab/sipnab.toml` (sipnab creates it). The same
   file `F10` saves the column layout to. A run that loaded
-  `/etc/sipnab/sipnab.toml` cannot save.
+  `/etc/sipnab/sipnab.toml` cannot save to a file. Without a file sipnab
+  can write, the name still works, for this session only (see below).
 - Nothing changes on any other system.
 
 **Steps:**
@@ -433,11 +435,40 @@ name beside Named filter too.
   rule above or is one of the built-in aliases. Choose another name.
 - **`is not a valid filter expression`.** The Expression does not parse.
   `Esc` closes the prompt; correct the field and press `F2` again.
-- **`Named filter not saved`.** The session has no file it may write. Start
-  sipnab with `--config` naming a file you own.
-- **The REST API or MCP server of the same session does not know the
-  name.** They read `[filters]` when the run starts. Restart sipnab to use
-  the name there.
+- **`Kept @name for this session only`.** sipnab could not write a config
+  file, so the name is in the running session only: listed beside Named
+  filter and usable as `@name` in the dialog, the REST API and the MCP
+  server, until sipnab exits. sipnab never writes it later. The note names
+  the reason:
+  - `cannot create <directory>`: a directory on the way to the file does
+    not exist, and you may not create it.
+  - `cannot write <file>`: you may not write the file (its mode, or another
+    user owns it), or you may not write its directory. sipnab does not
+    replace a file you may not write.
+  - `cannot read <file>`: you may not read the file. sipnab also could not
+    check whether the file already defines the name.
+  - `not saved: the settings in use come from /etc/sipnab/sipnab.toml`, or
+    no `$HOME`: there is no file to write.
+
+  To keep the name, start sipnab with `--config <writable file>` or set
+  `$SIPNAB_CONFIG` to a file you may write, or fix the permissions of the
+  file or directory the note names. Then add the entry the note shows under
+  `[filters]` in that file. `F3` copies the entry line to the clipboard, and
+  `Esc` closes the note. sipnab refuses a second save of the same name in
+  the same session as a duplicate.
+- **`Save failed`.** sipnab could not write the file for a reason other
+  than permission, such as a full disk, and nothing changed. The message
+  names the file and the cause.
+- **`not valid TOML`** or **`[filters] is not a table`.** The config file
+  has an error; nothing changed. Fix the file and press `F2` again.
+- **`Refusing to save`.** The path is a directory, or the file is not valid
+  UTF-8; nothing changed.
+- **A save writes, but another sipnab session saved to the same file at the
+  same moment.** sipnab reads the file just before it writes it, so it
+  finds a name the other session saved earlier and refuses it as a
+  duplicate. Two
+  saves that run at the same instant can still lose one of them: check the
+  file, and save the lost name again.
 
 ## Find the calls sipnab diagnosed
 

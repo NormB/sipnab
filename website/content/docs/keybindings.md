@@ -1160,6 +1160,13 @@ Each label says what its field matches:
 > **Tip:** Press `F9` to clear every field and the method boxes at once,
 the Expression field included.
 
+`F2` saves the dialog's filter under a name in `[filters]`. When sipnab may
+write no config file, it keeps the name for the session and the dialog shows
+the entry to add to a file. `F3` copies that entry, and `Esc` closes the
+note. [Save the dialog's filter under a
+name](@/docs/tui.md#save-the-dialog-s-filter-under-a-name) walks through
+it.
+
 Status line 3 shows the applied selections as a summary, one short item per
 field:
 

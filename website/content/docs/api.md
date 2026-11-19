@@ -4659,14 +4659,17 @@ that renders it treats it as untrusted text.
 
 ### GET /v1/filters
 
-The [named filters](@/docs/filter-dsl.md#named-filters) this run started with: each
+The [named filters](@/docs/filter-dsl.md#named-filters) of this run: each
 `[filters]` entry's name and its definition as the config file writes it.
 The `named` parameter of `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates`
 and `/v1/talkers` takes one of these names, and a `filter` expression refers
 to one as `@name`. The route takes no parameters and reads no dialog.
 
-sipnab resolves the table once, when it starts, so the answer does not change
-while the server runs. An empty `filters` list means the config defines none.
+sipnab resolves the table when it starts. A name saved with `F2` in the
+terminal UI of the same run joins the table at once, whether sipnab wrote it
+to the config file or kept it for the session only, and the list, `named`
+and `@name` take it from then on. An empty `filters` list means the run
+defines none.
 The MCP tool [`list_named_filters`](@/docs/mcp-tools-signaling.md#list-named-filters)
 returns the same answer.
 

@@ -507,6 +507,7 @@ impl TuiOptions {
         app.declared_one_way_delay_ms = self.declared_one_way_delay_ms;
         app.quality_bands = self.quality_bands;
         app.alias_thresholds = self.alias_thresholds;
+        app.filter_publisher = Some(crate::sip::named_filters::publish);
         app.set_protected_inputs(self.protected_inputs);
         app.set_bpf_filter(self.bpf_filter, self.bpf_filter_generated);
         app.set_resolver(self.name_setup.resolver);
@@ -1194,6 +1195,21 @@ pub struct FilterDialogState {
     /// The line a successful save leaves in the dialog: the name and the
     /// file it went to. Cleared when the dialog opens.
     pub(in crate::tui) notice: Option<String>,
+    /// Set when the last `F2` save kept the name for this session only,
+    /// because no config file could be written: shown in the lower part of
+    /// the dialog until Esc, F2 or the dialog opening again.
+    pub(in crate::tui) session_note: Option<SessionNote>,
+}
+
+/// A named filter kept for this session only: why it is not in a file, and
+/// the `[filters]` entry line to add to one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::tui) struct SessionNote {
+    /// The lines shown: what happened, why (path and cause), what to do.
+    pub(in crate::tui) lines: Vec<String>,
+    /// `name = "definition"`, quoted as a config file holds it; `F3`
+    /// copies it.
+    pub(in crate::tui) entry: String,
 }
 
 impl Default for FilterDialogState {
@@ -1221,6 +1237,7 @@ impl Default for FilterDialogState {
             show_help: false,
             save_name: None,
             notice: None,
+            session_note: None,
         }
     }
 }

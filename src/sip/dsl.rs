@@ -830,7 +830,7 @@ pub fn resolve_filter_text<'a>(input: &'a str, t: &AliasThresholds) -> std::borr
     if let Some(expansion) = expand_alias(input, t) {
         return std::borrow::Cow::Owned(expansion);
     }
-    resolve_references(input, super::named_filters::installed(), t)
+    resolve_references(input, &super::named_filters::installed(), t)
 }
 
 /// `input` with each `@name` replaced through `filters` (and the built-in
@@ -1067,7 +1067,7 @@ impl FilterExpr {
                 "{}",
                 super::named_filters::unknown_reference_message(
                     name,
-                    super::named_filters::installed()
+                    &super::named_filters::installed()
                 )
             );
         }

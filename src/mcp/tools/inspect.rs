@@ -298,7 +298,7 @@ impl SipnabMcp {
         // config, and nothing here was read off the wire.
         Ok(CallToolResult::success(vec![ContentBlock::json(
             crate::output::query::named_filters::named_filter_list(
-                crate::sip::named_filters::installed(),
+                &crate::sip::named_filters::installed(),
             ),
         )?]))
     }
@@ -346,7 +346,7 @@ impl SipnabMcp {
         // no tool. Called directly so the parser's position is kept.
         let compiled = crate::sip::filter_request::check_expression(
             &params.expr,
-            crate::sip::named_filters::installed(),
+            &crate::sip::named_filters::installed(),
             &self.alias_thresholds,
         );
 
@@ -1072,7 +1072,7 @@ mod tests {
             let v = validated(expr).await?;
             let rest = crate::output::query::named_filters::filter_validation(
                 expr,
-                crate::sip::named_filters::installed(),
+                &crate::sip::named_filters::installed(),
                 &Default::default(),
             );
             assert_eq!(
@@ -1139,7 +1139,7 @@ mod tests {
                 .map_err(|e| format!("the call succeeds: {e:?}"))?,
         )?;
         let rest = crate::output::query::named_filters::named_filter_list(
-            crate::sip::named_filters::installed(),
+            &crate::sip::named_filters::installed(),
         );
         assert_eq!(
             v,
@@ -1326,7 +1326,7 @@ mod tests {
     async fn an_unknown_name_is_refused_on_every_tool() -> Result<(), TestError> {
         let want = crate::sip::named_filters::unknown_reference_message(
             "support",
-            crate::sip::named_filters::installed(),
+            &crate::sip::named_filters::installed(),
         );
         for (tool, base) in filter_tools() {
             let e = refusal(tool, &base, serde_json::json!({"named": "support"})).await?;

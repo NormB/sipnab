@@ -4887,7 +4887,7 @@ pub(crate) fn compile_query_filter(
     crate::sip::filter_request::compile_request(
         filter,
         named,
-        crate::sip::named_filters::installed(),
+        &crate::sip::named_filters::installed(),
         thresholds,
     )
     .map_err(|e| {
@@ -4930,7 +4930,7 @@ pub struct FilterValidateParams {
     path = "/v1/filters",
     tag = "filters",
     summary = "List the named filters",
-    description = "The `[filters]` table this run started with: each entry's name, which the `named` parameter takes and `@name` refers to, and its definition as the config file writes it. The table is resolved once at startup and does not change while the server runs.\n\nThe MCP `list_named_filters` tool returns the same answer.",
+    description = "The `[filters]` table of this run: each entry's name, which the `named` parameter takes and `@name` refers to, and its definition as the config file writes it. The table is resolved at startup; a name saved with F2 in the terminal UI of the same run joins it at once, written to the config file or kept for the session only.\n\nThe MCP `list_named_filters` tool returns the same answer.",
     security(("bearer" = [])),
     responses(
         (status = 200, description = "Every entry, in name order; an empty list when the config defines none.", body = crate::output::query::named_filters::NamedFilterList),
@@ -4946,7 +4946,7 @@ async fn get_named_filters(
     guard(&state, &headers, addr.ip())?;
     Ok(Json(
         crate::output::query::named_filters::named_filter_list(
-            crate::sip::named_filters::installed(),
+            &crate::sip::named_filters::installed(),
         ),
     ))
 }
@@ -5000,7 +5000,7 @@ async fn get_filter_validation(
     Ok(Json(
         crate::output::query::named_filters::filter_validation(
             &expr,
-            crate::sip::named_filters::installed(),
+            &crate::sip::named_filters::installed(),
             &state.alias_thresholds,
         ),
     ))
@@ -16157,7 +16157,7 @@ mod tests {
             "named: {}",
             crate::sip::named_filters::unknown_reference_message(
                 "support",
-                crate::sip::named_filters::installed()
+                &crate::sip::named_filters::installed()
             )
         );
         for route in FILTER_ROUTES {

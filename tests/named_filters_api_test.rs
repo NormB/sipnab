@@ -45,7 +45,7 @@ const TABLE: [(&str, &str); 3] = [
 
 /// Install [`TABLE`] for this process. The first call installs it; a later
 /// call finds the same table there.
-fn install_table() -> Result<&'static NamedFilters, TestError> {
+fn install_table() -> Result<Arc<NamedFilters>, TestError> {
     let defs = TABLE
         .iter()
         .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
@@ -295,7 +295,7 @@ async fn rest_unknown_name_lists_the_defined_names() -> Result<(), TestError> {
         body["detail"],
         format!(
             "named: {}",
-            named_filters::unknown_reference_message("support", table)
+            named_filters::unknown_reference_message("support", &table)
         ),
         "the reason"
     );

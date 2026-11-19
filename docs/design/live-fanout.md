@@ -240,7 +240,7 @@ from a headless run — `start_servers` is called with `metrics: true` and the
 real meter from [`batch.rs:4095-4111`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4095-L4111)<!-- "let servers = crate::app::servers::start_servers(" -->.
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
-`capture_health` MCP response ([`server.rs:9450`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9450)<!-- "pub async fn capture_health(" -->),
+`capture_health` MCP response ([`server.rs:9451`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9451)<!-- "pub async fn capture_health(" -->),
 carries `packets`, `kernel_dropped`, `interface_dropped`, `invalid_timestamps`
 and `undecodable_frames` — and **no queue depth and no backpressure count**. So
 the surface built for production field reports

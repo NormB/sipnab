@@ -301,7 +301,7 @@ settled before anyone writes code, which is section 9's condition.
 
 **Yes, `identifier_match: true`, for both proposed reasons.** The field's
 meaning is documented at [`server.rs:4501`](https://github.com/NormB/sipnab/blob/04869cf6b999741dec5d7eff8d1d0b10a6f84eee/src/mcp/server.rs#L4501) and in
-[`mcp-tools-signaling.md:866-869`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools-signaling.md#L866-L869)<!-- "`identifier_match` is `true` when the leg matched" --> as *identifiers were compared* versus *this was a
+[`mcp-tools-signaling.md:867-870`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools-signaling.md#L867-L870)<!-- "`identifier_match` is `true` when the leg matched" --> as *identifiers were compared* versus *this was a
 guess*. An icid comparison compares an opaque value that RFC 7315 requires to be
 globally unique. It is not a guess from timing or endpoint overlap, and
 reporting it as `false` would put it in a bucket whose defining property —
@@ -370,7 +370,7 @@ router name in disguise.
 
 **The good news is that the existing surface already does the right thing and
 needs no new discipline.** `find_correlated`'s response
-([`server.rs:8942`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8942)<!-- "pub async fn find_correlated(" -->) returns, per leg, `call_id`,
+([`server.rs:8943`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8943)<!-- "pub async fn find_correlated(" -->) returns, per leg, `call_id`,
 `score`, `strategy`, `identifier_match` and `observed_gap_ms` — and never the
 matched identifier. `session_id` matches today without the `Session-ID` value
 ever reaching a client. **A sixth strategy that reports only its name inherits
@@ -423,7 +423,7 @@ The shape, by file:
 | [`dialog_store.rs:44`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L44)<!-- "pub enum CorrelationReason" --> | Two new `CorrelationReason` variants, each with the doc comment explaining its survival properties that the existing five carry |
 | [`dialog_store.rs:1034-1058`](https://github.com/NormB/sipnab/blob/04869cf6b999741dec5d7eff8d1d0b10a6f84eee/src/sip/dialog_store.rs#L1034-L1058) | Two new candidate blocks between `sdp_origin` and `via_branch`, following the established pattern: hoist the source dialog's values into a `HashSet` once before the candidate loop (as `src_origins` does at [`:964`](https://github.com/NormB/sipnab/blob/04869cf6b999741dec5d7eff8d1d0b10a6f84eee/src/sip/dialog_store.rs#L964)), parse the candidate side lazily inside the loop |
 | [`server.rs:4501`](https://github.com/NormB/sipnab/blob/04869cf6b999741dec5d7eff8d1d0b10a6f84eee/src/mcp/server.rs#L4501) | Two new arms. **This is a compile error until written**, by design |
-| [`mcp-tools-signaling.md:808-818`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools-signaling.md#L808-L818)<!-- "Survives a B2BUA?" -->, [`mcp-estate.md:558-568`](https://github.com/NormB/sipnab/blob/main/docs/mcp-estate.md#L558-L568)<!-- "What a match is worth" -->, [`domain-primer.md:271-282`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L271-L282)<!-- "[`dialog_store.rs`](../../src/sip/dialog_store.rs)" --> | Strategy tables and the "correlates legs five ways" sentence |
+| [`mcp-tools-signaling.md:809-819`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools-signaling.md#L809-L819)<!-- "Survives a B2BUA?" -->, [`mcp-estate.md:558-568`](https://github.com/NormB/sipnab/blob/main/docs/mcp-estate.md#L558-L568)<!-- "What a match is worth" -->, [`domain-primer.md:271-282`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L271-L282)<!-- "[`dialog_store.rs`](../../src/sip/dialog_store.rs)" --> | Strategy tables and the "correlates legs five ways" sentence |
 
 Three code-level facts that a naive implementation would get wrong:
 

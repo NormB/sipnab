@@ -430,7 +430,8 @@ tools are [`list_dialogs`](@/docs/mcp-tools-core.md#list-dialogs),
 
 **Prerequisites.** A config file with a
 [`[filters]`](@/docs/config.md#filters) table, passed with `--config` to
-the run that serves MCP. sipnab reads the table when it starts. Nothing
+the run that serves MCP. sipnab reads the table when it starts, and a name
+saved with `F2` in the terminal UI of the same run joins it at once. Nothing
 changes on any other system.
 
 **Steps.** With this `sipnab.toml`:

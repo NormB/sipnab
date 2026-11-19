@@ -10149,7 +10149,7 @@
     },
     "/v1/filters": {
       "get": {
-        "description": "The `[filters]` table this run started with: each entry's name, which the `named` parameter takes and `@name` refers to, and its definition as the config file writes it. The table is resolved once at startup and does not change while the server runs.\n\nThe MCP `list_named_filters` tool returns the same answer.",
+        "description": "The `[filters]` table of this run: each entry's name, which the `named` parameter takes and `@name` refers to, and its definition as the config file writes it. The table is resolved at startup; a name saved with F2 in the terminal UI of the same run joins it at once, written to the config file or kept for the session only.\n\nThe MCP `list_named_filters` tool returns the same answer.",
         "operationId": "get_named_filters",
         "responses": {
           "200": {

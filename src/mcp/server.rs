@@ -4376,7 +4376,8 @@ impl SipnabMcp {
         named: Option<&str>,
     ) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
         use crate::sip::filter_request::{FilterParam, FilterRequestError};
-        let table = crate::sip::named_filters::installed();
+        let snapshot = crate::sip::named_filters::installed();
+        let table = &*snapshot;
         crate::sip::filter_request::compile_request(filter, named, table, &self.alias_thresholds)
             .map_err(|e| match e {
                 FilterRequestError::Conflict => errors::refuse(

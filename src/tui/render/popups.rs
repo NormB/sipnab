@@ -1448,6 +1448,32 @@ pub(in crate::tui) fn render_filter_popup(
         return;
     }
 
+    // ── Session-only note (F2 could not write a file), in the same rows ──
+    if let Some(note) = &state.session_note {
+        let room = iw.saturating_sub(4);
+        let heading: String = "F3 copies the entry \u{b7} Esc closes this note"
+            .chars()
+            .take(usize::from(room))
+            .collect();
+        set_string_clipped(
+            buf,
+            inner,
+            ix + 2,
+            sep_y + 1,
+            &heading,
+            Style::default().fg(theme.muted),
+        );
+        let rows = note
+            .lines
+            .iter()
+            .flat_map(|line| crate::tui::render::wrap_to_width(line, room));
+        let style = Style::default().fg(theme.warning);
+        for (row, line) in (sep_y + 2..inner.y + inner.height).zip(rows) {
+            set_string_clipped(buf, inner, ix + 2, row, &line, style);
+        }
+        return;
+    }
+
     // ── "All" master checkbox — ABOVE the method grid it governs ──
     let all_y = sep_y + 1;
     let col1_x = ix + 2;

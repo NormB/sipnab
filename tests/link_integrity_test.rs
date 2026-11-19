@@ -1929,7 +1929,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/mcp-tools-core.md 4, docs/filter-dsl.md 3, docs/mcp-tools.md 2,
     // docs/mcp-tools-security.md 1 and docs/mcp-tools-vcon.md 1 (the `named`
     // rows and the index row).
-    const EXPECTED_WIKI_LINKS: usize = 2755;
+    // 2755 -> 2756 (F2-SAVE-UNWRITABLE, +1): docs/keybindings.md 1 (the
+    // filter dialog's F2/F3 paragraph links "Save the dialog's filter under
+    // a name").
+    const EXPECTED_WIKI_LINKS: usize = 2756;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -1056,7 +1056,9 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // 685 -> 687 (TUI-FILTER-FOLLOWUPS, F2 save as a named filter): +2 in
 // src/config.rs, a `[filters]` that already holds the name and a `filters`
 // that is not a table.
-const EXPECTED_TEMPLATES: usize = 687;
+// 687 -> 688 (F2-SAVE-UNWRITABLE): +1 in src/error.rs, the
+// `ConfigUnwritable` variant a TUI save prints for a permission failure.
+const EXPECTED_TEMPLATES: usize = 688;
 
 // ---------------------------------------------------------------------------
 // The page gates
