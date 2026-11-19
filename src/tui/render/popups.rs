@@ -1052,6 +1052,15 @@ pub(in crate::tui) fn render_filter_text_field(
     let field_width = field.field_width;
     let focused = field.focused;
     let cursor_pos = field.cursor_pos;
+    // Scrolled so the cursor cell stays inside the brackets while the text
+    // runs past them; an unfocused field shows its start.
+    let inner_width = field_width.saturating_sub(2) as usize; // subtract brackets
+    let (value, cursor_pos) = if focused {
+        let start = field_scroll_start(value, cursor_pos, inner_width);
+        (&value[start..], cursor_pos.saturating_sub(start))
+    } else {
+        (value, cursor_pos)
+    };
     let label_style = Style::default().fg(theme.header);
     let bracket_style = if focused {
         Style::default().fg(theme.foreground)
@@ -1071,9 +1080,8 @@ pub(in crate::tui) fn render_filter_text_field(
     // char boundaries so no slice can split a multibyte UTF-8 sequence.
     let content_x = field_x + 1;
     // On a very narrow field the bracket pair alone can exceed the width;
-    // saturating keeps `inner_width` at 0 instead of underflowing (which
-    // panics in debug builds and wraps to a huge value in release).
-    let inner_width = field_width.saturating_sub(2) as usize; // subtract brackets
+    // saturating keeps `inner_width` (above) at 0 instead of underflowing
+    // (which panics in debug builds and wraps to a huge value in release).
     let cursor = crate::text::floor_char_boundary(value, cursor_pos);
     // End of the display window, backed up to a boundary.
     let visible_end = crate::text::floor_char_boundary(value, inner_width);
@@ -1189,41 +1197,70 @@ pub(in crate::tui) fn render_filter_text_field(
     );
 }
 
+/// The byte offset a focused text field's window starts at, so the cursor
+/// cell is the last cell inside the brackets at most.
+///
+/// The field paints one byte per column, so the window is measured in bytes
+/// and moved forward to a char boundary.
+///
+/// # Arguments
+/// * `value` - The field's text.
+/// * `cursor` - The cursor's byte offset in `value`.
+/// * `inner_width` - Columns between the brackets.
+///
+/// # Returns
+/// `0` while the cursor fits; otherwise the first byte that keeps it in view.
+fn field_scroll_start(value: &str, cursor: usize, inner_width: usize) -> usize {
+    let cursor = crate::text::floor_char_boundary(value, cursor);
+    if inner_width == 0 || cursor < inner_width {
+        return 0;
+    }
+    let mut start = cursor + 1 - inner_width;
+    // `cursor` is itself a boundary, so this stops at or before it.
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    start
+}
+
 /// Render the filter dialog as a centered popup overlay.
 ///
-/// Layout, drawn to scale at the fixed 56-column by 20-row popup size set
+/// Layout, drawn to scale at the fixed 76-column by 23-row popup size set
 /// below, so every column stop in the figure is the one the code paints:
 ///
 /// ```text
-/// + Filter ----------------------------------------------+
-/// |                                                      |
-/// |  SIP From:    [                                   ]  |
-/// |  SIP To:      [                                   ]  |
-/// |  Source:      [                                   ]  |
-/// |  Destination: [                                   ]  |
-/// |  Payload:     [                                   ]  |
-/// |  ──────────────────────────────────────────────────  |
-/// |  All       [ ]                                       |
-/// |  REGISTER  [*]             OPTIONS   [ ]             |
-/// |  INVITE    [*]             PUBLISH   [ ]             |
-/// |  SUBSCRIBE [ ]             MESSAGE   [ ]             |
-/// |  NOTIFY    [ ]             REFER     [ ]             |
-/// |  INFO      [ ]             UPDATE    [ ]             |
-/// |                                                      |
-/// |     [ Filter ]                 [ Cancel ]            |
-/// |  (inline parse error appears here)                   |
-/// |                                                      |
-/// |                                                      |
-/// +------------------------------------------------------+
+/// +- Filter -----------------------------------------------------------------+
+/// |  From user:       [                                                   ]  |
+/// |  To user:         [                                                   ]  |
+/// |  Source IP:       [                                                   ]  |
+/// |  Destination IP:  [                                                   ]  |
+/// |  Text in message: [                                                   ]  |
+/// |  Header:          [Name: text                                         ]  |
+/// |  After:           [2026-07-07T08:00:00Z                               ]  |
+/// |  Before:          [2026-07-07T09:00:00Z                               ]  |
+/// |  Named filter:    [none in [filters]                                  ]  |
+/// |  Expression:      [any --filter expression                            ]  |
+/// |  ──────────────────────────────────────────────────────────────────────  |
+/// |  All       [ ]                                                           |
+/// |  REGISTER  [*]                       OPTIONS   [ ]                       |
+/// |  INVITE    [*]                       PUBLISH   [ ]                       |
+/// |  SUBSCRIBE [ ]                       MESSAGE   [ ]                       |
+/// |  NOTIFY    [ ]                       REFER     [ ]                       |
+/// |  INFO      [ ]                       UPDATE    [ ]                       |
+/// |     [ Filter ]                           [ Cancel ]                      |
+/// |  (the headline of a refusal appears here)                                |
+/// |  Tab move · Enter apply · Esc cancel                                     |
+/// |  (the parser's hint line, when it has one, appears here)                 |
+/// +--------------------------------------------------------------------------+
 /// ```
 ///
 /// The method grid is filled a row at a time, left cell then right, in
 /// `FILTER_METHODS` order. The `All` master checkbox sits above the grid it
 /// governs and shows checked only while every method is checked, so the
 /// mixed selection drawn here leaves it clear; by default every method is
-/// checked and every marker reads `[*]`. The last painted row appears only
-/// when Enter fails to parse the typed values, and the live version is
-/// prefixed with a warning sign.
+/// checked and every marker reads `[*]`. The two refusal rows appear only
+/// when Enter refuses the typed values; the headline is prefixed with a
+/// warning sign.
 ///
 /// # Arguments
 /// * `frame` - Frame to draw into.
@@ -1241,11 +1278,14 @@ pub(in crate::tui) fn render_filter_popup(
     state: &FilterDialogState,
     theme: &Theme,
 ) {
-    let popup_width: u16 = 56;
+    // 76 columns, inside an 80-column terminal: the Expression field holds a
+    // whole Filter DSL expression, so its brackets get 51 columns.
+    let popup_width: u16 = 76;
     // Three rows taller than the five-field original: `Header` is text field
-    // six, the `After`/`Before` time bounds are seven and eight and `Named
-    // filter` is nine. The fourth field row took the blank row that used to
-    // sit above the first field rather than a row of height, so the popup
+    // six, the `After`/`Before` time bounds are seven and eight, `Named
+    // filter` is nine and `Expression` ten. The fourth field row took the
+    // blank row that used to sit above the first field, and the fifth the
+    // blank row above the buttons, rather than rows of height, so the popup
     // still leaves the key-hint line visible on an 80x24 terminal.
     let popup_height: u16 = 23;
     let popup_area = centered_popup(area, popup_width, popup_height);
@@ -1283,6 +1323,7 @@ pub(in crate::tui) fn render_filter_popup(
         "  After:           ",
         "  Before:          ",
         "  Named filter:    ",
+        "  Expression:      ",
     ];
     // While empty, the Named field lists what the run's [filters] defines.
     let named_hint = if state.known_names.is_empty() {
@@ -1300,6 +1341,7 @@ pub(in crate::tui) fn render_filter_popup(
         "2026-07-07T08:00:00Z",
         "2026-07-07T09:00:00Z",
         named_hint.as_str(),
+        "any --filter expression",
     ];
     let field_width = iw.saturating_sub(labels[0].len() as u16 + 2); // +2 for margin
 
@@ -1408,7 +1450,7 @@ pub(in crate::tui) fn render_filter_popup(
     }
 
     // ── Buttons ────────────────────────────────────────────────────
-    let btn_y = cb_y + 6;
+    let btn_y = cb_y + 5;
     let filter_focused = state.focused_field == FILTER_BUTTON_IDX;
     let cancel_focused = state.focused_field == CANCEL_BUTTON_IDX;
 
@@ -1446,19 +1488,22 @@ pub(in crate::tui) fn render_filter_popup(
     }
 
     // ── Inline parse error (dialog stays open on failure) ─────────
+    // A parser message spans several lines (headline, echo, caret, hint,
+    // operator list). The headline goes above the key hint and the parser's
+    // `hint:` line, when it has one, below it; the cursor in the field marks
+    // the place, so the echo and caret are not repeated here.
     if let Some(err) = &state.error {
-        let msg: String = format!("\u{26a0} {err}")
-            .chars()
-            .take((iw as usize).saturating_sub(4))
-            .collect();
-        set_string_clipped(
-            buf,
-            inner,
-            ix + 2,
-            btn_y + 1,
-            &msg,
-            Style::default().fg(theme.warning),
-        );
+        let room = (iw as usize).saturating_sub(4);
+        let style = Style::default().fg(theme.warning);
+        let headline = err.lines().next().unwrap_or_default();
+        let msg: String = format!("\u{26a0} {headline}").chars().take(room).collect();
+        set_string_clipped(buf, inner, ix + 2, btn_y + 1, &msg, style);
+        if let Some(hint) = err.lines().find(|l| l.starts_with("hint:"))
+            && btn_y + 3 < inner.y + inner.height
+        {
+            let hint: String = hint.chars().take(room).collect();
+            set_string_clipped(buf, inner, ix + 2, btn_y + 3, &hint, style);
+        }
     }
 }
 

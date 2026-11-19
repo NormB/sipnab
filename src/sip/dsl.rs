@@ -850,6 +850,34 @@ pub fn parse_filter(input: &str, t: &AliasThresholds) -> Result<FilterExpr> {
     FilterExpr::parse(&resolve_filter_text(input, t))
 }
 
+/// The expression text a filter the user typed stands for, resolved through
+/// a given `[filters]` table: each `@name` replaced, then a diagnostic alias
+/// name expanded when it is the whole input.
+///
+/// The one rule `--filter`, `[filter] expression` and the TUI filter
+/// dialog's Expression field resolve typed text with, so the same text
+/// selects the same dialogs on each.
+///
+/// # Errors
+///
+/// The message for the first `@name` that `filters` does not define, which
+/// names the ones it does.
+pub fn resolve_typed_filter(
+    input: &str,
+    filters: &super::named_filters::NamedFilters,
+    t: &AliasThresholds,
+) -> std::result::Result<String, String> {
+    let referenced = resolve_references(input, filters, t);
+    // Said here, with the caller's table, rather than left to the parser,
+    // which knows only the table installed for the request-time surfaces.
+    if let Some(name) = super::named_filters::first_reference(&referenced) {
+        return Err(super::named_filters::unknown_reference_message(
+            name, filters,
+        ));
+    }
+    Ok(resolve_filter_text(&referenced, t).into_owned())
+}
+
 /// Whether any leaf comparison in the tree references a diagnosis-derived
 /// field. Walked once at parse time to cache `FilterExpr::needs_diagnosis`.
 ///
@@ -1034,10 +1062,7 @@ impl FilterExpr {
         let (remaining, expr) = parse_or_expr(trimmed).map_err(|e| match e {
             nom::Err::Error(err) | nom::Err::Failure(err) => {
                 let pos = trimmed.len() - err.input.len();
-                anyhow::anyhow!(
-                    "{}",
-                    render_parse_error(trimmed, pos, &parse_problem(err.code))
-                )
+                SyntaxError::at(trimmed, pos, &parse_problem(err.code)).into()
             }
             nom::Err::Incomplete(_) => anyhow::anyhow!("incomplete filter expression"),
         })?;
@@ -1045,10 +1070,7 @@ impl FilterExpr {
         if !remaining.trim().is_empty() {
             // Position of the first non-space char of the unparsed tail.
             let pos = trimmed.len() - remaining.trim_start().len();
-            bail!(
-                "{}",
-                render_parse_error(trimmed, pos, trailing_input_problem(trimmed, pos))
-            );
+            return Err(SyntaxError::at(trimmed, pos, trailing_input_problem(trimmed, pos)).into());
         }
 
         // Size, not grouping depth. `check_nesting_depth` above measures
@@ -1796,6 +1818,49 @@ fn trailing_input_problem(expr: &str, pos: usize) -> &'static str {
         "unexpected trailing input"
     }
 }
+
+/// A syntax error [`FilterExpr::parse`] found at a known place in its input.
+///
+/// Its text is exactly what [`render_parse_error`] writes, so every surface
+/// that prints the error prints what it always did. The place is kept as a
+/// value as well, so a surface that edits the expression, such as the TUI's
+/// filter dialog, can put its cursor where the parser stopped instead of
+/// reading the number back out of the text.
+#[derive(Debug)]
+pub(crate) struct SyntaxError {
+    /// Byte offset into the TRIMMED input, on a char boundary.
+    offset: usize,
+    /// The rendered message.
+    message: String,
+}
+
+impl SyntaxError {
+    /// The error for `problem` at byte `pos` of the trimmed `expr`.
+    fn at(expr: &str, pos: usize, problem: &str) -> Self {
+        Self {
+            offset: crate::text::floor_char_boundary(expr, pos),
+            message: render_parse_error(expr, pos, problem),
+        }
+    }
+
+    /// Byte offset of the error in the input with its leading and trailing
+    /// whitespace removed, which is the text the parser read.
+    ///
+    /// Read by the TUI's filter dialog, so a build without `tui` has no
+    /// caller outside the tests; the `cfg_attr` says exactly that.
+    #[cfg_attr(not(any(feature = "tui", test)), allow(dead_code))]
+    pub(crate) fn offset(&self) -> usize {
+        self.offset
+    }
+}
+
+impl std::fmt::Display for SyntaxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SyntaxError {}
 
 /// Render a filter parse error as a multi-line diagnostic: the (possibly
 /// windowed) expression, a caret under the offending position, the operator
@@ -6436,6 +6501,155 @@ mod latest_message_tests {
             !selects_the_call("duration < 1")?,
             "0.905 s, to the last message read, is not the duration"
         );
+        Ok(())
+    }
+}
+
+/// Tests for the place a syntax error carries and for the rule that resolves
+/// typed filter text (#841): the TUI's Expression field reads both.
+#[cfg(test)]
+mod typed_filter_tests {
+    use super::*;
+    use crate::sip::named_filters::NamedFilters;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The syntax error `parse` returns for `input`.
+    fn syntax_error_of(input: &str) -> Result<(usize, String), TestError> {
+        let err = match FilterExpr::parse(input) {
+            Ok(_) => return Err(format!("{input:?} must not parse").into()),
+            Err(e) => e,
+        };
+        let syntax = err
+            .downcast_ref::<SyntaxError>()
+            .ok_or_else(|| format!("{input:?}: not a syntax error: {err}"))?;
+        Ok((syntax.offset(), err.to_string()))
+    }
+
+    /// A `[filters]` table defining `sales`.
+    fn sales_table() -> Result<NamedFilters, TestError> {
+        let mut defs = std::collections::BTreeMap::new();
+        defs.insert("sales".to_string(), "to.user == '7000'".to_string());
+        Ok(NamedFilters::resolve(&defs, &AliasThresholds::default())?)
+    }
+
+    /// The offset is the place the message names: for an unquoted value
+    /// followed by more text, the value's first byte.
+    #[test]
+    fn a_syntax_error_carries_the_offset_its_message_names() -> Result<(), TestError> {
+        let (offset, message) = syntax_error_of("msg_count > 5 garbage")?;
+        assert_eq!(offset, 12, "the offset is where '5' starts");
+        assert!(
+            message.contains("at position 12: '5'"),
+            "the message is unchanged: {message}"
+        );
+        Ok(())
+    }
+
+    /// Trailing input after a complete expression: the offset is where the
+    /// tail starts.
+    #[test]
+    fn trailing_input_is_placed_at_its_start() -> Result<(), TestError> {
+        let (offset, message) = syntax_error_of("msg_count > 5 )")?;
+        assert_eq!(offset, 14, "the stray ')': {message}");
+        Ok(())
+    }
+
+    /// The offset counts in the text the parser read, without the leading
+    /// whitespace it trimmed.
+    #[test]
+    fn the_offset_is_into_the_trimmed_input() -> Result<(), TestError> {
+        let (offset, _) = syntax_error_of("   msg_count > 5 garbage  ")?;
+        assert_eq!(offset, 12, "measured from the first non-space character");
+        Ok(())
+    }
+
+    /// A single `=` is not an operator; the error is at the operator.
+    #[test]
+    fn a_single_equals_sign_is_refused_at_its_place() -> Result<(), TestError> {
+        let (offset, message) = syntax_error_of("msg_count = 5")?;
+        assert!(
+            offset >= "msg_count".len(),
+            "the error is at or after the field: {offset} in {message}"
+        );
+        assert!(
+            message.contains(&format!("at position {offset}")),
+            "the offset and the message agree for ASCII text: {offset} in {message}"
+        );
+        Ok(())
+    }
+
+    /// An error after a multibyte character lands on a char boundary.
+    #[test]
+    fn the_offset_is_on_a_char_boundary_after_multibyte_text() -> Result<(), TestError> {
+        let input = "payload =~ 'é' garbage";
+        let (offset, _) = syntax_error_of(input)?;
+        assert!(
+            input.is_char_boundary(offset),
+            "offset {offset} splits a char"
+        );
+        assert_eq!(&input[offset..], "garbage", "offset {offset}");
+        Ok(())
+    }
+
+    /// An error with no place in the text is not a syntax error.
+    #[test]
+    fn an_empty_expression_has_no_place() -> Result<(), TestError> {
+        let err = match FilterExpr::parse("   ") {
+            Ok(_) => return Err("an empty expression must not parse".into()),
+            Err(e) => e,
+        };
+        assert!(
+            err.downcast_ref::<SyntaxError>().is_none(),
+            "an empty expression has no position: {err}"
+        );
+        Ok(())
+    }
+
+    /// A plain expression resolves to itself.
+    #[test]
+    fn a_plain_expression_resolves_unchanged() -> Result<(), TestError> {
+        let text = "payload =~ 'X-Foo' AND msg_count > 5";
+        let resolved = resolve_typed_filter(text, &sales_table()?, &AliasThresholds::default())?;
+        assert_eq!(resolved, text, "nothing to resolve");
+        Ok(())
+    }
+
+    /// An `@name` resolves through the table passed in.
+    #[test]
+    fn a_reference_resolves_through_the_given_table() -> Result<(), TestError> {
+        let resolved = resolve_typed_filter(
+            "@sales AND msg_count > 5",
+            &sales_table()?,
+            &AliasThresholds::default(),
+        )?;
+        assert_eq!(
+            resolved, "(to.user == '7000') AND msg_count > 5",
+            "@sales replaced by its grouped definition"
+        );
+        Ok(())
+    }
+
+    /// A diagnostic alias name as the whole text expands, as `--filter
+    /// one-way` does.
+    #[test]
+    fn a_bare_alias_name_expands() -> Result<(), TestError> {
+        let resolved =
+            resolve_typed_filter("one-way", &sales_table()?, &AliasThresholds::default())?;
+        assert_eq!(resolved, "one_way == true", "the alias's expansion");
+        Ok(())
+    }
+
+    /// A name the table does not define is refused, naming what it defines.
+    #[test]
+    fn an_undefined_reference_is_refused_naming_the_defined_ones() -> Result<(), TestError> {
+        let err = match resolve_typed_filter("@nope", &sales_table()?, &AliasThresholds::default())
+        {
+            Ok(text) => return Err(format!("'@nope' resolved to {text:?}").into()),
+            Err(e) => e,
+        };
+        assert!(err.contains("'@nope' is not a defined filter"), "{err}");
+        assert!(err.contains("sales"), "names what is defined: {err}");
         Ok(())
     }
 }

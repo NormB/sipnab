@@ -5057,7 +5057,7 @@ mod tests {
         assert_eq!(st.text_field(5), "h");
         assert_eq!(st.text_field(6), "a");
         assert_eq!(st.text_field(7), "b");
-        assert_eq!(FILTER_TEXT_FIELD_COUNT, 9);
+        assert_eq!(FILTER_TEXT_FIELD_COUNT, 10, "Expression is the tenth");
         if let Some(s) = st.text_field_mut(5) {
             s.push('x');
         }

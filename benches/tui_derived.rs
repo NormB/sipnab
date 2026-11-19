@@ -146,6 +146,93 @@ fn bench_displayed_dialogs(c: &mut Criterion) {
     g.finish();
 }
 
+/// A request of `method` for `call_id`, carrying `extra` header lines.
+fn request_with(method: &str, call_id: &str, extra: &str, off_ms: i64) -> SipMessage {
+    let raw = format!(
+        "{method} sip:bob@example.com SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK{call_id}-1\r\n\
+         From: \"alice\" <sip:alice@example.com>;tag=a{call_id}\r\n\
+         To: <sip:bob@example.com>\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: 1 {method}\r\n\
+         {extra}\
+         Content-Length: 0\r\n\r\n"
+    );
+    sip_msg(raw.as_bytes(), 1, 2, off_ms)
+}
+
+/// The TUI's default store size, 100,000 dialogs, shaped for the #841
+/// expressions: every tenth carries `X-Foo`, every twentieth (from the fifth)
+/// is an OPTIONS dialog, and every third has seven messages, the rest two.
+fn store_for_expressions() -> DialogStore {
+    const N: usize = 100_000;
+    let mut store = DialogStore::new(N + 10, false);
+    for i in 0..N {
+        let cid = format!("expr-{i}@10.0.0.1");
+        let method = if i % 20 == 5 { "OPTIONS" } else { "INVITE" };
+        let extra = if i % 10 == 0 { "X-Foo: 1\r\n" } else { "" };
+        let t = i as i64 * 10;
+        store.process_message(request_with(method, &cid, extra, t));
+        let statuses: &[u16] = if i % 3 == 0 {
+            &[100, 180, 181, 182, 183, 200]
+        } else {
+            &[200]
+        };
+        for (k, status) in statuses.iter().enumerate() {
+            store.process_message(response(&cid, *status, 1, t + 1 + k as i64));
+        }
+    }
+    store
+}
+
+/// One call-list rebuild under a typed Expression (#841) on a 100,000-dialog
+/// store. This is the pass `sync_caches` runs on the UI thread when Enter
+/// applies the filter, and at most once per churn floor while a capture adds
+/// dialogs, so its time is how long the screen waits.
+fn bench_expression_filter(c: &mut Criterion) {
+    let store = store_for_expressions();
+    let mut g = c.benchmark_group("tui_derived");
+    g.sample_size(10);
+    for (name, text) in [
+        (
+            "expression_100k_reported",
+            "payload =~ 'X-Foo' AND NOT payload =~ 'OPTIONS' AND msg_count > 5",
+        ),
+        // A case-insensitive regex that matches nothing: every message of
+        // every dialog is scanned, the worst case for `payload`.
+        (
+            "expression_100k_payload_miss_ci",
+            "payload =~ '(?i)x-nothing'",
+        ),
+        ("expression_100k_msg_count", "msg_count > 5"),
+    ] {
+        // A refused expression is named and its case skipped, rather than
+        // timed as an empty pass.
+        let filter = match sipnab::sip::dsl::FilterExpr::parse(text) {
+            Ok(filter) => filter,
+            Err(e) => {
+                eprintln!("{name}: the expression does not parse: {e}");
+                continue;
+            }
+        };
+        g.bench_function(name, |b| {
+            b.iter(|| {
+                displayed_dialogs(
+                    &store,
+                    Some(&filter),
+                    None,
+                    None,
+                    "",
+                    sipnab::tui::call_list::SortColumn::Index,
+                    true,
+                )
+                .len()
+            })
+        });
+    }
+    g.finish();
+}
+
 /// One full CallList frame tick (sync_caches + read-only render + feedback
 /// write-back) on a 10k-dialog store with an active non-matching search —
 /// the WS4.3 acceptance surface. Today this runs the filter+search+sort
@@ -238,6 +325,7 @@ fn bench_ladder_frame(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_displayed_dialogs,
+    bench_expression_filter,
     bench_search_frame,
     bench_prepare_ladder,
     bench_ladder_frame

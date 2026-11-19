@@ -1905,7 +1905,14 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // `--user` of `sipnab g729 install` and docs/errors.md's entry for a failed
     // download link "Install as root" in g729.md; least-privilege.md's link to
     // g729.md became a link to that section (no change).
-    const EXPECTED_WIKI_LINKS: usize = 2709;
+    // 2709 -> 2716 (TUI-FILTER-EXPRESSION, #841, +7): docs/tui-walkthrough.md
+    // 6 (its "Filter with an expression" links filter-dsl.md, the `[filters]`
+    // and `[filter]` sections of config-reference.md, and its own "Before you
+    // start", "Open a capture" and, from "Search and filter", the new
+    // section); docs/keybindings.md 1 (the Expression bullet links that
+    // section; its filter-dsl.md link moved from the tip to the bullet, no
+    // change).
+    const EXPECTED_WIKI_LINKS: usize = 2716;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

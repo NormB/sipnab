@@ -6698,7 +6698,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // table of adapted files in CONTRIBUTING.md's "Updating code adapted from
     // other projects", with its site mirror (+2), and the "Adapted code" table
     // of THIRD-PARTY-NOTICES.md (+1).
-    const EXPECTED_TABLES: usize = 1517;
+    // 1517 -> 1518 (TUI-FILTER-EXPRESSION, #841): the table of the typed
+    // expressions' rebuild times in benches/BASELINES.md's 2026-11-19 entry,
+    // which has no site mirror (+1).
+    const EXPECTED_TABLES: usize = 1518;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

@@ -19,6 +19,27 @@ CONTRIBUTING.md "Running Benchmarks").
 > Do not edit an old one: the value of a baseline is that it records what was
 > actually measured, and rewriting it destroys exactly that.
 
+## 2026-11-19 — aarch64 (Jetson AGX Thor, Linux 6.8.12-rt-tegra, 14 cores), rustc 1.99.0, typed TUI expressions
+
+`tui_derived` cases for the `F7` dialog's Expression field (#841), new with it:
+one call-list rebuild (`displayed_dialogs`) under a compiled filter, on a store
+at the TUI's default size of 100,000 dialogs. Every tenth dialog carries
+`X-Foo`, every twentieth from the fifth is an OPTIONS dialog, and every third
+has seven messages, the rest two. `cargo bench --profile profiling --features
+tui --bench tui_derived -- expression_100k`, one run, on a shared host with
+other jobs running and no idle check, so read the figures as an upper bound.
+
+| case | expression | median |
+|---|---|---|
+| tui_derived/expression_100k_reported | `payload =~ 'X-Foo' AND NOT payload =~ 'OPTIONS' AND msg_count > 5` | 61.628 ms |
+| tui_derived/expression_100k_payload_miss_ci | `payload =~ '(?i)x-nothing'` | 89.725 ms |
+| tui_derived/expression_100k_msg_count | `msg_count > 5` | 1.5045 ms |
+
+The rebuild runs on the UI thread once when Enter applies the filter, and at
+most once per 300 ms churn floor while a capture adds dialogs; between
+rebuilds the cached list serves every frame. A `payload` regex that matches
+nothing reads every message of every dialog, which makes it the slowest case.
+
 ## 2026-11-07 — aarch64 (Jetson AGX Thor, Linux 6.8.12-rt-tegra, 14 cores), rustc 1.99.0, search without formatting
 
 `tui_derived` before and after the change that compares a dialog's two

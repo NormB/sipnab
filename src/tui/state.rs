@@ -422,6 +422,10 @@ pub struct TuiOptions {
     /// `-c` / `--calls-only`: open with only INVITE checked in the filter
     /// dialog and that filter applied, so the call list shows calls (#474).
     pub calls_only: bool,
+    /// The run's typed filter, `--filter` or else `[filter] expression`, as
+    /// typed: the session opens with it in the filter dialog's Expression
+    /// field and applied (#841). `None` when the run has neither.
+    pub filter_expression: Option<String>,
     /// `[display] mouse_capture = false`: open with mouse capture off (#484).
     pub mouse_capture_off: bool,
     /// `[display] view_filter_detail`: how status line 3 opens showing the F7
@@ -517,9 +521,6 @@ impl TuiOptions {
                     .map(|why| format!("Name edits {why}")),
             )
             .collect();
-        if !notices.is_empty() {
-            app.status_error = Some(notices.join(" | "));
-        }
         app.set_action_trail(self.action_trail);
         app.relay_query = self.relay_query;
         app.set_column_save_target(self.config_save.0);
@@ -537,12 +538,28 @@ impl TuiOptions {
         app.mouse_capture_enabled = !self.mouse_capture_off;
         app.view_filter_detail = self.view_filter_detail;
         // Last, once the action trail is attached, so the applied filter is
-        // recorded the way one applied from the dialog is.
+        // recorded the way one applied from the dialog is. The run's typed
+        // filter goes in the Expression field first, so `-c` applies with it.
+        if let Some(text) = self.filter_expression {
+            app.filter_dialog.expression = text;
+        }
         if self.calls_only {
             super::controllers::start_calls_only(&mut app);
+        } else if !app.filter_dialog.expression.trim().is_empty() {
+            super::controllers::apply_filter_dialog(&mut app);
         }
+        // Planning refused a filter that does not parse, so this is only
+        // reached if the dialog and the plan ever disagreed; it is said
+        // rather than left in a dialog nobody opened.
+        let refused = app.filter_dialog.error.take();
         if let Some(mode) = self.capture_mode {
             app.set_capture_mode(mode);
+        }
+        // After the filter: applying one clears the status line, which would
+        // drop a notice set before it.
+        let notices: Vec<String> = notices.into_iter().chain(refused).collect();
+        if !notices.is_empty() {
+            app.status_error = Some(notices.join(" | "));
         }
         app
     }
@@ -714,9 +731,13 @@ pub(in crate::tui) const FILTER_METHODS: [&str; 10] = [
 ];
 
 /// Number of text input fields in the filter dialog.
-pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 9;
+pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 10;
 
-/// Total focusable items: 9 text fields + 10 method checkboxes + the
+/// Focus index of the Expression field: the last text field, right after
+/// Named filter, so the two fields that take Filter DSL sit together.
+pub(in crate::tui) const EXPRESSION_FIELD_IDX: usize = 9;
+
+/// Total focusable items: 10 text fields + 10 method checkboxes + the
 /// "All" master checkbox + 2 buttons.
 pub(in crate::tui) const FILTER_ITEM_COUNT: usize =
     FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 3;
@@ -1141,6 +1162,10 @@ pub struct FilterDialogState {
     /// Names of `[filters]` entries, space-separated, each with or without a
     /// leading `@`. Each becomes `@name` and they AND together.
     pub(in crate::tui) named: String,
+    /// A Filter DSL expression typed as it is: any text `--filter` accepts.
+    /// It is resolved and parsed by the rule `--filter` uses, not escaped, and
+    /// it ANDs with every other field. Empty means no expression.
+    pub(in crate::tui) expression: String,
     /// The names the run's `[filters]` defines, filled when the dialog opens
     /// and shown beside the Named field.
     pub(in crate::tui) known_names: Vec<String>,
@@ -1171,6 +1196,7 @@ impl Default for FilterDialogState {
             time_after: String::new(),
             time_before: String::new(),
             named: String::new(),
+            expression: String::new(),
             known_names: Vec::new(),
             // All SIP methods checked by default == show every message. The
             // method filter only narrows once the user unchecks something.
@@ -1214,6 +1240,7 @@ impl FilterDialogState {
             6 => &self.time_after,
             7 => &self.time_before,
             8 => &self.named,
+            EXPRESSION_FIELD_IDX => &self.expression,
             _ => "",
         }
     }
@@ -1230,6 +1257,7 @@ impl FilterDialogState {
             6 => Some(&mut self.time_after),
             7 => Some(&mut self.time_before),
             8 => Some(&mut self.named),
+            EXPRESSION_FIELD_IDX => Some(&mut self.expression),
             _ => None,
         }
     }
@@ -1468,6 +1496,10 @@ impl FilterDialogState {
                 .split_whitespace()
                 .map(|word| format!("@{}", word.trim_start_matches('@'))),
         );
+        let expression = self.expression.trim();
+        if !expression.is_empty() {
+            parts.push(format!("expr {expression}"));
+        }
         for (label, text) in [("after", &self.time_after), ("before", &self.time_before)] {
             if !text.is_empty() {
                 parts.push(format!("{label} {text}"));
@@ -1491,6 +1523,7 @@ impl FilterDialogState {
         self.time_after.clear();
         self.time_before.clear();
         self.named.clear();
+        self.expression.clear();
         // Re-check every method so "clear filter" means show all, matching the
         // dialog's default state.
         self.methods = [true; 10];
@@ -1528,6 +1561,7 @@ impl FilterDialogState {
             && self.time_after.is_empty()
             && self.time_before.is_empty()
             && self.named.is_empty()
+            && self.expression.is_empty()
             // All methods checked == no method narrowing == an "empty" filter.
             && self.methods.iter().all(|&v| v)
     }

@@ -1,0 +1,28 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Live capture: any    Dialogs: 2 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: F7: expr from.user =~ '1003' OR msg_count > 3 · F full
+  # ▲    Method    From To    Source         Destination    State      Msgs +Prev    PDD    Duration
+> [ ] 1  INVITE    1001 1002  10.0.0.1       10.0.0.2       Completed  4    +0.000s  1000ms 1m2s
+  [ ] 2  INVITE    1003 1004  10.0.0.1       10.0.0.2       FAILED ⚠   2    +5.000s         1.0s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Esc Quit  F1 Help  Enter Open call  Tab Streams  O Open file  F2 Save  F7 Filter  F9 Clear filter

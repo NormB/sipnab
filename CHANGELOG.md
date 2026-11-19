@@ -10,6 +10,14 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The TUI filter dialog takes a typed Filter DSL expression.**
+  - Effect: The `F7` dialog's Expression field accepts any `--filter` expression and applies it with the other fields, on whole dialogs.
+  - Effect: For a refused expression the dialog shows the parser's message and position, and the filter in force stays.
+  - Effect: A session started with `--filter` or `[filter] expression` opens with it in the field and applied.
+  - Docs: [Filter with an expression](docs/tui-walkthrough.md#filter-with-an-expression)
+
 ### Changed
 
 - **The installer and download page no longer suggest WSL or a source build on Windows.**

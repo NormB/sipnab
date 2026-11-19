@@ -302,7 +302,7 @@ AssertWithoutMessage	src/tui/dashboard.rs	52
 AssertWithoutMessage	src/tui/header_form.rs	17
 AssertWithoutMessage	src/tui/help.rs	24
 AssertWithoutMessage	src/tui/loss_map.rs	1
-AssertWithoutMessage	src/tui/mod.rs	183
+AssertWithoutMessage	src/tui/mod.rs	182
 AssertWithoutMessage	src/tui/msg_raw.rs	5
 AssertWithoutMessage	src/tui/relay_stats.rs	9
 AssertWithoutMessage	src/tui/render/mod.rs	44

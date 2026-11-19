@@ -18,8 +18,8 @@ source = "docs/filter-dsl.md"
 
 A filter needs no build feature, no privilege beyond what the capture itself
 needs, and no change on any other system. The same expression works on the
-command line, in the terminal interface (through a named filter), over REST
-and over MCP, where the
+command line, in the terminal interface (the `F7` dialog's Expression field),
+over REST and over MCP, where the
 [`validate_filter`](@/docs/mcp-tools-signaling.md#validate-filter) tool checks one
 without running it.
 
