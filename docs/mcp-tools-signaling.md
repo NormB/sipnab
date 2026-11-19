@@ -348,7 +348,7 @@ error only for an internal failure.
   "schema_version": 1,
   "expr": "state = Failed",
   "valid": false,
-  "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
+  "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
   "total_matched": null,
   "total_dialogs": 2,
   "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",

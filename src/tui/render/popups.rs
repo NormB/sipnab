@@ -1545,15 +1545,41 @@ pub(in crate::tui) fn render_filter_popup(
     // canceled this dialog and it was never written down, so the only way to
     // learn it was to guess -- the same defect as a hint truncated off the
     // right edge, and indistinguishable from one at the keyboard.
-    let footer_hint = "Tab move \u{b7} Enter apply \u{b7} Esc cancel \u{b7} F1 fields";
+    // While the F2 prompt is open its line takes the key line's place: the
+    // dialog's other keys wait for it, so their hints would misdescribe them.
     if btn_y + 2 < inner.y + inner.height {
+        match &state.save_name {
+            Some(name) => {
+                let prompt = format!("Save as: @{name}\u{2581} \u{b7} Enter save \u{b7} Esc back");
+                set_string_clipped(
+                    buf,
+                    inner,
+                    ix + 2,
+                    btn_y + 2,
+                    &prompt,
+                    Style::default().fg(theme.foreground),
+                );
+            }
+            None => set_string_clipped(
+                buf,
+                inner,
+                ix + 2,
+                btn_y + 2,
+                "Tab move \u{b7} Enter apply \u{b7} Esc cancel \u{b7} F1 fields \u{b7} F2 save",
+                Style::default().fg(theme.muted),
+            ),
+        }
+    }
+    if let (Some(notice), None) = (&state.notice, &state.error) {
+        let room = (iw as usize).saturating_sub(4);
+        let line: String = notice.chars().take(room).collect();
         set_string_clipped(
             buf,
             inner,
             ix + 2,
-            btn_y + 2,
-            footer_hint,
-            Style::default().fg(theme.muted),
+            btn_y + 1,
+            &line,
+            Style::default().fg(theme.good),
         );
     }
 

@@ -1917,7 +1917,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // same filter from a shell" links the "Copying text" section of
     // keybindings.md); docs/keybindings.md 1 (the call list's `Y` row links
     // "Run the same filter from a shell").
-    const EXPECTED_WIKI_LINKS: usize = 2720;
+    // 2720 -> 2722 (TUI-FILTER-FOLLOWUPS, F2 save, +2): docs/keybindings.md 1
+    // (the filter popup's `F2` row links "Save the dialog's filter under a
+    // name"); docs/errors.md 1 (the `[filters] already defines` entry links
+    // that section).
+    const EXPECTED_WIKI_LINKS: usize = 2722;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

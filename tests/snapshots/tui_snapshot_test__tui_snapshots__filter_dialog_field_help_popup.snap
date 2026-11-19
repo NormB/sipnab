@@ -25,4 +25,4 @@ expression: output
   │  Operators: == != <= >= < > =~ in_subnet                                 │
   │  Combine: AND OR NOT ( )                                                 │
   └──────────────────────────────────────────────────────────────────────────┘
-Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear  F1 Fields
+Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear  F1 Fields  F2 Save as

@@ -979,7 +979,7 @@ sipnab -N -I capture.pcap --filter 'method == INVITE extra'
 Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
   method == INVITE extra
             ^
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 
@@ -995,7 +995,7 @@ Invalid --filter expression: unexpected input at position 0: 'nosuch'
   ^
 hint: unknown field 'nosuch'
 valid fields: from.user, to.user, from.host, to.host, from.uri, to.uri, ruri, pai.user, method, ua, call_id, payload, src.ip, dst.ip, src.port, dst.port, state, duration, msg_count, response_code, final_status_code, response_class, pdd, setup_time, retransmits, rtp.mos, rtp.jitter, rtp.loss, rtp.packets, rtp.codec, rtp.codecs, rtp.ssrc, side, endpoint, one_way, nat_mismatch, no_media, codec_asymmetry, ptime_asymmetry, payload_asymmetry, duration_asymmetry, late_media, time, header.<name>
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 

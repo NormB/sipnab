@@ -1998,7 +1998,8 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
         ));
     }
 
-    out.push_str("\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)");
+    out.push_str("\nvalid operators: ");
+    out.push_str(&operator_footer_list());
     out.push_str("\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases");
     out
 }
@@ -2053,10 +2054,31 @@ const OPERATOR_TABLE: [(&str, Operator); 8] = [
 /// of [`OPERATOR_TABLE`]: `==`, `!=`, `<=`, `>=`, `<`, `>`, `=~`, `in_subnet`.
 ///
 /// For a help surface that lists the language: the TUI filter dialog's
-/// field help reads it, so its list is the parser's own.
+/// field help reads it, so its list is the parser's own. The parse error
+/// footer reads the table itself ([`operator_footer_list`]), in every build.
 #[cfg(any(test, feature = "tui"))]
 pub(crate) fn operator_tokens() -> impl Iterator<Item = &'static str> {
     OPERATOR_TABLE.iter().map(|(token, _)| *token)
+}
+
+/// The operators for a parse error's footer: every [`OPERATOR_TABLE`] token
+/// in its order, the two whose right side is not a plain value followed by
+/// what that side is (`=~ (regex)`, `in_subnet (CIDR)`).
+fn operator_footer_list() -> String {
+    OPERATOR_TABLE
+        .iter()
+        .map(|(token, op)| match op {
+            Operator::Regex => format!("{token} (regex)"),
+            Operator::InSubnet => format!("{token} (CIDR)"),
+            Operator::Eq
+            | Operator::Ne
+            | Operator::Lt
+            | Operator::Le
+            | Operator::Gt
+            | Operator::Ge => (*token).to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Parse a comparison operator token into an `Operator`.
@@ -6800,6 +6822,160 @@ mod operator_table_tests {
             FilterExpr::parse("method == 'BYE' XOR method == 'ACK'").is_err(),
             "a word the parser does not know is refused"
         );
+        Ok(())
+    }
+}
+
+/// The "valid operators" footer of a parse error is built from
+/// [`OPERATOR_TABLE`], so it names every operator the parser accepts,
+/// `in_subnet` included, in every build.
+#[cfg(test)]
+mod operator_footer_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The footer line of a rendered error, without its leading newline.
+    fn footer_of(rendered: &str) -> Result<&str, TestError> {
+        Ok(rendered
+            .lines()
+            .find(|l| l.starts_with("valid operators: "))
+            .ok_or_else(|| format!("no footer line in:\n{rendered}"))?)
+    }
+
+    /// The footer of a real parse error names `in_subnet`.
+    #[test]
+    fn a_parse_error_footer_names_in_subnet() -> Result<(), TestError> {
+        let err = FilterExpr::parse("src.ip @@ '198.51.100.0/24'")
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
+        assert!(
+            footer_of(&err)?.contains("in_subnet"),
+            "the footer must list in_subnet, got:\n{err}"
+        );
+        Ok(())
+    }
+
+    /// Every operator of the table appears in the footer.
+    #[test]
+    fn the_footer_lists_every_table_operator() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        let footer = footer_of(&out)?;
+        for (token, _) in OPERATOR_TABLE {
+            assert!(footer.contains(token), "footer lacks '{token}': {footer}");
+        }
+        Ok(())
+    }
+
+    /// The footer lists the operators in the table's order.
+    #[test]
+    fn the_footer_keeps_the_table_order() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        let footer = footer_of(&out)?;
+        let listed: Vec<&str> = footer
+            .trim_start_matches("valid operators: ")
+            .split(", ")
+            .map(|item| item.split(' ').next().unwrap_or(item))
+            .collect();
+        let table: Vec<&str> = OPERATOR_TABLE.iter().map(|(t, _)| *t).collect();
+        assert_eq!(listed, table, "footer order must be the table's: {footer}");
+        Ok(())
+    }
+
+    /// The exact footer: each token once, `=~` and `in_subnet` explained.
+    #[test]
+    fn the_footer_text_is_exact() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        assert_eq!(
+            footer_of(&out)?,
+            "valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)",
+            "the footer wording"
+        );
+        Ok(())
+    }
+
+    /// The footer appears once per rendered error.
+    #[test]
+    fn the_footer_appears_once() -> Result<(), TestError> {
+        let out = render_parse_error("a == ", 5, "unexpected end of input");
+        let count = out
+            .lines()
+            .filter(|l| l.starts_with("valid operators: "))
+            .count();
+        assert_eq!(count, 1, "one footer line in:\n{out}");
+        Ok(())
+    }
+
+    /// The unknown-field hint path still ends with the same footer.
+    #[test]
+    fn the_unknown_field_error_has_the_same_footer() -> Result<(), TestError> {
+        let err = FilterExpr::parse("frm.user == 'alice'")
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
+        let plain = render_parse_error("a", 0, "unexpected input");
+        assert_eq!(
+            footer_of(&err)?,
+            footer_of(&plain)?,
+            "every error carries one footer"
+        );
+        Ok(())
+    }
+
+    /// The footer is followed by the docs pointer line, as before.
+    #[test]
+    fn the_docs_pointer_follows_the_footer() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        let lines: Vec<&str> = out.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("valid operators: "))
+            .ok_or("no footer")?;
+        assert!(
+            lines
+                .get(at + 1)
+                .is_some_and(|l| l.starts_with("see docs/filter-dsl.md")),
+            "the docs pointer follows the footer:\n{out}"
+        );
+        Ok(())
+    }
+
+    /// A typed `in_subnet` with a bad value still names the operator list
+    /// that holds it.
+    #[test]
+    fn an_in_subnet_value_error_lists_in_subnet() -> Result<(), TestError> {
+        let err = FilterExpr::parse("src.ip in_subnet")
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
+        assert!(footer_of(&err)?.contains("in_subnet (CIDR)"), "got:\n{err}");
+        Ok(())
+    }
+
+    /// Every page and example that quotes the footer quotes the parser's
+    /// own line, so a reader never sees an operator list the parser does
+    /// not print.
+    #[test]
+    fn every_quoted_footer_matches_the_parser() -> Result<(), TestError> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let rendered = render_parse_error("a", 0, "unexpected input");
+        let want = footer_of(&rendered)?;
+        let mut seen = 0;
+        for rel in [
+            "docs/filter-dsl.md",
+            "docs/rest-api.md",
+            "docs/mcp-tools-signaling.md",
+            "examples/filter_dialogs.rs",
+        ] {
+            let text = std::fs::read_to_string(root.join(rel))?;
+            for (at, _) in text.match_indices("valid operators: ") {
+                let line = text[at..].split(['\n', '\\']).next().ok_or("empty match")?;
+                assert_eq!(line, want, "{rel} quotes a stale footer");
+                seen += 1;
+            }
+        }
+        assert!(seen >= 5, "the four files quote the footer {seen} times");
         Ok(())
     }
 }

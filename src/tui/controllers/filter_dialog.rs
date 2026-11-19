@@ -145,10 +145,121 @@ pub(in crate::tui) fn open_filter_dialog(app: &mut App) {
     app.filter_dialog.focused_field = 0;
     app.filter_dialog.sync_cursor();
     app.filter_dialog.error = None;
+    app.filter_dialog.save_name = None;
+    app.filter_dialog.notice = None;
     app.filter_dialog.known_names = app.named_filters.names().map(str::to_owned).collect();
     app.filter_dialog.show_help = false;
     app.expression_history.end_walk();
     app.active_popup = Some(crate::tui::Popup::FilterDialog);
+}
+
+/// The text `F2` saves as a named filter: the dialog's own fields ANDed with
+/// the Expression field as typed, `@name` references kept, so a saved entry
+/// follows the entries it names. A built-in alias typed as the whole
+/// Expression is saved as `@alias`, the form a `[filters]` entry reads.
+///
+/// # Errors
+/// A sentence for the dialog when there is nothing a `[filters]` entry can
+/// hold: no SIP method checked, a time window set (an entry is an
+/// expression only), or every field empty.
+fn expression_to_save(
+    dialog: &crate::tui::state::FilterDialogState,
+    thresholds: &crate::sip::dsl::AliasThresholds,
+) -> Result<String, String> {
+    if !dialog.any_method_checked() {
+        return Err("Nothing to save: no SIP method is checked".to_owned());
+    }
+    if !dialog.time_after.trim().is_empty() || !dialog.time_before.trim().is_empty() {
+        return Err(
+            "A named filter holds no time window: clear After and Before to save".to_owned(),
+        );
+    }
+    let typed = dialog.expression.trim();
+    let typed = (!typed.is_empty()).then(|| {
+        if crate::sip::dsl::expand_alias(typed, thresholds).is_some() {
+            format!("@{typed}")
+        } else {
+            typed.to_owned()
+        }
+    });
+    and_typed_expression(dialog.build_filter_expression(), typed)
+        .ok_or_else(|| "Nothing to save: every field is empty".to_owned())
+}
+
+/// `F2`: open the "Save as" prompt, or show why the dialog's filter cannot
+/// be saved.
+fn start_save_prompt(app: &mut App) {
+    app.filter_dialog.notice = None;
+    match expression_to_save(&app.filter_dialog, &app.alias_thresholds) {
+        Ok(_) => {
+            app.filter_dialog.error = None;
+            app.filter_dialog.save_name = Some(String::new());
+        }
+        Err(why) => app.filter_dialog.error = Some(why),
+    }
+}
+
+/// Save the dialog's filter under `typed` (one leading `@` and surrounding
+/// spaces dropped): the new table is built and checked first, then the
+/// config file is written, and only then does the run's table change.
+///
+/// # Returns
+/// The name saved and the file written.
+///
+/// # Errors
+/// The reason, for the dialog: the filter cannot be saved, the name is not
+/// usable or already defined, the expression does not resolve or parse, no
+/// file may be written, or the write failed. Nothing changes on an error.
+fn save_named_filter(app: &mut App, typed: &str) -> Result<(String, std::path::PathBuf), String> {
+    let name = typed.trim();
+    let name = name.strip_prefix('@').unwrap_or(name);
+    let expr = expression_to_save(&app.filter_dialog, &app.alias_thresholds)?;
+    let table = app
+        .named_filters
+        .with_added(name, &expr, &app.alias_thresholds)
+        .map_err(|e| e.to_string())?;
+    let path = app
+        .column_config_path
+        .clone()
+        .map_err(|why| format!("Named filter {why}"))?;
+    crate::config::write_named_filter_file(&path, name, &expr)
+        .map_err(|e| format!("Save failed: {e}"))?;
+    app.named_filters = table;
+    app.filter_dialog.known_names = app.named_filters.names().map(str::to_owned).collect();
+    Ok((name.to_owned(), path))
+}
+
+/// Keys while the "Save as" prompt is open: text edits the name, Enter
+/// saves, Esc closes the prompt; every other key waits.
+fn handle_save_prompt_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.filter_dialog.save_name = None;
+            app.filter_dialog.error = None;
+        }
+        KeyCode::Enter => {
+            let typed = app.filter_dialog.save_name.clone().unwrap_or_default();
+            match save_named_filter(app, &typed) {
+                Ok((name, path)) => {
+                    app.filter_dialog.save_name = None;
+                    app.filter_dialog.error = None;
+                    app.filter_dialog.notice = Some(format!("Saved @{name} to {}", path.display()));
+                }
+                Err(why) => app.filter_dialog.error = Some(why),
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(name) = app.filter_dialog.save_name.as_mut() {
+                name.pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(name) = app.filter_dialog.save_name.as_mut() {
+                name.push(c);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Up in the Expression field: the next older applied expression into the
@@ -374,18 +485,25 @@ pub(in crate::tui) fn apply_filter_expression(
 /// # Side effects
 /// Esc (or Enter/Space on Cancel) closes the popup without applying; with
 /// the field help shown, Esc hides the help first. F1 shows or hides the
-/// field help. In the Expression field, Up and Down walk the expression
-/// history before they move focus.
+/// field help. F2 opens the "Save as" prompt, which takes every key until
+/// Enter saves or Esc closes it (see [`handle_save_prompt_key`]). In the
+/// Expression field, Up and Down walk the expression history before they
+/// move focus.
 /// Enter elsewhere (or Space on Filter) applies the dialog via
 /// `apply_filter_dialog`. F9 clears the dialog fields, the active filter,
 /// and the status line, then closes. Focus and checkbox keys mutate
 /// `app.filter_dialog` focus/checkbox state; editing keys mutate the
 /// focused text field and `cursor_pos`.
 pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
+    if app.filter_dialog.save_name.is_some() {
+        handle_save_prompt_key(app, key.code);
+        return;
+    }
     let is_shift = key.modifiers.contains(KeyModifiers::SHIFT);
     end_recall_on_other_keys(app, key.code);
 
     match key.code {
+        KeyCode::F(2) => start_save_prompt(app),
         KeyCode::Esc if app.filter_dialog.show_help => {
             // The help goes first; a second Esc cancels the dialog.
             app.filter_dialog.show_help = false;
@@ -2736,6 +2854,634 @@ mod history_and_help_tests {
             ["big"],
             "the names are listed"
         );
+        Ok(())
+    }
+}
+
+/// `F2` in the filter dialog: save the dialog's filter under a name in the
+/// config's `[filters]` table.
+#[cfg(test)]
+mod save_named_tests {
+    use super::expression_tests::{big_table, fixture_app, ids, key, row_with, screen, shown};
+    use super::*;
+    use crate::tui::Popup;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The fixture with `big` defined, the dialog open, and saves going to
+    /// `sipnab.toml` in a fresh directory, which the caller keeps alive.
+    fn saving_app() -> Result<(App, tempfile::TempDir, std::path::PathBuf), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        let mut app = fixture_app()?;
+        app.named_filters = big_table()?;
+        app.column_config_path = Ok(path.clone());
+        open_filter_dialog(&mut app);
+        Ok((app, dir, path))
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        handle_filter_popup_key(app, key(code));
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    /// F2, the name typed, Enter.
+    fn save_as(app: &mut App, name: &str) {
+        press(app, KeyCode::F(2));
+        type_text(app, name);
+        press(app, KeyCode::Enter);
+    }
+
+    /// The `[filters]` table of the file at `path`.
+    fn saved(
+        path: &std::path::Path,
+    ) -> Result<std::collections::BTreeMap<String, String>, TestError> {
+        let text = std::fs::read_to_string(path)?;
+        Ok(toml::from_str::<crate::config::Config>(&text)?.filters)
+    }
+
+    // ── success ────────────────────────────────────────────────────────
+
+    /// F2 with an expression typed opens the name prompt, empty.
+    #[test]
+    fn f2_opens_the_name_prompt() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        press(&mut app, KeyCode::F(2));
+        assert_eq!(
+            app.filter_dialog.save_name.as_deref(),
+            Some(""),
+            "prompt open"
+        );
+        assert!(app.filter_dialog.error.is_none(), "no error");
+        Ok(())
+    }
+
+    /// Typed characters go to the prompt, not to a field.
+    #[test]
+    fn typing_fills_the_prompt_not_the_field() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        app.filter_dialog.focused_field = EXPRESSION_FIELD_IDX;
+        app.filter_dialog.sync_cursor();
+        press(&mut app, KeyCode::F(2));
+        type_text(&mut app, "large");
+        assert_eq!(
+            app.filter_dialog.save_name.as_deref(),
+            Some("large"),
+            "prompt"
+        );
+        assert_eq!(
+            app.filter_dialog.expression, "msg_count > 5",
+            "field untouched"
+        );
+        Ok(())
+    }
+
+    /// Enter writes the entry to the config file.
+    #[test]
+    fn enter_writes_the_entry() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        assert_eq!(
+            saved(&path)?.get("large").map(String::as_str),
+            Some("msg_count > 5"),
+            "written to [filters]"
+        );
+        Ok(())
+    }
+
+    /// The saved name is listed beside Named filter at once.
+    #[test]
+    fn the_saved_name_is_listed_at_once() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        assert_eq!(app.filter_dialog.known_names, ["big", "large"], "listed");
+        Ok(())
+    }
+
+    /// The run's table holds the new name, so `@large` resolves.
+    #[test]
+    fn the_run_table_holds_the_new_name() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        assert_eq!(
+            app.named_filters.expansion("large"),
+            Some("msg_count > 5"),
+            "in the table"
+        );
+        Ok(())
+    }
+
+    /// The dialog says where the name was saved.
+    #[test]
+    fn the_notice_names_the_filter_and_the_file() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        let notice = app.filter_dialog.notice.clone().ok_or("no notice")?;
+        assert!(
+            notice.contains("@large") && notice.contains(&path.display().to_string()),
+            "notice: {notice}"
+        );
+        Ok(())
+    }
+
+    /// After a save the prompt is closed and the dialog stays open.
+    #[test]
+    fn the_prompt_closes_and_the_dialog_stays() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        assert!(app.filter_dialog.save_name.is_none(), "prompt closed");
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog), "dialog open");
+        Ok(())
+    }
+
+    /// The dialog's own fields and the Expression are saved together.
+    #[test]
+    fn fields_and_expression_are_saved_together() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.sip_from = "alice".into();
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "alice-big");
+        assert_eq!(
+            saved(&path)?.get("alice-big").map(String::as_str),
+            Some("from.user =~ 'alice' AND (msg_count > 5)"),
+            "both parts saved"
+        );
+        Ok(())
+    }
+
+    /// A typed `@name` is saved as written, so it follows that entry.
+    #[test]
+    fn a_typed_reference_is_saved_as_written() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "@big AND from.user == 'bob'".into();
+        save_as(&mut app, "bob-big");
+        assert_eq!(
+            saved(&path)?.get("bob-big").map(String::as_str),
+            Some("@big AND from.user == 'bob'"),
+            "the reference kept"
+        );
+        Ok(())
+    }
+
+    /// A built-in alias typed as the whole Expression is saved as `@alias`.
+    #[test]
+    fn a_typed_alias_is_saved_as_a_reference() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "problems".into();
+        save_as(&mut app, "trouble");
+        assert_eq!(
+            saved(&path)?.get("trouble").map(String::as_str),
+            Some("@problems"),
+            "the alias as a reference"
+        );
+        Ok(())
+    }
+
+    /// The Named filter field is saved as its references.
+    #[test]
+    fn the_named_field_is_saved_as_references() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.named = "big".into();
+        save_as(&mut app, "big2");
+        assert_eq!(
+            saved(&path)?.get("big2").map(String::as_str),
+            Some("@big"),
+            "ref"
+        );
+        Ok(())
+    }
+
+    /// The saved name, applied from Named filter, selects what the dialog's
+    /// filter selected.
+    #[test]
+    fn the_saved_name_applies_the_same_selection() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.sip_from = "alice".into();
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "alice-big");
+        app.filter_dialog.clear();
+        app.filter_dialog.named = "alice-big".into();
+        apply_filter_dialog(&mut app);
+        assert!(
+            app.filter_dialog.error.is_none(),
+            "{:?}",
+            app.filter_dialog.error
+        );
+        assert_eq!(shown(&mut app), ids(&["foo-big"]), "alice's big call");
+        Ok(())
+    }
+
+    /// A save keeps the comments and other settings of the file.
+    #[test]
+    fn a_save_keeps_the_file() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        std::fs::write(&path, "# my settings\n[capture]\ninterface = \"eth0\"\n")?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        let text = std::fs::read_to_string(&path)?;
+        assert!(
+            text.starts_with("# my settings\n[capture]\ninterface = \"eth0\"\n"),
+            "kept:\n{text}"
+        );
+        Ok(())
+    }
+
+    /// The dialog's key line names F2.
+    #[test]
+    fn the_key_line_names_f2() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        let text = screen(&mut app, 80, 24)?;
+        let row = row_with(&text, "Tab move").ok_or("the key line")?;
+        assert!(row.contains("F2 save"), "{row:?}");
+        Ok(())
+    }
+
+    /// The open prompt is drawn with the typed name.
+    #[test]
+    fn the_prompt_is_drawn() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        press(&mut app, KeyCode::F(2));
+        type_text(&mut app, "large");
+        let text = screen(&mut app, 80, 24)?;
+        assert!(
+            row_with(&text, "Save as: @large").is_some(),
+            "the prompt row:\n{text}"
+        );
+        Ok(())
+    }
+
+    /// The notice is drawn after a save.
+    #[test]
+    fn the_notice_is_drawn() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        let text = screen(&mut app, 80, 24)?;
+        assert!(
+            row_with(&text, "Saved @large").is_some(),
+            "notice row:\n{text}"
+        );
+        Ok(())
+    }
+
+    // ── failure ────────────────────────────────────────────────────────
+
+    /// F2 with every field empty refuses and opens no prompt.
+    #[test]
+    fn nothing_to_save_is_refused() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        press(&mut app, KeyCode::F(2));
+        assert!(app.filter_dialog.save_name.is_none(), "no prompt");
+        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(err.contains("Nothing to save"), "reason: {err}");
+        Ok(())
+    }
+
+    /// A time window cannot be part of a named filter.
+    #[test]
+    fn a_time_window_is_refused() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        app.filter_dialog.time_after = "2026-01-01T00:00:00Z".into();
+        press(&mut app, KeyCode::F(2));
+        assert!(app.filter_dialog.save_name.is_none(), "no prompt");
+        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(err.contains("After and Before"), "reason: {err}");
+        Ok(())
+    }
+
+    /// With no method checked there is no expression to save.
+    #[test]
+    fn no_method_checked_is_refused() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        app.filter_dialog.methods = [false; 10];
+        press(&mut app, KeyCode::F(2));
+        assert!(app.filter_dialog.save_name.is_none(), "no prompt");
+        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(err.contains("no SIP method"), "reason: {err}");
+        Ok(())
+    }
+
+    /// A name the run already defines is refused; the prompt stays open
+    /// and nothing is written.
+    #[test]
+    fn a_duplicate_name_is_refused() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "big");
+        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(err.contains("already defines 'big'"), "reason: {err}");
+        assert_eq!(
+            app.filter_dialog.save_name.as_deref(),
+            Some("big"),
+            "prompt kept"
+        );
+        assert!(!path.exists(), "nothing written");
+        Ok(())
+    }
+
+    /// A name with a space is refused with the naming rule.
+    #[test]
+    fn a_name_with_a_space_is_refused() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "my calls");
+        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(err.contains("not usable"), "reason: {err}");
+        assert!(!path.exists(), "nothing written");
+        Ok(())
+    }
+
+    /// A built-in alias name is refused.
+    #[test]
+    fn a_built_in_alias_name_is_refused() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "problems");
+        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(err.contains("built-in alias"), "reason: {err}");
+        assert!(!path.exists(), "nothing written");
+        Ok(())
+    }
+
+    /// An empty name is refused.
+    #[test]
+    fn an_empty_name_is_refused() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "");
+        assert!(app.filter_dialog.error.is_some(), "refused");
+        assert!(!path.exists(), "nothing written");
+        Ok(())
+    }
+
+    /// An Expression that does not parse is refused with the parser's
+    /// message, and nothing is written.
+    #[test]
+    fn an_invalid_expression_is_refused() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count >> 5".into();
+        save_as(&mut app, "large");
+        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(
+            err.contains("not a valid filter expression"),
+            "reason: {err}"
+        );
+        assert!(!path.exists(), "nothing written");
+        assert!(
+            app.named_filters.expansion("large").is_none(),
+            "not in the table"
+        );
+        Ok(())
+    }
+
+    /// With no file to save to, the reason is shown and the table is
+    /// unchanged.
+    #[test]
+    fn no_save_target_is_refused() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.column_config_path = Err("not saved: no config file for this session".into());
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(
+            err.contains("no config file for this session"),
+            "reason: {err}"
+        );
+        assert!(
+            app.named_filters.expansion("large").is_none(),
+            "not in the table"
+        );
+        Ok(())
+    }
+
+    /// A file that gained the name since the run started is not
+    /// overwritten, and the run's table is unchanged.
+    #[test]
+    fn a_name_added_to_the_file_meanwhile_is_refused() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        let before = "[filters]\nlarge = \"msg_count > 9\"\n";
+        std::fs::write(&path, before)?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(err.contains("already defines 'large'"), "reason: {err}");
+        assert_eq!(std::fs::read_to_string(&path)?, before, "file untouched");
+        assert!(
+            app.named_filters.expansion("large").is_none(),
+            "not in the table"
+        );
+        Ok(())
+    }
+
+    /// A save target that cannot be read is refused, and nothing changes.
+    #[test]
+    fn an_unreadable_target_is_refused() -> Result<(), TestError> {
+        let (mut app, dir, _) = saving_app()?;
+        app.column_config_path = Ok(dir.path().to_path_buf());
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        let err = app.filter_dialog.error.clone().ok_or("no error")?;
+        assert!(err.contains("Refusing to save"), "reason: {err}");
+        assert!(
+            app.named_filters.expansion("large").is_none(),
+            "not in the table"
+        );
+        Ok(())
+    }
+
+    /// A refused save shows no success notice.
+    #[test]
+    fn a_refused_save_shows_no_notice() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "big");
+        assert!(app.filter_dialog.notice.is_none(), "no notice");
+        Ok(())
+    }
+
+    // ── edge ───────────────────────────────────────────────────────────
+
+    /// Esc closes the prompt only; the dialog and its fields stay.
+    #[test]
+    fn esc_closes_only_the_prompt() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        press(&mut app, KeyCode::F(2));
+        type_text(&mut app, "large");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.filter_dialog.save_name.is_none(), "prompt closed");
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog), "dialog open");
+        assert_eq!(app.filter_dialog.expression, "msg_count > 5", "field kept");
+        assert!(!path.exists(), "nothing written");
+        Ok(())
+    }
+
+    /// A second Esc closes the dialog as before.
+    #[test]
+    fn a_second_esc_closes_the_dialog() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        press(&mut app, KeyCode::F(2));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.active_popup, None, "dialog closed");
+        Ok(())
+    }
+
+    /// Backspace removes the last character, a multibyte one whole.
+    #[test]
+    fn backspace_removes_one_character() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        press(&mut app, KeyCode::F(2));
+        type_text(&mut app, "ab\u{e9}");
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(
+            app.filter_dialog.save_name.as_deref(),
+            Some("ab"),
+            "one char"
+        );
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(
+            app.filter_dialog.save_name.as_deref(),
+            Some(""),
+            "empty, no panic"
+        );
+        Ok(())
+    }
+
+    /// A name typed with its `@` is saved without it.
+    #[test]
+    fn a_leading_at_sign_is_dropped() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "@large");
+        assert!(saved(&path)?.contains_key("large"), "saved as large");
+        Ok(())
+    }
+
+    /// Spaces around the name are dropped.
+    #[test]
+    fn surrounding_spaces_are_dropped() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "  large ");
+        assert!(saved(&path)?.contains_key("large"), "saved as large");
+        Ok(())
+    }
+
+    /// Tab and F9 do nothing while the prompt is open.
+    #[test]
+    fn other_dialog_keys_wait_for_the_prompt() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        let focus = app.filter_dialog.focused_field;
+        press(&mut app, KeyCode::F(2));
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::F(9));
+        assert_eq!(app.filter_dialog.focused_field, focus, "focus kept");
+        assert_eq!(app.filter_dialog.expression, "msg_count > 5", "not cleared");
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog), "dialog open");
+        Ok(())
+    }
+
+    /// Opening the dialog again starts with no prompt and no notice.
+    #[test]
+    fn reopening_clears_prompt_and_notice() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        press(&mut app, KeyCode::F(2));
+        open_filter_dialog(&mut app);
+        assert!(app.filter_dialog.save_name.is_none(), "no prompt");
+        assert!(app.filter_dialog.notice.is_none(), "no notice");
+        Ok(())
+    }
+
+    /// Two saves in a row are both listed and both written.
+    #[test]
+    fn two_saves_in_a_row_are_both_kept() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        app.filter_dialog.expression = "msg_count > 2".into();
+        save_as(&mut app, "medium");
+        assert_eq!(
+            app.filter_dialog.known_names,
+            ["big", "large", "medium"],
+            "listed"
+        );
+        assert_eq!(saved(&path)?.len(), 2, "both written");
+        Ok(())
+    }
+
+    /// The new name may be used by the next save at once.
+    #[test]
+    fn a_saved_name_can_be_referenced_at_once() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        app.filter_dialog.expression = "@large AND from.user == 'bob'".into();
+        save_as(&mut app, "bob-large");
+        assert!(
+            app.filter_dialog.error.is_none(),
+            "{:?}",
+            app.filter_dialog.error
+        );
+        assert!(saved(&path)?.contains_key("bob-large"), "written");
+        Ok(())
+    }
+
+    /// F2 again after a refusal clears the old error when the prompt opens.
+    #[test]
+    fn f2_clears_an_earlier_error() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        press(&mut app, KeyCode::F(2));
+        assert!(app.filter_dialog.error.is_some(), "refused first");
+        app.filter_dialog.expression = "msg_count > 5".into();
+        press(&mut app, KeyCode::F(2));
+        assert!(app.filter_dialog.error.is_none(), "error cleared");
+        assert!(app.filter_dialog.save_name.is_some(), "prompt open");
+        Ok(())
+    }
+
+    /// Blank time fields do not count as a window.
+    #[test]
+    fn blank_time_fields_are_no_window() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        app.filter_dialog.time_before = "   ".into();
+        press(&mut app, KeyCode::F(2));
+        assert!(app.filter_dialog.save_name.is_some(), "prompt open");
+        Ok(())
+    }
+
+    /// A save does not apply the filter: the call list is unchanged.
+    #[test]
+    fn a_save_does_not_apply_the_filter() -> Result<(), TestError> {
+        let (mut app, _dir, _) = saving_app()?;
+        let before = shown(&mut app);
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "large");
+        assert_eq!(shown(&mut app), before, "list unchanged");
+        assert!(app.active_filter.is_none(), "no filter in force");
         Ok(())
     }
 }
