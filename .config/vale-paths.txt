@@ -24,3 +24,4 @@ website/content/
 README.md
 SUPPORT.md
 MAINTAINERS.md
+GOVERNANCE.md

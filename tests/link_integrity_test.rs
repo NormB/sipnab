@@ -2066,7 +2066,11 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // item links docs/internals/build-ci-release.md#the-format-of-an-entry.
     // 151 -> 152 (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS): the count
     // the test gave after CONTRIBUTING.md's "Updating code adapted from other projects" was added.
-    const EXPECTED_COMMUNITY_LINKS: usize = 152;
+    // 152 -> 172 (governance): GOVERNANCE.md joins ROOT_FILES with 15
+    // relative .md links; README.md, MAINTAINERS.md and SUPPORT.md each link
+    // it (+3); CONTRIBUTING.md links it and its own "Pull request process"
+    // section from "Your first change" (+2).
+    const EXPECTED_COMMUNITY_LINKS: usize = 172;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -2075,6 +2079,7 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
         "SECURITY.md",
         "CODE_OF_CONDUCT.md",
         "ROADMAP.md",
+        "GOVERNANCE.md",
     ];
     let mut problems = Vec::new();
     let mut seen = 0;
