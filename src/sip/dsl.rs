@@ -19,10 +19,9 @@
 use anyhow::{Result, bail};
 use nom::{
     IResult, Parser,
-    branch::alt,
-    bytes::complete::{tag, tag_no_case, take_while1},
+    bytes::complete::{tag_no_case, take_while1},
     character::complete::{char, multispace0, multispace1},
-    combinator::{map, opt, recognize},
+    combinator::{opt, recognize},
     sequence::preceded,
 };
 
@@ -109,9 +108,26 @@ const MAX_HEADER_NAME_LEN: usize = 256;
 /// `header.<name>` reads any SIP header by name.
 const HEADER_FIELD_PREFIX: &str = "header.";
 
-/// How the header family is written in the parse-error field list, beside the
-/// fixed names of [`FIELD_NAMES`].
-const HEADER_FIELD_HINT: &str = "header.<name>";
+/// How the header family is written in the parse-error field list and the TUI
+/// filter dialog's field help, beside the fixed names of [`FIELD_NAMES`].
+pub(crate) const HEADER_FIELD_HINT: &str = "header.<name>";
+
+/// The word that joins two terms that must both hold. Matched without regard
+/// to case.
+const AND_KEYWORD: &str = "AND";
+
+/// The word that joins two terms of which one must hold. Matched without
+/// regard to case.
+const OR_KEYWORD: &str = "OR";
+
+/// The word that negates the term after it. Matched without regard to case.
+const NOT_KEYWORD: &str = "NOT";
+
+/// The words that combine comparisons, in the parser's own spelling: the
+/// constants the `AND`, `OR` and `NOT` parsers match, listed for a help
+/// surface such as the TUI filter dialog's field help.
+#[cfg(any(test, feature = "tui"))]
+pub(crate) const LOGICAL_KEYWORDS: &[&str] = &[AND_KEYWORD, OR_KEYWORD, NOT_KEYWORD];
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -1340,8 +1356,11 @@ fn parse_or_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 
     loop {
         let trimmed = remaining.trim_start();
-        if let Ok((after_or, _)) =
-            preceded(tag_no_case::<&str, &str, NomErr<'_>>("OR"), multispace1).parse(trimmed)
+        if let Ok((after_or, _)) = preceded(
+            tag_no_case::<&str, &str, NomErr<'_>>(OR_KEYWORD),
+            multispace1,
+        )
+        .parse(trimmed)
         {
             let (rest, right) = parse_and_expr(after_or)?;
             result = Expr::Or(Box::new(result), Box::new(right));
@@ -1375,8 +1394,11 @@ fn parse_and_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 
     loop {
         let trimmed = remaining.trim_start();
-        if let Ok((after_and, _)) =
-            preceded(tag_no_case::<&str, &str, NomErr<'_>>("AND"), multispace1).parse(trimmed)
+        if let Ok((after_and, _)) = preceded(
+            tag_no_case::<&str, &str, NomErr<'_>>(AND_KEYWORD),
+            multispace1,
+        )
+        .parse(trimmed)
         {
             let (rest, right) = parse_not_expr(after_and)?;
             result = Expr::And(Box::new(result), Box::new(right));
@@ -1404,8 +1426,11 @@ fn parse_not_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
 
     // Try "NOT" followed by whitespace
-    if let Ok((after_not, _)) =
-        preceded(tag_no_case::<&str, &str, NomErr<'_>>("NOT"), multispace1).parse(input)
+    if let Ok((after_not, _)) = preceded(
+        tag_no_case::<&str, &str, NomErr<'_>>(NOT_KEYWORD),
+        multispace1,
+    )
+    .parse(input)
     {
         let (rest, inner) = parse_atom(after_not)?;
         return Ok((rest, Expr::Not(Box::new(inner))));
@@ -2006,26 +2031,45 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// Every comparison operator, as the parser reads it, in the order it tries
+/// them: the one table [`parse_operator`] matches against and
+/// `operator_tokens` lists for help, so the two cannot disagree.
+///
+/// Two-character operators come before the one-character `<` and `>`, so a
+/// prefix is never read as the whole operator. No token is a prefix of a later
+/// one of a different length, which `operator_table_tests` checks.
+const OPERATOR_TABLE: [(&str, Operator); 8] = [
+    ("==", Operator::Eq),
+    ("!=", Operator::Ne),
+    ("<=", Operator::Le),
+    (">=", Operator::Ge),
+    ("<", Operator::Lt),
+    (">", Operator::Gt),
+    ("=~", Operator::Regex),
+    ("in_subnet", Operator::InSubnet),
+];
+
+/// The comparison operators the DSL accepts, as they are typed, in the order
+/// of [`OPERATOR_TABLE`]: `==`, `!=`, `<=`, `>=`, `<`, `>`, `=~`, `in_subnet`.
+///
+/// For a help surface that lists the language: the TUI filter dialog's
+/// field help reads it, so its list is the parser's own.
+#[cfg(any(test, feature = "tui"))]
+pub(crate) fn operator_tokens() -> impl Iterator<Item = &'static str> {
+    OPERATOR_TABLE.iter().map(|(token, _)| *token)
+}
+
 /// Parse a comparison operator token into an `Operator`.
 ///
-/// Two-character operators (`=~`, `==`, `!=`, `<=`, `>=`) are tried
-/// before single-character `<`/`>` so a prefix is never misparsed.
-/// Returns the remainder and the operator, or a nom error when no
-/// operator matches.
+/// The first entry of [`OPERATOR_TABLE`] that `input` starts with wins; the
+/// table puts each two-character operator before its one-character prefix.
+/// Returns the remainder and the operator, or a nom `Tag` error at `input`
+/// when no operator matches.
 fn parse_operator(input: &str) -> IResult<&str, Operator, NomErr<'_>> {
-    alt((
-        // Before the symbolic operators: a word operator cannot be confused
-        // with them, and putting it first keeps the longest-match rule simple.
-        map(tag("in_subnet"), |_| Operator::InSubnet),
-        map(tag("=~"), |_| Operator::Regex),
-        map(tag("=="), |_| Operator::Eq),
-        map(tag("!="), |_| Operator::Ne),
-        map(tag("<="), |_| Operator::Le),
-        map(tag(">="), |_| Operator::Ge),
-        map(tag("<"), |_| Operator::Lt),
-        map(tag(">"), |_| Operator::Gt),
-    ))
-    .parse(input)
+    OPERATOR_TABLE
+        .iter()
+        .find_map(|(token, op)| input.strip_prefix(token).map(|rest| (rest, *op)))
+        .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
 }
 
 /// Scan a quoted string body (everything after the opening `quote`),
@@ -2137,7 +2181,7 @@ fn ends_a_comparison(rest: &str) -> bool {
     if rest.is_empty() || rest.starts_with(')') {
         return true;
     }
-    ["AND", "OR"].iter().any(|word| {
+    [AND_KEYWORD, OR_KEYWORD].iter().any(|word| {
         rest.get(..word.len())
             .is_some_and(|w| w.eq_ignore_ascii_case(word))
             && rest[word.len()..]
@@ -6650,6 +6694,112 @@ mod typed_filter_tests {
         };
         assert!(err.contains("'@nope' is not a defined filter"), "{err}");
         assert!(err.contains("sales"), "names what is defined: {err}");
+        Ok(())
+    }
+}
+
+/// The operator and keyword lists a help surface reads are the parser's own:
+/// each listed operator parses, each operator that parses is listed, and the
+/// table's order cannot shadow a longer operator behind a shorter one.
+#[cfg(test)]
+mod operator_table_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Every listed operator is one whole operator to the parser.
+    #[test]
+    fn each_listed_operator_parses_whole() -> Result<(), TestError> {
+        let tokens: Vec<&str> = operator_tokens().collect();
+        assert_eq!(
+            tokens,
+            ["==", "!=", "<=", ">=", "<", ">", "=~", "in_subnet"],
+            "the help lists the parser's operators in its order"
+        );
+        for token in tokens {
+            let (rest, _) = parse_operator(token).map_err(|e| format!("{token}: {e}"))?;
+            assert!(
+                rest.is_empty(),
+                "'{token}' parsed only in part: rest {rest:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Every string the parser takes whole as an operator is in the list: a
+    /// new operator added to the parser cannot be left out of the help.
+    #[test]
+    fn every_operator_the_parser_takes_is_listed() {
+        let listed: Vec<&str> = operator_tokens().collect();
+        let symbols = ['=', '!', '<', '>', '~'];
+        let mut probes: Vec<String> = symbols.iter().map(char::to_string).collect();
+        for a in symbols {
+            for b in symbols {
+                probes.push(format!("{a}{b}"));
+            }
+        }
+        probes.extend(["in_subnet", "in", "IN_SUBNET", "subnet"].map(str::to_owned));
+        let mut taken = 0;
+        for probe in &probes {
+            if let Ok(("", _)) = parse_operator(probe) {
+                taken += 1;
+                assert!(
+                    listed.contains(&probe.as_str()),
+                    "the parser takes '{probe}' but the list leaves it out"
+                );
+            }
+        }
+        assert_eq!(taken, 8, "the probes reach every operator: {listed:?}");
+    }
+
+    /// No operator is a prefix of one tried after it, which would make the
+    /// later one unreachable.
+    #[test]
+    fn no_operator_shadows_a_later_one() {
+        for (i, (first, _)) in OPERATOR_TABLE.iter().enumerate() {
+            for (later, _) in &OPERATOR_TABLE[i + 1..] {
+                assert!(
+                    !later.starts_with(first),
+                    "'{first}' is tried before '{later}' and would cut it short"
+                );
+            }
+        }
+    }
+
+    /// A string that is not an operator is refused, as before the table.
+    #[test]
+    fn a_non_operator_is_refused() {
+        for probe in ["", "=", "!", "~", "<>", "in", " ==", "IN_SUBNET"] {
+            assert!(
+                !matches!(parse_operator(probe), Ok(("", _))),
+                "'{probe}' must not parse as a whole operator"
+            );
+        }
+    }
+
+    /// The listed combining words are the ones the parser joins terms with,
+    /// in any case, and a word it does not know is refused.
+    #[test]
+    fn the_listed_keywords_combine_terms() -> Result<(), TestError> {
+        assert_eq!(
+            LOGICAL_KEYWORDS,
+            ["AND", "OR", "NOT"],
+            "the parser's three words"
+        );
+        for word in LOGICAL_KEYWORDS {
+            for spelled in [word.to_string(), word.to_lowercase()] {
+                let text = if *word == NOT_KEYWORD {
+                    format!("{spelled} method == 'BYE'")
+                } else {
+                    format!("method == 'BYE' {spelled} method == 'ACK'")
+                };
+                FilterExpr::parse(&text).map_err(|e| format!("{text}: {e}"))?;
+            }
+        }
+        assert!(
+            FilterExpr::parse("method == 'BYE' XOR method == 'ACK'").is_err(),
+            "a word the parser does not know is refused"
+        );
         Ok(())
     }
 }

@@ -81,7 +81,8 @@ Any other key leaves the question on screen.
 
 ## Copying text
 
-Clipboard copies (`y` in the Raw Message view, `E` in the Call Flow view) use
+Clipboard copies (`y` in the Raw Message view, `E` in the Call Flow view, `Y`
+in the Call List) use
 **OSC 52**. This is an escape sequence the terminal maps to your system
 clipboard.
 
@@ -147,6 +148,7 @@ To start every session with capture off, set `mouse_capture = false` under
 | S | Open the **Relay statistics** view — asks the live relay for its own counters (`s` asks what this capture saw, `S` asks what the relay says). See [Relay statistics](#relay-statistics) |
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | T | Open the call timeline for the selected dialog (Esc / q closes it) |
+| Y | Copy the view filter in force as a `sipnab` command line with `--filter`, and show it. See [Run the same filter from a shell](tui-walkthrough.md#run-the-same-filter-from-a-shell) |
 | O | Open pcap file (File Open dialog) |
 | F8 | Open Settings popup **(configurable: `settings`)** |
 | Tab | Switch to RTP Streams view |
@@ -703,10 +705,11 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 | Enter | Apply filter (or cancel if Cancel button focused) |
 | Tab | Focus next field |
 | Shift+Tab / BackTab | Focus previous field |
-| Down | Next field (or checkbox down) |
-| Up | Previous field (or checkbox up) |
+| Down | Next field (or checkbox down). In Expression during a recall: the next newer expression, then the text you typed |
+| Up | Previous field (or checkbox up). In Expression: the expression applied before, newest first; past the oldest, the previous field |
 | Left / Right | Move within checkboxes or text cursor |
 | Space | Toggle checkbox / activate button |
+| F1 | Show or hide the Filter DSL field names and operators in place of the method boxes. Esc hides them first |
 | F9 | Clear all fields, the Expression field included, and the active filter, close popup |
 | Backspace / Delete | Text editing in focused text field |
 | Home / End | Jump to start/end of text field |
@@ -1112,7 +1115,7 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="t-muted"> │</span>  INVITE    <span class="t-good">[*]</span>                       PUBLISH   <span class="t-good">[*]</span>                       <span class="t-muted">│</span>
 <span class="t-muted"> │</span>     <span class="t-good">[ Filter ]</span>                           <span class="t-muted">[ Cancel ]</span>                      <span class="t-muted">│</span>
 <span class="t-muted"> └──────────────────────────────────────────────────────────────────────────┘</span>
-<span class="t-muted"> Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear</span></pre>
+<span class="t-muted"> Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear  F1 Fields</span></pre>
 </div>
 
 Each label says what its field matches:
@@ -1137,6 +1140,10 @@ Each label says what its field matches:
   - When Enter refuses it, the dialog stays open with the parser's message
     and position, the cursor moves to that position, and the filter in force
     stays.
+  - Up recalls the expressions applied earlier in the session, newest first,
+    and Down walks back to the text you typed. The session keeps the newest
+    50, each once.
+  - `F1` lists every field name and operator the DSL takes.
   - [Filter with an expression](tui-walkthrough.md#filter-with-an-expression)
     walks through it.
 

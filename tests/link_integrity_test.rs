@@ -1912,7 +1912,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // section); docs/keybindings.md 1 (the Expression bullet links that
     // section; its filter-dsl.md link moved from the tip to the bullet, no
     // change).
-    const EXPECTED_WIKI_LINKS: usize = 2716;
+    // 2716 -> 2720 (TUI-FILTER-FOLLOWUPS, +4): docs/tui-walkthrough.md 3
+    // ("Look up the fields and operators" links filter-dsl.md twice, "Run the
+    // same filter from a shell" links the "Copying text" section of
+    // keybindings.md); docs/keybindings.md 1 (the call list's `Y` row links
+    // "Run the same filter from a shell").
+    const EXPECTED_WIKI_LINKS: usize = 2720;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

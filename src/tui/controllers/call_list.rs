@@ -121,6 +121,9 @@ pub enum CallListAction {
     OpenDashboard,
     /// `T` — open the call timeline of the selected dialog.
     OpenTimeline,
+    /// `Y` — copy the filter in force as a `sipnab … --filter '…'` command
+    /// line, and show it.
+    CopyFilterCommand,
 }
 
 /// Pure key→action mapping for the call list view (keymap-aware).
@@ -191,6 +194,9 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         // 't' (lowercase) is the timestamp-mode cycle; the timeline opens
         // on Shift+T so both keep a call-list binding.
         KeyCode::Char('T') => OpenTimeline,
+        // `y` copies a message in the call flow; `Y` copies the filter that
+        // chose the calls on this list.
+        KeyCode::Char('Y') => CopyFilterCommand,
         _ => return None,
     })
 }
@@ -313,11 +319,7 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         }
         CallListAction::OpenFilterDialog => {
             // Always open the filter dialog (state is preserved)
-            app.filter_dialog.focused_field = 0;
-            app.filter_dialog.sync_cursor();
-            app.filter_dialog.error = None;
-            app.filter_dialog.known_names = app.named_filters.names().map(str::to_owned).collect();
-            app.active_popup = Some(Popup::FilterDialog);
+            crate::tui::controllers::filter_dialog::open_filter_dialog(app);
         }
         CallListAction::OpenSettings => {
             app.settings_dialog.focused_item = 0;
@@ -438,6 +440,9 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             if let Some(call_id) = get_selected_call_id(app) {
                 app.current_view = View::CallTimeline(call_id);
             }
+        }
+        CallListAction::CopyFilterCommand => {
+            crate::tui::controllers::command_line::copy_filter_command(app);
         }
     }
 }

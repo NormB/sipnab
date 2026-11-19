@@ -3,9 +3,7 @@
 
 //! Key handling for the RTP stream list and stream detail views.
 
-use crate::tui::{
-    App, KeyCode, KeyEvent, Keymap, Popup, View, open_name_dialog_for, open_save_popup,
-};
+use crate::tui::{App, KeyCode, KeyEvent, Keymap, View, open_name_dialog_for, open_save_popup};
 
 /// Everything the stream list view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,10 +132,7 @@ fn execute_stream_list_action(app: &mut App, action: StreamListAction) {
         StreamListAction::Help => app.current_view = View::Help,
         StreamListAction::OpenSaveDialog => open_save_popup(app),
         StreamListAction::OpenFilterDialog => {
-            app.filter_dialog.focused_field = 0;
-            app.filter_dialog.sync_cursor();
-            app.filter_dialog.error = None;
-            app.active_popup = Some(Popup::FilterDialog);
+            crate::tui::controllers::filter_dialog::open_filter_dialog(app);
         }
         StreamListAction::OpenDetail => {
             if let Some(key) = get_selected_stream_key(app) {
@@ -339,6 +334,7 @@ pub(in crate::tui) fn get_selected_stream_key(app: &App) -> Option<crate::rtp::s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::Popup;
     use crate::tui::controllers::test_support::*;
 
     type TestError = Box<dyn std::error::Error>;
