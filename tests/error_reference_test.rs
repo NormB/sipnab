@@ -1053,7 +1053,9 @@ const EXPECTED_UNRESOLVED: usize = 87;
 // the ends of the download a root install runs as another user: it failed,
 // a signal ended it, it sent more than a table file, it had no output, and a
 // platform with no unix user ids cannot start it.
-const EXPECTED_TEMPLATES: usize = 685;
+// 685 -> 686 (IMPORT-V6 D17 parser cap): +1 in src/error.rs, ParseError::TooLong,
+// the refusal of a SIP message longer than any input path delivers.
+const EXPECTED_TEMPLATES: usize = 686;
 
 // ---------------------------------------------------------------------------
 // The page gates

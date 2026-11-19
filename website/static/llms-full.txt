@@ -130,7 +130,8 @@ enums. They do not return `anyhow::Result`.
 | `config::Config::load`, address/rule/CIDR parsing | `Result<_, Error>` |
 
 - **`ParseError`** — protocol parsers. Variants include
-  `Empty { what }`, `TooShort { what, need, got }`, `InvalidUtf8 { what }`,
+  `Empty { what }`, `TooShort { what, need, got }`, `TooLong { what, len, max }`,
+  `InvalidUtf8 { what }`,
   `MissingCrlf`, `NotSip { line }`, `InvalidStatusCode { code }`,
   `BadRtpVersion { version }`, `SdpMissingVersion`,
   `BadSdpVersion { version }`.
@@ -22687,7 +22688,7 @@ clients' as `192.0.2.21`.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `--max-streams` | `<N>` | `50000` | 0.3.0 | Maximum number of RTP streams to track simultaneously. At least 1: sipnab refuses `0`. Config: `[limits] max_streams` |
+| `--max-streams` | `<N>` | `50000` | 0.3.0 | Maximum number of RTP streams to track simultaneously. At the cap, sipnab discards the oldest tenth of the streams to make room: a WARN line names the cap and the count (first at one, then at 10, 100 and each further power of ten), and the end-of-run `retention:` line gives the total. At least 1: sipnab refuses `0`. Config: `[limits] max_streams` |
 | `--max-lost-sequences` | `<N>` | `1000` | 0.5.97 | Lost RTP sequence numbers retained per stream, for the Packet Loss Map and the burst/gap analysis. The default is about a minute of a call losing 1 % at 50 packets a second, so on a half-hour call the map shows the tail and marks itself truncated. The burst/gap window widens with it, and each retained loss costs two bytes per stream. Config: `[limits] max_lost_sequences`. How-to: [Measure call quality](call-quality.md#see-when-the-quality-changed) |
 | `--quality-interval` | `<SECONDS>` | `5` | 0.5.160 | Seconds between RTP quality snapshots — the resolution of the per-stream quality trend, which carries a MOS, an R-factor and an `acceptable`/`degraded`/`not_scorable` verdict per interval. The shipped five seconds averages away any burst shorter than itself, so three half-second dropouts read as a mild five-second average. The trend still covers an hour of call time whatever this is, so one second retains 3600 snapshots per stream instead of 720: resolution costs memory, never history. Accepts 1 to 300. Config: `[limits] quality_interval_secs`. How-to: [Measure call quality](call-quality.md#see-when-the-quality-changed) |
 | `--quality-threshold` | `<MOS>` | `3.0` | 0.3.0 | MOS quality threshold for alerts (1.0-5.0 scale). How-to: [Measure call quality](call-quality.md#run-a-command-when-quality-drops) |
@@ -23543,7 +23544,7 @@ The platforms also differ.
 | `--cores` | `<N>` | `1` | 0.4.14 | CPU cores for offline pcap reconstruction (`-I`). At least 1: sipnab refuses `0`. 1 = single-threaded; >1 shards by host pair for multi-core throughput and prints the whole-capture views (`--report`, `--json-dialogs`, `--analyze`, `--call-report`). A run that asks for none of them exits 2 before reading. A flag it does not carry out, such as `--json`, `--hexdump`, a matcher, a key file, an exec hook, a server or `--sandbox`, exits 2 naming it. Started as root it opens every input file first, then drops to `--user` (or `nobody`) as the single-core read does, so a root-only capture still reads. At any core count sipnab reads a plain uncompressed `.pcap` by mapping it, which is where most of the multi-core gain comes from; pcapng, gzip, a non-regular file, or any run with a BPF filter reads through libpcap instead. Set `SIPNAB_NO_MMAP=1` to force the libpcap path everywhere — an escape hatch for a filesystem where mapping misbehaves, such as some network or FUSE mounts. Results are identical either way, except that libpcap reads a nanosecond-resolution pcap's timestamps to the microsecond. With `--retain-audio` each worker gets an equal share of `[limits] max_audio_bytes`, so the run as a whole stays inside the budget |
 | `--max-metadata-file-bytes` | `<BYTES>` | `2147483648` | 0.5.97 | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. A `tcpdump -C` or `dumpcap -b` ring member passes 2 GiB on a host with the RAM to spare, and the refusal is fatal. **A memory-exhaustion guard on untrusted input:** raising it to N lets ONE file claim N bytes of this host's RAM, roughly 2N while `--strip-secrets` writes its copy, on nothing but a file size and before sipnab can tell the file is a capture at all. Raise it for captures you produced. Config: `[limits] max_metadata_file_bytes` |
 | `--max-gunzip-bytes` | `<BYTES>` | `1073741824` | 0.5.97 | Bytes sipnab may inflate out of one gzip-compressed input: a `-I capture.pcap.gz`, every gzip layer of an archive summed across the layers of one input, the embedded names and TLS secrets it reads out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. **A gzip-bomb guard:** inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes of input claim N bytes of RAM or disk. Raise it for archives you compressed yourself. Config: `[limits] max_gunzip_bytes` |
-| `--max-tcp-buffer` | `<BYTES>` | `65536` | 0.5.99 | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message — both halves parse as malformed, the cut destroys the framing for every message behind it, and the peer that sent a valid message is the one sipnab reports as broken. Raising it to N lets one TCP direction hold N bytes. The floor is one SIP header line (8192), below which no message survives, and sipnab refuses a smaller value by name. Config: `[limits] max_tcp_buffer` |
+| `--max-tcp-buffer` | `<BYTES>` | `65536` | 0.5.99 | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then drops that message: it is in no dialog and no output, a WARN line says so (first at one, then at 10, 100 and each further power of ten), the end-of-run capture quality line gives the total, and reading resumes at the message after it. Raising it to N lets one TCP direction hold N bytes. The floor is one SIP header line (8192), below which no message survives, and sipnab refuses a smaller value by name. Config: `[limits] max_tcp_buffer` |
 
 **Examples**
 
@@ -23560,8 +23561,8 @@ The platforms also differ.
 - `sipnab -N -I a.pcap -I b.pcap --max-capture-sources 2 --report` — the smallest table two input files can run with; one less and sipnab refuses to start, naming the setting
 - `sipnab -N -I archive.pcapng.gz --max-gunzip-bytes 8589934592 --strip-secrets sanitized.pcapng` — sanitize an 8 GiB pcapng you compressed yourself, without spending the disk that decompressing it by hand would need
 - `sipnab -N -I from-customer.pcapng.gz --max-gunzip-bytes 268435456 --report` — the opposite, for a file that arrived from outside: a quarter-gigabyte ceiling on the embedded names and secrets sipnab reads out of it, so a gzip bomb wearing a capture's name cannot take the box down
-- `sipnab -N -I isup-trunk.pcap --max-tcp-buffer 1048576 --json-dialogs --no-cli-print` — a carrier trunk whose SIP/TCP messages carry encapsulated ISUP bodies past 64 KiB: at the shipped ceiling sipnab cuts each one in half and reports it malformed, and at 1 MiB the same bytes produce the call
-- `sudo sipnab -d eth0 --max-tcp-buffer 262144` — watch a live SBC that answers with long `Record-Route` sets, holding a quarter-megabyte per TCP direction so a large response frames whole instead of arriving as two malformed fragments
+- `sipnab -N -I isup-trunk.pcap --max-tcp-buffer 1048576 --json-dialogs --no-cli-print` — a carrier trunk whose SIP/TCP messages carry encapsulated ISUP bodies past 64 KiB: at the shipped ceiling sipnab drops each one and warns, and at 1 MiB the same bytes produce the call
+- `sudo sipnab -d eth0 --max-tcp-buffer 262144` — watch a live SBC that answers with long `Record-Route` sets, holding a quarter-megabyte per TCP direction so a large response frames whole and sipnab keeps it
 - `sudo sipnab -N -d eth0 --reassembly-ttl 600 --max-reassembly 50000` — a persistent SIP/TLS trunk to a carrier that goes quiet overnight: ten minutes of patience keeps the half-read stream, so the first segment of the morning continues a message rather than landing in the middle of one
 - `sipnab -N -I untrusted.pcap --reassembly-ttl 5 --max-reassembly 2000` — the opposite, for a capture from outside: a five-second wait drops a half-sent stream almost at once, so a peer that opens streams and never finishes them cannot hold state
 - `sipnab -N -I calls.pcap --mcp --mcp-allow-save-findings --mcp-max-findings 20000` — a long agent session over a large capture, where a thousand annotations is a session doing its job and the journal on this box can take twenty
@@ -25249,13 +25250,13 @@ A `[keybindings]` value is not a key the terminal UI can read.
 
 **Exit code:** 1.
 
-### `[limits] max_tcp_buffer must be >= {} (a smaller ceiling cannot hold one SIP header line, so every SIP/TCP message would be flushed mid-message and reported malformed), got {v}`
+### `[limits] max_tcp_buffer must be >= {} (a smaller ceiling cannot hold one SIP header line, so every SIP/TCP message would be dropped as oversized), got {v}`
 
-`[limits] max_tcp_buffer` is how many bytes sipnab may buffer for one direction of a SIP over TCP connection, before it flushes the buffer.
+`[limits] max_tcp_buffer` is how many bytes sipnab may buffer for one direction of a SIP over TCP connection. It is also the longest SIP over TCP message sipnab keeps: sipnab drops a longer one.
 
 - `{}` is the smallest value accepted, 8192. That is the longest single header line the parser accepts.
 - `{v}` is the value in the file.
-- A smaller buffer cannot hold one header line. So sipnab would report every SIP over TCP message as malformed.
+- A smaller buffer cannot hold one header line. So sipnab would drop every SIP over TCP message.
 - The printed line starts with `invalid config value: `.
 
 **What to do:** Set a value of 8192 or more, for example the default `65536`, or remove the key.
@@ -31166,6 +31167,19 @@ Data is shorter than the structure it must hold.
 
 **Exit code:** None. The error goes back to the program that calls the library, or sipnab counts the frame as truncated, and the run continues.
 
+### `{what} too long: {len} bytes (max {max})`
+
+Data is longer than the most its structure may hold.
+
+- `{what}` names the structure. The SIP parser reports `SIP message`.
+- `{len}` is the number of bytes given.
+- `{max}` is the most the parser accepts: 65535, the largest UDP datagram, or the `--max-tcp-buffer` ceiling when that is larger.
+- No input path delivers a SIP message longer than that intact, so the parser refuses it rather than reading it.
+
+**What to do:** If the message came from a SIP over TCP capture, raise `--max-tcp-buffer` or `[limits] max_tcp_buffer` above its length. A program that calls the library can split or shorten its input.
+
+**Exit code:** None. The error goes back to the program that calls the library, or sipnab does not analyze the message, and the run continues.
+
 ### `unsupported GRE inner protocol: 0x{0:04X}`
 
 Packet decoder error from the library: a GRE tunnel packet carries an inner protocol other than IPv4, IPv6 or Transparent Ethernet Bridging (`0x6558`).
@@ -36582,7 +36596,7 @@ Resource limits to prevent unbounded memory growth.
 | `max_grouped_messages` | integer | `200000` | Messages `--group-by` buffers across every group. Grouping cannot stream — the last packet may belong to the first group — so this is memory held until the capture ends. Must be at least `1`: sipnab refuses `0`. `--max-grouped-messages` overrides it |
 | `max_metadata_file_bytes` | integer | `2147483648` | Bytes of pcapng sipnab reads into memory for embedded names and TLS secrets. **A memory-exhaustion guard on untrusted input.** Raising it to N lets ONE file claim N bytes of this host's RAM — roughly 2N while `--strip-secrets` writes its copy — on nothing but a file size, before sipnab can tell the file is a capture at all. Raise it for captures you produced; leave it for captures someone sent you. Must be at least `1`: sipnab refuses `0`. `--max-metadata-file-bytes` overrides it |
 | `max_gunzip_bytes` | integer | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets read out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, a `-I capture.pcap.gz` input, and the whole capture in the browser build. sipnab refuses an `-I` file that inflates past the limit: `decompressing reached the <N>-byte ceiling`, exit 1. **A gzip-bomb guard.** Inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes claim N bytes of RAM. Raise it for archives you compressed yourself. Must be at least `1`: sipnab refuses `0`. `--max-gunzip-bytes` overrides it |
-| `max_tcp_buffer` | integer | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. A message larger than this, such as one carrying ISUP encapsulation, a long `Record-Route` set or a large SDP offer, makes sipnab flush the buffer mid-message and report both halves as malformed. Raise it on such a trunk. The minimum is 8192, one SIP header line; sipnab refuses a smaller value and names the key. `--max-tcp-buffer` overrides it |
+| `max_tcp_buffer` | integer | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. sipnab drops a message larger than this, such as one carrying ISUP encapsulation, a long `Record-Route` set or a large SDP offer: it is in no dialog and no output, and a WARN line and the end-of-run capture quality line say how many. Raise it on such a trunk. The minimum is 8192, one SIP header line; sipnab refuses a smaller value and names the key. `--max-tcp-buffer` overrides it |
 | `api_max_rows` | integer | `1000` | Rows one list-style REST response returns. The REST counterpart of `mcp_max_rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. `--api-max-rows` overrides it. `0` fails validation and names the key |
 | `api_rate_limit_per_peer` | integer | `100` | REST requests one client IP may make per second. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance and see `503` (`503` rather than `429` because the limiter runs before authentication, so the refusal says nothing about the credential). `0` disables the cap, the reading `hep_rate_limit` and `mcp_rate_limit_per_peer` also give it. At most 4294967295; a larger value fails validation and names the key. `--api-rate-limit-per-peer` overrides it |
 | `metrics_max_conn` | integer | `16` | Metrics scrapes served at once before further ones get `503`. A refused scrape leaves a gap in the series. Raise it where several collectors scrape one sipnab. `--metrics-max-conn` overrides it. `0` fails validation and names the key |
@@ -56083,6 +56097,9 @@ a network interface.
 | A warning that starts `'eth0': the kernel refused a` | The kernel had no memory for the buffer `-B` asked for, and sipnab took a smaller one | Free memory or ask for less, as [It degrades rather than failing](#it-degrades-rather-than-failing) says |
 | The last line still counts drops by the kernel buffer | sipnab read slower than packets arrived | Work down the list in [A worked starting point](#a-worked-starting-point) |
 | The last line counts drops by the interface | The interface or its driver dropped them before libpcap saw them. A larger `-B` does not change this count | [Interface and driver drops](#interface-and-driver-drops) |
+| A warning that starts `a SIP/TCP message from`, or the `capture quality:` line counts `SIP/TCP message(s) longer than the reassembly ceiling` | A SIP over TCP message passed `--max-tcp-buffer` (64 KiB by default), for example one with an ISUP body. sipnab dropped it, and reading resumed at the next message | Raise `--max-tcp-buffer` or `[limits] max_tcp_buffer` above the largest message, then run again. Check: the warning no longer appears and the call has its messages |
+| A warning that starts `a WebSocket frame declaring`, or the `capture quality:` line counts `WebSocket frame(s) longer than the 65536-byte frame limit` | A SIP over WebSocket frame was longer than 64 KiB, the frame limit. sipnab dropped the frame and did not analyze the SIP in it | No setting changes this limit. Capture the call on its SIP over UDP or TCP leg if the network has one |
+| A warning that starts `the RTP stream store reached its cap`, or the `retention:` line counts `oldest RTP stream(s) discarded at capacity` | More RTP streams than `--max-streams` (50000 by default) were open at once, and sipnab discarded the oldest | Raise `--max-streams` or `[limits] max_streams`, then run again. Check: the warning no longer appears |
 
 ---
 

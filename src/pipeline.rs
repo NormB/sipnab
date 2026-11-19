@@ -2024,7 +2024,33 @@ pub fn try_websocket_unwrap(pp: &ParsedPacket) -> Option<Vec<u8>> {
             record_ws_port_skip(pp.src_port, pp.dst_port, &payload);
             None
         }
+        WebSocketSip::Oversized(declared) => {
+            if let Some(total) = crate::capture::tally_warning_due(&WS_OVERSIZE_FRAMES, 1) {
+                tracing::warn!("{}", ws_oversize_warning(declared, total));
+            }
+            None
+        }
     }
+}
+
+/// WebSocket data frames over the 64 KB limit dropped on a WebSocket port,
+/// since start. Process-global for the reason `WS_PORT_SKIPS` is.
+static WS_OVERSIZE_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// WebSocket data frames over the 64 KB limit this run dropped on a
+/// WebSocket port. Reported at the end of a batch run: the SIP in each was
+/// not analyzed.
+#[must_use]
+pub fn ws_oversize_frames() -> u64 {
+    WS_OVERSIZE_FRAMES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The WARN line for a dropped oversized WebSocket frame.
+fn ws_oversize_warning(declared: u64, total: u64) -> String {
+    format!(
+        "a WebSocket frame declaring {declared} bytes exceeds the 65536-byte frame limit and \
+         was dropped, so the SIP in it is not analyzed ({total} frame(s) dropped so far)"
+    )
 }
 
 /// SIP found inside a WebSocket frame, and whether its port is in the set.
@@ -2034,6 +2060,9 @@ enum WebSocketSip {
     /// Outside the port set: the SIP is discarded, and counted by whoever
     /// owns the packet.
     OffPort(Vec<u8>),
+    /// On a WebSocket port, the start of a data frame declaring more than
+    /// the 64 KB limit: dropped, and counted by whoever owns the packet.
+    Oversized(u64),
 }
 
 /// The rule behind [`try_websocket_unwrap`], recording nothing.
@@ -2046,7 +2075,13 @@ fn websocket_sip(pp: &ParsedPacket) -> Option<WebSocketSip> {
     // is not a WebSocket data frame — which is what makes running the unwrap
     // on every port affordable at all.
     if !websocket::is_websocket_frame(&pp.payload) {
-        return None;
+        // The sniff turns an oversized frame away with the rest; on a
+        // WebSocket port it is named, so it is counted and said rather than
+        // lost in silence. Off the port set such bytes are too likely to be
+        // something else.
+        return websocket::oversized_data_frame(&pp.payload)
+            .filter(|_| websocket::is_ws_port(pp.dst_port) || websocket::is_ws_port(pp.src_port))
+            .map(WebSocketSip::Oversized);
     }
 
     let payload = match websocket::unwrap_websocket_frame(&pp.payload) {
@@ -2578,7 +2613,7 @@ pub fn sdp_links_of(
     }
     let (payload, transport): (bytes::Bytes, TransportProto) = match websocket_sip(pp) {
         Some(WebSocketSip::OnPort(payload)) => (payload.into(), TransportProto::Ws),
-        Some(WebSocketSip::OffPort(_)) => return Vec::new(),
+        Some(WebSocketSip::OffPort(_) | WebSocketSip::Oversized(_)) => return Vec::new(),
         None => (pp.payload.clone(), pp.transport),
     };
     if !sip::parser::starts_sip_message(&payload) {
@@ -2764,7 +2799,9 @@ pub fn copy_learning(pp: &ParsedPacket, opts: &PipelineOptions) -> CopyLearning 
     crate::capture::untallied(|| {
         let (payload, transport): (bytes::Bytes, TransportProto) = match websocket_sip(pp) {
             Some(WebSocketSip::OnPort(payload)) => (payload.into(), TransportProto::Ws),
-            Some(WebSocketSip::OffPort(_)) => return CopyLearning::Nothing,
+            Some(WebSocketSip::OffPort(_) | WebSocketSip::Oversized(_)) => {
+                return CopyLearning::Nothing;
+            }
             None => (pp.payload.clone(), pp.transport),
         };
         if sip_port_ok(pp, opts) && sip::parser::starts_sip_message(&payload) {
@@ -6168,6 +6205,213 @@ mod engine_sighting_claim_tests {
             Some(EngineIdentity::ListenNg(remote)),
             "IP-in-IP: the inner destination, not 203.0.113.2"
         );
+        Ok(())
+    }
+}
+
+/// A WebSocket data frame over the 64 KB limit on a WebSocket port is named
+/// for counting rather than lost in silence (backlog IMPORT-V6
+/// "WebSocket frame >64KB → drop and WARN").
+#[cfg(test)]
+mod ws_oversize_tests {
+    use super::*;
+    use crate::capture::parse::{ParsedPacket, TransportProto};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A TCP packet 192.0.2.1:`src` -> 192.0.2.2:`dst` carrying `payload`.
+    fn tcp(src: u16, dst: u16, payload: Vec<u8>) -> ParsedPacket {
+        ParsedPacket {
+            frame_bytes: None,
+            frame: None,
+            timestamp: chrono::DateTime::UNIX_EPOCH,
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: src,
+            dst_port: dst,
+            transport: TransportProto::Tcp,
+            payload: payload.into(),
+            ip_id: None,
+            tcp_seq: Some(1),
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 6,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
+        }
+    }
+
+    /// The head of a text frame declaring `declared` bytes, then 64 bytes.
+    fn oversized(declared: u64) -> Vec<u8> {
+        let mut f = vec![0x81, 127];
+        f.extend_from_slice(&declared.to_be_bytes());
+        f.extend_from_slice(&[b'x'; 64]);
+        f
+    }
+
+    /// A whole text frame carrying a SIP OPTIONS request.
+    fn sip_frame() -> Vec<u8> {
+        let sip = b"OPTIONS sip:a@example.com SIP/2.0\r\nCall-ID: ws@example.com\r\n\r\n";
+        let mut f = vec![0x81, sip.len() as u8];
+        f.extend_from_slice(sip);
+        f
+    }
+
+    fn oversized_of(pp: &ParsedPacket) -> Option<u64> {
+        match websocket_sip(pp) {
+            Some(WebSocketSip::Oversized(n)) => Some(n),
+            _ => None,
+        }
+    }
+
+    macro_rules! port_case {
+        ($name:ident, $src:expr, $dst:expr, $declared:expr, $want:expr) => {
+            #[test]
+            fn $name() -> Result<(), TestError> {
+                let pp = tcp($src, $dst, oversized($declared));
+                assert_eq!(oversized_of(&pp), $want, "{} -> {}", $src, $dst);
+                Ok(())
+            }
+        };
+    }
+
+    // Success: on a WebSocket port, either direction.
+    port_case!(to_port_8080, 50_000, 8080, 70_000, Some(70_000));
+    port_case!(from_port_8080, 8080, 50_000, 70_000, Some(70_000));
+    port_case!(to_port_443, 50_001, 443, 1 << 20, Some(1 << 20));
+    port_case!(to_port_80, 50_002, 80, 65_537, Some(65_537));
+    port_case!(to_port_8443, 50_003, 8443, 200_000, Some(200_000));
+
+    // Failure: outside the port set, the bytes are not taken for WebSocket.
+    port_case!(off_the_port_set, 50_000, 9999, 70_000, None);
+    port_case!(sip_port_is_not_a_websocket_port, 5060, 5060, 70_000, None);
+    port_case!(at_the_limit_is_not_oversized, 50_000, 8080, 65_536, None);
+
+    macro_rules! frame_case {
+        ($name:ident, $frame:expr, $want:expr) => {
+            #[test]
+            fn $name() -> Result<(), TestError> {
+                let pp = tcp(50_100, 8080, $frame);
+                assert_eq!(oversized_of(&pp), $want, "on port 8080");
+                Ok(())
+            }
+        };
+    }
+
+    /// `oversized(n)` with its first byte replaced.
+    fn with_byte0(byte0: u8, declared: u64) -> Vec<u8> {
+        let mut f = oversized(declared);
+        f[0] = byte0;
+        f
+    }
+
+    /// `oversized(n)` with a mask bit and key.
+    fn masked(declared: u64) -> Vec<u8> {
+        let mut f = vec![0x81, 0x80 | 127];
+        f.extend_from_slice(&declared.to_be_bytes());
+        f.extend_from_slice(&[9, 9, 9, 9]);
+        f
+    }
+
+    // Success: each data frame shape is named on a WebSocket port.
+    frame_case!(
+        binary_frame_on_the_port,
+        with_byte0(0x82, 80_000),
+        Some(80_000)
+    );
+    frame_case!(
+        masked_client_frame_on_the_port,
+        masked(90_000),
+        Some(90_000)
+    );
+    frame_case!(
+        unfinished_first_fragment_on_the_port,
+        with_byte0(0x01, 70_000),
+        Some(70_000)
+    );
+    frame_case!(
+        a_gibibyte_frame_on_the_port,
+        oversized(1 << 30),
+        Some(1 << 30)
+    );
+
+    // Failure: a frame that is not an oversized data frame is not named.
+    frame_case!(close_frame_on_the_port, with_byte0(0x88, 80_000), None);
+    frame_case!(continuation_on_the_port, with_byte0(0x80, 80_000), None);
+    frame_case!(rsv_bit_on_the_port, with_byte0(0xC1, 80_000), None);
+    frame_case!(
+        a_small_sip_frame_on_the_port_is_not_oversized,
+        sip_frame(),
+        None
+    );
+
+    // Edge: a head cut short, or nothing at all.
+    frame_case!(
+        a_head_cut_short_on_the_port,
+        oversized(80_000)[..7].to_vec(),
+        None
+    );
+    frame_case!(an_empty_payload_on_the_port, Vec::new(), None);
+
+    /// UDP is never WebSocket.
+    #[test]
+    fn udp_is_never_oversized_websocket() -> Result<(), TestError> {
+        let mut pp = tcp(50_000, 8080, oversized(70_000));
+        pp.transport = TransportProto::Udp;
+        assert_eq!(oversized_of(&pp), None, "UDP");
+        Ok(())
+    }
+
+    /// A whole SIP frame on the port is still analyzed.
+    #[test]
+    fn a_normal_frame_is_still_unwrapped() -> Result<(), TestError> {
+        let pp = tcp(50_000, 8080, sip_frame());
+        assert!(
+            matches!(websocket_sip(&pp), Some(WebSocketSip::OnPort(_))),
+            "an ordinary SIP frame must unwrap"
+        );
+        Ok(())
+    }
+
+    /// The unwrap returns nothing for the oversized frame: it is dropped.
+    #[test]
+    fn the_unwrap_drops_the_oversized_frame() -> Result<(), TestError> {
+        let pp = tcp(50_000, 8080, oversized(70_000));
+        assert_eq!(
+            crate::capture::untallied(|| try_websocket_unwrap(&pp)),
+            None,
+            "dropped"
+        );
+        Ok(())
+    }
+
+    /// The SDP link reader learns nothing from it.
+    #[test]
+    fn sdp_links_of_an_oversized_frame_are_empty() -> Result<(), TestError> {
+        let pp = tcp(50_000, 8080, oversized(70_000));
+        let opts = PipelineOptions::default();
+        assert!(sdp_links_of(&pp, &opts).is_empty(), "no SDP");
+        Ok(())
+    }
+
+    /// The warning names the declared size, the limit and the total.
+    #[test]
+    fn the_warning_names_size_limit_and_total() -> Result<(), TestError> {
+        let text = ws_oversize_warning(70_000, 3);
+        for needle in ["70000", "65536", "3 frame(s) dropped so far"] {
+            assert!(text.contains(needle), "missing {needle:?}: {text}");
+        }
+        Ok(())
+    }
+
+    /// The warning says the SIP in the frame is not analyzed.
+    #[test]
+    fn the_warning_says_what_is_lost() -> Result<(), TestError> {
+        let text = ws_oversize_warning(1 << 20, 1);
+        assert!(text.contains("not analyzed"), "{text}");
         Ok(())
     }
 }

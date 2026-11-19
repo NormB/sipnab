@@ -864,6 +864,9 @@ a network interface.
 | A warning that starts `'eth0': the kernel refused a` | The kernel had no memory for the buffer `-B` asked for, and sipnab took a smaller one | Free memory or ask for less, as [It degrades rather than failing](#it-degrades-rather-than-failing) says |
 | The last line still counts drops by the kernel buffer | sipnab read slower than packets arrived | Work down the list in [A worked starting point](#a-worked-starting-point) |
 | The last line counts drops by the interface | The interface or its driver dropped them before libpcap saw them. A larger `-B` does not change this count | [Interface and driver drops](#interface-and-driver-drops) |
+| A warning that starts `a SIP/TCP message from`, or the `capture quality:` line counts `SIP/TCP message(s) longer than the reassembly ceiling` | A SIP over TCP message passed `--max-tcp-buffer` (64 KiB by default), for example one with an ISUP body. sipnab dropped it, and reading resumed at the next message | Raise `--max-tcp-buffer` or `[limits] max_tcp_buffer` above the largest message, then run again. Check: the warning no longer appears and the call has its messages |
+| A warning that starts `a WebSocket frame declaring`, or the `capture quality:` line counts `WebSocket frame(s) longer than the 65536-byte frame limit` | A SIP over WebSocket frame was longer than 64 KiB, the frame limit. sipnab dropped the frame and did not analyze the SIP in it | No setting changes this limit. Capture the call on its SIP over UDP or TCP leg if the network has one |
+| A warning that starts `the RTP stream store reached its cap`, or the `retention:` line counts `oldest RTP stream(s) discarded at capacity` | More RTP streams than `--max-streams` (50000 by default) were open at once, and sipnab discarded the oldest | Raise `--max-streams` or `[limits] max_streams`, then run again. Check: the warning no longer appears |
 
 ---
 

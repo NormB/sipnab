@@ -2312,9 +2312,9 @@ fn probe_max_gunzip_bytes() -> Result<(String, String), TestError> {
 /// `max_tcp_buffer`: a 100 KiB SIP/TCP INVITE against the shipped 64 KiB.
 ///
 /// The one cap in this registry that DESTROYS data. At the shipped ceiling the
-/// reassembler flushes the INVITE in half and both halves parse as malformed,
-/// so the dialog holds only the `200 OK` that answered a request sipnab never
-/// reported; at 256 KiB the same bytes produce both messages.
+/// INVITE is dropped as oversized (D17), so the dialog holds only the `200 OK`
+/// that answered a request sipnab never reported; at 256 KiB the same bytes
+/// produce both messages.
 ///
 /// The observation is the dialog's MESSAGE count, not the dialog count: the
 /// answer alone still opens a dialog, so counting dialogs would report `1` in

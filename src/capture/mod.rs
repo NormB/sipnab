@@ -259,6 +259,55 @@ pub(crate) fn tally(counter: &AtomicU64, n: u64) {
     }
 }
 
+/// Whether a loss that moved a lifetime count from `before` to `after` is
+/// said at WARN: the first one, and each one that reaches a power of ten
+/// (10, 100, ...). The one rule for every counter of discarded data that
+/// warns as it goes (RTP streams at `--max-streams`, oversized WebSocket
+/// frames, oversized SIP/TCP messages): a source at a limit usually passes
+/// it on every message, so a line each time would bury the run's other
+/// warnings, and a line only the first time would hide how much was lost.
+pub(crate) fn count_warning_due(before: u64, after: u64) -> bool {
+    if after <= before {
+        return false;
+    }
+    if before == 0 {
+        return true;
+    }
+    let mut power: u64 = 10;
+    loop {
+        if power > after {
+            return false;
+        }
+        if power > before {
+            return true;
+        }
+        match power.checked_mul(10) {
+            Some(next) => power = next,
+            None => return false,
+        }
+    }
+}
+
+/// Add `n` discarded items to `counter`. Nothing is counted inside
+/// [`untallied`], where the same packet is read a second time.
+///
+/// # Returns
+///
+/// The new total when [`count_warning_due`] says the loss is to be said at
+/// WARN; the caller logs it, beside its own message text.
+pub(crate) fn tally_warning_due(counter: &AtomicU64, n: u64) -> Option<u64> {
+    if !tallying() || n == 0 {
+        return None;
+    }
+    let before = counter
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
+            Some(c.saturating_add(n))
+        })
+        .unwrap_or_else(|c| c);
+    let after = before.saturating_add(n);
+    count_warning_due(before, after).then_some(after)
+}
+
 /// Whether this thread counts what it reads: `false` inside [`untallied`].
 /// For a site that records into something other than one counter.
 #[inline]
@@ -1256,6 +1305,14 @@ pub struct PacketProcessor {
         Vec<u8>,
         ahash::RandomState,
     >,
+    /// Per-direction rest of a SIP message dropped for passing the
+    /// reassembly ceiling, still to be skipped. Keyed and bounded as
+    /// `tcp_sip_leftover` is.
+    tcp_sip_discard: indexmap::IndexMap<
+        (std::net::SocketAddr, std::net::SocketAddr),
+        Discard,
+        ahash::RandomState,
+    >,
     /// Cap on tracked `tcp_sip_leftover` sessions; when full, the
     /// least-recently-updated entry is evicted to keep memory bounded.
     max_sessions: usize,
@@ -1372,6 +1429,7 @@ impl PacketProcessor {
             fragment_reassembler: FragmentReassembler::new(),
             tcp_reassembler: TcpReassembler::new().with_resync(opens_stream_unit),
             tcp_sip_leftover: indexmap::IndexMap::default(),
+            tcp_sip_discard: indexmap::IndexMap::default(),
             max_sessions: DEFAULT_MAX_SESSIONS,
             sctp_reassembler: parse::SctpReassembler::new(),
             reassembly: true,
@@ -1419,6 +1477,7 @@ impl PacketProcessor {
             )
             .with_resync(opens_stream_unit),
             tcp_sip_leftover: indexmap::IndexMap::default(),
+            tcp_sip_discard: indexmap::IndexMap::default(),
             max_sessions,
             sctp_reassembler: parse::SctpReassembler::with_max_streams(max_sessions),
             reassembly: true,
@@ -1686,14 +1745,19 @@ impl PacketProcessor {
                 p.payload = bytes::Bytes::from(rem);
                 return smallvec![p];
             }
+            if !stream_open {
+                self.tcp_sip_discard.shift_remove(&key);
+            }
             return SmallVec::new();
         }
 
         // A hole the capture never held was skipped: the partial message held
         // for this direction lost its continuation and can never complete, so
-        // it must not be glued onto the message the stream resumed at.
+        // it must not be glued onto the message the stream resumed at. The
+        // stream resumed at a message, so a pending discard ends too.
         if self.tcp_reassembler.take_resync(src, dst) {
             self.tcp_sip_leftover.shift_remove(&key);
+            self.tcp_sip_discard.shift_remove(&key);
             self.remember_resynced(src, dst);
         }
 
@@ -1701,6 +1765,19 @@ impl PacketProcessor {
         let mut buf = self.tcp_sip_leftover.shift_remove(&key).unwrap_or_default();
         for chunk in &flushed {
             buf.extend_from_slice(chunk);
+        }
+
+        // The rest of a message dropped for passing the ceiling is skipped,
+        // so its body is not read as the next message.
+        if let Some(state) = self.tcp_sip_discard.shift_remove(&key) {
+            let (skip, pending) = apply_discard(state, &buf);
+            if let Some(d) = pending.filter(|_| stream_open) {
+                self.remember_discard(key, d);
+            }
+            buf.drain(..skip);
+            if buf.is_empty() {
+                return SmallVec::new();
+            }
         }
 
         // Only SIP-over-TCP is Content-Length framed. TLS, WebSocket, and any
@@ -1718,9 +1795,18 @@ impl PacketProcessor {
         // A held partial must be an owned, growable Vec (the next flush is
         // appended to it), so copy just the tail out — before `buf` is frozen
         // into `Bytes` below. This is the same single tail copy as before.
-        let held_tail =
-            (consumed < buf.len() && stream_open && buf.len() - consumed <= max_tcp_leftover())
-                .then(|| buf[consumed..].to_vec());
+        let partial_over = consumed < buf.len() && sip_message_over_ceiling(buf.len() - consumed);
+        let held_tail = (consumed < buf.len() && stream_open && !partial_over)
+            .then(|| buf[consumed..].to_vec());
+        if partial_over {
+            // D17: a message past the ceiling is dropped, not cut. The part
+            // held goes now, and the rest of it is skipped as it arrives.
+            note_sip_oversize(src, dst);
+            if stream_open {
+                let d = discard_after_oversize(&buf[consumed..]);
+                self.remember_discard(key, d);
+            }
+        }
 
         // Freeze the stream buffer once: every framed message (and an
         // end-of-stream tail) becomes a zero-copy view into this single
@@ -1733,6 +1819,7 @@ impl PacketProcessor {
 
         let mut out: ParsedPackets = ranges
             .into_iter()
+            .filter(|r| keep_framed(r.len(), src, dst))
             .map(|r| {
                 let mut p = parsed.clone();
                 p.payload = frozen.slice(r);
@@ -1740,7 +1827,9 @@ impl PacketProcessor {
             })
             .collect();
 
-        if let Some(tail) = held_tail {
+        if partial_over {
+            // Dropped and counted above; nothing of it is surfaced.
+        } else if let Some(tail) = held_tail {
             // More bytes may arrive — hold the partial for the next flush.
             if !self.tcp_sip_leftover.contains_key(&key)
                 && self.tcp_sip_leftover.len() >= self.max_sessions
@@ -1752,9 +1841,8 @@ impl PacketProcessor {
             }
             self.tcp_sip_leftover.insert(key, tail);
         } else if consumed < total {
-            // Connection ended (or the partial is oversized): surface the
-            // truncated tail so a downstream parser can flag it malformed
-            // rather than silently dropping it.
+            // Connection ended: surface the truncated tail so a downstream
+            // parser can flag it malformed rather than silently dropping it.
             let mut p = parsed.clone();
             p.payload = frozen.slice(consumed..);
             out.push(p);
@@ -1789,7 +1877,10 @@ impl PacketProcessor {
             // capture is dropped here as it is everywhere else at the end.
             let (ranges, _) = frame_tcp_sip(&data);
             let frozen = bytes::Bytes::from(data);
-            for r in ranges {
+            for r in ranges
+                .into_iter()
+                .filter(|r| keep_framed(r.len(), src, dst))
+            {
                 let mut p = template.clone();
                 p.payload = frozen.slice(r);
                 out.push(p);
@@ -1814,6 +1905,19 @@ impl PacketProcessor {
         // FIN), so an idle half-message can't leak.
         self.tcp_sip_leftover
             .retain(|(src, dst), _| self.tcp_reassembler.contains(*src, *dst));
+        self.tcp_sip_discard
+            .retain(|(src, dst), _| self.tcp_reassembler.contains(*src, *dst));
+    }
+
+    /// Remember that `key` skips the rest of a dropped message, bounded as
+    /// the held partials are.
+    fn remember_discard(&mut self, key: (std::net::SocketAddr, std::net::SocketAddr), d: Discard) {
+        if !self.tcp_sip_discard.contains_key(&key)
+            && self.tcp_sip_discard.len() >= self.max_sessions
+        {
+            self.tcp_sip_discard.shift_remove_index(0);
+        }
+        self.tcp_sip_discard.insert(key, d);
     }
 }
 
@@ -1857,6 +1961,111 @@ pub(crate) fn frame_tcp_sip(data: &[u8]) -> (Vec<std::ops::Range<usize>>, usize)
         pos += msg_end;
     }
     (ranges, pos)
+}
+
+/// What a TCP direction still skips of a SIP message dropped for passing the
+/// reassembly ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Discard {
+    /// The rest of the message, by its `Content-Length`: this many bytes.
+    Bytes(usize),
+    /// The headers did not end inside the ceiling, so nothing says where
+    /// the message ends: skip until a chunk starts a SIP message.
+    UntilMessage,
+}
+
+/// The part of an oversized message still to come, from the `partial` of it
+/// already held.
+fn discard_after_oversize(partial: &[u8]) -> Discard {
+    let Some(body_start) = find_header_end(partial) else {
+        return Discard::UntilMessage;
+    };
+    // A missing or unreadable Content-Length reads as 0, so its end falls
+    // inside the partial and the message's end is unknown.
+    match body_start.checked_add(parse_content_length(&partial[..body_start])) {
+        Some(end) if end > partial.len() => Discard::Bytes(end - partial.len()),
+        _ => Discard::UntilMessage,
+    }
+}
+
+/// Apply a direction's discard to the next chunk `buf` of its stream.
+///
+/// # Returns
+///
+/// How many bytes at the front of `buf` to skip, and the discard still
+/// pending after them. A chunk that starts a SIP message ends any discard:
+/// a sender whose `Content-Length` overstated its body must not cost the
+/// messages after it.
+fn apply_discard(state: Discard, buf: &[u8]) -> (usize, Option<Discard>) {
+    if crate::sip::parser::starts_sip_message(buf) {
+        return (0, None);
+    }
+    match state {
+        Discard::Bytes(n) if n < buf.len() => (n, None),
+        Discard::Bytes(n) => (
+            buf.len(),
+            (n > buf.len()).then(|| Discard::Bytes(n - buf.len())),
+        ),
+        Discard::UntilMessage => (buf.len(), Some(Discard::UntilMessage)),
+    }
+}
+
+/// SIP/TCP messages dropped for passing the reassembly ceiling, since start.
+static SIP_OVERSIZE_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// SIP/TCP messages this run dropped for passing the reassembly ceiling
+/// (`--max-tcp-buffer`, D17's 64 KiB by default). Reported at the end of a
+/// batch run: none of them reached a dialog or an output.
+#[must_use]
+pub fn sip_oversize_dropped() -> u64 {
+    SIP_OVERSIZE_DROPPED.load(Ordering::Relaxed)
+}
+
+/// Whether a SIP message of `len` bytes passes the ceiling and is dropped.
+/// The one rule for a framed message, a held partial and decrypted SIP.
+pub(crate) fn sip_message_over_ceiling(len: usize) -> bool {
+    len > max_tcp_leftover()
+}
+
+/// Whether a framed SIP message of `len` bytes on `src` -> `dst` is kept;
+/// one past the ceiling is counted, said and dropped. A message can arrive
+/// whole in one flush and still pass the ceiling.
+pub(crate) fn keep_framed(
+    len: usize,
+    src: std::net::SocketAddr,
+    dst: std::net::SocketAddr,
+) -> bool {
+    if sip_message_over_ceiling(len) {
+        note_sip_oversize(src, dst);
+        return false;
+    }
+    true
+}
+
+/// Count and say one SIP/TCP message dropped on `src` -> `dst`.
+pub(crate) fn note_sip_oversize(src: std::net::SocketAddr, dst: std::net::SocketAddr) {
+    if let Some(total) = tally_warning_due(&SIP_OVERSIZE_DROPPED, 1) {
+        tracing::warn!(
+            "{}",
+            oversize_sip_warning(
+                reassembly::max_tcp_buffer(),
+                &src.to_string(),
+                &dst.to_string(),
+                total,
+            )
+        );
+    }
+}
+
+/// The WARN line for a dropped oversized SIP/TCP message.
+fn oversize_sip_warning(ceiling: usize, src: &str, dst: &str, total: u64) -> String {
+    format!(
+        "a SIP/TCP message from {src} to {dst} exceeds the {ceiling}-byte reassembly \
+         ceiling and was dropped ({total} message(s) dropped so far): it is in no dialog \
+         and no output. TCP sets no such limit; this is sipnab's ceiling. Large multipart \
+         bodies (ISUP, long Record-Route sets) reach it legitimately. Raise it with \
+         --max-tcp-buffer or [limits] max_tcp_buffer."
+    )
 }
 
 /// Find the end of the SIP header section, returning the index just past the
@@ -2417,6 +2626,352 @@ mod tests {
             "full body must span the fragmented segment, got: {msg}"
         );
         Ok(())
+    }
+
+    /// A SIP/TCP message over the reassembly ceiling is dropped, counted and
+    /// said, and the stream resumes at the next message (backlog IMPORT-V6
+    /// D17 "Max SIP message size: 64KB. Drop and WARN if exceeded."). Before,
+    /// its first 64 KiB came out as a message that parsed as malformed and
+    /// the rest of its body was read as the next message.
+    mod oversize_sip {
+        use super::*;
+
+        /// A SIP MESSAGE request with a body of `body` bytes, named `call`.
+        fn message(call: &str, body: usize) -> Vec<u8> {
+            let mut m = format!(
+                "MESSAGE sip:b@example.com SIP/2.0\r\nCall-ID: {call}\r\n\
+                 Content-Length: {body}\r\n\r\n"
+            )
+            .into_bytes();
+            m.extend(std::iter::repeat_n(b'z', body));
+            m
+        }
+
+        /// Send `stream` from port `port` in PSH segments of `chunk` bytes;
+        /// every payload that came out, in order.
+        fn send(
+            proc: &mut PacketProcessor,
+            port: u16,
+            stream: &[u8],
+            chunk: usize,
+        ) -> Vec<Vec<u8>> {
+            let mut out = Vec::new();
+            let mut seq = 1u32;
+            for part in stream.chunks(chunk) {
+                for p in proc.process(&tcp_frame_from(port, part, seq, true, false)) {
+                    out.push(p.payload.to_vec());
+                }
+                seq = seq.wrapping_add(part.len() as u32);
+            }
+            out
+        }
+
+        /// Call-IDs of the messages that came out.
+        fn calls(out: &[Vec<u8>]) -> Vec<String> {
+            out.iter()
+                .map(|p| {
+                    let text = String::from_utf8_lossy(p);
+                    text.lines()
+                        .find_map(|l| l.strip_prefix("Call-ID: ").map(str::to_owned))
+                        .unwrap_or_else(|| format!("<{} bytes, no Call-ID>", p.len()))
+                })
+                .collect()
+        }
+
+        fn run(stream: &[u8], chunk: usize, port: u16) -> Vec<String> {
+            let mut proc = PacketProcessor::new();
+            calls(&send(&mut proc, port, stream, chunk))
+        }
+
+        macro_rules! stream_case {
+            ($name:ident, [$(($call:expr, $body:expr)),*], chunk = $chunk:expr, want = [$($want:expr),*]) => {
+                #[test]
+                fn $name() -> Result<(), TestError> {
+                    let mut stream = Vec::new();
+                    $( stream.extend(message($call, $body)); )*
+                    let port = 40_000 + (line!() % 20_000) as u16;
+                    let got = untallied(|| run(&stream, $chunk, port));
+                    let want: Vec<String> = vec![$($want.to_string()),*];
+                    assert_eq!(got, want, "messages out of the stream");
+                    Ok(())
+                }
+            };
+        }
+
+        // Success: the oversized message is dropped whole and the stream
+        // resumes at the message after it.
+        stream_case!(
+            an_oversized_message_is_dropped_and_the_next_kept,
+            [("big", 70_000), ("after", 0)],
+            chunk = 16_000,
+            want = ["after"]
+        );
+        stream_case!(
+            a_message_before_it_is_kept,
+            [("before", 10), ("big", 70_000), ("after", 0)],
+            chunk = 16_000,
+            want = ["before", "after"]
+        );
+        stream_case!(
+            a_far_oversized_message_is_dropped,
+            [("huge", 300_000), ("after", 5)],
+            chunk = 30_000,
+            want = ["after"]
+        );
+        stream_case!(
+            two_oversized_messages_in_a_row,
+            [("big1", 80_000), ("big2", 90_000), ("after", 0)],
+            chunk = 20_000,
+            want = ["after"]
+        );
+        stream_case!(
+            oversized_between_normal_messages,
+            [("a", 100), ("big", 70_000), ("b", 100), ("c", 0)],
+            chunk = 9_000,
+            want = ["a", "b", "c"]
+        );
+        stream_case!(
+            the_next_message_shares_a_segment_with_the_tail,
+            [("big", 66_000), ("after", 20)],
+            chunk = 7_001,
+            want = ["after"]
+        );
+        stream_case!(
+            small_segments_still_drop_exactly,
+            [("big", 66_000), ("after", 0)],
+            chunk = 1_400,
+            want = ["after"]
+        );
+        stream_case!(
+            a_message_after_two_normal_ones_and_a_big_one,
+            [("a", 0), ("b", 0), ("big", 100_000), ("c", 3)],
+            chunk = 12_000,
+            want = ["a", "b", "c"]
+        );
+        stream_case!(
+            the_whole_stream_in_large_segments,
+            [("big", 70_000), ("after", 0)],
+            chunk = 60_000,
+            want = ["after"]
+        );
+        stream_case!(
+            an_oversized_message_alone_gives_nothing,
+            [("big", 70_000)],
+            chunk = 16_000,
+            want = []
+        );
+        stream_case!(
+            three_after_one_oversized,
+            [("big", 70_000), ("x", 0), ("y", 1), ("z", 2)],
+            chunk = 16_000,
+            want = ["x", "y", "z"]
+        );
+        stream_case!(
+            a_body_just_past_the_ceiling,
+            [("edge", 65_500), ("after", 0)],
+            chunk = 16_000,
+            want = ["after"]
+        );
+
+        // Failure: what fits under the ceiling is not touched.
+        stream_case!(
+            a_message_under_the_ceiling_is_kept,
+            [("fits", 60_000), ("after", 0)],
+            chunk = 16_000,
+            want = ["fits", "after"]
+        );
+        stream_case!(
+            ordinary_messages_are_kept,
+            [("a", 0), ("b", 200), ("c", 0)],
+            chunk = 1_400,
+            want = ["a", "b", "c"]
+        );
+        stream_case!(
+            one_byte_under_the_ceiling_is_kept,
+            [("edge", 65_400), ("after", 0)],
+            chunk = 16_000,
+            want = ["edge", "after"]
+        );
+
+        /// The drop is counted; nothing under the ceiling is.
+        #[test]
+        fn the_drop_is_counted() -> Result<(), TestError> {
+            let mut stream = message("big", 70_000);
+            stream.extend(message("after", 0));
+            let before = sip_oversize_dropped();
+            let mut proc = PacketProcessor::new();
+            send(&mut proc, 39_001, &stream, 16_000);
+            assert!(
+                sip_oversize_dropped() > before,
+                "the dropped message is counted ({before} before)"
+            );
+            Ok(())
+        }
+
+        /// The drop is said at WARN with the ceiling and its remedy.
+        #[cfg(feature = "native")]
+        #[test]
+        fn the_drop_is_warned() -> Result<(), TestError> {
+            let text = oversize_sip_warning(65_536, "192.0.2.1:5060", "192.0.2.2:5060", 3);
+            for needle in [
+                "65536",
+                "dropped",
+                "--max-tcp-buffer",
+                "3 message(s) dropped so far",
+            ] {
+                assert!(text.contains(needle), "missing {needle:?}: {text}");
+            }
+            assert!(
+                !text.contains("malformed"),
+                "it is no longer parsed: {text}"
+            );
+            Ok(())
+        }
+
+        macro_rules! discard_case {
+            ($name:ident, $partial:expr, $want:expr) => {
+                #[test]
+                fn $name() -> Result<(), TestError> {
+                    let partial: Vec<u8> = $partial;
+                    assert_eq!(
+                        discard_after_oversize(&partial),
+                        $want,
+                        "partial of {} bytes",
+                        partial.len()
+                    );
+                    Ok(())
+                }
+            };
+        }
+
+        /// The first `n` bytes of a message with a body of `body`.
+        fn prefix(body: usize, n: usize) -> Vec<u8> {
+            message("p", body)[..n].to_vec()
+        }
+
+        // Success: with the headers in hand, the rest of the message is known.
+        discard_case!(
+            rest_of_the_body_is_known,
+            prefix(70_000, 66_000),
+            Discard::Bytes(message("p", 70_000).len() - 66_000)
+        );
+        discard_case!(
+            one_byte_left,
+            prefix(70_000, message("p", 70_000).len() - 1),
+            Discard::Bytes(1)
+        );
+        discard_case!(
+            lf_only_headers_are_read,
+            {
+                let mut m = b"MESSAGE sip:b SIP/2.0\nContent-Length: 100\n\n".to_vec();
+                m.extend([b'z'; 10]);
+                m
+            },
+            Discard::Bytes(90)
+        );
+        discard_case!(
+            compact_content_length_is_read,
+            {
+                let mut m = b"MESSAGE sip:b SIP/2.0\r\nl: 100\r\n\r\n".to_vec();
+                m.extend([b'z'; 40]);
+                m
+            },
+            Discard::Bytes(60)
+        );
+
+        // Failure: without the end of the headers nothing says where it ends.
+        discard_case!(
+            headers_not_finished,
+            b"MESSAGE sip:b SIP/2.0\r\nVia: x".to_vec(),
+            Discard::UntilMessage
+        );
+        discard_case!(empty_partial, Vec::new(), Discard::UntilMessage);
+        discard_case!(
+            no_content_length_and_a_body,
+            {
+                let mut m = b"MESSAGE sip:b SIP/2.0\r\n\r\n".to_vec();
+                m.extend([b'z'; 40]);
+                m
+            },
+            Discard::UntilMessage
+        );
+        discard_case!(
+            headers_with_nothing_after_them,
+            b"MESSAGE sip:b SIP/2.0\r\nVia: x\r\n\r\n".to_vec(),
+            Discard::UntilMessage
+        );
+        discard_case!(
+            content_length_that_overflows,
+            b"MESSAGE sip:b SIP/2.0\r\nContent-Length: 18446744073709551615\r\n\r\nzz".to_vec(),
+            Discard::UntilMessage
+        );
+
+        macro_rules! apply_case {
+            ($name:ident, $state:expr, $buf:expr, $want:expr) => {
+                #[test]
+                fn $name() -> Result<(), TestError> {
+                    let buf: &[u8] = $buf;
+                    assert_eq!(
+                        apply_discard($state, buf),
+                        $want,
+                        "{:?} over {} bytes",
+                        $state,
+                        buf.len()
+                    );
+                    Ok(())
+                }
+            };
+        }
+
+        // Success: the remainder is skipped exactly.
+        apply_case!(
+            skip_part_of_a_chunk,
+            Discard::Bytes(3),
+            b"zzzINVITE",
+            (3, None)
+        );
+        apply_case!(
+            skip_a_whole_chunk_and_wait,
+            Discard::Bytes(10),
+            b"zzzz",
+            (4, Some(Discard::Bytes(6)))
+        );
+        apply_case!(skip_exactly_a_chunk, Discard::Bytes(4), b"zzzz", (4, None));
+        apply_case!(
+            resume_at_a_message_start,
+            Discard::UntilMessage,
+            b"BYE sip:b SIP/2.0\r\n",
+            (0, None)
+        );
+        apply_case!(
+            resume_at_a_response,
+            Discard::UntilMessage,
+            b"SIP/2.0 200 OK\r\n",
+            (0, None)
+        );
+
+        // Failure: what is not a message start is skipped.
+        apply_case!(
+            skip_a_chunk_that_is_no_message,
+            Discard::UntilMessage,
+            b"zzzzzz",
+            (6, Some(Discard::UntilMessage))
+        );
+        apply_case!(
+            skip_an_empty_chunk,
+            Discard::UntilMessage,
+            b"",
+            (0, Some(Discard::UntilMessage))
+        );
+
+        // Edge: a declared length the sender did not keep.
+        apply_case!(
+            a_message_start_ends_a_byte_skip,
+            Discard::Bytes(1_000),
+            b"OPTIONS sip:b SIP/2.0\r\n",
+            (0, None)
+        );
+        apply_case!(nothing_left_to_skip, Discard::Bytes(0), b"zz", (0, None));
     }
 
     /// A segment the capture never held splits a SIP-over-TCP stream. The
@@ -3870,5 +4425,137 @@ mod tests {
             reset_undecodable_frames();
             Ok(())
         }
+    }
+}
+
+/// The shared count-and-warn step of every counter of discarded data
+/// (oversized WebSocket frames and SIP/TCP messages), driven on counters of
+/// the test's own so no other test's tally can reach them.
+#[cfg(all(test, feature = "native"))]
+mod tally_and_warn_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// What every site does with [`tally_warning_due`]: log its own line
+    /// with the total when one is due.
+    fn tally_and_warn(counter: &AtomicU64, n: u64, warning: impl FnOnce(u64) -> String) -> bool {
+        match tally_warning_due(counter, n) {
+            Some(total) => {
+                tracing::warn!("{}", warning(total));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Lines of `f`'s WARN output that carry `tag`.
+    fn warned(tag: &str, f: impl FnOnce()) -> Vec<String> {
+        crate::test_utils::capture_logs(tracing::Level::WARN, f)
+            .lines()
+            .filter(|l| l.contains(tag))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Record `times` losses of `n` on a fresh counter; the counter after.
+    fn run(times: u64, n: u64, tag: &'static str) -> (u64, Vec<String>) {
+        let counter = AtomicU64::new(0);
+        let lines = warned(tag, || {
+            for _ in 0..times {
+                tally_and_warn(&counter, n, |total| format!("{tag} total {total}"));
+            }
+        });
+        (counter.load(Ordering::Relaxed), lines)
+    }
+
+    #[test]
+    fn the_first_loss_counts_and_warns() -> Result<(), TestError> {
+        let (count, lines) = run(1, 1, "tw-first");
+        assert_eq!(count, 1, "counted");
+        assert_eq!(lines.len(), 1, "warned once: {lines:?}");
+        assert!(
+            lines[0].contains("tw-first total 1"),
+            "with the total: {lines:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nine_losses_warn_once() -> Result<(), TestError> {
+        let (count, lines) = run(9, 1, "tw-nine");
+        assert_eq!(count, 9, "counted");
+        assert_eq!(lines.len(), 1, "only the first: {lines:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn ten_losses_warn_twice() -> Result<(), TestError> {
+        let (count, lines) = run(10, 1, "tw-ten");
+        assert_eq!(count, 10, "counted");
+        assert_eq!(lines.len(), 2, "at 1 and 10: {lines:?}");
+        assert!(lines[1].contains("tw-ten total 10"), "{lines:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_thousand_losses_warn_four_times() -> Result<(), TestError> {
+        let (count, lines) = run(1000, 1, "tw-thousand");
+        assert_eq!(count, 1000, "counted");
+        assert_eq!(lines.len(), 4, "at 1, 10, 100, 1000: {lines:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_batch_adds_its_size() -> Result<(), TestError> {
+        let (count, lines) = run(3, 7, "tw-batch");
+        assert_eq!(count, 21, "3 x 7");
+        assert_eq!(lines.len(), 2, "at 7 and at 14 (passing 10): {lines:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_zero_loss_counts_and_says_nothing() -> Result<(), TestError> {
+        let (count, lines) = run(5, 0, "tw-zero");
+        assert_eq!(count, 0, "nothing lost");
+        assert!(lines.is_empty(), "nothing said: {lines:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn untallied_work_counts_and_says_nothing() -> Result<(), TestError> {
+        let counter = AtomicU64::new(0);
+        let lines = warned("tw-untallied", || {
+            untallied(|| {
+                tally_and_warn(&counter, 1, |t| format!("tw-untallied {t}"));
+            });
+        });
+        assert_eq!(counter.load(Ordering::Relaxed), 0, "a copy is not counted");
+        assert!(lines.is_empty(), "and not said: {lines:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_return_says_whether_it_warned() -> Result<(), TestError> {
+        let counter = AtomicU64::new(0);
+        let said: Vec<bool> = (0..11)
+            .map(|_| tally_and_warn(&counter, 1, |t| format!("tw-ret {t}")))
+            .collect();
+        let at: Vec<usize> = said
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| **s)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(at, vec![0, 9], "warned at the 1st and 10th: {said:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_counter_near_the_top_saturates() -> Result<(), TestError> {
+        let counter = AtomicU64::new(u64::MAX - 1);
+        tally_and_warn(&counter, 5, |t| format!("tw-top {t}"));
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX, "held at the top");
+        Ok(())
     }
 }
