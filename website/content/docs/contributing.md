@@ -30,6 +30,22 @@ The threading topology and lock discipline live in
 By participating in this project you agree to abide by the
 [Code of Conduct](https://github.com/NormB/sipnab/blob/main/CODE_OF_CONDUCT.md).
 
+[GOVERNANCE.md](https://github.com/NormB/sipnab/blob/main/GOVERNANCE.md) says who holds which role, how someone becomes
+a committer and how the project makes decisions.
+
+## Your first change
+
+- The
+  [`good first issue` list](https://github.com/NormB/sipnab/labels/good%20first%20issue)
+  holds issues a maintainer has marked as small and self-contained.
+- A starter issue says what to change, where in the code, how to test it and
+  what a reviewer checks. The
+  [starter task form](https://github.com/NormB/sipnab/blob/main/.github/ISSUE_TEMPLATE/starter_task.yml)
+  (`.github/ISSUE_TEMPLATE/starter_task.yml`) asks for those four things.
+- Comment on the issue before you start, so two people do not make the same
+  change.
+- Then follow [Pull request process](#pull-request-process).
+
 ## Contributor license agreement
 
 Sign the sipnab [Contributor License Agreement](https://github.com/NormB/sipnab/blob/main/CLA.md) before your first pull
@@ -72,6 +88,75 @@ Post it verbatim.
 - Bot accounts such as Dependabot cannot sign an agreement. They are on the
   allowlist in the CLA Assistant settings. So their pull requests pass the
   check without one.
+
+## Signing off commits
+
+The project is moving from the CLA to the
+[Developer Certificate of Origin](https://developercertificate.org/) (DCO).
+Until the switch is complete, both apply: sign the CLA as described above,
+and sign off every commit as described here.
+
+**What a sign-off is.** It is one line at the end of the commit message, with
+your name and the author email of the commit, which must be your GitHub
+noreply address:
+
+```text
+Signed-off-by: Your Name <your GitHub noreply address>
+```
+
+By adding it you state that you have the right to submit the change under the
+project's license, as the DCO text says. The line stays in the history of
+`main` for anyone to read, so it names GitHub's alias for you, never a
+personal mailbox. The `DCO` check refuses a sign-off that names any other
+address.
+
+**Before you start.**
+
+- On GitHub, open Settings, then Emails. Turn on "Keep my email addresses
+  private" and copy the noreply address the page shows: `ID+login` followed
+  by `@users.noreply.github.com`.
+- In your clone, run `git config user.email` with that address, so git
+  writes it as the author email and into the sign-off.
+
+**How to add it.**
+
+- `git commit -s` adds the line for you, from `user.name` and `user.email`.
+- To sign off every commit already on your branch, run
+  `git rebase --signoff origin/main`, then push again. If those commits carry
+  another author email, also run
+  `git rebase --exec 'git commit --amend --no-edit --reset-author' origin/main`
+  first, after setting `user.email`.
+- The `commit-msg` hook warns, without refusing the commit, when your author
+  email is not a noreply address or the message has no sign-off that names it.
+
+**Verify.** `git log -1` shows the noreply address on the `Author:` line, and
+the message ends with the `Signed-off-by:` line naming that address. On the
+pull request, the `DCO` check passes.
+
+**What checks it.** The `DCO` job in `.github/workflows/pr-text.yml` runs
+`scripts/check-dco.py` on every commit of a pull request, merge commits
+included. The line must name a name and the author email of the commit, and
+that email must be a GitHub noreply address. Two kinds of commits need no
+sign-off:
+
+- a commit by a GitHub bot account, such as Dependabot, when GitHub has
+  verified its signature.
+- a commit that the repository owner authored and committed, when GitHub has
+  verified its signature. The owner holds the rights to that work already.
+
+**Troubleshoot.** Each failing commit has one line in the `DCO` check's log:
+
+- `no Signed-off-by line`: sign the commit off as above.
+- `the author email is not a GitHub noreply address`: set `user.email`, reset
+  the author of the commit and sign it off again, as above.
+- `no Signed-off-by line names the author email`: the line names another
+  address, has no name, or has text after the address. Sign off again with
+  `git commit --amend -s` or `git rebase --signoff origin/main`.
+
+**During the switch.** Branch protection does not require the `DCO` check yet.
+`license/cla` stays required until the repository owner changes branch
+protection. [MAINTAINERS.md](https://github.com/NormB/sipnab/blob/main/MAINTAINERS.md#the-contributor-agreement) records
+the steps.
 
 ## Prerequisites
 

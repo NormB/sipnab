@@ -52,7 +52,9 @@ checklists for common changes.
 
 ## What support does not mean here
 
-One person maintains this project ([MAINTAINERS.md](MAINTAINERS.md)). There is no
+One person maintains this project ([MAINTAINERS.md](MAINTAINERS.md)), and
+[GOVERNANCE.md](GOVERNANCE.md) says what you can rely on when that person is
+unavailable. There is no
 SLA, no paid tier, and no guarantee of a reply. Only the latest release gets
 fixes — there are no maintenance branches. That is the honest shape of it, and it
 is better said than discovered.

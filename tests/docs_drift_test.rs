@@ -967,6 +967,18 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "nocapture",
         &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
+    // git's `rebase --signoff`, with which the contributing guide's section
+    // "Signing off commits" adds the DCO line to every commit of a branch.
+    (
+        "signoff",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    // git's `commit --amend --reset-author`, with which "Signing off commits"
+    // moves a commit's author email to the GitHub noreply address.
+    (
+        "reset-author",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
     // git's `--no-verify`, which skips the commit-msg hook: the pre-push
     // message gate exists for a commit made that way.
     (
@@ -5770,7 +5782,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // website/content/docs/relay-engines.md.
     // 344 -> 346 (TOP3-MTLS): docs/mtls.md, the client-certificate how-to,
     // and its generated mirror website/content/docs/mtls.md.
-    const EXPECTED_MARKDOWN_FILES: usize = 346;
+    // 346 -> 347 (governance): GOVERNANCE.md, which has no site mirror.
+    // Attributed against the staged diff: `--diff-filter=A` lists it as the
+    // one markdown file added.
+    const EXPECTED_MARKDOWN_FILES: usize = 347;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -6698,10 +6713,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // table of adapted files in CONTRIBUTING.md's "Updating code adapted from
     // other projects", with its site mirror (+2), and the "Adapted code" table
     // of THIRD-PARTY-NOTICES.md (+1).
-    // 1517 -> 1518 (TUI-FILTER-EXPRESSION, #841): the table of the typed
+    // 1517 -> 1518 (governance): the roles table in GOVERNANCE.md, which has
+    // no site mirror (+1).
+    // 1518 -> 1519 (TUI-FILTER-EXPRESSION, #841): the table of the typed
     // expressions' rebuild times in benches/BASELINES.md's 2026-11-19 entry,
     // which has no site mirror (+1).
-    const EXPECTED_TABLES: usize = 1518;
+    const EXPECTED_TABLES: usize = 1519;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

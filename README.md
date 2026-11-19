@@ -579,12 +579,17 @@ We welcome contributions.
   [Contributor License Agreement](CONTRIBUTING.md#contributor-license-agreement)
   once.
 - A pull request cannot merge until the `license/cla` check passes.
+- Sign off each commit with `git commit -s`: the project is moving from the
+  CLA to the
+  [Developer Certificate of Origin](CONTRIBUTING.md#signing-off-commits).
 - If your change adds a dependency, read
   [Dependencies](CONTRIBUTING.md#dependencies) first.
 - This project follows the
   [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
 - [ROADMAP.md](ROADMAP.md) says what we intend to work on over the next year.
   It also says what we have decided not to build.
+- [GOVERNANCE.md](GOVERNANCE.md) says how someone becomes a committer and how
+  the project makes decisions.
 
 ## Security
 

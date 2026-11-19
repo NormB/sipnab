@@ -26,6 +26,8 @@ has to satisfy. Two things save the most time on both sides:
 
 [ROADMAP.md](ROADMAP.md) states where the project is going over the next year,
 and what it does not intend to do. Check it before proposing something large.
+[GOVERNANCE.md](GOVERNANCE.md) states the roles, the path to commit access and
+how the project makes decisions.
 
 ## The contributor agreement
 
@@ -56,6 +58,19 @@ pull requests means adding it to that allowlist first, or its pull requests
 stall on a signature nobody can give.
 [`tests/branch_protection_drift_test.rs`](tests/branch_protection_drift_test.rs)
 fails if the required check and this page disagree.
+
+**The move to a DCO.** The `DCO` job in `.github/workflows/pr-text.yml` checks
+every commit of a pull request for a sign-off, as
+[CONTRIBUTING.md](CONTRIBUTING.md#signing-off-commits) describes.
+It reports on every pull request, and branch protection does not require it
+yet. Only the repository owner can finish the switch, in this order:
+
+1. In branch protection on `main`, require the `DCO` check and remove
+   `license/cla`.
+2. Turn CLA Assistant off for this repository.
+3. Merge the change that moves `tests/branch_protection_drift_test.rs` to the
+   `DCO` check and marks the CLA as retired. Until it merges, that test fails
+   on `main`, because the live protection and the declared check differ.
 
 ## How releases happen
 
