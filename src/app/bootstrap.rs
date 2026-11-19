@@ -7889,15 +7889,27 @@ pub(crate) fn named_filters(
 fn resolved_filter_text(expr: &str, cli: &Cli, config: &Config) -> Result<String, PlanError> {
     let thresholds = cli.alias_thresholds(config);
     let filters = named_filters(cli, config)?;
-    let referenced = crate::sip::dsl::resolve_references(expr, &filters, &thresholds);
-    // Said here, with this run's table, rather than left to the parser, which
-    // knows only the table installed for the request-time surfaces.
-    if let Some(name) = crate::sip::named_filters::first_reference(&referenced) {
-        return Err(PlanError::arg(
-            crate::sip::named_filters::unknown_reference_message(name, &filters),
-        ));
-    }
-    Ok(crate::sip::dsl::resolve_filter_text(&referenced, &thresholds).into_owned())
+    // The rule the TUI's Expression field resolves with too.
+    crate::sip::dsl::resolve_typed_filter(expr, &filters, &thresholds).map_err(PlanError::arg)
+}
+
+/// The filter the run was given as typed text: `--filter` when it is set,
+/// otherwise `[filter] expression`, the precedence
+/// [`filter_expr_from_sources`] applies to the two.
+///
+/// The TUI opens with this text in the filter dialog's Expression field
+/// (#841), so the operator sees and edits what they typed rather than its
+/// expansion.
+///
+/// # Returns
+///
+/// `None` when the run has neither.
+#[cfg(feature = "tui")]
+pub(crate) fn typed_filter_text<'a>(cli: &'a Cli, config: &'a Config) -> Option<&'a str> {
+    cli.matching_args
+        .filter
+        .as_deref()
+        .or(config.filter.expression.as_deref())
 }
 
 /// Build a `FilterExpr` from CLI `--filter` flag, diagnostic aliases, or
@@ -9825,6 +9837,50 @@ mod tests {
             err.message.contains("Invalid --filter expression"),
             "got: {}",
             err.message
+        );
+        Ok(())
+    }
+
+    /// The TUI's typed filter is `--filter` as typed, which wins over the
+    /// config file's expression, as it does for the compiled filter.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn typed_filter_text_prefers_the_command_line() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.matching_args.filter = Some("msg_count > 5".to_string());
+        let mut config = Config::default();
+        config.filter.expression = Some("@sales".to_string());
+        assert_eq!(
+            typed_filter_text(&cli, &config),
+            Some("msg_count > 5"),
+            "--filter wins over [filter] expression"
+        );
+        Ok(())
+    }
+
+    /// With no `--filter`, the config file's expression is the typed filter,
+    /// kept as written rather than expanded.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn typed_filter_text_falls_back_to_the_config_expression() -> Result<(), TestError> {
+        let mut config = Config::default();
+        config.filter.expression = Some("@sales".to_string());
+        assert_eq!(
+            typed_filter_text(&base_cli(), &config),
+            Some("@sales"),
+            "the config text, unexpanded"
+        );
+        Ok(())
+    }
+
+    /// A run with neither has no typed filter.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn typed_filter_text_is_none_without_either() -> Result<(), TestError> {
+        assert_eq!(
+            typed_filter_text(&base_cli(), &Config::default()),
+            None,
+            "no --filter and no [filter] expression"
         );
         Ok(())
     }

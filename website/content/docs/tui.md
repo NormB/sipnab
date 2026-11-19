@@ -143,7 +143,8 @@ Suspect a header changed across a retransmit or a proxy hop?
 - `/` searches the current view (Call List, Raw Message, or RTP Streams).
 - `F7` opens the **Filter dialog**.
   - Its fields are From user, To user, Source IP, Destination IP, Text in
-    message, Header, After, Before and Named filter, and a box per method.
+    message, Header, After, Before, Named filter and Expression, and a box
+    per method.
   - After and Before take an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html)
     time, such as `2023-11-14T22:13:25Z`, and keep the calls that started in
     between.
@@ -154,6 +155,8 @@ Suspect a header changed across a retransmit or a proxy hop?
     [Filter DSL](@/docs/filter-dsl.md#named-filters) expression, for example
     `rtp.mos < 3.0`. Without a configuration file, it shows
     `none in [filters]`.
+  - Expression takes any Filter DSL expression typed as it is. See
+    [Filter with an expression](#filter-with-an-expression).
 - Status line 3 shows the filter the dialog built as a summary, such as
   `F7: 7 methods, From~alice · F full`.
   - `F` switches between the summary and the full expression, in every view.
@@ -163,6 +166,89 @@ Suspect a header changed across a retransmit or a proxy hop?
 - `F9` clears the view filter and any kept search.
 - `i` prunes the dialogs that do *not* match, keeping only the matches.
 - `I` prunes the ones that do.
+
+## Filter with an expression
+
+The `F7` dialog's **Expression** field takes a
+[Filter DSL](@/docs/filter-dsl.md) expression typed as it is. Use it for a filter
+the other fields cannot say: an exclusion, a message count, `OR`, or
+parentheses. It needs no restart and no configuration file.
+
+**What you need:**
+
+- **sipnab with the `tui` feature**, as in [Before you start](#before-you-start).
+- **No change on any other system.** The expression filters the calls the
+  TUI already holds.
+
+**Steps:**
+
+1. Open a capture or start a live capture, as in
+   [Open a capture](#open-a-capture).
+2. Press `F7`. The dialog opens with the cursor in **From user**.
+3. Press `Tab` nine times. The cursor moves to **Expression**, the field
+   under Named filter.
+4. Type the expression. It takes the text `--filter` takes:
+   - `payload =~ 'X-Foo' AND NOT payload =~ 'OPTIONS' AND msg_count > 5`
+     keeps the calls that carry `X-Foo`, never mention `OPTIONS`, and have
+     more than five messages.
+   - `msg_count < 3`, `msg_count > 5` and `msg_count == 2` compare the
+     number of messages in a call. Equality is `==`.
+   - `payload =~ '(?i)x-foo'` matches either case.
+   - `OR` and parentheses group terms:
+     `payload =~ 'X-Foo' AND (msg_count < 3 OR NOT payload =~ 'OPTIONS')`.
+   - `@name` uses a [`[filters]`](@/docs/config.md#filters) entry, and an
+     alias name such as `one-way` stands for its expansion.
+
+   ```text
+   │  Named filter:    [none in [filters]                                  ]  │
+   │  Expression:      [from.user =~ '1003' OR msg_count > 3               ]  │
+   │  ──────────────────────────────────────────────────────────────────────  │
+   │  All       [*]                                                           │
+   ```
+
+5. Press `Enter`. The dialog closes and the call list keeps only the calls
+   the expression and every other field of the dialog select. The filter
+   applies to calls that arrive later too.
+
+A session started with `--filter` or with `expression` under
+[`[filter]`](@/docs/config.md#filter) opens with that text in the
+Expression field, already applied. Edit it there.
+
+**Check that it worked:** status line 3 names the expression after `expr`, and the count on line 1
+drops:
+
+```text
+ Live capture: any    Dialogs: 2 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: F7: expr from.user =~ '1003' OR msg_count > 3 · F full
+```
+
+- `F` shows the full expression that runs. The other fields come first, and
+  the typed expression in parentheses after `AND`.
+- To remove the expression, open `F7`, empty the field, and press `Enter`.
+  `F9` clears every field and the filter at once.
+
+**When it does not work:**
+
+- **The dialog stays open with `⚠ Expression error:`.** The parser refused
+  the text. The line gives its reason and position, the cursor sits at that
+  position, and the filter in force before stays until you apply a valid
+  one. When the parser has a hint, it appears under the key line:
+
+  ```text
+  │  ⚠ Expression error: unexpected input at position 18: 'msgcount'         │
+  │  Tab move · Enter apply · Esc cancel                                     │
+  │  hint: unknown field 'msgcount' — did you mean 'msg_count'?              │
+  ```
+
+- **The dialog refuses `msg_count = 5`.** The DSL writes equality as `==`.
+- **`'@name' is not a defined filter`.** The name is not under `[filters]`
+  in the configuration file this session loaded. The message lists the names
+  that are.
+- **A text match finds nothing.** A regex is case-sensitive. Add `(?i)` at
+  the start of the pattern to ignore case.
+- **Nothing shows at all.** Every method box is clear. That shows no calls
+  whatever the expression says. Check **All**.
 
 ## Find the calls sipnab diagnosed
 

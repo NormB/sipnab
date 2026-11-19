@@ -716,7 +716,7 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 | Up | Previous field (or checkbox up) |
 | Left / Right | Move within checkboxes or text cursor |
 | Space | Toggle checkbox / activate button |
-| F9 | Clear all fields and active filter, close popup |
+| F9 | Clear all fields, the Expression field included, and the active filter, close popup |
 | Backspace / Delete | Text editing in focused text field |
 | Home / End | Jump to start/end of text field |
 | (any char) | Insert character in focused text field |
@@ -1104,22 +1104,23 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Filter Dialog</span>
 </div>
-<pre class="terminal-body"><span class="t-muted"> ┌ Filter ──────────────────────────────────────────────┐</span>
-<span class="t-muted"> │</span>  <span class="t-header">From user:</span>       <span class="t-selected">[alice                          ]</span>  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">To user:</span>         [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Source IP:</span>       [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Destination IP:</span>  [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Text in message:</span> [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Header:</span>          [<span class="t-muted">Name: text</span>                     ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">After:</span>           [<span class="t-muted">2026-07-07T08:00:00Z</span>           ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Before:</span>          [<span class="t-muted">2026-07-07T09:00:00Z</span>           ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Named filter:</span>    [<span class="t-muted">sales, support      </span>           ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  ──────────────────────────────────────────────────  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  All       <span class="t-good">[*]</span>                                       <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  REGISTER  <span class="t-good">[*]</span>             OPTIONS   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  INVITE    <span class="t-good">[*]</span>             PUBLISH   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
-<span class="t-muted"> │</span>     <span class="t-good">[ Filter ]</span>                 <span class="t-muted">[ Cancel ]</span>            <span class="t-muted">│</span>
-<span class="t-muted"> └──────────────────────────────────────────────────────┘</span>
+<pre class="terminal-body"><span class="t-muted"> ┌ Filter ──────────────────────────────────────────────────────────────────┐</span>
+<span class="t-muted"> │</span>  <span class="t-header">From user:</span>       <span class="t-selected">[alice                                              ]</span>  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">To user:</span>         [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Source IP:</span>       [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Destination IP:</span>  [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Text in message:</span> [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Header:</span>          [<span class="t-muted">Name: text</span>                                         ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">After:</span>           [<span class="t-muted">2026-07-07T08:00:00Z</span>                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Before:</span>          [<span class="t-muted">2026-07-07T09:00:00Z</span>                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Named filter:</span>    [<span class="t-muted">sales, support</span>                                     ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Expression:</span>      [<span class="t-muted">any --filter expression</span>                            ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  ──────────────────────────────────────────────────────────────────────  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  All       <span class="t-good">[*]</span>                                                           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  REGISTER  <span class="t-good">[*]</span>                       OPTIONS   <span class="t-good">[*]</span>                       <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  INVITE    <span class="t-good">[*]</span>                       PUBLISH   <span class="t-good">[*]</span>                       <span class="t-muted">│</span>
+<span class="t-muted"> │</span>     <span class="t-good">[ Filter ]</span>                           <span class="t-muted">[ Cancel ]</span>                      <span class="t-muted">│</span>
+<span class="t-muted"> └──────────────────────────────────────────────────────────────────────────┘</span>
 <span class="t-muted"> Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear</span></pre>
 </div>
 
@@ -1136,10 +1137,20 @@ Each label says what its field matches:
 - Named filter takes the names of [`[filters]`](@/docs/config.md#filters)
   entries, separated by spaces, with or without the leading `@`. While it is
   empty, it lists the names the config defines.
+- Expression takes any [Filter DSL](@/docs/filter-dsl.md) expression, typed as it
+  is: the text `--filter` takes, `@name` references and alias names included.
+  - It joins the other fields with AND: a dialog must match it and every
+    other field to stay in the list.
+  - A session started with `--filter` or `[filter] expression` opens with
+    that text here, already applied.
+  - When Enter refuses it, the dialog stays open with the parser's message
+    and position, the cursor moves to that position, and the filter in force
+    stays.
+  - [Filter with an expression](@/docs/tui.md#filter-with-an-expression)
+    walks through it.
 
-> **Tip:** Press `F9` to clear every field and the method boxes at once. For
-anything the fields cannot say, the [Filter DSL](@/docs/filter-dsl.md) takes the full
-expression.
+> **Tip:** Press `F9` to clear every field and the method boxes at once,
+the Expression field included.
 
 Status line 3 shows the applied selections as a summary, one short item per
 field:
@@ -1148,6 +1159,7 @@ field:
   as in `INVITE`.
 - `From~alice` names the field and the text it matches.
 - `@sales` names a `[filters]` entry.
+- `expr msg_count > 5` repeats a typed expression.
 - `after 2026-07-07T08:00:00Z` repeats a time bound.
 
 For example, `F7: 7 methods, From~alice, To~bob · F full`.

@@ -10,8 +10,8 @@
 
 A filter needs no build feature, no privilege beyond what the capture itself
 needs, and no change on any other system. The same expression works on the
-command line, in the terminal interface (through a named filter), over REST
-and over MCP, where the
+command line, in the terminal interface (the `F7` dialog's Expression field),
+over REST and over MCP, where the
 [`validate_filter`](mcp-tools-signaling.md#validate_filter) tool checks one
 without running it.
 

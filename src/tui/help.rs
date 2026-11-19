@@ -35,7 +35,7 @@ CALL LIST:
   F3               Search (same as /)
   F5, Ctrl+L       Clear calls (asks first during a live capture)
   r, F6            Show raw SIP message
-  F7               Filter dialog
+  F7               Filter dialog (fields, methods, typed expression)
   F8               Settings
   t                Cycle timestamps (absolute / delta from previous / delta from first / scaled)
   u                Cycle From/To (default/host:port/user/user@host:port)

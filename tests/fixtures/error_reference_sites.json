@@ -774,13 +774,6 @@
     },
     {
       "file": "src/app/bootstrap.rs",
-      "call": "PlanError::arg( crate::sip::named_filters::unknown_reference_message(name, &filters), )",
-      "count": 1,
-      "carries": [],
-      "why": "resolved_filter_text in bootstrap.rs: src/sip/named_filters.rs::unknown_reference_message, a format! outside the extractor's scope; the same text reaches the request-time surfaces through src/sip/dsl.rs."
-    },
-    {
-      "file": "src/app/bootstrap.rs",
       "call": "PlanError { exit_code: 1, message, }",
       "count": 1,
       "carries": [],

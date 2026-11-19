@@ -433,7 +433,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:155`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L155)<!-- "if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device { return RunMode::CoresFile;" -->), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:8770`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8770)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:8782`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8782)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -497,7 +497,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:2313-2326`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2313-L2326)<!-- "fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {" -->), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:8770`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8770)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:8782`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8782)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:1057`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1057)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" -->). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a
@@ -560,7 +560,7 @@ disjunctive and cannot be widened by adding a member.
 - No TUI changes. Two reasons, and the second is the stronger one:
   `capture_mode` ([`src/tui/mod.rs:249`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L249)<!-- "capture_mode: String," -->) is one display string with no room for a
   second source, and the TUI never joins the capture handle at all — it drops it
-  ([`src/app/tui_mode.rs:853`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L853)<!-- "drop(self.handle);" -->), so a capture thread that failed reports nothing.
+  ([`src/app/tui_mode.rs:857`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L857)<!-- "drop(self.handle);" -->), so a capture thread that failed reports nothing.
   With one source that loses one error; with a composite it loses the answer to
   "which member died". Batch first, and the TUI needs that join before it takes
   a composite.

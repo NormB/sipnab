@@ -784,6 +784,10 @@ pub fn run_tui_mode(
             notes_path,
             // -c / --calls-only: the session opens filtered to calls (#474).
             calls_only: cli.mode_args.calls_only,
+            // --filter / [filter] expression: pre-filled in F7's Expression
+            // field and applied (#841).
+            filter_expression: crate::app::bootstrap::typed_filter_text(&cli, &config)
+                .map(str::to_owned),
             mouse_capture_off: tui_mouse_capture_off(&config),
             view_filter_detail: tui_view_filter_detail(&config),
         },

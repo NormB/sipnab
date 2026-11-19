@@ -6715,7 +6715,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // of THIRD-PARTY-NOTICES.md (+1).
     // 1517 -> 1518 (governance): the roles table in GOVERNANCE.md, which has
     // no site mirror (+1).
-    const EXPECTED_TABLES: usize = 1518;
+    // 1518 -> 1519 (TUI-FILTER-EXPRESSION, #841): the table of the typed
+    // expressions' rebuild times in benches/BASELINES.md's 2026-11-19 entry,
+    // which has no site mirror (+1).
+    const EXPECTED_TABLES: usize = 1519;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

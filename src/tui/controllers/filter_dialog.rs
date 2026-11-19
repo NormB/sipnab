@@ -4,7 +4,8 @@
 //! The structured filter dialog popup.
 
 use crate::tui::{
-    App, CANCEL_BUTTON_IDX, FILTER_BUTTON_IDX, FilterExpr, KeyCode, KeyEvent, KeyModifiers,
+    App, CANCEL_BUTTON_IDX, EXPRESSION_FIELD_IDX, FILTER_BUTTON_IDX, FilterExpr, KeyCode, KeyEvent,
+    KeyModifiers,
 };
 
 /// Apply the filter dialog state: build a DSL expression, parse it, and set the active filter.
@@ -31,13 +32,105 @@ pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
             return;
         }
     };
-    let expr_text = app.filter_dialog.build_filter_expression();
+    // The Expression field is checked on its own first, so its error names
+    // the field and its position is a place in the text the operator typed,
+    // not in the expression the whole dialog builds.
+    let typed = match resolve_expression_field(
+        &app.filter_dialog.expression,
+        &app.named_filters,
+        &app.alias_thresholds,
+    ) {
+        Ok(typed) => typed,
+        Err(refusal) => {
+            refuse_expression(app, refusal);
+            return;
+        }
+    };
+    let expr_text = and_typed_expression(app.filter_dialog.build_filter_expression(), typed);
     apply_filter_expression(app, expr_text, window);
     // Applied: the filter now in force is the dialog's, so status line 3 may
     // show it as the dialog's summary. Refused: the dialog stays open with its
     // error, and the filter in force keeps its own summary.
     if app.filter_dialog.error.is_none() {
         app.active_filter_summary = app.filter_dialog.summary();
+    }
+}
+
+/// Why the Expression field was refused.
+#[derive(Debug)]
+struct ExpressionRefusal {
+    /// The line for the dialog: the field's name and the message of the rule
+    /// that refused it, the parser's own when the parser did.
+    message: String,
+    /// Byte offset in the field where the parser stopped, when that place is
+    /// in the text as typed; `None` when it is not (an error inside an
+    /// `@name` expansion) or the refusal has no place.
+    cursor: Option<usize>,
+}
+
+/// The Expression field resolved and checked the way `--filter` is.
+///
+/// # Returns
+/// `Ok(None)` for a blank field; `Ok(Some(text))` with the resolved text
+/// (`@name` references and a whole-text alias expanded) when it parses.
+///
+/// # Errors
+/// An [`ExpressionRefusal`] for an undefined `@name` or a parse error.
+fn resolve_expression_field(
+    field: &str,
+    filters: &crate::sip::named_filters::NamedFilters,
+    thresholds: &crate::sip::dsl::AliasThresholds,
+) -> Result<Option<String>, ExpressionRefusal> {
+    let typed = field.trim();
+    if typed.is_empty() {
+        return Ok(None);
+    }
+    let refused = |message: String, cursor| ExpressionRefusal {
+        message: format!("Expression error: {message}"),
+        cursor,
+    };
+    let resolved = crate::sip::dsl::resolve_typed_filter(typed, filters, thresholds)
+        .map_err(|m| refused(m, None))?;
+    match FilterExpr::parse(&resolved) {
+        Ok(_) => Ok(Some(resolved)),
+        Err(e) => {
+            // The parser's offset is into the text it read, so it is a place
+            // in the field only when nothing was expanded.
+            let leading = field.len() - field.trim_start().len();
+            let cursor = e
+                .downcast_ref::<crate::sip::dsl::SyntaxError>()
+                .filter(|_| resolved == typed)
+                .map(|s| leading + s.offset());
+            Err(refused(e.to_string(), cursor))
+        }
+    }
+}
+
+/// Keep the dialog open on a refused Expression: the message shown, the
+/// focus on the field, and the cursor where the parser stopped when that is
+/// known. The filter in force is not touched.
+fn refuse_expression(app: &mut App, refusal: ExpressionRefusal) {
+    let dialog = &mut app.filter_dialog;
+    if dialog.focused_field != EXPRESSION_FIELD_IDX {
+        dialog.focused_field = EXPRESSION_FIELD_IDX;
+        dialog.sync_cursor();
+    }
+    if let Some(cursor) = refusal.cursor {
+        dialog.cursor_pos = cursor;
+    }
+    dialog.error = Some(refusal.message);
+}
+
+/// The dialog's own expression ANDed with the typed one.
+///
+/// The typed text is grouped, so an `OR` in it stays inside it: the dialog's
+/// fields narrow the whole expression, not only its last term. Alone, it is
+/// applied as typed.
+fn and_typed_expression(dialog: Option<String>, typed: Option<String>) -> Option<String> {
+    match (dialog, typed) {
+        (Some(dialog), Some(typed)) => Some(format!("{dialog} AND ({typed})")),
+        (dialog, None) => dialog,
+        (None, typed) => typed,
     }
 }
 
@@ -965,6 +1058,24 @@ mod summary_tests {
         Ok(())
     }
 
+    /// A typed expression is one token of the summary, kept as typed, after
+    /// the named filters and before the time bounds.
+    #[test]
+    fn the_summary_names_a_typed_expression() -> Result<(), TestError> {
+        let d = FilterDialogState {
+            named: "@scanners".to_string(),
+            expression: "msg_count > 5".to_string(),
+            time_after: "2026-07-07T08:00:00Z".to_string(),
+            ..FilterDialogState::default()
+        };
+        assert_eq!(
+            d.summary().as_deref(),
+            Some("@scanners, expr msg_count > 5, after 2026-07-07T08:00:00Z"),
+            "the expression token sits between the names and the time"
+        );
+        Ok(())
+    }
+
     /// A dialog the DSL refuses keeps the filter that was in force, and that
     /// filter's summary with it.
     #[test]
@@ -980,6 +1091,1050 @@ mod summary_tests {
             "the header name is refused"
         );
         assert_eq!(app.active_filter_summary.as_deref(), Some("From~alice"));
+        Ok(())
+    }
+}
+
+/// Tests for the Expression field (#841): a Filter DSL expression typed in
+/// the dialog, resolved and parsed by the rule `--filter` uses, ANDed with
+/// the other fields, on whole dialogs.
+///
+/// The fixture is five dialogs, each named for what tells it apart:
+///
+/// | Call-ID      | first request | carries     | messages | From  |
+/// |--------------|---------------|-------------|----------|-------|
+/// | `foo-big`    | INVITE        | `X-Foo`     | 7        | alice |
+/// | `foo-small`  | INVITE        | `X-Foo`     | 2        | alice |
+/// | `foo-opts`   | OPTIONS       | `X-Foo`     | 7        | carol |
+/// | `plain-big`  | INVITE        | nothing     | 7        | bob   |
+/// | `lower-foo`  | INVITE        | `x-foo`     | 7        | bob   |
+#[cfg(test)]
+mod expression_tests {
+    use super::*;
+    use crate::capture::parse::TransportProto;
+    use crate::sip::SipMessage;
+    use crate::sip::parser::parse_sip;
+    use crate::tui::controllers::test_support::{addr_a, addr_b, base_ts, raw_sip};
+    use crate::tui::{
+        ALL_METHODS_IDX, EXPRESSION_FIELD_IDX, FILTER_METHODS, FilterDialogState, Popup, TuiOptions,
+    };
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The reporter's expression from #841.
+    const REPORTED: &str = "payload =~ 'X-Foo' AND NOT payload =~ 'OPTIONS' AND msg_count > 5";
+
+    /// Six responses: with the request, a dialog of seven messages.
+    const SIX: [&str; 6] = [
+        "100 Trying",
+        "180 Ringing",
+        "181 Forwarded",
+        "182 Queued",
+        "183 Progress",
+        "200 OK",
+    ];
+
+    /// Build an unmodified `KeyEvent` for `code`.
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// One parsed message of `call_id`, `n` ms after the base time.
+    fn message(
+        first_line: &str,
+        call_id: &str,
+        method: &str,
+        from: &str,
+        extra: &[&str],
+        n: i64,
+    ) -> Result<SipMessage, TestError> {
+        let from_h = format!("From: \"{from}\" <sip:{from}@example.com>;tag=t1");
+        let cid = format!("Call-ID: {call_id}");
+        let cseq = format!("CSeq: 1 {method}");
+        let mut headers: Vec<&str> = vec![&from_h, "To: <sip:bob@example.com>", &cid, &cseq];
+        headers.extend_from_slice(extra);
+        headers.push("Content-Length: 0");
+        let raw = raw_sip(first_line, &headers);
+        let request = !first_line.starts_with("SIP/2.0");
+        let (src, dst) = if request {
+            (addr_a(), addr_b())
+        } else {
+            (addr_b(), addr_a())
+        };
+        let ts = base_ts() + chrono::TimeDelta::milliseconds(n);
+        Ok(
+            parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse {first_line}: {e:?}"))?,
+        )
+    }
+
+    /// A dialog: `method` from `from` carrying `extra`, then `responses`.
+    fn dialog(
+        method: &str,
+        call_id: &str,
+        from: &str,
+        extra: &[&str],
+        responses: &[&str],
+        start: i64,
+    ) -> Result<Vec<SipMessage>, TestError> {
+        let mut out = vec![message(
+            &format!("{method} sip:bob@example.com SIP/2.0"),
+            call_id,
+            method,
+            from,
+            extra,
+            start,
+        )?];
+        for (i, status) in responses.iter().enumerate() {
+            out.push(message(
+                &format!("SIP/2.0 {status}"),
+                call_id,
+                method,
+                from,
+                &[],
+                start + 1 + i as i64,
+            )?);
+        }
+        Ok(out)
+    }
+
+    /// The five fixture dialogs' messages.
+    fn fixture_messages() -> Result<Vec<SipMessage>, TestError> {
+        let mut all = Vec::new();
+        all.extend(dialog(
+            "INVITE",
+            "foo-big",
+            "alice",
+            &["X-Foo: 1"],
+            &SIX,
+            0,
+        )?);
+        all.extend(dialog(
+            "INVITE",
+            "foo-small",
+            "alice",
+            &["X-Foo: 1"],
+            &["200 OK"],
+            100,
+        )?);
+        all.extend(dialog(
+            "OPTIONS",
+            "foo-opts",
+            "carol",
+            &["X-Foo: 1"],
+            &SIX,
+            200,
+        )?);
+        all.extend(dialog("INVITE", "plain-big", "bob", &[], &SIX, 300)?);
+        all.extend(dialog(
+            "INVITE",
+            "lower-foo",
+            "bob",
+            &["x-foo: 1"],
+            &SIX,
+            400,
+        )?);
+        Ok(all)
+    }
+
+    /// An app holding the fixture with the filter dialog open.
+    fn fixture_app() -> Result<App, TestError> {
+        let mut app = App::with_processed_messages(fixture_messages()?);
+        app.sync_caches();
+        app.active_popup = Some(Popup::FilterDialog);
+        Ok(app)
+    }
+
+    /// The Call-IDs the call list shows, sorted.
+    fn shown(app: &mut App) -> Vec<String> {
+        app.sync_caches();
+        let mut ids = app.displayed.ids.clone();
+        ids.sort();
+        ids
+    }
+
+    /// Type `text` into the Expression field and apply the dialog.
+    fn apply_typed(app: &mut App, text: &str) {
+        app.filter_dialog.expression = text.to_string();
+        app.active_popup = Some(Popup::FilterDialog);
+        apply_filter_dialog(app);
+    }
+
+    /// The Call-IDs `text` selects on the fixture, failing on a refusal.
+    fn selects(text: &str) -> Result<Vec<String>, TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, text);
+        if let Some(e) = &app.filter_dialog.error {
+            return Err(format!("{text:?} was refused: {e}").into());
+        }
+        Ok(shown(&mut app))
+    }
+
+    /// `ids` as owned, sorted strings, to compare with [`shown`].
+    fn ids(list: &[&str]) -> Vec<String> {
+        let mut v: Vec<String> = list.iter().map(|s| (*s).to_string()).collect();
+        v.sort();
+        v
+    }
+
+    /// A `[filters]` table defining `big` as `msg_count > 5`.
+    fn big_table() -> Result<crate::sip::named_filters::NamedFilters, TestError> {
+        let mut defs = std::collections::BTreeMap::new();
+        defs.insert("big".to_string(), "msg_count > 5".to_string());
+        Ok(crate::sip::named_filters::NamedFilters::resolve(
+            &defs,
+            &crate::sip::dsl::AliasThresholds::default(),
+        )?)
+    }
+
+    /// The whole screen of `app`, drawn at `w` x `h`, one line per row.
+    fn screen(app: &mut App, w: u16, h: u16) -> Result<String, TestError> {
+        let mut terminal = Terminal::new(TestBackend::new(w, h))?;
+        terminal.draw(|frame| app.render(frame))?;
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf.cell((x, y)).map_or(" ", |c| c.symbol()));
+            }
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    /// The row of `text` that contains `needle`.
+    fn row_with<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
+        text.lines().find(|l| l.contains(needle))
+    }
+
+    // ── The reporter's cases (success) ─────────────────────────────
+
+    /// The issue's expression selects the one dialog with `X-Foo`, no
+    /// `OPTIONS` anywhere in it, and more than five messages.
+    #[test]
+    fn the_reported_expression_selects_on_whole_dialogs() -> Result<(), TestError> {
+        assert_eq!(
+            selects(REPORTED)?,
+            ids(&["foo-big"]),
+            "X-Foo, not OPTIONS, more than 5 messages"
+        );
+        Ok(())
+    }
+
+    /// `msg_count <` counts a dialog's messages.
+    #[test]
+    fn msg_count_less_than() -> Result<(), TestError> {
+        assert_eq!(selects("msg_count < 3")?, ids(&["foo-small"]), "2 < 3");
+        Ok(())
+    }
+
+    /// `msg_count >` counts a dialog's messages.
+    #[test]
+    fn msg_count_greater_than() -> Result<(), TestError> {
+        assert_eq!(
+            selects("msg_count > 5")?,
+            ids(&["foo-big", "foo-opts", "lower-foo", "plain-big"]),
+            "every dialog of seven messages"
+        );
+        Ok(())
+    }
+
+    /// The DSL spells equality `==`.
+    #[test]
+    fn msg_count_equals() -> Result<(), TestError> {
+        assert_eq!(selects("msg_count == 2")?, ids(&["foo-small"]), "exactly 2");
+        Ok(())
+    }
+
+    /// `(?i)` makes a regex case-insensitive, so `x-foo` and `X-Foo` both
+    /// match.
+    #[test]
+    fn case_insensitive_regex() -> Result<(), TestError> {
+        assert_eq!(
+            selects("payload =~ '(?i)x-foo'")?,
+            ids(&["foo-big", "foo-opts", "foo-small", "lower-foo"]),
+            "either case"
+        );
+        Ok(())
+    }
+
+    /// Without `(?i)` a regex is case-sensitive.
+    #[test]
+    fn a_regex_is_case_sensitive_by_default() -> Result<(), TestError> {
+        assert_eq!(
+            selects("payload =~ 'x-foo'")?,
+            ids(&["lower-foo"]),
+            "only the lower-case header"
+        );
+        Ok(())
+    }
+
+    /// `OR` admits a dialog that either side admits.
+    #[test]
+    fn or_admits_either_side() -> Result<(), TestError> {
+        assert_eq!(
+            selects("msg_count < 3 OR payload =~ 'OPTIONS'")?,
+            ids(&["foo-opts", "foo-small"]),
+            "the short dialog and the OPTIONS dialog"
+        );
+        Ok(())
+    }
+
+    /// Parentheses group an `OR` under an `AND`.
+    #[test]
+    fn parentheses_group_an_or_under_an_and() -> Result<(), TestError> {
+        assert_eq!(
+            selects("payload =~ 'X-Foo' AND (msg_count < 3 OR NOT payload =~ 'OPTIONS')")?,
+            ids(&["foo-big", "foo-small"]),
+            "X-Foo, and short or not OPTIONS"
+        );
+        Ok(())
+    }
+
+    /// Without the parentheses `AND` binds first, so the same words select
+    /// a different set: the parentheses are what made the case above.
+    #[test]
+    fn without_parentheses_and_binds_before_or() -> Result<(), TestError> {
+        assert_eq!(
+            selects("payload =~ 'X-Foo' AND msg_count < 3 OR NOT payload =~ 'OPTIONS'")?,
+            ids(&["foo-big", "foo-small", "lower-foo", "plain-big"]),
+            "(X-Foo AND short) OR not OPTIONS"
+        );
+        Ok(())
+    }
+
+    // ── AND-combined with the rest of the dialog (success) ─────────
+
+    /// The From field and the expression must both hold.
+    #[test]
+    fn the_expression_ands_with_a_text_field() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.sip_from = "alice".to_string();
+        apply_typed(&mut app, "msg_count > 5");
+        assert_eq!(shown(&mut app), ids(&["foo-big"]), "alice AND 7 messages");
+        Ok(())
+    }
+
+    /// A top-level `OR` in the expression stays inside it: the dialog's
+    /// fields narrow the whole expression, not only its last term.
+    #[test]
+    fn an_or_in_the_expression_stays_grouped_under_the_fields() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.sip_from = "alice".to_string();
+        apply_typed(&mut app, "msg_count > 5 OR payload =~ 'OPTIONS'");
+        assert_eq!(
+            shown(&mut app),
+            ids(&["foo-big"]),
+            "alice AND (7 messages OR OPTIONS); carol's OPTIONS dialog stays out"
+        );
+        Ok(())
+    }
+
+    /// The method checkboxes and the expression must both hold.
+    #[test]
+    fn the_expression_ands_with_the_method_checkboxes() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.methods = FILTER_METHODS.map(|m| m == "INVITE");
+        apply_typed(&mut app, "payload =~ 'X-Foo'");
+        assert_eq!(
+            shown(&mut app),
+            ids(&["foo-big", "foo-small"]),
+            "INVITE AND X-Foo"
+        );
+        Ok(())
+    }
+
+    /// The Named filter field and the expression must both hold.
+    #[test]
+    fn the_expression_ands_with_the_named_filter() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.named_filters = big_table()?;
+        app.filter_dialog.named = "big".to_string();
+        apply_typed(&mut app, "payload =~ 'X-Foo'");
+        assert_eq!(
+            shown(&mut app),
+            ids(&["foo-big", "foo-opts"]),
+            "@big AND X-Foo"
+        );
+        Ok(())
+    }
+
+    /// An `@name` inside the expression resolves through the run's
+    /// `[filters]`, as it does in `--filter`.
+    #[test]
+    fn a_reference_in_the_expression_resolves() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.named_filters = big_table()?;
+        apply_typed(&mut app, "@big AND NOT payload =~ 'X-Foo'");
+        assert!(
+            app.filter_dialog.error.is_none(),
+            "{:?}",
+            app.filter_dialog.error
+        );
+        assert_eq!(
+            shown(&mut app),
+            ids(&["lower-foo", "plain-big"]),
+            "7 messages and no X-Foo"
+        );
+        Ok(())
+    }
+
+    /// A diagnostic alias name alone is expanded, as `--filter one-way` is.
+    #[test]
+    fn a_bare_alias_name_is_expanded() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "one-way");
+        assert!(
+            app.filter_dialog.error.is_none(),
+            "{:?}",
+            app.filter_dialog.error
+        );
+        assert_eq!(
+            app.active_filter.as_ref().map(FilterExpr::source),
+            Some("one_way == true"),
+            "the alias's expansion is what runs"
+        );
+        Ok(())
+    }
+
+    /// The expression alone is applied as typed, not wrapped.
+    #[test]
+    fn an_expression_alone_is_applied_as_typed() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, REPORTED);
+        assert_eq!(
+            app.active_filter_text, REPORTED,
+            "the status text is the expression"
+        );
+        assert!(
+            app.active_popup.is_none(),
+            "a valid expression closes the dialog"
+        );
+        Ok(())
+    }
+
+    /// Typed through the keys: Tab from the Named field reaches the
+    /// Expression field, the text goes in, and Enter applies it.
+    #[test]
+    fn typing_the_expression_through_the_keys_applies_it() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.focused_field = 8;
+        handle_filter_popup_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(
+            app.filter_dialog.focused_field, EXPRESSION_FIELD_IDX,
+            "Tab from Named filter"
+        );
+        for c in "msg_count == 2".chars() {
+            handle_filter_popup_key(&mut app, key(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            app.filter_dialog.expression, "msg_count == 2",
+            "typed into the field"
+        );
+        handle_filter_popup_key(&mut app, key(KeyCode::Enter));
+        assert!(app.active_popup.is_none(), "{:?}", app.filter_dialog.error);
+        assert_eq!(shown(&mut app), ids(&["foo-small"]), "Enter applied it");
+        Ok(())
+    }
+
+    /// The filter is applied live: a dialog that arrives after Enter is
+    /// shown or hidden by the expression too.
+    #[test]
+    fn a_dialog_arriving_later_is_filtered_too() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "payload =~ 'X-Late'");
+        assert!(shown(&mut app).is_empty(), "nothing carries X-Late yet");
+        {
+            let mut store = app.dialog_store.write();
+            for m in dialog("INVITE", "late", "dave", &["X-Late: 1"], &["200 OK"], 900)? {
+                store.process_message(m);
+            }
+            for m in dialog("INVITE", "late-plain", "dave", &[], &["200 OK"], 950)? {
+                store.process_message(m);
+            }
+        }
+        // The rebuild a store change waits for: the churn floor passing.
+        app.displayed.floor.elapse_for_test();
+        assert_eq!(
+            shown(&mut app),
+            ids(&["late"]),
+            "the new match, not the new miss"
+        );
+        Ok(())
+    }
+
+    /// The summary on status line 3 says an expression is active.
+    #[test]
+    fn the_status_line_says_an_expression_is_active() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msg_count > 5");
+        let text = screen(&mut app, 100, 24)?;
+        let row = row_with(&text, "View filter:").ok_or("status line 3")?;
+        assert!(
+            row.contains("F7: expr msg_count > 5"),
+            "the summary names the expression: {row:?}"
+        );
+        Ok(())
+    }
+
+    /// In full mode status line 3 shows the expression that runs, with the
+    /// fields it was ANDed with.
+    #[test]
+    fn full_mode_shows_the_combined_expression() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.view_filter_detail = crate::tui::ViewFilterDetail::Full;
+        app.filter_dialog.sip_from = "alice".to_string();
+        apply_typed(&mut app, "msg_count > 5");
+        assert_eq!(
+            app.active_filter_text, "from.user =~ 'alice' AND (msg_count > 5)",
+            "fields first, the expression grouped"
+        );
+        let text = screen(&mut app, 120, 24)?;
+        let row = row_with(&text, "View filter:").ok_or("status line 3")?;
+        assert!(row.contains("AND (msg_count > 5)"), "{row:?}");
+        Ok(())
+    }
+
+    /// The dialog draws the Expression field after Named filter, with the
+    /// text in it.
+    #[test]
+    fn the_dialog_draws_the_expression_field() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.expression = "msg_count > 5".to_string();
+        let text = screen(&mut app, 80, 24)?;
+        let named = text
+            .lines()
+            .position(|l| l.contains("Named filter:"))
+            .ok_or("the Named row")?;
+        let expr = text
+            .lines()
+            .position(|l| l.contains("Expression:"))
+            .ok_or_else(|| format!("no Expression row:\n{text}"))?;
+        assert_eq!(expr, named + 1, "Expression sits right under Named filter");
+        let row = text.lines().nth(expr).unwrap_or_default();
+        assert!(row.contains("[msg_count > 5"), "{row:?}");
+        Ok(())
+    }
+
+    // ── Refusals (failure) ─────────────────────────────────────────
+
+    /// A parse error keeps the dialog open with the parser's own message and
+    /// position, prefixed with the field's name.
+    #[test]
+    fn a_parse_error_is_shown_inline_with_its_position() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msg_count > 5 garbage");
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog), "stays open");
+        let error = app.filter_dialog.error.clone().unwrap_or_default();
+        assert!(
+            error.starts_with("Expression error: a value containing whitespace"),
+            "names the field: {error}"
+        );
+        // The parser stops at the value: an unquoted `5 garbage` reads as a
+        // value with a space in it, or a missing AND/OR.
+        assert!(
+            error.contains("at position 12: '5'"),
+            "the parser's position: {error}"
+        );
+        Ok(())
+    }
+
+    /// The filter in force before a refused expression stays in force.
+    #[test]
+    fn a_refused_expression_keeps_the_previous_filter() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msg_count == 2");
+        assert_eq!(shown(&mut app), ids(&["foo-small"]), "the first filter");
+        let before = app.active_filter_text.clone();
+        apply_typed(&mut app, "msg_count == ");
+        assert!(app.filter_dialog.error.is_some(), "refused");
+        assert_eq!(app.active_filter_text, before, "the old filter text");
+        assert_eq!(shown(&mut app), ids(&["foo-small"]), "the old selection");
+        Ok(())
+    }
+
+    /// A refusal puts the focus on the Expression field and the cursor
+    /// where the parser stopped.
+    #[test]
+    fn a_refusal_puts_the_cursor_where_the_parser_stopped() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.focused_field = 0;
+        apply_typed(&mut app, "msg_count > 5 garbage");
+        assert_eq!(
+            app.filter_dialog.focused_field, EXPRESSION_FIELD_IDX,
+            "focus moved from From user to Expression"
+        );
+        assert_eq!(
+            app.filter_dialog.cursor_pos, 12,
+            "on the '5' the parser names"
+        );
+        Ok(())
+    }
+
+    /// The cursor allows for the whitespace the parser trimmed off the
+    /// front of the field.
+    #[test]
+    fn the_cursor_allows_for_leading_whitespace() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "   msg_count > 5 garbage");
+        assert_eq!(app.filter_dialog.cursor_pos, 15, "3 spaces + 12");
+        Ok(())
+    }
+
+    /// `=` alone is not an operator: refused, as `--filter` refuses it.
+    #[test]
+    fn a_single_equals_sign_is_refused() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msg_count = 5");
+        let error = app.filter_dialog.error.clone().unwrap_or_default();
+        assert!(error.starts_with("Expression error:"), "{error}");
+        assert!(error.contains("position"), "{error}");
+        assert!(app.active_filter.is_none(), "nothing applied");
+        Ok(())
+    }
+
+    /// An unclosed parenthesis is refused.
+    #[test]
+    fn an_unclosed_parenthesis_is_refused() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "(msg_count > 5 OR msg_count < 3");
+        assert!(
+            app.filter_dialog
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("Expression error:"),
+            "{:?}",
+            app.filter_dialog.error
+        );
+        assert!(app.active_filter.is_none(), "nothing applied");
+        Ok(())
+    }
+
+    /// A misspelled field is refused with the parser's hint naming the field
+    /// it meant.
+    #[test]
+    fn a_misspelled_field_is_refused_with_the_parsers_hint() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msgcount > 5");
+        let error = app.filter_dialog.error.clone().unwrap_or_default();
+        assert!(error.contains("did you mean 'msg_count'"), "{error}");
+        Ok(())
+    }
+
+    /// A regex that does not compile is refused.
+    #[test]
+    fn an_invalid_regex_is_refused() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "payload =~ '('");
+        assert!(
+            app.filter_dialog
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("Expression error:"),
+            "{:?}",
+            app.filter_dialog.error
+        );
+        assert!(app.active_filter.is_none(), "nothing applied");
+        Ok(())
+    }
+
+    /// An `@name` the run does not define is refused, naming the defined
+    /// ones, and the filter in force stays.
+    #[test]
+    fn an_undefined_reference_is_refused() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.named_filters = big_table()?;
+        apply_typed(&mut app, "@nope AND msg_count > 1");
+        let error = app.filter_dialog.error.clone().unwrap_or_default();
+        assert!(error.contains("'@nope' is not a defined filter"), "{error}");
+        assert!(error.contains("big"), "names what is defined: {error}");
+        assert!(app.active_filter.is_none(), "nothing applied");
+        assert_eq!(
+            app.filter_dialog.focused_field, EXPRESSION_FIELD_IDX,
+            "focus on the refused field"
+        );
+        Ok(())
+    }
+
+    /// Correcting the refused text applies it and clears the error.
+    #[test]
+    fn correcting_a_refused_expression_applies_it() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msg_count = 2");
+        assert!(app.filter_dialog.error.is_some(), "refused first");
+        apply_typed(&mut app, "msg_count == 2");
+        assert!(
+            app.filter_dialog.error.is_none(),
+            "{:?}",
+            app.filter_dialog.error
+        );
+        assert!(app.active_popup.is_none(), "closed");
+        assert_eq!(shown(&mut app), ids(&["foo-small"]), "the corrected filter");
+        Ok(())
+    }
+
+    /// The refusal is drawn in the dialog: the parser's headline on one
+    /// row, its hint on another, never the raw multi-line text on one.
+    #[test]
+    fn the_refusal_is_drawn_in_the_dialog() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msgcount > 5");
+        let text = screen(&mut app, 80, 24)?;
+        let headline =
+            row_with(&text, "Expression error:").ok_or_else(|| format!("no error row:\n{text}"))?;
+        assert!(headline.contains("at position 0"), "{headline:?}");
+        let hint = row_with(&text, "hint: unknown field 'msgcount'")
+            .ok_or_else(|| format!("no hint row:\n{text}"))?;
+        assert!(hint.contains("did you mean 'msg_count'"), "{hint:?}");
+        Ok(())
+    }
+
+    /// A valid expression does not get a bad Header name through: the
+    /// Header is still refused, and nothing is applied.
+    #[test]
+    fn a_valid_expression_does_not_excuse_a_bad_header() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.header = "bad name: x".to_string();
+        apply_typed(&mut app, "msg_count > 5");
+        let error = app.filter_dialog.error.clone().unwrap_or_default();
+        assert!(
+            error.starts_with("Filter error:"),
+            "the Header is refused: {error}"
+        );
+        assert!(app.active_filter.is_none(), "nothing applied");
+        Ok(())
+    }
+
+    /// A refused expression on an unfiltered list leaves it unfiltered:
+    /// every dialog stays shown and no filter text appears.
+    #[test]
+    fn a_refused_expression_changes_nothing_on_screen() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        let all = shown(&mut app);
+        apply_typed(&mut app, "msg_count >");
+        assert!(app.filter_dialog.error.is_some(), "refused");
+        assert_eq!(shown(&mut app), all, "every dialog still shown");
+        assert!(app.active_filter_text.is_empty(), "no filter text");
+        Ok(())
+    }
+
+    // ── Edges ──────────────────────────────────────────────────────
+
+    /// An empty Expression field adds nothing: the dialog clears.
+    #[test]
+    fn an_empty_expression_adds_nothing() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "");
+        assert!(app.active_filter.is_none(), "no filter");
+        assert_eq!(shown(&mut app).len(), 5, "every dialog");
+        Ok(())
+    }
+
+    /// Whitespace alone is an empty field, not a parse error.
+    #[test]
+    fn whitespace_alone_is_an_empty_expression() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "   ");
+        assert!(
+            app.filter_dialog.error.is_none(),
+            "{:?}",
+            app.filter_dialog.error
+        );
+        assert!(app.active_filter.is_none(), "no filter");
+        Ok(())
+    }
+
+    /// Clearing the field and applying removes the expression.
+    #[test]
+    fn clearing_the_field_removes_the_expression() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msg_count == 2");
+        assert_eq!(shown(&mut app).len(), 1, "the expression narrows");
+        apply_typed(&mut app, "");
+        assert!(app.active_filter.is_none(), "the expression is gone");
+        assert_eq!(shown(&mut app).len(), 5, "every dialog again");
+        assert_eq!(app.active_filter_summary, None, "nothing to summarize");
+        Ok(())
+    }
+
+    /// F9 empties the Expression field with the others.
+    #[test]
+    fn f9_empties_the_expression_field() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msg_count == 2");
+        app.active_popup = Some(Popup::FilterDialog);
+        handle_filter_popup_key(&mut app, key(KeyCode::F(9)));
+        assert_eq!(app.filter_dialog.expression, "", "emptied");
+        assert!(app.active_filter.is_none(), "dropped");
+        assert_eq!(shown(&mut app).len(), 5, "every dialog again");
+        Ok(())
+    }
+
+    /// Only the expression set is still a dialog that filters.
+    #[test]
+    fn a_dialog_with_only_an_expression_is_not_empty() -> Result<(), TestError> {
+        let mut d = FilterDialogState {
+            expression: "msg_count > 5".to_string(),
+            ..FilterDialogState::default()
+        };
+        assert!(!d.is_empty(), "an expression is a filter");
+        d.clear();
+        assert!(d.expression.is_empty(), "clear() empties it");
+        assert!(d.is_empty(), "nothing left to filter on");
+        Ok(())
+    }
+
+    /// With no method checked nothing shows, whatever the expression says.
+    #[test]
+    fn no_method_checked_wins_over_the_expression() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.methods = [false; 10];
+        apply_typed(&mut app, "msg_count > 0");
+        assert!(
+            shown(&mut app).is_empty(),
+            "the explicit show-nothing state"
+        );
+        Ok(())
+    }
+
+    /// Esc closes the dialog without applying the typed expression.
+    #[test]
+    fn esc_does_not_apply_the_typed_expression() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.expression = "msg_count == 2".to_string();
+        handle_filter_popup_key(&mut app, key(KeyCode::Esc));
+        assert!(app.active_popup.is_none(), "closed");
+        assert!(app.active_filter.is_none(), "nothing applied");
+        assert_eq!(
+            app.filter_dialog.expression, "msg_count == 2",
+            "the text stays for the next open"
+        );
+        Ok(())
+    }
+
+    /// The field keeps its text when the dialog is opened again with F7.
+    #[test]
+    fn reopening_the_dialog_keeps_the_expression() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msg_count == 2");
+        app.handle_key(KeyCode::F(7));
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog), "reopened");
+        assert_eq!(
+            app.filter_dialog.expression, "msg_count == 2",
+            "the text survives a reopen"
+        );
+        Ok(())
+    }
+
+    /// Tab order: Named filter, Expression, then the All checkbox; Up from
+    /// All comes back to Expression.
+    #[test]
+    fn the_expression_field_sits_between_named_and_all() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.focused_field = 8;
+        handle_filter_popup_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(
+            app.filter_dialog.focused_field, EXPRESSION_FIELD_IDX,
+            "Named filter, then Expression"
+        );
+        handle_filter_popup_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(
+            app.filter_dialog.focused_field, ALL_METHODS_IDX,
+            "Expression, then All"
+        );
+        handle_filter_popup_key(&mut app, key(KeyCode::Up));
+        assert_eq!(
+            app.filter_dialog.focused_field, EXPRESSION_FIELD_IDX,
+            "Up from All"
+        );
+        Ok(())
+    }
+
+    /// Multibyte text edits safely in the Expression field.
+    #[test]
+    fn multibyte_text_in_the_expression_edits_safely() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.focused_field = EXPRESSION_FIELD_IDX;
+        app.filter_dialog.sync_cursor();
+        for c in "payload =~ 'é'".chars() {
+            handle_filter_popup_key(&mut app, key(KeyCode::Char(c)));
+        }
+        handle_filter_popup_key(&mut app, key(KeyCode::Left));
+        handle_filter_popup_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(
+            app.filter_dialog.expression, "payload =~ ''",
+            "the whole 'é' removed"
+        );
+        Ok(())
+    }
+
+    /// An error inside text an `@name` expanded to cannot be placed in the
+    /// field, so the cursor stays where it was; the message still shows.
+    #[test]
+    fn an_error_inside_an_expansion_leaves_the_cursor() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.named_filters = big_table()?;
+        app.filter_dialog.focused_field = EXPRESSION_FIELD_IDX;
+        app.filter_dialog.expression = "@big garbage".to_string();
+        app.filter_dialog.cursor_pos = 4;
+        apply_filter_dialog(&mut app);
+        assert!(
+            app.filter_dialog
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("Expression error:"),
+            "{:?}",
+            app.filter_dialog.error
+        );
+        assert_eq!(
+            app.filter_dialog.cursor_pos, 4,
+            "not moved into the expansion"
+        );
+        Ok(())
+    }
+
+    /// An expression longer than the field scrolls, so the cursor and the
+    /// text before it stay in view while typing.
+    #[test]
+    fn a_long_expression_scrolls_to_keep_the_cursor_in_view() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.focused_field = EXPRESSION_FIELD_IDX;
+        let long = format!("{REPORTED} AND payload =~ 'TAIL-END'");
+        app.filter_dialog.expression = long.clone();
+        app.filter_dialog.cursor_pos = long.len();
+        let text = screen(&mut app, 80, 24)?;
+        let row = row_with(&text, "Expression:").ok_or("the Expression row")?;
+        assert!(row.contains("'TAIL-END'"), "the end is in view: {row:?}");
+        // The cursor cell after the text, inside the closing bracket: one
+        // byte further and the bracket would be painted over it.
+        assert!(
+            row.contains("'TAIL-END' ]"),
+            "the cursor cell sits between the text and the bracket: {row:?}"
+        );
+        assert!(
+            !row.contains("payload =~ 'X-Foo'"),
+            "the start scrolled off: {row:?}"
+        );
+        Ok(())
+    }
+
+    /// Unfocused, a long expression shows its start.
+    #[test]
+    fn an_unfocused_long_expression_shows_its_start() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.focused_field = 0;
+        app.filter_dialog.expression = format!("{REPORTED} AND payload =~ 'TAIL-END'");
+        let text = screen(&mut app, 80, 24)?;
+        let row = row_with(&text, "Expression:").ok_or("the Expression row")?;
+        assert!(row.contains("[payload =~ 'X-Foo'"), "the start: {row:?}");
+        assert!(!row.contains("TAIL-END"), "the end is cut: {row:?}");
+        Ok(())
+    }
+
+    // ── Started with --filter / [filter] expression ────────────────
+
+    /// The session opens with the run's typed filter in the field, applied.
+    #[test]
+    fn the_run_filter_is_prefilled_and_applied() -> Result<(), TestError> {
+        let fixture = App::with_processed_messages(fixture_messages()?);
+        let mut app = TuiOptions {
+            filter_expression: Some(REPORTED.to_string()),
+            ..TuiOptions::default()
+        }
+        .into_app(
+            std::sync::Arc::clone(&fixture.dialog_store),
+            std::sync::Arc::clone(&fixture.stream_store),
+        );
+        assert_eq!(app.filter_dialog.expression, REPORTED, "prefilled as typed");
+        assert_eq!(shown(&mut app), ids(&["foo-big"]), "and applied");
+        assert!(app.active_popup.is_none(), "no dialog left open");
+        Ok(())
+    }
+
+    /// With `-c` as well, both apply: calls only AND the expression.
+    #[test]
+    fn the_run_filter_and_calls_only_both_apply() -> Result<(), TestError> {
+        let fixture = App::with_processed_messages(fixture_messages()?);
+        let mut app = TuiOptions {
+            filter_expression: Some("payload =~ 'X-Foo'".to_string()),
+            calls_only: true,
+            ..TuiOptions::default()
+        }
+        .into_app(
+            std::sync::Arc::clone(&fixture.dialog_store),
+            std::sync::Arc::clone(&fixture.stream_store),
+        );
+        assert_eq!(
+            shown(&mut app),
+            ids(&["foo-big", "foo-small"]),
+            "INVITE AND X-Foo; the OPTIONS dialog stays out"
+        );
+        Ok(())
+    }
+
+    /// A startup notice survives the run's filter being applied: applying a
+    /// filter clears the status line, so the notice is set after it. Before
+    /// #841 `-c` dropped it the same way.
+    #[test]
+    fn a_startup_notice_survives_the_run_filter() -> Result<(), TestError> {
+        for calls_only in [false, true] {
+            let fixture = App::with_processed_messages(fixture_messages()?);
+            let app = TuiOptions {
+                filter_expression: Some("msg_count > 5".to_string()),
+                calls_only,
+                startup_notice: Some("Config: example.toml".to_string()),
+                ..TuiOptions::default()
+            }
+            .into_app(
+                std::sync::Arc::clone(&fixture.dialog_store),
+                std::sync::Arc::clone(&fixture.stream_store),
+            );
+            assert!(app.active_filter.is_some(), "-c {calls_only}: applied");
+            assert_eq!(
+                app.status_error.as_deref(),
+                Some("Config: example.toml"),
+                "-c {calls_only}: the notice is kept"
+            );
+        }
+        Ok(())
+    }
+
+    /// A run filter the session cannot apply is said on the status line,
+    /// not left in a dialog nobody opened, and nothing is applied.
+    #[test]
+    fn a_run_filter_the_session_refuses_is_said_on_the_status_line() -> Result<(), TestError> {
+        let fixture = App::with_processed_messages(fixture_messages()?);
+        let app = TuiOptions {
+            filter_expression: Some("@undefined".to_string()),
+            ..TuiOptions::default()
+        }
+        .into_app(
+            std::sync::Arc::clone(&fixture.dialog_store),
+            std::sync::Arc::clone(&fixture.stream_store),
+        );
+        let status = app.status_error.clone().unwrap_or_default();
+        assert!(status.contains("Expression error:"), "{status:?}");
+        assert!(status.contains("'@undefined'"), "{status:?}");
+        assert!(app.filter_dialog.error.is_none(), "not left in the dialog");
+        assert!(app.active_filter.is_none(), "nothing applied");
+        Ok(())
+    }
+
+    /// A run with no typed filter opens with the field empty and no filter.
+    #[test]
+    fn no_run_filter_leaves_the_field_empty() -> Result<(), TestError> {
+        let fixture = App::with_processed_messages(fixture_messages()?);
+        let app = TuiOptions::default().into_app(
+            std::sync::Arc::clone(&fixture.dialog_store),
+            std::sync::Arc::clone(&fixture.stream_store),
+        );
+        assert_eq!(app.filter_dialog.expression, "", "nothing prefilled");
+        assert!(app.active_filter.is_none(), "no filter");
         Ok(())
     }
 }

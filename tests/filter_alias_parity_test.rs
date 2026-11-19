@@ -417,11 +417,22 @@ fn the_resolver_reads_configured_thresholds() -> Result<(), TestError> {
     );
     // `parse_filter` is the shared resolver every surface calls: it expands
     // through `expand_alias` and then parses, so naming it is naming the
-    // expansion.
+    // expansion. `resolved_filter_text` reaches it directly, or through
+    // `dsl::resolve_typed_filter`, the rule the TUI's Expression field shares
+    // since #841; then that function must call `resolve_filter_text`.
+    let dsl = std::fs::read_to_string(repo().join("src/sip/dsl.rs"))?;
+    let typed = dsl.find("pub fn resolve_typed_filter").map(|at| {
+        let rest = &dsl[at..];
+        &rest[..rest.find("\n}\n").unwrap_or(rest.len())]
+    });
+    let via_expands = via.is_some_and(|v| {
+        v.contains("resolve_filter_text(")
+            || (v.contains("resolve_typed_filter(")
+                && typed.is_some_and(|t| t.contains("resolve_filter_text(")))
+    });
     let expands = body.contains("expand_alias")
         || body.contains("parse_filter(")
-        || (body.contains("resolved_filter_text(")
-            && via.is_some_and(|v| v.contains("resolve_filter_text(")));
+        || (body.contains("resolved_filter_text(") && via_expands);
     assert!(expands, "the vcon resolver does not expand aliases at all");
     Ok(())
 }
