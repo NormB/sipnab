@@ -4563,6 +4563,70 @@ pub fn upsert_display_columns(existing: &str, columns: &[String]) -> Result<Stri
     Ok(doc.to_string())
 }
 
+/// Add `name = "definition"` to the `[filters]` table of a sipnabrc document.
+///
+/// Parses `existing` (may be empty), creates `[filters]` when the document
+/// has none, and returns the new text with every comment, key order and
+/// other section kept. An inline `filters = { ... }` table is extended in
+/// place. Pure: no filesystem access.
+///
+/// # Errors
+/// `crate::Error::ConfigInvalid` when `existing` is not valid TOML, when
+/// `filters` exists but is not a table, or when `[filters]` already holds
+/// `name`: a save never replaces an entry the operator wrote.
+pub fn upsert_named_filter(
+    existing: &str,
+    name: &str,
+    definition: &str,
+) -> Result<String, crate::Error> {
+    use toml_edit::{DocumentMut, Item, Table, value};
+
+    let mut doc = existing
+        .parse::<DocumentMut>()
+        .map_err(|e| crate::Error::ConfigInvalid(format!("sipnabrc is not valid TOML: {e}")))?;
+    if doc.get("filters").is_none() {
+        doc["filters"] = Item::Table(Table::new());
+    }
+    let filters = doc["filters"]
+        .as_table_like_mut()
+        .ok_or_else(|| crate::Error::ConfigInvalid("[filters] is not a table".into()))?;
+    if filters.contains_key(name) {
+        return Err(crate::Error::ConfigInvalid(format!(
+            "[filters] already defines '{name}'; choose another name, or edit \
+             that entry in the config file"
+        )));
+    }
+    filters.insert(name, value(definition));
+    Ok(doc.to_string())
+}
+
+/// Add one `[filters]` entry to the sipnabrc at `path`, keeping the rest of
+/// the file (see [`upsert_named_filter`]). Creates the file and its parent
+/// directory when needed.
+///
+/// # Errors
+/// The file cannot be read (only a MISSING file counts as empty), it is not
+/// valid TOML, `[filters]` already holds `name`, the parent directory cannot
+/// be created, or the write fails. On every error the file is unchanged.
+///
+/// # Side effects
+/// Reads `path`, creates its parent directory, and rewrites the file
+/// atomically (temp-in-dir + rename in native builds).
+pub fn write_named_filter_file(
+    path: &Path,
+    name: &str,
+    definition: &str,
+) -> Result<(), crate::Error> {
+    let existing = read_existing_sipnabrc(path)?;
+    let updated = upsert_named_filter(&existing, name, definition)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            crate::Error::ConfigInvalid(format!("create {}: {e}", parent.display()))
+        })?;
+    }
+    write_sipnabrc_atomic(path, &updated)
+}
+
 /// Write `contents` to the sipnabrc at `path` atomically (native builds) so an
 /// interrupted or failing write never truncates the operator's existing config,
 /// and a symlink at `path` is replaced rather than followed onto a victim file.
@@ -7634,6 +7698,323 @@ mod config_locations_tests {
             assert!(media(spelled).validate().is_ok(), "{spelled:?}");
             assert!(crate::rtp::emodel_wb::ListeningContext::parse(spelled).is_some());
         }
+        Ok(())
+    }
+}
+
+/// [`upsert_named_filter`] and [`write_named_filter_file`]: a save of one
+/// `[filters]` entry from the terminal UI.
+#[cfg(test)]
+mod named_filter_write_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The `[filters]` table of `text`, as a run would load it.
+    fn filters_of(text: &str) -> Result<std::collections::BTreeMap<String, String>, TestError> {
+        Ok(toml::from_str::<Config>(text)?.filters)
+    }
+
+    // ── success ────────────────────────────────────────────────────────
+
+    /// An empty file gains a `[filters]` table with the entry.
+    #[test]
+    fn an_empty_file_gains_the_table() -> Result<(), TestError> {
+        let out = upsert_named_filter("", "sales", "to.user == '7000'")?;
+        assert_eq!(
+            filters_of(&out)?.get("sales").map(String::as_str),
+            Some("to.user == '7000'"),
+            "the entry loads back: {out}"
+        );
+        Ok(())
+    }
+
+    /// An existing `[filters]` table gains the entry beside its others.
+    #[test]
+    fn an_existing_table_keeps_its_entries() -> Result<(), TestError> {
+        let before = "[filters]\nwest = \"src.ip == '192.0.2.1'\"\n";
+        let out = upsert_named_filter(before, "sales", "to.user == '7000'")?;
+        let loaded = filters_of(&out)?;
+        assert_eq!(loaded.len(), 2, "both entries: {out}");
+        assert_eq!(
+            loaded.get("west").map(String::as_str),
+            Some("src.ip == '192.0.2.1'"),
+            "west kept"
+        );
+        Ok(())
+    }
+
+    /// Comments anywhere in the file survive the save.
+    #[test]
+    fn comments_are_kept() -> Result<(), TestError> {
+        let before = "# top comment\n[display]\n# columns note\nvisible_columns = [\"method\"]\n\n[filters]\n# west office\nwest = \"src.ip == '192.0.2.1'\"\n";
+        let out = upsert_named_filter(before, "sales", "to.user == '7000'")?;
+        for comment in ["# top comment", "# columns note", "# west office"] {
+            assert!(out.contains(comment), "{comment} kept in:\n{out}");
+        }
+        Ok(())
+    }
+
+    /// Other sections and keys keep their values and order.
+    #[test]
+    fn other_sections_are_unchanged() -> Result<(), TestError> {
+        let before =
+            "[capture]\ninterface = \"eth0\"\n\n[display]\nvisible_columns = [\"method\"]\n";
+        let out = upsert_named_filter(before, "sales", "to.user == '7000'")?;
+        assert!(out.starts_with(before), "the old text is a prefix:\n{out}");
+        Ok(())
+    }
+
+    /// A value holding both quote kinds is written so it loads back equal.
+    #[test]
+    fn a_value_with_quotes_round_trips() -> Result<(), TestError> {
+        let expr = "to.user == 'a' OR from.user == \"b\"";
+        let out = upsert_named_filter("", "q", expr)?;
+        assert_eq!(
+            filters_of(&out)?.get("q").map(String::as_str),
+            Some(expr),
+            "{out}"
+        );
+        Ok(())
+    }
+
+    /// A value with a backslash (a regex escape) loads back equal.
+    #[test]
+    fn a_value_with_a_backslash_round_trips() -> Result<(), TestError> {
+        let expr = "ua =~ 'Phone\\.1'";
+        let out = upsert_named_filter("", "phones", expr)?;
+        assert_eq!(
+            filters_of(&out)?.get("phones").map(String::as_str),
+            Some(expr),
+            "{out}"
+        );
+        Ok(())
+    }
+
+    /// A name with `-` is written as a key that loads back.
+    #[test]
+    fn a_dashed_name_round_trips() -> Result<(), TestError> {
+        let out = upsert_named_filter("", "west-sales", "@west AND @sales")?;
+        assert_eq!(
+            filters_of(&out)?.get("west-sales").map(String::as_str),
+            Some("@west AND @sales"),
+            "{out}"
+        );
+        Ok(())
+    }
+
+    /// An inline `filters = { ... }` table gains the entry too.
+    #[test]
+    fn an_inline_table_gains_the_entry() -> Result<(), TestError> {
+        let before = "filters = { west = \"src.ip == '192.0.2.1'\" }\n";
+        let out = upsert_named_filter(before, "sales", "to.user == '7000'")?;
+        assert_eq!(filters_of(&out)?.len(), 2, "both entries: {out}");
+        Ok(())
+    }
+
+    /// The file write creates the file and its parent directory.
+    #[test]
+    fn the_file_write_creates_file_and_parent() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sub").join("sipnab.toml");
+        write_named_filter_file(&path, "sales", "to.user == '7000'")?;
+        let text = std::fs::read_to_string(&path)?;
+        assert_eq!(filters_of(&text)?.len(), 1, "one entry: {text}");
+        Ok(())
+    }
+
+    /// The file write keeps what the file held.
+    #[test]
+    fn the_file_write_keeps_the_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "# mine\n[capture]\ninterface = \"eth0\"\n")?;
+        write_named_filter_file(&path, "sales", "to.user == '7000'")?;
+        let text = std::fs::read_to_string(&path)?;
+        assert!(
+            text.starts_with("# mine\n[capture]\ninterface = \"eth0\"\n"),
+            "the old content stays:\n{text}"
+        );
+        Ok(())
+    }
+
+    /// The file write leaves no temporary file in the directory.
+    #[test]
+    fn the_file_write_leaves_no_temp_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        write_named_filter_file(&path, "sales", "to.user == '7000'")?;
+        let names: Vec<String> = std::fs::read_dir(dir.path())?
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["sipnab.toml"], "only the config file");
+        Ok(())
+    }
+
+    /// Two saves in a row keep both entries.
+    #[test]
+    fn two_saves_keep_both() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        write_named_filter_file(&path, "a1", "src.port == 1")?;
+        write_named_filter_file(&path, "a2", "src.port == 2")?;
+        assert_eq!(
+            filters_of(&std::fs::read_to_string(&path)?)?.len(),
+            2,
+            "two"
+        );
+        Ok(())
+    }
+
+    // ── failure ────────────────────────────────────────────────────────
+
+    /// A name the file's `[filters]` already defines is refused.
+    #[test]
+    fn a_name_already_in_the_file_is_refused() -> Result<(), TestError> {
+        let before = "[filters]\nsales = \"to.user == '7000'\"\n";
+        let err = upsert_named_filter(before, "sales", "method == 'INVITE'")
+            .err()
+            .ok_or("must be refused")?;
+        assert!(
+            err.to_string().contains("already defines 'sales'"),
+            "reason: {err}"
+        );
+        Ok(())
+    }
+
+    /// The refused file write leaves the file byte for byte as it was.
+    #[test]
+    fn a_refused_file_write_changes_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        let before = "[filters]\nsales = \"to.user == '7000'\" # keep\n";
+        std::fs::write(&path, before)?;
+        assert!(
+            write_named_filter_file(&path, "sales", "x == 1").is_err(),
+            "refused"
+        );
+        assert_eq!(std::fs::read_to_string(&path)?, before, "file untouched");
+        Ok(())
+    }
+
+    /// A file that is not TOML is refused, not replaced.
+    #[test]
+    fn invalid_toml_is_refused() -> Result<(), TestError> {
+        let err = upsert_named_filter("[filters\n", "sales", "x == 1").err();
+        assert!(
+            err.is_some_and(|e| e.to_string().contains("not valid TOML")),
+            "invalid TOML refused"
+        );
+        Ok(())
+    }
+
+    /// `filters` that is a value, not a table, is refused.
+    #[test]
+    fn a_filters_value_that_is_not_a_table_is_refused() -> Result<(), TestError> {
+        let err = upsert_named_filter("filters = 3\n", "sales", "x == 1").err();
+        assert!(
+            err.is_some_and(|e| e.to_string().contains("[filters] is not a table")),
+            "non-table refused"
+        );
+        Ok(())
+    }
+
+    /// An unreadable path (a directory) is refused and nothing is written.
+    #[test]
+    fn a_directory_at_the_path_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let err = write_named_filter_file(dir.path(), "sales", "x == 1").err();
+        assert!(
+            err.is_some_and(|e| e.to_string().contains("Refusing to save")),
+            "a directory is not an empty config"
+        );
+        Ok(())
+    }
+
+    /// A file write onto invalid TOML keeps the file as it was.
+    #[test]
+    fn a_file_write_onto_invalid_toml_changes_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "[filters\n")?;
+        assert!(
+            write_named_filter_file(&path, "s", "x == 1").is_err(),
+            "refused"
+        );
+        assert_eq!(std::fs::read_to_string(&path)?, "[filters\n", "untouched");
+        Ok(())
+    }
+
+    // ── edge ───────────────────────────────────────────────────────────
+
+    /// A name differing only in case is a new key.
+    #[test]
+    fn a_name_differing_in_case_is_a_new_key() -> Result<(), TestError> {
+        let before = "[filters]\nsales = \"to.user == '7000'\"\n";
+        let out = upsert_named_filter(before, "Sales", "x == 1")?;
+        assert_eq!(filters_of(&out)?.len(), 2, "two keys: {out}");
+        Ok(())
+    }
+
+    /// A multibyte value is written and loads back equal.
+    #[test]
+    fn a_multibyte_value_round_trips() -> Result<(), TestError> {
+        let expr = "to.user == 'caf\u{e9}'";
+        let out = upsert_named_filter("", "cafe", expr)?;
+        assert_eq!(
+            filters_of(&out)?.get("cafe").map(String::as_str),
+            Some(expr),
+            "{out}"
+        );
+        Ok(())
+    }
+
+    /// A `[filters]` table after other sections gains the entry in place,
+    /// not a second `[filters]` heading.
+    #[test]
+    fn the_table_is_not_written_twice() -> Result<(), TestError> {
+        let before = "[filters]\nwest = \"src.port == 1\"\n\n[display]\nvisible_columns = []\n";
+        let out = upsert_named_filter(before, "sales", "x == 1")?;
+        assert_eq!(out.matches("[filters]").count(), 1, "one heading:\n{out}");
+        Ok(())
+    }
+
+    /// A file with no trailing newline still produces valid TOML.
+    #[test]
+    fn a_file_without_a_final_newline_is_handled() -> Result<(), TestError> {
+        let out = upsert_named_filter("[capture]\ninterface = \"eth0\"", "s", "x == 1")?;
+        assert_eq!(filters_of(&out)?.len(), 1, "{out}");
+        Ok(())
+    }
+
+    /// A `[filters.sub]` dotted table counts as an existing `[filters]`, so
+    /// a name equal to that sub-table's key is refused, not overwritten.
+    #[test]
+    fn a_sub_table_key_is_not_overwritten() -> Result<(), TestError> {
+        let before = "[filters.sales]\nx = 1\n";
+        assert!(
+            upsert_named_filter(before, "sales", "x == 1").is_err(),
+            "an existing key of any kind is refused"
+        );
+        Ok(())
+    }
+
+    /// A symlink at the path is replaced, not written through.
+    #[test]
+    #[cfg(all(unix, feature = "native"))]
+    fn the_file_write_does_not_follow_a_symlink() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let victim = dir.path().join("victim.toml");
+        std::fs::write(&victim, "# do not touch\n")?;
+        let link = dir.path().join("sipnab.toml");
+        std::os::unix::fs::symlink(&victim, &link)?;
+        write_named_filter_file(&link, "sales", "x == 1")?;
+        assert_eq!(
+            std::fs::read_to_string(&victim)?,
+            "# do not touch\n",
+            "the link target is untouched"
+        );
         Ok(())
     }
 }

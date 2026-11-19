@@ -8,6 +8,23 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **The TUI filter dialog saves its filter as a named filter.**
+  - Effect: `F2` in the dialog asks for a name and adds the filter to `[filters]` in your config file, keeping its comments.
+  - Effect: The name is listed beside Named filter at once; a duplicate or invalid name is refused with the reason.
+  - Limit: The REST API and MCP server of a running session see the name after a restart.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+
+### Fixed
+
+- **A filter parse error lists `in_subnet` among the valid operators.**
+  - Was: The `valid operators:` line of every filter error omitted `in_subnet`, which the parser accepts.
+  - Effect: The line lists every operator the parser accepts, in the order it tries them.
+  - Docs: [Filter DSL](docs/filter-dsl.md)
+
 ## [0.5.266] - 2026-11-19
 
 ### Added

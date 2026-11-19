@@ -34,6 +34,8 @@ pub enum NamedFilterError {
     BadName(String),
     /// The name is a built-in alias, which keeps its meaning.
     BuiltIn(String),
+    /// A save would define a name the table already defines.
+    Duplicate(String),
     /// `filter` references `missing`, which nothing defines.
     Unknown {
         /// The filter whose definition holds the reference.
@@ -66,6 +68,11 @@ impl std::fmt::Display for NamedFilterError {
                 "[filters] name '{name}' is a built-in alias and keeps its \
                  built-in meaning; choose another name"
             ),
+            Self::Duplicate(name) => write!(
+                f,
+                "[filters] already defines '{name}'; choose another name, or \
+                 edit that entry in the config file"
+            ),
             Self::Unknown { filter, missing } => write!(
                 f,
                 "[filters] '{filter}' references '@{missing}', which no \
@@ -97,6 +104,10 @@ impl std::error::Error for NamedFilterError {}
 pub struct NamedFilters {
     /// Name to expansion.
     expanded: BTreeMap<String, String>,
+    /// Name to definition as written, `@name` references kept: what a save
+    /// writes back to the config, and the text [`Self::with_added`] resolves
+    /// the table again from.
+    definitions: BTreeMap<String, String>,
 }
 
 impl NamedFilters {
@@ -128,7 +139,42 @@ impl NamedFilters {
                 message: e.to_string(),
             })?;
         }
-        Ok(Self { expanded })
+        Ok(Self {
+            expanded,
+            definitions: defs.clone(),
+        })
+    }
+
+    /// The table with `name` defined as `definition` added, resolved again
+    /// by the rules of [`Self::resolve`]. `self` is not changed.
+    ///
+    /// # Errors
+    ///
+    /// [`NamedFilterError::Duplicate`] when the table already defines
+    /// `name`; otherwise what [`Self::resolve`] refuses for the new entry: a
+    /// bad name, a built-in alias name, an unknown reference, a loop, or a
+    /// definition that does not parse.
+    pub fn with_added(
+        &self,
+        name: &str,
+        definition: &str,
+        t: &AliasThresholds,
+    ) -> Result<Self, NamedFilterError> {
+        if !valid_name(name) {
+            return Err(NamedFilterError::BadName(name.to_owned()));
+        }
+        if self.definitions.contains_key(name) {
+            return Err(NamedFilterError::Duplicate(name.to_owned()));
+        }
+        let mut defs = self.definitions.clone();
+        defs.insert(name.to_owned(), definition.to_owned());
+        Self::resolve(&defs, t)
+    }
+
+    /// The definition of `name` as written in `[filters]`, if it is defined.
+    #[must_use]
+    pub fn definition(&self, name: &str) -> Option<&str> {
+        self.definitions.get(name).map(String::as_str)
     }
 
     /// The defined names, in order.
@@ -514,5 +560,415 @@ mod tests {
         {
             assert!(e.to_string().contains(want), "{e}");
         }
+    }
+}
+
+/// [`NamedFilters::with_added`]: the table a save from the terminal UI
+/// would leave, or the reason the save is refused.
+#[cfg(test)]
+mod adding_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    fn t() -> AliasThresholds {
+        AliasThresholds::default()
+    }
+
+    /// A table holding `sales` and `west`.
+    fn table() -> Result<NamedFilters, TestError> {
+        let mut defs = BTreeMap::new();
+        defs.insert("sales".to_owned(), "to.user == '7000'".to_owned());
+        defs.insert("west".to_owned(), "src.ip == '192.0.2.1'".to_owned());
+        Ok(NamedFilters::resolve(&defs, &t())?)
+    }
+
+    // ── success ────────────────────────────────────────────────────────
+
+    /// A new name joins the table with its expansion.
+    #[test]
+    fn a_new_name_is_added() -> Result<(), TestError> {
+        let added = table()?.with_added("invites", "method == 'INVITE'", &t())?;
+        assert_eq!(
+            added.expansion("invites"),
+            Some("method == 'INVITE'"),
+            "the new name expands to its definition"
+        );
+        Ok(())
+    }
+
+    /// The names already defined stay, with the same expansions.
+    #[test]
+    fn the_existing_names_are_kept() -> Result<(), TestError> {
+        let before = table()?;
+        let added = before.with_added("invites", "method == 'INVITE'", &t())?;
+        for name in ["sales", "west"] {
+            assert_eq!(
+                added.expansion(name),
+                before.expansion(name),
+                "{name} keeps its expansion"
+            );
+        }
+        Ok(())
+    }
+
+    /// The names come back in order, the new one among them.
+    #[test]
+    fn names_stay_sorted_with_the_new_one() -> Result<(), TestError> {
+        let added = table()?.with_added("north", "src.port == 5060", &t())?;
+        let names: Vec<&str> = added.names().collect();
+        assert_eq!(names, ["north", "sales", "west"], "sorted names");
+        Ok(())
+    }
+
+    /// The table it was built from does not change.
+    #[test]
+    fn the_original_table_is_unchanged() -> Result<(), TestError> {
+        let before = table()?;
+        let copy = before.clone();
+        let _ = before.with_added("north", "src.port == 5060", &t())?;
+        assert_eq!(before, copy, "with_added does not change self");
+        Ok(())
+    }
+
+    /// A definition may reference a name already in the table.
+    #[test]
+    fn a_reference_to_a_defined_name_is_expanded() -> Result<(), TestError> {
+        let added = table()?.with_added("west-sales", "@west AND @sales", &t())?;
+        assert_eq!(
+            added.expansion("west-sales"),
+            Some("(src.ip == '192.0.2.1') AND (to.user == '7000')"),
+            "references expand in the new definition"
+        );
+        Ok(())
+    }
+
+    /// A definition may reference a built-in alias.
+    #[test]
+    fn a_reference_to_a_built_in_alias_is_expanded() -> Result<(), TestError> {
+        let added = table()?.with_added("bad-sales", "@sales AND @one-way", &t())?;
+        let text = added.expansion("bad-sales").ok_or("no expansion")?;
+        assert!(
+            text.contains("one_way == true") && !text.contains('@'),
+            "the alias expands: {text}"
+        );
+        Ok(())
+    }
+
+    /// The definition as written is kept beside the expansion.
+    #[test]
+    fn the_definition_is_kept_as_written() -> Result<(), TestError> {
+        let added = table()?.with_added("west-sales", "@west AND @sales", &t())?;
+        assert_eq!(
+            added.definition("west-sales"),
+            Some("@west AND @sales"),
+            "the definition keeps its references"
+        );
+        Ok(())
+    }
+
+    /// The definitions a table was resolved from can be read back.
+    #[test]
+    fn resolve_keeps_every_definition() -> Result<(), TestError> {
+        let table = table()?;
+        assert_eq!(
+            table.definition("sales"),
+            Some("to.user == '7000'"),
+            "sales"
+        );
+        assert_eq!(
+            table.definition("west"),
+            Some("src.ip == '192.0.2.1'"),
+            "west"
+        );
+        Ok(())
+    }
+
+    /// An empty table accepts a first name.
+    #[test]
+    fn an_empty_table_takes_a_first_name() -> Result<(), TestError> {
+        let added = NamedFilters::default().with_added("first", "state == 'Failed'", &t())?;
+        assert_eq!(added.names().count(), 1, "one name");
+        Ok(())
+    }
+
+    /// The longest allowed name is accepted.
+    #[test]
+    fn a_name_of_the_maximum_length_is_accepted() -> Result<(), TestError> {
+        let name = "a".repeat(MAX_FILTER_NAME_LEN);
+        let added = table()?.with_added(&name, "src.port == 5060", &t())?;
+        assert!(added.expansion(&name).is_some(), "64-byte name added");
+        Ok(())
+    }
+
+    /// A name with digits, `-` and `_` is accepted.
+    #[test]
+    fn a_name_with_dash_underscore_and_digits_is_accepted() -> Result<(), TestError> {
+        let added = table()?.with_added("pbx_2-west", "src.port == 5060", &t())?;
+        assert!(added.expansion("pbx_2-west").is_some(), "added");
+        Ok(())
+    }
+
+    /// An expression holding `OR` keeps its own grouping when referenced.
+    #[test]
+    fn an_or_definition_is_grouped_when_referenced() -> Result<(), TestError> {
+        let added = table()?
+            .with_added("either", "method == 'BYE' OR method == 'CANCEL'", &t())?
+            .with_added("either-west", "@either AND @west", &t())?;
+        assert_eq!(
+            added.expansion("either-west"),
+            Some("(method == 'BYE' OR method == 'CANCEL') AND (src.ip == '192.0.2.1')"),
+            "the OR stays inside its parentheses"
+        );
+        Ok(())
+    }
+
+    // ── failure ────────────────────────────────────────────────────────
+
+    /// A name the table already defines is refused, naming it.
+    #[test]
+    fn a_duplicate_name_is_refused() -> Result<(), TestError> {
+        let err = table()?
+            .with_added("sales", "method == 'INVITE'", &t())
+            .err()
+            .ok_or("a duplicate must be refused")?;
+        assert_eq!(
+            err,
+            NamedFilterError::Duplicate("sales".into()),
+            "duplicate"
+        );
+        Ok(())
+    }
+
+    /// The duplicate refusal says what to do.
+    #[test]
+    fn the_duplicate_message_names_the_filter_and_the_way_out() {
+        let text = NamedFilterError::Duplicate("sales".into()).to_string();
+        assert!(
+            text.contains("'sales'") && text.contains("already defines"),
+            "message: {text}"
+        );
+    }
+
+    /// An empty name is refused.
+    #[test]
+    fn an_empty_name_is_refused() -> Result<(), TestError> {
+        let err = table()?.with_added("", "method == 'INVITE'", &t()).err();
+        assert_eq!(
+            err,
+            Some(NamedFilterError::BadName(String::new())),
+            "empty name"
+        );
+        Ok(())
+    }
+
+    /// A name with a space is refused.
+    #[test]
+    fn a_name_with_a_space_is_refused() -> Result<(), TestError> {
+        let err = table()?
+            .with_added("my calls", "method == 'INVITE'", &t())
+            .err();
+        assert_eq!(
+            err,
+            Some(NamedFilterError::BadName("my calls".into())),
+            "space"
+        );
+        Ok(())
+    }
+
+    /// A name one byte past the limit is refused.
+    #[test]
+    fn a_name_past_the_maximum_length_is_refused() -> Result<(), TestError> {
+        let name = "a".repeat(MAX_FILTER_NAME_LEN + 1);
+        let err = table()?.with_added(&name, "method == 'INVITE'", &t()).err();
+        assert_eq!(err, Some(NamedFilterError::BadName(name)), "65 bytes");
+        Ok(())
+    }
+
+    /// A name starting with `-` is refused.
+    #[test]
+    fn a_name_starting_with_a_dash_is_refused() -> Result<(), TestError> {
+        let err = table()?.with_added("-x", "method == 'INVITE'", &t()).err();
+        assert_eq!(
+            err,
+            Some(NamedFilterError::BadName("-x".into())),
+            "leading dash"
+        );
+        Ok(())
+    }
+
+    /// A name written with its `@` is refused: the `@` is not part of a name.
+    #[test]
+    fn a_name_with_an_at_sign_is_refused() -> Result<(), TestError> {
+        let err = table()?.with_added("@x", "method == 'INVITE'", &t()).err();
+        assert_eq!(
+            err,
+            Some(NamedFilterError::BadName("@x".into())),
+            "leading @"
+        );
+        Ok(())
+    }
+
+    /// A built-in alias name is refused.
+    #[test]
+    fn a_built_in_alias_name_is_refused() -> Result<(), TestError> {
+        let err = table()?
+            .with_added("problems", "method == 'INVITE'", &t())
+            .err();
+        assert_eq!(
+            err,
+            Some(NamedFilterError::BuiltIn("problems".into())),
+            "alias"
+        );
+        Ok(())
+    }
+
+    /// A definition that does not parse is refused with the parser's message.
+    #[test]
+    fn an_invalid_expression_is_refused() -> Result<(), TestError> {
+        let err = table()?
+            .with_added("bad", "method === 'INVITE'", &t())
+            .err()
+            .ok_or("must be refused")?;
+        assert!(
+            matches!(&err, NamedFilterError::Invalid { filter, .. } if filter == "bad"),
+            "invalid: {err:?}"
+        );
+        Ok(())
+    }
+
+    /// A reference to a name nothing defines is refused.
+    #[test]
+    fn an_unknown_reference_is_refused() -> Result<(), TestError> {
+        let err = table()?.with_added("x", "@nosuch", &t()).err();
+        assert_eq!(
+            err,
+            Some(NamedFilterError::Unknown {
+                filter: "x".into(),
+                missing: "nosuch".into()
+            }),
+            "unknown reference"
+        );
+        Ok(())
+    }
+
+    /// A definition that references itself is refused as a loop.
+    #[test]
+    fn a_self_reference_is_refused() -> Result<(), TestError> {
+        let err = table()?.with_added("loop", "@loop", &t()).err();
+        assert!(
+            matches!(err, Some(NamedFilterError::Cycle(_))),
+            "self reference: {err:?}"
+        );
+        Ok(())
+    }
+
+    /// An empty expression is refused.
+    #[test]
+    fn an_empty_expression_is_refused() -> Result<(), TestError> {
+        let err = table()?.with_added("x", "", &t()).err();
+        assert!(
+            matches!(err, Some(NamedFilterError::Invalid { .. })),
+            "empty: {err:?}"
+        );
+        Ok(())
+    }
+
+    // ── edge ───────────────────────────────────────────────────────────
+
+    /// Names differ by case: `Sales` is not `sales`.
+    #[test]
+    fn names_are_case_sensitive() -> Result<(), TestError> {
+        let added = table()?.with_added("Sales", "method == 'INVITE'", &t())?;
+        assert_eq!(added.names().count(), 3, "Sales is a new name");
+        Ok(())
+    }
+
+    /// A quoted `@word` in the definition is a value, not a reference.
+    #[test]
+    fn a_quoted_at_word_is_not_a_reference() -> Result<(), TestError> {
+        let added = table()?.with_added("q", "to.user == '@nosuch'", &t())?;
+        assert_eq!(added.expansion("q"), Some("to.user == '@nosuch'"), "kept");
+        Ok(())
+    }
+
+    /// A refused add leaves nothing behind: the next add of a good name works
+    /// on the original table.
+    #[test]
+    fn a_refused_add_changes_nothing() -> Result<(), TestError> {
+        let before = table()?;
+        assert!(
+            before.with_added("sales", "x == 1", &t()).is_err(),
+            "refused"
+        );
+        assert_eq!(before.names().count(), 2, "still two names");
+        Ok(())
+    }
+
+    /// Adding two names one after the other keeps both.
+    #[test]
+    fn two_adds_in_a_row_keep_both() -> Result<(), TestError> {
+        let added = table()?
+            .with_added("a1", "src.port == 1", &t())?
+            .with_added("a2", "src.port == 2", &t())?;
+        assert!(
+            added.expansion("a1").is_some() && added.expansion("a2").is_some(),
+            "both kept"
+        );
+        Ok(())
+    }
+
+    /// The same expression under a second name is allowed.
+    #[test]
+    fn the_same_expression_under_two_names_is_allowed() -> Result<(), TestError> {
+        let added = table()?.with_added("sales2", "to.user == '7000'", &t())?;
+        assert_eq!(
+            added.expansion("sales2"),
+            added.expansion("sales"),
+            "same text"
+        );
+        Ok(())
+    }
+
+    /// A multibyte character in a name is refused, not split.
+    #[test]
+    fn a_multibyte_name_is_refused() -> Result<(), TestError> {
+        let err = table()?
+            .with_added("caf\u{e9}", "src.port == 1", &t())
+            .err();
+        assert_eq!(
+            err,
+            Some(NamedFilterError::BadName("caf\u{e9}".into())),
+            "non-ASCII"
+        );
+        Ok(())
+    }
+
+    /// A definition with a multibyte value is kept byte for byte.
+    #[test]
+    fn a_multibyte_value_is_kept() -> Result<(), TestError> {
+        let added = table()?.with_added("cafe", "to.user == 'caf\u{e9}'", &t())?;
+        assert_eq!(
+            added.definition("cafe"),
+            Some("to.user == 'caf\u{e9}'"),
+            "kept"
+        );
+        Ok(())
+    }
+
+    /// A definition with surrounding blanks is kept as given; it parses.
+    #[test]
+    fn a_definition_with_blanks_is_accepted() -> Result<(), TestError> {
+        let added = table()?.with_added("sp", "  src.port == 1  ", &t())?;
+        assert!(added.expansion("sp").is_some(), "parses with blanks");
+        Ok(())
+    }
+
+    /// A name that is only digits is accepted.
+    #[test]
+    fn a_digit_only_name_is_accepted() -> Result<(), TestError> {
+        let added = table()?.with_added("5060", "src.port == 5060", &t())?;
+        assert!(added.expansion("5060").is_some(), "digits only");
+        Ok(())
     }
 }

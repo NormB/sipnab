@@ -937,7 +937,7 @@ instead of hyphen) answers:
 filter: unexpected input at position 0: 'slow_setup'
   slow_setup
   ^
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 
