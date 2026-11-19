@@ -853,12 +853,13 @@ List all tracked SIP dialogs with optional filtering and pagination.
 | `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Canceled`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
 | `from`    | string | --      | Filter by From user (regex pattern). sipnab ignores a pattern that is not a valid regular expression: the page is the one you get without `from`. Check the `total` against a run without it |
 | `filter`  | string | --      | A [filter DSL](filter-dsl.md) expression, the language `--filter` and the TUI filter dialog use, for example `method == INVITE` or `rtp.loss > 2.0`, or a [named alias](filter-dsl.md#named-aliases) such as `problems` or `slow-setup`. A value may be bare or quoted, so `method == 'INVITE'` is the same filter. URL-encode it. A value that is neither is a `400` naming the position, never an unfiltered page. ANDed with `state` and `from` |
+| `named`   | string | --      | The name of one [`[filters]` entry](filter-dsl.md#named-filters) or named alias, in place of `filter`: `named=sales` selects what `filter=@sales` selects, with or without a leading `@`. [`GET /v1/filters`](#get-v1filters) lists the entries. `filter` and `named` together are a `400`, and so is a name nothing defines; its detail lists the defined names |
 | `limit`   | int    | 50      | Maximum results. Ceiling is `--api-max-rows` (1000 by default), not a fixed limit |
 | `offset`  | int    | 0       | Pagination offset |
 | `after`   | string | --      | Only dialogs whose first message is at or after this [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) instant, for example `2026-09-15T12:00:00Z`. An instant that does not parse is a `400` |
 | `before`  | string | --      | Only dialogs whose first message is strictly before this RFC 3339 instant. With `after` it forms the half-open window `[after, before)`, the window the MCP `search_by_time` tool uses, so consecutive windows never count a dialog twice. An instant that does not parse is a `400` |
 
-`state`, `from`, `filter`, `after` and `before` combine with AND. `total`
+`state`, `from`, `filter` (or `named`), `after` and `before` combine with AND. `total`
 counts the dialogs that pass all of them, before `offset` and `limit` page them.
 
 **curl:**
@@ -4264,6 +4265,8 @@ answered over the store rather than the model.
 - `filter` (optional) — a DSL expression or named alias narrowing which
   dialogs the count includes, what `/v1/dialogs?filter=` accepts. A value that
   is neither is a `400`.
+- `named` (optional) — the name of a `[filters]` entry or named alias, in
+  place of `filter`, what `/v1/dialogs?named=` accepts.
 - `top_n` (optional) — keep the largest N buckets. The rest fold into
   `other_count`.
 
@@ -4518,6 +4521,8 @@ the MCP `group_dialogs` tool computes.
 - `filter` (optional) — a DSL expression or named alias narrowing which
   dialogs the route groups, what `/v1/dialogs?filter=` accepts. A value that is
   neither is a `400`.
+- `named` (optional) — the name of a `[filters]` entry or named alias, in
+  place of `filter`, what `/v1/dialogs?named=` accepts.
 - `top_n` (optional) — keep the largest N groups by dialog count. The rest fold
   into `other_count`. Clamped to the server's row cap.
 
@@ -4592,6 +4597,8 @@ dialed number's leading digits).
 - `filter` (optional) — a DSL expression or named alias narrowing which
   dialogs count, what `/v1/dialogs?filter=` accepts. A value that is neither is
   a `400`.
+- `named` (optional) — the name of a `[filters]` entry or named alias, in
+  place of `filter`, what `/v1/dialogs?named=` accepts.
 - `limit` (optional) — the most rows to return, clamped to the server's row cap.
 - `prefix_digits` (optional) — leading digits that make one `prefix` bucket
   (default 4). Zero is a `400`. Ignored for every other `by`.
@@ -4641,6 +4648,197 @@ A `ua` key is a banner a stranger typed. It comes back verbatim. So a program
 that renders it treats it as untrusted text.
 
 ---
+
+### GET /v1/filters
+
+The [named filters](filter-dsl.md#named-filters) of this run: each
+`[filters]` entry's name and its definition as the config file writes it.
+The `named` parameter of `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates`
+and `/v1/talkers` takes one of these names, and a `filter` expression refers
+to one as `@name`. The route takes no parameters and reads no dialog.
+
+sipnab resolves the table when it starts. A name saved with `F2` in the
+terminal UI of the same run joins the table at once, whether sipnab wrote it
+to the config file or kept it for the session only, and the list, `named`
+and `@name` take it from then on. An empty `filters` list means the run
+defines none.
+The MCP tool [`list_named_filters`](mcp-tools-signaling.md#list_named_filters)
+returns the same answer.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/filters | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "filters": [
+    {
+      "name": "lab-failed",
+      "definition": "@lab-net AND state == 'Failed'"
+    },
+    {
+      "name": "lab-net",
+      "definition": "src.ip in_subnet '192.0.2.0/24'"
+    }
+  ]
+}
+```
+
+### GET /v1/filters/validate
+
+Compiles a filter expression the way every `filter` parameter compiles one,
+with the same aliases, `@name` references and thresholds, and says whether it
+compiled. It reads no dialog.
+
+| Parameter | Meaning |
+|-----------|---------|
+| `expr` | The expression, percent-encoded. Required: without it the route answers `400` |
+
+An expression that does not compile is still a `200`:
+
+- `valid` is `false`.
+- `error` holds the parser's message, the text a `filter` parameter's `400`
+  carries after `filter: `.
+- `position` is where the parser stopped: the 0-based character column in
+  the expression with its leading and trailing whitespace removed, the
+  number `error` prints after `at position`.
+
+`position` is `null` when the expression compiled, when the parser names no
+place (an empty expression, an undefined `@name`, a depth or size limit), and
+when the error is inside the expansion of an alias or an `@name`, whose
+columns are not columns of the text you sent. The MCP tool
+[`validate_filter`](mcp-tools-signaling.md#validate_filter) reports the same
+`position`.
+
+**curl:**
+
+```bash
+curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/filters/validate \
+  --data-urlencode "expr=state == Failed AND response_code = 486" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "expr": "state == Failed AND response_code = 486",
+  "valid": false,
+  "error": "unexpected input at position 34: '='\n  state == Failed AND response_code = 486\n                                    ^\nvalid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
+  "position": 34
+}
+```
+
+### Select dialogs with a named filter
+
+Write a filter once in the config file and use it by name from a REST client
+or an MCP agent, instead of sending the whole expression with every request.
+
+**Prerequisites.**
+
+- sipnab: a build with the `api` feature, which the release packages carry,
+  started with `--api` and a key, and a config file with a
+  [`[filters]`](config-reference.md#filters) table. sipnab reads the table
+  when it starts; a change to the file takes effect at the next start.
+- Nothing changes on any other system.
+
+This example's `sipnab.toml`:
+
+```toml
+[filters]
+lab-net    = "src.ip in_subnet '192.0.2.0/24'"
+lab-failed = "@lab-net AND state == 'Failed'"
+```
+
+**Steps.**
+
+1. Start sipnab with the config file. This example reads
+   [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap):
+
+   ```bash
+   sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config sipnab.toml --api 127.0.0.1:8080 --api-key "$SIPNAB_API_KEY" --no-cli-print --quiet
+   ```
+
+2. In a second shell, list the names, then select dialogs by one of them:
+
+   ```bash
+   # Run all of these, in order.
+   curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/filters | jq -c '[.filters[].name]'
+   curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dialogs?named=lab-failed" | jq -c '{total, ids: [.dialogs[].call_id]}'
+   ```
+
+**Verify.** The list names both entries, and `named=lab-failed` selects the
+two failed calls from `192.0.2.0/24`:
+
+```text
+["lab-failed","lab-net"]
+{"total":2,"ids":["busy-3a2b1c@192.0.2.30","unavail-4e5f60@192.0.2.50"]}
+```
+
+`filter=%40lab-failed` (the expression `@lab-failed`) selects the same two
+dialogs. The same `named` parameter works on `/v1/aggregate`,
+`/v1/dialogs/rates` and `/v1/talkers`.
+
+**Troubleshoot.**
+
+- **`400` with `named: '@lab-busy' is not a defined filter`.** The config
+  defines no entry of that name. The detail lists the names it does define:
+
+  ```text
+  named: '@lab-busy' is not a defined filter. Defined in [filters]: lab-failed, lab-net. Built-in aliases: problems, slow-setup, short-calls, one-way, nat-issues, codec-asym, ptime-asym, payload-asym, duration-asym, late-media
+  ```
+
+- **`400` with `` `filter` and `named` are alternatives ``.** The request
+  gave both. Give one, or write the name into the expression:
+  `filter=@lab-failed AND response_code == 486`.
+- **`GET /v1/filters` lists nothing.** The run did not read the file: check
+  the `--config` path, and that the table's heading reads `[filters]`.
+- **sipnab does not start, naming a `[filters]` entry.** The table has a bad
+  name, a reference to an undefined name, a loop or an expression that does
+  not parse. [`[filters]`](config-reference.md#filters) lists what sipnab
+  refuses.
+
+### Check a filter expression before using it
+
+Find out whether an expression compiles, and where it stops when it does not,
+before using it on `/v1/dialogs` or in a dashboard.
+
+**Prerequisites.** The ones for
+[Select dialogs with a named filter](#select-dialogs-with-a-named-filter). Only
+an expression that uses `@name` needs a `[filters]` table.
+
+**Steps.** Send the expression with `curl -G --data-urlencode`, which encodes
+its spaces, quotes and `=` signs:
+
+```bash
+# Run all of these, in order.
+curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/filters/validate --data-urlencode "expr=@lab-failed AND response_code == 486" | jq -c '{valid, position}'
+curl -s -G -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/filters/validate --data-urlencode "expr=state == Failed AND response_code = 486" | jq -c '{valid, position}'
+```
+
+**Verify.** The first expression compiles. The second stops at column 34,
+the single `=`:
+
+```text
+{"valid":true,"position":null}
+{"valid":false,"position":34}
+```
+
+**Troubleshoot.**
+
+- **`400` with `expr: give the expression to validate`.** The request has no
+  `expr` parameter.
+- **`valid: false` and `position: null`.** The parser names no column: the
+  expression is empty, it uses an `@name` nothing defines, it is past the
+  depth or size limit, or the error is inside an alias or `@name` expansion.
+  `error` says which.
+- **The position differs from a byte offset.** It counts characters, not
+  bytes, from 0, in the expression without its leading whitespace.
 
 ### GET /v1/endpoints
 

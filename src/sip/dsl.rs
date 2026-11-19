@@ -1871,9 +1871,14 @@ impl SyntaxError {
     /// Byte offset of the error in the input with its leading and trailing
     /// whitespace removed, which is the text the parser read.
     ///
-    /// Read by the TUI's filter dialog, so a build without `tui` has no
-    /// caller outside the tests; the `cfg_attr` says exactly that.
-    #[cfg_attr(not(any(feature = "tui", test)), allow(dead_code))]
+    /// Read by the TUI's filter dialog and by the REST and MCP filter
+    /// validation ([`super::filter_request::check_expression`]), so a build
+    /// with none of `tui`, `api` and `mcp` has no caller outside the tests;
+    /// the `cfg_attr` says exactly that.
+    #[cfg_attr(
+        not(any(feature = "tui", feature = "api", feature = "mcp", test)),
+        allow(dead_code)
+    )]
     pub(crate) fn offset(&self) -> usize {
         self.offset
     }
