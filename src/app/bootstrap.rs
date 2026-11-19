@@ -9811,7 +9811,7 @@ mod tests {
                 .map_err(|e| format!("MCP filter {alias}: {e:?}"))?
                 .ok_or("MCP filter compiles to a filter")?;
 
-            let by_rest = crate::output::api::compile_query_filter(&thresholds, Some(alias))
+            let by_rest = crate::output::api::compile_query_filter(&thresholds, Some(alias), None)
                 .map_err(|e| format!("REST filter={alias}: {e:?}"))?
                 .ok_or("REST filter compiles to a filter")?;
 

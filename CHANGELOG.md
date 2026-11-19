@@ -8,6 +8,20 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **REST and MCP list the named filters and select dialogs by name.**
+  - Effect: `GET /v1/filters` and the MCP `list_named_filters` tool list each `[filters]` name and its definition as written.
+  - Effect: `named=<name>` selects a named filter on `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates`, `/v1/talkers` and every MCP tool that takes `filter`.
+  - Limit: `filter` and `named` together are refused, and so is a name nothing defines; the refusal lists the defined names.
+  - Docs: [Select dialogs with a named filter](docs/rest-api.md#select-dialogs-with-a-named-filter)
+- **A filter expression can be checked before use, with the position of an error.**
+  - Effect: `GET /v1/filters/validate?expr=` answers `valid`, the parser's message and the character position where it stopped.
+  - Effect: The MCP `validate_filter` tool reports the same `position`.
+  - Docs: [Check a filter expression before using it](docs/rest-api.md#check-a-filter-expression-before-using-it)
+
 ## [0.5.266] - 2026-11-19
 
 ### Added

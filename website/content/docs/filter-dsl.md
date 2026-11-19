@@ -686,6 +686,11 @@ sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'I
 - sipnab refuses a filter given at run time that names something undefined.
   - This applies on the command line or through REST or MCP.
   - sipnab lists the defined names.
+- REST and MCP list the table and take a name on its own:
+  [`GET /v1/filters`](@/docs/api.md#get-v1-filters) and the MCP tool
+  [`list_named_filters`](@/docs/mcp-tools-signaling.md#list-named-filters) list it,
+  and a `named` parameter selects one entry in place of `filter`. See
+  [Select dialogs with a named filter](@/docs/api.md#select-dialogs-with-a-named-filter).
 
 For example, with this `sipnab.toml`:
 

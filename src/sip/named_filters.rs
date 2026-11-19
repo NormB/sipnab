@@ -97,6 +97,9 @@ impl std::error::Error for NamedFilterError {}
 pub struct NamedFilters {
     /// Name to expansion.
     expanded: BTreeMap<String, String>,
+    /// Name to definition as written, `@name` references kept: what
+    /// `GET /v1/filters` and the MCP `list_named_filters` tool list.
+    definitions: BTreeMap<String, String>,
 }
 
 impl NamedFilters {
@@ -128,7 +131,16 @@ impl NamedFilters {
                 message: e.to_string(),
             })?;
         }
-        Ok(Self { expanded })
+        Ok(Self {
+            expanded,
+            definitions: defs.clone(),
+        })
+    }
+
+    /// The definition of `name` as written in `[filters]`, if it is defined.
+    #[must_use]
+    pub fn definition(&self, name: &str) -> Option<&str> {
+        self.definitions.get(name).map(String::as_str)
     }
 
     /// The defined names, in order.

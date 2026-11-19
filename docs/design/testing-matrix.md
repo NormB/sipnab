@@ -50,8 +50,8 @@ was driving all of them.
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
 | CLI flags | 412 | 342 | 27 | 43 | 0 |
-| HTTP routes | 51 | 51 | -- | 0 | 0 |
-| MCP tools | 79 | 79 | -- | 0 | 0 |
+| HTTP routes | 53 | 53 | -- | 0 | 0 |
+| MCP tools | 80 | 80 | -- | 0 | 0 |
 
 **No row can ever say `none`, and that is the point.** `flag_coverage_test` already requires every flag's `--name` token to appear somewhere in the test corpus, and it defines "referenced" as exactly that. A coverage metric built on mentions therefore reports 100% for this project no matter what is actually exercised -- which is what a yes/no "tested" column would have shown. The rows at `referenced` are the ones that gate passes and this document does not.
 
@@ -521,6 +521,8 @@ behind them.
 | `/v1/dialogs/{call_id}/tree` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/dialogs/{call_id}/vcon` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/endpoints` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
+| `/v1/filters` | exercised | `tests/named_filters_api_test.rs` |
+| `/v1/filters/validate` | exercised | `tests/named_filters_api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/hep/senders` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_token_test.rs` +2 |
 | `/v1/inventory` | exercised | `tests/api_capture_identity_test.rs`, `tests/fleet_inventory_test.rs` |
 | `/v1/persistence` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +3 |
@@ -598,6 +600,7 @@ behind them.
 | `lint_dialog` | exercised | `tests/api_capture_identity_test.rs`, `tests/mcp_completeness_test.rs` +3 |
 | `list_captures` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
 | `list_dialogs` | exercised | `tests/annotate_cli_test.rs`, `tests/api_capture_identity_test.rs` +19 |
+| `list_named_filters` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
 | `list_tls_libraries` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
 | `media_diagnostics` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +2 |
 | `open_capture` | exercised | `tests/mcp_archive_password_test.rs`, `tests/mcp_completeness_test.rs` +5 |

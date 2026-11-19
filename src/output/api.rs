@@ -750,6 +750,12 @@ pub struct DialogListParams {
     /// query was rejected rather than receiving every row. ANDed with
     /// `state`/`from`.
     pub filter: Option<String>,
+    /// The name of one `[filters]` entry or diagnostic alias, in place of
+    /// `filter`: `named=sales` selects what `filter=@sales` selects. A
+    /// leading `@` is accepted. `GET /v1/filters` lists the entries. Give
+    /// `filter` or `named`, not both: both is a 400, and so is a name nothing
+    /// defines, whose detail lists the names that are defined.
+    pub named: Option<String>,
     /// Only dialogs whose first message is at or after this RFC 3339 instant
     /// (e.g. `2026-09-15T12:00:00Z`). A timestamp that does not parse is a 400.
     pub after: Option<String>,
@@ -786,6 +792,9 @@ pub struct AggregateParams {
     /// counted, what `/v1/dialogs?filter=` accepts. A value that is neither an
     /// alias nor an expression that parses is a 400.
     pub filter: Option<String>,
+    /// The name of one `[filters]` entry or diagnostic alias, in place of
+    /// `filter`, what `/v1/dialogs?named=` accepts. Both is a 400.
+    pub named: Option<String>,
     /// Keep the largest N buckets; the rest fold into `other_count`. Clamped to
     /// the server's row cap.
     pub top_n: Option<usize>,
@@ -854,6 +863,9 @@ pub struct RatesParams {
     /// grouped, what `/v1/dialogs?filter=` accepts. A value that is neither an
     /// alias nor an expression that parses is a 400.
     pub filter: Option<String>,
+    /// The name of one `[filters]` entry or diagnostic alias, in place of
+    /// `filter`, what `/v1/dialogs?named=` accepts. Both is a 400.
+    pub named: Option<String>,
     /// Keep the largest N groups by dialog count; the rest fold into
     /// `other_count`. Clamped to the server's row cap.
     pub top_n: Option<usize>,
@@ -870,6 +882,9 @@ pub struct TalkersParams {
     /// what `/v1/dialogs?filter=` accepts. A value that is neither an alias nor
     /// an expression that parses is a 400.
     pub filter: Option<String>,
+    /// The name of one `[filters]` entry or diagnostic alias, in place of
+    /// `filter`, what `/v1/dialogs?named=` accepts. Both is a 400.
+    pub named: Option<String>,
     /// Maximum rows to return, clamped to the server's row cap. `distinct_talkers`
     /// still counts every talker, so a page is never mistaken for the whole rank.
     pub limit: Option<usize>,
@@ -1182,6 +1197,8 @@ fn router_for(state: ApiState, with_console: bool) -> Router {
         .route("/v1/endpoints", get(get_endpoints))
         .route("/v1/security/findings", get(get_security_findings))
         .route("/v1/captures/compare", get(get_captures_compare))
+        .route("/v1/filters", get(get_named_filters))
+        .route("/v1/filters/validate", get(get_filter_validation))
         // Relay statistics (ST5). Each transmits once, behind
         // --api-allow-relay-query; the /call/ segment keeps C2 from colliding
         // with the static /names path. Polling (C5) is not offered here.
@@ -2211,7 +2228,11 @@ async fn get_aggregate(
         .map_err(|why| Problem::detailed(StatusCode::BAD_REQUEST, why))?;
 
     // Same DSL and 400-on-parse-failure as `/v1/dialogs?filter=`.
-    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
+    let dsl = compile_query_filter(
+        &state.alias_thresholds,
+        params.filter.as_deref(),
+        params.named.as_deref(),
+    )?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
 
     // Capture lock, then dialogs, then streams -- the order `CaptureState`
@@ -2534,7 +2555,11 @@ async fn get_rates(
     )
     .map_err(|why| Problem::detailed(StatusCode::BAD_REQUEST, why))?;
 
-    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
+    let dsl = compile_query_filter(
+        &state.alias_thresholds,
+        params.filter.as_deref(),
+        params.named.as_deref(),
+    )?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
 
     // Capture lock, then dialogs, then streams -- the order `CaptureState`
@@ -2617,7 +2642,11 @@ async fn get_talkers(
     )
     .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
 
-    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
+    let dsl = compile_query_filter(
+        &state.alias_thresholds,
+        params.filter.as_deref(),
+        params.named.as_deref(),
+    )?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
 
     // Capture lock, then dialogs, then streams -- the order `CaptureState`
@@ -4160,7 +4189,11 @@ async fn list_dialogs(
     // expression is a 400 with a reason rather than a silent unfiltered page.
     // Deliberately stricter than the `from` regex above, which is best-effort:
     // a structured query a client got wrong is a client error it must see.
-    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
+    let dsl = compile_query_filter(
+        &state.alias_thresholds,
+        params.filter.as_deref(),
+        params.named.as_deref(),
+    )?;
 
     // Parse the time window up front, so a malformed timestamp is a 400 rather
     // than a silently ignored window a client would read as the answer to its
@@ -4828,27 +4861,149 @@ fn object_body<T: serde::de::DeserializeOwned>(
     serde_json::from_value(raw).map_err(|_| Problem::new(StatusCode::BAD_REQUEST))
 }
 
-/// Compile a `filter` query parameter: a diagnostic alias name or a DSL
-/// expression, the way `--filter` and every MCP tool's `filter` accept one.
+/// Compile the `filter` and `named` query parameters: a diagnostic alias name
+/// or a DSL expression in `filter`, the way `--filter` and every MCP tool's
+/// `filter` accept one, or the name of one `[filters]` entry or built-in
+/// alias in `named`.
 ///
-/// The one place a REST handler turns that parameter into a [`FilterExpr`].
-/// `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates` and `/v1/talkers` all
-/// call it, so no route can accept a spelling another refuses.
+/// The one place a REST handler turns those parameters into a
+/// [`FilterExpr`]. `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates` and
+/// `/v1/talkers` all call it, so no route can accept a spelling another
+/// refuses. The rule is [`crate::sip::filter_request::compile_request`],
+/// which the MCP tools apply too, over the `[filters]` table the run
+/// installed at startup.
 ///
 /// # Errors
 ///
-/// A `400` whose detail is `filter: ` followed by the parse error, which names
-/// the text and the position where it stopped parsing.
+/// A `400`. Its detail is the conflict message when both are given, and
+/// otherwise the parameter's name, `: `, and the reason: the parse error,
+/// which names the text and the position where it stopped parsing, or the
+/// names that are defined when `named` names none of them.
 pub(crate) fn compile_query_filter(
     thresholds: &crate::sip::dsl::AliasThresholds,
     filter: Option<&str>,
+    named: Option<&str>,
 ) -> Result<Option<crate::sip::dsl::FilterExpr>, Problem> {
-    filter
-        .map(|expr| {
-            crate::sip::dsl::parse_filter(expr, thresholds)
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))
-        })
-        .transpose()
+    crate::sip::filter_request::compile_request(
+        filter,
+        named,
+        crate::sip::named_filters::installed(),
+        thresholds,
+    )
+    .map_err(|e| {
+        let detail = match e.param() {
+            Some(param) => format!("{}: {e}", param.name()),
+            None => e.to_string(),
+        };
+        Problem::detailed(StatusCode::BAD_REQUEST, detail)
+    })
+}
+
+/// Query parameters for the `GET /v1/filters/validate` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct FilterValidateParams {
+    /// The expression to compile: a DSL expression or a diagnostic alias
+    /// name, with `@name` references, what a `filter` parameter accepts.
+    /// Percent-encode it. Required; an absent `expr` is a 400.
+    pub expr: Option<String>,
+}
+
+/// `GET /v1/filters` — the `[filters]` table this run started with.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+///
+/// # Returns
+///
+/// 200 with every entry's name and definition as written; 401/503 from the
+/// guard.
+///
+/// # Side effects
+///
+/// Mutates the rate limiter. Reads no store.
+#[utoipa::path(
+    get,
+    path = "/v1/filters",
+    tag = "filters",
+    summary = "List the named filters",
+    description = "The `[filters]` table this run started with: each entry's name, which the `named` parameter takes and `@name` refers to, and its definition as the config file writes it. The table is resolved once at startup and does not change while the server runs.\n\nThe MCP `list_named_filters` tool returns the same answer.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Every entry, in name order; an empty list when the config defines none.", body = crate::output::query::named_filters::NamedFilterList),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_named_filters(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    Ok(Json(
+        crate::output::query::named_filters::named_filter_list(
+            crate::sip::named_filters::installed(),
+        ),
+    ))
+}
+
+/// `GET /v1/filters/validate` — whether an expression compiles, and where it
+/// stopped when it did not.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — `expr`, the expression to compile.
+///
+/// # Returns
+///
+/// 200 with `valid` and, when it is false, the parser's message and
+/// position; 400 when `expr` is absent; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Mutates the rate limiter. Reads no store.
+#[utoipa::path(
+    get,
+    path = "/v1/filters/validate",
+    tag = "filters",
+    summary = "Validate a filter expression",
+    description = "Compiles an expression the way every `filter` parameter is compiled, with the same aliases, `@name` references and thresholds, and reports whether it compiled. An expression that does not compile is a `200` with `valid: false`, the parser's message in `error` (the text a `filter` parameter's `400` carries after `filter: `) and, when the parser stopped at a place in the text as sent, that place in `position`.\n\nThe MCP `validate_filter` tool reports the same `error` and `position`.",
+    params(FilterValidateParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Whether it compiled; the message and position when it did not.", body = crate::output::query::named_filters::FilterValidation),
+        (status = 400, description = "No `expr` parameter.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_filter_validation(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<FilterValidateParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let expr = params.expr.ok_or_else(|| {
+        Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "expr: give the expression to validate, percent-encoded",
+        )
+    })?;
+    Ok(Json(
+        crate::output::query::named_filters::filter_validation(
+            &expr,
+            crate::sip::named_filters::installed(),
+            &state.alias_thresholds,
+        ),
+    ))
 }
 
 /// A JSON request body, or the problem that refuses it.
@@ -8178,6 +8333,8 @@ impl utoipa::Modify for BearerAuth {
         get_endpoints,
         get_security_findings,
         get_captures_compare,
+        get_named_filters,
+        get_filter_validation,
         get_dialog_audio,
         get_lint,
         get_persistence,
@@ -8254,6 +8411,9 @@ impl utoipa::Modify for BearerAuth {
         schema::BucketDeltaView,
         schema::DimensionDiffView,
         schema::CaptureComparisonView,
+        crate::output::query::named_filters::NamedFilterList,
+        crate::output::query::named_filters::NamedFilterRow,
+        crate::output::query::named_filters::FilterValidation,
         schema::RelayStatsResponse,
         schema::RelaySessionsResponse,
         crate::output::relay_polled::PolledAnswer,
@@ -8300,6 +8460,7 @@ impl utoipa::Modify for BearerAuth {
         (name = "dialogs", description = "SIP dialogs the capture is tracking"),
         (name = "streams", description = "RTP streams the capture is tracking"),
         (name = "capture", description = "The capture as a whole"),
+        (name = "filters", description = "The `[filters]` table this run started with, and filter expression validation"),
         (name = "operations", description = "Liveness, metrics, and the persistence gate"),
         (name = "tfps", description = "The toll-fraud prevention peer on this host, when one is installed: what it condemns, what it dropped, its verdict log, and an operator's ban or release relayed to it"),
         (name = "security", description = "sipnab's own armed detectors: the findings the scanner, fraud, digest and reg-flood rules recorded")
@@ -15872,6 +16033,397 @@ mod tests {
                 "{route}: the detail points at the alias list: {detail}"
             );
         }
+        Ok(())
+    }
+
+    // ── named filters: `named`, GET /v1/filters, GET /v1/filters/validate ──
+    //
+    // The lib tests run with the installed `[filters]` table empty, so these
+    // drive `named` with the built-in aliases and unknown names; the pure
+    // rule is driven with any table in `crate::sip::filter_request`, and
+    // `tests/named_filters_api_test.rs` drives these routes with a table
+    // installed.
+
+    /// The four routes that take a `filter`, with the parameters each also
+    /// needs, ready for `filter=` or `named=` to be appended.
+    const FILTER_ROUTES: [&str; 4] = [
+        "/v1/dialogs?",
+        "/v1/aggregate?by=state&",
+        "/v1/dialogs/rates?by=method&",
+        "/v1/talkers?by=ip&",
+    ];
+
+    /// The `detail` of a `400` from `uri`.
+    async fn detail_of_400(state: &ApiState, uri: &str) -> Result<String, TestError> {
+        let (status, body) = get_json(state, uri).await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        Ok(body["detail"]
+            .as_str()
+            .ok_or_else(|| format!("{uri}: a 400 carries detail: {body}"))?
+            .to_owned())
+    }
+
+    /// `named=<alias>` answers what `filter=<alias>` answers, on each route.
+    async fn assert_named_alias_is_filter_alias(route: &str) -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        for alias in crate::sip::dsl::DIAGNOSTIC_ALIASES {
+            let (named_status, by_name) =
+                get_json(&state, &format!("{route}named={alias}")).await?;
+            let (filter_status, by_filter) =
+                get_json(&state, &format!("{route}filter={alias}")).await?;
+            assert_eq!(
+                named_status,
+                StatusCode::OK,
+                "{route}named={alias}: {by_name}"
+            );
+            assert_eq!(filter_status, StatusCode::OK, "{route}filter={alias}");
+            assert_eq!(by_name, by_filter, "{route}named={alias} is filter={alias}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_dialogs_named_alias_is_the_filter_alias() -> Result<(), TestError> {
+        assert_named_alias_is_filter_alias(FILTER_ROUTES[0]).await
+    }
+
+    #[tokio::test]
+    async fn aggregate_named_alias_is_the_filter_alias() -> Result<(), TestError> {
+        assert_named_alias_is_filter_alias(FILTER_ROUTES[1]).await
+    }
+
+    #[tokio::test]
+    async fn rates_named_alias_is_the_filter_alias() -> Result<(), TestError> {
+        assert_named_alias_is_filter_alias(FILTER_ROUTES[2]).await
+    }
+
+    #[tokio::test]
+    async fn talkers_named_alias_is_the_filter_alias() -> Result<(), TestError> {
+        assert_named_alias_is_filter_alias(FILTER_ROUTES[3]).await
+    }
+
+    /// `named=problems` narrows: the fixture's 486 is the one problem call.
+    #[tokio::test]
+    async fn named_problems_narrows_the_dialog_list() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let (status, body) = get_json(&state, "/v1/dialogs?named=problems").await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["total"], 1, "the one problem call: {body}");
+        assert_eq!(body["dialogs"][0]["call_id"], "call-2@test", "{body}");
+        Ok(())
+    }
+
+    /// A leading `@` in `named` is accepted: `named=@problems` is
+    /// `named=problems`.
+    #[tokio::test]
+    async fn named_accepts_a_leading_at_sign() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let (status, with_at) = get_json(&state, "/v1/dialogs?named=%40problems").await?;
+        assert_eq!(status, StatusCode::OK, "{with_at}");
+        assert_eq!(with_at["total"], 1, "narrowed, not every row: {with_at}");
+        let (_, bare) = get_json(&state, "/v1/dialogs?named=problems").await?;
+        assert_eq!(with_at, bare, "the @ is optional");
+        Ok(())
+    }
+
+    /// `filter` and `named` together are a `400` on every route, with the
+    /// one conflict message.
+    #[tokio::test]
+    async fn filter_and_named_together_are_a_400_on_every_route() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        for route in FILTER_ROUTES {
+            let detail =
+                detail_of_400(&state, &format!("{route}filter=problems&named=one-way")).await?;
+            assert_eq!(
+                detail,
+                crate::sip::filter_request::CONFLICT_MESSAGE,
+                "{route}: the conflict message"
+            );
+        }
+        Ok(())
+    }
+
+    /// An unknown name is a `400` on every route, naming it and the names
+    /// that are defined.
+    #[tokio::test]
+    async fn an_unknown_named_filter_is_a_400_on_every_route() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let want = format!(
+            "named: {}",
+            crate::sip::named_filters::unknown_reference_message(
+                "support",
+                crate::sip::named_filters::installed()
+            )
+        );
+        for route in FILTER_ROUTES {
+            let detail = detail_of_400(&state, &format!("{route}named=support")).await?;
+            assert_eq!(detail, want, "{route}: the reason");
+        }
+        Ok(())
+    }
+
+    /// An empty `named` is a `400`, not an unfiltered answer.
+    #[tokio::test]
+    async fn an_empty_named_is_a_400_on_every_route() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        for route in FILTER_ROUTES {
+            let detail = detail_of_400(&state, &format!("{route}named=")).await?;
+            assert_eq!(
+                detail,
+                format!("named: {}", crate::sip::filter_request::EMPTY_NAME_MESSAGE),
+                "{route}"
+            );
+        }
+        Ok(())
+    }
+
+    /// An expression in `named` is refused as a name, not run as a filter.
+    #[tokio::test]
+    async fn an_expression_in_named_is_a_400() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let detail = detail_of_400(
+            &state,
+            &format!("/v1/dialogs?named={}", query_encode("method == INVITE")),
+        )
+        .await?;
+        assert!(
+            detail.starts_with("named: '@method == INVITE' is not a defined filter"),
+            "{detail}"
+        );
+        Ok(())
+    }
+
+    /// The `filter` refusal is unchanged by `named`: `filter: ` and the
+    /// parser's message.
+    #[tokio::test]
+    async fn an_invalid_filter_keeps_its_detail() -> Result<(), TestError> {
+        let state = make_state();
+        let expr = "state == InCall )";
+        let detail = detail_of_400(
+            &state,
+            &format!("/v1/dialogs?filter={}", query_encode(expr)),
+        )
+        .await?;
+        let parser = match crate::sip::dsl::parse_filter(expr, &state.alias_thresholds) {
+            Ok(_) => return Err("the parser accepted it".into()),
+            Err(e) => e.to_string(),
+        };
+        assert_eq!(detail, format!("filter: {parser}"), "unchanged");
+        Ok(())
+    }
+
+    /// `GET /v1/filters` lists the installed table: empty here.
+    #[tokio::test]
+    async fn the_filter_list_is_empty_with_no_table() -> Result<(), TestError> {
+        let state = make_state();
+        let (status, body) = get_json(&state, "/v1/filters").await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body,
+            serde_json::json!({"schema_version": 1, "filters": []}),
+            "no entries"
+        );
+        Ok(())
+    }
+
+    /// `GET /v1/filters` is behind the bearer guard like every `/v1` route.
+    #[tokio::test]
+    async fn the_filter_list_needs_a_credential() -> Result<(), TestError> {
+        let state = make_state_with_key("named-filters-key");
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/filters")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "no credential");
+        Ok(())
+    }
+
+    /// `GET /v1/filters` with the credential answers.
+    #[tokio::test]
+    async fn the_filter_list_answers_with_a_credential() -> Result<(), TestError> {
+        let state = make_state_with_key("named-filters-key");
+        let resp = build_router(state)
+            .oneshot(test_request_with_header(
+                "/v1/filters",
+                "authorization",
+                "Bearer named-filters-key",
+            )?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK, "credential accepted");
+        Ok(())
+    }
+
+    /// `GET /v1/filters` takes no write: a POST is refused.
+    #[tokio::test]
+    async fn the_filter_list_is_read_only() -> Result<(), TestError> {
+        let state = make_state();
+        let mut req = test_request("/v1/filters")?;
+        *req.method_mut() = axum::http::Method::POST;
+        let resp = build_router(state)
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED, "no write");
+        Ok(())
+    }
+
+    /// The validation answer for `expr`, which must be a `200`.
+    async fn validation(state: &ApiState, expr: &str) -> Result<Value, TestError> {
+        let uri = format!("/v1/filters/validate?expr={}", query_encode(expr));
+        let (status, body) = get_json(state, &uri).await?;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        Ok(body)
+    }
+
+    #[tokio::test]
+    async fn a_valid_expression_validates_over_rest() -> Result<(), TestError> {
+        let body = validation(&make_state(), "method == INVITE").await?;
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "schema_version": 1,
+                "expr": "method == INVITE",
+                "valid": true,
+                "error": null,
+                "position": null
+            }),
+            "valid"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_alias_validates_over_rest() -> Result<(), TestError> {
+        let body = validation(&make_state(), "problems").await?;
+        assert_eq!(body["valid"], true, "{body}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_at_alias_validates_over_rest() -> Result<(), TestError> {
+        let body = validation(&make_state(), "@one-way AND method == INVITE").await?;
+        assert_eq!(body["valid"], true, "{body}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_invalid_expression_reports_position_over_rest() -> Result<(), TestError> {
+        let body = validation(&make_state(), "state == InCall )").await?;
+        assert_eq!(body["valid"], false, "{body}");
+        assert_eq!(body["position"], 16, "{body}");
+        let error = body["error"].as_str().ok_or("an error")?;
+        assert!(error.contains(" at position 16: ')'"), "{error}");
+        Ok(())
+    }
+
+    /// The validation's `error` is the text the same expression's `filter`
+    /// `400` carries after `filter: `, on every route.
+    #[tokio::test]
+    async fn the_validation_error_is_the_filter_400_text() -> Result<(), TestError> {
+        let state = make_state();
+        for expr in ["state == InCall )", "method ==", "@nope", "staet == InCall"] {
+            let body = validation(&state, expr).await?;
+            let error = body["error"].as_str().ok_or("an error")?.to_owned();
+            for route in FILTER_ROUTES {
+                let detail =
+                    detail_of_400(&state, &format!("{route}filter={}", query_encode(expr))).await?;
+                assert_eq!(detail, format!("filter: {error}"), "{route} for '{expr}'");
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_validation_position_counts_characters() -> Result<(), TestError> {
+        let body = validation(&make_state(), "from.user == 'é' )").await?;
+        assert_eq!(body["position"], 17, "{body}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_undefined_name_validates_false_without_a_position() -> Result<(), TestError> {
+        let body = validation(&make_state(), "@nope").await?;
+        assert_eq!(body["valid"], false, "{body}");
+        assert_eq!(body["position"], Value::Null, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.starts_with("'@nope' is not a defined filter")),
+            "{body}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_empty_expression_validates_false() -> Result<(), TestError> {
+        let body = validation(&make_state(), "").await?;
+        assert_eq!(body["valid"], false, "{body}");
+        assert_eq!(body["error"], "filter expression is empty", "{body}");
+        assert_eq!(body["position"], Value::Null, "{body}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_validated_expression_is_echoed_verbatim() -> Result<(), TestError> {
+        let body = validation(&make_state(), "  method ==  INVITE ").await?;
+        assert_eq!(body["expr"], "  method ==  INVITE ", "{body}");
+        assert_eq!(body["valid"], true, "{body}");
+        Ok(())
+    }
+
+    /// No `expr` is a `400` naming the parameter, not a validation of
+    /// nothing.
+    #[tokio::test]
+    async fn validation_without_expr_is_a_400() -> Result<(), TestError> {
+        let detail = detail_of_400(&make_state(), "/v1/filters/validate").await?;
+        assert!(detail.starts_with("expr"), "{detail}");
+        Ok(())
+    }
+
+    /// `GET /v1/filters/validate` is behind the bearer guard.
+    #[tokio::test]
+    async fn validation_needs_a_credential() -> Result<(), TestError> {
+        let state = make_state_with_key("named-filters-key");
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/filters/validate?expr=problems")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "no credential");
+        Ok(())
+    }
+
+    /// The validation reads no dialog: it answers the same on an empty store
+    /// and a populated one.
+    #[tokio::test]
+    async fn validation_does_not_depend_on_the_store() -> Result<(), TestError> {
+        let empty = make_state();
+        let full = make_state();
+        populate_alias_fixture(&full)?;
+        for expr in ["problems", "state == InCall )", "@nope"] {
+            assert_eq!(
+                validation(&empty, expr).await?,
+                validation(&full, expr).await?,
+                "'{expr}'"
+            );
+        }
+        Ok(())
+    }
+
+    /// Two characters the URL must encode, `&` and `#`, reach the parser as
+    /// written.
+    #[tokio::test]
+    async fn validation_reads_an_encoded_expression_as_written() -> Result<(), TestError> {
+        let body = validation(&make_state(), "from.user == 'a&b#c'").await?;
+        assert_eq!(body["expr"], "from.user == 'a&b#c'", "{body}");
+        assert_eq!(body["valid"], true, "{body}");
         Ok(())
     }
 

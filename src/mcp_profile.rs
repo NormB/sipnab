@@ -101,6 +101,7 @@ pub const BUNDLES: &[(&str, &[&str])] = &[
             "get_sdp_timeline",
             "group_dialogs",
             "lint_dialog",
+            "list_named_filters",
             "render_ladder",
             "search_by_time",
             "tail_dialogs",
