@@ -579,6 +579,9 @@ We welcome contributions.
   [Contributor License Agreement](CONTRIBUTING.md#contributor-license-agreement)
   once.
 - A pull request cannot merge until the `license/cla` check passes.
+- Sign off each commit with `git commit -s`: the project is moving from the
+  CLA to the
+  [Developer Certificate of Origin](CONTRIBUTING.md#signing-off-commits).
 - If your change adds a dependency, read
   [Dependencies](CONTRIBUTING.md#dependencies) first.
 - This project follows the

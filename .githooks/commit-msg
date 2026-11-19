@@ -80,3 +80,21 @@ case $rc in
 	exit 1
 	;;
 esac
+
+# ── DCO sign-off (a warning only) ─────────────────────────────────────
+# CI's `DCO` job (.github/workflows/pr-text.yml) decides whether a pull
+# request's commits are signed off. This tells a contributor before the push:
+# it warns when the author email is not a GitHub noreply address, or the
+# message has no `Signed-off-by:` line naming it, and the author is not a
+# maintainer in .github/allowed_signers. It never
+# refuses a commit. scripts/check-dco.py holds the rule; a branch without it
+# skips this step.
+DCO_CHECK="${MSG_ROOT:-.}/scripts/check-dco.py"
+if [ -r "$DCO_CHECK" ] && command -v python3 > /dev/null 2>&1; then
+	echo -n "  Commit message has a DCO sign-off... "
+	DCO_OUT=$(python3 "${MSG_ROOT:-.}/scripts/check-dco.py" --warn-local "$1" "$(git var GIT_AUTHOR_IDENT)" "${MSG_ROOT:-.}/.github/allowed_signers" 2>&1) || true
+	case $DCO_OUT in
+	OK) echo -e "${GREEN}OK${NC}" ;;
+	*) echo -e "${YELLOW}${DCO_OUT}${NC}" ;;
+	esac
+fi

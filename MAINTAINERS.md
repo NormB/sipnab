@@ -59,6 +59,19 @@ stall on a signature nobody can give.
 [`tests/branch_protection_drift_test.rs`](tests/branch_protection_drift_test.rs)
 fails if the required check and this page disagree.
 
+**The move to a DCO.** The `DCO` job in `.github/workflows/pr-text.yml` checks
+every commit of a pull request for a sign-off, as
+[CONTRIBUTING.md](CONTRIBUTING.md#signing-off-commits) describes.
+It reports on every pull request, and branch protection does not require it
+yet. Only the repository owner can finish the switch, in this order:
+
+1. In branch protection on `main`, require the `DCO` check and remove
+   `license/cla`.
+2. Turn CLA Assistant off for this repository.
+3. Merge the change that moves `tests/branch_protection_drift_test.rs` to the
+   `DCO` check and marks the CLA as retired. Until it merges, that test fails
+   on `main`, because the live protection and the declared check differ.
+
 ## How releases happen
 
 The maintainer cuts them. The procedure lives in

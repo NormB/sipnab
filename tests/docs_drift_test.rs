@@ -967,6 +967,18 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "nocapture",
         &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
+    // git's `rebase --signoff`, with which the contributing guide's section
+    // "Signing off commits" adds the DCO line to every commit of a branch.
+    (
+        "signoff",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    // git's `commit --amend --reset-author`, with which "Signing off commits"
+    // moves a commit's author email to the GitHub noreply address.
+    (
+        "reset-author",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
     // git's `--no-verify`, which skips the commit-msg hook: the pre-push
     // message gate exists for a commit made that way.
     (

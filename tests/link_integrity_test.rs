@@ -2070,7 +2070,10 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // relative .md links; README.md, MAINTAINERS.md and SUPPORT.md each link
     // it (+3); CONTRIBUTING.md links it and its own "Pull request process"
     // section from "Your first change" (+2).
-    const EXPECTED_COMMUNITY_LINKS: usize = 172;
+    // 172 -> 175 (DCO): README.md and MAINTAINERS.md each link
+    // CONTRIBUTING.md#signing-off-commits, and that section links
+    // MAINTAINERS.md#the-contributor-agreement (+3).
+    const EXPECTED_COMMUNITY_LINKS: usize = 175;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

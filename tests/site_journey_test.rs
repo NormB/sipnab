@@ -6954,7 +6954,9 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 334 -> 335 (cross pinned): release.yml's comment on "Install cross
     // (Linux)" names scripts/check-binary-size.sh. Measurement: the scan read
     // 335 with it staged.
-    const EXPECTED_REFERENCES: usize = 335;
+    // 335 -> 337 (DCO): pr-text.yml's `dco` job names
+    // `scripts/check-dco.py` in its comment and in its command (+2).
+    const EXPECTED_REFERENCES: usize = 337;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
