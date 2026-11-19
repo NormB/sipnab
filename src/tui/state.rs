@@ -410,6 +410,10 @@ pub struct TuiOptions {
     /// sessions only). `Some` for `-I one.pcap`; `None` for a live capture, a
     /// multi-file input, or no input.
     pub rescan_path: Option<std::path::PathBuf>,
+    /// The words that name the run's capture source, as given: each `-I`
+    /// input, `--recursive`, or else `-d` and `-L`. The call list's `Y` puts
+    /// them in the command line it copies. Empty when the run named none.
+    pub capture_source: Vec<String>,
     /// True when the session reads capture files (`-I`) and runs no live
     /// capture. The default, false, is a live session.
     pub offline: bool,
@@ -531,6 +535,7 @@ impl TuiOptions {
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app.rescan_path = self.rescan_path;
+        app.capture_source = self.capture_source;
         app.set_live_capture(!self.offline);
         app.set_capture_options(self.capture_options);
         app.set_notes(self.notes, self.notes_path);
@@ -1180,6 +1185,9 @@ pub struct FilterDialogState {
     /// Parse error shown inline; while set, Enter keeps the dialog open so
     /// the typed values can be corrected instead of being discarded.
     pub(in crate::tui) error: Option<String>,
+    /// Whether `F1` has put the Filter DSL's field help in the lower part of
+    /// the dialog. Off each time the dialog opens.
+    pub(in crate::tui) show_help: bool,
 }
 
 impl Default for FilterDialogState {
@@ -1204,6 +1212,7 @@ impl Default for FilterDialogState {
             focused_field: 0,
             cursor_pos: 0,
             error: None,
+            show_help: false,
         }
     }
 }
@@ -1826,6 +1835,11 @@ pub enum Popup {
     /// now?" -- the first time a G.729 stream appears on a host without the
     /// tables. See `controllers::g729_offer`.
     G729Install,
+    /// The command line `Y` in the call list copied: `sipnab`, the capture
+    /// source and `--filter` with the filter in force. Shown on every copy,
+    /// because an OSC 52 write is not acknowledged and the TUI cannot tell
+    /// whether a clipboard took it.
+    CommandLine(String),
 }
 
 /// The note being typed, and the frame it is about.

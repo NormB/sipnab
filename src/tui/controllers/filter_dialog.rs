@@ -53,6 +53,10 @@ pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
     // error, and the filter in force keeps its own summary.
     if app.filter_dialog.error.is_none() {
         app.active_filter_summary = app.filter_dialog.summary();
+        // Applied, so it parsed: the Expression, as typed, joins the history
+        // Up recalls. A blank field records nothing.
+        let typed = app.filter_dialog.expression.clone();
+        app.expression_history.record(&typed);
     }
 }
 
@@ -132,6 +136,99 @@ fn and_typed_expression(dialog: Option<String>, typed: Option<String>) -> Option
         (dialog, None) => dialog,
         (None, typed) => typed,
     }
+}
+
+/// Open the filter dialog, from any view: focus on the first field, no error
+/// shown, the run's `[filters]` names listed beside Named filter, the field
+/// help off and no history recall under way. The fields keep what they held.
+pub(in crate::tui) fn open_filter_dialog(app: &mut App) {
+    app.filter_dialog.focused_field = 0;
+    app.filter_dialog.sync_cursor();
+    app.filter_dialog.error = None;
+    app.filter_dialog.known_names = app.named_filters.names().map(str::to_owned).collect();
+    app.filter_dialog.show_help = false;
+    app.expression_history.end_walk();
+    app.active_popup = Some(crate::tui::Popup::FilterDialog);
+}
+
+/// Up in the Expression field: the next older applied expression into the
+/// field, the cursor at its end.
+///
+/// # Returns
+/// `false`, changing nothing, when another field has focus or there is no
+/// older expression; Up then moves focus as in every other field.
+fn recall_older(app: &mut App) -> bool {
+    if app.filter_dialog.focused_field != EXPRESSION_FIELD_IDX {
+        return false;
+    }
+    let Some(text) = app
+        .expression_history
+        .older(&app.filter_dialog.expression)
+        .map(str::to_owned)
+    else {
+        return false;
+    };
+    show_recalled(app, text);
+    true
+}
+
+/// Down in the Expression field during a recall: the next newer expression,
+/// or past the newest the text the field held before the recall.
+///
+/// # Returns
+/// `false`, changing nothing, when another field has focus or no recall is
+/// under way; Down then moves focus as in every other field.
+fn recall_newer(app: &mut App) -> bool {
+    if app.filter_dialog.focused_field != EXPRESSION_FIELD_IDX {
+        return false;
+    }
+    let Some(text) = app.expression_history.newer() else {
+        return false;
+    };
+    show_recalled(app, text);
+    true
+}
+
+/// End a history recall on every key but Up/Down and the cursor moves: from
+/// then on the field's text, edited or not, is the text Down returns to.
+fn end_recall_on_other_keys(app: &mut App, code: KeyCode) {
+    if !matches!(
+        code,
+        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
+    ) {
+        app.expression_history.end_walk();
+    }
+}
+
+/// Down in the dialog: the next method box in the grid; in the Expression
+/// field during a recall, the next newer expression; else the next field,
+/// which ends any recall.
+fn arrow_down(app: &mut App) {
+    if app.filter_dialog.is_checkbox_focused() {
+        app.filter_dialog.checkbox_down();
+    } else if !recall_newer(app) {
+        app.expression_history.end_walk();
+        app.filter_dialog.focus_next();
+    }
+}
+
+/// Up in the dialog: the previous method box in the grid; in the Expression
+/// field, the next older applied expression; else the previous field, which
+/// ends any recall.
+fn arrow_up(app: &mut App) {
+    if app.filter_dialog.is_checkbox_focused() {
+        app.filter_dialog.checkbox_up();
+    } else if !recall_older(app) {
+        app.expression_history.end_walk();
+        app.filter_dialog.focus_prev();
+    }
+}
+
+/// Put `text` in the Expression field with the cursor at its end. The field
+/// holds a copy: editing it never changes the history.
+fn show_recalled(app: &mut App, text: String) {
+    app.filter_dialog.expression = text;
+    app.filter_dialog.cursor_pos = app.filter_dialog.expression.len();
 }
 
 /// Start the session the way `-c` / `--calls-only` asks: only INVITE checked
@@ -275,7 +372,10 @@ pub(in crate::tui) fn apply_filter_expression(
 ///   apply only while a text field is focused.
 ///
 /// # Side effects
-/// Esc (or Enter/Space on Cancel) closes the popup without applying.
+/// Esc (or Enter/Space on Cancel) closes the popup without applying; with
+/// the field help shown, Esc hides the help first. F1 shows or hides the
+/// field help. In the Expression field, Up and Down walk the expression
+/// history before they move focus.
 /// Enter elsewhere (or Space on Filter) applies the dialog via
 /// `apply_filter_dialog`. F9 clears the dialog fields, the active filter,
 /// and the status line, then closes. Focus and checkbox keys mutate
@@ -283,11 +383,19 @@ pub(in crate::tui) fn apply_filter_expression(
 /// focused text field and `cursor_pos`.
 pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
     let is_shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    end_recall_on_other_keys(app, key.code);
 
     match key.code {
+        KeyCode::Esc if app.filter_dialog.show_help => {
+            // The help goes first; a second Esc cancels the dialog.
+            app.filter_dialog.show_help = false;
+        }
         KeyCode::Esc => {
             // Cancel without applying
             app.active_popup = None;
+        }
+        KeyCode::F(1) => {
+            app.filter_dialog.show_help = !app.filter_dialog.show_help;
         }
         KeyCode::Enter => {
             if app.filter_dialog.focused_field == CANCEL_BUTTON_IDX {
@@ -308,20 +416,8 @@ pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
         KeyCode::BackTab => {
             app.filter_dialog.focus_prev();
         }
-        KeyCode::Down => {
-            if app.filter_dialog.is_checkbox_focused() {
-                app.filter_dialog.checkbox_down();
-            } else {
-                app.filter_dialog.focus_next();
-            }
-        }
-        KeyCode::Up => {
-            if app.filter_dialog.is_checkbox_focused() {
-                app.filter_dialog.checkbox_up();
-            } else {
-                app.filter_dialog.focus_prev();
-            }
-        }
+        KeyCode::Down => arrow_down(app),
+        KeyCode::Up => arrow_up(app),
         KeyCode::Right if app.filter_dialog.is_checkbox_focused() => {
             app.filter_dialog.checkbox_right();
         }
@@ -1109,7 +1205,7 @@ mod summary_tests {
 /// | `plain-big`  | INVITE        | nothing     | 7        | bob   |
 /// | `lower-foo`  | INVITE        | `x-foo`     | 7        | bob   |
 #[cfg(test)]
-mod expression_tests {
+pub(super) mod expression_tests {
     use super::*;
     use crate::capture::parse::TransportProto;
     use crate::sip::SipMessage;
@@ -1137,7 +1233,7 @@ mod expression_tests {
     ];
 
     /// Build an unmodified `KeyEvent` for `code`.
-    fn key(code: KeyCode) -> KeyEvent {
+    pub(in crate::tui::controllers) fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
@@ -1201,7 +1297,7 @@ mod expression_tests {
     }
 
     /// The five fixture dialogs' messages.
-    fn fixture_messages() -> Result<Vec<SipMessage>, TestError> {
+    pub(in crate::tui::controllers) fn fixture_messages() -> Result<Vec<SipMessage>, TestError> {
         let mut all = Vec::new();
         all.extend(dialog(
             "INVITE",
@@ -1240,7 +1336,7 @@ mod expression_tests {
     }
 
     /// An app holding the fixture with the filter dialog open.
-    fn fixture_app() -> Result<App, TestError> {
+    pub(in crate::tui::controllers) fn fixture_app() -> Result<App, TestError> {
         let mut app = App::with_processed_messages(fixture_messages()?);
         app.sync_caches();
         app.active_popup = Some(Popup::FilterDialog);
@@ -1248,7 +1344,7 @@ mod expression_tests {
     }
 
     /// The Call-IDs the call list shows, sorted.
-    fn shown(app: &mut App) -> Vec<String> {
+    pub(in crate::tui::controllers) fn shown(app: &mut App) -> Vec<String> {
         app.sync_caches();
         let mut ids = app.displayed.ids.clone();
         ids.sort();
@@ -1256,7 +1352,7 @@ mod expression_tests {
     }
 
     /// Type `text` into the Expression field and apply the dialog.
-    fn apply_typed(app: &mut App, text: &str) {
+    pub(in crate::tui::controllers) fn apply_typed(app: &mut App, text: &str) {
         app.filter_dialog.expression = text.to_string();
         app.active_popup = Some(Popup::FilterDialog);
         apply_filter_dialog(app);
@@ -1273,14 +1369,15 @@ mod expression_tests {
     }
 
     /// `ids` as owned, sorted strings, to compare with [`shown`].
-    fn ids(list: &[&str]) -> Vec<String> {
+    pub(in crate::tui::controllers) fn ids(list: &[&str]) -> Vec<String> {
         let mut v: Vec<String> = list.iter().map(|s| (*s).to_string()).collect();
         v.sort();
         v
     }
 
     /// A `[filters]` table defining `big` as `msg_count > 5`.
-    fn big_table() -> Result<crate::sip::named_filters::NamedFilters, TestError> {
+    pub(in crate::tui::controllers) fn big_table()
+    -> Result<crate::sip::named_filters::NamedFilters, TestError> {
         let mut defs = std::collections::BTreeMap::new();
         defs.insert("big".to_string(), "msg_count > 5".to_string());
         Ok(crate::sip::named_filters::NamedFilters::resolve(
@@ -1290,7 +1387,11 @@ mod expression_tests {
     }
 
     /// The whole screen of `app`, drawn at `w` x `h`, one line per row.
-    fn screen(app: &mut App, w: u16, h: u16) -> Result<String, TestError> {
+    pub(in crate::tui::controllers) fn screen(
+        app: &mut App,
+        w: u16,
+        h: u16,
+    ) -> Result<String, TestError> {
         let mut terminal = Terminal::new(TestBackend::new(w, h))?;
         terminal.draw(|frame| app.render(frame))?;
         let buf = terminal.backend().buffer();
@@ -1305,7 +1406,10 @@ mod expression_tests {
     }
 
     /// The row of `text` that contains `needle`.
-    fn row_with<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
+    pub(in crate::tui::controllers) fn row_with<'a>(
+        text: &'a str,
+        needle: &str,
+    ) -> Option<&'a str> {
         text.lines().find(|l| l.contains(needle))
     }
 
@@ -2135,6 +2239,503 @@ mod expression_tests {
         );
         assert_eq!(app.filter_dialog.expression, "", "nothing prefilled");
         assert!(app.active_filter.is_none(), "no filter");
+        Ok(())
+    }
+}
+
+/// The Expression field's history (Up/Down) and the dialog's field help
+/// (`F1`), driven through the dialog's keys.
+#[cfg(test)]
+mod history_and_help_tests {
+    use super::expression_tests::{
+        apply_typed, fixture_app, fixture_messages, key, row_with, screen, shown,
+    };
+    use super::*;
+    use crate::tui::expression_history::EXPRESSION_HISTORY_MAX;
+    use crate::tui::{ALL_METHODS_IDX, Popup, TuiOptions};
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The fixture with each of `texts` applied from the Expression field in
+    /// turn, then the dialog opened again with the Expression field focused
+    /// and empty.
+    fn with_history(texts: &[&str]) -> Result<App, TestError> {
+        let mut app = fixture_app()?;
+        for text in texts {
+            apply_typed(&mut app, text);
+            if let Some(e) = &app.filter_dialog.error {
+                return Err(format!("{text:?} was refused: {e}").into());
+            }
+        }
+        open_filter_dialog(&mut app);
+        app.filter_dialog.expression.clear();
+        app.filter_dialog.focused_field = EXPRESSION_FIELD_IDX;
+        app.filter_dialog.sync_cursor();
+        Ok(app)
+    }
+
+    /// Press `code` in the dialog.
+    fn press(app: &mut App, code: KeyCode) {
+        handle_filter_popup_key(app, key(code));
+    }
+
+    /// The history, newest first.
+    fn history(app: &App) -> Vec<String> {
+        app.expression_history
+            .entries()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    // ── History ────────────────────────────────────────────────────
+
+    /// An applied expression enters the history.
+    #[test]
+    fn an_applied_expression_enters_the_history() -> Result<(), TestError> {
+        let app = with_history(&["msg_count > 5"])?;
+        assert_eq!(history(&app), ["msg_count > 5"], "recorded on apply");
+        Ok(())
+    }
+
+    /// Up in the Expression field recalls the newest applied expression,
+    /// with the cursor at its end.
+    #[test]
+    fn up_recalls_the_newest_expression() -> Result<(), TestError> {
+        let mut app = with_history(&["msg_count > 5", "method == 'BYE'"])?;
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.filter_dialog.expression, "method == 'BYE'",
+            "the newest"
+        );
+        assert_eq!(
+            app.filter_dialog.cursor_pos,
+            app.filter_dialog.expression.len(),
+            "the cursor at the end"
+        );
+        assert_eq!(
+            app.filter_dialog.focused_field, EXPRESSION_FIELD_IDX,
+            "focus stays"
+        );
+        Ok(())
+    }
+
+    /// Up again recalls the one before it.
+    #[test]
+    fn up_again_recalls_the_older_one() -> Result<(), TestError> {
+        let mut app = with_history(&["msg_count > 5", "method == 'BYE'"])?;
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.filter_dialog.expression, "msg_count > 5", "older");
+        Ok(())
+    }
+
+    /// Down walks forward and, past the newest, restores what was typed.
+    #[test]
+    fn down_walks_forward_to_the_typed_text() -> Result<(), TestError> {
+        let mut app = with_history(&["msg_count > 5", "method == 'BYE'"])?;
+        app.filter_dialog.expression = "ua =~ 'half".into();
+        app.filter_dialog.sync_cursor();
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.filter_dialog.expression, "method == 'BYE'", "forward");
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.filter_dialog.expression, "ua =~ 'half",
+            "the typed text is back"
+        );
+        assert_eq!(
+            app.filter_dialog.focused_field, EXPRESSION_FIELD_IDX,
+            "focus stays"
+        );
+        Ok(())
+    }
+
+    /// Up at the oldest entry moves focus on to Named filter, as Up does in
+    /// every other field.
+    #[test]
+    fn up_past_the_oldest_moves_to_the_named_field() -> Result<(), TestError> {
+        let mut app = with_history(&["msg_count > 5"])?;
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.filter_dialog.focused_field,
+            EXPRESSION_FIELD_IDX - 1,
+            "Named filter"
+        );
+        assert_eq!(
+            app.filter_dialog.expression, "msg_count > 5",
+            "the recall stays in the field"
+        );
+        assert!(
+            !app.expression_history.is_walking(),
+            "leaving the field ends the recall"
+        );
+        Ok(())
+    }
+
+    /// Down with no recall under way moves focus on to All, as before.
+    #[test]
+    fn down_without_a_recall_moves_to_all() -> Result<(), TestError> {
+        let mut app = with_history(&["msg_count > 5"])?;
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.filter_dialog.focused_field, ALL_METHODS_IDX, "All");
+        Ok(())
+    }
+
+    /// With no history, Up and Down move focus exactly as they did before.
+    #[test]
+    fn with_no_history_up_and_down_move_focus() -> Result<(), TestError> {
+        let mut app = with_history(&[])?;
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.filter_dialog.focused_field,
+            EXPRESSION_FIELD_IDX - 1,
+            "up to Named"
+        );
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.filter_dialog.focused_field, EXPRESSION_FIELD_IDX,
+            "back down"
+        );
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.filter_dialog.focused_field, ALL_METHODS_IDX,
+            "on to All"
+        );
+        Ok(())
+    }
+
+    /// Up in another text field moves focus, and recalls nothing there.
+    #[test]
+    fn up_in_another_field_recalls_nothing() -> Result<(), TestError> {
+        let mut app = with_history(&["msg_count > 5"])?;
+        app.filter_dialog.focused_field = 1;
+        app.filter_dialog.sync_cursor();
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.filter_dialog.focused_field, 0, "Up moved focus");
+        assert_eq!(app.filter_dialog.sip_from, "", "no recall into From user");
+        assert_eq!(app.filter_dialog.expression, "", "nor into Expression");
+        assert!(!app.expression_history.is_walking(), "no recall started");
+        Ok(())
+    }
+
+    /// A refused expression does not enter the history.
+    #[test]
+    fn a_refused_expression_is_not_recorded() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        apply_typed(&mut app, "msg_count = 5");
+        assert!(app.filter_dialog.error.is_some(), "refused");
+        assert_eq!(history(&app), Vec::<String>::new(), "not recorded");
+        Ok(())
+    }
+
+    /// An expression refused because another field failed does not enter
+    /// the history: only an applied dialog records.
+    #[test]
+    fn an_expression_beside_a_bad_time_bound_is_not_recorded() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.time_after = "yesterday".into();
+        apply_typed(&mut app, "msg_count > 5");
+        assert!(
+            app.filter_dialog.error.is_some(),
+            "the time bound refused it"
+        );
+        assert_eq!(history(&app), Vec::<String>::new(), "not recorded");
+        Ok(())
+    }
+
+    /// A dialog applied with an empty Expression records nothing.
+    #[test]
+    fn an_empty_expression_is_not_recorded() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.filter_dialog.sip_from = "alice".into();
+        apply_typed(&mut app, "");
+        assert_eq!(app.filter_dialog.error, None, "applied");
+        assert_eq!(history(&app), Vec::<String>::new(), "nothing recorded");
+        Ok(())
+    }
+
+    /// The history records the text as typed, not its `@name` expansion.
+    #[test]
+    fn the_history_keeps_the_text_as_typed() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.named_filters = super::expression_tests::big_table()?;
+        apply_typed(&mut app, "  @big  ");
+        assert_eq!(app.filter_dialog.error, None, "applied");
+        assert_eq!(history(&app), ["@big"], "trimmed, not expanded");
+        Ok(())
+    }
+
+    /// Applying the same expression twice keeps one entry.
+    #[test]
+    fn applying_twice_keeps_one_entry() -> Result<(), TestError> {
+        let app = with_history(&["msg_count > 5", "method == 'BYE'", "msg_count > 5"])?;
+        assert_eq!(
+            history(&app),
+            ["msg_count > 5", "method == 'BYE'"],
+            "collapsed"
+        );
+        Ok(())
+    }
+
+    /// The dialog's history holds at most the bound.
+    #[test]
+    fn the_dialog_history_is_bounded() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        for n in 0..EXPRESSION_HISTORY_MAX + 5 {
+            apply_typed(&mut app, &format!("msg_count > {n}"));
+        }
+        assert_eq!(history(&app).len(), EXPRESSION_HISTORY_MAX, "bounded");
+        Ok(())
+    }
+
+    /// Typing after a recall edits the field's copy; the history entry is
+    /// unchanged, and applying the edit adds it as a new entry.
+    #[test]
+    fn typing_after_a_recall_edits_a_copy() -> Result<(), TestError> {
+        let mut app = with_history(&["msg_count > 5"])?;
+        press(&mut app, KeyCode::Up);
+        for c in " AND ua =~ 'x'".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(
+            app.filter_dialog.expression, "msg_count > 5 AND ua =~ 'x'",
+            "edited"
+        );
+        assert_eq!(history(&app), ["msg_count > 5"], "the entry is unchanged");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            history(&app),
+            ["msg_count > 5 AND ua =~ 'x'", "msg_count > 5"],
+            "the edit is its own entry"
+        );
+        Ok(())
+    }
+
+    /// After an edit, Up starts again from the newest entry and Down brings
+    /// the edited text back.
+    #[test]
+    fn an_edit_ends_the_recall() -> Result<(), TestError> {
+        let mut app = with_history(&["ua == 'a'", "ua == 'b'"])?;
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(
+            app.filter_dialog.expression, "ua == 'a",
+            "edited the older one"
+        );
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.filter_dialog.expression, "ua == 'b'",
+            "from the newest again"
+        );
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.filter_dialog.expression, "ua == 'a", "the edit is back");
+        Ok(())
+    }
+
+    /// Moving the cursor inside a recalled entry does not end the recall.
+    #[test]
+    fn moving_the_cursor_keeps_the_recall() -> Result<(), TestError> {
+        let mut app = with_history(&["ua == 'a'", "ua == 'b'"])?;
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Home);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.filter_dialog.expression, "ua == 'a'",
+            "still walking back"
+        );
+        Ok(())
+    }
+
+    /// Leaving the field with Tab ends the recall: back in the field, Up
+    /// starts from the newest entry.
+    #[test]
+    fn tab_ends_the_recall() -> Result<(), TestError> {
+        let mut app = with_history(&["ua == 'a'", "ua == 'b'"])?;
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(
+            app.filter_dialog.focused_field, EXPRESSION_FIELD_IDX,
+            "back"
+        );
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.filter_dialog.expression, "ua == 'b'", "from the newest");
+        Ok(())
+    }
+
+    /// The history outlives `F9`, which clears the fields and the filter.
+    #[test]
+    fn the_history_outlives_a_clear() -> Result<(), TestError> {
+        let mut app = with_history(&["msg_count > 5"])?;
+        press(&mut app, KeyCode::F(9));
+        assert_eq!(app.active_popup, None, "F9 closed the dialog");
+        open_filter_dialog(&mut app);
+        app.filter_dialog.focused_field = EXPRESSION_FIELD_IDX;
+        app.filter_dialog.sync_cursor();
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.filter_dialog.expression, "msg_count > 5",
+            "still recalled"
+        );
+        Ok(())
+    }
+
+    /// The expression a session started with (`--filter`) is applied, so it
+    /// is in the history.
+    #[test]
+    fn the_run_filter_is_in_the_history() -> Result<(), TestError> {
+        let fixture = App::with_processed_messages(fixture_messages()?);
+        let app = TuiOptions {
+            filter_expression: Some("msg_count > 5".to_string()),
+            ..TuiOptions::default()
+        }
+        .into_app(
+            std::sync::Arc::clone(&fixture.dialog_store),
+            std::sync::Arc::clone(&fixture.stream_store),
+        );
+        assert_eq!(
+            history(&app),
+            ["msg_count > 5"],
+            "applied at start, recorded"
+        );
+        Ok(())
+    }
+
+    /// A recalled expression applies like a typed one.
+    #[test]
+    fn a_recalled_expression_applies() -> Result<(), TestError> {
+        let mut app = with_history(&["msg_count > 5", "msg_count < 3"])?;
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.active_popup, None, "applied");
+        assert_eq!(
+            shown(&mut app),
+            super::expression_tests::ids(&["foo-big", "foo-opts", "lower-foo", "plain-big"]),
+            "the recalled msg_count > 5"
+        );
+        Ok(())
+    }
+
+    // ── Field help (F1) ────────────────────────────────────────────
+
+    /// `F1` shows the field help in the dialog, and `F1` again hides it.
+    #[test]
+    fn f1_toggles_the_field_help() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        press(&mut app, KeyCode::F(1));
+        assert!(app.filter_dialog.show_help, "shown");
+        assert_eq!(
+            app.active_popup,
+            Some(Popup::FilterDialog),
+            "the dialog stays"
+        );
+        press(&mut app, KeyCode::F(1));
+        assert!(!app.filter_dialog.show_help, "hidden");
+        Ok(())
+    }
+
+    /// `Esc` with the help shown hides the help and keeps the dialog.
+    #[test]
+    fn esc_hides_the_help_first() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        press(&mut app, KeyCode::F(1));
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.filter_dialog.show_help, "help hidden");
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog), "dialog open");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.active_popup, None, "the second Esc cancels");
+        Ok(())
+    }
+
+    /// Typing goes on with the help shown: the field still takes keys and
+    /// Enter still applies.
+    #[test]
+    fn typing_goes_on_with_the_help_shown() -> Result<(), TestError> {
+        let mut app = with_history(&[])?;
+        press(&mut app, KeyCode::F(1));
+        for c in "msg_count > 5".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.filter_dialog.expression, "msg_count > 5", "typed");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.active_popup, None, "applied");
+        Ok(())
+    }
+
+    /// The help is off each time the dialog opens.
+    #[test]
+    fn the_help_is_off_when_the_dialog_opens() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        press(&mut app, KeyCode::F(1));
+        press(&mut app, KeyCode::Enter);
+        open_filter_dialog(&mut app);
+        assert!(!app.filter_dialog.show_help, "off");
+        Ok(())
+    }
+
+    /// With the help shown, the dialog draws every field name and operator
+    /// and the key that closes it, in place of the method boxes.
+    #[test]
+    fn the_dialog_draws_the_help() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        press(&mut app, KeyCode::F(1));
+        let text = screen(&mut app, 80, 24)?;
+        for name in crate::sip::dsl::FIELD_NAMES {
+            assert!(
+                text.split(|c: char| c.is_whitespace() || c == '\u{2502}')
+                    .any(|w| w == *name),
+                "'{name}' is not drawn:\n{text}"
+            );
+        }
+        for op in crate::sip::dsl::operator_tokens() {
+            assert!(text.contains(op), "'{op}' is not drawn:\n{text}");
+        }
+        assert!(
+            row_with(&text, "F1 or Esc").is_some(),
+            "how to close it:\n{text}"
+        );
+        assert!(
+            row_with(&text, "REGISTER").is_none(),
+            "the boxes are covered:\n{text}"
+        );
+        assert!(
+            row_with(&text, "Expression:").is_some(),
+            "the fields stay:\n{text}"
+        );
+        Ok(())
+    }
+
+    /// The dialog's key line names F1.
+    #[test]
+    fn the_key_line_names_f1() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        let text = screen(&mut app, 80, 24)?;
+        let row = row_with(&text, "Tab move").ok_or("the key line")?;
+        assert!(row.contains("F1 fields"), "{row:?}");
+        Ok(())
+    }
+
+    /// Opening the dialog from the RTP streams view lists the run's named
+    /// filters too, as opening it from the call list does.
+    #[test]
+    fn opening_from_the_stream_list_lists_the_named_filters() -> Result<(), TestError> {
+        let mut app = fixture_app()?;
+        app.active_popup = None;
+        app.named_filters = super::expression_tests::big_table()?;
+        app.current_view = crate::tui::View::StreamList;
+        crate::tui::controllers::handle_key_event(&mut app, key(KeyCode::F(7)));
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog), "opened");
+        assert_eq!(
+            app.filter_dialog.known_names,
+            ["big"],
+            "the names are listed"
+        );
         Ok(())
     }
 }

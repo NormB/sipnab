@@ -1421,6 +1421,47 @@ mod tui_snapshots {
         Ok(())
     }
 
+    /// Snapshot: the F7 popup with `F1`'s field help shown: the Filter DSL's
+    /// fields, operators and combining words in place of the method boxes.
+    #[test]
+    fn filter_dialog_field_help_popup() -> Result<(), TestError> {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = App::new_test();
+        app.handle_key(crossterm::event::KeyCode::F(7));
+        app.handle_key(crossterm::event::KeyCode::F(1));
+
+        terminal.draw(|frame| app.render(frame))?;
+
+        let output = buffer_to_string(&terminal)?;
+        insta::assert_snapshot!(output);
+        Ok(())
+    }
+
+    /// Snapshot: `Y` in the call list after an Expression was applied: the
+    /// command line it copied, shown over the list.
+    #[test]
+    fn call_list_copied_command_line_popup() -> Result<(), TestError> {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
+        app.handle_key(crossterm::event::KeyCode::F(7));
+        for _ in 0..9 {
+            app.handle_key(crossterm::event::KeyCode::Tab);
+        }
+        for c in "from.user =~ '1003' OR msg_count > 3".chars() {
+            app.handle_key(crossterm::event::KeyCode::Char(c));
+        }
+        app.handle_key(crossterm::event::KeyCode::Enter);
+        app.handle_key(crossterm::event::KeyCode::Char('Y'));
+
+        terminal.draw(|frame| app.render(frame))?;
+
+        let output = buffer_to_string(&terminal)?;
+        insta::assert_snapshot!(output);
+        Ok(())
+    }
+
     /// Snapshot: the call list under an applied Expression, with status
     /// line 3 naming it (#841).
     #[test]

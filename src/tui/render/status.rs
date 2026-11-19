@@ -527,6 +527,7 @@ pub(in crate::tui) fn fkey_bar_items(
             Popup::G729Install => vec![("Y", "Download"), ("N/Esc", "Not now")],
             Popup::NoteEditor => vec![("Enter", "Keep"), ("Esc", "Cancel")],
             Popup::UnsavedNotes => vec![("Y", "Open"), ("N/Esc", "Keep")],
+            Popup::CommandLine(_) => vec![("Esc/Enter", "Close")],
             Popup::ArchivePassword => vec![
                 ("Enter", "Try"),
                 ("Esc", "Skip"),
@@ -541,6 +542,7 @@ pub(in crate::tui) fn fkey_bar_items(
                     ("Enter", "Apply"),
                     ("Esc", "Cancel"),
                     ("F9", "Clear"),
+                    ("F1", "Fields"),
                 ]
             }
             Popup::SettingsDialog => {

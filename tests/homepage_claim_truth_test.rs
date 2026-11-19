@@ -860,11 +860,12 @@ fn homepage_filter_field_count_matches_the_parser() -> Result<(), TestError> {
 #[test]
 fn filter_doc_documents_every_operator_the_parser_accepts() -> Result<(), TestError> {
     let src = read("src/sip/dsl.rs")?;
-    let spellings: BTreeSet<String> =
-        regex::Regex::new(r#"tag\("([^"]+)"\),\s*\|_\|\s*Operator::"#)?
-            .captures_iter(&src)
-            .map(|c| c[1].to_string())
-            .collect();
+    // The rows of `OPERATOR_TABLE`, the one table `parse_operator` matches:
+    // `("==", Operator::Eq),`.
+    let spellings: BTreeSet<String> = regex::Regex::new(r#"\("([^"]+)",\s*Operator::"#)?
+        .captures_iter(&src)
+        .map(|c| c[1].to_string())
+        .collect();
     assert!(
         spellings.len() >= 4,
         "only {} operator spelling(s) extracted from the parser: {spellings:?}",

@@ -593,6 +593,56 @@ pub(in crate::tui) fn render_g729_install_popup(frame: &mut ratatui::Frame, area
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// The command line `Y` copied, wrapped to the popup's width, with the keys
+/// that close it.
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup); no state is
+/// mutated.
+pub(in crate::tui) fn render_command_line_popup(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    command: &str,
+    theme: &Theme,
+) {
+    // As wide as an 80-column terminal allows, so a typical command fits on
+    // one or two rows; one column of margin inside each border.
+    let popup_width = area.width.saturating_sub(4).clamp(1, 76);
+    let text_width = usize::from(popup_width.saturating_sub(4)).max(1);
+    // Wrapped at a fixed width, not at spaces: every character is drawn,
+    // spaces at a row's end included, so the rows read back as the command.
+    let chars: Vec<char> = command.chars().collect();
+    let mut lines: Vec<Line<'_>> = chars
+        .chunks(text_width)
+        .map(|chunk| {
+            Line::from(Span::styled(
+                format!(" {}", chunk.iter().collect::<String>()),
+                Style::default().fg(theme.foreground),
+            ))
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" Esc/Enter", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " close \u{b7} the status line reports the copy",
+            Style::default().fg(theme.muted),
+        ),
+    ]));
+    let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let popup_height = rows.saturating_add(2).min(area.height);
+    let popup_area = centered_popup(area, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Command line ")
+        .style(Style::default().bg(theme.background));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 /// The two lines that say operator notes are not saved, shared by the quit
 /// confirmation and the capture-swap question.
 fn unsaved_notes_lines(app: &App) -> [Line<'static>; 2] {
@@ -1378,6 +1428,26 @@ pub(in crate::tui) fn render_filter_popup(
         Style::default().fg(theme.muted),
     );
 
+    // ── Field help (F1) in place of the boxes, buttons and hints ──
+    // The dialog has no free row, so the help takes the rows below the
+    // fields while it is shown; the fields stay visible and editable.
+    if state.show_help {
+        let muted = Style::default().fg(theme.muted);
+        let room = usize::from(iw.saturating_sub(4));
+        let heading: String = "Filter DSL \u{b7} F1 or Esc closes this help"
+            .chars()
+            .take(room)
+            .collect();
+        set_string_clipped(buf, inner, ix + 2, sep_y + 1, &heading, muted);
+        let style = Style::default().fg(theme.foreground);
+        for (row, line) in
+            (sep_y + 2..inner.y + inner.height).zip(crate::tui::filter_help::field_help_lines(room))
+        {
+            set_string_clipped(buf, inner, ix + 2, row, &line, style);
+        }
+        return;
+    }
+
     // ── "All" master checkbox — ABOVE the method grid it governs ──
     let all_y = sep_y + 1;
     let col1_x = ix + 2;
@@ -1475,7 +1545,7 @@ pub(in crate::tui) fn render_filter_popup(
     // canceled this dialog and it was never written down, so the only way to
     // learn it was to guess -- the same defect as a hint truncated off the
     // right edge, and indistinguishable from one at the keyboard.
-    let footer_hint = "Tab move \u{b7} Enter apply \u{b7} Esc cancel";
+    let footer_hint = "Tab move \u{b7} Enter apply \u{b7} Esc cancel \u{b7} F1 fields";
     if btn_y + 2 < inner.y + inner.height {
         set_string_clipped(
             buf,
@@ -2170,6 +2240,16 @@ mod tests {
             }),
             ("unsaved_notes", |f, a, app| {
                 render_unsaved_notes_popup(f, a, app);
+                Ok(())
+            }),
+            // Drawn after `Y` copied a filter, so rendered with a command
+            // long enough to wrap.
+            ("command_line", |f, a, app| {
+                let command = format!(
+                    "sipnab -I /srv/evidence/trunk-b/call.pcap --filter 'payload =~ '\\''{}'\\'''",
+                    "X-Foo".repeat(20)
+                );
+                render_command_line_popup(f, a, &command, &app.theme);
                 Ok(())
             }),
             // Drawn only while a load waits on a password, so rendered with
@@ -3311,6 +3391,94 @@ mod tests {
                 let area = frame.area();
                 render_filter_popup(frame, area, &state, &theme);
             })?;
+        }
+        Ok(())
+    }
+
+    // ── The command-line popup (`Y`) ───────────────────────────────
+
+    /// The rows of `command`'s popup drawn alone at `w` x `h`.
+    fn command_popup_rows(command: &str, w: u16, h: u16) -> Result<Vec<String>, TestError> {
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(w, h))?;
+        terminal.draw(|frame| render_command_line_popup(frame, frame.area(), command, &theme))?;
+        let buf = terminal.backend().buffer();
+        let mut rows = Vec::new();
+        for y in 0..buf.area.height {
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                row.push_str(buf.cell((x, y)).map_or(" ", |c| c.symbol()));
+            }
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+
+    /// The text inside the popup's border, row by row, the margin removed.
+    fn inside(rows: &[String]) -> Vec<String> {
+        rows.iter()
+            .filter_map(|r| {
+                let start = r.find('\u{2502}')?;
+                let end = r.rfind('\u{2502}')?;
+                (end > start).then(|| r[start + '\u{2502}'.len_utf8()..end].to_string())
+            })
+            .collect()
+    }
+
+    /// A command wider than the popup is wrapped, and every character of it
+    /// is drawn, in order.
+    #[test]
+    fn the_command_popup_draws_every_character_wrapped() -> Result<(), TestError> {
+        let command = format!(
+            "sipnab -I /cases/a.pcap --filter 'payload =~ '\\''{}'\\'' AND msg_count > 5'",
+            "X-Foo".repeat(30)
+        );
+        let rows = command_popup_rows(&command, 80, 24)?;
+        let body: Vec<String> = inside(&rows);
+        // Each row is one margin column, the text, and one margin column; a
+        // full row's text is exactly that wide, spaces at its end included.
+        let joined: String = body
+            .iter()
+            .map(|r| {
+                let width = r.chars().count().saturating_sub(2);
+                r.chars().skip(1).take(width).collect::<String>()
+            })
+            .collect();
+        assert!(
+            joined.contains(&command),
+            "the command is drawn whole:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            body.iter().filter(|r| r.contains("X-Foo")).count() > 1,
+            "it wraps onto several rows:\n{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    /// The popup has a title and names the keys that close it.
+    #[test]
+    fn the_command_popup_names_its_title_and_keys() -> Result<(), TestError> {
+        let rows = command_popup_rows("sipnab --filter 'msg_count > 5'", 80, 24)?;
+        let text = rows.join("\n");
+        assert!(text.contains(" Command line "), "the title:\n{text}");
+        assert!(text.contains("Esc"), "the closing key:\n{text}");
+        assert!(
+            text.contains("sipnab --filter 'msg_count > 5'"),
+            "the command:\n{text}"
+        );
+        Ok(())
+    }
+
+    /// A tiny terminal draws without a panic, and a short one keeps the
+    /// popup inside the screen.
+    #[test]
+    fn the_command_popup_survives_tiny_terminals() -> Result<(), TestError> {
+        let command = "sipnab --filter 'msg_count > 5'".repeat(20);
+        for (w, h) in [(1u16, 1u16), (3, 3), (10, 4), (20, 6), (200, 3)] {
+            let rows = command_popup_rows(&command, w, h)?;
+            assert_eq!(rows.len(), usize::from(h), "{w}x{h} drew inside the screen");
         }
         Ok(())
     }

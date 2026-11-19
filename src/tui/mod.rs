@@ -57,6 +57,9 @@ use crate::config::{KeybindingsConfig, ThemeConfig, parse_color, parse_keycode};
 
 mod clipboard;
 mod controllers;
+mod expression_history;
+mod filter_command;
+mod filter_help;
 mod input_parse;
 mod render;
 mod save;
@@ -147,6 +150,13 @@ pub struct App {
     raw_msg_return_view: Option<View>,
     /// Structured filter dialog state (preserved between opens).
     pub filter_dialog: FilterDialogState,
+    /// The Expression field's history for this session: the expressions the
+    /// dialog applied, newest first, which Up and Down recall.
+    expression_history: expression_history::ExpressionHistory,
+    /// The words that name the capture source the session was started with
+    /// (`-I` inputs, `--recursive`, `-d`, `-L`), for the command line `Y`
+    /// copies. Empty when the session named none.
+    capture_source: Vec<String>,
     /// The run's resolved `[filters]`, which the dialog's Named field and
     /// `@name` references read. The table installed at startup, held here so
     /// a test can give the app any table.
@@ -535,6 +545,8 @@ impl App {
             stream_list_show_all: false,
             raw_msg_return_view: None,
             filter_dialog: FilterDialogState::default(),
+            expression_history: expression_history::ExpressionHistory::default(),
+            capture_source: Vec::new(),
             named_filters: crate::sip::named_filters::installed().clone(),
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             settings_dialog: SettingsDialogState::default(),

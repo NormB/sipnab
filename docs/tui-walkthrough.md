@@ -228,7 +228,7 @@ drops:
 
   ```text
   │  ⚠ Expression error: unexpected input at position 18: 'msgcount'         │
-  │  Tab move · Enter apply · Esc cancel                                     │
+  │  Tab move · Enter apply · Esc cancel · F1 fields                         │
   │  hint: unknown field 'msgcount' — did you mean 'msg_count'?              │
   ```
 
@@ -240,6 +240,128 @@ drops:
   the start of the pattern to ignore case.
 - **Nothing shows at all.** Every method box is clear. That shows no calls
   whatever the expression says. Check **All**.
+
+### Use an earlier expression again
+
+The Expression field keeps the expressions you applied in this session, so
+you can go back to one without typing it again.
+
+**What you need:** a session where you applied at least one expression, as
+in the steps above. Nothing changes on any other system.
+
+**Steps:**
+
+1. Press `F7` and move to **Expression** (`Tab` nine times).
+2. Press `Up`. The field shows the expression you applied last, with the
+   cursor at its end. Each further `Up` shows the one applied before it.
+3. Press `Down` to step back toward the newest. One `Down` past the newest
+   puts back the text the field held before the first `Up`.
+4. Edit the recalled text if you need to. The edit changes the field only.
+   The history keeps the expression as you applied it.
+5. Press `Enter` to apply it.
+
+The history holds only expressions the dialog applied, so each one parsed.
+It keeps the newest 50, each once: applying an expression again moves it to
+the front. It lasts for the session and is not saved. An expression the
+session started with from `--filter` or `[filter] expression` is the first
+entry.
+
+**Check that it worked:** status line 3 names the recalled expression after
+`expr`, as for a typed one.
+
+**When it does not work:**
+
+- **`Up` moves to Named filter instead.** The history is empty, or the field
+  already shows the oldest entry. Apply an expression first.
+- **An expression is missing.** The dialog refused it, so it never entered
+  the history, or 50 newer ones pushed it out.
+
+### Look up the fields and operators
+
+`F1` in the dialog shows every field name, comparison operator and combining
+word the [Filter DSL](filter-dsl.md) takes. The list comes from the parser,
+so it names exactly what the Expression field accepts.
+
+**What you need:** the `F7` dialog open. Nothing changes on any other system.
+
+**Steps:**
+
+1. Press `F7`.
+2. Press `F1`. The list takes the place of the method boxes and the buttons.
+   The text fields stay, and typing and `Enter` work as before.
+3. Press `F1` or `Esc` to hide the list. With the list hidden, `Esc` cancels
+   the dialog as usual.
+
+```text
+│  ──────────────────────────────────────────────────────────────────────  │
+│  Filter DSL · F1 or Esc closes this help                                 │
+│  Fields: from.user to.user from.host to.host from.uri to.uri ruri        │
+```
+
+The list is behind a key because the dialog has no free row: the fields
+take about seven rows of the 23-row dialog, which would no longer fit an
+80x24 terminal with its key line. The values each field takes are in the
+[Filter DSL reference](filter-dsl.md).
+
+**Check that it worked:** the dialog shows lines that start `Fields:`,
+`Operators:` and `Combine:`.
+
+**When it does not work:** `F1` opens the main help instead when no dialog is
+open. Press `F7` first.
+
+### Run the same filter from a shell
+
+`Y` in the call list turns the filter in force into one `sipnab` command line
+with `--filter`, and copies it. Run it later, or on another host with the same
+capture, to see the same call list.
+
+**What you need:**
+
+- A view filter in force: from the `F7` fields, a named filter, an
+  expression, or a time window.
+- For the copy to reach your system clipboard, a terminal that accepts
+  OSC 52, as in [Copying text](keybindings.md#copying-text). Without one, the
+  command is still shown.
+- Nothing changes on any other system.
+
+**Steps:**
+
+1. Apply a filter with `F7`, as above.
+2. Close the dialog and press `Y` in the call list.
+3. A **Command line** box shows the command, and the status line reports the
+   copy:
+
+   ```text
+   sipnab -I sample-call.pcap --filter 'from.user =~ '\''1003'\'' OR msg_count > 3'
+   ```
+
+4. Press `Esc` or `Enter` to close the box. Paste the command into a shell.
+
+The filter in the command is the one the call list runs. It holds every `F7`
+field and the full text of each named filter, and After and Before become
+`time` comparisons, so the command needs no `[filters]` table. sipnab quotes
+each word for a POSIX shell: a `'` in the text becomes `'\''`.
+
+The source words are the ones the session read: `-I` and the file for one
+capture file (or the last file `O` opened), each `-I` input and
+`--recursive` for several, or `-d` and `-L` for a live capture. The command
+leaves out the other options of the run, such as a BPF capture filter or a
+port range. Add them to the command if the session used them.
+
+**Check that it worked:** run the command. The new session opens with the
+filter in its Expression field and applied, and status line 1 shows the same
+count of calls.
+
+**When it does not work:**
+
+- **`No view filter is in force`.** Nothing narrows the call list. Apply a
+  filter with `F7` first.
+- **`Clipboard error`.** No clipboard took the text. The box still shows the
+  command: press `F12` to turn mouse capture off and select it with the mouse.
+- **`not valid UTF-8`.** Text cannot hold the capture file's path.
+  Rename the file or open it from a path that can.
+- **The new session shows more calls.** The run used an option the command
+  does not carry, such as a capture filter. Add it to the command.
 
 ## Find the calls sipnab diagnosed
 

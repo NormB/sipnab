@@ -22,7 +22,7 @@ expression: output
   │  INFO      [*]                       UPDATE    [*]                       │
   │     [ Filter ]                           [ Cancel ]                      │
   │  ⚠ Expression error: unexpected input at position 18: 'msgcount'         │
-  │  Tab move · Enter apply · Esc cancel                                     │
+  │  Tab move · Enter apply · Esc cancel · F1 fields                         │
   │  hint: unknown field 'msgcount' — did you mean 'msg_count'?              │
   └──────────────────────────────────────────────────────────────────────────┘
-Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear
+Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear  F1 Fields

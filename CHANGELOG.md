@@ -8,6 +8,24 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **The TUI filter dialog recalls expressions, lists the DSL, and copies the filter.**
+  - Effect: `Up` and `Down` in the Expression field recall the expressions applied this session, newest first, each once.
+  - Effect: `F1` in the dialog lists every Filter DSL field name, operator and combining word.
+  - Effect: `Y` in the call list copies the filter in force as a quoted `sipnab --filter` command line and shows it.
+  - Limit: The history keeps the newest 50; the command carries the capture source, not other run options.
+  - Docs: [Use an earlier expression again](docs/tui-walkthrough.md#use-an-earlier-expression-again)
+
+### Fixed
+
+- **The `F7` dialog lists the named filters when opened from any view.**
+  - Was: Opened first from the call flow or RTP streams, Named filter said `none in [filters]` though the config defined names.
+  - Effect: Every view opens the dialog the same way, with the configured names beside Named filter.
+  - Docs: [Keybindings](docs/keybindings.md#filter-popup)
+
 ## [0.5.265] - 2026-11-19
 
 ### Added
