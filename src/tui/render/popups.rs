@@ -416,8 +416,21 @@ pub(in crate::tui) fn render_quit_confirm_popup(frame: &mut ratatui::Frame, area
             Style::default().fg(app.theme.header),
         )),
         Line::from(""),
+        // "Yes" is the preselected answer, drawn as the selected button:
+        // Enter takes it, so the operator who asked to quit confirms with
+        // the key every dialog default answers to.
         Line::from(vec![
-            Span::styled("  Y", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled(
+                "[ Yes ]",
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("[ No ]", Style::default().fg(app.theme.muted)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Enter/Y", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(" quit", Style::default().fg(app.theme.muted)),
             Span::styled("    N/Esc", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(" cancel", Style::default().fg(app.theme.muted)),
@@ -1856,6 +1869,42 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         terminal.draw(|frame| render_name_popup(frame, frame.area(), &app))?;
         Ok(terminal.backend().buffer().content().to_vec())
+    }
+
+    /// The quit popup shows its preselected answer: a `[ Yes ]` button in
+    /// reverse video beside `[ No ]`, and Enter named with Y.
+    #[test]
+    fn the_quit_popup_shows_yes_preselected() -> Result<(), TestError> {
+        let app = App::new_test();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        terminal.draw(|frame| render_quit_confirm_popup(frame, frame.area(), &app))?;
+        let buf = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+                    .collect()
+            })
+            .collect();
+        let (y, row) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.contains("[ Yes ]"))
+            .ok_or("no [ Yes ] button")?;
+        assert!(row.contains("[ No ]"), "the No button beside Yes: {row:?}");
+        let x = row.find("[ Yes ]").ok_or("Yes column")?;
+        let cell = buf
+            .cell((u16::try_from(row[..x].chars().count())?, u16::try_from(y)?))
+            .ok_or("the Yes cell")?;
+        assert!(
+            cell.modifier.contains(Modifier::REVERSED),
+            "Yes is drawn selected (reverse video)"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("Enter/Y")),
+            "Enter is named as the key that quits"
+        );
+        Ok(())
     }
 
     /// Failure: under NO_COLOR the Name Address popup paints no color. Its
