@@ -401,6 +401,54 @@ impl SipDialog {
         &self.state
     }
 
+    /// The state as of `now` (the capture's clock), for views that ask
+    /// "is this dialog over?".
+    ///
+    /// The state machine moves only on messages, so two REGISTER dialogs
+    /// that end in silence never reach a final state there:
+    /// - one still `Trying` that got a final non-2xx (a `401`/`407` the client
+    ///   never answered with a `2xx`-ed REGISTER, an auth loop) is `Failed`;
+    /// - one `Registered` whose granted interval (the last `2xx`'s Contact
+    ///   `expires`, else its `Expires`, else RFC 3261's 3600 s) ran out before
+    ///   `now` with no further message is `Expired`.
+    ///
+    /// Every other dialog returns [`Self::state`] unchanged.
+    #[must_use]
+    pub fn state_at(&self, now: DateTime<Utc>) -> DialogState {
+        if self.method != SipMethod::Register {
+            return self.state.clone();
+        }
+        let final_answers = || {
+            self.messages.iter().rev().filter(|m| {
+                !m.is_request
+                    && m.status_code.is_some_and(|c| c >= 200)
+                    && m.cseq().is_some_and(|(_, meth)| meth.eq_ignore_ascii_case("REGISTER"))
+            })
+        };
+        match self.state {
+            DialogState::Trying => {
+                if final_answers().next().is_some_and(|m| m.status_code.is_some_and(|c| c >= 300)) {
+                    DialogState::Failed
+                } else {
+                    DialogState::Trying
+                }
+            }
+            DialogState::Registered => {
+                let Some(ok) = final_answers().find(|m| m.status_code.is_some_and(|c| c < 300))
+                else {
+                    return DialogState::Registered;
+                };
+                let granted = i64::from(crate::sip::registration_expiry(ok).unwrap_or(3600));
+                if self.latest_message_at + chrono::TimeDelta::seconds(granted) < now {
+                    DialogState::Expired
+                } else {
+                    DialogState::Registered
+                }
+            }
+            _ => self.state.clone(),
+        }
+    }
+
     /// The final SIP response code of the transaction that decides the
     /// dialog's outcome — the code behind the [`DialogState`] word: 200 for
     /// an answered call (`InCall`/`Completed`), the 4xx/5xx/6xx for a
@@ -1938,6 +1986,96 @@ mod tests {
         // The 200 races the CANCEL and wins — the call was established.
         update_state(&mut dialog, &make_response(200, "OK", "INVITE")?);
         assert_eq!(dialog.state, DialogState::InCall);
+        Ok(())
+    }
+
+    /// A REGISTER for `state_at`: the request, then each response in turn
+    /// through `update_state`, every message kept as the store keeps it.
+    fn register_with(responses: &[SipMessage]) -> Result<SipDialog, TestError> {
+        let raw = build_sip(
+            "REGISTER sip:registrar.example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=r1",
+                "To: <sip:alice@example.com>",
+                "Call-ID: register-at@example.com",
+                "CSeq: 1 REGISTER",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let register = parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?;
+        let mut dialog = SipDialog::new(&register).ok_or("should create dialog")?;
+        dialog.messages.push(register);
+        for r in responses {
+            update_state(&mut dialog, r);
+            dialog.messages.push(r.clone());
+        }
+        Ok(dialog)
+    }
+
+    /// The auth loop: a REGISTER answered only by challenges stays
+    /// `Trying` in the machine, but it is over -- `state_at` says `Failed`.
+    /// A `2xx` after the challenge makes it `Registered` again.
+    #[test]
+    fn state_at_a_register_never_answered_2xx_after_a_challenge_is_failed() -> Result<(), TestError> {
+        let now = ts()?;
+        let looped = register_with(&[make_response(401, "Unauthorized", "REGISTER")?])?;
+        assert_eq!(looped.state(), &DialogState::Trying, "the machine itself is unchanged");
+        assert_eq!(looped.state_at(now), DialogState::Failed);
+        assert!(looped.state_at(now).is_final());
+        let fresh = register_with(&[])?;
+        assert_eq!(fresh.state_at(now), DialogState::Trying, "no answer yet is not over");
+        let answered = register_with(&[
+            make_response(401, "Unauthorized", "REGISTER")?,
+            make_response(200, "OK", "REGISTER")?,
+        ])?;
+        assert_eq!(answered.state_at(now), DialogState::Registered);
+        Ok(())
+    }
+
+    /// A registration whose granted interval ran out with no further message
+    /// is `Expired` by the capture's clock; before that it is
+    /// `Registered`. The interval is the 2xx's Contact `expires`.
+    #[test]
+    fn state_at_a_registration_past_its_expiry_is_expired() -> Result<(), TestError> {
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:alice@example.com>;tag=r1",
+                "To: <sip:alice@example.com>;tag=t2",
+                "Call-ID: register-at@example.com",
+                "CSeq: 1 REGISTER",
+                "Contact: <sip:alice@192.0.2.1:5060>;expires=60",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let ok = parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?;
+        let dialog = register_with(&[ok])?;
+        assert_eq!(dialog.state(), &DialogState::Registered);
+        let t0 = dialog.latest_message_at;
+        assert_eq!(dialog.state_at(t0 + chrono::TimeDelta::seconds(59)), DialogState::Registered);
+        assert_eq!(dialog.state_at(t0 + chrono::TimeDelta::seconds(61)), DialogState::Expired);
+        // No Contact/Expires: RFC 3261's default 3600 s.
+        let plain = register_with(&[make_response(200, "OK", "REGISTER")?])?;
+        assert_eq!(plain.state_at(t0 + chrono::TimeDelta::seconds(61)), DialogState::Registered);
+        assert_eq!(plain.state_at(t0 + chrono::TimeDelta::seconds(3601)), DialogState::Expired);
         Ok(())
     }
 

@@ -2028,7 +2028,7 @@ impl DialogStore {
     /// anchoring to the wall clock ages every offline dialog out at once. On a
     /// live capture the newest message IS approximately now, so one rule serves
     /// both without a mode flag.
-    fn capture_now(&self) -> chrono::DateTime<chrono::Utc> {
+    pub fn capture_now(&self) -> chrono::DateTime<chrono::Utc> {
         self.dialogs
             .values()
             .map(|d| d.latest_message_at)
