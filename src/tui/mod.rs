@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{self, EnterAlternateScreen};
 use parking_lot::RwLock;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -2262,16 +2262,9 @@ impl Drop for TerminalGuard {
     /// there is no recovery path during teardown), then tell the crash
     /// hook the terminal is sane so it won't restore twice.
     fn drop(&mut self) {
-        let _ = execute!(
-            io::stdout(),
-            crossterm::event::DisableMouseCapture,
-            // Harmless when paste was never on; restores it when the run
-            // ended with the password popup open.
-            crossterm::event::DisableBracketedPaste,
-            crossterm::cursor::Show,
-            LeaveAlternateScreen
-        );
-        let _ = terminal::disable_raw_mode();
+        // Disabling bracketed paste is harmless when it was never on; it
+        // restores it when the run ended with the password popup open.
+        crate::crash::restore_terminal();
         // The terminal is sane again; the crash hook must not restore twice.
         crate::crash::set_terminal_raw(false);
     }
