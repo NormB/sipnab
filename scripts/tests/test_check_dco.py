@@ -486,13 +486,16 @@ def _section(rel, heading):
 
 def test_success_contributing_tells_a_contributor_how_to_sign_off():
     text = _section("CONTRIBUTING.md", "Signing off commits")
-    for needle in ["git commit -s", "git rebase --signoff", "scripts/check-dco.py", "`DCO`", "both apply"]:
+    for needle in ["git commit -s", "git rebase --signoff", "scripts/check-dco.py", "`DCO`", "requires the `DCO` check"]:
         assert needle in text, f"CONTRIBUTING.md's DCO section must mention {needle!r}"
+    assert "both apply" not in text and "During the switch" not in text, (
+        "CONTRIBUTING.md's DCO section still describes the switch from the CLA as unfinished"
+    )
 
 
-def test_success_maintainers_lists_the_owner_steps_of_the_switch():
+def test_success_maintainers_states_the_dco_is_required_and_the_cla_retired():
     text = _section("MAINTAINERS.md", "The contributor agreement")
-    for needle in ["require the `DCO` check", "remove `license/cla`", "Turn CLA Assistant off"]:
+    for needle in ["requires the `DCO` check", "retired the CLA", "CLA Assistant is off"]:
         assert needle in text, f"MAINTAINERS.md's agreement section must mention {needle!r}"
 
 

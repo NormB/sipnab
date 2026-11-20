@@ -2073,7 +2073,11 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // 172 -> 175 (DCO): README.md and MAINTAINERS.md each link
     // CONTRIBUTING.md#signing-off-commits, and that section links
     // MAINTAINERS.md#the-contributor-agreement (+3).
-    const EXPECTED_COMMUNITY_LINKS: usize = 175;
+    // 175 -> 173 (CLA retired): README.md's and MAINTAINERS.md's links to
+    // CONTRIBUTING.md#contributor-license-agreement are gone (-2); the
+    // section's own links now point at CLA.md, #signing-off-commits and
+    // MAINTAINERS.md, as before in number.
+    const EXPECTED_COMMUNITY_LINKS: usize = 173;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

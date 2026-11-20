@@ -155,17 +155,17 @@ fn contributing_md_states_the_code_review_requirements() -> Result<(), TestError
         .collect::<Vec<_>>()
         .join(" ");
     let status = drift_test_constant("DECLARED_STATUS_CHECK")?;
-    let cla = drift_test_constant("DECLARED_CLA_CHECK")?;
+    let sign_off = drift_test_constant("DECLARED_SIGN_OFF_CHECK")?;
     assert!(
-        !status.is_empty() && !cla.is_empty(),
+        !status.is_empty() && !sign_off.is_empty(),
         "the reader of the drift test's constants broke"
     );
     for needle in [
         format!("`{status}`"),
-        format!("`{cla}`"),
+        format!("`{sign_off}`"),
         "CODEOWNERS".to_string(),
         "signed".to_string(),
-        "CLA".to_string(),
+        "sign-off".to_string(),
         "resolved".to_string(),
         "threat-model.md".to_string(),
         "PULL_REQUEST_TEMPLATE.md".to_string(),
@@ -776,6 +776,541 @@ fn e16_the_projects_published_address_is_not_personal_and_a_lookalike_is() {
     let text = format!("security@sipnab.com SECURITY@SIPNAB.COM a{AT}sipnab.com.evil.co");
     let found = gov::personal_addresses(&text);
     assert_eq!(found, [format!("a{AT}sipnab.com.evil.co")], "{found:?}");
+}
+
+// ---------------------------------------------------------------------------
+// The retired CLA (owner decisions (i), (iii) and (iv), 2026-11-18). No page
+// sends a contributor to the signing flow or calls `license/cla` required; the
+// pages that keep the agreement say it is retired; the code review section
+// names the checks main requires.
+// ---------------------------------------------------------------------------
+
+/// The pages a contributor reads, and the site's copies of them.
+const CONTRIBUTOR_PAGES: &[&str] = &[
+    "README.md",
+    "CONTRIBUTING.md",
+    "MAINTAINERS.md",
+    "website/content/cla.md",
+    "website/content/docs/contributing.md",
+    "website/templates/index.html",
+    "docs/internals/build-ci-release.md",
+];
+
+/// The checks main requires that the code review section names.
+fn required_checks() -> Result<Vec<String>, TestError> {
+    Ok(vec![
+        drift_test_constant("DECLARED_STATUS_CHECK")?,
+        drift_test_constant("DECLARED_SIGN_OFF_CHECK")?,
+    ])
+}
+
+const NOTICE: &str = "**This agreement is retired.** sipnab no longer collects signatures. \
+Sign off instead: [Signing off commits](CONTRIBUTING.md#signing-off-commits).";
+
+fn page_routes(rel: &str) -> Result<Vec<String>, TestError> {
+    Ok(agreement::signing_routes(&read(rel)?))
+}
+
+#[test]
+fn a01_readme_sends_no_one_to_the_signing_flow() -> Result<(), TestError> {
+    let found = page_routes(CONTRIBUTOR_PAGES[0])?;
+    assert!(found.is_empty(), "README.md: {found:?}");
+    Ok(())
+}
+
+#[test]
+fn a02_contributing_sends_no_one_to_the_signing_flow() -> Result<(), TestError> {
+    let found = page_routes(CONTRIBUTOR_PAGES[1])?;
+    assert!(found.is_empty(), "CONTRIBUTING.md: {found:?}");
+    Ok(())
+}
+
+#[test]
+fn a03_maintainers_sends_no_one_to_the_signing_flow() -> Result<(), TestError> {
+    let found = page_routes(CONTRIBUTOR_PAGES[2])?;
+    assert!(found.is_empty(), "MAINTAINERS.md: {found:?}");
+    Ok(())
+}
+
+#[test]
+fn a04_the_retired_cla_page_sends_no_one_to_the_signing_flow() -> Result<(), TestError> {
+    let found = page_routes(CONTRIBUTOR_PAGES[3])?;
+    assert!(found.is_empty(), "website/content/cla.md: {found:?}");
+    Ok(())
+}
+
+#[test]
+fn a05_the_site_contributing_page_sends_no_one_to_the_signing_flow() -> Result<(), TestError> {
+    let found = page_routes(CONTRIBUTOR_PAGES[4])?;
+    assert!(
+        found.is_empty(),
+        "website/content/docs/contributing.md: {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a06_the_homepage_sends_no_one_to_the_signing_flow() -> Result<(), TestError> {
+    let found = page_routes(CONTRIBUTOR_PAGES[5])?;
+    assert!(found.is_empty(), "website/templates/index.html: {found:?}");
+    Ok(())
+}
+
+#[test]
+fn a07_the_release_page_sends_no_one_to_the_signing_flow() -> Result<(), TestError> {
+    let found = page_routes(CONTRIBUTOR_PAGES[6])?;
+    assert!(
+        found.is_empty(),
+        "docs/internals/build-ci-release.md: {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a08_the_retired_cla_page_says_it_is_retired() -> Result<(), TestError> {
+    // The body a reader sees, not the front matter's description.
+    let page = read("website/content/cla.md")?;
+    let body = page
+        .splitn(3, "+++")
+        .nth(2)
+        .ok_or("website/content/cla.md has no front matter")?;
+    let found = agreement::notice_problems(body);
+    assert!(found.is_empty(), "website/content/cla.md body: {found:?}");
+    Ok(())
+}
+
+#[test]
+fn a09_contributings_agreement_section_says_it_is_retired() -> Result<(), TestError> {
+    let text = flat_section("CONTRIBUTING.md", "Contributor license agreement")?;
+    let found = agreement::notice_problems(&text);
+    assert!(found.is_empty(), "CONTRIBUTING.md: {found:?}");
+    Ok(())
+}
+
+#[test]
+fn a10_maintainers_agreement_section_says_it_is_retired() -> Result<(), TestError> {
+    let text = flat_section("MAINTAINERS.md", "The contributor agreement")?;
+    let found = agreement::notice_problems(&text);
+    assert!(found.is_empty(), "MAINTAINERS.md: {found:?}");
+    Ok(())
+}
+
+#[test]
+fn a11_the_site_contributing_copy_says_it_is_retired() -> Result<(), TestError> {
+    let text = flat_section(
+        "website/content/docs/contributing.md",
+        "Contributor license agreement",
+    )?;
+    let found = agreement::notice_problems(&text);
+    assert!(
+        found.is_empty(),
+        "website/content/docs/contributing.md: {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a12_the_code_review_section_names_every_required_check() -> Result<(), TestError> {
+    let text = flat_section("CONTRIBUTING.md", "Code review")?;
+    let found = agreement::unnamed_checks(&text, &required_checks()?);
+    assert!(
+        found.is_empty(),
+        "CONTRIBUTING.md's code review section leaves out {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a13_no_contributor_page_calls_the_retired_check_required() -> Result<(), TestError> {
+    for rel in CONTRIBUTOR_PAGES {
+        let found = agreement::retired_check_called_required(&gov::flat(&read(rel)?));
+        assert!(
+            found.is_empty(),
+            "{rel} calls `license/cla` required: {found:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a14_the_drift_test_declares_dco_required() -> Result<(), TestError> {
+    assert_eq!(
+        drift_test_constant("DECLARED_SIGN_OFF_CHECK")?,
+        "DCO",
+        "the required sign-off check is the `DCO` job of pr-text.yml"
+    );
+    assert_eq!(
+        drift_test_constant("RETIRED_CLA_CHECK")?,
+        "license/cla",
+        "the retired check the drift test refuses as required"
+    );
+    Ok(())
+}
+
+#[test]
+fn a15_readme_links_the_sign_off_how_to() -> Result<(), TestError> {
+    assert!(
+        read("README.md")?.contains("(CONTRIBUTING.md#signing-off-commits)"),
+        "README.md must link CONTRIBUTING.md#signing-off-commits"
+    );
+    Ok(())
+}
+
+#[test]
+fn a16_the_unbroken_fixtures_pass() {
+    assert!(agreement::notice_problems(NOTICE).is_empty(), "NOTICE");
+    assert!(
+        agreement::signing_routes(NOTICE).is_empty(),
+        "NOTICE routes"
+    );
+    let checks = ["CI success".to_string(), "DCO".to_string()];
+    assert!(
+        agreement::unnamed_checks("Requires `CI success` and `DCO`.", &checks).is_empty(),
+        "both named"
+    );
+}
+
+#[test]
+fn b01_a_signing_service_link_is_found() {
+    let found = agreement::signing_routes("[sign](https://cla-assistant.io/NormB/sipnab)");
+    assert_eq!(found, ["cla-assistant.io"], "{found:?}");
+}
+
+#[test]
+fn b02_an_instruction_to_sign_is_found() {
+    let found = agreement::signing_routes("Sign the CLA before your first pull request.");
+    assert_eq!(found, ["sign the cla"], "{found:?}");
+}
+
+#[test]
+fn b03_the_signing_sentence_is_found() {
+    let found = agreement::signing_routes("> I have read the CLA Document and I hereby sign it");
+    assert_eq!(found, ["hereby sign"], "{found:?}");
+}
+
+#[test]
+fn b04_the_signing_bot_is_found() {
+    let found = agreement::signing_routes("the `CLAassistant` bot comments");
+    assert_eq!(found, ["claassistant"], "{found:?}");
+}
+
+#[test]
+fn b05_a_badge_of_the_service_is_found() {
+    let found =
+        agreement::signing_routes("[![CLA](https://cla-assistant.io/readme/badge/NormB/sipnab)]");
+    assert_eq!(found, ["cla-assistant.io"], "{found:?}");
+}
+
+#[test]
+fn b06_a_sign_button_is_found() {
+    let found = agreement::signing_routes("<a class=\"btn\" href=\"x\">Sign the CLA &rarr;</a>");
+    assert_eq!(found, ["sign the cla"], "{found:?}");
+}
+
+#[test]
+fn b07_a_notice_without_retired_is_refused() {
+    let found = agreement::notice_problems(&NOTICE.replace("retired", "kept"));
+    assert!(gov_has(&found, "retired"), "{found:?}");
+}
+
+#[test]
+fn b08_a_notice_that_still_collects_signatures_is_refused() {
+    let found = agreement::notice_problems(&NOTICE.replace("no longer collects", "collects"));
+    assert!(
+        gov_has(&found, "no longer collects signatures"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn b09_a_notice_without_the_sign_off_link_is_refused() {
+    let found = agreement::notice_problems(
+        &NOTICE.replace("#signing-off-commits", "#pull-request-process"),
+    );
+    assert!(gov_has(&found, "signing-off-commits"), "{found:?}");
+}
+
+#[test]
+fn b10_a_required_check_left_out_is_named() {
+    let checks = ["CI success".to_string(), "DCO".to_string()];
+    let found = agreement::unnamed_checks("Requires `CI success`.", &checks);
+    assert_eq!(found, ["DCO"], "{found:?}");
+}
+
+#[test]
+fn b11_calling_the_retired_check_required_is_found() {
+    let found =
+        agreement::retired_check_called_required("Branch protection requires `license/cla`.");
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
+#[test]
+fn b12_the_old_pair_of_required_checks_is_found() {
+    let found = agreement::retired_check_called_required(
+        "It is fine. Branch protection on `main` requires `CI success` and `license/cla`. Done.",
+    );
+    assert_eq!(
+        found,
+        ["Branch protection on `main` requires `CI success` and `license/cla`"],
+        "{found:?}"
+    );
+}
+
+#[test]
+fn b13_a_merge_that_waits_for_the_retired_check_is_found() {
+    let found = agreement::retired_check_called_required(
+        "A pull request cannot merge until the `license/cla` check passes.",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
+#[test]
+fn b14_each_kind_of_route_is_reported_once() {
+    let found = agreement::signing_routes(
+        "Sign the CLA. Sign the CLA again at cla-assistant.io/x/y or cla-assistant.io/z.",
+    );
+    assert_eq!(found, ["cla-assistant.io", "sign the cla"], "{found:?}");
+}
+
+#[test]
+fn b15_a_notice_with_every_fault_reports_each() {
+    let found = agreement::notice_problems("This page holds an agreement.");
+    assert_eq!(found.len(), 3, "{found:?}");
+}
+
+#[test]
+fn c01_a_route_is_found_in_any_case() {
+    let found = agreement::signing_routes("SIGN THE CLA NOW");
+    assert_eq!(found, ["sign the cla"], "{found:?}");
+}
+
+#[test]
+fn c02_a_route_wrapped_across_lines_is_found() {
+    let found = agreement::signing_routes("Please sign the\nCLA before you open it.");
+    assert_eq!(found, ["sign the cla"], "{found:?}");
+}
+
+#[test]
+fn c03_words_that_contain_cla_are_not_routes() {
+    let found = agreement::signing_routes(
+        "We declare and sign the clause and its claims; SIGN THE CLAUSE.",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn c04_saying_the_cla_is_retired_is_not_a_route() {
+    let found =
+        agreement::signing_routes("The CLA is retired. Contributor License Agreement (retired).");
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn c05_no_longer_requiring_the_retired_check_is_allowed() {
+    for text in [
+        "Branch protection no longer requires `license/cla`.",
+        "Branch protection does not require `license/cla`, and CLA Assistant is off.",
+        "Main requires `DCO` in place of the retired `license/cla`.",
+    ] {
+        let found = agreement::retired_check_called_required(text);
+        assert!(found.is_empty(), "{text:?}: {found:?}");
+    }
+}
+
+#[test]
+fn c06_the_retired_check_in_another_sentence_than_requires_is_not_required() {
+    let found = agreement::retired_check_called_required(
+        "Branch protection requires `DCO`. The `license/cla` status was the old one.",
+    );
+    assert_eq!(
+        found,
+        ["The `license/cla` status was the old one"],
+        "{found:?}"
+    );
+}
+
+#[test]
+fn c07_a_bare_check_name_without_backticks_is_not_named() {
+    let checks = ["DCO".to_string()];
+    let found = agreement::unnamed_checks("The DCO check is required.", &checks);
+    assert_eq!(found, ["DCO"], "{found:?}");
+}
+
+#[test]
+fn c08_an_empty_text_has_no_route_and_every_notice_fault() {
+    assert!(agreement::signing_routes("").is_empty(), "empty routes");
+    assert_eq!(agreement::notice_problems("").len(), 3, "empty notice");
+}
+
+#[test]
+fn c09_crlf_text_is_read() {
+    let found = agreement::signing_routes("Sign the\r\nCLA.\r\n");
+    assert_eq!(found, ["sign the cla"], "{found:?}");
+}
+
+#[test]
+fn c10_both_spellings_of_the_sign_off_link_count() {
+    for link in [
+        "(CONTRIBUTING.md#signing-off-commits)",
+        "(@/docs/contributing.md#signing-off-commits)",
+        "(#signing-off-commits)",
+    ] {
+        let text = NOTICE.replace("(CONTRIBUTING.md#signing-off-commits)", link);
+        let found = agreement::notice_problems(&text);
+        assert!(found.is_empty(), "{link}: {found:?}");
+    }
+}
+
+#[test]
+fn c11_retired_is_read_in_any_case() {
+    let found = agreement::notice_problems(&NOTICE.replace("retired", "RETIRED"));
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn c12_a_check_named_twice_is_named() {
+    let checks = ["DCO".to_string()];
+    assert!(
+        agreement::unnamed_checks("`DCO`, then `DCO` again.", &checks).is_empty(),
+        "named twice is named"
+    );
+}
+
+#[test]
+fn c13_a_requires_sentence_without_the_retired_check_is_allowed() {
+    let found = agreement::retired_check_called_required(
+        "Branch protection requires `CI success` and `DCO`.",
+    );
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn c14_a_longer_check_name_does_not_count_for_a_shorter_one() {
+    let checks = ["DCO".to_string()];
+    let found = agreement::unnamed_checks("`DCO (advisory)` runs.", &checks);
+    assert_eq!(found, ["DCO"], "{found:?}");
+}
+
+#[test]
+fn a17_the_homepage_carries_no_agreement_pill() -> Result<(), TestError> {
+    assert!(
+        !read("website/templates/index.html")?.contains("@/cla.md"),
+        "the homepage still links the retired agreement as a trust claim"
+    );
+    Ok(())
+}
+
+#[test]
+fn b16_a_signing_link_in_an_attribute_is_found() {
+    let found =
+        agreement::signing_routes("<a href=\"https://cla-assistant.io/NormB/sipnab\">go</a>");
+    assert_eq!(found, ["cla-assistant.io"], "{found:?}");
+}
+
+#[test]
+fn b17_calling_the_retired_check_a_required_check_is_found() {
+    let found =
+        agreement::retired_check_called_required("`license/cla` is a required check on `main`.");
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
+#[test]
+fn c15_the_history_of_the_switch_is_allowed() {
+    let text = "Until the switch to the DCO, contributors signed the CLA, and branch \
+                protection required its `license/cla` status.";
+    let found = agreement::retired_check_called_required(text);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn c16_a_dot_inside_a_name_does_not_end_the_sentence() {
+    let found = agreement::retired_check_called_required(
+        "Run `check-dco.py` and it requires `license/cla`.",
+    );
+    assert_eq!(
+        found,
+        ["Run `check-dco.py` and it requires `license/cla`"],
+        "{found:?}"
+    );
+}
+
+fn gov_has(found: &[String], needle: &str) -> bool {
+    found.iter().any(|f| f.contains(needle))
+}
+
+/// The retired-CLA rules, each a pure function of the text it reads.
+mod agreement {
+    /// What sends a contributor to the retired signing flow, lowercase: the
+    /// service, its bot, an instruction to sign, and the sentence that signed.
+    pub const ROUTES: &[&str] = &[
+        "cla-assistant.io",
+        "claassistant",
+        "hereby sign",
+        "sign the cla",
+    ];
+
+    /// Each kind of route in `text`, once, in ROUTES order; whitespace runs
+    /// (line wraps) read as one space, case ignored.
+    pub fn signing_routes(text: &str) -> Vec<String> {
+        let flat = super::gov::flat(text).to_lowercase();
+        ROUTES
+            .iter()
+            .filter(|r| {
+                flat.match_indices(**r).any(|(at, _)| {
+                    let end = at + r.len();
+                    !flat[end..].starts_with(|c: char| c.is_ascii_alphanumeric())
+                })
+            })
+            .map(|r| r.to_string())
+            .collect()
+    }
+
+    /// What a page that keeps the agreement must say.
+    pub fn notice_problems(text: &str) -> Vec<String> {
+        let lower = super::gov::flat(text).to_lowercase();
+        let mut out = Vec::new();
+        if !lower.contains("retired") {
+            out.push("the notice must say the agreement is retired".to_string());
+        }
+        if !lower.contains("no longer collects signatures") {
+            out.push("the notice must say the project no longer collects signatures".to_string());
+        }
+        if !lower.contains("#signing-off-commits)") {
+            out.push("the notice must link the signing-off-commits how-to".to_string());
+        }
+        out
+    }
+
+    /// Each of `checks` that `text` does not name in backticks.
+    pub fn unnamed_checks(text: &str, checks: &[String]) -> Vec<String> {
+        checks
+            .iter()
+            .filter(|c| !text.contains(&format!("`{c}`")))
+            .cloned()
+            .collect()
+    }
+
+    /// Words that make a sentence about `license/cla` history, not a claim
+    /// that main requires it.
+    const HISTORY: &[&str] = &[
+        "no longer",
+        "does not require",
+        "retired",
+        "until the switch",
+    ];
+
+    /// Each sentence of `text` that calls the retired check required.
+    pub fn retired_check_called_required(text: &str) -> Vec<String> {
+        text.split(". ")
+            .map(|s| s.trim().trim_end_matches('.'))
+            .filter(|s| s.contains("`license/cla`"))
+            .filter(|s| {
+                let lower = s.to_lowercase();
+                !HISTORY.iter().any(|h| lower.contains(h))
+            })
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 /// The governance rules, each a pure function of the text it reads.

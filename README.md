@@ -575,13 +575,9 @@ We welcome contributions.
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) covers the build and test workflow, the
   git hooks, and the pull request checklist.
-- Before we can merge a pull request, you sign the
-  [Contributor License Agreement](CONTRIBUTING.md#contributor-license-agreement)
-  once.
-- A pull request cannot merge until the `license/cla` check passes.
-- Sign off each commit with `git commit -s`: the project is moving from the
-  CLA to the
+- Sign off each commit with `git commit -s`, under the
   [Developer Certificate of Origin](CONTRIBUTING.md#signing-off-commits).
+- A pull request cannot merge until the `DCO` check passes.
 - If your change adds a dependency, read
   [Dependencies](CONTRIBUTING.md#dependencies) first.
 - This project follows the
@@ -609,7 +605,6 @@ Found a vulnerability? **Do not open a public issue.**
 
 [![Patreon](https://img.shields.io/badge/Patreon-support-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/NormB975)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/NormB)
-[![CLA assistant](https://cla-assistant.io/readme/badge/NormB/sipnab)](https://cla-assistant.io/NormB/sipnab)
 
 ## License
 

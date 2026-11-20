@@ -87,11 +87,6 @@ const LANDINGS: &[Landing] = &[
     ),
     // Trust.
     (
-        "@/cla.md",
-        "📝 Contributor License Agreement",
-        &["Contributor License Agreement"],
-    ),
-    (
         "@/docs/install.md#verify-a-download-is-genuine",
         "🔏 Signed build provenance",
         &["provenance", "SBOM"],
