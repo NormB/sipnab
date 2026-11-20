@@ -840,6 +840,11 @@ fn diff_select(app: &mut App, msg_count: usize) {
                     msg1_idx: first,
                     msg2_idx: cur,
                 };
+            } else {
+                // Space on the message that is already selected deselects
+                // it, the selection and its "Selected: message N" hint
+                // together.
+                clear_diff_selection(app);
             }
         } else {
             // First selection
@@ -2240,6 +2245,29 @@ mod tests {
         app.status_error = Some("Mark set".to_string());
         clear_diff_selection(&mut app);
         assert_eq!(app.status_error.as_deref(), Some("Mark set"));
+        Ok(())
+    }
+
+    /// Space on the message that is already selected deselects it: the
+    /// selection and its "Selected: message N" hint are both gone.
+    #[test]
+    fn space_on_the_selected_message_deselects_it() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(app.flow.diff_selected.is_some());
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert_eq!(app.flow.diff_selected, None, "still selected");
+        assert!(
+            !app.status_error
+                .as_deref()
+                .is_some_and(|s| s.starts_with(DIFF_HINT_PREFIX)),
+            "hint left: {:?}",
+            app.status_error
+        );
+        // A third Space selects it again.
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(app.flow.diff_selected.is_some());
         Ok(())
     }
 
