@@ -3937,6 +3937,62 @@ mod tests {
         Ok(())
     }
 
+    /// The call list's `#` is the dialog's own number, given when it was
+    /// first seen: a search that hides the first two rows, or a reversed sort,
+    /// shows the third dialog as 3, never as its row position.
+    #[test]
+    fn the_index_column_is_the_dialog_number_not_the_row() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("num-1@test", "1001", "1002", base_ts())?,
+            make_invite("num-2@test", "1003", "1004", base_ts())?,
+            make_invite("num-3@test", "1005", "1006", base_ts())?,
+        ]);
+        // The number after each row's checkbox, top to bottom.
+        let numbers = |app: &mut App| -> Result<Vec<String>, TestError> {
+            app.elapse_churn_floors_for_test();
+            app.sync_caches();
+            let mut terminal = Terminal::new(TestBackend::new(120, 12))?;
+            terminal.draw(|f| app.render(f))?;
+            Ok((0..12u16)
+                .map(|y| {
+                    (0..120u16)
+                        .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .filter(|line| line.contains("INVITE"))
+                .filter_map(|line| {
+                    let (_, rest) = line.split_once(']')?;
+                    rest.split_whitespace().next().map(str::to_string)
+                })
+                .collect())
+        };
+        assert_eq!(numbers(&mut app)?, ["1", "2", "3"]);
+        app.search_query = "1005".to_string();
+        assert_eq!(numbers(&mut app)?, ["3"], "a search keeps the number");
+        app.search_query.clear();
+        app.call_list.reverse_sort();
+        assert_eq!(numbers(&mut app)?, ["3", "2", "1"], "a reversed sort keeps it");
+        // A number wider than the box is shown whole, never cut short.
+        if let Some(d) = app.dialog_store.write().get_mut("num-3@test") {
+            d.number = 123_456;
+        }
+        app.dialog_store.write().retain(|_| true); // a change the tick sees
+        app.elapse_churn_floors_for_test();
+        app.sync_caches();
+        let mut terminal = Terminal::new(TestBackend::new(120, 12))?;
+        terminal.draw(|f| app.render(f))?;
+        let shown = (0..12u16).any(|y| {
+            let line: String = (0..120u16)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
+                .collect();
+            line.contains(" 123456 ") && line.contains("INVITE")
+        });
+        assert!(shown, "the six-digit number is shown whole");
+        Ok(())
+    }
+
     /// Sticky-bottom autoscroll is tick logic, not render logic: with the
     /// selection on the last row and new dialogs arriving, sync_caches()
     /// must pull the selection to the new bottom.
