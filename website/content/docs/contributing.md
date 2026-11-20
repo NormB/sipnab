@@ -48,53 +48,17 @@ a committer and how the project makes decisions.
 
 ## Contributor license agreement
 
-Sign the sipnab [Contributor License Agreement](https://github.com/NormB/sipnab/blob/main/CLA.md) before your first pull
-request merges.
-
-- It is a one-time step covering all of your contributions.
-- You keep full ownership of your work.
-
-The text exists in three copies:
-
-- `CLA.md` holds the text.
-- <https://sipnab.com/cla/> republishes it.
-- [CLA Assistant](https://cla-assistant.io/NormB/sipnab) shows the same words
-  to signers.
-- A gate keeps the first two copies identical.
-  [MAINTAINERS.md](https://github.com/NormB/sipnab/blob/main/MAINTAINERS.md#the-contributor-agreement) records who
-  re-checks the third.
-
-Open your pull request as normal. If anyone who committed to it has not signed,
-the `CLAassistant` bot comments within a minute or so. You have two ways to
-answer it:
-
-- follow its link and authorize CLA Assistant with your GitHub account,
-- or post this exact sentence as a pull request comment.
-
-> I have read the CLA Document and I hereby sign the CLA
-
-Post it verbatim.
-
-- The bot matches the whole sentence.
-- So a reworded version reads as an ordinary comment and signs nothing.
-- The bot then reports a `license/cla` status on the pull request.
-- It turns the status green once everyone who committed to that branch has
-  signed.
-
-**A merge waits for it.**
-
-- Branch protection on `main` requires `license/cla` alongside `CI success`.
-- So a pull request cannot merge until everyone who committed to it has signed.
-- Bot accounts such as Dependabot cannot sign an agreement. They are on the
-  allowlist in the CLA Assistant settings. So their pull requests pass the
-  check without one.
+The project retired the [Contributor License Agreement](https://github.com/NormB/sipnab/blob/main/CLA.md). It no longer
+collects signatures, and no check asks for one. Sign off your commits instead,
+as [Signing off commits](#signing-off-commits) describes.
+[MAINTAINERS.md](https://github.com/NormB/sipnab/blob/main/MAINTAINERS.md#the-contributor-agreement) says what changed.
 
 ## Signing off commits
 
-The project is moving from the CLA to the
-[Developer Certificate of Origin](https://developercertificate.org/) (DCO).
-Until the switch is complete, both apply: sign the CLA as described above,
-and sign off every commit as described here.
+Every commit of a pull request carries a
+[Developer Certificate of Origin](https://developercertificate.org/) (DCO)
+sign-off, and branch protection on `main` requires the `DCO` check that reads
+it.
 
 **What a sign-off is.** It is one line at the end of the commit message, with
 your name and the author email of the commit, which must be your GitHub
@@ -152,11 +116,6 @@ sign-off:
 - `no Signed-off-by line names the author email`: the line names another
   address, has no name, or has text after the address. Sign off again with
   `git commit --amend -s` or `git rebase --signoff origin/main`.
-
-**During the switch.** Branch protection does not require the `DCO` check yet.
-`license/cla` stays required until the repository owner changes branch
-protection. [MAINTAINERS.md](https://github.com/NormB/sipnab/blob/main/MAINTAINERS.md#the-contributor-agreement) records
-the steps.
 
 ## Prerequisites
 
@@ -495,7 +454,7 @@ gates when GitHub already proved the tagged commit:
 - every tagged commit is on `main`, by GitHub's compare API;
 - every check that `main` requires concluded `success` on that commit, or on
   the head of the merged pull request it merges, when GitHub reports the same
-  tree for both. The PR-text check and `license/cla` run only on a pull
+  tree for both. The PR-text checks, `DCO` among them, run only on a pull
   request's head.
 
 The hook then prints one line naming the commit, the number of required checks
@@ -1384,19 +1343,19 @@ maintainer writes.
 - **A changelog entry.** A user-visible change adds an entry under
   `## [Unreleased]` in [CHANGELOG.md](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md), in
   [the format of an entry](https://github.com/NormB/sipnab/blob/main/docs/internals/build-ci-release.md#the-format-of-an-entry).
-- **The contributor agreement.** Everyone who committed to the branch has
-  signed the [CLA](#contributor-license-agreement).
+- **The sign-off.** Every commit carries a DCO sign-off, as
+  [Signing off commits](#signing-off-commits) describes.
 
 ### What a change needs before it can merge
 
 A pull request is acceptable when all of these hold:
 
 - **The required checks are green.**
-  - Branch protection on `main` requires `CI success` and `license/cla`.
+  - Branch protection on `main` requires `CI success` and `DCO`.
   - It requires the branch to be up to date with `main` before it merges.
   - `CI success` passes only when every CI job it depends on passes.
-  - `license/cla` passes when everyone who committed to the branch has signed
-    the CLA.
+  - `DCO` passes when every commit of the branch carries a sign-off, or needs
+    none.
 - **Every commit carries a signature.**
   - Branch protection on `main` requires signed commits. So GitHub refuses a
     merge that contains an unsigned or unverified one.

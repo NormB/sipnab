@@ -183,8 +183,9 @@ jobs:
     # `Signed-off-by:` line naming the author's email, which must be a GitHub
     # noreply address, except for a verified
     # commit authored and committed by the repository owner, or a verified
-    # commit by a GitHub Bot account. Branch protection does not require this
-    # check yet; the repository owner decides when it replaces `license/cla`.
+    # commit by a GitHub Bot account. Branch protection requires this check
+    # in place of the retired `license/cla`; tests/branch_protection_drift_test.rs
+    # holds that.
     # Like the `commits` job, it runs main's script and reads the pull
     # request's commits as data. GitHub's commit API is asked once per commit,
     # because the author's account type and the signature verdict are not in
