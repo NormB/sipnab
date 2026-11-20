@@ -8,6 +8,17 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A filter's regexes have a budget, so one filter cannot take seconds to read.**
+  - Was: A filter compiled every `=~` regex on reading; `(?i)` classes such as `[\D]` cost about 0.4 s per KiB, with no total.
+  - Effect: One expression holds at most 8 regexes, 1024 bytes of regex text and 16 classes, checked before compiling.
+  - Effect: MCP `search_messages` with `regex: true` also refuses a pattern of more than 16 classes.
+  - Do: Join alternatives into one regex, or write `\d` and `\w`, which do not count, in place of classes.
+  - Docs: [Parser constraints](docs/filter-dsl.md#parser-constraints), [Search messages with a regular expression](docs/mcp.md#search-messages-with-a-regular-expression)
+
 ## [0.5.268] - 2026-11-20
 
 ### Fixed

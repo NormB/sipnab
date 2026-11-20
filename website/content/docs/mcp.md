@@ -351,9 +351,10 @@ What to know when you write a pattern:
   line end.
 - **The pattern sees the bytes of the message,** the bytes `payload =~` scans
   in a [filter expression](@/docs/filter-dsl.md).
-- **Three limits bound a pattern:** it is at most 1024 bytes long, it compiles
-  to at most 1000000 bytes, and one call scans for at most 5 s. The syntax has
-  no look-around and no back references.
+- **Four limits bound a pattern:** it is at most 1024 bytes long, it holds at
+  most 16 character classes (each `[`, `\p` or `\P`), it compiles to at most
+  1000000 bytes, and one call scans for at most 5 s. The syntax has no
+  look-around and no back references.
 
 ### Check that the regex search worked
 

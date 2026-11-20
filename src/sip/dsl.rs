@@ -71,6 +71,125 @@ const MAX_EXPRESSION_NODES: usize = 1024;
 /// Maximum regex size in bytes (D17).
 pub(crate) const REGEX_SIZE_LIMIT: usize = 1_000_000;
 
+// ── Regex budget of one expression ──────────────────────────────────
+//
+// [`REGEX_SIZE_LIMIT`] bounds a compiled program, not the work done to reach
+// it. The regex crate case-folds a bracket class or a Unicode class under
+// `(?i)` over the whole range it covers while it translates the pattern, before
+// the size limit is consulted. Measured 2026-11-20 on an optimized build: 1 KiB
+// of `(?i)[\D]` took 369 ms to compile and 16 KiB took 98 s in a debug build;
+// a near-limit `\w{n}` costs about 6 ms each. Every `=~` value is compiled when
+// the expression is parsed, so before this budget one `--filter`, REST `filter`
+// or MCP filter argument of 512 comparisons could cost seconds of CPU and,
+// near the size limit, hundreds of megabytes. The same cost timed out the
+// ClusterFuzzLite corpus merge of `fuzz_filter_dsl`.
+//
+// The three limits below are spent by all regexes of one expression together
+// and are checked on the pattern text before the regex crate sees it, so a
+// refused expression costs a scan of its text. Every documented filter holds
+// one regex of under 60 bytes. Within the budget the costliest expression
+// measured on the same build took 131 ms: eight 103-byte patterns of many `?`
+// from the fuzz corpus, about 16 ms each in the regex crate's own bounded
+// literal analysis.
+
+/// Most `=~` comparisons one filter expression may hold.
+pub(crate) const MAX_REGEX_COMPARISONS: usize = 8;
+
+/// Most pattern bytes the regexes of one expression may hold together.
+///
+/// Also the most one MCP `search_messages` pattern may hold.
+pub(crate) const MAX_REGEX_PATTERN_BYTES: usize = 1024;
+
+/// Most character classes the regexes of one expression may hold together.
+///
+/// What [`regex_class_count`] counts: each `[` and each `\p`/`\P`.
+pub(crate) const MAX_REGEX_CLASSES: usize = 16;
+
+/// The character classes in `pattern` the regex crate may case-fold: each `[`
+/// that is not escaped (a nested class is folded on its own, so each counts)
+/// and each `\p` or `\P` Unicode class. A `\` escapes the character after it,
+/// so `\[` is a literal and `\\[` is a backslash and then a class.
+///
+/// A count of the text, not a parse: a `[` the regex crate reads as a literal
+/// (`[[]`) counts too, which only ever refuses sooner.
+pub(crate) fn regex_class_count(pattern: &str) -> usize {
+    let mut count = 0;
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if matches!(chars.next(), Some('p' | 'P')) {
+                    count += 1;
+                }
+            }
+            '[' => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
+/// The limit of a [`RegexBudget`] a pattern went past.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegexOverBudget {
+    /// More than [`MAX_REGEX_COMPARISONS`] regexes.
+    Comparisons,
+    /// More than [`MAX_REGEX_PATTERN_BYTES`] pattern bytes.
+    PatternBytes,
+    /// More than [`MAX_REGEX_CLASSES`] character classes.
+    Classes,
+}
+
+/// What the regexes of one expression may still spend before they compile.
+///
+/// One budget per parse (or per MCP search): each pattern is spent with
+/// [`RegexBudget::spend`] before it is handed to the regex crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RegexBudget {
+    /// Regexes still allowed.
+    comparisons: usize,
+    /// Pattern bytes still allowed.
+    bytes: usize,
+    /// Character classes still allowed.
+    classes: usize,
+}
+
+impl RegexBudget {
+    /// The whole budget: [`MAX_REGEX_COMPARISONS`], [`MAX_REGEX_PATTERN_BYTES`]
+    /// and [`MAX_REGEX_CLASSES`].
+    pub(crate) const fn new() -> Self {
+        Self {
+            comparisons: MAX_REGEX_COMPARISONS,
+            bytes: MAX_REGEX_PATTERN_BYTES,
+            classes: MAX_REGEX_CLASSES,
+        }
+    }
+
+    /// Spends `pattern` from the budget, or names the limit it goes past and
+    /// spends nothing. The limits are checked in the order comparisons, bytes,
+    /// classes; the classes are counted only on a pattern within the bytes.
+    ///
+    /// # Errors
+    ///
+    /// The [`RegexOverBudget`] limit `pattern` would go past.
+    pub(crate) fn spend(&mut self, pattern: &str) -> Result<(), RegexOverBudget> {
+        if self.comparisons == 0 {
+            return Err(RegexOverBudget::Comparisons);
+        }
+        if pattern.len() > self.bytes {
+            return Err(RegexOverBudget::PatternBytes);
+        }
+        let classes = regex_class_count(pattern);
+        if classes > self.classes {
+            return Err(RegexOverBudget::Classes);
+        }
+        self.comparisons -= 1;
+        self.bytes -= pattern.len();
+        self.classes -= classes;
+        Ok(())
+    }
+}
+
 /// Compiles `pattern` for a scan of raw message bytes.
 ///
 /// The one compile rule for the two surfaces that search a whole message with
@@ -1075,7 +1194,10 @@ impl FilterExpr {
         // Count max nesting depth before parsing
         check_nesting_depth(trimmed)?;
 
-        let (remaining, expr) = parse_or_expr(trimmed).map_err(|e| match e {
+        // One regex budget for the whole expression, spent by every `=~`
+        // value before it compiles.
+        let mut budget = RegexBudget::new();
+        let (remaining, expr) = parse_or_expr(trimmed, &mut budget).map_err(|e| match e {
             nom::Err::Error(err) | nom::Err::Failure(err) => {
                 let pos = trimmed.len() - err.input.len();
                 SyntaxError::at(trimmed, pos, &parse_problem(err.code)).into()
@@ -1349,8 +1471,11 @@ type NomErr<'a> = nom::error::Error<&'a str>;
 /// The unconsumed remainder and the parsed node — a left-associative `Or`
 /// chain (or just the single and-expression) — or a nom error at the
 /// failing position.
-fn parse_or_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
-    let (input, first) = parse_and_expr(input)?;
+fn parse_or_expr<'a>(
+    input: &'a str,
+    budget: &mut RegexBudget,
+) -> IResult<&'a str, Expr, NomErr<'a>> {
+    let (input, first) = parse_and_expr(input, budget)?;
     let mut result = first;
     let mut remaining = input;
 
@@ -1362,7 +1487,7 @@ fn parse_or_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
         )
         .parse(trimmed)
         {
-            let (rest, right) = parse_and_expr(after_or)?;
+            let (rest, right) = parse_and_expr(after_or, budget)?;
             result = Expr::Or(Box::new(result), Box::new(right));
             remaining = rest;
         } else {
@@ -1386,9 +1511,12 @@ fn parse_or_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 /// The unconsumed remainder and the parsed node — a left-associative
 /// `And` chain (or just the single not-expression) — or a nom error at
 /// the failing position.
-fn parse_and_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
+fn parse_and_expr<'a>(
+    input: &'a str,
+    budget: &mut RegexBudget,
+) -> IResult<&'a str, Expr, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
-    let (input, first) = parse_not_expr(input)?;
+    let (input, first) = parse_not_expr(input, budget)?;
     let mut result = first;
     let mut remaining = input;
 
@@ -1400,7 +1528,7 @@ fn parse_and_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
         )
         .parse(trimmed)
         {
-            let (rest, right) = parse_not_expr(after_and)?;
+            let (rest, right) = parse_not_expr(after_and, budget)?;
             result = Expr::And(Box::new(result), Box::new(right));
             remaining = rest;
         } else {
@@ -1422,7 +1550,10 @@ fn parse_and_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 ///
 /// The unconsumed remainder and either a `Not` wrapping the atom or the
 /// atom itself, or a nom error from the atom parser.
-fn parse_not_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
+fn parse_not_expr<'a>(
+    input: &'a str,
+    budget: &mut RegexBudget,
+) -> IResult<&'a str, Expr, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
 
     // Try "NOT" followed by whitespace
@@ -1432,11 +1563,11 @@ fn parse_not_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     )
     .parse(input)
     {
-        let (rest, inner) = parse_atom(after_not)?;
+        let (rest, inner) = parse_atom(after_not, budget)?;
         return Ok((rest, Expr::Not(Box::new(inner))));
     }
 
-    parse_atom(input)
+    parse_atom(input, budget)
 }
 
 /// Parse an atom: parenthesized expression or comparison.
@@ -1449,20 +1580,20 @@ fn parse_not_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 ///
 /// The unconsumed remainder and the inner expression (parens are consumed
 /// but add no node), or a nom error when neither form parses.
-fn parse_atom(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
+fn parse_atom<'a>(input: &'a str, budget: &mut RegexBudget) -> IResult<&'a str, Expr, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
 
     // Try parenthesized expression
     if input.starts_with('(') {
         let (input, _) = char('(').parse(input)?;
-        let (input, expr) = parse_or_expr(input)?;
+        let (input, expr) = parse_or_expr(input, budget)?;
         let (input, _) = multispace0(input)?;
         let (input, _) = char(')').parse(input)?;
         return Ok((input, expr));
     }
 
     // Otherwise, parse a comparison
-    parse_comparison(input)
+    parse_comparison(input, budget)
 }
 
 /// Parse a comparison: `field operator value`, with optional whitespace
@@ -1476,7 +1607,10 @@ fn parse_atom(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 ///
 /// The unconsumed remainder and an `Expr::Compare` leaf, or the first nom
 /// error from the field, operator, or value parser.
-fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
+fn parse_comparison<'a>(
+    input: &'a str,
+    budget: &mut RegexBudget,
+) -> IResult<&'a str, Expr, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
     let (input, field) = parse_field(input)?;
     let (input, _) = multispace0(input)?;
@@ -1495,7 +1629,7 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
         )));
     }
     let (input, _) = multispace0(input)?;
-    let (input, value) = parse_value(input, &field, op)?;
+    let (input, value) = parse_value(input, &field, op, budget)?;
 
     Ok((input, Expr::Compare(field, op, value)))
 }
@@ -1736,6 +1870,15 @@ const SYMBOLIC_COMBINATOR: nom::error::ErrorKind = nom::error::ErrorKind::Escape
 /// [`REGEX_SIZE_LIMIT`]. Unused by every combinator here.
 const REGEX_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::RegexpMatch;
 
+/// A regex past [`MAX_REGEX_COMPARISONS`] in one expression.
+const REGEX_TOO_MANY: nom::error::ErrorKind = nom::error::ErrorKind::RegexpFind;
+
+/// A regex past [`MAX_REGEX_PATTERN_BYTES`] in one expression.
+const REGEX_TOO_LONG: nom::error::ErrorKind = nom::error::ErrorKind::RegexpCapture;
+
+/// A regex past [`MAX_REGEX_CLASSES`] in one expression.
+const REGEX_TOO_MANY_CLASSES: nom::error::ErrorKind = nom::error::ErrorKind::RegexpCaptures;
+
 /// The headline for a parse error of `kind`.
 ///
 /// Only the two header-name problems get words of their own: every other
@@ -1772,6 +1915,18 @@ fn parse_problem(kind: nom::error::ErrorKind) -> String {
         REGEX_INVALID => {
             format!("the regex does not compile or is larger than {REGEX_SIZE_LIMIT} bytes")
         }
+        REGEX_TOO_MANY => format!(
+            "too many regexes: one expression holds at most \
+             {MAX_REGEX_COMPARISONS} regex comparisons (=~)"
+        ),
+        REGEX_TOO_LONG => format!(
+            "regex too long: the regexes of one expression hold at most \
+             {MAX_REGEX_PATTERN_BYTES} bytes together"
+        ),
+        REGEX_TOO_MANY_CLASSES => format!(
+            "too many regex classes: the regexes of one expression hold at most \
+             {MAX_REGEX_CLASSES} character classes (each [, \\p or \\P) together"
+        ),
         _ => "unexpected input".to_string(),
     }
 }
@@ -2248,6 +2403,7 @@ fn parse_value<'a>(
     input: &'a str,
     field: &Field,
     op: Operator,
+    budget: &mut RegexBudget,
 ) -> IResult<&'a str, Value, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
     let fail = |at: &'a str, kind| nom::Err::Failure(nom::error::Error::new(at, kind));
@@ -2285,6 +2441,18 @@ fn parse_value<'a>(
     };
 
     if op == Operator::Regex {
+        // Spent before the compile: a pattern past the budget never reaches
+        // the regex crate (see `RegexBudget`).
+        budget.spend(&text).map_err(|over| {
+            fail(
+                input,
+                match over {
+                    RegexOverBudget::Comparisons => REGEX_TOO_MANY,
+                    RegexOverBudget::PatternBytes => REGEX_TOO_LONG,
+                    RegexOverBudget::Classes => REGEX_TOO_MANY_CLASSES,
+                },
+            )
+        })?;
         // `payload` greps the raw message bytes, so its regex is compiled
         // with the byte engine to match without a lossy UTF-8 copy.
         if *field == Field::Payload {
@@ -5312,6 +5480,127 @@ mod tests {
 
 /// Tests for the unknown-field diagnostic: naming the field, suggesting
 /// the closest valid one, and keeping FIELD_NAMES in sync with the parser.
+#[cfg(test)]
+mod regex_budget_tests {
+    use super::*;
+
+    #[test]
+    fn a_pattern_without_classes_counts_none() {
+        assert_eq!(
+            regex_class_count("(?i)friendly-scanner"),
+            0,
+            "no class at all"
+        );
+        assert_eq!(regex_class_count(""), 0, "the empty pattern");
+    }
+
+    #[test]
+    fn each_bracket_and_unicode_class_counts_once() {
+        assert_eq!(regex_class_count("[a-z][0-9]"), 2, "two bracket classes");
+        assert_eq!(
+            regex_class_count("\\pL\\PL\\p{Greek}"),
+            3,
+            "three Unicode classes"
+        );
+        assert_eq!(
+            regex_class_count("[[a][b]]"),
+            3,
+            "a nested class counts per bracket"
+        );
+    }
+
+    #[test]
+    fn an_escape_consumes_the_character_after_it() {
+        assert_eq!(
+            regex_class_count("\\[x\\]"),
+            0,
+            "an escaped bracket is a literal"
+        );
+        assert_eq!(
+            regex_class_count("\\\\[x]"),
+            1,
+            "an escaped backslash, then a class"
+        );
+        assert_eq!(
+            regex_class_count("\\\\pL"),
+            0,
+            "an escaped backslash, then the letters pL"
+        );
+        assert_eq!(
+            regex_class_count("\\d\\w\\D"),
+            0,
+            "Perl classes are not counted"
+        );
+        assert_eq!(
+            regex_class_count("a\\"),
+            0,
+            "a trailing backslash ends the scan"
+        );
+    }
+
+    #[test]
+    fn a_fresh_budget_takes_exactly_its_limits() {
+        let mut budget = RegexBudget::new();
+        let classes = "[a]".repeat(MAX_REGEX_CLASSES);
+        assert_eq!(budget.spend(&classes), Ok(()), "the class limit fits");
+        assert_eq!(
+            budget.spend("[b]"),
+            Err(RegexOverBudget::Classes),
+            "one past it does not"
+        );
+
+        let mut budget = RegexBudget::new();
+        let bytes = "a".repeat(MAX_REGEX_PATTERN_BYTES);
+        assert_eq!(budget.spend(&bytes), Ok(()), "the byte limit fits");
+        assert_eq!(
+            budget.spend("b"),
+            Err(RegexOverBudget::PatternBytes),
+            "one past it does not"
+        );
+
+        let mut budget = RegexBudget::new();
+        for n in 0..MAX_REGEX_COMPARISONS {
+            assert_eq!(budget.spend(""), Ok(()), "comparison {n} fits");
+        }
+        assert_eq!(
+            budget.spend(""),
+            Err(RegexOverBudget::Comparisons),
+            "one past them does not"
+        );
+    }
+
+    #[test]
+    fn a_refused_spend_spends_nothing() {
+        let mut budget = RegexBudget::new();
+        let before = budget;
+        assert_eq!(
+            budget.spend(&"[a]".repeat(MAX_REGEX_CLASSES + 1)),
+            Err(RegexOverBudget::Classes),
+            "past the class limit"
+        );
+        assert_eq!(budget, before, "a refusal leaves the budget as it was");
+    }
+
+    #[test]
+    fn the_limits_are_checked_comparisons_then_bytes_then_classes() {
+        let mut budget = RegexBudget::new();
+        let both = "[a]".repeat(MAX_REGEX_PATTERN_BYTES);
+        assert_eq!(
+            budget.spend(&both),
+            Err(RegexOverBudget::PatternBytes),
+            "past bytes and classes: bytes name it"
+        );
+        for _ in 0..MAX_REGEX_COMPARISONS {
+            let _ = budget.spend("");
+        }
+        assert_eq!(
+            budget.spend(&both),
+            Err(RegexOverBudget::Comparisons),
+            "past all three: comparisons name it"
+        );
+    }
+}
+
 #[cfg(test)]
 mod unknown_field_hint_tests {
     use super::*;
