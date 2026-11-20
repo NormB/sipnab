@@ -181,6 +181,18 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
         Span::raw(format!(
             "{L1_GAP}Dialogs: {displayed_count} shown of {total_count}"
         )),
+        // The order of the rows, always named: `<`, `>`, `Z` and `L` change
+        // it, and a list sorted by some other column than the number reads
+        // as dialogs jumping around.
+        Span::raw(format!(
+            "{L1_GAP}Sort: {} {}",
+            app.call_list.sort_column().label(),
+            if app.call_list.sort_ascending() {
+                "\u{25b2}"
+            } else {
+                "\u{25bc}"
+            }
+        )),
         Span::raw(format!(
             "{L1_GAP}Autoscroll: {}",
             if app.call_list.autoscroll {

@@ -124,6 +124,9 @@ pub enum CallListAction {
     /// `Y` — copy the filter in force as a `sipnab … --filter '…'` command
     /// line, and show it.
     CopyFilterCommand,
+    /// `L` — toggle "last updated last" (order by each dialog's last
+    /// message) against the number order.
+    ToggleLastUpdateOrder,
 }
 
 /// Pure key→action mapping for the call list view (keymap-aware).
@@ -197,6 +200,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         // `y` copies a message in the call flow; `Y` copies the filter that
         // chose the calls on this list.
         KeyCode::Char('Y') => CopyFilterCommand,
+        KeyCode::Char('L') => ToggleLastUpdateOrder,
         _ => return None,
     })
 }
@@ -295,6 +299,7 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         CallListAction::SortPrevColumn => app.call_list.sort_prev_column(),
         CallListAction::SortNextColumn => app.call_list.sort_next_column(),
         CallListAction::ReverseSort => app.call_list.reverse_sort(),
+        CallListAction::ToggleLastUpdateOrder => app.call_list.toggle_last_update_order(),
         CallListAction::ToggleAutoscroll => {
             app.call_list.autoscroll = !app.call_list.autoscroll;
         }

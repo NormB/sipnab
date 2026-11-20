@@ -23,8 +23,9 @@ CALL LIST:
   Enter            Open call flow
   Space            Select/deselect dialog
   Esc, q           Quit (asks first, Ctrl+C quits at once)
-  < / >            Change sort column
+  < / >            Change sort column (the status line shows Sort:)
   Z                Reverse sort direction
+  L                Last updated last (by each dialog's last message); again = number order
   A                Toggle autoscroll
   p                Pause/resume capture
   /                Search (arrows/Space work while typing; Enter opens)
