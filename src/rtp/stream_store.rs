@@ -888,6 +888,10 @@ pub struct StreamStore {
     /// O(streams) per packet → O(calls²). Batched eviction amortizes it to O(1)
     /// per insertion. A value near evictions×max_streams means the regression is back.
     evict_shift_work: u64,
+    /// Streams discarded at `max_streams`, for the life of the store; a
+    /// merge adds its workers'. Read by
+    /// [`StreamStore::total_capacity_streams_evicted`].
+    capacity_streams_evicted: u64,
     /// Structural-change counter for cache invalidation — see
     /// `Self::generation`.
     generation: u64,
@@ -967,6 +971,7 @@ impl StreamStore {
             provenance: std::collections::HashMap::default(),
             link_scan_iters: 0,
             evict_shift_work: 0,
+            capacity_streams_evicted: 0,
             generation: 0,
             relay_control: crate::relay_vocab::ControlChannels::default_capacity(),
             live_sessions: std::collections::HashMap::default(),
@@ -1109,6 +1114,13 @@ impl StreamStore {
     /// signals the O(n)-per-eviction regression returned.
     pub fn evict_shift_work(&self) -> u64 {
         self.evict_shift_work
+    }
+
+    /// Streams discarded at `--max-streams` over the store's life, a merge's
+    /// workers included: each is media that left every report.
+    #[must_use]
+    pub fn total_capacity_streams_evicted(&self) -> u64 {
+        self.capacity_streams_evicted
     }
 
     /// Enable or disable audio payload buffering (see the field docs).
@@ -2715,6 +2727,9 @@ impl StreamStore {
             self.binding_seq = self.binding_seq.max(other.binding_seq);
             self.link_scan_iters += other.link_scan_iters;
             self.evict_shift_work += other.evict_shift_work;
+            self.capacity_streams_evicted = self
+                .capacity_streams_evicted
+                .saturating_add(other.capacity_streams_evicted);
             self.relay_control.merge(other.relay_control);
         }
         // Stable: equal positions keep the order the stores were given in.
@@ -2844,6 +2859,18 @@ impl StreamStore {
                 .collect();
             self.audio_bytes_retained = self.audio_bytes_retained.saturating_sub(freed);
             self.audio_release_cursor = self.audio_release_cursor.saturating_sub(batch);
+            // Counted and said HERE, on the one path that discards, so every
+            // caller (a packet, a merge) is covered by construction. It
+            // logged nothing before: the oldest streams left every report
+            // and no line said so.
+            let before = self.capacity_streams_evicted;
+            self.capacity_streams_evicted = before.saturating_add(batch as u64);
+            if crate::capture::count_warning_due(before, self.capacity_streams_evicted) {
+                tracing::warn!(
+                    "{}",
+                    stream_eviction_warning(self.max_streams, batch, self.capacity_streams_evicted)
+                );
+            }
             for key in &evicted {
                 if let Some(keys) = self.ssrc_index.get_mut(&key.ssrc) {
                     keys.retain(|k| k != key);
@@ -2866,6 +2893,16 @@ impl StreamStore {
             }
         }
     }
+}
+
+/// The WARN line for an eviction: the cap, this batch, the lifetime total
+/// and both ways to raise the cap.
+fn stream_eviction_warning(cap: usize, batch: usize, total: u64) -> String {
+    format!(
+        "the RTP stream store reached its cap of {cap} streams and discarded the {batch} \
+         oldest to make room ({total} stream(s) discarded so far): their media is in no \
+         report or output. Raise --max-streams or [limits] max_streams to keep more."
+    )
 }
 
 /// One remembered entry of a worker's table, by its key, with where the
@@ -7057,5 +7094,416 @@ a=rtpmap:96 H264/90000\r\n";
         let flow = merged.iter().next().ok_or("a stream")?.key.flow();
         assert_eq!(merged.get_live(&flow).map(|s| s.key.session), Some(1));
         Ok(())
+    }
+
+    /// Streams discarded at `--max-streams` are counted and said (backlog
+    /// IMPORT-V6 "50,001st triggers rotation, WARN logged"): before, the store
+    /// discarded the oldest streams and logged nothing, so their media left
+    /// every report with no line saying so.
+    mod capacity_eviction {
+        use super::*;
+
+        /// Create `n` distinct streams, one packet each, in order.
+        fn create_streams(store: &mut StreamStore, n: u16) {
+            for i in 0..n {
+                let p = make_parsed(20_000 + i, 40_000 + i, 160);
+                let r = make_rtp_header(0x1000_0000 + u32::from(i), 1);
+                store.process_rtp(&p, &r, ts(i64::from(i)));
+            }
+        }
+
+        /// Every stream created is either still held or counted as evicted.
+        fn assert_every_stream_accounted(store: &StreamStore, created: u16) {
+            assert_eq!(
+                store.total_capacity_streams_evicted() + store.len() as u64,
+                u64::from(created),
+                "held {} + evicted {} must equal the {created} streams created",
+                store.len(),
+                store.total_capacity_streams_evicted()
+            );
+        }
+
+        macro_rules! evicted_case {
+            ($name:ident,cap = $cap:expr,created = $n:expr,evicted = $want:expr) => {
+                #[test]
+                fn $name() -> Result<(), TestError> {
+                    let mut store = StreamStore::new($cap);
+                    create_streams(&mut store, $n);
+                    assert_eq!(
+                        store.total_capacity_streams_evicted(),
+                        $want,
+                        "cap {} with {} streams created",
+                        $cap,
+                        $n
+                    );
+                    assert_every_stream_accounted(&store, $n);
+                    Ok(())
+                }
+            };
+        }
+
+        // Success: the store evicted, and the count says how many.
+        evicted_case!(
+            cap_1_three_streams_evicts_two,
+            cap = 1,
+            created = 3,
+            evicted = 2
+        );
+        evicted_case!(
+            cap_1_ten_streams_evicts_nine,
+            cap = 1,
+            created = 10,
+            evicted = 9
+        );
+        evicted_case!(
+            cap_2_three_streams_evicts_one,
+            cap = 2,
+            created = 3,
+            evicted = 1
+        );
+        evicted_case!(
+            cap_2_seven_streams_evicts_five,
+            cap = 2,
+            created = 7,
+            evicted = 5
+        );
+        evicted_case!(
+            cap_10_eleven_streams_evicts_one,
+            cap = 10,
+            created = 11,
+            evicted = 1
+        );
+        evicted_case!(
+            cap_10_fifteen_streams_evicts_five,
+            cap = 10,
+            created = 15,
+            evicted = 5
+        );
+        evicted_case!(
+            cap_20_one_past_evicts_a_batch_of_two,
+            cap = 20,
+            created = 21,
+            evicted = 2
+        );
+        evicted_case!(
+            cap_20_two_past_is_still_one_batch,
+            cap = 20,
+            created = 22,
+            evicted = 2
+        );
+        evicted_case!(
+            cap_20_three_past_evicts_two_batches,
+            cap = 20,
+            created = 23,
+            evicted = 4
+        );
+        evicted_case!(
+            cap_100_one_past_evicts_ten,
+            cap = 100,
+            created = 101,
+            evicted = 10
+        );
+        evicted_case!(
+            cap_100_eleven_past_evicts_twenty,
+            cap = 100,
+            created = 111,
+            evicted = 20
+        );
+        evicted_case!(
+            cap_50_fifty_one_evicts_five,
+            cap = 50,
+            created = 51,
+            evicted = 5
+        );
+        evicted_case!(
+            cap_3_hundred_streams_evicts_ninety_seven,
+            cap = 3,
+            created = 100,
+            evicted = 97
+        );
+
+        // Failure: nothing was evicted, and nothing is counted.
+        evicted_case!(
+            empty_store_counts_nothing,
+            cap = 10,
+            created = 0,
+            evicted = 0
+        );
+        evicted_case!(
+            below_the_cap_counts_nothing,
+            cap = 10,
+            created = 9,
+            evicted = 0
+        );
+        evicted_case!(
+            exactly_the_cap_counts_nothing,
+            cap = 10,
+            created = 10,
+            evicted = 0
+        );
+        evicted_case!(
+            cap_1_one_stream_counts_nothing,
+            cap = 1,
+            created = 1,
+            evicted = 0
+        );
+        evicted_case!(
+            default_sized_cap_counts_nothing,
+            cap = 50_000,
+            created = 200,
+            evicted = 0
+        );
+
+        /// More packets of a stream already held never evict.
+        #[test]
+        fn packets_of_a_held_stream_never_evict() -> Result<(), TestError> {
+            let mut store = StreamStore::new(1);
+            let p = make_parsed(20_000, 40_000, 160);
+            for seq in 1..=50u16 {
+                store.process_rtp(&p, &make_rtp_header(0x2222, seq), ts(i64::from(seq)));
+            }
+            assert_eq!(store.len(), 1, "one stream, fifty packets");
+            assert_eq!(
+                store.total_capacity_streams_evicted(),
+                0,
+                "a stream's own packets are not new streams"
+            );
+            Ok(())
+        }
+
+        /// The count is a lifetime total: it does not fall when the store
+        /// refills after an eviction.
+        #[test]
+        fn the_count_only_grows() -> Result<(), TestError> {
+            let mut store = StreamStore::new(2);
+            let mut last = 0;
+            for i in 0..30u16 {
+                let p = make_parsed(21_000 + i, 41_000 + i, 160);
+                store.process_rtp(&p, &make_rtp_header(0x3000 + u32::from(i), 1), ts(0));
+                let now = store.total_capacity_streams_evicted();
+                assert!(now >= last, "fell from {last} to {now} at stream {i}");
+                last = now;
+            }
+            assert_eq!(last, 28, "30 streams through a cap of 2");
+            Ok(())
+        }
+
+        /// A multi-core merge carries each worker's evictions.
+        #[test]
+        fn a_merge_adds_the_workers_evictions() -> Result<(), TestError> {
+            let mut a = StreamStore::new(2);
+            create_streams(&mut a, 5);
+            let mut b = StreamStore::new(1);
+            for i in 0..3u16 {
+                let p = make_parsed(25_000 + i, 45_000 + i, 160);
+                b.process_rtp(&p, &make_rtp_header(0x5000 + u32::from(i), 1), ts(0));
+            }
+            assert_eq!(a.total_capacity_streams_evicted(), 3, "worker a");
+            assert_eq!(b.total_capacity_streams_evicted(), 2, "worker b");
+            let mut merged = StreamStore::new(100);
+            merged.merge_in_read_order([a, b], |_| 0u8);
+            assert_eq!(
+                merged.total_capacity_streams_evicted(),
+                5,
+                "the merged store reports what the workers discarded"
+            );
+            assert_eq!(merged.len(), 3, "two from a and one from b survive");
+            Ok(())
+        }
+
+        /// A merge into a smaller cap counts what the merge itself evicts.
+        #[test]
+        fn a_merge_counts_its_own_evictions() -> Result<(), TestError> {
+            let mut a = StreamStore::new(100);
+            create_streams(&mut a, 6);
+            let mut merged = StreamStore::new(4);
+            merged.merge(a);
+            assert_eq!(merged.len(), 4, "the merged cap holds");
+            assert_eq!(
+                merged.total_capacity_streams_evicted(),
+                2,
+                "six streams into a cap of four"
+            );
+            Ok(())
+        }
+
+        /// A merge of workers that evicted nothing reports nothing.
+        #[test]
+        fn a_merge_of_clean_workers_counts_nothing() -> Result<(), TestError> {
+            let mut a = StreamStore::new(100);
+            create_streams(&mut a, 6);
+            let mut merged = StreamStore::new(100);
+            merged.merge(a);
+            assert_eq!(
+                merged.total_capacity_streams_evicted(),
+                0,
+                "no eviction anywhere"
+            );
+            Ok(())
+        }
+
+        macro_rules! due_case {
+            ($name:ident, $before:expr, $after:expr, $want:expr) => {
+                #[test]
+                fn $name() -> Result<(), TestError> {
+                    let (before, after): (u64, u64) = ($before, $after);
+                    assert_eq!(
+                        crate::capture::count_warning_due(before, after),
+                        $want,
+                        "from {before} to {after} evicted"
+                    );
+                    Ok(())
+                }
+            };
+        }
+
+        // Success: a warning is due at the first eviction and at each power
+        // of ten the lifetime count reaches.
+        due_case!(due_at_the_first_eviction, 0, 1, true);
+        due_case!(due_at_a_first_batch, 0, 5000, true);
+        due_case!(due_on_reaching_ten, 9, 10, true);
+        due_case!(due_on_passing_ten_in_one_batch, 5, 15, true);
+        due_case!(due_on_reaching_a_hundred, 99, 100, true);
+        due_case!(due_on_reaching_a_million, 999_990, 1_000_000, true);
+        due_case!(due_on_crossing_two_powers_at_once, 9, 1000, true);
+
+        // Failure: no warning between powers of ten, or when nothing moved.
+        due_case!(not_due_when_nothing_was_evicted, 0, 0, false);
+        due_case!(not_due_between_one_and_ten, 1, 9, false);
+        due_case!(not_due_just_past_ten, 10, 11, false);
+        due_case!(not_due_between_ten_and_a_hundred, 11, 99, false);
+        due_case!(not_due_when_the_count_did_not_move, 10, 10, false);
+        due_case!(not_due_between_a_hundred_and_a_thousand, 100, 999, false);
+
+        // Edge: the top of the counter.
+        due_case!(
+            due_on_reaching_ten_to_the_nineteenth,
+            9_999_999_999_999_999_999,
+            10_000_000_000_000_000_000,
+            true
+        );
+        due_case!(
+            not_due_past_the_last_power_of_ten,
+            10_000_000_000_000_000_000,
+            u64::MAX,
+            false
+        );
+        due_case!(due_across_the_whole_range, 0, u64::MAX, true);
+
+        /// The warning names the cap, the counts and both ways to raise it.
+        #[test]
+        fn the_warning_names_the_cap_counts_and_remedy() -> Result<(), TestError> {
+            let text = stream_eviction_warning(50_000, 5_000, 5_000);
+            for needle in [
+                "50000",
+                "5000 oldest",
+                "--max-streams",
+                "[limits] max_streams",
+            ] {
+                assert!(text.contains(needle), "missing {needle:?} in {text:?}");
+            }
+            Ok(())
+        }
+
+        /// The warning gives the lifetime total apart from this batch.
+        #[test]
+        fn the_warning_gives_the_total_apart_from_the_batch() -> Result<(), TestError> {
+            let text = stream_eviction_warning(20, 2, 10);
+            assert!(text.contains("2 oldest"), "the batch: {text:?}");
+            assert!(
+                text.contains("10 stream(s) discarded so far"),
+                "the total: {text:?}"
+            );
+            Ok(())
+        }
+
+        /// Captured log lines of `f` at WARN, for the eviction tests.
+        #[cfg(feature = "native")]
+        fn warnings_of(f: impl FnOnce()) -> Vec<String> {
+            crate::test_utils::capture_logs(tracing::Level::WARN, f)
+                .lines()
+                .filter(|l| l.contains("--max-streams"))
+                .map(str::to_owned)
+                .collect()
+        }
+
+        /// The first eviction is said at WARN: the defect.
+        #[cfg(feature = "native")]
+        #[test]
+        fn the_first_eviction_is_warned() -> Result<(), TestError> {
+            let lines = warnings_of(|| {
+                let mut store = StreamStore::new(2);
+                create_streams(&mut store, 3);
+            });
+            assert_eq!(lines.len(), 1, "one eviction, one warning: {lines:?}");
+            assert!(lines[0].contains("WARN"), "at WARN: {lines:?}");
+            Ok(())
+        }
+
+        /// A store below its cap says nothing.
+        #[cfg(feature = "native")]
+        #[test]
+        fn no_eviction_no_warning() -> Result<(), TestError> {
+            let lines = warnings_of(|| {
+                let mut store = StreamStore::new(10);
+                create_streams(&mut store, 10);
+            });
+            assert!(lines.is_empty(), "nothing was evicted: {lines:?}");
+            Ok(())
+        }
+
+        /// Sustained pressure warns at 1 and at 10, not on every eviction.
+        #[cfg(feature = "native")]
+        #[test]
+        fn sustained_pressure_warns_at_powers_of_ten() -> Result<(), TestError> {
+            let lines = warnings_of(|| {
+                let mut store = StreamStore::new(1);
+                // 1 + 99 evicted: warnings at 1, 10 and 100.
+                create_streams(&mut store, 101);
+            });
+            assert_eq!(
+                lines.len(),
+                3,
+                "warnings at 1, 10 and 100 evicted: {lines:?}"
+            );
+            Ok(())
+        }
+
+        /// Each warning carries the total reached so far.
+        #[cfg(feature = "native")]
+        #[test]
+        fn each_warning_carries_its_total() -> Result<(), TestError> {
+            let lines = warnings_of(|| {
+                let mut store = StreamStore::new(1);
+                create_streams(&mut store, 11);
+            });
+            assert_eq!(lines.len(), 2, "at 1 and at 10: {lines:?}");
+            assert!(
+                lines[0].contains("1 stream(s) discarded so far"),
+                "{lines:?}"
+            );
+            assert!(
+                lines[1].contains("10 stream(s) discarded so far"),
+                "{lines:?}"
+            );
+            Ok(())
+        }
+
+        /// A merge into a smaller cap warns for what it evicts.
+        #[cfg(feature = "native")]
+        #[test]
+        fn a_merge_that_evicts_warns() -> Result<(), TestError> {
+            let mut a = StreamStore::new(100);
+            create_streams(&mut a, 6);
+            let lines = warnings_of(|| {
+                let mut merged = StreamStore::new(4);
+                merged.merge(a);
+            });
+            assert!(
+                !lines.is_empty(),
+                "the merge evicted two streams: {lines:?}"
+            );
+            Ok(())
+        }
     }
 }

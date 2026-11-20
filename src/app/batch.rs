@@ -1513,7 +1513,7 @@ fn report_parallel_run(
         report_icmp_summary(&r.stream_store);
         report_relay_retries(&r.stream_store);
         report_impossible_rates(&r.stream_store);
-        report_retention_losses(&r.dialog_store);
+        report_retention_losses(&r.dialog_store, &r.stream_store);
         report_capture_quality();
         report_llmnr_summary();
     }
@@ -1660,11 +1660,12 @@ fn report_impossible_rates(streams: &crate::rtp::stream_store::StreamStore) {
 /// - at capacity with `--no-rotate`, a new dialog is REJECTED, so the earliest
 ///   calls are the ones you keep
 /// - at capacity while rotating, the OLDEST dialog is discarded instead
+/// - at `--max-streams`, the OLDEST RTP streams are discarded
 ///
 /// Silent when nothing was shed, so a clean run stays quiet — the same rule
 /// the `-I` resolution accounting follows.
-fn report_retention_losses(dialogs: &DialogStore) {
-    if let Some(msg) = retention_summary(dialogs) {
+fn report_retention_losses(dialogs: &DialogStore, streams: &StreamStore) {
+    if let Some(msg) = retention_summary(dialogs, streams.total_capacity_streams_evicted()) {
         tracing::warn!("{msg}");
     }
 }
@@ -1747,11 +1748,11 @@ fn th_callid_guidance(summary: &crate::sip::dialog_store::ThCallidSummary) -> Ve
 /// Split from the logging so the wording is testable: the value of this line
 /// is entirely in what it says, and a test that only checked "something was
 /// logged" would pass on a sentence naming the wrong number.
-fn retention_summary(dialogs: &DialogStore) -> Option<String> {
+fn retention_summary(dialogs: &DialogStore, streams_rotated: u64) -> Option<String> {
     let msgs = dialogs.total_idle_messages_evicted();
     let dropped = dialogs.total_capacity_dialogs_dropped();
     let rotated = dialogs.total_capacity_dialogs_evicted();
-    if msgs == 0 && dropped == 0 && rotated == 0 {
+    if msgs == 0 && dropped == 0 && rotated == 0 && streams_rotated == 0 {
         return None;
     }
 
@@ -1769,6 +1770,11 @@ fn retention_summary(dialogs: &DialogStore) -> Option<String> {
     if rotated > 0 {
         parts.push(format!(
             "{rotated} oldest dialog(s) discarded at capacity by rotation"
+        ));
+    }
+    if streams_rotated > 0 {
+        parts.push(format!(
+            "{streams_rotated} oldest RTP stream(s) discarded at capacity (--max-streams)"
         ));
     }
 
@@ -2104,12 +2110,19 @@ fn capture_quality_summary() -> Option<String> {
     // resumed at the next message behind each, so what is missing is the
     // data in the hole and any message it cut.
     let (holes, hole_bytes) = crate::capture::reassembly::tcp_gaps_skipped();
+    // A seventh: SIP messages and WebSocket frames dropped at a size limit
+    // (D17). Each was counted and warned as it went; this is the total.
+    let oversize = oversize_parts(
+        crate::capture::sip_oversize_dropped(),
+        crate::pipeline::ws_oversize_frames(),
+    );
     if dropped == 0
         && if_dropped == 0
         && bad_ts == 0
         && undecodable.frames == 0
         && snapped == 0
         && holes == 0
+        && oversize.is_empty()
     {
         return None;
     }
@@ -2173,6 +2186,7 @@ fn capture_quality_summary() -> Option<String> {
              capture point missed)"
         ));
     }
+    parts.extend(oversize);
 
     Some(format!(
         "capture quality: {}. THIS ANALYSIS IS INCOMPLETE — the counts above are \
@@ -2180,6 +2194,26 @@ fn capture_quality_summary() -> Option<String> {
          docs/tuning-capture.md.",
         parts.join("; ")
     ))
+}
+
+/// The capture-quality clauses for data dropped at a size limit: SIP/TCP
+/// messages past the reassembly ceiling and WebSocket frames past 64 KiB.
+/// Empty when nothing was dropped.
+fn oversize_parts(sip_messages: u64, ws_frames: u64) -> Vec<String> {
+    let mut parts = Vec::new();
+    if sip_messages > 0 {
+        parts.push(format!(
+            "{sip_messages} SIP/TCP message(s) longer than the reassembly ceiling were \
+             dropped (raise --max-tcp-buffer to keep them)"
+        ));
+    }
+    if ws_frames > 0 {
+        parts.push(format!(
+            "{ws_frames} WebSocket frame(s) longer than the 65536-byte frame limit were \
+             dropped, so the SIP in them was not analyzed"
+        ));
+    }
+    parts
 }
 
 /// Share of frames that must fail to decode before the notice stops being
@@ -5306,7 +5340,7 @@ impl BatchRunner {
         report_icmp_summary(&self.stream_store.read());
         report_relay_retries(&self.stream_store.read());
         report_impossible_rates(&self.stream_store.read());
-        report_retention_losses(&self.dialog_store.read());
+        report_retention_losses(&self.dialog_store.read(), &self.stream_store.read());
         report_th_callid(&self.dialog_store.read());
         report_capture_quality();
         report_llmnr_summary();
@@ -17688,10 +17722,115 @@ mod tests {
         store.process_message(invite_msg("kept-1@example.com")?);
 
         assert_eq!(
-            retention_summary(&store),
+            retention_summary(&store, 0),
             None,
             "nothing was shed, so there is nothing to warn about"
         );
+        Ok(())
+    }
+
+    /// Nothing dropped at a size limit adds no clause.
+    #[test]
+    fn no_oversize_clause_when_nothing_was_dropped() -> Result<(), TestError> {
+        assert!(oversize_parts(0, 0).is_empty(), "nothing dropped");
+        Ok(())
+    }
+
+    /// Dropped SIP/TCP messages are named with their count and remedy.
+    #[test]
+    fn dropped_sip_messages_are_named() -> Result<(), TestError> {
+        let parts = oversize_parts(4, 0);
+        assert_eq!(parts.len(), 1, "{parts:?}");
+        assert!(parts[0].starts_with("4 SIP/TCP message(s)"), "{parts:?}");
+        assert!(parts[0].contains("--max-tcp-buffer"), "{parts:?}");
+        Ok(())
+    }
+
+    /// Dropped WebSocket frames are named with their count.
+    #[test]
+    fn dropped_websocket_frames_are_named() -> Result<(), TestError> {
+        let parts = oversize_parts(0, 2);
+        assert_eq!(parts.len(), 1, "{parts:?}");
+        assert!(parts[0].starts_with("2 WebSocket frame(s)"), "{parts:?}");
+        assert!(parts[0].contains("not analyzed"), "{parts:?}");
+        Ok(())
+    }
+
+    /// Both are named, SIP first.
+    #[test]
+    fn both_drops_are_named_sip_first() -> Result<(), TestError> {
+        let parts = oversize_parts(1, 1);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert!(parts[0].contains("SIP/TCP"), "{parts:?}");
+        assert!(parts[1].contains("WebSocket"), "{parts:?}");
+        Ok(())
+    }
+
+    /// The largest counts print whole.
+    #[test]
+    fn the_largest_oversize_counts_print_whole() -> Result<(), TestError> {
+        let parts = oversize_parts(u64::MAX, u64::MAX);
+        assert!(
+            parts.iter().all(|p| p.contains(&u64::MAX.to_string())),
+            "{parts:?}"
+        );
+        Ok(())
+    }
+
+    /// RTP streams discarded at `--max-streams` are named with their count,
+    /// even when no dialog was shed (backlog IMPORT-V6 stream eviction).
+    #[test]
+    fn streams_discarded_at_capacity_are_named_with_their_count() -> Result<(), TestError> {
+        let store = DialogStore::new(16, true);
+        let msg = retention_summary(&store, 37).ok_or("a stream eviction must be reported")?;
+        assert!(
+            msg.contains("37 oldest RTP stream(s) discarded at capacity"),
+            "count and cause: {msg}"
+        );
+        assert!(msg.contains("--max-streams"), "the remedy: {msg}");
+        Ok(())
+    }
+
+    /// One stream discarded is enough to report.
+    #[test]
+    fn one_stream_discarded_is_reported() -> Result<(), TestError> {
+        let store = DialogStore::new(16, true);
+        let msg = retention_summary(&store, 1).ok_or("one stream eviction must be reported")?;
+        assert!(msg.contains("1 oldest RTP stream(s)"), "{msg}");
+        Ok(())
+    }
+
+    /// No stream discarded adds no stream clause beside a dialog loss.
+    #[test]
+    fn no_stream_clause_when_no_stream_was_discarded() -> Result<(), TestError> {
+        let mut store = DialogStore::new(1, true);
+        store.process_message(invite_msg("a@example.com")?);
+        store.process_message(invite_msg("b@example.com")?);
+        let msg = retention_summary(&store, 0).ok_or("the dialog eviction is reported")?;
+        assert!(!msg.contains("RTP stream"), "no stream clause: {msg}");
+        Ok(())
+    }
+
+    /// Dialog and stream losses share one sentence, dialogs first.
+    #[test]
+    fn dialog_and_stream_losses_share_one_sentence() -> Result<(), TestError> {
+        let mut store = DialogStore::new(1, true);
+        store.process_message(invite_msg("c@example.com")?);
+        store.process_message(invite_msg("d@example.com")?);
+        let msg = retention_summary(&store, 4).ok_or("both losses are reported")?;
+        let dialogs = msg.find("oldest dialog(s)").ok_or("dialog clause")?;
+        let streams = msg.find("oldest RTP stream(s)").ok_or("stream clause")?;
+        assert!(dialogs < streams, "dialogs first: {msg}");
+        assert_eq!(msg.matches("retention:").count(), 1, "one sentence: {msg}");
+        Ok(())
+    }
+
+    /// The largest count prints whole.
+    #[test]
+    fn the_largest_stream_count_prints_whole() -> Result<(), TestError> {
+        let store = DialogStore::new(16, true);
+        let msg = retention_summary(&store, u64::MAX).ok_or("reported")?;
+        assert!(msg.contains(&u64::MAX.to_string()), "{msg}");
         Ok(())
     }
 
@@ -17715,7 +17854,7 @@ mod tests {
             "the fixture must actually evict, or this test proves nothing"
         );
 
-        let msg = retention_summary(&store).ok_or("an eviction must be reported")?;
+        let msg = retention_summary(&store, 0).ok_or("an eviction must be reported")?;
         assert!(
             msg.contains('1') && msg.contains("discarded at capacity"),
             "the warning must carry the count and the cause: {msg}"

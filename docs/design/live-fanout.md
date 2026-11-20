@@ -203,7 +203,7 @@ speculated about.
 
 `capture_live_fanout` gives every socket the same `tx`
 ([`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" -->), and there is one receiver: the
-`rx.recv_timeout` at [`batch.rs:4566`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4566)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100))" -->. So the shape is
+`rx.recv_timeout` at [`batch.rs:4600`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4600)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100))" -->. So the shape is
 N producers, one consumer, one pair of stores, one sweep.
 
 **It buys N rings and N drainers.** The overflow CT2 describes is per-socket:
@@ -237,7 +237,7 @@ distinguishable by instruments that already exist:
 instrument, fed from `CaptureMeter`
 ([`channel.rs:157-175`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L157-L175)<!-- "pub fn in_flight(&self)" -->), and they are scrapeable
 from a headless run — `start_servers` is called with `metrics: true` and the
-real meter from [`batch.rs:4095-4111`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4095-L4111)<!-- "let servers = crate::app::servers::start_servers(" -->.
+real meter from [`batch.rs:4129-4145`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4129-L4145)<!-- "let servers = crate::app::servers::start_servers(" -->.
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
 `capture_health` MCP response ([`server.rs:9451`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9451)<!-- "pub async fn capture_health(" -->),
@@ -265,7 +265,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
    fragments in capture-timestamp order and re-runs the state machine. Live,
    there is no moment at which a dialog is finished arriving.
 2. **`StreamStore::reassociate_all` links streams to dialogs globally**
-   ([`stream_store.rs:2799`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2799)<!-- "pub fn reassociate_all(&mut" -->), because SDP and RTP
+   ([`stream_store.rs:2814`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2814)<!-- "pub fn reassociate_all(&mut" -->), because SDP and RTP
    routinely land on different workers when the carrier advertises a separate
    media IP.
 3. **The merge replays the single-threaded path's idle-compaction sweeps.**
@@ -281,7 +281,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
 Point 3 transfers verbatim to a live worker pool, and it is the one that should
 stop anyone from treating this as CT4's sequel. The live loop already sweeps
 every five seconds of capture time
-([`batch.rs:4407-4413`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4407-L4413)<!-- "/// Periodic sweep of reassembly state and idle-dialog compaction" -->) against one `SweepClock` fed by
+([`batch.rs:4441-4447`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4441-L4447)<!-- "/// Periodic sweep of reassembly state and idle-dialog compaction" -->) against one `SweepClock` fed by
 every packet the single receiver saw. Give each of N workers its own clock and
 the orphan/compaction verdict becomes a function of how the kernel hashed the
 flows. That is a wrong answer that renders as a normal report.

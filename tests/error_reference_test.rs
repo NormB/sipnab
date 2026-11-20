@@ -1058,7 +1058,9 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // that is not a table.
 // 687 -> 688 (F2-SAVE-UNWRITABLE): +1 in src/error.rs, the
 // `ConfigUnwritable` variant a TUI save prints for a permission failure.
-const EXPECTED_TEMPLATES: usize = 688;
+// 688 -> 689 (IMPORT-V6 D17 parser cap): +1 in src/error.rs, ParseError::TooLong,
+// the refusal of a SIP message longer than any input path delivers.
+const EXPECTED_TEMPLATES: usize = 689;
 
 // ---------------------------------------------------------------------------
 // The page gates
