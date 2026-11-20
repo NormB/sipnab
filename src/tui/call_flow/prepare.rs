@@ -1177,6 +1177,15 @@ fn fold_messages(
     // the old code re-scanned the whole emitted prefix per retransmission
     // (O(n²) when a long retx run is expanded and visible), this is O(n).
     let mut last_header_idx: Option<usize> = None;
+    // Index into `result` of the most recent COLLAPSED auth fold header. A
+    // retransmission that follows it is a copy of one of the fold's hidden
+    // members (the authenticated request, typically): it is counted in the
+    // auth fold, whose label keeps saying "auth retry", and expanding the
+    // fold shows it again under its original. Without this the
+    // header's count mixed the auth members with the retx and its label
+    // claimed them all as retransmissions, so expanding it showed one
+    // message fewer than the fold had promised.
+    let mut auth_header_idx: Option<usize> = None;
 
     // Push a row and, if it qualifies as a retx fold header, record its index.
     fn push_row(
@@ -1231,6 +1240,7 @@ fn fold_messages(
                 // gap demand at the 98-col demo geometry.
                 fm.label = format!("{} (+auth)", fm.label);
                 push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
+                auth_header_idx = result.len().checked_sub(1);
             }
             // Drop the member rows: every following row whose raw index is
             // inside the sequence.
@@ -1259,6 +1269,13 @@ fn fold_messages(
             // header, so pushing it leaves `last_header_idx` pointing at the
             // run's header for every subsequent retx in the run).
             match last_header_idx {
+                Some(idx) if auth_header_idx == Some(idx) => {
+                    result[idx].folded_count += 1;
+                    let n = result[idx].folded_count;
+                    result[idx].fold_label =
+                        Some(format!("{n} msgs folded (auth retry) - press e to expand"));
+                    source[i].take();
+                }
                 Some(idx) => {
                     let header_raw = result[idx].raw_index.unwrap_or(usize::MAX);
                     if fold_expanded.contains(&header_raw) {
@@ -3822,6 +3839,67 @@ mod tests {
             4,
             "expanded auth sequence should show all rows"
         );
+        Ok(())
+    }
+
+    /// A retransmission of the authenticated request, right after the auth
+    /// exchange, belongs to the collapsed auth fold: the fold counts
+    /// it and still says "auth retry" (it used to claim all five messages as
+    /// retransmissions), and expanding the fold accounts for every message:
+    /// the four rows plus the retx folded under its original.
+    #[test]
+    fn auth_fold_keeps_a_following_retx_of_its_member() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let cid = "cauthretx";
+        let mut retx = register(
+            cid,
+            2,
+            Some("Digest username=\"alice\""),
+            t0() + TimeDelta::milliseconds(40),
+        )?;
+        retx.is_retransmission = true;
+        let msgs = vec![
+            register(cid, 1, None, t0())?,
+            response(
+                cid,
+                401,
+                "Unauthorized",
+                1,
+                "REGISTER",
+                t0() + TimeDelta::milliseconds(10),
+            )?,
+            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20))?,
+            register(
+                cid,
+                2,
+                Some("Digest username=\"alice\""),
+                t0() + TimeDelta::milliseconds(30),
+            )?,
+            retx,
+        ];
+        let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(folded.len(), 1, "collapsed: one row");
+        assert_eq!(folded[0].folded_count, 5);
+        let fl = folded[0].fold_label.as_deref().unwrap_or("");
+        assert!(fl.contains("auth retry"), "auth fold label lost: {fl:?}");
+
+        let mut expanded = HashSet::new();
+        expanded.insert(0usize);
+        let (_p2, shown) = prepare_messages(&msgs, t0(), None, &o, &expanded);
+        let hidden: usize = shown.iter().map(|m| m.folded_count).sum();
+        assert_eq!(
+            shown.len() + hidden,
+            msgs.len(),
+            "expanded: every message is a row or counted in a visible fold"
+        );
+        assert_eq!(shown.len(), 4);
+        assert_eq!(shown[3].folded_count, 1, "the retx folds under its original");
+
+        // Collapsing again is the first picture.
+        let (_p3, again) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].folded_count, 5);
         Ok(())
     }
 
