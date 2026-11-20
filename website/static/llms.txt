@@ -31,6 +31,7 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Understand MOS and codecs](https://sipnab.com/docs/mos-and-codecs/): Where the quality score comes from, which codecs have a published impairment factor behind it, and which report a placeholder.
 - [Look up a SIP response code](https://sipnab.com/docs/sip-response-codes/): Every SIP response code in the IANA registry, the RFC section that defines it, and whether it means the call failed.
 - [Choose an output format](https://sipnab.com/docs/output-formats/): Machine-readable output: NDJSON, summary reports, dialog/stream JSON, and pcap/pcapng.
+- [Check what a release keeps compatible](https://sipnab.com/docs/stability/): Which changes to the REST API and the JSON report schemas break a program, and how to compare two releases with scripts/contract-diff.py.
 - [Configure sipnab](https://sipnab.com/docs/config/): TOML configuration file format and all configurable sections.
 - [Read TLS without keys (eBPF)](https://sipnab.com/docs/uprobe-walkthrough/): What uprobe and eBPF capture is and is NOT, its security implications, whether your kernel supports it at all, and how to run both backends step by step.
 - [Deploy the MCP server](https://sipnab.com/docs/mcp-deploy/): Step-by-step MCP deployment scenarios: same-box stdio, remote production servers over SSH or HTTP, HEP capture hosts, TLS endpoints, fleets, and headless automation.

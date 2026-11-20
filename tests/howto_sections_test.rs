@@ -156,6 +156,7 @@ const PAGES: &[(&str, Kind)] = &[
     ("sip-methods", Reference),
     ("sip-parameters", Reference),
     ("sip-response-codes", Reference),
+    ("stability", Task),
     ("tfps", Task),
     ("tfps-sipnab", Task),
     ("theme-guide", Task),

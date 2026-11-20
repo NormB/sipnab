@@ -193,13 +193,89 @@ mod tests {
             assert!(!name.is_empty(), "device name must not be empty: {devs:?}");
         }
 
-        // The list is a pure query of the OS device table: two back-to-back
-        // calls must agree. This fails if `list_devices` ever became
-        // non-idempotent (e.g. draining a shared iterator so the second call
-        // came back empty on a host that has interfaces).
+        // A second call must not come back drained. See `reads_agree` for why
+        // the two reads are not compared for equality.
         let again = list_devices();
-        assert_eq!(devs, again, "list_devices must be deterministic");
+        assert!(
+            reads_agree(&devs, &again),
+            "a second list_devices call disagrees with the first: {devs:?} then {again:?}"
+        );
         Ok(())
+    }
+
+    /// True when two `list_devices` reads of a live host agree: the second
+    /// is empty only when the first is, and no name in either is empty.
+    ///
+    /// Equality is the wrong test. libpcap ranks each device as it adds it,
+    /// by whether it is running, up, connected, loopback or `any`
+    /// (`get_figure_of_merit` in libpcap's pcap.c), so a device whose state
+    /// changes between the calls moves in the list, and a container runtime
+    /// on the same host adds and removes veth devices at any time. CI run
+    /// 44741854200 read the same 34 names twice with docker0 in another place.
+    /// What the test guards is a second call that comes back drained.
+    fn reads_agree(first: &[String], second: &[String]) -> bool {
+        first.is_empty() == second.is_empty()
+            && first.iter().chain(second).all(|name| !name.is_empty())
+    }
+
+    #[test]
+    fn reads_agree_on_the_same_list() {
+        let first = names(&["eth0", "any", "lo"]);
+        assert!(reads_agree(&first, &first), "a list must agree with itself");
+    }
+
+    #[test]
+    fn reads_agree_when_libpcap_reorders_a_device() {
+        // CI run 44741854200: docker0 changed state between the two calls,
+        // so libpcap ranked it elsewhere.
+        let first = names(&["eth0", "any", "lo", "docker0", "usb0"]);
+        let second = names(&["eth0", "any", "lo", "usb0", "docker0"]);
+        assert!(reads_agree(&first, &second), "a reordered list must agree");
+    }
+
+    #[test]
+    fn reads_agree_when_a_device_comes_or_goes() {
+        let first = names(&["eth0", "veth1", "lo"]);
+        let second = names(&["eth0", "lo"]);
+        assert!(reads_agree(&first, &second), "a removed veth must agree");
+        assert!(reads_agree(&second, &first), "an added veth must agree");
+    }
+
+    #[test]
+    fn reads_agree_when_both_are_empty() {
+        assert!(reads_agree(&[], &[]), "a deviceless host must agree");
+    }
+
+    #[test]
+    fn reads_disagree_when_the_second_read_is_drained() {
+        let first = names(&["eth0", "lo"]);
+        assert!(
+            !reads_agree(&first, &[]),
+            "a drained second read must disagree"
+        );
+    }
+
+    #[test]
+    fn reads_disagree_when_only_the_second_read_has_devices() {
+        let second = names(&["eth0"]);
+        assert!(
+            !reads_agree(&[], &second),
+            "an empty first read must disagree"
+        );
+    }
+
+    #[test]
+    fn reads_disagree_on_an_empty_name_in_either_read() {
+        let good = names(&["eth0", "lo"]);
+        let blank = names(&["eth0", ""]);
+        assert!(
+            !reads_agree(&good, &blank),
+            "a blank name in the second read must disagree"
+        );
+        assert!(
+            !reads_agree(&blank, &good),
+            "a blank name in the first read must disagree"
+        );
     }
 
     /// `find_default_device` yields a non-empty name, or one of the known

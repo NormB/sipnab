@@ -10,6 +10,13 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **A stability page and a script that compare two releases' REST API and JSON schemas.**
+  - Effect: `scripts/contract-diff.py` labels each change `breaking` or `additive` and exits 1 on a breaking one.
+  - Limit: Until 1.0 a release may still change any surface; the command line, config keys, MCP tools and metrics are not compared yet.
+  - Docs: [Compare the REST API of two releases](docs/stability.md#compare-the-rest-api-of-two-releases)
+
 ### Fixed
 
 - **sipnab drops a SIP/TCP message over `--max-tcp-buffer` whole and says so.**

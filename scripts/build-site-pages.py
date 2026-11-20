@@ -307,6 +307,17 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "JSON, and pcap/pcapng.",
     ),
     (
+        "docs/stability.md",
+        "stability.md",
+        "Check what a release keeps compatible",
+        "Check what a release keeps compatible",
+        # A weight no other page uses (see the tuning-capture entry).
+        96,
+        "Which changes to the REST API and the JSON report schemas break a "
+        "program, and how to compare two releases with "
+        "scripts/contract-diff.py.",
+    ),
+    (
         "docs/config-reference.md",
         "config.md",
         "Config reference",

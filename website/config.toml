@@ -433,6 +433,7 @@ pages = [
   { path = "docs/follow-a-call.md", menu = true },
   { path = "docs/expectations.md", menu = false },
   { path = "docs/output-formats.md", menu = true },
+  { path = "docs/stability.md", menu = false },
   { path = "docs/config.md", menu = true },
   { path = "docs/errors.md", menu = false },
   { path = "docs/sip-lint-rules.md", menu = false },
