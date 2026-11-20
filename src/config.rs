@@ -173,6 +173,11 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "from_to",
             "mouse_capture",
             "view_filter_detail",
+            "fold",
+            "autoscroll",
+            "sdp_display",
+            "color_mode",
+            "extended_flow",
         ]
         .as_slice(),
     );
@@ -1867,6 +1872,20 @@ pub struct DisplayConfig {
     /// (one short token per selection) or `"full"` (the expression). The
     /// `filter_detail` key toggles it at runtime. Unset means `"summary"`.
     pub view_filter_detail: Option<String>,
+    /// Fold retransmissions and auth retries into one ladder arrow (`e`
+    /// expands one). Unset means on.
+    pub fold: Option<bool>,
+    /// The call list follows new dialogs (`A` toggles it). Unset means on.
+    pub autoscroll: Option<bool>,
+    /// How SDP shows under its arrow: `"none"`, `"summary"` or `"full"`.
+    /// Unset means `"none"`.
+    pub sdp_display: Option<String>,
+    /// What colors the ladder arrows: `"method"`, `"call_id"` or `"cseq"`
+    /// (the `c` key cycles them). Unset means `"method"`.
+    pub color_mode: Option<String>,
+    /// A call opens as the extended (multi-leg) flow (F4 toggles it). Unset
+    /// means off.
+    pub extended_flow: Option<bool>,
 }
 
 impl DisplayConfig {
@@ -1911,6 +1930,20 @@ impl DisplayConfig {
             {
                 return Err(crate::Error::ConfigInvalid(format!(
                     "[display] view_filter_detail must be one of summary, full, got {m:?}"
+                )));
+            }
+            if let Some(m) = &self.sdp_display
+                && crate::tui::SdpDisplayMode::parse(m).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[display] sdp_display must be one of none, summary, full, got {m:?}"
+                )));
+            }
+            if let Some(m) = &self.color_mode
+                && crate::tui::ColorMode::parse(m).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[display] color_mode must be one of method, call_id, cseq, got {m:?}"
                 )));
             }
             let labels = crate::tui::call_list::COLUMN_LABELS;
@@ -5402,6 +5435,21 @@ from_to = "user-host-port"
 "#;
         let config: Config = toml::from_str(toml_str)?;
         assert_eq!(config.display.from_to.as_deref(), Some("user-host-port"));
+        Ok(())
+    }
+
+    /// `[display] sdp_display` and `color_mode` refuse a spelling the TUI
+    /// does not know.
+    #[test]
+    #[cfg(feature = "tui")]
+    fn display_sdp_and_color_mode_are_validated() -> Result<(), TestError> {
+        let ok: Config =
+            toml::from_str("[display]\nsdp_display = \"full\"\ncolor_mode = \"call_id\"\n")?;
+        assert!(ok.display.validate().is_ok());
+        let bad: Config = toml::from_str("[display]\nsdp_display = \"short\"\n")?;
+        assert!(bad.display.validate().is_err());
+        let bad: Config = toml::from_str("[display]\ncolor_mode = \"callid\"\n")?;
+        assert!(bad.display.validate().is_err());
         Ok(())
     }
 

@@ -1055,6 +1055,15 @@ impl App {
         );
     }
 
+    /// Open the session with these `[display]` preferences.
+    pub(crate) fn apply_display_prefs(&mut self, prefs: DisplayPrefs) {
+        self.flow.fold = prefs.fold;
+        self.call_list.autoscroll = prefs.autoscroll;
+        self.sdp_display_mode = prefs.sdp_display;
+        self.color_mode = prefs.color_mode;
+        self.flow.extended = prefs.extended_flow;
+    }
+
     /// Reset all per-call transient state when entering a call flow view.
     /// Scroll, selection, fold expansion, marks and diff selection are all
     /// positions within ONE dialog's ladder; carrying them into another
@@ -1912,6 +1921,7 @@ impl App {
             ts_mode: self.timestamp_mode,
             show_rtp: self.flow.show_rtp && !self.flow.ladder.rtp_streams.is_empty(),
             resolver: self.resolver.as_ref(),
+            fold: self.flow.fold,
             name_mode: self.name_mode,
             rtp_streams: &self.flow.ladder.rtp_streams,
         };
@@ -1956,6 +1966,7 @@ impl App {
             ts_mode: self.timestamp_mode,
             show_rtp: self.flow.show_rtp,
             resolver: self.resolver.as_ref(),
+            fold: self.flow.fold,
             name_mode: self.name_mode,
             // A transaction filter narrows the ladder to one transaction;
             // the call's streams are not part of it.

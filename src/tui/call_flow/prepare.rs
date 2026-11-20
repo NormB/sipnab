@@ -93,6 +93,9 @@ pub struct LayoutOptions<'a> {
     pub name_mode: crate::names::NameMode,
     /// The call's RTP streams, one row each when `show_rtp` is on.
     pub rtp_streams: &'a [RtpFlowStream],
+    /// Fold retransmissions and auth retries into one row (`[display]
+    /// fold`). Off keeps every message its own row.
+    pub fold: bool,
 }
 
 impl<'a> From<&FlowDisplayOptions<'a>> for LayoutOptions<'a> {
@@ -105,6 +108,7 @@ impl<'a> From<&FlowDisplayOptions<'a>> for LayoutOptions<'a> {
             resolver: o.resolver,
             name_mode: o.name_mode,
             rtp_streams: o.rtp_streams,
+            fold: true,
         }
     }
 }
@@ -434,7 +438,11 @@ pub fn layout(
     // Folding runs BEFORE spacer insertion so that which rows exist is
     // identical in every timestamp mode; synthetic rows (raw_index == None)
     // are never folded.
-    let result = fold_messages(messages, result, fold_expanded);
+    let result = if opts.fold {
+        fold_messages(messages, result, fold_expanded)
+    } else {
+        result
+    };
 
     // ── Time-proportional spacer insertion (Feature 6) ─────────────
     let result = if opts.ts_mode == TimestampMode::Scaled && result.len() >= 2 {
@@ -3950,6 +3958,46 @@ mod tests {
         let (_p3, again) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].folded_count, 5);
+        Ok(())
+    }
+
+    /// `[display] fold = false`: no fold at all, every message of an
+    /// auth retry with a retransmission is its own row.
+    #[test]
+    fn fold_off_keeps_every_message_its_own_row() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let cid = "cfoldoff";
+        let mut retx = register(
+            cid,
+            2,
+            Some("Digest username=\"alice\""),
+            t0() + TimeDelta::milliseconds(40),
+        )?;
+        retx.is_retransmission = true;
+        let msgs = vec![
+            register(cid, 1, None, t0())?,
+            response(cid, 401, "Unauthorized", 1, "REGISTER", t0() + TimeDelta::milliseconds(10))?,
+            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20))?,
+            register(
+                cid,
+                2,
+                Some("Digest username=\"alice\""),
+                t0() + TimeDelta::milliseconds(30),
+            )?,
+            retx,
+        ];
+        let on = LayoutOptions::from(&o);
+        let off = LayoutOptions { fold: false, ..LayoutOptions::from(&o) };
+        let raw_rows = |lo: &LayoutOptions<'_>| {
+            layout(&msgs, t0(), None, lo, &HashSet::new())
+                .1
+                .iter()
+                .filter(|r| r.raw_index.is_some())
+                .count()
+        };
+        assert_eq!(raw_rows(&on), 1, "fold on: one auth-fold row");
+        assert_eq!(raw_rows(&off), 5, "fold off: every message a row");
         Ok(())
     }
 
