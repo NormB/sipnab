@@ -47,6 +47,17 @@ impl SdpDisplayMode {
     pub(in crate::tui) fn label(self) -> String {
         format!("SDP: {}", self.name())
     }
+
+    /// Parse a `[display] sdp_display` value (`none`, `summary`, `full`).
+    /// `None` for any other spelling.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "summary" => Some(Self::Summary),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
 }
 
 /// Timestamp display mode for the call flow ladder.
@@ -154,6 +165,17 @@ impl ColorMode {
     /// Human-readable label for the status bar.
     pub(in crate::tui) fn label(self) -> String {
         format!("Color: {}", self.name())
+    }
+
+    /// Parse a `[display] color_mode` value (`method`, `call_id`, `cseq`).
+    /// `None` for any other spelling.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "method" => Some(Self::Method),
+            "call_id" => Some(Self::CallId),
+            "cseq" => Some(Self::CSeq),
+            _ => None,
+        }
     }
 }
 
@@ -271,6 +293,60 @@ impl ViewFilterDetail {
 }
 
 // ── Session wiring passed in from CLI/config ────────────────────────
+
+/// How the TUI opens: the `[display]` preferences. Precedence, per key: a
+/// CLI flag (none of these has one today) > the user's `[display]` key >
+/// sipnab's default ([`Self::default`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayPrefs {
+    /// `[display] fold`: retransmissions and auth retries folded into one
+    /// arrow (`e` expands one).
+    pub fold: bool,
+    /// `[display] autoscroll`: the call list follows new dialogs.
+    pub autoscroll: bool,
+    /// `[display] sdp_display`: how SDP shows under its arrow.
+    pub sdp_display: SdpDisplayMode,
+    /// `[display] color_mode`: what colors the arrows.
+    pub color_mode: ColorMode,
+    /// `[display] extended_flow`: a call opens as the multi-leg flow.
+    pub extended_flow: bool,
+}
+
+impl Default for DisplayPrefs {
+    /// sipnab's defaults: what the TUI did before these keys existed.
+    fn default() -> Self {
+        Self {
+            fold: true,
+            autoscroll: true,
+            sdp_display: SdpDisplayMode::default(),
+            color_mode: ColorMode::default(),
+            extended_flow: false,
+        }
+    }
+}
+
+impl DisplayPrefs {
+    /// The user's `[display]` keys over the defaults. The config loader has
+    /// already refused a spelling `parse` does not know.
+    pub fn resolve(cfg: &crate::config::DisplayConfig) -> Self {
+        let d = Self::default();
+        Self {
+            fold: cfg.fold.unwrap_or(d.fold),
+            autoscroll: cfg.autoscroll.unwrap_or(d.autoscroll),
+            sdp_display: cfg
+                .sdp_display
+                .as_deref()
+                .and_then(SdpDisplayMode::parse)
+                .unwrap_or(d.sdp_display),
+            color_mode: cfg
+                .color_mode
+                .as_deref()
+                .and_then(ColorMode::parse)
+                .unwrap_or(d.color_mode),
+            extended_flow: cfg.extended_flow.unwrap_or(d.extended_flow),
+        }
+    }
+}
 
 /// Name-resolution wiring passed into the TUI from CLI/config.
 pub struct NameSetup {
@@ -435,6 +511,9 @@ pub struct TuiOptions {
     /// `[display] view_filter_detail`: how status line 3 opens showing the F7
     /// dialog's filter.
     pub view_filter_detail: ViewFilterDetail,
+    /// The `[display]` preferences over sipnab's defaults. `None` keeps the
+    /// defaults.
+    pub display: Option<DisplayPrefs>,
     /// The capture-mode label the status bar opens with (`Online (eth0)`,
     /// `Offline (call.pcap)`). `None` keeps the built-in `Online (any)`.
     pub capture_mode: Option<String>,
@@ -543,6 +622,9 @@ impl TuiOptions {
         app.capture_meter = self.capture_meter;
         app.mouse_capture_enabled = !self.mouse_capture_off;
         app.view_filter_detail = self.view_filter_detail;
+        if let Some(prefs) = self.display {
+            app.apply_display_prefs(prefs);
+        }
         // Last, once the action trail is attached, so the applied filter is
         // recorded the way one applied from the dialog is. The run's typed
         // filter goes in the Expression field first, so `-c` applies with it.
@@ -919,6 +1001,9 @@ pub(in crate::tui) struct CallFlowViewState {
     pub(in crate::tui) mark_index: Option<usize>,
     /// Set of message indices where folds are expanded ('e' toggles).
     pub(in crate::tui) fold_expanded: HashSet<usize>,
+    /// `[display] fold`: whether retransmissions and auth retries fold at
+    /// all. Off draws each as its own arrow.
+    pub(in crate::tui) fold: bool,
     /// Cached rendered message count (after folding).
     pub(in crate::tui) cached_msg_count: usize,
     /// Indices of FormattedMessages that carry an RTP bar (Enter drill-down).
@@ -948,6 +1033,7 @@ impl Default for CallFlowViewState {
             raw_preview_pct: 40,
             raw_preview_pct_user_set: false,
             extended: false,
+            fold: true,
             merged_calls: Vec::new(),
             transaction_filter: None,
             show_rtp: false,

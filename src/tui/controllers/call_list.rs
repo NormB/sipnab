@@ -776,6 +776,35 @@ mod tests {
         Ok(())
     }
 
+    /// Saving the columns (and the names) writes only its own key: the
+    /// session's `[display]` defaults never land in the user's file, so the
+    /// file keeps meaning "what the user chose".
+    #[test]
+    fn config_writers_never_write_display_defaults() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "[display]\nfold = false\n")?;
+        let mut app = App::new_test();
+        app.apply_display_prefs(crate::tui::DisplayPrefs::default());
+        app.set_column_config_path(Some(path.clone()));
+        app.call_list.column_selector_open = true;
+        handle_call_list_key(&mut app, key(KeyCode::Char('s')));
+        crate::config::write_manual_mappings_file(
+            &path,
+            &[("10.0.0.1".to_string(), "pbx".to_string())],
+        )?;
+
+        let doc: toml::Table = std::fs::read_to_string(&path)?.parse()?;
+        let display = doc
+            .get("display")
+            .and_then(|d| d.as_table())
+            .ok_or("[display] kept")?;
+        let mut keys: Vec<&str> = display.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["fold", "visible_columns"]);
+        Ok(())
+    }
+
     /// `u` cycles the From/To display through all four modes and back,
     /// announcing each on the status line.
     #[test]
