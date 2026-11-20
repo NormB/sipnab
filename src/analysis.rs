@@ -1163,6 +1163,9 @@ pub struct RetentionCounts {
     pub dialogs_refused: u64,
     /// Oldest dialogs discarded at capacity by rotation.
     pub dialogs_rotated: u64,
+    /// Messages dropped at ingest by method (`--drop-method`,
+    /// `--only-method`): never a dialog, on purpose.
+    pub messages_dropped_by_method: u64,
 }
 
 impl RetentionCounts {
@@ -1173,6 +1176,7 @@ impl RetentionCounts {
             messages_evicted: dialogs.total_idle_messages_evicted(),
             dialogs_refused: dialogs.total_capacity_dialogs_dropped(),
             dialogs_rotated: dialogs.total_capacity_dialogs_evicted(),
+            messages_dropped_by_method: dialogs.total_messages_dropped_by_method(),
         }
     }
 }
@@ -1861,6 +1865,16 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
                 .note("oldest dialogs discarded at capacity by rotation (--limit)"),
         );
     }
+    let by_method = facts.retention.messages_dropped_by_method;
+    if by_method > 0 {
+        acc.bump(
+            FindingKind::RetentionLoss,
+            by_method,
+            Evidence::default()
+                .count(CountLabel::Messages, by_method)
+                .note("messages dropped at ingest by method, on purpose (--drop-method / --only-method)"),
+        );
+    }
     if facts.stun.dropped > 0 {
         acc.bump(
             FindingKind::RetentionLoss,
@@ -2426,6 +2440,7 @@ mod tests {
                 messages_evicted: 30,
                 dialogs_refused: 2,
                 dialogs_rotated: 5,
+                ..RetentionCounts::default()
             },
             ..CaptureFacts::default()
         };

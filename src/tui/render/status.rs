@@ -181,6 +181,16 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
         Span::raw(format!(
             "{L1_GAP}Dialogs: {displayed_count} shown of {total_count}"
         )),
+        // Named only when a method filter dropped something at ingest:
+        // those messages are in no dialog and in no other count.
+        Span::raw(if app.cached_dropped_by_method > 0 {
+            format!(
+                "{L1_GAP}Dropped by method: {}",
+                app.cached_dropped_by_method
+            )
+        } else {
+            String::new()
+        }),
         Span::raw(format!(
             "{L1_GAP}Autoscroll: {}",
             if app.call_list.autoscroll {

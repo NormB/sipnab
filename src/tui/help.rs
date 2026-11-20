@@ -231,6 +231,18 @@ TERMS:
   HEP      Homer Encapsulation Protocol: SIP mirrored by a proxy
   TFPS     Optional peer that bans sources (this view only reads it)
 
+DROP BY METHOD (start flags --drop-method / --only-method, [capture]
+drop_methods / only_methods; any methods, case-insensitive):
+Decided ONCE per dialog, on the request that starts it (INVITE, REGISTER,
+OPTIONS, SUBSCRIBE, MESSAGE, ...). Kept = its method is in only (or no
+only list) AND not in drop: then EVERY message of the dialog is kept and
+shown (ACK, BYE, CANCEL, re-INVITE, UPDATE, INFO, PRACK, REFER, NOTIFY, an
+in-dialog OPTIONS, ...) with every reply. Refused = the whole dialog is
+dropped at ingest: no dialog, no number, never in memory; only the
+\"Dropped by method\" count on status line 1 and in the capture report.
+A message whose dialog start was never seen (capture began mid-call) is
+decided by its own method (a reply by its CSeq method).
+
 FILTER DIALOG (F7):
   Tab, Shift+Tab   Next / previous field
   \u{2191}/\u{2193}              In Expression: earlier applied expressions (newest 50), then the next field

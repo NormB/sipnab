@@ -158,6 +158,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "promisc",
             "hep_parse",
             "bpf_filter",
+            "drop_methods",
+            "only_methods",
         ]
         .as_slice(),
     );
@@ -1763,6 +1765,17 @@ pub struct CaptureConfig {
     /// positional filter or `--bpf-file` replaces it, and while it is set no
     /// filter is generated from `portrange`.
     pub bpf_filter: Option<String>,
+    /// SIP methods dropped at ingest, decided once per dialog on its
+    /// starting request: a dialog started by one of them opens no dialog,
+    /// takes no number, and all its messages count only as "dropped by
+    /// method"; a dialog started by another method keeps every message.
+    /// Case-insensitive. `--drop-method` adds to it.
+    pub drop_methods: Option<Vec<String>>,
+    /// When set, only dialogs STARTED by these methods are kept at ingest
+    /// (with every message of theirs, whatever its method); the rest is
+    /// dropped as `drop_methods` drops. Kept = in `only_methods` AND not in
+    /// `drop_methods`. `--only-method` adds to it.
+    pub only_methods: Option<Vec<String>>,
 }
 
 impl CaptureConfig {
