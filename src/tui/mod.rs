@@ -2467,7 +2467,12 @@ fn event_loop(
         // terminal; its read loop never returns on one that has gone. A lost
         // terminal is the hang-up SIGHUP reports, and the run stops the way
         // SIGHUP stops it, exiting 129.
-        let found = input.wait(app.poll_timeout())?;
+        // A lone ESC held by the parser bounds the wait to its ESC_DELAY,
+        // so a lone Esc acts at once and a split arrow key stays an arrow.
+        let timeout = parser
+            .escape_wait()
+            .map_or(app.poll_timeout(), |left| left.min(app.poll_timeout()));
+        let found = input.wait(timeout)?;
         let terminal_input::Taken::Events(events) =
             terminal_input::take_input(input, found, &mut parser)?
         else {
