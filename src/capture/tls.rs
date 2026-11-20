@@ -378,14 +378,20 @@ impl TlsRecordReassembler {
         buf.extend_from_slice(plaintext);
 
         let (ranges, consumed) = crate::capture::frame_tcp_sip(buf);
-        let mut out: Vec<Vec<u8>> = ranges.iter().map(|r| buf[r.clone()].to_vec()).collect();
+        let mut out: Vec<Vec<u8>> = ranges
+            .iter()
+            .filter(|r| crate::capture::keep_framed(r.len(), src, dst))
+            .map(|r| buf[r.clone()].to_vec())
+            .collect();
         buf.drain(..consumed);
 
         // A held remainder that can never complete is dropped rather than
         // grown: without this a single unterminated message pins a buffer per
-        // direction for the life of the run.
+        // direction for the life of the run. Counted and said with the other
+        // SIP messages dropped at a ceiling; it was dropped in silence.
         if buf.len() > usize::from(MAX_TLS_RECORD_LENGTH) * 4 {
             buf.clear();
+            crate::capture::note_sip_oversize(src, dst);
         }
         if buf.is_empty() {
             self.plaintext.shift_remove(&key);

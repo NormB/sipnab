@@ -1336,13 +1336,13 @@ A `[keybindings]` value is not a key the terminal UI can read.
 
 **Exit code:** 1.
 
-### `[limits] max_tcp_buffer must be >= {} (a smaller ceiling cannot hold one SIP header line, so every SIP/TCP message would be flushed mid-message and reported malformed), got {v}`
+### `[limits] max_tcp_buffer must be >= {} (a smaller ceiling cannot hold one SIP header line, so every SIP/TCP message would be dropped as oversized), got {v}`
 
-`[limits] max_tcp_buffer` is how many bytes sipnab may buffer for one direction of a SIP over TCP connection, before it flushes the buffer.
+`[limits] max_tcp_buffer` is how many bytes sipnab may buffer for one direction of a SIP over TCP connection. It is also the longest SIP over TCP message sipnab keeps: sipnab drops a longer one.
 
 - `{}` is the smallest value accepted, 8192. That is the longest single header line the parser accepts.
 - `{v}` is the value in the file.
-- A smaller buffer cannot hold one header line. So sipnab would report every SIP over TCP message as malformed.
+- A smaller buffer cannot hold one header line. So sipnab would drop every SIP over TCP message.
 - The printed line starts with `invalid config value: `.
 
 **What to do:** Set a value of 8192 or more, for example the default `65536`, or remove the key.
@@ -7252,6 +7252,19 @@ Data is shorter than the structure it must hold.
 **What to do:** For truncated frames, capture again with a larger `--snaplen`. For a capture file or RTP packet, the input ends early or is not in that format.
 
 **Exit code:** None. The error goes back to the program that calls the library, or sipnab counts the frame as truncated, and the run continues.
+
+### `{what} too long: {len} bytes (max {max})`
+
+Data is longer than the most its structure may hold.
+
+- `{what}` names the structure. The SIP parser reports `SIP message`.
+- `{len}` is the number of bytes given.
+- `{max}` is the most the parser accepts: 65535, the largest UDP datagram, or the `--max-tcp-buffer` ceiling when that is larger.
+- No input path delivers a SIP message longer than that intact, so the parser refuses it rather than reading it.
+
+**What to do:** If the message came from a SIP over TCP capture, raise `--max-tcp-buffer` or `[limits] max_tcp_buffer` above its length. A program that calls the library can split or shorten its input.
+
+**Exit code:** None. The error goes back to the program that calls the library, or sipnab does not analyze the message, and the run continues.
 
 ### `unsupported GRE inner protocol: 0x{0:04X}`
 

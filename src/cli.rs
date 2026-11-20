@@ -5002,8 +5002,8 @@ pub struct LimitsArgs {
     /// TCP imposes no such ceiling and neither does RFC 3261: on a carrier
     /// trunk a message carrying ISUP encapsulation, a long `Record-Route` set
     /// or a fat SDP offer passes 64 KiB legitimately, and when it does the
-    /// buffer is flushed mid-message so both halves parse as malformed. The
-    /// peer that sent a perfectly good message is the one reported broken.
+    /// message is dropped, counted and warned: it is in no dialog and no
+    /// output, and the stream resumes at the message after it.
     ///
     /// Raising it to N lets one TCP direction hold N bytes, so it is the
     /// operator's statement about the trunk they are watching. The floor is

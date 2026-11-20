@@ -138,6 +138,17 @@ pub enum ParseError {
         got: usize,
     },
 
+    /// Input is longer than the most its kind may be.
+    #[error("{what} too long: {len} bytes (max {max})")]
+    TooLong {
+        /// The structure that is too long (e.g. `"SIP message"`).
+        what: &'static str,
+        /// Bytes given.
+        len: usize,
+        /// Bytes allowed.
+        max: usize,
+    },
+
     /// Bytes that must be text are not valid UTF-8.
     #[error("{what} contains invalid UTF-8")]
     InvalidUtf8 {

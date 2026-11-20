@@ -3391,9 +3391,8 @@ pub struct LimitsConfig {
     /// TCP imposes no such ceiling and neither does RFC 3261: a message
     /// carrying a large multipart body — ISUP encapsulation, a long
     /// `Record-Route` set, a fat SDP offer — legitimately exceeds it, and when
-    /// it does the buffer is flushed mid-message so both halves parse as
-    /// malformed. The peer that sent a perfectly good message is the one
-    /// reported broken.
+    /// it does the message is dropped (D17), counted and warned: it is in no
+    /// dialog and no output.
     pub max_tcp_buffer: Option<u64>,
     /// Rows one list-style REST response may return (default: 1000).
     ///
@@ -3660,7 +3659,7 @@ impl LimitsConfig {
             return Err(crate::Error::ConfigInvalid(format!(
                 "[limits] max_tcp_buffer must be >= {} (a smaller ceiling cannot \
                  hold one SIP header line, so every SIP/TCP message would be \
-                 flushed mid-message and reported malformed), got {v}",
+                 dropped as oversized), got {v}",
                 crate::capture::reassembly::MIN_TCP_BUFFER
             )));
         }
