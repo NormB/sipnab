@@ -444,7 +444,7 @@ in it. Those are **confident wrong answers** — the exact failure this codebase
 has already had to fix once at the capture layer, where an unreadable
 encapsulation produced *"49 packets captured, 0 SIP messages … exit 0 — output
 textually IDENTICAL to a capture that was read perfectly"*
-([`src/capture/mod.rs:320-327`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L320-L327)<!-- "// sipnab's failure mode for an encapsulation it cannot read" -->).
+([`src/capture/mod.rs:322-329`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L322-L329)<!-- "// sipnab's failure mode for an encapsulation it cannot read" -->).
 
 `SECCOMP_RET_KILL_PROCESS` produces a death with a syscall number attached. That
 is diagnosable, it is loud, and it is the only action that makes the proof in [section 7.2, "The behavioral proof, which is the one that matters"](#72-the-behavioral-proof-which-is-the-one-that-matters)

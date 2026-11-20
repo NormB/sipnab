@@ -224,8 +224,10 @@ pub(crate) fn captured_packets_deferred<R>(f: impl FnOnce() -> R) -> R {
 ///
 /// Thread-local, so another thread's reads are counted as usual. Nested
 /// scopes restore the state they found. Only `crate::parallel` reads copies,
-/// so this exists only in the builds that have it.
-#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+/// so this exists only in the builds that have it, and in every test build:
+/// the tests of a count that a copy must not repeat run under `--features
+/// tls` too, where `crate::parallel` is not built.
+#[cfg(any(test, all(not(target_arch = "wasm32"), feature = "native")))]
 pub(crate) fn untallied<R>(f: impl FnOnce() -> R) -> R {
     /// Restores the previous state on every path out, including a panic.
     struct Restore(bool);
