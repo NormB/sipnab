@@ -57,6 +57,23 @@ pub enum SortColumn {
     Pdd,
     /// Sort by dialog duration (first to last message).
     Duration,
+    /// Sort by the time of the dialog's last message: the dialog updated
+    /// last at the bottom (ascending). Not a column of the table, so `<` and
+    /// `>` never land on it; `L` toggles it against the number order.
+    LastUpdate,
+}
+
+impl SortColumn {
+    /// The name the status line gives the sort: the column's header label,
+    /// or "Last update" for the order that has no column.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match ALL_COLUMNS.iter().position(|c| *c == self) {
+            Some(0) => "#",
+            Some(i) => COLUMN_LABELS[i],
+            None => "Last update",
+        }
+    }
 }
 
 /// All columns in display order, used for cycling with `<` and `>`.
@@ -225,6 +242,18 @@ impl CallListState {
             self.sort_column = column;
             self.sort_ascending = true;
         }
+    }
+
+    /// `L`: order by the time of each dialog's last message, the dialog
+    /// updated last at the bottom; pressed again, back to the number order
+    /// (first seen first).
+    pub fn toggle_last_update_order(&mut self) {
+        self.sort_column = if self.sort_column == SortColumn::LastUpdate {
+            SortColumn::Index
+        } else {
+            SortColumn::LastUpdate
+        };
+        self.sort_ascending = true;
     }
 
     /// Reverse the current sort direction.
@@ -779,7 +808,7 @@ pub fn render_call_list(
     let header_cells: Vec<Cell> = vis_indices
         .iter()
         .map(|&i| {
-            if i == sort_col_idx {
+            if i == sort_col_idx && ALL_COLUMNS.get(i) == Some(&state.sort_column()) {
                 Cell::from(format!("{}{}", base_labels[i].trim(), sort_indicator))
             } else {
                 Cell::from(base_labels[i])
@@ -1362,6 +1391,10 @@ fn sort_dialogs(
                 .unwrap_or(i64::MAX)
                 .cmp(&b.timing.pdd_ms().unwrap_or(i64::MAX)),
             SortColumn::Duration => a.duration().cmp(&b.duration()),
+            SortColumn::LastUpdate => a
+                .latest_message_at
+                .cmp(&b.latest_message_at)
+                .then(a.number.cmp(&b.number)),
         };
         if ascending { ord } else { ord.reverse() }
     });
@@ -3028,6 +3061,60 @@ mod latest_message_tests {
             ["short@example.com", "spanned@example.com"],
             "1.5 s sorts before 2.505 s; by last message read, 0.905 s would sort first"
         );
+        Ok(())
+    }
+
+    /// `L`: the dialog updated last sorts last, whatever its number; `L`
+    /// again is the number order, and the status line names each.
+    #[test]
+    fn l_orders_by_the_last_message_and_back() -> Result<(), TestError> {
+        let t0 = chrono::DateTime::from_timestamp(crate::test_utils::OUT_OF_ORDER_T0, 0)
+            .ok_or("the fixture's epoch")?;
+        let dialog = |cid: &str, last_ms: i64| -> Result<crate::sip::dialog::SipDialog, TestError> {
+            let raw = crate::test_utils::build_sip_message(
+                "OPTIONS sip:pbx@example.com SIP/2.0",
+                &[
+                    "Via: SIP/2.0/UDP 198.51.100.7:5060;branch=z9hG4bK-l",
+                    "From: <sip:a@example.com>;tag=a",
+                    "To: <sip:pbx@example.com>",
+                    &format!("Call-ID: {cid}"),
+                    "CSeq: 1 OPTIONS",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let mut d = crate::sip::dialog::SipDialog::new(
+                &crate::sip::parser::parse_sip(
+                    &raw,
+                    t0,
+                    [198, 51, 100, 7].into(),
+                    [192, 0, 2, 2].into(),
+                    5060,
+                    5060,
+                    crate::net::TransportProto::Udp,
+                )
+                .map_err(|e| format!("parse: {e:?}"))?,
+            )
+            .ok_or("a dialog")?;
+            d.latest_message_at = t0 + chrono::TimeDelta::milliseconds(last_ms);
+            d.updated_at = d.latest_message_at;
+            Ok(d)
+        };
+        let first = dialog("first@example.com", 5000)?;
+        let second = dialog("second@example.com", 1000)?;
+        let mut rows = vec![&first, &second];
+        sort_dialogs(&mut rows, SortColumn::LastUpdate, true);
+        let order: Vec<&str> = rows.iter().map(|d| d.call_id.as_str()).collect();
+        assert_eq!(order, ["second@example.com", "first@example.com"]);
+
+        let mut state = CallListState::new();
+        state.toggle_last_update_order();
+        assert_eq!(state.sort_column(), SortColumn::LastUpdate);
+        assert!(state.sort_ascending());
+        assert_eq!(state.sort_column().label(), "Last update");
+        state.toggle_last_update_order();
+        assert_eq!(state.sort_column(), SortColumn::Index);
+        assert_eq!(state.sort_column().label(), "#");
         Ok(())
     }
 }
