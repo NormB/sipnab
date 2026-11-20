@@ -256,6 +256,29 @@ pub fn parse_sip(
     )
 }
 
+/// The longest SIP message the parser accepts, in bytes: the larger of the
+/// largest UDP datagram (65,535) and the SIP/TCP reassembly ceiling
+/// (`--max-tcp-buffer`, 64 KiB by default; D17). No input path delivers a
+/// longer message intact, so one is refused as [`ParseError::TooLong`]
+/// rather than parsed.
+#[must_use]
+pub fn max_message_len() -> usize {
+    crate::capture::reassembly::max_tcp_buffer().max(usize::from(u16::MAX))
+}
+
+/// Refuse `data` longer than [`max_message_len`].
+fn check_message_len(data: &[u8]) -> Result<(), ParseError> {
+    let max = max_message_len();
+    if data.len() > max {
+        return Err(ParseError::TooLong {
+            what: "SIP message",
+            len: data.len(),
+            max,
+        });
+    }
+    Ok(())
+}
+
 /// Run the cheap, allocation-free first-line validation that gates whether a
 /// buffer can become a [`SipMessage`]. Returns the same `Err` variants
 /// `parse_sip_bytes` would, so pre-checking the borrowed slice is behaviorally
@@ -266,6 +289,7 @@ fn precheck_first_line(data: &[u8]) -> Result<(), ParseError> {
             what: "SIP message",
         });
     }
+    check_message_len(data)?;
     let first_crlf = find_crlf(data).ok_or(ParseError::MissingCrlf)?;
     let first_line = &data[..first_crlf];
     let first_line_str = std::str::from_utf8(first_line).map_err(|_| ParseError::InvalidUtf8 {
@@ -298,6 +322,7 @@ pub fn parse_sip_bytes(
             what: "SIP message",
         });
     }
+    check_message_len(data)?;
 
     // Find the end of the first line
     let first_crlf = find_crlf(data).ok_or(ParseError::MissingCrlf)?;
@@ -2249,6 +2274,157 @@ mod oversize_header_tests {
             "the drop must be counted; parse_error alone cannot tell a withheld \
              header from a bad Content-Length"
         );
+        Ok(())
+    }
+}
+
+/// The parser refuses a message longer than any input path may deliver
+/// (backlog IMPORT-V6 D17: "the parser has no cap").
+#[cfg(test)]
+mod message_cap_tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    type TestError = Box<dyn std::error::Error>;
+
+    const IP: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+
+    /// A MESSAGE request of exactly `len` bytes (body padded).
+    fn message_of(len: usize) -> Vec<u8> {
+        let head_for = |body: usize| {
+            format!(
+                "MESSAGE sip:b@example.com SIP/2.0\r\nCall-ID: cap@example.com\r\nContent-Length: {body}\r\n\r\n"
+            )
+        };
+        let mut body = len.saturating_sub(head_for(0).len());
+        while head_for(body).len() + body > len {
+            body -= 1;
+        }
+        let mut m = head_for(body).into_bytes();
+        m.resize(len, b'z');
+        m
+    }
+
+    fn parse(data: &[u8]) -> Result<SipMessage, ParseError> {
+        parse_sip(
+            data,
+            chrono::DateTime::UNIX_EPOCH,
+            IP,
+            IP,
+            5060,
+            5060,
+            TransportProto::Tcp,
+        )
+    }
+
+    fn parse_bytes(data: &[u8]) -> Result<SipMessage, ParseError> {
+        parse_sip_bytes(
+            &bytes::Bytes::copy_from_slice(data),
+            chrono::DateTime::UNIX_EPOCH,
+            IP,
+            IP,
+            5060,
+            5060,
+            TransportProto::Tcp,
+        )
+    }
+
+    fn too_long(r: Result<SipMessage, ParseError>) -> Option<(usize, usize)> {
+        match r {
+            Err(ParseError::TooLong { len, max, .. }) => Some((len, max)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn the_cap_is_at_least_a_udp_datagram() -> Result<(), TestError> {
+        assert!(max_message_len() >= 65_535, "cap {}", max_message_len());
+        Ok(())
+    }
+
+    #[test]
+    fn the_cap_follows_the_reassembly_ceiling() -> Result<(), TestError> {
+        assert!(
+            max_message_len() >= crate::capture::reassembly::max_tcp_buffer(),
+            "a message the reassembler keeps must parse"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_fixture_is_exact() -> Result<(), TestError> {
+        for len in [200, 65_535, 70_000] {
+            assert_eq!(message_of(len).len(), len, "fixture of {len}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_small_message_parses() -> Result<(), TestError> {
+        assert!(parse(&message_of(500)).is_ok(), "500 bytes");
+        Ok(())
+    }
+
+    #[test]
+    fn a_message_of_exactly_the_cap_parses() -> Result<(), TestError> {
+        let m = message_of(max_message_len());
+        assert!(parse(&m).is_ok(), "{} bytes", m.len());
+        assert!(parse_bytes(&m).is_ok(), "{} bytes, zero-copy", m.len());
+        Ok(())
+    }
+
+    #[test]
+    fn one_byte_past_the_cap_is_refused() -> Result<(), TestError> {
+        let cap = max_message_len();
+        let m = message_of(cap + 1);
+        assert_eq!(too_long(parse(&m)), Some((cap + 1, cap)), "parse_sip");
+        Ok(())
+    }
+
+    #[test]
+    fn one_byte_past_the_cap_is_refused_zero_copy() -> Result<(), TestError> {
+        let cap = max_message_len();
+        let m = message_of(cap + 1);
+        assert_eq!(
+            too_long(parse_bytes(&m)),
+            Some((cap + 1, cap)),
+            "parse_sip_bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_mebibyte_is_refused() -> Result<(), TestError> {
+        let m = message_of(1 << 20);
+        assert_eq!(
+            too_long(parse(&m)),
+            Some((1 << 20, max_message_len())),
+            "1 MiB"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_refusal_names_both_sizes() -> Result<(), TestError> {
+        let cap = max_message_len();
+        let err = parse(&message_of(cap + 10)).err().ok_or("refused")?;
+        let text = err.to_string();
+        assert!(text.contains(&(cap + 10).to_string()), "{text}");
+        assert!(text.contains(&cap.to_string()), "{text}");
+        assert!(text.contains("SIP message"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn empty_input_is_still_empty() -> Result<(), TestError> {
+        assert!(matches!(parse(b""), Err(ParseError::Empty { .. })), "empty");
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_garbage_is_refused_for_its_size() -> Result<(), TestError> {
+        let junk = vec![b'z'; max_message_len() + 1];
+        assert!(too_long(parse(&junk)).is_some(), "size first");
         Ok(())
     }
 }

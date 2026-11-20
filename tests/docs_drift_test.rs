@@ -294,7 +294,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
+            // git's `fetch --tags`, which the stability page's comparison
+            // of two releases needs in an older clone.
+            "docs/stability.md",
+            "website/content/docs/stability.md",
         ],
+    ),
+    // scripts/contract-diff.py's `--kind openapi|schema`, which the
+    // stability page runs: the script's flag, not sipnab's.
+    (
+        "kind",
+        &["docs/stability.md", "website/content/docs/stability.md"],
     ),
     // `cargo clippy --no-default-features --lib -- -D warnings`, the
     // no-feature lint that CI and pre-push run: cargo's flag, not sipnab's.
@@ -5789,7 +5799,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 346 -> 347 (governance): GOVERNANCE.md, which has no site mirror.
     // Attributed against the staged diff: `--diff-filter=A` lists it as the
     // one markdown file added.
-    const EXPECTED_MARKDOWN_FILES: usize = 347;
+    // 347 -> 349 (WC2a): docs/stability.md, the stability how-to, and its
+    // generated mirror website/content/docs/stability.md.
+    const EXPECTED_MARKDOWN_FILES: usize = 349;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -6728,7 +6740,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1521 -> 1522 (named filters over REST and MCP): the "List the named
     // filters" capability in docs/design/surface-capability-matrix.md, which
     // has no site mirror (+1).
-    const EXPECTED_TABLES: usize = 1522;
+    // 1522 -> 1524 (WC2a): the surfaces table of docs/stability.md and its
+    // site mirror (+2).
+    const EXPECTED_TABLES: usize = 1524;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

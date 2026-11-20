@@ -1932,7 +1932,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2755 -> 2756 (F2-SAVE-UNWRITABLE, +1): docs/keybindings.md 1 (the
     // filter dialog's F2/F3 paragraph links "Save the dialog's filter under
     // a name").
-    const EXPECTED_WIKI_LINKS: usize = 2756;
+    // 2756 -> 2758 (WC2a stability page, +2): docs/README.md 1 (its index
+    // line for docs/stability.md) and docs/stability.md 1 (the changelog).
+    const EXPECTED_WIKI_LINKS: usize = 2758;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2104,7 +2106,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // CONTRIBUTING.md#contributor-license-agreement are gone (-2); the
     // section's own links now point at CLA.md, #signing-off-commits and
     // MAINTAINERS.md, as before in number.
-    const EXPECTED_COMMUNITY_LINKS: usize = 173;
+    // 173 -> 174 (WC2a stability page): README.md's docs table links
+    // docs/stability.md.
+    const EXPECTED_COMMUNITY_LINKS: usize = 174;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -3230,7 +3234,8 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // docs/expectations.md.
     // 110 -> 111 (#664): docs/relay-engines.md, reached from docs/README.md.
     // 111 -> 112 (TOP3-MTLS): docs/mtls.md, reached from docs/README.md.
-    const EXPECTED_DOCS_PAGES: usize = 112;
+    // 112 -> 113 (WC2a): docs/stability.md, reached from docs/README.md.
+    const EXPECTED_DOCS_PAGES: usize = 113;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

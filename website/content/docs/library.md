@@ -132,7 +132,8 @@ enums. They do not return `anyhow::Result`.
 | `config::Config::load`, address/rule/CIDR parsing | `Result<_, Error>` |
 
 - **`ParseError`** — protocol parsers. Variants include
-  `Empty { what }`, `TooShort { what, need, got }`, `InvalidUtf8 { what }`,
+  `Empty { what }`, `TooShort { what, need, got }`, `TooLong { what, len, max }`,
+  `InvalidUtf8 { what }`,
   `MissingCrlf`, `NotSip { line }`, `InvalidStatusCode { code }`,
   `BadRtpVersion { version }`, `SdpMissingVersion`,
   `BadSdpVersion { version }`.

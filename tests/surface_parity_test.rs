@@ -1063,9 +1063,12 @@ fn a_limit_that_refuses_real_work_warns_where_it_refuses() -> Result<(), TestErr
             what: "idle compaction dropping messages that were successfully captured",
         },
         Site {
-            file: "src/capture/reassembly.rs",
-            marker: "flushed mid-message",
-            what: "a SIP/TCP message over 64 KiB cut in half, so it parses as malformed",
+            // Moved from src/capture/reassembly.rs, which cut the message and
+            // said it would parse as malformed: the framer now drops it
+            // whole (IMPORT-V6 D17) and says so.
+            file: "src/capture/mod.rs",
+            marker: "-byte reassembly",
+            what: "a SIP/TCP message over the 64 KiB ceiling dropped, so it is in no dialog",
         },
         Site {
             // Markers must sit on ONE source line: this gate greps the file,

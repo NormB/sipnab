@@ -558,6 +558,7 @@ do. Here are the ones most people need:
 | Look up a flag | [CLI reference](docs/cli-reference.md) |
 | Write a config file | [Config reference](docs/config-reference.md), starting from [contrib/sipnabrc.example](contrib/sipnabrc.example) |
 | Parse sipnab's JSON or export pcap | [Output formats](docs/output-formats.md) |
+| Check what a new release keeps compatible | [Stability](docs/stability.md) |
 | Use sipnab as a Rust library | [Library API](docs/library.md) |
 | Understand how it works inside | [Architecture](docs/architecture.md) and [Fault model](docs/fault-model.md) |
 

@@ -856,27 +856,12 @@ impl TcpReassembler {
         let mut results = Vec::new();
         let flushed = self.drain_in_order(key);
         if !flushed.is_empty() {
-            // Warned, not just debugged: this cuts a message in half, and
-            // the halves parse as malformed SIP. An operator reading the
-            // output sees a broken message from a peer that sent a
-            // perfectly good one, and nothing connects that to a buffer
-            // ceiling. Once per process — a peer that exceeds it once
-            // usually exceeds it on every call.
-            static OVERFLOW_WARNED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !OVERFLOW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                tracing::warn!(
-                    "a SIP/TCP message from {} to {} exceeded the {ceiling}-byte \
-                     reassembly buffer and was flushed mid-message, so it will parse as \
-                     malformed. TCP sets no such limit; this is sipnab's ceiling. Large \
-                     multipart bodies (ISUP, long Record-Route sets) hit it legitimately. \
-                     Raise it with --max-tcp-buffer or [limits] max_tcp_buffer.",
-                    key.src,
-                    key.dst,
-                );
-            }
+            // Not warned here: the SIP framer above this decides what the
+            // flush cost. A SIP message past the ceiling is dropped, counted
+            // and said there (`crate::capture::note_sip_oversize`); data
+            // that is not SIP passes through whole, as before.
             tracing::debug!(
-                "TCP buffer overflow flush: {} -> {} ({} bytes)",
+                "TCP buffer overflow flush: {} -> {} ({} bytes, ceiling {ceiling})",
                 key.src,
                 key.dst,
                 flushed.len(),
@@ -1980,33 +1965,30 @@ mod tests {
         Ok(())
     }
 
-    /// The buffer-ceiling warning is said once per process, however many
-    /// times a stream passes the ceiling.
+    /// The reassembler passes an overflowing direction up whole and says
+    /// nothing itself: the SIP framer above it decides what the flush cost
+    /// and says that (IMPORT-V6 D17), so a non-SIP stream is not reported as
+    /// a SIP message cut in half.
     #[cfg(feature = "native")]
     #[test]
-    fn the_buffer_ceiling_warning_is_said_at_most_once() -> Result<(), TestError> {
+    fn the_reassembler_flushes_past_the_ceiling_without_a_warning() -> Result<(), TestError> {
         let ceiling = max_tcp_buffer();
         let full = vec![b'x'; ceiling + 1];
         let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {
-            for port in [5070, 5071] {
-                let mut r = TcpReassembler::new();
-                let mut syn = default_tcp_flags();
-                syn.syn = true;
-                r.insert(&make_tcp_segment(port, 5061, 99, syn, b""));
-                let out = r.insert(&make_tcp_segment(
-                    port,
-                    5061,
-                    100,
-                    default_tcp_flags(),
-                    &full,
-                ));
-                assert_eq!(out.len(), 1, "flushed past the ceiling");
-            }
+            let mut r = TcpReassembler::new();
+            let mut syn = default_tcp_flags();
+            syn.syn = true;
+            r.insert(&make_tcp_segment(5070, 5061, 99, syn, b""));
+            let out = r.insert(&make_tcp_segment(
+                5070,
+                5061,
+                100,
+                default_tcp_flags(),
+                &full,
+            ));
+            assert_eq!(out.len(), 1, "flushed past the ceiling");
         });
-        assert!(
-            logs.matches("exceeded the").count() <= 1,
-            "warned more than once: {logs}"
-        );
+        assert!(!logs.contains("5070"), "the reassembler warned: {logs}");
         Ok(())
     }
 

@@ -10,6 +10,13 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **A stability page and a script that compare two releases' REST API and JSON schemas.**
+  - Effect: `scripts/contract-diff.py` labels each change `breaking` or `additive` and exits 1 on a breaking one.
+  - Limit: Until 1.0 a release may still change any surface; the command line, config keys, MCP tools and metrics are not compared yet.
+  - Docs: [Compare the REST API of two releases](docs/stability.md#compare-the-rest-api-of-two-releases)
+
 ### Fixed
 
 - **A filter's regexes have a budget, so one filter cannot take seconds to read.**
@@ -18,6 +25,20 @@ entry that carries them.
   - Effect: MCP `search_messages` with `regex: true` also refuses a pattern of more than 16 classes.
   - Do: Join alternatives into one regex, or write `\d` and `\w`, which do not count, in place of classes.
   - Docs: [Parser constraints](docs/filter-dsl.md#parser-constraints), [Search messages with a regular expression](docs/mcp.md#search-messages-with-a-regular-expression)
+- **sipnab drops a SIP/TCP message over `--max-tcp-buffer` whole and says so.**
+  - Was: Its first 64 KiB came out as a malformed message, and sipnab read the rest of its body as the next message.
+  - Effect: A warning names the peers, and the `capture quality:` line gives the total.
+  - Effect: Reading resumes at the message after it, so sipnab keeps the rest of the connection.
+  - Do: Raise `--max-tcp-buffer` for trunks whose messages carry large bodies.
+  - Docs: [Tuning capture](docs/tuning-capture.md)
+- **sipnab counts and warns about WebSocket frames over 64 KiB.**
+  - Was: SIP in such a frame vanished from every count and output with no line saying so.
+  - Effect: A warning names the frame's size, and the `capture quality:` line gives the total.
+  - Docs: [Tuning capture](docs/tuning-capture.md)
+- **sipnab warns about and counts RTP streams it discards at `--max-streams`.**
+  - Was: At the cap the oldest streams left every report, and no line said so.
+  - Effect: A warning names the cap and the count, and the end-of-run `retention:` line gives the total.
+  - Docs: [Command-line reference](docs/cli-reference.md)
 
 ## [0.5.268] - 2026-11-20
 

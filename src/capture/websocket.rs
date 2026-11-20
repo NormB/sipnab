@@ -252,6 +252,36 @@ pub fn is_websocket_frame(data: &[u8]) -> bool {
     }
 }
 
+/// The length a text or binary frame declares when it starts at `data` and
+/// declares more than the 64 KB limit, `MAX_FRAME_SIZE`; `None` for
+/// anything else.
+///
+/// The frame [`is_websocket_frame`] turns away for its size, named so the
+/// caller can count and say it rather than drop it in silence. Only the
+/// 64-bit length form can exceed the limit, the reserved bits must be clear
+/// and the length's top bit too ([RFC 6455 section 5.2](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.2)), so other TCP
+/// data is seldom taken for one; the caller also requires a WebSocket port.
+#[must_use]
+pub fn oversized_data_frame(data: &[u8]) -> Option<u64> {
+    let (&byte0, &byte1) = (data.first()?, data.get(1)?);
+    let opcode = byte0 & 0x0F;
+    if byte0 & 0x70 != 0 || (opcode != OPCODE_TEXT && opcode != OPCODE_BINARY) {
+        return None;
+    }
+    if byte1 & 0x7F != 127 {
+        return None;
+    }
+    let len: [u8; 8] = data.get(2..10)?.try_into().ok()?;
+    let declared = u64::from_be_bytes(len);
+    if declared >> 63 != 0 || declared <= MAX_FRAME_SIZE {
+        return None;
+    }
+    if byte1 & 0x80 != 0 && data.len() < 14 {
+        return None;
+    }
+    Some(declared)
+}
+
 /// Unwrap a WebSocket frame, returning the payload bytes.
 ///
 /// Returns `Ok(Some(payload))` for text (opcode 1) and binary (opcode 2)
@@ -971,5 +1001,182 @@ mod tests {
         let result = unwrap_websocket_frame(&frame)?;
         assert_eq!(result, Some(payload.to_vec()));
         Ok(())
+    }
+
+    /// The start of a data frame that declares more than the 64 KB limit is
+    /// named, so the pipeline can count and say what it drops (backlog
+    /// IMPORT-V6 "WebSocket frame >64KB → drop and WARN").
+    mod oversized {
+        use super::*;
+
+        /// A frame head: `byte0`, the 64-bit length form, `declared`, an
+        /// optional mask key, then `extra` payload bytes.
+        fn head(byte0: u8, masked: bool, declared: u64, extra: usize) -> Vec<u8> {
+            let mut f = vec![byte0, if masked { 0x80 | 127 } else { 127 }];
+            f.extend_from_slice(&declared.to_be_bytes());
+            if masked {
+                f.extend_from_slice(&[1, 2, 3, 4]);
+            }
+            f.extend(std::iter::repeat_n(b'x', extra));
+            f
+        }
+
+        macro_rules! over {
+            ($name:ident, $frame:expr, $want:expr) => {
+                #[test]
+                fn $name() -> Result<(), TestError> {
+                    let frame: Vec<u8> = $frame;
+                    assert_eq!(
+                        oversized_data_frame(&frame),
+                        $want,
+                        "frame head {:02x?}",
+                        &frame[..frame.len().min(14)]
+                    );
+                    Ok(())
+                }
+            };
+        }
+
+        // Success: an oversized text or binary frame is named with its length.
+        over!(
+            text_one_past_the_limit,
+            head(0x81, false, 65_537, 0),
+            Some(65_537)
+        );
+        over!(
+            binary_far_past_the_limit,
+            head(0x82, false, 100_000, 0),
+            Some(100_000)
+        );
+        over!(masked_text_frame, head(0x81, true, 70_000, 0), Some(70_000));
+        over!(
+            first_fragment_without_fin,
+            head(0x01, false, 80_000, 0),
+            Some(80_000)
+        );
+        over!(
+            with_some_payload_after_the_head,
+            head(0x81, false, 90_000, 1400),
+            Some(90_000)
+        );
+        over!(
+            four_gibibytes,
+            head(0x82, true, u64::from(u32::MAX), 0),
+            Some(u64::from(u32::MAX))
+        );
+        over!(
+            largest_length_rfc_6455_allows,
+            head(0x81, false, (1 << 63) - 1, 0),
+            Some((1 << 63) - 1)
+        );
+
+        // Failure: not an oversized data frame.
+        over!(
+            exactly_the_limit_is_not_over,
+            head(0x81, false, 65_536, 0),
+            None
+        );
+        over!(
+            sixteen_bit_form_cannot_be_over,
+            vec![0x81, 126, 0xFF, 0xFF],
+            None
+        );
+        over!(
+            small_frame_is_not_over,
+            vec![0x81, 5, b'h', b'e', b'l', b'l', b'o'],
+            None
+        );
+        // The bytes after a 16-bit or 7-bit length are payload, not a 64-bit
+        // length, however large they would read as one.
+        over!(
+            sixteen_bit_form_with_payload_is_not_over,
+            {
+                let mut f = vec![0x81, 126, 0x10, 0x00];
+                f.extend([0x7F; 4096]);
+                f
+            },
+            None
+        );
+        over!(
+            seven_bit_form_with_payload_is_not_over,
+            {
+                let mut f = vec![0x82, 125];
+                f.extend([0x7F; 125]);
+                f
+            },
+            None
+        );
+        over!(close_frame_is_not_data, head(0x88, false, 70_000, 0), None);
+        over!(ping_frame_is_not_data, head(0x89, false, 70_000, 0), None);
+        over!(
+            continuation_is_not_a_start,
+            head(0x80, false, 70_000, 0),
+            None
+        );
+        over!(
+            reserved_opcode_is_not_data,
+            head(0x83, false, 70_000, 0),
+            None
+        );
+        over!(
+            rsv_bits_set_is_not_websocket,
+            head(0xC1, false, 70_000, 0),
+            None
+        );
+        over!(
+            top_length_bit_set_breaks_rfc_6455,
+            head(0x81, false, 1 << 63, 0),
+            None
+        );
+        over!(
+            not_minimal_length_is_not_over,
+            head(0x81, false, 300, 0),
+            None
+        );
+
+        // Edge: too short to hold the head.
+        over!(empty_input, Vec::new(), None);
+        over!(one_byte, vec![0x81], None);
+        over!(
+            length_cut_short,
+            head(0x81, false, 70_000, 0)[..6].to_vec(),
+            None
+        );
+        over!(
+            mask_key_cut_short,
+            head(0x81, true, 70_000, 0)[..11].to_vec(),
+            None
+        );
+        over!(
+            tls_record_is_not_websocket,
+            vec![0x17, 0x03, 0x03, 0x40, 0x00],
+            None
+        );
+        over!(
+            sip_text_is_not_websocket,
+            b"INVITE sip:a@example.com SIP/2.0\r\n".to_vec(),
+            None
+        );
+
+        /// What the pipeline already refuses, it names: every frame named
+        /// oversized is one `is_websocket_frame` turns away.
+        #[test]
+        fn every_named_frame_is_one_the_sniff_refuses() -> Result<(), TestError> {
+            for declared in [65_537u64, 70_000, 1 << 20, u64::from(u32::MAX)] {
+                for byte0 in [0x81u8, 0x82, 0x01, 0x02] {
+                    let f = head(byte0, false, declared, 0);
+                    assert_eq!(
+                        oversized_data_frame(&f),
+                        Some(declared),
+                        "{byte0:02x} {declared}"
+                    );
+                    assert!(
+                        !is_websocket_frame(&f),
+                        "{byte0:02x} {declared} must be refused"
+                    );
+                }
+            }
+            Ok(())
+        }
     }
 }

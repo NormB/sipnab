@@ -1773,7 +1773,10 @@ mod tests {
             (1, true),
             (MAX_MULTIPART_DEPTH + 1, true),
             (MAX_MULTIPART_DEPTH + 2, false),
-            (2_000, false),
+            // Far past the bound, and inside the parser's message cap
+            // (`max_message_len`, 64 KiB by default): 2,000 levels made a
+            // 139 KB message no input path delivers.
+            (800, false),
         ] {
             let (ct, body) = nested(depth, "application/sdp", SDP_BODY);
             let m = invite_with(Some(&ct), &body)?;
