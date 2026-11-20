@@ -313,6 +313,27 @@ fn copy_session_entry_with(app: &mut App, copy: fn(&str) -> crate::tui::StatusMe
     app.status_error = Some("Copying the [filters] entry to the clipboard\u{2026}".to_owned());
 }
 
+/// The notice a save into a file shows: the name and the file, the file
+/// under `home` (the `$HOME` value) written from `~`.
+fn saved_notice(name: &str, path: &std::path::Path, home: Option<&std::ffi::OsStr>) -> String {
+    format!("Saved @{name} to {}", home_relative(path, home))
+}
+
+/// `path` for display, with `home` written as `~` when `path` is inside it
+/// (whole components, so `/home/ex` is not a prefix of `/home/example`).
+/// A home that is empty, relative or `/` is not used: `~` would hide where
+/// the file is rather than shorten it.
+fn home_relative(path: &std::path::Path, home: Option<&std::ffi::OsStr>) -> String {
+    let home = home
+        .map(std::path::Path::new)
+        .filter(|home| home.is_absolute() && home.components().ne([std::path::Component::RootDir]));
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
 /// Keys while the "Save as" prompt is open: text edits the name, Enter
 /// saves, Esc closes the prompt; every other key waits.
 fn handle_save_prompt_key(app: &mut App, code: KeyCode) {
@@ -329,8 +350,11 @@ fn handle_save_prompt_key(app: &mut App, code: KeyCode) {
                     app.filter_dialog.error = None;
                     match saved {
                         Saved::File(path) => {
-                            app.filter_dialog.notice =
-                                Some(format!("Saved @{name} to {}", path.display()));
+                            app.filter_dialog.notice = Some(saved_notice(
+                                &name,
+                                &path,
+                                std::env::var_os("HOME").as_deref(),
+                            ));
                         }
                         Saved::Session(note) => app.filter_dialog.session_note = Some(note),
                     }
@@ -3229,6 +3253,298 @@ mod save_named_tests {
         assert!(
             row_with(&text, "Saved @large").is_some(),
             "notice row:\n{text}"
+        );
+        Ok(())
+    }
+
+    // ── The notice and refusal are whole in the dialog ─────────────────
+
+    /// The rows inside the filter dialog's border, drawn at `w` x `h`.
+    fn dialog_rows(app: &mut App, w: u16, h: u16) -> Result<Vec<String>, TestError> {
+        let text = screen(app, w, h)?;
+        let popup =
+            crate::tui::render::centered_popup(ratatui::layout::Rect::new(0, 0, w, h), 76, 23);
+        let (left, right) = (
+            usize::from(popup.x) + 1,
+            usize::from(popup.x + popup.width) - 1,
+        );
+        Ok(text
+            .lines()
+            .skip(usize::from(popup.y) + 1)
+            .take(usize::from(popup.height.saturating_sub(2)))
+            .map(|line| {
+                let row: String = line.chars().skip(left).take(right - left).collect();
+                row.trim_end().to_owned()
+            })
+            .collect())
+    }
+
+    /// `text` without its white space, to find a wrapped message whole.
+    fn squash(text: &str) -> String {
+        text.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    /// An app whose save target is a path longer than the dialog is wide.
+    fn long_path_app() -> Result<(App, tempfile::TempDir, std::path::PathBuf), TestError> {
+        let (mut app, dir, _) = saving_app()?;
+        let path = dir
+            .path()
+            .join("voice-operations-shared-configuration")
+            .join("site-a-primary-and-secondary-proxies")
+            .join("sipnab.toml");
+        app.column_config_path = Ok(path.clone());
+        Ok((app, dir, path))
+    }
+
+    // success
+
+    /// The live case at the 76-column default: the saved notice holds the
+    /// whole path, however long.
+    #[test]
+    fn the_saved_path_is_whole_at_76_columns() -> Result<(), TestError> {
+        let (mut app, _dir, path) = long_path_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "bigcalls");
+        assert!(path.is_file(), "saved");
+        let rows = dialog_rows(&mut app, 80, 24)?;
+        let want = format!("Saved @bigcalls to {}", path.display());
+        assert!(
+            squash(&rows.join("")).contains(&squash(&want)),
+            "the whole notice {want:?}:\n{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    /// The same at the dialog's minimum size, 40 columns.
+    #[test]
+    fn the_saved_path_is_whole_at_the_minimum_size() -> Result<(), TestError> {
+        let (mut app, _dir, path) = long_path_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "bigcalls");
+        let rows = dialog_rows(&mut app, 40, 24)?;
+        let want = format!("Saved @bigcalls to {}", path.display());
+        assert!(
+            squash(&rows.join("")).contains(&squash(&want)),
+            "the whole notice {want:?}:\n{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    /// The live test's 160 x 45 terminal: the notice is whole.
+    #[test]
+    fn the_saved_path_is_whole_at_160_columns() -> Result<(), TestError> {
+        let (mut app, _dir, path) = long_path_app()?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "bigcalls");
+        let rows = dialog_rows(&mut app, 160, 45)?;
+        let want = format!("Saved @bigcalls to {}", path.display());
+        assert!(
+            squash(&rows.join("")).contains(&squash(&want)),
+            "the whole notice {want:?}:\n{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    /// The live case's refusal of a name the file already holds is whole
+    /// at the minimum size, and the prompt with the typed name stays.
+    #[test]
+    fn the_duplicate_refusal_is_whole_with_its_prompt() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        std::fs::write(&path, "[filters]\nbigcalls = \"msg_count > 9\"\n")?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "bigcalls");
+        let err = app.filter_dialog.error.clone().ok_or("refused")?;
+        let rows = dialog_rows(&mut app, 40, 24)?;
+        assert!(
+            squash(&rows.join("")).contains(&squash(&format!("\u{26a0} {err}"))),
+            "the whole refusal {err:?}:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("Save as: @bigcalls")),
+            "the prompt stays:\n{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    /// A file under `$HOME` is written from `~`.
+    #[test]
+    fn a_path_under_home_starts_with_a_tilde() -> Result<(), TestError> {
+        let home = std::ffi::OsStr::new("/home/example");
+        let path = std::path::Path::new("/home/example/.config/sipnab/sipnab.toml");
+        assert_eq!(
+            home_relative(path, Some(home)),
+            "~/.config/sipnab/sipnab.toml",
+            "home as ~"
+        );
+        Ok(())
+    }
+
+    /// The notice reads "Saved @name to ~/…".
+    #[test]
+    fn the_saved_notice_uses_the_tilde() -> Result<(), TestError> {
+        let home = std::ffi::OsStr::new("/home/example");
+        let path = std::path::Path::new("/home/example/.config/sipnab/sipnab.toml");
+        assert_eq!(
+            saved_notice("bigcalls", path, Some(home)),
+            "Saved @bigcalls to ~/.config/sipnab/sipnab.toml",
+            "the notice"
+        );
+        Ok(())
+    }
+
+    /// A deep path under home keeps every component after the `~`.
+    #[test]
+    fn a_deep_path_under_home_keeps_its_components() -> Result<(), TestError> {
+        let home = std::ffi::OsStr::new("/srv/users/example");
+        let path = std::path::Path::new("/srv/users/example/a/b/c/sipnab.toml");
+        assert_eq!(
+            home_relative(path, Some(home)),
+            "~/a/b/c/sipnab.toml",
+            "every component kept"
+        );
+        Ok(())
+    }
+
+    // failure
+
+    /// A path outside home is shown whole, unchanged.
+    #[test]
+    fn a_path_outside_home_is_unchanged() -> Result<(), TestError> {
+        let home = std::ffi::OsStr::new("/home/example");
+        let path = std::path::Path::new("/etc/sipnab/sipnab.toml");
+        assert_eq!(
+            home_relative(path, Some(home)),
+            "/etc/sipnab/sipnab.toml",
+            "unchanged"
+        );
+        Ok(())
+    }
+
+    /// A sibling whose name starts with home's is not inside home.
+    #[test]
+    fn a_sibling_of_home_is_unchanged() -> Result<(), TestError> {
+        let home = std::ffi::OsStr::new("/home/ex");
+        let path = std::path::Path::new("/home/example/sipnab.toml");
+        assert_eq!(
+            home_relative(path, Some(home)),
+            "/home/example/sipnab.toml",
+            "a component boundary, not a string prefix"
+        );
+        Ok(())
+    }
+
+    /// A home of `/` would turn every path into `~/…`: it is not used.
+    #[test]
+    fn a_root_home_is_not_used() -> Result<(), TestError> {
+        let path = std::path::Path::new("/etc/sipnab/sipnab.toml");
+        assert_eq!(
+            home_relative(path, Some(std::ffi::OsStr::new("/"))),
+            "/etc/sipnab/sipnab.toml",
+            "unchanged"
+        );
+        Ok(())
+    }
+
+    /// A relative home is not a place: it is not used.
+    #[test]
+    fn a_relative_home_is_not_used() -> Result<(), TestError> {
+        let path = std::path::Path::new("example/sipnab.toml");
+        assert_eq!(
+            home_relative(path, Some(std::ffi::OsStr::new("example"))),
+            "example/sipnab.toml",
+            "unchanged"
+        );
+        Ok(())
+    }
+
+    /// An empty home is not used.
+    #[test]
+    fn an_empty_home_is_not_used() -> Result<(), TestError> {
+        let path = std::path::Path::new("/home/example/sipnab.toml");
+        assert_eq!(
+            home_relative(path, Some(std::ffi::OsStr::new(""))),
+            "/home/example/sipnab.toml",
+            "unchanged"
+        );
+        Ok(())
+    }
+
+    /// No home at all: the path is shown whole.
+    #[test]
+    fn no_home_leaves_the_path() -> Result<(), TestError> {
+        let path = std::path::Path::new("/home/example/sipnab.toml");
+        assert_eq!(
+            home_relative(path, None),
+            "/home/example/sipnab.toml",
+            "unchanged"
+        );
+        Ok(())
+    }
+
+    /// Esc after a refusal clears it, and the buttons are drawn again in
+    /// the rows it took.
+    #[test]
+    fn esc_after_a_refusal_gives_the_rows_back() -> Result<(), TestError> {
+        let (mut app, _dir, path) = saving_app()?;
+        std::fs::write(&path, "[filters]\nbigcalls = \"msg_count > 9\"\n")?;
+        app.filter_dialog.expression = "msg_count > 5".into();
+        save_as(&mut app, "bigcalls");
+        assert!(app.filter_dialog.error.is_some(), "refused");
+        press(&mut app, KeyCode::Esc);
+        let rows = dialog_rows(&mut app, 40, 24)?;
+        assert!(
+            rows.iter().any(|r| r.contains("[ Filter ]")),
+            "the buttons are back:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains("already defines")),
+            "the refusal is gone:\n{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    // edge
+
+    /// The home directory itself is `~`.
+    #[test]
+    fn home_itself_is_a_tilde() -> Result<(), TestError> {
+        let home = std::ffi::OsStr::new("/home/example");
+        assert_eq!(
+            home_relative(std::path::Path::new("/home/example"), Some(home)),
+            "~",
+            "home alone"
+        );
+        Ok(())
+    }
+
+    /// A home given with a trailing slash still matches.
+    #[test]
+    fn a_home_with_a_trailing_slash_matches() -> Result<(), TestError> {
+        let home = std::ffi::OsStr::new("/home/example/");
+        let path = std::path::Path::new("/home/example/sipnab.toml");
+        assert_eq!(home_relative(path, Some(home)), "~/sipnab.toml", "matched");
+        Ok(())
+    }
+
+    /// A file name that is not UTF-8 is shown with replacement characters
+    /// after the `~`, as the full path would be.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_name_under_home_is_shown() -> Result<(), TestError> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let home = std::ffi::OsStr::new("/home/example");
+        let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/home/example/s\xffp.toml"));
+        assert_eq!(
+            home_relative(path, Some(home)),
+            "~/s\u{fffd}p.toml",
+            "lossy, as display"
         );
         Ok(())
     }

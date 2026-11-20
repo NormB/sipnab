@@ -8,6 +8,20 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A TUI save keeps the mode of the config file it updates.**
+  - Was: Saving a named filter (`F2`), the column layout (`F10`) or name edits made a `0664` or `0640` config `0600`.
+  - Effect: The file keeps its mode, and its group when you belong to that group; a new file is still `0600`.
+  - Effect: TUI exports that replace an existing file keep its mode too; a notes file is always `0600`.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+- **The filter dialog shows a long save notice or refusal whole.**
+  - Was: `Saved @name to <path>` and the duplicate-name refusal stopped at the dialog's right edge.
+  - Effect: The message continues on the next rows, and a path in your home directory starts with `~`.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+
 ## [0.5.267] - 2026-11-19
 
 ### Added

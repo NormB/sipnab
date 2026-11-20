@@ -19057,7 +19057,8 @@ MCP server of the same session resolve the name at once, with no restart.
 
 3. Type the name, for example `alice-big`, and press `Enter`. The dialog
    shows `Saved @alice-big to` and the file's path, and the name joins the
-   list beside Named filter.
+   list beside Named filter. A path in your home directory starts with `~`.
+   A notice or refusal wider than the dialog continues on the next rows.
 4. Press `Esc` to close the dialog, or `Enter` to apply the filter as well.
    Saving does not apply it.
 
@@ -19066,7 +19067,9 @@ or digit. sipnab drops a leading `@` you type. The entry is the expression the
 dialog builds, with each `@name` and the Named filter kept as references, so
 it follows the entries it names. sipnab saves a built-in alias typed as the
 whole Expression, such as `problems`, as `@problems`. sipnab adds the one
-line to `[filters]` and keeps every comment and other setting of the file:
+line to `[filters]` and keeps every comment and other setting of the file,
+its mode, and its group when you belong to that group. A file sipnab creates is readable and writable by you
+only (mode `0600`):
 
 ```toml
 [filters]
@@ -87845,7 +87848,7 @@ It also runs on a push to `main` that changes a file those suites compile.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 153 `unsafe` blocks are libc FFI.
+- Most of this crate's 156 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.

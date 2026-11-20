@@ -8779,4 +8779,173 @@ pub(crate) mod save_permission_tests {
         );
         Ok(())
     }
+
+    // ── a save keeps the file's mode ───────────────────────────────────
+
+    /// The permission bits of `path` itself, not of a symlink's target.
+    fn own_mode(path: &Path) -> Result<u32, TestError> {
+        Ok(std::fs::symlink_metadata(path)?.permissions().mode() & 0o7777)
+    }
+
+    /// A config of mode `mode` holding a comment, saved by `writer`: the
+    /// mode afterwards; the comment must still be there.
+    fn mode_after_save(writer: Writer, mode: u32) -> Result<u32, TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "# mine\n")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+        writer(&path)?;
+        assert!(
+            std::fs::read_to_string(&path)?.contains("# mine"),
+            "the comment is kept"
+        );
+        assert!(temp_files(dir.path())?.is_empty(), "no temp file");
+        own_mode(&path)
+    }
+
+    /// The live case: an F2 save into a group-writable config keeps 0664.
+    #[test]
+    fn a_filter_save_keeps_0664() -> Result<(), TestError> {
+        assert_eq!(mode_after_save(filters_writer, 0o664)?, 0o664, "mode kept");
+        Ok(())
+    }
+
+    /// A filter save keeps a group-readable 0640.
+    #[test]
+    fn a_filter_save_keeps_0640() -> Result<(), TestError> {
+        assert_eq!(mode_after_save(filters_writer, 0o640)?, 0o640, "mode kept");
+        Ok(())
+    }
+
+    /// A filter save keeps a world-readable 0644.
+    #[test]
+    fn a_filter_save_keeps_0644() -> Result<(), TestError> {
+        assert_eq!(mode_after_save(filters_writer, 0o644)?, 0o644, "mode kept");
+        Ok(())
+    }
+
+    /// A filter save keeps an owner-only 0600.
+    #[test]
+    fn a_filter_save_keeps_0600() -> Result<(), TestError> {
+        assert_eq!(mode_after_save(filters_writer, 0o600)?, 0o600, "mode kept");
+        Ok(())
+    }
+
+    /// The column layout (F10) and the name edits keep the mode as the
+    /// filter save does: they share the one write path.
+    #[test]
+    fn every_writer_keeps_the_mode() -> Result<(), TestError> {
+        for (label, writer) in WRITERS {
+            for mode in [0o600, 0o640, 0o644, 0o664] {
+                assert_eq!(
+                    mode_after_save(writer, mode).map_err(|e| format!("{label}: {e}"))?,
+                    mode,
+                    "{label}: mode {mode:o} kept"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// A save through a symlink replaces the link with a regular file of
+    /// the target's mode; the target is untouched.
+    #[test]
+    fn a_save_through_a_symlink_takes_the_targets_mode() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let target = dir.path().join("shared.toml");
+        std::fs::write(&target, "# shared\n")?;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o664))?;
+        let link = dir.path().join("sipnab.toml");
+        std::os::unix::fs::symlink(&target, &link)?;
+        filters_writer(&link)?;
+        assert!(std::fs::symlink_metadata(&link)?.is_file(), "replaced");
+        assert_eq!(own_mode(&link)?, 0o664, "the target's mode");
+        assert_eq!(own_mode(&target)?, 0o664, "target mode unchanged");
+        Ok(())
+    }
+
+    /// A config the save creates is owner-only: it can hold credentials.
+    #[test]
+    fn every_writer_creates_a_0600_file() -> Result<(), TestError> {
+        for (label, writer) in WRITERS {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("sipnab.toml");
+            writer(&path).map_err(|e| format!("{label}: {e}"))?;
+            assert_eq!(own_mode(&path)?, 0o600, "{label}: owner-only");
+        }
+        Ok(())
+    }
+
+    /// A refused duplicate name writes nothing: mode and contents stay.
+    #[test]
+    fn a_refused_duplicate_leaves_the_mode() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        let text = "[filters]\nsales = \"msg_count > 1\"\n";
+        std::fs::write(&path, text)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664))?;
+        assert!(filters_writer(&path).is_err(), "the duplicate is refused");
+        assert_eq!(std::fs::read_to_string(&path)?, text, "contents unchanged");
+        assert_eq!(own_mode(&path)?, 0o664, "mode unchanged");
+        Ok(())
+    }
+
+    /// A config that is not TOML is refused: mode and contents stay.
+    #[test]
+    fn a_refused_invalid_file_leaves_the_mode() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "[filters\n")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))?;
+        for (label, writer) in WRITERS {
+            assert!(writer(&path).is_err(), "{label}: refused");
+            assert_eq!(own_mode(&path)?, 0o640, "{label}: mode unchanged");
+        }
+        Ok(())
+    }
+
+    /// An unwritable directory with a group-writable config in it: the
+    /// save is refused before any temp file, and the mode stays.
+    #[test]
+    fn an_unwritable_directory_leaves_the_files_mode() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let conf = dir.path().join("conf");
+        std::fs::create_dir(&conf)?;
+        let path = conf.join("sipnab.toml");
+        std::fs::write(&path, "# mine\n")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664))?;
+        let locked = Locked::new(conf, 0o500, true)?;
+        let (action, _, _) = unwritable(filters_writer(&path))?;
+        assert_eq!(action, "write", "refused at the write step");
+        assert_eq!(own_mode(&path)?, 0o664, "mode unchanged");
+        assert!(temp_files(&locked.path)?.is_empty(), "no temp file");
+        Ok(())
+    }
+
+    /// A 0444 file in a writable directory is still refused (the check
+    /// before the write), and it keeps 0444 for every writer.
+    #[test]
+    fn a_0444_file_is_still_refused_by_every_writer() -> Result<(), TestError> {
+        if !denied() {
+            return Ok(());
+        }
+        for (label, writer) in WRITERS {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("sipnab.toml");
+            std::fs::write(&path, "# mine\n")?;
+            let _locked = Locked::new(path.clone(), 0o444, false)?;
+            let (action, _, _) = unwritable(writer(&path))?;
+            assert_eq!(action, "write", "{label}: refused");
+            assert_eq!(own_mode(&path)?, 0o444, "{label}: mode unchanged");
+            assert_eq!(
+                std::fs::read_to_string(&path)?,
+                "# mine\n",
+                "{label}: unchanged"
+            );
+        }
+        Ok(())
+    }
 }
