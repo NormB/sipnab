@@ -730,7 +730,14 @@ pub(crate) struct Parser {
     events: VecDeque<Event>,
     /// Whether the terminal is in raw mode.
     raw_mode: bool,
+    /// When the lone ESC held in `buffer` arrived, while one is held.
+    escape_since: Option<std::time::Instant>,
 }
+
+/// How long a lone ESC at the end of a read waits for the rest of a key
+/// sequence before it is the Esc key (25 ms, as a terminal UI's usual
+/// short escape delay).
+pub(crate) const ESC_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl Parser {
     /// A parser for a terminal that is in raw mode when `raw_mode` is set.
@@ -739,15 +746,28 @@ impl Parser {
             buffer: Vec::with_capacity(256),
             events: VecDeque::with_capacity(128),
             raw_mode,
+            escape_since: None,
         }
     }
 
     /// Parse the bytes of one read. `more` says that the read filled its
     /// buffer, so more bytes may follow at once.
+    ///
+    /// A lone ESC that ends a read is held, not made the Esc key at once: an
+    /// arrow key is `ESC [ B`, and over ssh or tmux its bytes can arrive in
+    /// two reads. The held ESC joins the next read's bytes, or is the Esc key
+    /// once [`ESC_DELAY`] has passed with nothing after it
+    /// ([`Parser::flush_escape_if_due`]), as a terminal UI's escape delay does.
     pub(crate) fn advance(&mut self, bytes: &[u8], more: bool) {
         for (idx, byte) in bytes.iter().enumerate() {
             let more = idx + 1 < bytes.len() || more;
             self.buffer.push(*byte);
+            if !more && self.buffer.as_slice() == b"\x1b" {
+                self.escape_since
+                    .get_or_insert_with(std::time::Instant::now);
+                return;
+            }
+            self.escape_since = None;
             match parse_event(&self.buffer, more, self.raw_mode) {
                 Ok(Some(parsed)) => {
                     if let Parsed::Event(event) = parsed {
@@ -758,6 +778,29 @@ impl Parser {
                 Ok(None) => {}
                 Err(_) => self.buffer.clear(),
             }
+        }
+    }
+
+    /// How long the next terminal wait may last before a held ESC is due:
+    /// the rest of [`ESC_DELAY`], or `None` when no ESC is held.
+    pub(crate) fn escape_wait(&self) -> Option<std::time::Duration> {
+        self.escape_since
+            .map(|since| ESC_DELAY.saturating_sub(since.elapsed()))
+    }
+
+    /// A held ESC that has waited [`ESC_DELAY`] with nothing after it is
+    /// the Esc key.
+    pub(crate) fn flush_escape_if_due(&mut self) {
+        if self.escape_wait() == Some(std::time::Duration::ZERO) {
+            self.flush_escape();
+        }
+    }
+
+    /// A held ESC is the Esc key now, whatever time has passed.
+    fn flush_escape(&mut self) {
+        if self.escape_since.take().is_some() {
+            self.buffer.clear();
+            self.events.push_back(Event::Key(KeyCode::Esc.into()));
         }
     }
 
@@ -999,6 +1042,7 @@ mod tests {
     fn events_of(bytes: &[u8]) -> Vec<Event> {
         let mut parser = raw();
         parser.advance(bytes, false);
+        parser.flush_escape();
         parser.take()
     }
 
@@ -1024,6 +1068,8 @@ mod tests {
         let mut parser = raw();
         for (index, (bytes, recorded)) in CORPUS.iter().zip(CROSSTERM_0_29).enumerate() {
             parser.advance(bytes, false);
+            // each recorded read was followed by a pause longer than ESC_DELAY
+            parser.flush_escape();
             let got = format!("{:?}", parser.take());
             assert_eq!(
                 &got, recorded,
@@ -1398,6 +1444,68 @@ mod tests {
                 KeyModifiers::SHIFT
             )],
             "left Shift alone"
+        );
+    }
+
+    /// An arrow key whose ESC arrives in one read and `[B` in the
+    /// next, inside ESC_DELAY, is the arrow key, not Esc then `[` and `B`
+    /// (a short escape delay keeps them together).
+    #[test]
+    fn success_an_arrow_split_after_its_escape_is_the_arrow() {
+        let mut parser = raw();
+        parser.advance(b"\x1b", false);
+        assert_eq!(
+            parser.take(),
+            vec![],
+            "the lone ESC is held, not yet the Esc key"
+        );
+        assert!(
+            parser.escape_wait().is_some(),
+            "the held ESC bounds the next wait"
+        );
+        parser.flush_escape_if_due();
+        parser.advance(b"[B", false);
+        assert_eq!(
+            parser.take(),
+            vec![plain(KeyCode::Down)],
+            "ESC + [B in two reads = Down"
+        );
+        assert_eq!(parser.escape_wait(), None, "nothing held after the arrow");
+    }
+
+    /// A lone Esc is the Esc key as soon as ESC_DELAY has passed with
+    /// nothing after it, not later.
+    #[test]
+    fn success_a_lone_escape_is_the_esc_key_after_the_delay() {
+        let mut parser = raw();
+        parser.advance(b"\x1b", false);
+        let wait = parser.escape_wait().unwrap_or_default();
+        assert!(wait <= ESC_DELAY, "the wait is at most ESC_DELAY: {wait:?}");
+        std::thread::sleep(ESC_DELAY + std::time::Duration::from_millis(5));
+        assert_eq!(
+            parser.escape_wait(),
+            Some(std::time::Duration::ZERO),
+            "due now"
+        );
+        parser.flush_escape_if_due();
+        assert_eq!(
+            parser.take(),
+            vec![plain(KeyCode::Esc)],
+            "the lone ESC is the Esc key"
+        );
+        assert_eq!(parser.escape_wait(), None, "nothing held after it");
+    }
+
+    /// An ESC followed by more bytes in the same read never waits.
+    #[test]
+    fn success_an_escape_inside_a_read_never_waits() {
+        let mut parser = raw();
+        parser.advance(b"\x1b[Bq", false);
+        assert_eq!(parser.escape_wait(), None, "nothing held");
+        assert_eq!(
+            parser.take(),
+            vec![plain(KeyCode::Down), plain(KeyCode::Char('q'))],
+            "Down then q"
         );
     }
 }
