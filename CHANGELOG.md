@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **A stability page and a script that compare two releases' REST API and JSON schemas.**
+  - Effect: `scripts/contract-diff.py` labels each change `breaking` or `additive` and exits 1 on a breaking one.
+  - Limit: Until 1.0 a release may still change any surface; the command line, config keys, MCP tools and metrics are not compared yet.
+  - Docs: [Compare the REST API of two releases](docs/stability.md#compare-the-rest-api-of-two-releases)
+
 ## [0.5.268] - 2026-11-20
 
 ### Fixed

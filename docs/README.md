@@ -112,6 +112,9 @@ Each answers one "how do I" question and assumes you already know what you want.
   means. [API TLS](rest-api.md#api-tls) serves it over HTTPS, and
   [Call the REST API from code](https://sipnab.com/docs/api-clients/) has
   clients in Python, TypeScript, Rust and Go, and curl one-liners.
+- **[Check what a release keeps compatible](stability.md)**: which changes
+  to the REST API and the JSON report schemas break a program, and how to
+  compare two releases.
 - **[Manage many sipnab instances](fleet.md)**: one table of every
   instance's build, binary and configuration digests, privilege and uptime,
   and which instances did not answer.
