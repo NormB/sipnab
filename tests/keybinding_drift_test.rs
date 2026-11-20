@@ -546,8 +546,9 @@ fn page_sections_for(help_heading: &str) -> Option<Option<&'static [&'static str
         "ARCHIVE PASSWORD (a load waits on an encrypted archive member):" => {
             Some(&["Archive password popup"])
         }
+        "FILTER DIALOG (F7):" => Some(&["Filter popup"]),
         // Each key here belongs to one view; the page documents it there.
-        "COPY & PASTE:" => Some(&["Raw message", "Call flow", "Global"]),
+        "COPY & PASTE:" => Some(&["Raw message", "Call flow", "Call list", "Global"]),
         "TERMS:" => None,
         "VCON EXPORT (one call, for handing to somebody else):" => None,
         _ => return None,

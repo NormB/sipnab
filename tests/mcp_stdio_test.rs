@@ -759,6 +759,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
         "lint_dialog",
         "list_captures",
         "list_dialogs",
+        "list_named_filters",
         "list_tls_libraries",
         "media_diagnostics",
         "siprec_metadata",
@@ -820,8 +821,9 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     assert_eq!(names, expected, "MCP tool set drifted");
     // 69 -> 70: `fleet_inventory` (#635), in every build with the MCP server.
     // `th_mappings` (#636) is the second tool behind `hep`.
+    // 71 -> 72: `list_named_filters`, in every build with the MCP server.
     let want =
-        71 + if cfg!(feature = "vcon") { 6 } else { 0 } + 2 * usize::from(cfg!(feature = "hep"));
+        72 + if cfg!(feature = "vcon") { 6 } else { 0 } + 2 * usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // Wait for the replay to be read to its end. Until then the store-reading

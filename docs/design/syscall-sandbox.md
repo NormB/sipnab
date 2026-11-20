@@ -262,7 +262,7 @@ code does the opposite: `drop_privileges` is at
 [`src/app/bootstrap.rs:4002-4007`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4002-L4007)<!-- "// 16a. Drop privileges now that capture devices are open" --> and `start_servers` is reached
 only after `launch` returns, from
 [`src/app/batch.rs:4095`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4095)<!-- "let servers = crate::app::servers::start_servers(" --> or
-[`src/app/tui_mode.rs:1075`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L1075)<!-- "crate::app::servers::start_servers(" -->. Anyone deriving an allowlist from
+[`src/app/tui_mode.rs:1114`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L1114)<!-- "crate::app::servers::start_servers(" -->. Anyone deriving an allowlist from
 that comment would omit `socket`, `bind`, `listen` and `accept4` and ship a
 filter that kills every `--api` run. Correcting the comment is part of this work.
 
@@ -485,7 +485,7 @@ receive loop is where the untrusted bytes arrive, and the filter has to be up
 before the first one does.
 
 The TUI path needs the same install after
-[`src/app/tui_mode.rs:1075`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L1075)<!-- "crate::app::servers::start_servers(" -->. Two call sites, one function.
+[`src/app/tui_mode.rs:1114`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L1114)<!-- "crate::app::servers::start_servers(" -->. Two call sites, one function.
 
 **`PR_SET_NO_NEW_PRIVS` must be verified, not assumed.** `seccomp(2)` without
 `CAP_SYS_ADMIN` requires it. `set_no_new_privs`
@@ -612,7 +612,7 @@ Reporting means three things:
    implemented".
 2. A field in the batch summary and in `capture_health` — the same structural
    discipline the rest of that response follows: a code, not a free string
-   ([`src/mcp/server.rs:3527-3537`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3527-L3537)<!-- "// That machine's traffic is confidential" -->).
+   ([`src/mcp/server.rs:3536-3546`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3536-L3546)<!-- "// That machine's traffic is confidential" -->).
 3. **`--require-sandbox`**, which turns degradation into a refusal. Opt-in,
    never the default, for the operator who would rather not capture than capture
    unsandboxed. Without this flag there is no way to express that preference; with

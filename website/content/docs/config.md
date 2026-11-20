@@ -275,7 +275,7 @@ Default filter presets applied at startup.
 |-----|------|---------|-------------|
 | `from` | string | -- | Default From header filter (regex). sipnab refuses a pattern that does not compile when the file loads, naming the key. `--from` overrides it |
 | `to` | string | -- | Default To header filter (regex). sipnab refuses a pattern that does not compile when the file loads, naming the key. `--to` overrides it |
-| `expression` | string | -- | Default filter DSL expression. `--filter` overrides it |
+| `expression` | string | -- | Default filter DSL expression. `--filter` overrides it. The TUI opens with it in the `F7` dialog's Expression field, applied |
 
 ```toml
 [filter]
@@ -295,7 +295,7 @@ Use a name as `@name` wherever sipnab takes a filter expression:
 - `[filter] expression`;
 - the REST `filter` parameter;
 - an MCP tool's `filter` argument;
-- the TUI filter dialog's Named filter field.
+- the TUI filter dialog's Named filter and Expression fields.
 
 See [Named filters](@/docs/filter-dsl.md#named-filters).
 

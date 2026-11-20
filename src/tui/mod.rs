@@ -57,6 +57,9 @@ use crate::config::{KeybindingsConfig, ThemeConfig, parse_color, parse_keycode};
 
 mod clipboard;
 mod controllers;
+mod expression_history;
+mod filter_command;
+mod filter_help;
 mod input_parse;
 mod render;
 mod save;
@@ -147,10 +150,22 @@ pub struct App {
     raw_msg_return_view: Option<View>,
     /// Structured filter dialog state (preserved between opens).
     pub filter_dialog: FilterDialogState,
+    /// The Expression field's history for this session: the expressions the
+    /// dialog applied, newest first, which Up and Down recall.
+    expression_history: expression_history::ExpressionHistory,
+    /// The words that name the capture source the session was started with
+    /// (`-I` inputs, `--recursive`, `-d`, `-L`), for the command line `Y`
+    /// copies. Empty when the session named none.
+    capture_source: Vec<String>,
     /// The run's resolved `[filters]`, which the dialog's Named field and
     /// `@name` references read. The table installed at startup, held here so
     /// a test can give the app any table.
     pub(crate) named_filters: crate::sip::named_filters::NamedFilters,
+    /// Where an `F2` save publishes the run's new table, so the REST API
+    /// and MCP server of this process resolve the name at once: the
+    /// process's live table in a real session (`TuiOptions::into_app`),
+    /// `None` in a test app, which must not change the process's table.
+    pub(crate) filter_publisher: Option<fn(crate::sip::named_filters::NamedFilters)>,
     /// The thresholds a built-in alias referenced as `@name` compares against:
     /// the run's, set by the TUI launcher.
     pub(crate) alias_thresholds: crate::sip::dsl::AliasThresholds,
@@ -535,7 +550,10 @@ impl App {
             stream_list_show_all: false,
             raw_msg_return_view: None,
             filter_dialog: FilterDialogState::default(),
-            named_filters: crate::sip::named_filters::installed().clone(),
+            expression_history: expression_history::ExpressionHistory::default(),
+            capture_source: Vec::new(),
+            named_filters: (*crate::sip::named_filters::installed()).clone(),
+            filter_publisher: None,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             settings_dialog: SettingsDialogState::default(),
             active_filter: None,
@@ -2674,6 +2692,20 @@ mod tests {
             ..TuiOptions::default()
         };
         assert_eq!(options.into_app(d, s).column_config_path, Ok(target));
+        Ok(())
+    }
+
+    /// A real session publishes F2 saves to the process's live table; the
+    /// test app (`App::new` alone) does not.
+    #[test]
+    fn a_session_publishes_saved_names_and_a_test_app_does_not() -> Result<(), TestError> {
+        let (d, s) = stores();
+        let app = TuiOptions::default().into_app(d, s);
+        assert!(app.filter_publisher.is_some(), "a session publishes");
+        assert!(
+            App::new_test().filter_publisher.is_none(),
+            "a test app does not"
+        );
         Ok(())
     }
 
@@ -5057,7 +5089,7 @@ mod tests {
         assert_eq!(st.text_field(5), "h");
         assert_eq!(st.text_field(6), "a");
         assert_eq!(st.text_field(7), "b");
-        assert_eq!(FILTER_TEXT_FIELD_COUNT, 9);
+        assert_eq!(FILTER_TEXT_FIELD_COUNT, 10, "Expression is the tenth");
         if let Some(s) = st.text_field_mut(5) {
             s.push('x');
         }

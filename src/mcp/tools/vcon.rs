@@ -69,6 +69,8 @@ pub struct ExportVconParams {
     /// take.
     /// Values may be bare or quoted.
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Maximum containers to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     ///
     /// A container is a large answer, so a filter matching a whole capture is
@@ -752,7 +754,7 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<ExportVconParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let selection = self.vcon_selection(params.call_id, params.filter)?;
+        let selection = self.vcon_selection(params.call_id, params.filter, params.named)?;
         // Parsed the way every other paged tool parses it, and refused the
         // same way: restarting from the beginning on a malformed cursor would
         // loop a paging agent over the first page forever.
@@ -906,34 +908,46 @@ impl SipnabMcp {
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when both are given, when neither is, or when
-    /// the filter is neither a known alias nor parseable.
+    /// `invalid_params` (-32602) when `call_id` is given with `filter` or
+    /// `named`, when none is given, and the `filter`/`named` refusals of
+    /// [`SipnabMcp::compile_selected`].
     fn vcon_selection(
         &self,
         call_id: Option<String>,
         filter: Option<String>,
+        named: Option<String>,
     ) -> Result<Selection, rmcp::ErrorData> {
-        match (call_id, filter) {
-            (Some(_), Some(_)) => Err(errors::refuse(
+        let rule = if named.is_some() && filter.is_none() {
+            "named"
+        } else {
+            "filter"
+        };
+        match (call_id, filter.is_some() || named.is_some()) {
+            (Some(_), true) => Err(errors::refuse(
                 Reason::ConflictingParams,
-                "`call_id` and `filter` are alternatives, not a pair: one names \
-                 a dialog, the other names a rule for choosing them. Give one",
+                format!(
+                    "`call_id` and `{rule}` are alternatives, not a pair: one names \
+                     a dialog, the other names a rule for choosing them. Give one"
+                ),
             )),
-            (None, None) => Err(errors::refuse(
+            (None, false) => Err(errors::refuse(
                 Reason::MissingParam,
                 "give `call_id` for one dialog, or `filter` for every dialog it \
-                 selects -- for example \"response_code >= 400\"",
+                 selects -- for example \"response_code >= 400\" -- or `named` \
+                 for every dialog a named filter selects",
             )),
-            (Some(id), None) => Ok(Selection::One(id)),
-            (None, Some(expression)) => {
-                let compiled = self.compile_filter(Some(&expression))?.ok_or_else(|| {
-                    errors::refuse_param(
-                        Reason::InvalidValue,
-                        "filter",
-                        "an empty filter selects nothing and names nothing; omit \
-                         it, or give an expression",
-                    )
-                })?;
+            (Some(id), false) => Ok(Selection::One(id)),
+            (None, true) => {
+                let compiled = self
+                    .compile_selected(filter.as_deref(), named.as_deref())?
+                    .ok_or_else(|| {
+                        errors::refuse_param(
+                            Reason::InvalidValue,
+                            "filter",
+                            "an empty filter selects nothing and names nothing; omit \
+                             it, or give an expression",
+                        )
+                    })?;
                 Ok(Selection::Matching(Box::new(compiled)))
             }
         }

@@ -761,7 +761,7 @@ fn lists() -> Result<Lists, TestError> {
 // file set moved from `plan` to `resolve_planned_inputs`, which judges the
 // set, so src/app/bootstrap.rs holds `PlanError::arg(msg)` at 3 sites (2 ->
 // 3), each passing on `capture_source_capacity_refusal`'s message.
-const EXPECTED_UNRESOLVED: usize = 87;
+const EXPECTED_UNRESOLVED: usize = 86;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -1053,7 +1053,12 @@ const EXPECTED_UNRESOLVED: usize = 87;
 // the ends of the download a root install runs as another user: it failed,
 // a signal ended it, it sent more than a table file, it had no output, and a
 // platform with no unix user ids cannot start it.
-const EXPECTED_TEMPLATES: usize = 685;
+// 685 -> 687 (TUI-FILTER-FOLLOWUPS, F2 save as a named filter): +2 in
+// src/config.rs, a `[filters]` that already holds the name and a `filters`
+// that is not a table.
+// 687 -> 688 (F2-SAVE-UNWRITABLE): +1 in src/error.rs, the
+// `ConfigUnwritable` variant a TUI save prints for a permission failure.
+const EXPECTED_TEMPLATES: usize = 688;
 
 // ---------------------------------------------------------------------------
 // The page gates

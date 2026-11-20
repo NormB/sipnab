@@ -26,6 +26,8 @@ pub mod correlated;
 pub mod endpoint;
 pub mod expectations;
 pub mod find_files;
+#[cfg(any(feature = "api", feature = "mcp"))]
+pub mod named_filters;
 pub mod rates;
 pub mod relay_capture;
 #[cfg(not(target_arch = "wasm32"))]

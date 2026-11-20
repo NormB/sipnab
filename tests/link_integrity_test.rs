@@ -1905,7 +1905,34 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // `--user` of `sipnab g729 install` and docs/errors.md's entry for a failed
     // download link "Install as root" in g729.md; least-privilege.md's link to
     // g729.md became a link to that section (no change).
-    const EXPECTED_WIKI_LINKS: usize = 2709;
+    // 2709 -> 2716 (TUI-FILTER-EXPRESSION, #841, +7): docs/tui-walkthrough.md
+    // 6 (its "Filter with an expression" links filter-dsl.md, the `[filters]`
+    // and `[filter]` sections of config-reference.md, and its own "Before you
+    // start", "Open a capture" and, from "Search and filter", the new
+    // section); docs/keybindings.md 1 (the Expression bullet links that
+    // section; its filter-dsl.md link moved from the tip to the bullet, no
+    // change).
+    // 2716 -> 2720 (TUI-FILTER-FOLLOWUPS, +4): docs/tui-walkthrough.md 3
+    // ("Look up the fields and operators" links filter-dsl.md twice, "Run the
+    // same filter from a shell" links the "Copying text" section of
+    // keybindings.md); docs/keybindings.md 1 (the call list's `Y` row links
+    // "Run the same filter from a shell").
+    // 2720 -> 2722 (TUI-FILTER-FOLLOWUPS, F2 save, +2): docs/keybindings.md 1
+    // (the filter popup's `F2` row links "Save the dialog's filter under a
+    // name"); docs/errors.md 1 (the `[filters] already defines` entry links
+    // that section).
+    // 2722 -> 2755 (named filters over REST and MCP, +33): docs/rest-api.md
+    // 8 (the `named` row, the two route sections and two how-tos; its sample
+    // capture link is not intra-docs); docs/mcp-tools-signaling.md 14 (the
+    // `list_named_filters` section and row, `validate_filter`'s position
+    // paragraph; its sample capture link is not intra-docs);
+    // docs/mcp-tools-core.md 4, docs/filter-dsl.md 3, docs/mcp-tools.md 2,
+    // docs/mcp-tools-security.md 1 and docs/mcp-tools-vcon.md 1 (the `named`
+    // rows and the index row).
+    // 2755 -> 2756 (F2-SAVE-UNWRITABLE, +1): docs/keybindings.md 1 (the
+    // filter dialog's F2/F3 paragraph links "Save the dialog's filter under
+    // a name").
+    const EXPECTED_WIKI_LINKS: usize = 2756;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -18,8 +18,8 @@ source = "docs/filter-dsl.md"
 
 A filter needs no build feature, no privilege beyond what the capture itself
 needs, and no change on any other system. The same expression works on the
-command line, in the terminal interface (through a named filter), over REST
-and over MCP, where the
+command line, in the terminal interface (the `F7` dialog's Expression field),
+over REST and over MCP, where the
 [`validate_filter`](@/docs/mcp-tools-signaling.md#validate-filter) tool checks one
 without running it.
 
@@ -686,6 +686,11 @@ sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'I
 - sipnab refuses a filter given at run time that names something undefined.
   - This applies on the command line or through REST or MCP.
   - sipnab lists the defined names.
+- REST and MCP list the table and take a name on its own:
+  [`GET /v1/filters`](@/docs/api.md#get-v1-filters) and the MCP tool
+  [`list_named_filters`](@/docs/mcp-tools-signaling.md#list-named-filters) list it,
+  and a `named` parameter selects one entry in place of `filter`. See
+  [Select dialogs with a named filter](@/docs/api.md#select-dialogs-with-a-named-filter).
 
 For example, with this `sipnab.toml`:
 
@@ -979,7 +984,7 @@ sipnab -N -I capture.pcap --filter 'method == INVITE extra'
 Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
   method == INVITE extra
             ^
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 
@@ -995,7 +1000,7 @@ Invalid --filter expression: unexpected input at position 0: 'nosuch'
   ^
 hint: unknown field 'nosuch'
 valid fields: from.user, to.user, from.host, to.host, from.uri, to.uri, ruri, pai.user, method, ua, call_id, payload, src.ip, dst.ip, src.port, dst.port, state, duration, msg_count, response_code, final_status_code, response_class, pdd, setup_time, retransmits, rtp.mos, rtp.jitter, rtp.loss, rtp.packets, rtp.codec, rtp.codecs, rtp.ssrc, side, endpoint, one_way, nat_mismatch, no_media, codec_asymmetry, ptime_asymmetry, payload_asymmetry, duration_asymmetry, late_media, time, header.<name>
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 

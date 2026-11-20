@@ -751,8 +751,19 @@ Does this filter expression parse, and how many dialogs does it select?
 |---|---|
 | CLI | decision: `--filter` compiles and rejects the same expression, and the count-only dry run is an agent's cheap-iterate affordance |
 | TUI | `CallList` |
-| REST | decision: `/v1/dialogs` has no expression filter param, so there is nothing to validate, and a program just issues its query |
+| REST | `/v1/filters/validate` |
 | MCP | `validate_filter` |
+
+### List the named filters
+
+Which named filters did the operator define, and what does each one say?
+
+| Surface | Detail |
+|---|---|
+| CLI | decision: the operator wrote the table in the file passed with `--config`, and reads it there |
+| TUI | `CallList` |
+| REST | `/v1/filters` |
+| MCP | `list_named_filters` |
 
 ### Evaluate expectations
 
