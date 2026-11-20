@@ -1186,23 +1186,19 @@ fn no_test_shells_out_for_file_metadata() -> Result<(), TestError> {
 
 /// No executable line uses a GNU-only spelling.
 ///
-/// The general form, across the scripts and hooks too. Each pattern here has
-/// a BSD counterpart that differs, so the command does not fail loudly on
-/// macOS -- it fails in whatever way that platform's tool chooses, which was
-/// "silently do nothing" for the one that started this.
+/// The general form, across the scripts, hooks, workflows and packaging.
+/// Each flag in `shell_flags::RULES` has a BSD counterpart that differs, so
+/// the command does not fail loudly on macOS -- it fails in whatever way that
+/// platform's tool chooses, which was "silently do nothing" for the one that
+/// started this.
+///
+/// Until 2026-11-20 this matched fixed substrings (`stat -c`), so `stat -L -c
+/// %s` passed it and failed CI's macOS shard (PR #848, run 44258178176). It
+/// now parses each command and its flags (`shell_flags`), in any position and
+/// in clustered short flags.
 #[test]
 fn no_executable_line_uses_a_gnu_only_spelling() -> Result<(), TestError> {
-    // Measured 2026-09-01: one real hit, `stat -c %s` in bench/live-capture.sh,
-    // now `wc -c` which is POSIX. Everything else that matches is prose
-    // explaining the hazard, which is why comment lines are skipped.
-    const GNU_ONLY: &[(&str, &str)] = &[
-        ("touch -d", "BSD touch has no -d; use std::fs or -t"),
-        ("stat -c", "BSD spells it `stat -f`; `wc -c` is portable"),
-        ("readlink -f", "BSD readlink has no -f"),
-        ("date -d ", "BSD date spells it -v or -j -f"),
-        ("cp --preserve", "BSD cp uses -p"),
-    ];
-    let listed = tracked::ls_files(repo(), &["--", "scripts/", ".githooks/", "bench/"])?;
+    let listed = tracked::ls_files(repo(), &[])?;
 
     let mut offenders = Vec::new();
     let mut scanned = 0;
@@ -1210,30 +1206,76 @@ fn no_executable_line_uses_a_gnu_only_spelling() -> Result<(), TestError> {
         let Ok(src) = std::fs::read_to_string(repo().join(file)) else {
             continue; // binary fixture
         };
+        if !shell_flags::is_scanned_file(file, src.lines().next().unwrap_or("")) {
+            continue;
+        }
         scanned += 1;
-        for (n, line) in src.lines().enumerate() {
-            let l = line.trim();
-            if l.starts_with('#') || l.starts_with("//") {
-                continue;
-            }
-            for (pattern, fix) in GNU_ONLY {
-                if l.contains(pattern) {
-                    offenders.push(format!("  {file}:{}: {pattern} -- {fix}", n + 1));
-                }
-            }
+        for (line, finding) in shell_flags::scan_file(file, &src) {
+            let fix = shell_flags::fix_for(&finding);
+            offenders.push(format!("  {file}:{line}: {finding} -- {fix}"));
         }
     }
+    // Measured 2026-11-20 on origin/main 0f6d2e9af: see SCANNED_FLOOR.
     assert!(
-        scanned >= 20,
-        "only {scanned} script(s) scanned; the walk is wrong and this proves \
-         nothing"
+        scanned >= shell_flags::SCANNED_FLOOR,
+        "only {scanned} file(s) scanned, fewer than {}; the walk is wrong and \
+         this proves nothing",
+        shell_flags::SCANNED_FLOOR
     );
     assert!(
         offenders.is_empty(),
         "these lines use a GNU-only spelling and behave differently on \
-         macOS:\n{}",
+         macOS. Use the portable form, put the BSD form on the same line \
+         after `||`, or (for a file or line that runs only on Linux) add it \
+         to shell_flags::LINUX_ONLY with the reason:\n{}",
         offenders.join("\n")
     );
+    Ok(())
+}
+
+/// Every LINUX_ONLY allowance still allows something, and says why.
+///
+/// An allowance that no longer matches a GNU form is a hole waiting for the
+/// next one: it would let a new GNU-only line into a file nobody re-checked.
+#[test]
+fn every_linux_only_allowance_is_live_and_has_a_reason() -> Result<(), TestError> {
+    for entry in shell_flags::LINUX_ONLY {
+        assert!(
+            shell_flags::reason_is_stated(entry.reason),
+            "{}: the allowance needs a stated reason, got {:?}",
+            entry.path,
+            entry.reason
+        );
+        let src = std::fs::read_to_string(repo().join(entry.path)).map_err(|e| {
+            format!(
+                "{}: allowance names a file that cannot be read: {e}",
+                entry.path
+            )
+        })?;
+        let raw = shell_flags::raw_findings(entry.path, &src);
+        let matched: Vec<_> = raw
+            .iter()
+            .filter(|(_, text, _)| entry.line.is_none_or(|l| text.contains(l)))
+            .collect();
+        assert!(
+            !matched.is_empty(),
+            "{} (line {:?}): the allowance matches no GNU-only form any more; \
+             remove it",
+            entry.path,
+            entry.line
+        );
+        if let Some(guard) = entry.guard {
+            let lines: Vec<usize> = matched.iter().map(|(n, _, _)| *n).collect();
+            let unguarded = shell_flags::unguarded_lines(&src, guard, &lines)
+                .map_err(|e| format!("{}: {e}", entry.path))?;
+            assert!(
+                unguarded.is_empty(),
+                "{}: lines {unguarded:?} hold a GNU form before the Linux guard \
+                 {guard:?}, so the guard does not protect them",
+                entry.path
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1589,4 +1631,1314 @@ fn apply_removes_a_stray_out_file_as_well_as_a_log() -> Result<(), TestError> {
          demands a deletion its own fixer will not do:\n{said}"
     );
     Ok(())
+}
+
+// ── shell_flags: the command/flag parser behind the GNU-only gate ───────
+
+/// Finds GNU-only flags in shell command lines.
+///
+/// A small shell lexer, not a shell: it splits a line into simple commands
+/// at `|`, `||`, `&&`, `;`, `&`, `(`, `)`, `$(...)` and backticks, honoring
+/// single and double quotes, then reads the flags of every word that names
+/// one of the tools in `RULES`, wherever it stands in the command (`sudo
+/// stat`, `find -exec sed`). Short flags are read cluster by cluster
+/// (`-Lc`), skipping the argument of an option that takes one, so `stat -f
+/// -c` is a format, not `-c`. Words after `--` are operands.
+///
+/// The BSD facts behind `RULES` were read from the FreeBSD manual pages
+/// (man.freebsd.org, 2026-11-20): stat, touch, readlink, date and sed
+/// document no long options; readlink has only -f and -n; date has no
+/// date-string option; touch -d takes only YYYY-MM-DDThh:mm:SS; sed -i
+/// takes its extension as an argument, so a bare `-i` reads the next word
+/// differently from GNU sed; cp has no -t, -T, -u, -b or -d, and its few
+/// long options are not in its synopsis and do not include --parents or
+/// --preserve. macOS's tools were not read, so every long option of these
+/// six tools counts as GNU-only: one rule, and the short forms are the ones
+/// both manuals share.
+///
+/// Not scanned: Python, Rust and Markdown (no shell lexer applies; Rust tests
+/// that shell out are held by `no_test_shells_out_for_file_metadata`), and
+/// Dockerfiles, whose RUN lines run in a Linux image by construction.
+pub(crate) mod shell_flags {
+    /// A Linux-only file or line, and why the GNU form there cannot reach a
+    /// BSD host.
+    pub struct LinuxOnly {
+        pub path: &'static str,
+        /// `None`: the whole file. `Some(text)`: lines that contain `text`.
+        pub line: Option<&'static str>,
+        /// Text of a line that must come BEFORE every allowed GNU form (the
+        /// file's own "not Linux, stop here" check), or `None`.
+        pub guard: Option<&'static str>,
+        pub reason: &'static str,
+    }
+
+    /// Files and lines that run only on Linux, each with its reason.
+    /// `every_linux_only_allowance_is_live_and_has_a_reason` refuses an entry
+    /// that no longer matches a GNU form.
+    pub const LINUX_ONLY: &[LinuxOnly] = &[
+        LinuxOnly {
+            path: "packaging/rpm/build-rpm.sh",
+            line: None,
+            guard: None,
+            reason: "builds the .rpm: release.yml runs it only when matrix.target is \
+                     x86_64- or aarch64-unknown-linux-gnu, and ci.yml's RPM job runs on a \
+                     self-hosted Linux runner",
+        },
+        LinuxOnly {
+            path: "scripts/check-non-linux.sh",
+            line: None,
+            guard: Some("[ \"$(uname -s)\" = \"Linux\" ] || skip"),
+            reason: "the script calls skip() at its `uname -s` check on every host that \
+                     is not Linux, before its first GNU form (the guard is checked)",
+        },
+        LinuxOnly {
+            path: "scripts/check-cert-expiry.sh",
+            line: Some("date -u -d \"$not_after\""),
+            guard: None,
+            reason: "cert-expiry.yml runs it on ubuntu-24.04; where `date -d` fails the \
+                     empty result is classified WARN on the next line, never a pass",
+        },
+    ];
+
+    /// Files the gate must scan at least, measured 2026-11-20 on origin/main
+    /// 0f6d2e9af (290 scanned) and set a little under it, so a broken walk
+    /// fails while ordinary deletions do not.
+    pub const SCANNED_FLOOR: usize = 280;
+
+    /// One GNU-only rule set per tool.
+    struct Rule {
+        tool: &'static str,
+        /// Short options that take an argument (attached or the next word).
+        takes_arg: &'static str,
+        /// Short options whose argument, if any, must be attached.
+        attached_arg: &'static str,
+        /// Short options that are GNU-only, with the portable fix.
+        gnu_short: &'static [(char, &'static str)],
+        /// A short option that is GNU-only when it has nothing attached.
+        bare_gnu: Option<(char, &'static str)>,
+    }
+
+    const RULES: &[Rule] = &[
+        Rule {
+            tool: "stat",
+            takes_arg: "cft",
+            attached_arg: "",
+            gnu_short: &[(
+                'c',
+                "BSD stat spells it -f FORMAT; `wc -c < file` is portable",
+            )],
+            bare_gnu: None,
+        },
+        Rule {
+            tool: "touch",
+            takes_arg: "Adrt",
+            attached_arg: "",
+            gnu_short: &[(
+                'd',
+                "BSD touch -d takes only YYYY-MM-DDThh:mm:SS; use -t or std::fs",
+            )],
+            bare_gnu: None,
+        },
+        Rule {
+            tool: "readlink",
+            takes_arg: "",
+            attached_arg: "",
+            gnu_short: &[
+                (
+                    'f',
+                    "not in every BSD readlink; `cd -P` with `pwd -P` is POSIX",
+                ),
+                ('e', "BSD readlink has only -f and -n"),
+                ('m', "BSD readlink has only -f and -n"),
+                ('q', "BSD readlink has only -f and -n"),
+                ('s', "BSD readlink has only -f and -n"),
+                ('v', "BSD readlink has only -f and -n"),
+                ('z', "BSD readlink has only -f and -n"),
+            ],
+            bare_gnu: None,
+        },
+        Rule {
+            tool: "date",
+            takes_arg: "frvz",
+            attached_arg: "I",
+            gnu_short: &[(
+                'd',
+                "BSD date has no date-string option; it parses with -j -f FORMAT",
+            )],
+            bare_gnu: None,
+        },
+        Rule {
+            tool: "cp",
+            takes_arg: "St",
+            attached_arg: "",
+            gnu_short: &[
+                ('t', "BSD cp has no -t; name the target last"),
+                ('T', "BSD cp has no -T"),
+                ('u', "BSD cp has no -u"),
+                ('b', "BSD cp has no -b"),
+                ('d', "BSD cp has no -d; use -P"),
+                ('S', "BSD cp has no -S"),
+            ],
+            bare_gnu: None,
+        },
+        Rule {
+            tool: "sed",
+            takes_arg: "ef",
+            attached_arg: "i",
+            gnu_short: &[('s', "BSD sed has no -s"), ('z', "BSD sed has no -z")],
+            bare_gnu: Some((
+                'i',
+                "GNU and BSD read the word after a bare -i differently; use -i.bak and remove the .bak",
+            )),
+        },
+    ];
+
+    /// The `lines` (1-based) that do not come after the first line holding
+    /// `guard`; an error when no line holds it.
+    pub fn unguarded_lines(src: &str, guard: &str, lines: &[usize]) -> Result<Vec<usize>, String> {
+        let guard_at = src
+            .lines()
+            .position(|l| l.contains(guard))
+            .map(|i| i + 1)
+            .ok_or_else(|| format!("guard {guard:?} is gone"))?;
+        Ok(lines.iter().copied().filter(|&n| n <= guard_at).collect())
+    }
+
+    /// A stated reason: at least five words.
+    pub fn reason_is_stated(reason: &str) -> bool {
+        reason.split_whitespace().count() >= 5
+    }
+
+    /// The portable fix for a finding (`stat -c`, `cp --parents`).
+    pub fn fix_for(finding: &str) -> String {
+        let (tool, flag) = finding.split_once(' ').unwrap_or((finding, ""));
+        let Some(rule) = RULES.iter().find(|r| r.tool == tool) else {
+            return String::from("unknown tool");
+        };
+        if flag.starts_with("--") {
+            return format!("long options are not portable to BSD {tool}; use the short form");
+        }
+        let ch = flag.chars().nth(1).unwrap_or(' ');
+        rule.gnu_short
+            .iter()
+            .chain(rule.bare_gnu.iter())
+            .find(|(g, _)| *g == ch)
+            .map_or_else(|| String::from("GNU-only"), |(_, fix)| (*fix).to_string())
+    }
+
+    /// One simple command (its words, quotes removed), and whether `||`
+    /// joined it to the one before. A quoted command name still runs the
+    /// command (`"stat" -c`), so quoting does not exempt a word.
+    struct Segment {
+        words: Vec<String>,
+        after_or: bool,
+    }
+
+    #[derive(PartialEq)]
+    enum Kind {
+        Top,
+        Subst,
+        Backtick,
+    }
+
+    /// One command context: the line itself, a `$(...)` or a backtick pair.
+    struct Ctx {
+        kind: Kind,
+        parens: u32,
+        words: Vec<String>,
+        cur: String,
+        started: bool,
+        in_dq: bool,
+        after_or: bool,
+    }
+
+    impl Ctx {
+        fn new(kind: Kind) -> Self {
+            Ctx {
+                kind,
+                parens: 0,
+                words: Vec::new(),
+                cur: String::new(),
+                started: false,
+                in_dq: false,
+                after_or: false,
+            }
+        }
+
+        fn end_word(&mut self) {
+            if self.started {
+                self.words.push(std::mem::take(&mut self.cur));
+            }
+            self.started = false;
+        }
+
+        fn end_segment(&mut self, out: &mut Vec<Segment>, next_after_or: bool) {
+            self.end_word();
+            if self.words.is_empty() {
+                self.after_or |= next_after_or;
+            } else {
+                out.push(Segment {
+                    words: std::mem::take(&mut self.words),
+                    after_or: self.after_or,
+                });
+                self.after_or = next_after_or;
+            }
+        }
+
+        fn push_char(&mut self, c: char) {
+            self.cur.push(c);
+            self.started = true;
+        }
+    }
+
+    /// Splits one logical line into simple commands.
+    fn segments(line: &str) -> Vec<Segment> {
+        let chars: Vec<char> = line.chars().collect();
+        let mut out = Vec::new();
+        let mut stack = vec![Ctx::new(Kind::Top)];
+        let mut i = 0;
+        'scan: while i < chars.len() {
+            let c = chars[i];
+            let next = chars.get(i + 1).copied();
+            let Some(ctx) = stack.last_mut() else { break };
+            if ctx.in_dq {
+                match (c, next) {
+                    ('"', _) => ctx.in_dq = false,
+                    ('\\', Some(n)) => {
+                        ctx.push_char(n);
+                        i += 1;
+                    }
+                    ('$', Some('(')) => {
+                        ctx.started = true;
+                        stack.push(Ctx::new(Kind::Subst));
+                        i += 1;
+                    }
+                    ('`', _) => {
+                        ctx.started = true;
+                        stack.push(Ctx::new(Kind::Backtick));
+                    }
+                    _ => ctx.push_char(c),
+                }
+                i += 1;
+                continue;
+            }
+            match (c, next) {
+                (' ' | '\t', _) => ctx.end_word(),
+                ('\'', _) => {
+                    ctx.started = true;
+                    i += 1;
+                    while i < chars.len() && chars[i] != '\'' {
+                        ctx.cur.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                ('"', _) => {
+                    ctx.started = true;
+                    ctx.in_dq = true;
+                }
+                ('\\', Some(n)) => {
+                    ctx.push_char(n);
+                    i += 1;
+                }
+                ('#', _) if !ctx.started => break 'scan,
+                ('$', Some('(')) => {
+                    ctx.started = true;
+                    stack.push(Ctx::new(Kind::Subst));
+                    i += 1;
+                }
+                ('$', Some('{')) => {
+                    while i < chars.len() && chars[i] != '}' {
+                        ctx.push_char(chars[i]);
+                        i += 1;
+                    }
+                    ctx.push_char('}');
+                }
+                ('`', _) => {
+                    if ctx.kind == Kind::Backtick {
+                        close(&mut stack, &mut out);
+                    } else {
+                        ctx.started = true;
+                        stack.push(Ctx::new(Kind::Backtick));
+                    }
+                }
+                ('(', _) => {
+                    if ctx.kind == Kind::Subst {
+                        ctx.parens += 1;
+                    }
+                    ctx.end_segment(&mut out, false);
+                }
+                (')', _) => {
+                    if ctx.kind == Kind::Subst && ctx.parens == 0 {
+                        close(&mut stack, &mut out);
+                    } else {
+                        ctx.parens = ctx.parens.saturating_sub(1);
+                        ctx.end_segment(&mut out, false);
+                    }
+                }
+                ('|', Some('|')) | ('&', Some('&')) => {
+                    ctx.end_segment(&mut out, c == '|');
+                    i += 1;
+                }
+                ('&', _) if ctx.cur.ends_with(['>', '<']) => ctx.push_char(c),
+                ('|' | '&' | ';', _) => ctx.end_segment(&mut out, false),
+                _ => ctx.push_char(c),
+            }
+            i += 1;
+        }
+        while !stack.is_empty() {
+            close(&mut stack, &mut out);
+        }
+        out
+    }
+
+    /// Ends the innermost context and returns to its parent.
+    fn close(stack: &mut Vec<Ctx>, out: &mut Vec<Segment>) {
+        if let Some(mut ctx) = stack.pop() {
+            ctx.end_segment(out, false);
+        }
+    }
+
+    /// The rule for a command word, by its basename (`/usr/bin/stat`).
+    fn rule_for(word: &str) -> Option<&'static Rule> {
+        let base = word.rsplit('/').next().unwrap_or("");
+        RULES.iter().find(|r| r.tool == base)
+    }
+
+    /// The GNU-only flags among one tool's arguments.
+    fn flags_of(rule: &Rule, args: &[String]) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut k = 0;
+        while k < args.len() {
+            let w = args[k].as_str();
+            if w == "--" {
+                break;
+            }
+            if let Some(long) = w.strip_prefix("--") {
+                let name = long.split('=').next().unwrap_or("");
+                found.push(format!("{} --{name}", rule.tool));
+            } else if let Some(cluster) = w.strip_prefix('-') {
+                let letters: Vec<char> = cluster.chars().collect();
+                for (p, &ch) in letters.iter().enumerate() {
+                    let last = p + 1 == letters.len();
+                    if rule.gnu_short.iter().any(|(g, _)| *g == ch) {
+                        found.push(format!("{} -{ch}", rule.tool));
+                    }
+                    if let Some((b, _)) = rule.bare_gnu
+                        && b == ch
+                    {
+                        if last {
+                            found.push(format!("{} -{ch}", rule.tool));
+                        }
+                        break;
+                    }
+                    if rule.attached_arg.contains(ch) {
+                        break;
+                    }
+                    if rule.takes_arg.contains(ch) {
+                        if last {
+                            k += 1;
+                        }
+                        break;
+                    }
+                }
+            }
+            k += 1;
+        }
+        found
+    }
+
+    /// One tool invocation: the segment it is in, its tool and its findings.
+    struct Invocation {
+        segment: usize,
+        tool: &'static str,
+        findings: Vec<String>,
+    }
+
+    fn invocations(segs: &[Segment]) -> Vec<Invocation> {
+        let mut out = Vec::new();
+        for (s, seg) in segs.iter().enumerate() {
+            let starts = seg
+                .words
+                .iter()
+                .enumerate()
+                .filter_map(|(k, w)| rule_for(w).map(|r| (k, r)));
+            for (k, rule) in starts {
+                // find's `-exec` terminator (`\;` lexes to the word `;`, or
+                // `+`) ends this tool's arguments. Another tool's name does
+                // not: it may be an operand (`cp -p date -t dir`).
+                let end = (k + 1..seg.words.len())
+                    .find(|&e| seg.words[e] == ";" || seg.words[e] == "+")
+                    .unwrap_or(seg.words.len());
+                out.push(Invocation {
+                    segment: s,
+                    tool: rule.tool,
+                    findings: flags_of(rule, &seg.words[k + 1..end]),
+                });
+            }
+        }
+        out
+    }
+
+    /// The GNU-only findings of one logical line, minus those that carry a
+    /// BSD fallback: the same tool, without a GNU-only flag, in another
+    /// command of the line, the later of the two joined by `||`.
+    pub fn gnu_flags_in(line: &str) -> Vec<String> {
+        let segs = segments(line);
+        let calls = invocations(&segs);
+        let mut out = Vec::new();
+        for (i, call) in calls.iter().enumerate() {
+            if call.findings.is_empty() {
+                continue;
+            }
+            let has_fallback = calls.iter().enumerate().any(|(j, other)| {
+                j != i
+                    && other.tool == call.tool
+                    && other.findings.is_empty()
+                    && other.segment != call.segment
+                    && segs[other.segment.max(call.segment)].after_or
+            });
+            if !has_fallback {
+                out.extend(call.findings.iter().cloned());
+            }
+        }
+        out
+    }
+
+    /// The source's lines with backslash continuations joined, each with the
+    /// number (1-based) of the line it starts on.
+    pub fn logical_lines(src: &str) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        let mut pending: Option<(usize, String)> = None;
+        for (n, line) in src.lines().enumerate() {
+            let (start, mut text) = pending.take().unwrap_or((n + 1, String::new()));
+            if let Some(cont) = line.strip_suffix('\\') {
+                text.push_str(cont);
+                pending = Some((start, text));
+            } else {
+                text.push_str(line);
+                out.push((start, text));
+            }
+        }
+        if let Some(rest) = pending {
+            out.push(rest);
+        }
+        out
+    }
+
+    /// Whether `line_no` (1-based) of a workflow sits in a job whose
+    /// `runs-on` names only Linux runners: an `ubuntu` image or a
+    /// self-hosted label list (every self-hosted runner registered for this
+    /// repository reports os Linux: `gh api repos/NormB/sipnab/actions/runners`,
+    /// 2026-11-20). An expression counts by every label it names: Linux only
+    /// when it names an ubuntu image or self-hosted and never macos or
+    /// windows; one that names no label (`${{ matrix.os }}`), or a job with
+    /// no runs-on, is not known to be Linux.
+    pub fn workflow_job_is_linux(src: &str, line_no: usize) -> bool {
+        let lines: Vec<&str> = src.lines().collect();
+        let idx = line_no.saturating_sub(1);
+        if idx >= lines.len() {
+            return false;
+        }
+        let is_header = |l: &str| {
+            l.strip_prefix("  ").is_some_and(|rest| {
+                rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+            })
+        };
+        // A job header is a two-space key (`  build:`); the `on:` triggers
+        // have the same shape but hold no runs-on, so they never count.
+        let Some(start) = (0..=idx).rev().find(|&k| is_header(lines[k])) else {
+            return false;
+        };
+        let end = (start + 1..lines.len())
+            .find(|&k| {
+                is_header(lines[k]) || (!lines[k].starts_with(' ') && !lines[k].trim().is_empty())
+            })
+            .unwrap_or(lines.len());
+        if idx >= end {
+            return false;
+        }
+        let runs_on = lines[start..end]
+            .iter()
+            .find_map(|l| l.strip_prefix("    runs-on:"))
+            .map(str::trim);
+        runs_on.is_some_and(|v| {
+            !v.contains("macos")
+                && !v.contains("windows")
+                && (v.contains("ubuntu") || v.contains("self-hosted"))
+        })
+    }
+
+    /// Every GNU-only finding of a file before any allowance: (line, the
+    /// logical line's text, the finding).
+    pub fn raw_findings(_path: &str, src: &str) -> Vec<(usize, String, String)> {
+        let mut out = Vec::new();
+        for (n, text) in logical_lines(src) {
+            for finding in gnu_flags_in(&text) {
+                out.push((n, text.clone(), finding));
+            }
+        }
+        out
+    }
+
+    /// The findings the gate reports: raw findings minus the Linux-only
+    /// workflow jobs and the `LINUX_ONLY` allowances.
+    pub fn scan_file(path: &str, src: &str) -> Vec<(usize, String)> {
+        let workflow = path.starts_with(".github/workflows/");
+        raw_findings(path, src)
+            .into_iter()
+            .filter(|(n, text, _)| {
+                let allowed = LINUX_ONLY
+                    .iter()
+                    .any(|a| a.path == path && a.line.is_none_or(|l| text.contains(l)));
+                !allowed && !(workflow && workflow_job_is_linux(src, *n))
+            })
+            .map(|(n, _, finding)| (n, finding))
+            .collect()
+    }
+
+    /// Whether the gate reads this tracked file: shell by extension or
+    /// shebang, the git hooks, workflows and composite actions, Makefiles,
+    /// and everything under scripts/ and bench/ (the gate's paths before
+    /// 2026-11-20, kept whole).
+    pub fn is_scanned_file(path: &str, first_line: &str) -> bool {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let shebang_shell = first_line.strip_prefix("#!").is_some_and(|cmd| {
+            cmd.split([' ', '/'])
+                .any(|w| matches!(w, "sh" | "bash" | "dash" | "ksh" | "zsh"))
+        });
+        path.ends_with(".sh")
+            || path.ends_with(".bash")
+            || shebang_shell
+            || path.starts_with(".githooks/")
+            || path.starts_with("scripts/")
+            || path.starts_with("bench/")
+            || (path.starts_with(".github/workflows/")
+                && (path.ends_with(".yml") || path.ends_with(".yaml")))
+            || (path.starts_with(".github/actions/") && name == "action.yml")
+            || name == "Makefile"
+    }
+}
+
+/// The GNU-only findings of one command line, for the tests below.
+fn gnu(line: &str) -> Vec<String> {
+    shell_flags::gnu_flags_in(line)
+}
+
+/// Asserts `line` holds exactly `want` GNU-only findings, in order.
+fn assert_gnu(line: &str, want: &[&str]) {
+    let got = gnu(line);
+    assert_eq!(
+        got, want,
+        "GNU-only findings of {line:?}: got {got:?}, expected {want:?}"
+    );
+}
+
+// Failure: the parser finds the GNU-only flag.
+
+#[test]
+fn gnu_flag_after_another_flag_is_found_the_pr_848_case() {
+    assert_gnu("bytes=$(stat -L -c %s -- \"$bin\")", &["stat -c"]);
+}
+
+#[test]
+fn gnu_flag_inside_a_short_flag_cluster_is_found() {
+    assert_gnu("stat -Lc %s f", &["stat -c"]);
+}
+
+#[test]
+fn gnu_flag_with_its_argument_attached_is_found() {
+    assert_gnu("stat -c%s f", &["stat -c"]);
+}
+
+#[test]
+fn gnu_long_option_of_stat_is_found() {
+    assert_gnu("stat --format=%s f", &["stat --format"]);
+}
+
+#[test]
+fn gnu_flag_after_an_operand_is_found() {
+    assert_gnu("stat f -c %s", &["stat -c"]);
+}
+
+#[test]
+fn touch_date_flag_is_found() {
+    assert_gnu("touch -d @0 f", &["touch -d"]);
+}
+
+#[test]
+fn readlink_canonicalize_flags_are_found() {
+    assert_gnu("readlink -f x", &["readlink -f"]);
+    assert_gnu("readlink -e x", &["readlink -e"]);
+    assert_gnu("readlink -m x", &["readlink -m"]);
+}
+
+#[test]
+fn date_string_flag_is_found_after_another_flag() {
+    assert_gnu("end=$(date -u -d \"$x\" +%s)", &["date -d"]);
+}
+
+#[test]
+fn date_string_flag_is_found_in_a_cluster() {
+    assert_gnu("date -ud x +%s", &["date -d"]);
+}
+
+#[test]
+fn date_long_option_is_found() {
+    assert_gnu("date --date=x", &["date --date"]);
+}
+
+#[test]
+fn cp_parents_and_preserve_are_found() {
+    assert_gnu("cp --parents a b", &["cp --parents"]);
+    assert_gnu("cp --preserve=mode a b", &["cp --preserve"]);
+}
+
+#[test]
+fn every_long_option_of_cp_is_found() {
+    assert_gnu("cp --recursive a b", &["cp --recursive"]);
+}
+
+#[test]
+fn cp_target_directory_flag_is_found_beside_parents() {
+    assert_gnu(
+        "(cd \"$ROOT\" && in_tree ! -type d -exec cp -a --parents -t \"$TREE\" {} +)",
+        &["cp --parents", "cp -t"],
+    );
+}
+
+#[test]
+fn bare_sed_in_place_is_found() {
+    assert_gnu("sed -i 's/a/b/' f", &["sed -i"]);
+    assert_gnu("sed -i '' 's/a/b/' f", &["sed -i"]);
+}
+
+#[test]
+fn bare_sed_in_place_at_the_end_of_a_cluster_is_found() {
+    assert_gnu("sed -Ei 's/a/b/' f", &["sed -i"]);
+}
+
+#[test]
+fn sed_long_option_is_found() {
+    assert_gnu("sed --in-place 's/a/b/' f", &["sed --in-place"]);
+}
+
+#[test]
+fn a_tool_in_the_middle_of_a_command_is_found() {
+    assert_gnu(
+        "find \"$T\" -name '*.rs' -exec sed -i -e x {} +",
+        &["sed -i"],
+    );
+    assert_gnu("find . -exec stat -c %s {} \\;", &["stat -c"]);
+}
+
+#[test]
+fn gnu_flag_in_a_quoted_command_substitution_is_found() {
+    assert_gnu(
+        "stage_elf \"$(readlink -f \"${BIN_SRC}\")\" \"$STAGED_BIN\"",
+        &["readlink -f"],
+    );
+}
+
+#[test]
+fn gnu_flag_in_backticks_is_found() {
+    assert_gnu("n=`stat -c %s f`", &["stat -c"]);
+}
+
+#[test]
+fn gnu_flag_after_a_wrapper_or_a_path_is_found() {
+    assert_gnu("sudo stat -c %s f", &["stat -c"]);
+    assert_gnu("/usr/bin/stat -c %s f", &["stat -c"]);
+    assert_gnu("LC_ALL=C timeout 5 date -d x", &["date -d"]);
+}
+
+#[test]
+fn or_to_another_tool_is_not_a_bsd_fallback() {
+    assert_gnu("stat -c %s f || echo 0", &["stat -c"]);
+}
+
+#[test]
+fn or_to_another_listed_tool_is_not_a_bsd_fallback() {
+    assert_gnu("n=$(stat -c %s f || date -u +%s)", &["stat -c"]);
+}
+
+#[test]
+fn and_to_the_bsd_form_is_not_a_fallback() {
+    assert_gnu("stat -c %s f && stat -f %z f", &["stat -c"]);
+}
+
+#[test]
+fn gnu_flag_after_a_stderr_redirect_is_found() {
+    assert_gnu("stat 2>&1 -c %s f", &["stat -c"]);
+}
+
+#[test]
+fn gnu_only_short_flags_of_cp_are_found() {
+    assert_gnu("cp -u a b", &["cp -u"]);
+    assert_gnu("cp -d a b", &["cp -d"]);
+}
+
+// Success: a portable line is not flagged.
+
+#[test]
+fn bsd_stat_format_is_not_flagged() {
+    assert_gnu("stat -f %z f", &[]);
+    assert_gnu("stat -L -f %z f", &[]);
+}
+
+#[test]
+fn posix_size_count_is_not_flagged() {
+    assert_gnu("bytes=$(wc -c < \"$f\")", &[]);
+}
+
+#[test]
+fn sed_in_place_with_an_attached_suffix_is_not_flagged() {
+    assert_gnu("sed -i.bak 's/a/b/' f && rm -f f.bak", &[]);
+}
+
+#[test]
+fn ordinary_sed_is_not_flagged() {
+    assert_gnu("sed -n 's/x/y/p' f | sed -n 1p", &[]);
+    assert_gnu("sed -E -e 's/-i//' f", &[]);
+}
+
+#[test]
+fn portable_date_forms_are_not_flagged() {
+    assert_gnu("date -u +%s", &[]);
+    assert_gnu("date -r 0 +%Y", &[]);
+    assert_gnu("date -u -v-1d +%F", &[]);
+    assert_gnu("date -Iseconds", &[]);
+}
+
+#[test]
+fn touch_with_a_posix_time_is_not_flagged() {
+    assert_gnu("touch -t 202601010000 f", &[]);
+    assert_gnu("touch -r ref f", &[]);
+}
+
+#[test]
+fn portable_cp_is_not_flagged() {
+    assert_gnu("cp -p a b; cp -R a b; cp -a a b", &[]);
+}
+
+#[test]
+fn readlink_without_gnu_flags_is_not_flagged() {
+    assert_gnu("readlink x", &[]);
+    assert_gnu("readlink -n x", &[]);
+}
+
+#[test]
+fn bsd_fallback_after_or_is_allowed() {
+    assert_gnu(
+        "bytes=$(stat -L -c %s -- \"$bin\" 2>/dev/null || stat -L -f %z -- \"$bin\")",
+        &[],
+    );
+}
+
+#[test]
+fn bsd_form_first_and_gnu_after_or_is_allowed() {
+    assert_gnu("stat -f %z f 2>/dev/null || stat -c %s f", &[]);
+}
+
+#[test]
+fn a_bsd_form_in_a_subshell_before_or_is_a_fallback() {
+    assert_gnu("(stat -f %z f) || stat -c %s f", &[]);
+}
+
+#[test]
+fn the_release_yml_size_line_is_allowed() {
+    assert_gnu(
+        "size=$(stat -c%s \"$bin\" 2>/dev/null || stat -f%z \"$bin\")",
+        &[],
+    );
+}
+
+#[test]
+fn the_install_sh_mode_line_is_allowed() {
+    assert_gnu(
+        "t \"mode\" \"644\" \"$(stat -c %a \"$f\" 2>/dev/null || stat -f %Lp \"$f\" 2>/dev/null)\"",
+        &[],
+    );
+}
+
+#[test]
+fn an_explicit_gnu_coreutils_name_is_not_matched() {
+    assert_gnu("gstat -c %s f; gdate -d x", &[]);
+}
+
+#[test]
+fn quoted_prose_is_not_a_command() {
+    assert_gnu("echo \"stat -c is GNU-only\"", &[]);
+    assert_gnu("x='readlink -f y'", &[]);
+}
+
+#[test]
+fn a_quoted_command_name_still_runs_the_command() {
+    assert_gnu("\"stat\" -c %s f", &["stat -c"]);
+    assert_gnu("'date' -d x", &["date -d"]);
+}
+
+#[test]
+fn comments_are_not_commands() {
+    assert_gnu("# stat -c %s f", &[]);
+    assert_gnu("wc -c f # not stat -c", &[]);
+}
+
+#[test]
+fn flags_after_end_of_options_are_operands() {
+    assert_gnu("stat -f %z -- -c", &[]);
+    assert_gnu("cp -- --parents b", &[]);
+}
+
+#[test]
+fn a_tool_named_as_an_argument_takes_no_flags() {
+    assert_gnu("command -v stat >/dev/null", &[]);
+}
+
+// Edge: the boundaries of the parser.
+
+#[test]
+fn an_empty_or_blank_line_has_no_findings() {
+    assert_gnu("", &[]);
+    assert_gnu("   \t ", &[]);
+}
+
+#[test]
+fn an_unterminated_quote_still_reports_the_flag_before_it() {
+    assert_gnu("stat -c \"%s f", &["stat -c"]);
+}
+
+#[test]
+fn an_unterminated_substitution_still_reports_its_flag() {
+    assert_gnu("x=$(stat -c %s f", &["stat -c"]);
+}
+
+#[test]
+fn an_option_argument_that_looks_like_a_gnu_flag_is_not_one() {
+    assert_gnu("date -r -d", &[]);
+    assert_gnu("stat -f -c f", &[]);
+}
+
+#[test]
+fn sed_in_place_with_a_one_letter_suffix_is_not_bare() {
+    assert_gnu("sed -ie 's/a/b/' f", &[]);
+}
+
+#[test]
+fn two_gnu_forms_joined_by_or_are_not_a_fallback() {
+    assert_gnu("stat -c a f || stat -c b f", &["stat -c", "stat -c"]);
+}
+
+#[test]
+fn a_gnu_flag_in_a_nested_substitution_is_found() {
+    assert_gnu(
+        "a=\"$(dirname \"$(readlink -f \"$0\")\")\"",
+        &["readlink -f"],
+    );
+}
+
+#[test]
+fn a_command_after_a_closed_quoted_substitution_is_read_as_a_command() {
+    assert_gnu("a=\"$(dirname x)\"; stat -c %s f", &["stat -c"]);
+    assert_gnu("a=\"`dirname x`\"; stat -c %s f", &["stat -c"]);
+}
+
+#[test]
+fn find_exec_terminator_keeps_a_later_tools_flags_from_the_earlier_tool() {
+    // `-u` is GNU-only for cp but portable for date.
+    assert_gnu("find . -exec cp -p {} d \\; -exec date -u \\;", &[]);
+}
+
+#[test]
+fn a_tool_name_as_an_operand_does_not_end_the_commands_flags() {
+    // A file named `date` is copied; cp's GNU-only -t still counts.
+    assert_gnu("cp -p date -t dir", &["cp -t"]);
+}
+
+#[test]
+fn find_exec_terminators_end_the_tools_arguments() {
+    // Without the terminator, find's next `-exec` reads as `stat -e -x -e -c`.
+    assert_gnu("find . -exec stat -f %z {} \\; -exec true \\;", &[]);
+    assert_gnu("find . -exec stat -f %z {} + -exec true \\;", &[]);
+    assert_gnu(
+        "find . -exec cp -p {} d \\; -exec stat -c %s {} \\;",
+        &["stat -c"],
+    );
+}
+
+#[test]
+fn two_invocations_in_one_command_are_not_a_fallback() {
+    assert_gnu(
+        "true || find . -exec stat -c %s {} \\; -exec stat -f %z {} \\;",
+        &["stat -c"],
+    );
+}
+
+#[test]
+fn a_subshell_inside_a_substitution_does_not_close_it() {
+    assert_gnu("x=\"$( (cd d) ; stat -c %s f )\"", &["stat -c"]);
+    assert_gnu("x=\"$( (cd d) )\"; stat -c %s f", &["stat -c"]);
+}
+
+#[test]
+fn a_parameter_expansion_is_one_word_even_with_a_separator_inside() {
+    assert_gnu("stat ${a%;*} -c %s f", &["stat -c"]);
+}
+
+#[test]
+fn multiple_tools_on_one_line_each_report() {
+    assert_gnu(
+        "touch -d x f; date -d y; cp --parents a b",
+        &["touch -d", "date -d", "cp --parents"],
+    );
+}
+
+#[test]
+fn logical_lines_join_continuations_and_keep_the_first_line_number() {
+    let got = shell_flags::logical_lines("a\nsed -i \\\n\t-e x \\\n\tf\nb\n");
+    let want = vec![
+        (1, "a".to_string()),
+        (2, "sed -i \t-e x \tf".to_string()),
+        (5, "b".to_string()),
+    ];
+    assert_eq!(
+        got, want,
+        "continuation lines must join into one logical line"
+    );
+}
+
+#[test]
+fn a_flag_on_a_continuation_line_is_found_at_the_first_line() {
+    let got = shell_flags::scan_file("contrib/x.sh", "#!/bin/sh\nstat -L \\\n  -c %s f\n");
+    assert_eq!(
+        got,
+        vec![(2, "stat -c".to_string())],
+        "a flag on a continuation line belongs to the command that started above"
+    );
+}
+
+/// A workflow with one job per runner kind; the line numbers in the tests
+/// below are its lines (1-based).
+const WORKFLOW: &str = concat!(
+    "name: x\n",
+    "env:\n",
+    "  A: $(date -d x)\n",
+    "jobs:\n",
+    "  lin:\n",
+    "    runs-on: ubuntu-24.04\n",
+    "    steps:\n",
+    "      - run: sed -i s/a/b/ f\n",
+    "  mac:\n",
+    "    runs-on: macos-26\n",
+    "    steps:\n",
+    "      - run: sed -i s/a/b/ f\n",
+    "  mat:\n",
+    "    runs-on: ${{ matrix.os }}\n",
+    "    steps:\n",
+    "      - run: sed -i s/a/b/ f\n",
+    "  own:\n",
+    "    runs-on: [self-hosted, jetson]\n",
+    "    steps:\n",
+    "      - run: sed -i s/a/b/ f\n",
+    "  none:\n",
+    "    steps:\n",
+    "      - run: sed -i s/a/b/ f\n",
+);
+
+#[test]
+fn a_workflow_job_on_ubuntu_is_linux() {
+    assert!(
+        shell_flags::workflow_job_is_linux(WORKFLOW, 8),
+        "line 8 is in job `lin`, which runs on ubuntu-24.04"
+    );
+}
+
+#[test]
+fn a_workflow_job_on_a_self_hosted_runner_is_linux() {
+    assert!(
+        shell_flags::workflow_job_is_linux(WORKFLOW, 20),
+        "line 20 is in job `own`, on [self-hosted, jetson]; every registered \
+         self-hosted runner reports Linux"
+    );
+}
+
+#[test]
+fn a_workflow_job_on_macos_is_not_linux() {
+    assert!(
+        !shell_flags::workflow_job_is_linux(WORKFLOW, 12),
+        "line 12 is in job `mac`, on macos-26"
+    );
+}
+
+#[test]
+fn a_workflow_job_on_an_expression_is_not_known_to_be_linux() {
+    assert!(
+        !shell_flags::workflow_job_is_linux(WORKFLOW, 16),
+        "line 16 is in job `mat`, whose runs-on is an expression that names \
+         no runner label"
+    );
+}
+
+/// Whether a one-job workflow with this `runs-on` value counts as Linux.
+fn runs_on_is_linux(value: &str) -> bool {
+    let src = format!("jobs:\n  j:\n    runs-on: {value}\n    steps:\n      - run: x\n");
+    shell_flags::workflow_job_is_linux(&src, 5)
+}
+
+#[test]
+fn a_self_hosted_label_list_naming_macos_or_windows_is_not_linux() {
+    assert!(
+        !runs_on_is_linux("[self-hosted, macos]"),
+        "a self-hosted macOS runner"
+    );
+    assert!(
+        !runs_on_is_linux("[self-hosted, windows]"),
+        "a self-hosted Windows runner"
+    );
+}
+
+#[test]
+fn an_expression_choosing_only_linux_runners_is_linux() {
+    assert!(
+        runs_on_is_linux("${{ matrix.big && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}"),
+        "both choices are ubuntu images"
+    );
+    assert!(
+        runs_on_is_linux(
+            "${{ github.ref == 'refs/heads/main' && fromJSON('[\"self-hosted\",\"jetson\"]') || fromJSON('[\"self-hosted\",\"overflow\"]') }}"
+        ),
+        "both choices are self-hosted label lists"
+    );
+}
+
+#[test]
+fn an_expression_that_can_choose_macos_is_not_linux() {
+    assert!(
+        !runs_on_is_linux("${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-24.04-arm' || 'macos-26' }}"),
+        "one choice is a macOS image"
+    );
+}
+
+#[test]
+fn a_top_level_key_after_the_jobs_is_in_no_job() {
+    let src = concat!(
+        "jobs:\n",
+        "  j:\n",
+        "    runs-on: ubuntu-24.04\n",
+        "x-note: $(sed -i s/a/b/ f)\n",
+    );
+    assert!(
+        !shell_flags::workflow_job_is_linux(src, 4),
+        "line 4 is a top-level key, outside job `j`"
+    );
+}
+
+#[test]
+fn a_comment_at_job_indent_does_not_end_the_job() {
+    let src = concat!(
+        "jobs:\n",
+        "  j:\n",
+        "    runs-on: ubuntu-24.04\n",
+        "  # macos jobs: none here\n",
+        "    steps:\n",
+        "      - run: sed -i s/a/b/ f\n",
+    );
+    assert!(
+        shell_flags::workflow_job_is_linux(src, 6),
+        "a comment is not a job header"
+    );
+}
+
+#[test]
+fn a_step_input_named_runs_on_is_not_the_jobs_runner() {
+    let src = concat!(
+        "jobs:\n",
+        "  j:\n",
+        "    steps:\n",
+        "      - uses: ./x\n",
+        "        with:\n",
+        "          runs-on: ubuntu-24.04\n",
+        "      - run: sed -i s/a/b/ f\n",
+    );
+    assert!(
+        !shell_flags::workflow_job_is_linux(src, 7),
+        "only the job's own runs-on (indent 4) names its runner"
+    );
+}
+
+#[test]
+fn a_workflow_job_without_runs_on_is_not_linux() {
+    assert!(
+        !shell_flags::workflow_job_is_linux(WORKFLOW, 23),
+        "line 23 is in job `none`, which states no runner"
+    );
+}
+
+#[test]
+fn a_workflow_line_outside_any_job_is_not_linux() {
+    assert!(
+        !shell_flags::workflow_job_is_linux(WORKFLOW, 3),
+        "line 3 is the workflow's top-level env, in no job"
+    );
+}
+
+#[test]
+fn a_workflow_scan_reports_only_the_jobs_not_known_to_be_linux() {
+    let got: Vec<usize> = shell_flags::scan_file(".github/workflows/x.yml", WORKFLOW)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(
+        got,
+        vec![3, 12, 16, 23],
+        "the ubuntu and self-hosted jobs are Linux; the rest are not"
+    );
+}
+
+#[test]
+fn a_composite_action_gets_no_job_allowance() {
+    let src = "runs:\n  using: composite\n  steps:\n    - run: sed -i s/a/b/ f\n";
+    let got = shell_flags::scan_file(".github/actions/x/action.yml", src);
+    assert_eq!(
+        got,
+        vec![(4, "sed -i".to_string())],
+        "an action runs on whichever runner calls it, macOS included"
+    );
+}
+
+#[test]
+fn only_a_workflow_file_gets_the_job_allowance() {
+    // A script that writes a workflow: its text has a job shape, but it runs
+    // wherever the script runs.
+    let src = concat!(
+        "cat >ci.yml <<'YAML'\n",
+        "  j:\n",
+        "    runs-on: ubuntu-24.04\n",
+        "    sed -i s/a/b/ f\n",
+        "YAML\n",
+    );
+    assert_eq!(
+        shell_flags::scan_file("contrib/gen-ci.sh", src),
+        vec![(4, "sed -i".to_string())],
+        "the job allowance is for .github/workflows/ only"
+    );
+}
+
+#[test]
+fn a_linux_only_file_is_not_reported_and_others_are() {
+    let src = "x=\"$(readlink -f y)\"\n";
+    assert!(
+        shell_flags::scan_file("packaging/rpm/build-rpm.sh", src).is_empty(),
+        "build-rpm.sh is listed as Linux-only"
+    );
+    assert_eq!(
+        shell_flags::scan_file("packaging/deb/build-deb.sh", src),
+        vec![(1, "readlink -f".to_string())],
+        "the allowance names one file, not its directory"
+    );
+}
+
+#[test]
+fn a_linux_only_line_allowance_covers_only_its_line() {
+    let src = "end=$(date -u -d \"$not_after\" +%s 2>/dev/null || printf '')\nn=$(date -d x)\n";
+    assert_eq!(
+        shell_flags::scan_file("scripts/check-cert-expiry.sh", src),
+        vec![(2, "date -d".to_string())],
+        "the cert-expiry allowance is for its one parse line"
+    );
+}
+
+#[test]
+fn every_finding_kind_names_its_portable_fix() {
+    for (finding, want) in [
+        (
+            "stat -c",
+            "BSD stat spells it -f FORMAT; `wc -c < file` is portable",
+        ),
+        (
+            "sed -i",
+            "GNU and BSD read the word after a bare -i differently; use -i.bak and remove the .bak",
+        ),
+        (
+            "sed --in-place",
+            "long options are not portable to BSD sed; use the short form",
+        ),
+        (
+            "cp --parents",
+            "long options are not portable to BSD cp; use the short form",
+        ),
+        ("cp -t", "BSD cp has no -t; name the target last"),
+        ("awk -x", "unknown tool"),
+    ] {
+        let got = shell_flags::fix_for(finding);
+        assert_eq!(got, want, "fix_for({finding:?})");
+    }
+}
+
+#[test]
+fn a_gnu_form_before_the_linux_guard_is_unguarded() {
+    let src = "a\nsed -i x f\n[ \"$(uname -s)\" = Linux ] || exit 0\nsed -i y f\n";
+    let got = shell_flags::unguarded_lines(src, "uname -s", &[2, 4]);
+    assert_eq!(got, Ok(vec![2]), "line 2 runs before the guard on line 3");
+}
+
+#[test]
+fn a_missing_guard_is_an_error() {
+    let got = shell_flags::unguarded_lines("sed -i x f\n", "uname -s", &[1]);
+    assert!(got.is_err(), "a guard that is gone must fail, got {got:?}");
+}
+
+#[test]
+fn a_gnu_form_on_the_guard_line_is_unguarded() {
+    let got = shell_flags::unguarded_lines("uname -s; sed -i x f\n", "uname -s", &[1]);
+    assert_eq!(
+        got,
+        Ok(vec![1]),
+        "the guard line itself is not protected by the guard"
+    );
+}
+
+#[test]
+fn an_allowance_reason_must_be_a_sentence() {
+    assert!(!shell_flags::reason_is_stated(""), "an empty reason");
+    assert!(
+        !shell_flags::reason_is_stated("linux"),
+        "one word is not a reason"
+    );
+    assert!(
+        shell_flags::reason_is_stated("runs only in the ubuntu-24.04 job of cert-expiry.yml"),
+        "a sentence naming where it runs"
+    );
+}
+
+#[test]
+fn shell_files_are_selected_by_extension_shebang_and_place() {
+    for (path, first, want) in [
+        ("contrib/a.sh", "", true),
+        ("harness/x/run", "#!/usr/bin/env bash", true),
+        ("harness/x/run2", "#!/bin/sh -eu", true),
+        (".githooks/pre-push", "", true),
+        (".github/workflows/ci.yml", "", true),
+        (".github/actions/x/action.yml", "", true),
+        ("demos/Makefile", "", true),
+        // Not a Python or shell name: a path under scripts/ with one of
+        // those extensions reads as a citation to
+        // mcp_tool_descriptions_test's every_cited_script_exists.
+        ("scripts/notes.txt", "", true),
+        ("bench/plot.py", "#!/usr/bin/env python3", true),
+        ("contrib/x.bash", "", true),
+        (".github/workflows/x.yaml", "", true),
+        (".github/actions/x/README.yml", "", false),
+        (".github/workflows/README.md", "", false),
+        ("tools/run.py", "#!/usr/bin/env python3", false),
+        (".github/ISSUE_TEMPLATE/bug.yml", "", false),
+        ("docs/install.md", "", false),
+        ("Dockerfile", "", false),
+        ("src/main.rs", "", false),
+    ] {
+        assert_eq!(
+            shell_flags::is_scanned_file(path, first),
+            want,
+            "is_scanned_file({path:?}, {first:?})"
+        );
+    }
 }
