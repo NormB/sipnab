@@ -7,7 +7,7 @@
 
 use super::{
     App, Block, Borders, Constraint, DialogStore, Layout, Line, Modifier, Paragraph, Popup, Rect,
-    RelayStatsMode, Span, StreamStore, Style, Theme, View, Wrap, call_flow, call_list, header_form,
+    RelayStatsMode, Span, StreamStore, Style, Theme, View, call_flow, call_list, header_form,
     help, msg_raw, stream_detail, stream_list,
 };
 
@@ -2045,22 +2045,6 @@ pub(in crate::tui) fn render_bpf_filter(
     clamped
 }
 
-/// Estimated rendered rows for `lines` wrapped to `width` columns: the
-/// ceil of each line's display width (the same accounting as the raw
-/// message view's `estimated_rows`). Word-wrap can add a stray row;
-/// close enough to clamp the scroll near the true bottom. Pure.
-fn estimated_wrapped_rows(lines: &[Line<'_>], width: u16) -> u16 {
-    let w = (width.max(1)) as usize;
-    lines
-        .iter()
-        .map(|l| {
-            let lw = l.width();
-            if lw == 0 { 1 } else { lw.div_ceil(w) }
-        })
-        .sum::<usize>()
-        .min(u16::MAX as usize) as u16
-}
-
 /// Word-wrap `text` to `width` columns with a hanging indent: a logical line
 /// that overflows continues on rows indented to where its text starts, so an
 /// indented explanation stays one readable block. A line shaped like a
@@ -2168,7 +2152,7 @@ pub(in crate::tui) fn render_text_panel(
 ///
 /// The BPF popup shows a machine-generated filter that runs to well over a
 /// thousand columns. The scroll clamp needs the true wrapped height, and
-/// [`estimated_wrapped_rows`] (ceil of width) UNDER-counts word-wrapped text,
+/// a ceil-of-width row estimate UNDER-counts word-wrapped text,
 /// which would leave the tail unreachable in the one view whose whole job is to
 /// show the filter in full. Wrapping here and rendering these exact lines keeps
 /// the clamp and the render in lockstep — without ratatui's unstable
@@ -2279,6 +2263,37 @@ fn lcs_line_alignment<'a>(
     out
 }
 
+/// Hard-wrap a styled line into rows of at most `width` display columns,
+/// keeping each span's style; an empty line stays one (empty) row. Pure.
+fn hard_wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthChar;
+    let w = width.max(1);
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut cur: Vec<Span<'static>> = Vec::new();
+    let mut cur_w = 0usize;
+    for span in line.spans {
+        let style = span.style;
+        let mut buf = String::new();
+        for ch in span.content.chars() {
+            let cw = ch.width().unwrap_or(0);
+            if cur_w + cw > w && cur_w > 0 {
+                if !buf.is_empty() {
+                    cur.push(Span::styled(std::mem::take(&mut buf), style));
+                }
+                rows.push(Line::from(std::mem::take(&mut cur)));
+                cur_w = 0;
+            }
+            buf.push(ch);
+            cur_w += cw;
+        }
+        if !buf.is_empty() {
+            cur.push(Span::styled(buf, style));
+        }
+    }
+    rows.push(Line::from(cur));
+    rows
+}
+
 /// Parameters for the side-by-side message diff view.
 pub(in crate::tui) struct MessageDiffView<'a> {
     /// Call-ID of the dialog holding both messages.
@@ -2363,6 +2378,10 @@ pub(in crate::tui) fn render_message_diff(
 
     let mut left_lines: Vec<Line<'static>> = Vec::new();
     let mut right_lines: Vec<Line<'static>> = Vec::new();
+    // Inner (border-less) widths of the two panes: each pair is wrapped by
+    // hand at these widths and the shorter side padded.
+    let left_w = half_width.saturating_sub(2).max(1) as usize;
+    let right_w = area.width.saturating_sub(half_width).saturating_sub(2).max(1) as usize;
 
     // Header lines
     left_lines.push(Line::from(Span::styled(
@@ -2390,14 +2409,18 @@ pub(in crate::tui) fn render_message_diff(
         let is_diff = l1 != l2;
         let style = if is_diff { diff_style } else { normal_style };
 
-        left_lines.push(Line::from(Span::styled(
-            l1.unwrap_or("").to_string(),
-            style,
-        )));
-        right_lines.push(Line::from(Span::styled(
-            l2.unwrap_or("").to_string(),
-            style,
-        )));
+        let left = Line::from(Span::styled(l1.unwrap_or("").to_string(), style));
+        let right = Line::from(Span::styled(l2.unwrap_or("").to_string(), style));
+        // One block per pair, as tall as the side that wraps into more
+        // rows; the shorter side gets blank rows (as `diff -y`), so the
+        // pairs below stay level on both sides.
+        let mut lrows = hard_wrap_line(left, left_w);
+        let mut rrows = hard_wrap_line(right, right_w);
+        let h = lrows.len().max(rrows.len());
+        lrows.resize(h, Line::from(""));
+        rrows.resize(h, Line::from(""));
+        left_lines.extend(lrows);
+        right_lines.extend(rrows);
     }
 
     let left_block = Block::default()
@@ -2407,23 +2430,15 @@ pub(in crate::tui) fn render_message_diff(
         .borders(Borders::ALL)
         .title(format!(" Message {} ", msg2_idx + 1));
 
-    // Both panes wrap, so the scroll clamp must count rendered (wrapped)
-    // rows — the unwrapped line count strands the wrapped tail of long
-    // headers below an unreachable bottom. Taller pane governs.
-    let left_rows = estimated_wrapped_rows(&left_lines, half_width.saturating_sub(2));
-    let right_rows = estimated_wrapped_rows(
-        &right_lines,
-        area.width.saturating_sub(half_width).saturating_sub(2),
-    );
-    let total_rows = left_rows.max(right_rows);
+    // Rows are already wrapped and padded pair by pair, so both panes hold
+    // the same number of rows and no further wrapping happens.
+    let total_rows = left_lines.len().max(right_lines.len()).min(u16::MAX as usize) as u16;
     let left_para = Paragraph::new(left_lines)
         .block(left_block)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
+        .scroll((scroll, 0));
     let right_para = Paragraph::new(right_lines)
         .block(right_block)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
+        .scroll((scroll, 0));
 
     frame.render_widget(left_para, left_area);
     frame.render_widget(right_para, right_area);
@@ -4255,6 +4270,86 @@ mod tests {
             }
         }
         assert!(text.contains("Dialog not found"));
+        Ok(())
+    }
+
+    /// A header that wraps on one side only must not push the rows below it
+    /// out of level: the line both messages share after it sits on the same
+    /// screen row in both panes (each pair padded to its taller side).
+    #[test]
+    fn render_message_diff_pairs_stay_level_after_a_one_sided_wrap() -> Result<(), TestError> {
+        use crate::capture::parse::TransportProto;
+        use crate::sip::parser::parse_sip;
+
+        let t0 = base_ts()?;
+        let long = format!("Contact: <sip:1001@10.0.0.1;thinfo={}>", "a".repeat(70));
+        let raw1 = build_sip(
+            "INVITE sip:1002@example.com SIP/2.0",
+            &[
+                "Call-ID: level@test",
+                "CSeq: 1 INVITE",
+                &long,
+                "Max-Forwards: 70",
+                "Content-Length: 0",
+            ],
+        );
+        let raw2 = build_sip(
+            "INVITE sip:1002@example.com SIP/2.0",
+            &[
+                "Call-ID: level@test",
+                "CSeq: 1 INVITE",
+                "Contact: <sip:1001@10.0.0.2>",
+                "Max-Forwards: 70",
+                "Content-Length: 0",
+            ],
+        );
+        let msg1 = parse_sip(&raw1, t0, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp)
+            .map_err(|e| format!("parse left: {e:?}"))?;
+        let msg2 = parse_sip(
+            &raw2,
+            t0 + chrono::TimeDelta::seconds(1),
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("parse right: {e:?}"))?;
+        let app = App::with_processed_messages(vec![msg1, msg2]);
+        let store = app.dialog_store.read();
+        let theme = Theme::default();
+        // 80 cols -> 40-wide panes (38 inner): the long Contact wraps to 3 rows.
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        terminal.draw(|frame| {
+            render_message_diff(
+                frame,
+                frame.area(),
+                &store,
+                &MessageDiffView {
+                    call_id: "level@test",
+                    msg1_idx: 0,
+                    msg2_idx: 1,
+                    scroll: 0,
+                    header_form: header_form::HeaderFormMode::AsCaptured,
+                    theme: &theme,
+                },
+            );
+        })?;
+        let buf = terminal.backend().buffer();
+        let row_of = |x0: u16, x1: u16| -> Result<u16, TestError> {
+            for y in 0..buf.area.height {
+                let mut line = String::new();
+                for x in x0..x1 {
+                    line.push_str(buf.cell((x, y)).ok_or("the cell is inside the buffer")?.symbol());
+                }
+                if line.contains("Max-Forwards: 70") {
+                    return Ok(y);
+                }
+            }
+            Err("Max-Forwards not on screen".into())
+        };
+        let (left, right) = (row_of(0, 40)?, row_of(40, 80)?);
+        assert_eq!(left, right, "the shared line must sit on the same row in both panes");
         Ok(())
     }
 
