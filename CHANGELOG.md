@@ -17,6 +17,14 @@ entry that carries them.
   - Limit: Until 1.0 a release may still change any surface; the command line, config keys, MCP tools and metrics are not compared yet.
   - Docs: [Compare the REST API of two releases](docs/stability.md#compare-the-rest-api-of-two-releases)
 
+### Fixed
+
+- **REST routes read a request body only after the credential check.**
+  - Was: A caller without a credential still had the server read and parse up to 1 MiB of JSON.
+  - Was: `{"enabled": false, "enabled": true}` opened the persistence gate; the last copy of a key won.
+  - Effect: A key given twice, or an object or array as a value, is a `400` whose `detail` names the rule.
+  - Docs: [Bind address & connection limits](docs/rest-api.md#bind-address--connection-limits)
+
 ## [0.5.268] - 2026-11-20
 
 ### Fixed

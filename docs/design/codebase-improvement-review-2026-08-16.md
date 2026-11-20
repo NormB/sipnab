@@ -476,7 +476,7 @@ either finds a Sipnab span in Tempo or explicitly says traces are unavailable.
 **Priority / type / effort:** P2 / capability improvement / M
 
 **Evidence:** REST health always returns literal `ok`
-([`src/output/api.rs:595-597`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/output/api.rs#L595-L597); [`docs/rest-api.md:797-799`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L797-L799)<!-- "### GET /health" -->), and MCP health is also
+([`src/output/api.rs:595-597`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/output/api.rs#L595-L597); [`docs/rest-api.md:818-820`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L818-L820)<!-- "### GET /health" -->), and MCP health is also
 unconditional ([`src/mcp/transport.rs:734-737`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L734-L737)<!-- "let mcp_router = Router::new()" -->). Existing capture state is not
 consulted by these probes.
 
