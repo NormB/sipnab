@@ -14,7 +14,7 @@ the other bundles and finds any tool by name.
 | Tool | Parameters | Returns |
 |---|---|---|
 | [`siprec_metadata`](#siprec_metadata) | `call_id` | The SIPREC ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866.html)) recording metadata a call carried: session id, mode, participants with AOR and display name, and the recorded streams, each naming its `m=` line label and the participant that sends it |
-| [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
+| [`export_vcon`](#export_vcon) | `call_id?`, `filter?`, `named?`, `limit?`, `cursor?`, `media?` | Dialogs as vCon conversation containers, structured JSON, each with its SHA-256. One `call_id` or a whole filtered set, paged with `cursor`. Unsigned, retained audio inline unless `media` is `omit`, and every omission stated in the response |
 | [`validate_vcon`](#validate_vcon) | `call_id?`, `container?` | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
 | [`analyze_vcon`](#analyze_vcon) | `container?`, `container_base64?`, `limit?` (one of the first two) | Rebuilds the SIP messages a stored container holds and analyzes them apart from the loaded capture: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, plus the capture analysis and what a container cannot reproduce |
 | [`fetch_vcon`](#fetch_vcon) | `uuid` | **Connects, off by default.** One container from the operator's `[vcon_fetch]` store by uuid, returned inline with the checks it passed. Needs `--mcp-allow-vcon-fetch`; the store and its keys come from operator configuration only |
@@ -155,23 +155,26 @@ container inline and is `readOnlyHint: true`.
 |---|---|---|---|
 | `call_id?` | string | A Call-ID the store holds. An unknown one fails with `invalid_params` (-32602) naming the value. | Give `filter` instead. |
 | `filter?` | string | A filter alias or a raw DSL expression, the vocabulary [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes. The `--export-vcon-when` flag takes the same vocabulary, aliases included. Every matching dialog comes back. | Give `call_id` instead. |
+| `named?` | string | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](mcp-tools-core.md#list_dialogs) takes it. With `call_id` it fails with `conflicting_params`. | Give `call_id` or `filter` instead. |
 | `limit?` | integer | 1 to `--mcp-max-rows` (1000 by default). | 50. |
 | `cursor?` | string | The previous response's `next_cursor`, passed back verbatim. It is the `<RFC 3339 created_at>\|<Call-ID>` cursor [`list_dialogs`](mcp-tools-core.md#list_dialogs) uses. A cursor whose time half is not [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) fails with `invalid_params` (-32602). | The first page. |
 | `media?` | string | `inline`: audio the run retained travels inline in a `recording` Dialog Object. `omit`: the exporter considers no audio, and each container records `media: "not-considered"`. sipnab refuses any other value before the tool runs, with an error result that names `inline` and `omit`. | `inline`. |
 
-Give `call_id` or `filter`, never both. The CLI refuses the same pair. Both
-fail with `invalid_params`:
+Give `call_id`, `filter` or `named`: one of the three. The CLI refuses the
+same pair. `call_id` with `filter` fails with `invalid_params`, and
+`call_id` with `named` fails the same way with `named` in place of `filter`:
 
 ```text
 `call_id` and `filter` are alternatives, not a pair: one names a dialog, the
 other names a rule for choosing them. Give one
 ```
 
-Neither fails with `invalid_params` too:
+None of the three fails with `invalid_params` too:
 
 ```text
 give `call_id` for one dialog, or `filter` for every dialog it selects -- for
-example "response_code >= 400"
+example "response_code >= 400" -- or `named` for every dialog a named filter
+selects
 ```
 
 **Export a set in one call.** To export every failed call, pass a `filter`

@@ -79,6 +79,8 @@ pub struct GroupDialogsParams {
     /// Values may be bare or quoted.
     #[serde(default)]
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Groups to return, largest first. Bounded by `--mcp-max-rows` and
     /// defaulted the same way `aggregate_dialogs` defaults `top_n`.
     ///
@@ -359,7 +361,7 @@ impl SipnabMcp {
         })?;
 
         let top_n = resolve_limit_with_cap(params.top_n, self.row_cap);
-        let filter = self.compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
 
         let (tally, total_matched, capture_identity) = {
             // Capture, dialogs, streams -- the order `CaptureState` documents.

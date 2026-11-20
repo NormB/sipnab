@@ -965,15 +965,30 @@ sipnab could not read a names file when it loaded names. A names file is an `/et
 
 **Exit code:** None. This is a warning, and the run continues.
 
+### `cannot {action} {path}: {source}. {advice}`
+
+A save from the terminal UI could not read or write its configuration file because the user running sipnab lacks the permission, or the file system allows no writes. The save was the column layout (F10 selector), a name for an address, or a named filter (`F2` in the filter dialog).
+
+- `{action}` is the step that failed: `read` the file, `create` its folder, or `write` the file.
+- `{path}` is the file, or for `create` the folder.
+- `{source}` is the operating system's reason, for example `Permission denied (os error 13)`.
+- `{advice}` is ``To save, run with `--config <writable file>` or set `$SIPNAB_CONFIG`, or fix the permissions``.
+- sipnab writes nothing and leaves no temporary file. It does not replace a file the user may not write, even when the folder allows it.
+- A named filter is still kept for this session only; the dialog shows the `[filters]` entry to add to a file.
+
+**What to do:** Start sipnab with `--config` naming a file you may write, or set `$SIPNAB_CONFIG` to one, or fix the permissions of the file or folder in the message. Then save again.
+
+**Exit code:** None. sipnab shows the error on the terminal UI status line or in the filter dialog, and the run continues.
+
 ### `create {}: {e}`
 
-sipnab could not create the folder that holds the configuration file. This happened while saving from the terminal UI, either the column layout (F10 selector) or a name for an address.
+sipnab could not create the folder that holds the configuration file, for a reason other than permission. This happened while saving from the terminal UI: the column layout (F10 selector), a name for an address, or a named filter (`F2` in the filter dialog). A permission failure prints `cannot {action} {path}: {source}. {advice}` instead (see that entry).
 
 - `{}` is the folder path.
-- `{e}` is the operating system's reason.
+- `{e}` is the operating system's reason, for example that a part of the path is a file.
 - sipnab writes nothing.
 
-**What to do:** Create the folder yourself, or give the user running sipnab permission to create it, then save again.
+**What to do:** Fix the path the reason names, then save again.
 
 **Exit code:** None. sipnab shows the error on the terminal UI status line, and the run continues.
 
@@ -1095,6 +1110,30 @@ You saved the column layout from the terminal UI (the `s` action in the F10 colu
 **What to do:** Correct the pattern so it is a valid regular expression, or remove the key. Characters such as `(`, `[` and `+` have a special meaning and need a `\` before them to match literally.
 
 **Exit code:** 1.
+
+### `[filters] already defines '{name}'; choose another name, or edit that entry in the config file`
+
+You pressed `F2` in the terminal UI filter dialog and typed a name. The run's named filters, or the `[filters]` table of the configuration file, already hold `{name}`.
+
+- A save never replaces an entry. The file's own `[filters]` can hold a name the run lacks when someone edited the file after sipnab started.
+- sipnab writes nothing, and the named filters of the run stay as they were.
+- The dialog shows the line, after `Save failed: invalid config value: ` when the file holds the name.
+
+**What to do:** Type another name, or edit that entry in the configuration file. See [Save the dialog's filter under a name](@/docs/tui.md#save-the-dialog-s-filter-under-a-name).
+
+**Exit code:** None. sipnab shows the error in the filter dialog, and the run continues.
+
+### `[filters] is not a table`
+
+You pressed `F2` in the terminal UI filter dialog to save a named filter. sipnab could not add the entry to the configuration file.
+
+- The reason: the file defines `filters` as a plain value instead of a `[filters]` table (section).
+- sipnab writes nothing.
+- The dialog shows `Save failed: invalid config value: [filters] is not a table`.
+
+**What to do:** Edit the configuration file so `filters` is a `[filters]` section, then save again.
+
+**Exit code:** None. sipnab shows the error in the filter dialog, and the run continues.
 
 ### `ignoring invalid [display] from_to = {s:?}`
 
@@ -1974,9 +2013,9 @@ The media type given to `--vcon-forward-content-type`, or to `[vcon_forward] con
 
 ### `write {}: {e}`
 
-sipnab could not write the configuration file while saving from the terminal UI. `{}` is the file path and `{e}` is the operating system's reason. sipnab writes to a temporary file in the same folder and then renames it, so the existing file stays unchanged.
+sipnab could not write the configuration file while saving from the terminal UI, for a reason other than permission, such as a full disk. `{}` is the file path and `{e}` is the operating system's reason. sipnab writes to a temporary file in the same folder and then renames it, so the existing file stays unchanged and sipnab leaves no temporary file. A permission failure prints `cannot {action} {path}: {source}. {advice}` instead (see that entry).
 
-**What to do:** Give the user running sipnab permission to write in the folder that holds the file. Check that the disk has free space. Then save again.
+**What to do:** Check that the disk has free space, then save again.
 
 **Exit code:** None. sipnab shows the error on the terminal UI status line, and the run continues.
 

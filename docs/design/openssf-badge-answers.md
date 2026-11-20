@@ -9,7 +9,7 @@ The same project holds **OpenSSF Baseline level 3**, the top level, achieved
 bestpractices.dev; the evidence they cite is
 [`docs/threat-model.md`](https://github.com/NormB/sipnab/blob/main/docs/threat-model.md) (SA-03.01),
 the [Dependencies section of [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md)](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#dependencies)
-(DO-06.01), and the required `license/cla` check on `main` (LE-01.01).
+(DO-06.01), and the required `DCO` sign-off check on `main` (LE-01.01).
 
 The badge is a self-certification questionnaire at
 [bestpractices.dev](https://www.bestpractices.dev/). Submission requires signing

@@ -126,6 +126,13 @@ pub struct ValidateFilterResponse {
     pub valid: bool,
     /// The parser's own message when it did not. `None` when it did.
     pub error: Option<String>,
+    /// Where the parser stopped: the 0-based character column in `expr` with
+    /// its leading and trailing whitespace removed, the number `error` prints
+    /// after `at position`. `None` when the expression compiled, when the
+    /// parser names no place (an empty expression, an undefined `@name`, a
+    /// depth or size limit), and when the error is inside the expansion of an
+    /// alias or an `@name`. The `position` `GET /v1/filters/validate` reports.
+    pub position: Option<usize>,
     /// Dialogs the expression selects. `None` when the expression did not
     /// compile — a zero there would read as "parsed, matched nothing".
     pub total_matched: Option<usize>,
@@ -260,6 +267,42 @@ impl SipnabMcp {
         ]))
     }
 
+    /// The `[filters]` table this run started with: each entry's name and
+    /// its definition as the config file writes it.
+    ///
+    /// The names are what every filtering tool's `named` argument takes and
+    /// what `@name` refers to inside a `filter`, so an agent can learn the
+    /// operator's vocabulary instead of guessing it. The answer is the one
+    /// `GET /v1/filters` serializes. It reads no capture store, so it sits
+    /// before `validate_filter` here: the completeness test's source scan
+    /// reads each tool from its attribute to the next tool's, and the last
+    /// tool in a file would take in the store-reading helper below.
+    ///
+    /// # Errors
+    ///
+    /// Nothing this tool raises. A `Result` is kept because the response
+    /// serializer returns one.
+    #[tool(
+        name = "list_named_filters",
+        description = "Lists the operator's named filters (the [filters] \
+                       table): each name and its definition as written. Pass \
+                       a name as `named` to a tool that takes `filter`, or \
+                       write `@name` inside a filter.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<
+            crate::output::query::named_filters::NamedFilterList,
+        >(),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn list_named_filters(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        // No untrusted-data note: the definitions are the operator's own
+        // config, and nothing here was read off the wire.
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            crate::output::query::named_filters::named_filter_list(
+                &crate::sip::named_filters::installed(),
+            ),
+        )?]))
+    }
+
     /// Compile a Filter DSL expression and count what it selects, returning
     /// neither rows nor a tool failure.
     ///
@@ -296,13 +339,19 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<ValidateFilterParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        // The same compiler every other tool's `filter` goes through, alias
-        // expansion included. A second parser here would validate an expression
-        // that `list_dialogs` then rejects, which is worse than no tool.
-        let compiled = self.compile_filter(Some(&params.expr));
+        // The same compile step every other tool's `filter` goes through
+        // (`compile_filter` is this step and the same refusal text), alias
+        // and `@name` expansion included. A second parser here would validate
+        // an expression that `list_dialogs` then rejects, which is worse than
+        // no tool. Called directly so the parser's position is kept.
+        let compiled = crate::sip::filter_request::check_expression(
+            &params.expr,
+            &crate::sip::named_filters::installed(),
+            &self.alias_thresholds,
+        );
 
         let payload = match compiled {
-            Err(e) => {
+            Err(rejection) => {
                 // Counted with no expression, which is the denominator alone,
                 // so even a parse failure names the capture it was read against.
                 let count = self.count_matching_dialogs(None);
@@ -310,19 +359,24 @@ impl SipnabMcp {
                     schema_version: 1,
                     expr: params.expr.clone(),
                     valid: false,
-                    error: Some(e.message.to_string()),
+                    error: Some(crate::mcp::server::invalid_filter_message(
+                        &params.expr,
+                        &rejection.message,
+                    )),
+                    position: rejection.position,
                     total_matched: None,
                     total_dialogs: count.total,
                     capture_identity: count.capture_identity,
                 }
             }
             Ok(expr) => {
-                let count = self.count_matching_dialogs(expr.as_ref());
+                let count = self.count_matching_dialogs(Some(&expr));
                 ValidateFilterResponse {
                     schema_version: 1,
                     expr: params.expr.clone(),
                     valid: true,
                     error: None,
+                    position: None,
                     total_matched: Some(count.matched),
                     total_dialogs: count.total,
                     capture_identity: count.capture_identity,
@@ -908,6 +962,545 @@ mod tests {
             "an alias `list_dialogs` accepts must not be reported as a syntax \
              error here, or the tool sends agents away from working filters: {v}"
         );
+        Ok(())
+    }
+
+    // ── validate_filter: position ───────────────────────────────────
+
+    /// The `validate_filter` payload for `expr` on the three-leg chain.
+    async fn validated(expr: &str) -> Result<serde_json::Value, TestError> {
+        json_of(
+            &three_leg_chain()?
+                .validate_filter(Parameters(ValidateFilterParams {
+                    expr: expr.to_string(),
+                }))
+                .await
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )
+    }
+
+    #[tokio::test]
+    async fn validate_filter_reports_the_parsers_position() -> Result<(), TestError> {
+        let v = validated("state == InCall )").await?;
+        assert_eq!(v["valid"], false, "{v}");
+        assert_eq!(v["position"], 16, "the ')' column: {v}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_filter_position_is_null_when_valid() -> Result<(), TestError> {
+        let v = validated("method == INVITE").await?;
+        assert_eq!(v["valid"], true, "{v}");
+        assert!(v["position"].is_null(), "no place: {v}");
+        assert!(
+            v.get("position").is_some(),
+            "present as null, not absent: {v}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_filter_position_counts_characters() -> Result<(), TestError> {
+        let v = validated("from.user == 'é' )").await?;
+        assert_eq!(v["position"], 17, "{v}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_filter_position_ignores_leading_whitespace() -> Result<(), TestError> {
+        let v = validated("   state == InCall )").await?;
+        assert_eq!(v["position"], 16, "{v}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_filter_position_is_null_for_an_undefined_name() -> Result<(), TestError> {
+        let v = validated("@nope").await?;
+        assert_eq!(v["valid"], false, "{v}");
+        assert!(v["position"].is_null(), "{v}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_filter_position_is_null_for_an_empty_expression() -> Result<(), TestError> {
+        let v = validated("").await?;
+        assert_eq!(v["valid"], false, "{v}");
+        assert!(v["position"].is_null(), "{v}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_filter_position_is_null_inside_an_expansion() -> Result<(), TestError> {
+        let v = validated("@problems )").await?;
+        assert_eq!(v["valid"], false, "{v}");
+        assert!(v["position"].is_null(), "a column in the expansion: {v}");
+        Ok(())
+    }
+
+    /// The error text keeps its shape: `invalid filter '<expr>': ` and the
+    /// parser's message, as before the position was added.
+    #[tokio::test]
+    async fn validate_filter_error_text_is_unchanged() -> Result<(), TestError> {
+        let expr = "state == InCall )";
+        let v = validated(expr).await?;
+        let parser = match crate::sip::dsl::parse_filter(expr, &Default::default()) {
+            Ok(_) => return Err("the parser accepted it".into()),
+            Err(e) => e.to_string(),
+        };
+        assert_eq!(
+            v["error"],
+            format!("invalid filter '{expr}': {parser}"),
+            "the established text"
+        );
+        Ok(())
+    }
+
+    /// The MCP position and the REST validation's position are one number,
+    /// for every expression.
+    #[tokio::test]
+    async fn validate_filter_position_matches_the_rest_validation() -> Result<(), TestError> {
+        for expr in [
+            "state == InCall )",
+            "method ==",
+            ") x",
+            "from.user == 'é' )",
+            "@nope",
+            "",
+            "problems",
+            "(method == INVITE",
+        ] {
+            let v = validated(expr).await?;
+            let rest = crate::output::query::named_filters::filter_validation(
+                expr,
+                &crate::sip::named_filters::installed(),
+                &Default::default(),
+            );
+            assert_eq!(
+                v["position"],
+                serde_json::to_value(rest.position)?,
+                "'{expr}': {v}"
+            );
+            assert_eq!(v["valid"], rest.valid, "'{expr}'");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_filter_position_is_zero_at_the_start() -> Result<(), TestError> {
+        let v = validated(") state == InCall").await?;
+        assert_eq!(v["position"], 0, "{v}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_filter_still_counts_when_it_reports_a_position() -> Result<(), TestError> {
+        let v = validated("state == InCall )").await?;
+        assert_eq!(v["total_dialogs"], 3, "the denominator stays: {v}");
+        assert!(v["total_matched"].is_null(), "{v}");
+        Ok(())
+    }
+
+    #[test]
+    fn validate_filter_output_schema_declares_position() -> Result<(), TestError> {
+        let router = SipnabMcp::inspect_router();
+        let tool = router.get("validate_filter").ok_or("registered")?;
+        let schema = serde_json::to_value(tool.output_schema.as_ref().ok_or("an output schema")?)?;
+        assert!(
+            schema["properties"]["position"].is_object(),
+            "position is declared: {schema}"
+        );
+        Ok(())
+    }
+
+    // ── list_named_filters ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_named_filters_is_empty_with_no_table() -> Result<(), TestError> {
+        let v = json_of(
+            &three_leg_chain()?
+                .list_named_filters()
+                .await
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
+        assert_eq!(
+            v,
+            serde_json::json!({"schema_version": 1, "filters": []}),
+            "no entries"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_named_filters_answers_the_rest_list() -> Result<(), TestError> {
+        let v = json_of(
+            &three_leg_chain()?
+                .list_named_filters()
+                .await
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
+        let rest = crate::output::query::named_filters::named_filter_list(
+            &crate::sip::named_filters::installed(),
+        );
+        assert_eq!(
+            v,
+            serde_json::to_value(rest)?,
+            "one answer on both surfaces"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn list_named_filters_is_registered_and_annotated_read_only() -> Result<(), TestError> {
+        let router = SipnabMcp::inspect_router();
+        let tool = router
+            .get("list_named_filters")
+            .ok_or("list_named_filters must be registered")?;
+        let annotations = tool.annotations.as_ref().ok_or("annotated")?;
+        assert_eq!(annotations.read_only_hint, Some(true), "read-only");
+        assert_eq!(annotations.open_world_hint, Some(false), "closed world");
+        assert!(tool.output_schema.is_some(), "an output schema");
+        Ok(())
+    }
+
+    // ── `named` on every tool that takes a `filter` ─────────────────
+
+    /// The tools that take a `filter`, with the arguments each also needs.
+    fn filter_tools() -> Vec<(&'static str, serde_json::Value)> {
+        let mut tools = vec![
+            ("list_dialogs", serde_json::json!({})),
+            (
+                "aggregate_dialogs",
+                serde_json::json!({"group_by": "state"}),
+            ),
+            ("find_problems", serde_json::json!({})),
+            (
+                "search_by_time",
+                serde_json::json!({"start": "2024-06-15T00:00:00Z"}),
+            ),
+            ("top_talkers", serde_json::json!({"by": "ip"})),
+            ("group_dialogs", serde_json::json!({"by": "state"})),
+        ];
+        if cfg!(feature = "vcon") {
+            tools.push(("export_vcon", serde_json::json!({})));
+        }
+        tools
+    }
+
+    /// Call `tool` with `base` plus `extra`: the payload, or the error.
+    async fn call_tool(
+        srv: &SipnabMcp,
+        tool: &str,
+        base: &serde_json::Value,
+        extra: serde_json::Value,
+    ) -> Result<Result<serde_json::Value, rmcp::ErrorData>, TestError> {
+        let mut args = base.clone();
+        let (Some(args_map), Some(extra_map)) = (args.as_object_mut(), extra.as_object()) else {
+            return Err("arguments are objects".into());
+        };
+        for (k, v) in extra_map {
+            args_map.insert(k.clone(), v.clone());
+        }
+        let result = match tool {
+            "list_dialogs" => {
+                srv.list_dialogs(Parameters(serde_json::from_value(args)?))
+                    .await
+            }
+            "aggregate_dialogs" => {
+                srv.aggregate_dialogs(Parameters(serde_json::from_value(args)?))
+                    .await
+            }
+            "find_problems" => {
+                srv.find_problems(Parameters(serde_json::from_value(args)?))
+                    .await
+            }
+            "search_by_time" => {
+                srv.search_by_time(Parameters(serde_json::from_value(args)?))
+                    .await
+            }
+            "top_talkers" => {
+                srv.top_talkers(Parameters(serde_json::from_value(args)?))
+                    .await
+            }
+            "group_dialogs" => {
+                srv.group_dialogs(Parameters(serde_json::from_value(args)?))
+                    .await
+            }
+            #[cfg(feature = "vcon")]
+            "export_vcon" => {
+                srv.export_vcon(Parameters(serde_json::from_value(args)?))
+                    .await
+            }
+            other => return Err(format!("no tool {other} in this table").into()),
+        };
+        Ok(match result {
+            Ok(r) => Ok(json_of(&r)?),
+            Err(e) => Err(e),
+        })
+    }
+
+    /// The refusal `tool` gives for `extra`, which must be one.
+    async fn refusal(
+        tool: &str,
+        base: &serde_json::Value,
+        extra: serde_json::Value,
+    ) -> Result<rmcp::ErrorData, TestError> {
+        match call_tool(&three_leg_chain()?, tool, base, extra).await? {
+            Ok(v) => Err(format!("{tool} answered: {v}").into()),
+            Err(e) => Ok(e),
+        }
+    }
+
+    #[tokio::test]
+    async fn named_alias_answers_what_filter_alias_answers_on_every_tool() -> Result<(), TestError>
+    {
+        let srv = three_leg_chain()?;
+        for (tool, base) in filter_tools() {
+            for alias in ["problems", "one-way"] {
+                let by_name =
+                    call_tool(&srv, tool, &base, serde_json::json!({"named": alias})).await?;
+                let by_filter =
+                    call_tool(&srv, tool, &base, serde_json::json!({"filter": alias})).await?;
+                assert_eq!(
+                    by_name.map_err(|e| e.message.to_string()),
+                    by_filter.map_err(|e| e.message.to_string()),
+                    "{tool}: named={alias} is filter={alias}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn named_narrows_the_dialog_list() -> Result<(), TestError> {
+        let srv = three_leg_chain()?;
+        let base = serde_json::json!({});
+        let all = call_tool(&srv, "list_dialogs", &base, serde_json::json!({}))
+            .await?
+            .map_err(|e| e.message.to_string())?;
+        let narrowed = call_tool(
+            &srv,
+            "list_dialogs",
+            &base,
+            serde_json::json!({"named": "one-way"}),
+        )
+        .await?
+        .map_err(|e| e.message.to_string())?;
+        let by_filter = call_tool(
+            &srv,
+            "list_dialogs",
+            &base,
+            serde_json::json!({"filter": "one_way == true"}),
+        )
+        .await?
+        .map_err(|e| e.message.to_string())?;
+        assert_eq!(
+            narrowed["total_matched"], by_filter["total_matched"],
+            "{narrowed}"
+        );
+        assert_eq!(all["total_matched"], 3, "{all}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn filter_and_named_together_are_refused_on_every_tool() -> Result<(), TestError> {
+        for (tool, base) in filter_tools() {
+            let e = refusal(
+                tool,
+                &base,
+                serde_json::json!({"filter": "problems", "named": "one-way"}),
+            )
+            .await?;
+            assert_eq!(e.code.0, -32602, "{tool}: invalid_params");
+            let data = e.data.ok_or("data")?;
+            assert_eq!(data["reason"], "conflicting_params", "{tool}: {data}");
+            assert_eq!(
+                e.message,
+                crate::sip::filter_request::CONFLICT_MESSAGE,
+                "{tool}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_unknown_name_is_refused_on_every_tool() -> Result<(), TestError> {
+        let want = crate::sip::named_filters::unknown_reference_message(
+            "support",
+            &crate::sip::named_filters::installed(),
+        );
+        for (tool, base) in filter_tools() {
+            let e = refusal(tool, &base, serde_json::json!({"named": "support"})).await?;
+            assert_eq!(e.message, want, "{tool}: the reason");
+            let data = e.data.ok_or("data")?;
+            assert_eq!(data["reason"], "invalid_choice", "{tool}: {data}");
+            assert_eq!(data["param"], "named", "{tool}: {data}");
+            let values = data["valid_values"].as_array().ok_or("valid_values")?;
+            assert!(
+                values.iter().any(|v| v == "problems"),
+                "{tool}: the aliases are offered: {data}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_empty_name_is_refused_on_every_tool() -> Result<(), TestError> {
+        for (tool, base) in filter_tools() {
+            let e = refusal(tool, &base, serde_json::json!({"named": ""})).await?;
+            assert_eq!(
+                e.message,
+                crate::sip::filter_request::EMPTY_NAME_MESSAGE,
+                "{tool}"
+            );
+            let data = e.data.ok_or("data")?;
+            assert_eq!(data["reason"], "invalid_value", "{tool}: {data}");
+            assert_eq!(data["param"], "named", "{tool}: {data}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_invalid_filter_keeps_its_refusal_on_every_tool() -> Result<(), TestError> {
+        let expr = "state == InCall )";
+        let parser = match crate::sip::dsl::parse_filter(expr, &Default::default()) {
+            Ok(_) => return Err("the parser accepted it".into()),
+            Err(e) => e.to_string(),
+        };
+        for (tool, base) in filter_tools() {
+            let e = refusal(tool, &base, serde_json::json!({"filter": expr})).await?;
+            assert_eq!(
+                e.message,
+                format!("invalid filter '{expr}': {parser}"),
+                "{tool}: unchanged"
+            );
+            let data = e.data.ok_or("data")?;
+            assert_eq!(data["reason"], "invalid_filter", "{tool}: {data}");
+            assert_eq!(data["param"], "filter", "{tool}: {data}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_leading_at_sign_in_named_is_accepted_by_the_tools() -> Result<(), TestError> {
+        let srv = three_leg_chain()?;
+        let base = serde_json::json!({});
+        let with_at = call_tool(
+            &srv,
+            "list_dialogs",
+            &base,
+            serde_json::json!({"named": "@one-way"}),
+        )
+        .await?
+        .map_err(|e| e.message.to_string())?;
+        let bare = call_tool(
+            &srv,
+            "list_dialogs",
+            &base,
+            serde_json::json!({"named": "one-way"}),
+        )
+        .await?
+        .map_err(|e| e.message.to_string())?;
+        assert_eq!(with_at, bare, "the @ is optional");
+        assert_eq!(
+            with_at["total_matched"], 0,
+            "narrowed, not all three: {with_at}"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn export_vcon_refuses_call_id_with_named() -> Result<(), TestError> {
+        let e = refusal(
+            "export_vcon",
+            &serde_json::json!({}),
+            serde_json::json!({"call_id": "a@test", "named": "problems"}),
+        )
+        .await?;
+        let data = e.data.ok_or("data")?;
+        assert_eq!(data["reason"], "conflicting_params", "{data}");
+        assert!(e.message.contains("`named`"), "{}", e.message);
+        Ok(())
+    }
+
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn export_vcon_selects_by_name() -> Result<(), TestError> {
+        let srv = three_leg_chain()?;
+        let base = serde_json::json!({});
+        let by_name = call_tool(
+            &srv,
+            "export_vcon",
+            &base,
+            serde_json::json!({"named": "@problems"}),
+        )
+        .await?
+        .map_err(|e| e.message.to_string());
+        let by_filter = call_tool(
+            &srv,
+            "export_vcon",
+            &base,
+            serde_json::json!({"filter": "problems"}),
+        )
+        .await?
+        .map_err(|e| e.message.to_string());
+        assert_eq!(by_name, by_filter, "named selects as filter does");
+        Ok(())
+    }
+
+    #[test]
+    fn every_filter_tool_advertises_named() -> Result<(), TestError> {
+        use crate::mcp::server::{
+            AggregateDialogsParams, FindProblemsParams, ListDialogsParams, SearchByTimeParams,
+        };
+        use crate::mcp::tools::aggregation::GroupDialogsParams;
+        use crate::mcp::tools::endpoints::TopTalkersParams;
+        let schemas = vec![
+            (
+                "list_dialogs",
+                rmcp::schemars::schema_for!(ListDialogsParams),
+            ),
+            (
+                "aggregate_dialogs",
+                rmcp::schemars::schema_for!(AggregateDialogsParams),
+            ),
+            (
+                "find_problems",
+                rmcp::schemars::schema_for!(FindProblemsParams),
+            ),
+            (
+                "search_by_time",
+                rmcp::schemars::schema_for!(SearchByTimeParams),
+            ),
+            ("top_talkers", rmcp::schemars::schema_for!(TopTalkersParams)),
+            (
+                "group_dialogs",
+                rmcp::schemars::schema_for!(GroupDialogsParams),
+            ),
+        ];
+        // Shadowed rather than pushed, so no binding is mutable in a build
+        // without `vcon`.
+        #[cfg(feature = "vcon")]
+        let schemas = {
+            let mut with_vcon = schemas;
+            with_vcon.push((
+                "export_vcon",
+                rmcp::schemars::schema_for!(crate::mcp::tools::vcon::ExportVconParams),
+            ));
+            with_vcon
+        };
+        assert_eq!(schemas.len(), filter_tools().len(), "one schema per tool");
+        for (tool, schema) in schemas {
+            let schema = serde_json::to_value(&schema)?;
+            let named = &schema["properties"]["named"];
+            assert!(named.is_object(), "{tool} declares `named`: {schema}");
+            assert!(
+                !schema["required"]
+                    .as_array()
+                    .is_some_and(|r| r.iter().any(|n| n == "named")),
+                "{tool}: `named` is optional"
+            );
+        }
         Ok(())
     }
 }

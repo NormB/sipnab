@@ -2,27 +2,27 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Live captur┌ Filter ──────────────────────────────────────────────┐
- Capture fil│  From user:       [                               ]  │
- View filter│  To user:         [                               ]  │
-  # ▲    Met│  Source IP:       [                               ]  │    Duration
-            │  Destination IP:  [                               ]  │
-  No SIP dia│  Text in message: [                               ]  │
-            │  Header:          [Name: text                     ]  │
-  Waiting fo│  After:           [2026-07-07T08:00:00Z           ]  │
-  Check the │  Before:          [2026-07-07T09:00:00Z           ]  │
-  F1 shows h│  Named filter:    [none in [filters]              ]  │
-            │  ──────────────────────────────────────────────────  │
-            │  All       [*]                                       │
-            │  REGISTER  [*]             OPTIONS   [*]             │
-            │  INVITE    [*]             PUBLISH   [*]             │
-            │  SUBSCRIBE [*]             MESSAGE   [*]             │
-            │  NOTIFY    [*]             REFER     [*]             │
-            │  INFO      [*]             UPDATE    [*]             │
-            │                                                      │
-            │     [ Filter ]                 [ Cancel ]            │
-            │                                                      │
-            │  Tab move · Enter apply · Esc cancel                 │
-            │                                                      │
-            └──────────────────────────────────────────────────────┘
-Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear
+ L┌ Filter ──────────────────────────────────────────────────────────────────┐
+ C│  From user:       [                                                   ]  │
+ V│  To user:         [                                                   ]  │
+  │  Source IP:       [                                                   ]  │on
+  │  Destination IP:  [                                                   ]  │
+  │  Text in message: [                                                   ]  │
+  │  Header:          [Name: text                                         ]  │
+  │  After:           [2026-07-07T08:00:00Z                               ]  │
+  │  Before:          [2026-07-07T09:00:00Z                               ]  │
+  │  Named filter:    [none in [filters]                                  ]  │
+  │  Expression:      [any --filter expression                            ]  │
+  │  ──────────────────────────────────────────────────────────────────────  │
+  │  All       [*]                                                           │
+  │  REGISTER  [*]                       OPTIONS   [*]                       │
+  │  INVITE    [*]                       PUBLISH   [*]                       │
+  │  SUBSCRIBE [*]                       MESSAGE   [*]                       │
+  │  NOTIFY    [*]                       REFER     [*]                       │
+  │  INFO      [*]                       UPDATE    [*]                       │
+  │     [ Filter ]                           [ Cancel ]                      │
+  │                                                                          │
+  │  Tab move · Enter apply · Esc cancel · F1 fields · F2 save               │
+  │                                                                          │
+  └──────────────────────────────────────────────────────────────────────────┘
+Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear  F1 Fields  F2 Save as

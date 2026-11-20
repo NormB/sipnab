@@ -35,7 +35,7 @@ CALL LIST:
   F3               Search (same as /)
   F5, Ctrl+L       Clear calls (asks first during a live capture)
   r, F6            Show raw SIP message
-  F7               Filter dialog
+  F7               Filter dialog (fields, methods, typed expression)
   F8               Settings
   t                Cycle timestamps (absolute / delta from previous / delta from first / scaled)
   u                Cycle From/To (default/host:port/user/user@host:port)
@@ -58,6 +58,7 @@ CALL LIST:
   D                Quality dashboard (live MOS/jitter/loss)
   T                Call timeline (selected dialog)
   F9               Clear the view filter and search
+  Y                Copy the view filter as a sipnab --filter command line
   F                Show the F7 view filter as a summary or in full \u{2014} global
   F10              Choose columns
   Tab              Switch to RTP streams
@@ -230,6 +231,14 @@ TERMS:
   HEP      Homer Encapsulation Protocol: SIP mirrored by a proxy
   TFPS     Optional peer that bans sources (this view only reads it)
 
+FILTER DIALOG (F7):
+  Tab, Shift+Tab   Next / previous field
+  \u{2191}/\u{2193}              In Expression: earlier applied expressions (newest 50), then the next field
+  F1               Show or hide the Filter DSL field names and operators
+  Enter            Apply
+  Esc              Hide the field list, else cancel
+  F9               Clear every field and the filter
+
 ARCHIVE PASSWORD (a load waits on an encrypted archive member):
   Enter            Try the password (three attempts per archive)
   Esc              Skip this archive's locked members
@@ -239,6 +248,7 @@ ARCHIVE PASSWORD (a load waits on an encrypted archive member):
 COPY & PASTE:
   y                Copy displayed message to clipboard (raw message, call flow)
   E                Export Mermaid diagram to clipboard (call flow view)
+  Y                Copy the view filter as a command line (call list)
   F12              Toggle mouse capture for native drag-to-select \u{2014} global
 
 VCON EXPORT (one call, for handing to somebody else):

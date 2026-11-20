@@ -1013,6 +1013,11 @@ fn every_documented_response_matches_what_the_server_sends() -> Result<(), TestE
             // one call to itself so the route answers 200 with its schema
             // rather than the 400 a missing `a`/`b` earns.
             format!("{url}?a={id}&b={id}", id = encode(&call_id))
+        } else if path == "/v1/filters/validate" {
+            // `/v1/filters/validate` needs an expression; one that does not
+            // compile, so the walk checks the shape with `error` and
+            // `position` filled rather than null.
+            format!("{url}?expr={}", encode("state == InCall )"))
         } else {
             url
         };

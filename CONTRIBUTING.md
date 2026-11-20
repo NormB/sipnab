@@ -22,48 +22,92 @@ The threading topology and lock discipline live in
 By participating in this project you agree to abide by the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
+[GOVERNANCE.md](GOVERNANCE.md) says who holds which role, how someone becomes
+a committer and how the project makes decisions.
+
+## Your first change
+
+- The
+  [`good first issue` list](https://github.com/NormB/sipnab/labels/good%20first%20issue)
+  holds issues a maintainer has marked as small and self-contained.
+- A starter issue says what to change, where in the code, how to test it and
+  what a reviewer checks. The
+  [starter task form](.github/ISSUE_TEMPLATE/starter_task.yml)
+  (`.github/ISSUE_TEMPLATE/starter_task.yml`) asks for those four things.
+- Comment on the issue before you start, so two people do not make the same
+  change.
+- Then follow [Pull request process](#pull-request-process).
+
 ## Contributor license agreement
 
-Sign the sipnab [Contributor License Agreement](CLA.md) before your first pull
-request merges.
+The project retired the [Contributor License Agreement](CLA.md). It no longer
+collects signatures, and no check asks for one. Sign off your commits instead,
+as [Signing off commits](#signing-off-commits) describes.
+[MAINTAINERS.md](MAINTAINERS.md#the-contributor-agreement) says what changed.
 
-- It is a one-time step covering all of your contributions.
-- You keep full ownership of your work.
+## Signing off commits
 
-The text exists in three copies:
+Every commit of a pull request carries a
+[Developer Certificate of Origin](https://developercertificate.org/) (DCO)
+sign-off, and branch protection on `main` requires the `DCO` check that reads
+it.
 
-- `CLA.md` holds the text.
-- <https://sipnab.com/cla/> republishes it.
-- [CLA Assistant](https://cla-assistant.io/NormB/sipnab) shows the same words
-  to signers.
-- A gate keeps the first two copies identical.
-  [MAINTAINERS.md](MAINTAINERS.md#the-contributor-agreement) records who
-  re-checks the third.
+**What a sign-off is.** It is one line at the end of the commit message, with
+your name and the author email of the commit, which must be your GitHub
+noreply address:
 
-Open your pull request as normal. If anyone who committed to it has not signed,
-the `CLAassistant` bot comments within a minute or so. You have two ways to
-answer it:
+```text
+Signed-off-by: Your Name <your GitHub noreply address>
+```
 
-- follow its link and authorize CLA Assistant with your GitHub account,
-- or post this exact sentence as a pull request comment.
+By adding it you state that you have the right to submit the change under the
+project's license, as the DCO text says. The line stays in the history of
+`main` for anyone to read, so it names GitHub's alias for you, never a
+personal mailbox. The `DCO` check refuses a sign-off that names any other
+address.
 
-> I have read the CLA Document and I hereby sign the CLA
+**Before you start.**
 
-Post it verbatim.
+- On GitHub, open Settings, then Emails. Turn on "Keep my email addresses
+  private" and copy the noreply address the page shows: `ID+login` followed
+  by `@users.noreply.github.com`.
+- In your clone, run `git config user.email` with that address, so git
+  writes it as the author email and into the sign-off.
 
-- The bot matches the whole sentence.
-- So a reworded version reads as an ordinary comment and signs nothing.
-- The bot then reports a `license/cla` status on the pull request.
-- It turns the status green once everyone who committed to that branch has
-  signed.
+**How to add it.**
 
-**A merge waits for it.**
+- `git commit -s` adds the line for you, from `user.name` and `user.email`.
+- To sign off every commit already on your branch, run
+  `git rebase --signoff origin/main`, then push again. If those commits carry
+  another author email, also run
+  `git rebase --exec 'git commit --amend --no-edit --reset-author' origin/main`
+  first, after setting `user.email`.
+- The `commit-msg` hook warns, without refusing the commit, when your author
+  email is not a noreply address or the message has no sign-off that names it.
 
-- Branch protection on `main` requires `license/cla` alongside `CI success`.
-- So a pull request cannot merge until everyone who committed to it has signed.
-- Bot accounts such as Dependabot cannot sign an agreement. They are on the
-  allowlist in the CLA Assistant settings. So their pull requests pass the
-  check without one.
+**Verify.** `git log -1` shows the noreply address on the `Author:` line, and
+the message ends with the `Signed-off-by:` line naming that address. On the
+pull request, the `DCO` check passes.
+
+**What checks it.** The `DCO` job in `.github/workflows/pr-text.yml` runs
+`scripts/check-dco.py` on every commit of a pull request, merge commits
+included. The line must name a name and the author email of the commit, and
+that email must be a GitHub noreply address. Two kinds of commits need no
+sign-off:
+
+- a commit by a GitHub bot account, such as Dependabot, when GitHub has
+  verified its signature.
+- a commit that the repository owner authored and committed, when GitHub has
+  verified its signature. The owner holds the rights to that work already.
+
+**Troubleshoot.** Each failing commit has one line in the `DCO` check's log:
+
+- `no Signed-off-by line`: sign the commit off as above.
+- `the author email is not a GitHub noreply address`: set `user.email`, reset
+  the author of the commit and sign it off again, as above.
+- `no Signed-off-by line names the author email`: the line names another
+  address, has no name, or has text after the address. Sign off again with
+  `git commit --amend -s` or `git rebase --signoff origin/main`.
 
 ## Prerequisites
 
@@ -402,7 +446,7 @@ gates when GitHub already proved the tagged commit:
 - every tagged commit is on `main`, by GitHub's compare API;
 - every check that `main` requires concluded `success` on that commit, or on
   the head of the merged pull request it merges, when GitHub reports the same
-  tree for both. The PR-text check and `license/cla` run only on a pull
+  tree for both. The PR-text checks, `DCO` among them, run only on a pull
   request's head.
 
 The hook then prints one line naming the commit, the number of required checks
@@ -1291,19 +1335,19 @@ maintainer writes.
 - **A changelog entry.** A user-visible change adds an entry under
   `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md), in
   [the format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
-- **The contributor agreement.** Everyone who committed to the branch has
-  signed the [CLA](#contributor-license-agreement).
+- **The sign-off.** Every commit carries a DCO sign-off, as
+  [Signing off commits](#signing-off-commits) describes.
 
 ### What a change needs before it can merge
 
 A pull request is acceptable when all of these hold:
 
 - **The required checks are green.**
-  - Branch protection on `main` requires `CI success` and `license/cla`.
+  - Branch protection on `main` requires `CI success` and `DCO`.
   - It requires the branch to be up to date with `main` before it merges.
   - `CI success` passes only when every CI job it depends on passes.
-  - `license/cla` passes when everyone who committed to the branch has signed
-    the CLA.
+  - `DCO` passes when every commit of the branch carries a sign-off, or needs
+    none.
 - **Every commit carries a signature.**
   - Branch protection on `main` requires signed commits. So GitHub refuses a
     merge that contains an unsigned or unverified one.

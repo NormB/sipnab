@@ -218,7 +218,7 @@ sipnab's analysis as tools.
 sipnab --mcp -N -I sip-problem-call.pcap --mcp-tools core
 ```
 
-The server offers 79 tools. Every tool costs the agent context before it asks
+The server offers 80 tools. Every tool costs the agent context before it asks
 anything.
 
 - `--mcp-tools core` loads a small set that still answers a whole call.
@@ -394,7 +394,7 @@ Next:
   - A capture started as root drops to `--user` after opening its devices.
   - It can confine itself with a Landlock sandbox (`--sandbox`) and a seccomp
     allowlist (`--seccomp`).
-- **MCP server.** 79 tools over stdio or HTTP.
+- **MCP server.** 80 tools over stdio or HTTP.
   - 66 only read.
   - The 13 that write each say what they change.
   - File writes stay inside `--mcp-file-root`.
@@ -575,16 +575,17 @@ We welcome contributions.
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) covers the build and test workflow, the
   git hooks, and the pull request checklist.
-- Before we can merge a pull request, you sign the
-  [Contributor License Agreement](CONTRIBUTING.md#contributor-license-agreement)
-  once.
-- A pull request cannot merge until the `license/cla` check passes.
+- Sign off each commit with `git commit -s`, under the
+  [Developer Certificate of Origin](CONTRIBUTING.md#signing-off-commits).
+- A pull request cannot merge until the `DCO` check passes.
 - If your change adds a dependency, read
   [Dependencies](CONTRIBUTING.md#dependencies) first.
 - This project follows the
   [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
 - [ROADMAP.md](ROADMAP.md) says what we intend to work on over the next year.
   It also says what we have decided not to build.
+- [GOVERNANCE.md](GOVERNANCE.md) says how someone becomes a committer and how
+  the project makes decisions.
 
 ## Security
 
@@ -604,7 +605,6 @@ Found a vulnerability? **Do not open a public issue.**
 
 [![Patreon](https://img.shields.io/badge/Patreon-support-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/NormB975)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/NormB)
-[![CLA assistant](https://cla-assistant.io/readme/badge/NormB/sipnab)](https://cla-assistant.io/NormB/sipnab)
 
 ## License
 

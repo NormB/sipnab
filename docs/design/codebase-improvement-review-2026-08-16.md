@@ -613,7 +613,7 @@ drift test; the guide accurately explains Cargo's top-level integration targets.
 
 **Priority / type / effort:** P2 / onboarding gap / M
 
-**Evidence:** [`CONTRIBUTING.md:68-76`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#L68-L76)<!-- "## Prerequisites" --> lists Rust, libpcap, and fuzzing tools, but
+**Evidence:** [`CONTRIBUTING.md:112-120`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#L112-L120)<!-- "## Prerequisites" --> lists Rust, libpcap, and fuzzing tools, but
 later required/important workflows depend on Vale, codespell, Python, cargo-insta,
 tmux, wasm-pack, and other CI/release tools ([`CONTRIBUTING.md:132-179`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/CONTRIBUTING.md#L132-L179);
 `docs/internals/testing.md:19,60,113-128`;

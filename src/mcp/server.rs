@@ -1537,6 +1537,9 @@ pub struct ListDialogsParams {
     /// "codec-asym") or a raw DSL expression.
     /// Values may be bare or quoted.
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter` (`list_named_filters`
+    /// lists them).
+    pub named: Option<String>,
     /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
     /// Cursor: pass back the previous response's `next_cursor` verbatim
@@ -1589,6 +1592,8 @@ pub struct AggregateDialogsParams {
     /// aggregate can be scoped the same way a listing is.
     /// Values may be bare or quoted.
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Buckets to return, largest first. Bounded by `--mcp-max-rows`, the same
     /// knob that bounds dialog rows, and defaulted the same way.
     ///
@@ -1714,6 +1719,8 @@ pub struct FindProblemsParams {
     /// trunk".
     /// Values may be bare or quoted.
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
     /// Cursor: pass back the previous response's `next_cursor` verbatim
@@ -2670,6 +2677,8 @@ pub struct SearchByTimeParams {
     /// one call rather than two.
     /// Values may be bare or quoted.
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
     /// Cursor: pass back the previous response's `next_cursor` verbatim
@@ -4321,6 +4330,13 @@ pub(crate) fn stream_identity(s: &crate::rtp::stream::RtpStream) -> String {
     }
 }
 
+/// The refusal text for an expression that did not compile: the expression
+/// as the caller gave it, then the parser's message. The one wording for every
+/// tool's `filter` refusal and for `validate_filter`'s `error`.
+pub(crate) fn invalid_filter_message(expr: &str, message: &str) -> String {
+    format!("invalid filter '{expr}': {message}")
+}
+
 // ── Tool implementations ────────────────────────────────────────────
 
 impl SipnabMcp {
@@ -4337,15 +4353,59 @@ impl SipnabMcp {
         &self,
         filter: Option<&str>,
     ) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
-        let Some(f) = filter else { return Ok(None) };
-        crate::sip::dsl::parse_filter(f, &self.alias_thresholds)
-            .map(Some)
-            .map_err(|e| {
-                errors::refuse_param(
-                    Reason::InvalidFilter,
-                    "filter",
-                    format!("invalid filter '{f}': {e}"),
-                )
+        self.compile_selected(filter, None)
+    }
+
+    /// Compile a tool's `filter` and `named` arguments: an alias or DSL
+    /// expression in `filter`, or the name of one `[filters]` entry or
+    /// built-in alias in `named`.
+    ///
+    /// The rule is [`crate::sip::filter_request::compile_request`], which the
+    /// REST routes apply too, over the `[filters]` table the run installed at
+    /// startup. Done outside every lock, as [`Self::compile_filter`] is.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602): `conflicting_params` when both are given;
+    /// `invalid_value` for an empty `named`; `invalid_choice` for a name
+    /// nothing defines, with the accepted names in `valid_values`; and
+    /// `invalid_filter` naming the expression when it does not compile.
+    pub(crate) fn compile_selected(
+        &self,
+        filter: Option<&str>,
+        named: Option<&str>,
+    ) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
+        use crate::sip::filter_request::{FilterParam, FilterRequestError};
+        let snapshot = crate::sip::named_filters::installed();
+        let table = &*snapshot;
+        crate::sip::filter_request::compile_request(filter, named, table, &self.alias_thresholds)
+            .map_err(|e| match e {
+                FilterRequestError::Conflict => errors::refuse(
+                    Reason::ConflictingParams,
+                    crate::sip::filter_request::CONFLICT_MESSAGE,
+                ),
+                FilterRequestError::EmptyName => errors::refuse_param(
+                    Reason::InvalidValue,
+                    FilterParam::Named.name(),
+                    crate::sip::filter_request::EMPTY_NAME_MESSAGE,
+                ),
+                FilterRequestError::UnknownName { message, .. } => errors::refuse_choice(
+                    FilterParam::Named.name(),
+                    crate::sip::filter_request::accepted_names(table),
+                    message,
+                ),
+                FilterRequestError::Invalid { param, rejection } => {
+                    let shown = match param {
+                        FilterParam::Filter => filter,
+                        FilterParam::Named => named,
+                    }
+                    .unwrap_or_default();
+                    errors::refuse_param(
+                        Reason::InvalidFilter,
+                        param.name(),
+                        invalid_filter_message(shown, &rejection.message),
+                    )
+                }
             })
     }
 
@@ -5236,7 +5296,7 @@ impl SipnabMcp {
         Parameters(params): Parameters<ListDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        let filter = self.compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
         let mut page = self.dialog_page(
             params.cursor.as_deref(),
             limit,
@@ -5311,7 +5371,7 @@ impl SipnabMcp {
         }
 
         let top_n = resolve_limit_with_cap(params.top_n, self.row_cap);
-        let filter = self.compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
 
         let (tally, total_matched, capture_identity) = {
             // Capture, dialogs, streams -- the order `CaptureState` documents.
@@ -5665,7 +5725,7 @@ impl SipnabMcp {
                 }
             }
         }
-        let extra = self.compile_filter(params.filter.as_deref())?;
+        let extra = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
 
         // ANY alias AND the filter. The aliases answer "is this call
         // interesting", the filter answers "is it the one I am looking at" —
@@ -7376,7 +7436,7 @@ impl SipnabMcp {
             ));
         }
         let limit = crate::mcp::shape::resolve_limit_with_cap(params.limit, self.row_cap);
-        let filter = self.compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
                 super::shape::parse_cursor(raw)
@@ -13279,13 +13339,18 @@ mod tests {
             // 22_500 -> 24_000 and full 90_000 -> 91_500 by `th_mappings`,
             // the OpenSIPS topology-hiding mapping listing (1,102 bytes):
             // signaling measured 23,576 over 21 tools and full 91,074 over 77.
-            ("signaling", 24_000),
+            // 24_000 -> 24_500 by `list_named_filters` and the `named`
+            // argument (92 bytes on each tool that takes `filter`): signaling
+            // measured 23,524 -> 24,046 over 22 tools.
+            ("signaling", 24_500),
             // 11_000 -> 13_000 and full 79_000 -> 81_000 by
             // `find_in_captures_status` and `cancel_find_in_captures`, the
             // poll and cancel of the background sweep job (captures measured
             // 12,542, full 80,864).
             ("captures", 13_000),
-            ("security", 10_000),
+            // 10_000 -> 10_500 by the `named` argument on `top_talkers` (92
+            // bytes): security measured 9,954 -> 10,046.
+            ("security", 10_500),
             ("media", 3_500),
             // 4_500 -> 5_000 by `relay_stats_polled` (578 bytes): relay
             // measured 4,777 over 5 tools.
@@ -13346,7 +13411,12 @@ mod tests {
             // above says; full measured 92,136 over 79 tools.
             // full 92_500 -> 93_000: `regex` on `search_messages`, as the
             // core row above says; full measured 92,627 over 79 tools.
-            ("full", 93_000),
+            // full 93_000 -> 94_000: `list_named_filters` and the `named`
+            // argument on the seven tools that take `filter`, as the
+            // signaling and security rows above say (core 12,648 -> 12,959
+            // and vcon 10,714 -> 10,806 stay under theirs); full measured
+            // 92,627 -> 93,644 over 80 tools.
+            ("full", 94_000),
         ];
         let measured = bundle_measure(false)?;
         let mut over = Vec::new();
@@ -13641,6 +13711,7 @@ mod tests {
             .list_dialogs(Parameters(ListDialogsParams {
                 max_response_bytes: None,
                 filter: None,
+                named: None,
                 limit: Some(limit),
                 cursor: cursor.map(str::to_string),
                 fields: None,
@@ -14080,6 +14151,7 @@ mod tests {
                 start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
                 end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
                 filter: None,
+                named: None,
                 limit: Some(10),
                 cursor: None,
                 fields: None,
@@ -16454,6 +16526,7 @@ mod tests {
                     start: "yesterday".into(),
                     end: None,
                     filter: None,
+                    named: None,
                     limit: None,
                     cursor: None,
                     fields: None,
@@ -16474,6 +16547,7 @@ mod tests {
                     start: "2026-01-02T00:00:00Z".into(),
                     end: Some("2026-01-01T00:00:00Z".into()),
                     filter: None,
+                    named: None,
                     limit: None,
                     cursor: None,
                     fields: None,
@@ -16500,6 +16574,7 @@ mod tests {
             start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
             end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
             filter: None,
+            named: None,
             limit: Some(1),
             cursor,
             fields: None,
@@ -16550,6 +16625,7 @@ mod tests {
                 start: "2026-01-01T00:00:00Z".into(),
                 end: None,
                 filter: None,
+                named: None,
                 limit: None,
                 cursor: Some("not-a-time|abc@x".into()),
                 fields: None,
@@ -19844,6 +19920,7 @@ mod tests {
                             cursor: None,
                             limit: None,
                             filter: None,
+                            named: None,
                             fields: None,
                         }))
                         .await
@@ -20549,6 +20626,7 @@ mod tests {
             failed.find_problems(Parameters(FindProblemsParams {
                 kinds: None,
                 filter: None,
+                named: None,
                 limit: Some(6),
                 cursor,
                 fields: None,
@@ -20588,6 +20666,7 @@ mod tests {
                 start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
                 end: None,
                 filter: None,
+                named: None,
                 limit: Some(6),
                 cursor,
                 fields: None,

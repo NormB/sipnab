@@ -410,6 +410,10 @@ pub struct TuiOptions {
     /// sessions only). `Some` for `-I one.pcap`; `None` for a live capture, a
     /// multi-file input, or no input.
     pub rescan_path: Option<std::path::PathBuf>,
+    /// The words that name the run's capture source, as given: each `-I`
+    /// input, `--recursive`, or else `-d` and `-L`. The call list's `Y` puts
+    /// them in the command line it copies. Empty when the run named none.
+    pub capture_source: Vec<String>,
     /// True when the session reads capture files (`-I`) and runs no live
     /// capture. The default, false, is a live session.
     pub offline: bool,
@@ -422,6 +426,10 @@ pub struct TuiOptions {
     /// `-c` / `--calls-only`: open with only INVITE checked in the filter
     /// dialog and that filter applied, so the call list shows calls (#474).
     pub calls_only: bool,
+    /// The run's typed filter, `--filter` or else `[filter] expression`, as
+    /// typed: the session opens with it in the filter dialog's Expression
+    /// field and applied (#841). `None` when the run has neither.
+    pub filter_expression: Option<String>,
     /// `[display] mouse_capture = false`: open with mouse capture off (#484).
     pub mouse_capture_off: bool,
     /// `[display] view_filter_detail`: how status line 3 opens showing the F7
@@ -499,6 +507,7 @@ impl TuiOptions {
         app.declared_one_way_delay_ms = self.declared_one_way_delay_ms;
         app.quality_bands = self.quality_bands;
         app.alias_thresholds = self.alias_thresholds;
+        app.filter_publisher = Some(crate::sip::named_filters::publish);
         app.set_protected_inputs(self.protected_inputs);
         app.set_bpf_filter(self.bpf_filter, self.bpf_filter_generated);
         app.set_resolver(self.name_setup.resolver);
@@ -517,9 +526,6 @@ impl TuiOptions {
                     .map(|why| format!("Name edits {why}")),
             )
             .collect();
-        if !notices.is_empty() {
-            app.status_error = Some(notices.join(" | "));
-        }
         app.set_action_trail(self.action_trail);
         app.relay_query = self.relay_query;
         app.set_column_save_target(self.config_save.0);
@@ -530,6 +536,7 @@ impl TuiOptions {
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app.rescan_path = self.rescan_path;
+        app.capture_source = self.capture_source;
         app.set_live_capture(!self.offline);
         app.set_capture_options(self.capture_options);
         app.set_notes(self.notes, self.notes_path);
@@ -537,12 +544,28 @@ impl TuiOptions {
         app.mouse_capture_enabled = !self.mouse_capture_off;
         app.view_filter_detail = self.view_filter_detail;
         // Last, once the action trail is attached, so the applied filter is
-        // recorded the way one applied from the dialog is.
+        // recorded the way one applied from the dialog is. The run's typed
+        // filter goes in the Expression field first, so `-c` applies with it.
+        if let Some(text) = self.filter_expression {
+            app.filter_dialog.expression = text;
+        }
         if self.calls_only {
             super::controllers::start_calls_only(&mut app);
+        } else if !app.filter_dialog.expression.trim().is_empty() {
+            super::controllers::apply_filter_dialog(&mut app);
         }
+        // Planning refused a filter that does not parse, so this is only
+        // reached if the dialog and the plan ever disagreed; it is said
+        // rather than left in a dialog nobody opened.
+        let refused = app.filter_dialog.error.take();
         if let Some(mode) = self.capture_mode {
             app.set_capture_mode(mode);
+        }
+        // After the filter: applying one clears the status line, which would
+        // drop a notice set before it.
+        let notices: Vec<String> = notices.into_iter().chain(refused).collect();
+        if !notices.is_empty() {
+            app.status_error = Some(notices.join(" | "));
         }
         app
     }
@@ -714,9 +737,13 @@ pub(in crate::tui) const FILTER_METHODS: [&str; 10] = [
 ];
 
 /// Number of text input fields in the filter dialog.
-pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 9;
+pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 10;
 
-/// Total focusable items: 9 text fields + 10 method checkboxes + the
+/// Focus index of the Expression field: the last text field, right after
+/// Named filter, so the two fields that take Filter DSL sit together.
+pub(in crate::tui) const EXPRESSION_FIELD_IDX: usize = 9;
+
+/// Total focusable items: 10 text fields + 10 method checkboxes + the
 /// "All" master checkbox + 2 buttons.
 pub(in crate::tui) const FILTER_ITEM_COUNT: usize =
     FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 3;
@@ -1141,6 +1168,10 @@ pub struct FilterDialogState {
     /// Names of `[filters]` entries, space-separated, each with or without a
     /// leading `@`. Each becomes `@name` and they AND together.
     pub(in crate::tui) named: String,
+    /// A Filter DSL expression typed as it is: any text `--filter` accepts.
+    /// It is resolved and parsed by the rule `--filter` uses, not escaped, and
+    /// it ANDs with every other field. Empty means no expression.
+    pub(in crate::tui) expression: String,
     /// The names the run's `[filters]` defines, filled when the dialog opens
     /// and shown beside the Named field.
     pub(in crate::tui) known_names: Vec<String>,
@@ -1155,6 +1186,30 @@ pub struct FilterDialogState {
     /// Parse error shown inline; while set, Enter keeps the dialog open so
     /// the typed values can be corrected instead of being discarded.
     pub(in crate::tui) error: Option<String>,
+    /// Whether `F1` has put the Filter DSL's field help in the lower part of
+    /// the dialog. Off each time the dialog opens.
+    pub(in crate::tui) show_help: bool,
+    /// The name typed into the `F2` "Save as" prompt; `Some` while the
+    /// prompt is open, when the dialog's other keys wait for it.
+    pub(in crate::tui) save_name: Option<String>,
+    /// The line a successful save leaves in the dialog: the name and the
+    /// file it went to. Cleared when the dialog opens.
+    pub(in crate::tui) notice: Option<String>,
+    /// Set when the last `F2` save kept the name for this session only,
+    /// because no config file could be written: shown in the lower part of
+    /// the dialog until Esc, F2 or the dialog opening again.
+    pub(in crate::tui) session_note: Option<SessionNote>,
+}
+
+/// A named filter kept for this session only: why it is not in a file, and
+/// the `[filters]` entry line to add to one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::tui) struct SessionNote {
+    /// The lines shown: what happened, why (path and cause), what to do.
+    pub(in crate::tui) lines: Vec<String>,
+    /// `name = "definition"`, quoted as a config file holds it; `F3`
+    /// copies it.
+    pub(in crate::tui) entry: String,
 }
 
 impl Default for FilterDialogState {
@@ -1171,6 +1226,7 @@ impl Default for FilterDialogState {
             time_after: String::new(),
             time_before: String::new(),
             named: String::new(),
+            expression: String::new(),
             known_names: Vec::new(),
             // All SIP methods checked by default == show every message. The
             // method filter only narrows once the user unchecks something.
@@ -1178,6 +1234,10 @@ impl Default for FilterDialogState {
             focused_field: 0,
             cursor_pos: 0,
             error: None,
+            show_help: false,
+            save_name: None,
+            notice: None,
+            session_note: None,
         }
     }
 }
@@ -1214,6 +1274,7 @@ impl FilterDialogState {
             6 => &self.time_after,
             7 => &self.time_before,
             8 => &self.named,
+            EXPRESSION_FIELD_IDX => &self.expression,
             _ => "",
         }
     }
@@ -1230,6 +1291,7 @@ impl FilterDialogState {
             6 => Some(&mut self.time_after),
             7 => Some(&mut self.time_before),
             8 => Some(&mut self.named),
+            EXPRESSION_FIELD_IDX => Some(&mut self.expression),
             _ => None,
         }
     }
@@ -1468,6 +1530,10 @@ impl FilterDialogState {
                 .split_whitespace()
                 .map(|word| format!("@{}", word.trim_start_matches('@'))),
         );
+        let expression = self.expression.trim();
+        if !expression.is_empty() {
+            parts.push(format!("expr {expression}"));
+        }
         for (label, text) in [("after", &self.time_after), ("before", &self.time_before)] {
             if !text.is_empty() {
                 parts.push(format!("{label} {text}"));
@@ -1491,6 +1557,7 @@ impl FilterDialogState {
         self.time_after.clear();
         self.time_before.clear();
         self.named.clear();
+        self.expression.clear();
         // Re-check every method so "clear filter" means show all, matching the
         // dialog's default state.
         self.methods = [true; 10];
@@ -1528,6 +1595,7 @@ impl FilterDialogState {
             && self.time_after.is_empty()
             && self.time_before.is_empty()
             && self.named.is_empty()
+            && self.expression.is_empty()
             // All methods checked == no method narrowing == an "empty" filter.
             && self.methods.iter().all(|&v| v)
     }
@@ -1792,6 +1860,11 @@ pub enum Popup {
     /// now?" -- the first time a G.729 stream appears on a host without the
     /// tables. See `controllers::g729_offer`.
     G729Install,
+    /// The command line `Y` in the call list copied: `sipnab`, the capture
+    /// source and `--filter` with the filter in force. Shown on every copy,
+    /// because an OSC 52 write is not acknowledged and the TUI cannot tell
+    /// whether a clipboard took it.
+    CommandLine(String),
 }
 
 /// The note being typed, and the frame it is about.

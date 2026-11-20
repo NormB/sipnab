@@ -143,7 +143,8 @@ Suspect a header changed across a retransmit or a proxy hop?
 - `/` searches the current view (Call List, Raw Message, or RTP Streams).
 - `F7` opens the **Filter dialog**.
   - Its fields are From user, To user, Source IP, Destination IP, Text in
-    message, Header, After, Before and Named filter, and a box per method.
+    message, Header, After, Before, Named filter and Expression, and a box
+    per method.
   - After and Before take an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html)
     time, such as `2023-11-14T22:13:25Z`, and keep the calls that started in
     between.
@@ -154,6 +155,8 @@ Suspect a header changed across a retransmit or a proxy hop?
     [Filter DSL](@/docs/filter-dsl.md#named-filters) expression, for example
     `rtp.mos < 3.0`. Without a configuration file, it shows
     `none in [filters]`.
+  - Expression takes any Filter DSL expression typed as it is. See
+    [Filter with an expression](#filter-with-an-expression).
 - Status line 3 shows the filter the dialog built as a summary, such as
   `F7: 7 methods, From~alice · F full`.
   - `F` switches between the summary and the full expression, in every view.
@@ -163,6 +166,312 @@ Suspect a header changed across a retransmit or a proxy hop?
 - `F9` clears the view filter and any kept search.
 - `i` prunes the dialogs that do *not* match, keeping only the matches.
 - `I` prunes the ones that do.
+
+## Filter with an expression
+
+The `F7` dialog's **Expression** field takes a
+[Filter DSL](@/docs/filter-dsl.md) expression typed as it is. Use it for a filter
+the other fields cannot say: an exclusion, a message count, `OR`, or
+parentheses. It needs no restart and no configuration file.
+
+**What you need:**
+
+- **sipnab with the `tui` feature**, as in [Before you start](#before-you-start).
+- **No change on any other system.** The expression filters the calls the
+  TUI already holds.
+
+**Steps:**
+
+1. Open a capture or start a live capture, as in
+   [Open a capture](#open-a-capture).
+2. Press `F7`. The dialog opens with the cursor in **From user**.
+3. Press `Tab` nine times. The cursor moves to **Expression**, the field
+   under Named filter.
+4. Type the expression. It takes the text `--filter` takes:
+   - `payload =~ 'X-Foo' AND NOT payload =~ 'OPTIONS' AND msg_count > 5`
+     keeps the calls that carry `X-Foo`, never mention `OPTIONS`, and have
+     more than five messages.
+   - `msg_count < 3`, `msg_count > 5` and `msg_count == 2` compare the
+     number of messages in a call. Equality is `==`.
+   - `payload =~ '(?i)x-foo'` matches either case.
+   - `OR` and parentheses group terms:
+     `payload =~ 'X-Foo' AND (msg_count < 3 OR NOT payload =~ 'OPTIONS')`.
+   - `@name` uses a [`[filters]`](@/docs/config.md#filters) entry, and an
+     alias name such as `one-way` stands for its expansion.
+
+   ```text
+   │  Named filter:    [none in [filters]                                  ]  │
+   │  Expression:      [from.user =~ '1003' OR msg_count > 3               ]  │
+   │  ──────────────────────────────────────────────────────────────────────  │
+   │  All       [*]                                                           │
+   ```
+
+5. Press `Enter`. The dialog closes and the call list keeps only the calls
+   the expression and every other field of the dialog select. The filter
+   applies to calls that arrive later too.
+
+A session started with `--filter` or with `expression` under
+[`[filter]`](@/docs/config.md#filter) opens with that text in the
+Expression field, already applied. Edit it there.
+
+**Check that it worked:** status line 3 names the expression after `expr`, and the count on line 1
+drops:
+
+```text
+ Live capture: any    Dialogs: 2 shown of 3    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: F7: expr from.user =~ '1003' OR msg_count > 3 · F full
+```
+
+- `F` shows the full expression that runs. The other fields come first, and
+  the typed expression in parentheses after `AND`.
+- To remove the expression, open `F7`, empty the field, and press `Enter`.
+  `F9` clears every field and the filter at once.
+
+**When it does not work:**
+
+- **The dialog stays open with `⚠ Expression error:`.** The parser refused
+  the text. The line gives its reason and position, the cursor sits at that
+  position, and the filter in force before stays until you apply a valid
+  one. When the parser has a hint, it appears under the key line:
+
+  ```text
+  │  ⚠ Expression error: unexpected input at position 18: 'msgcount'         │
+  │  Tab move · Enter apply · Esc cancel · F1 fields                         │
+  │  hint: unknown field 'msgcount' — did you mean 'msg_count'?              │
+  ```
+
+- **The dialog refuses `msg_count = 5`.** The DSL writes equality as `==`.
+- **`'@name' is not a defined filter`.** The name is not under `[filters]`
+  in the configuration file this session loaded. The message lists the names
+  that are.
+- **A text match finds nothing.** A regex is case-sensitive. Add `(?i)` at
+  the start of the pattern to ignore case.
+- **Nothing shows at all.** Every method box is clear. That shows no calls
+  whatever the expression says. Check **All**.
+
+### Use an earlier expression again
+
+The Expression field keeps the expressions you applied in this session, so
+you can go back to one without typing it again.
+
+**What you need:** a session where you applied at least one expression, as
+in the steps above. Nothing changes on any other system.
+
+**Steps:**
+
+1. Press `F7` and move to **Expression** (`Tab` nine times).
+2. Press `Up`. The field shows the expression you applied last, with the
+   cursor at its end. Each further `Up` shows the one applied before it.
+3. Press `Down` to step back toward the newest. One `Down` past the newest
+   puts back the text the field held before the first `Up`.
+4. Edit the recalled text if you need to. The edit changes the field only.
+   The history keeps the expression as you applied it.
+5. Press `Enter` to apply it.
+
+The history holds only expressions the dialog applied, so each one parsed.
+It keeps the newest 50, each once: applying an expression again moves it to
+the front. It lasts for the session and is not saved. An expression the
+session started with from `--filter` or `[filter] expression` is the first
+entry.
+
+**Check that it worked:** status line 3 names the recalled expression after
+`expr`, as for a typed one.
+
+**When it does not work:**
+
+- **`Up` moves to Named filter instead.** The history is empty, or the field
+  already shows the oldest entry. Apply an expression first.
+- **An expression is missing.** The dialog refused it, so it never entered
+  the history, or 50 newer ones pushed it out.
+
+### Look up the fields and operators
+
+`F1` in the dialog shows every field name, comparison operator and combining
+word the [Filter DSL](@/docs/filter-dsl.md) takes. The list comes from the parser,
+so it names exactly what the Expression field accepts.
+
+**What you need:** the `F7` dialog open. Nothing changes on any other system.
+
+**Steps:**
+
+1. Press `F7`.
+2. Press `F1`. The list takes the place of the method boxes and the buttons.
+   The text fields stay, and typing and `Enter` work as before.
+3. Press `F1` or `Esc` to hide the list. With the list hidden, `Esc` cancels
+   the dialog as usual.
+
+```text
+│  ──────────────────────────────────────────────────────────────────────  │
+│  Filter DSL · F1 or Esc closes this help                                 │
+│  Fields: from.user to.user from.host to.host from.uri to.uri ruri        │
+```
+
+The list is behind a key because the dialog has no free row: the fields
+take about seven rows of the 23-row dialog, which would no longer fit an
+80x24 terminal with its key line. The values each field takes are in the
+[Filter DSL reference](@/docs/filter-dsl.md).
+
+**Check that it worked:** the dialog shows lines that start `Fields:`,
+`Operators:` and `Combine:`.
+
+**When it does not work:** `F1` opens the main help instead when no dialog is
+open. Press `F7` first.
+
+### Run the same filter from a shell
+
+`Y` in the call list turns the filter in force into one `sipnab` command line
+with `--filter`, and copies it. Run it later, or on another host with the same
+capture, to see the same call list.
+
+**What you need:**
+
+- A view filter in force: from the `F7` fields, a named filter, an
+  expression, or a time window.
+- For the copy to reach your system clipboard, a terminal that accepts
+  OSC 52, as in [Copying text](@/docs/keybindings.md#copying-text). Without one, the
+  command is still shown.
+- Nothing changes on any other system.
+
+**Steps:**
+
+1. Apply a filter with `F7`, as above.
+2. Close the dialog and press `Y` in the call list.
+3. A **Command line** box shows the command, and the status line reports the
+   copy:
+
+   ```text
+   sipnab -I sample-call.pcap --filter 'from.user =~ '\''1003'\'' OR msg_count > 3'
+   ```
+
+4. Press `Esc` or `Enter` to close the box. Paste the command into a shell.
+
+The filter in the command is the one the call list runs. It holds every `F7`
+field and the full text of each named filter, and After and Before become
+`time` comparisons, so the command needs no `[filters]` table. sipnab quotes
+each word for a POSIX shell: a `'` in the text becomes `'\''`.
+
+The source words are the ones the session read: `-I` and the file for one
+capture file (or the last file `O` opened), each `-I` input and
+`--recursive` for several, or `-d` and `-L` for a live capture. The command
+leaves out the other options of the run, such as a BPF capture filter or a
+port range. Add them to the command if the session used them.
+
+**Check that it worked:** run the command. The new session opens with the
+filter in its Expression field and applied, and status line 1 shows the same
+count of calls.
+
+**When it does not work:**
+
+- **`No view filter is in force`.** Nothing narrows the call list. Apply a
+  filter with `F7` first.
+- **`Clipboard error`.** No clipboard took the text. The box still shows the
+  command: press `F12` to turn mouse capture off and select it with the mouse.
+- **`not valid UTF-8`.** Text cannot hold the capture file's path.
+  Rename the file or open it from a path that can.
+- **The new session shows more calls.** The run used an option the command
+  does not carry, such as a capture filter. Add it to the command.
+
+### Save the dialog's filter under a name
+
+`F2` in the filter dialog saves the dialog's filter as a `[filters]` entry
+of your config file. The name is then listed beside **Named filter**, and
+`@name` works wherever sipnab takes a filter: `--filter`, the REST `filter`
+parameter, an MCP tool's `filter`, and the dialog itself. The REST API and
+MCP server of the same session resolve the name at once, with no restart.
+
+**What you need:**
+
+- A config file the session may write: the file the run loaded, or, when it
+  loaded none, `~/.config/sipnab/sipnab.toml` (sipnab creates it). The same
+  file `F10` saves the column layout to. A run that loaded
+  `/etc/sipnab/sipnab.toml` cannot save to a file. Without a file sipnab
+  can write, the name still works, for this session only (see below).
+- Nothing changes on any other system.
+
+**Steps:**
+
+1. Press `F7` and fill the fields, the Named filter, or the Expression, as
+   above. After and Before stay empty: an entry holds an expression only.
+2. Press `F2`. The key line becomes a prompt:
+
+   ```text
+   Save as: @▁ · Enter save · Esc back
+   ```
+
+3. Type the name, for example `alice-big`, and press `Enter`. The dialog
+   shows `Saved @alice-big to` and the file's path, and the name joins the
+   list beside Named filter. A path in your home directory starts with `~`.
+   A notice or refusal wider than the dialog continues on the next rows.
+4. Press `Esc` to close the dialog, or `Enter` to apply the filter as well.
+   Saving does not apply it.
+
+A name is 1 to 64 ASCII letters, digits, `-` or `_`, starting with a letter
+or digit. sipnab drops a leading `@` you type. The entry is the expression the
+dialog builds, with each `@name` and the Named filter kept as references, so
+it follows the entries it names. sipnab saves a built-in alias typed as the
+whole Expression, such as `problems`, as `@problems`. sipnab adds the one
+line to `[filters]` and keeps every comment and other setting of the file,
+its mode, and its group when you belong to that group. A file sipnab creates is readable and writable by you
+only (mode `0600`):
+
+```toml
+[filters]
+alice-big = "from.user =~ 'alice' AND (msg_count > 5)"
+```
+
+**Check that it worked:** open the file and find the line under
+`[filters]`. Then type the name in Named filter and press `Enter`: the call
+list shows the calls the dialog's filter selected. A new session lists the
+name beside Named filter too.
+
+**When it does not work:**
+
+- **`Nothing to save`.** Every field is empty, or the dialog has no SIP
+  method checked. Fill a field, or check a method.
+- **`A named filter holds no time window`.** Clear After and Before, then
+  press `F2` again.
+- **`already defines 'name'`.** The run, or the file, already has that
+  name. Choose another name, or edit the entry in the file. A save never
+  replaces an entry.
+- **`is not usable`** or **`is a built-in alias`.** The name breaks the
+  rule above or is one of the built-in aliases. Choose another name.
+- **`is not a valid filter expression`.** The Expression does not parse.
+  `Esc` closes the prompt; correct the field and press `F2` again.
+- **`Kept @name for this session only`.** sipnab could not write a config
+  file, so the name is in the running session only: listed beside Named
+  filter and usable as `@name` in the dialog, the REST API and the MCP
+  server, until sipnab exits. sipnab never writes it later. The note names
+  the reason:
+  - `cannot create <directory>`: a directory on the way to the file does
+    not exist, and you may not create it.
+  - `cannot write <file>`: you may not write the file (its mode, or another
+    user owns it), or you may not write its directory. sipnab does not
+    replace a file you may not write.
+  - `cannot read <file>`: you may not read the file. sipnab also could not
+    check whether the file already defines the name.
+  - `not saved: the settings in use come from /etc/sipnab/sipnab.toml`, or
+    no `$HOME`: there is no file to write.
+
+  To keep the name, start sipnab with `--config <writable file>` or set
+  `$SIPNAB_CONFIG` to a file you may write, or fix the permissions of the
+  file or directory the note names. Then add the entry the note shows under
+  `[filters]` in that file. `F3` copies the entry line to the clipboard, and
+  `Esc` closes the note. sipnab refuses a second save of the same name in
+  the same session as a duplicate.
+- **`Save failed`.** sipnab could not write the file for a reason other
+  than permission, such as a full disk, and nothing changed. The message
+  names the file and the cause.
+- **`not valid TOML`** or **`[filters] is not a table`.** The config file
+  has an error; nothing changed. Fix the file and press `F2` again.
+- **`Refusing to save`.** The path is a directory, or the file is not valid
+  UTF-8; nothing changed.
+- **A save writes, but another sipnab session saved to the same file at the
+  same moment.** sipnab reads the file just before it writes it, so it
+  finds a name the other session saved earlier and refuses it as a
+  duplicate. Two
+  saves that run at the same instant can still lose one of them: check the
+  file, and save the lost name again.
 
 ## Find the calls sipnab diagnosed
 

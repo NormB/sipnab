@@ -14,6 +14,7 @@ use super::{
 mod call_flow;
 mod call_list;
 mod clear_confirm;
+mod command_line;
 mod dashboard;
 mod file_open;
 mod filter_dialog;
@@ -477,6 +478,7 @@ pub(in crate::tui) fn handle_popup_key(app: &mut App, key: KeyEvent) {
         Popup::UnsavedNotes => handle_unsaved_notes_key(app, key),
         Popup::ArchivePassword => handle_archive_password_key(app, key),
         Popup::G729Install => g729_offer::handle_g729_install_key(app, key),
+        Popup::CommandLine(_) => command_line::handle_command_line_key(app, key),
     }
 }
 

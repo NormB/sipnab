@@ -19,10 +19,9 @@
 use anyhow::{Result, bail};
 use nom::{
     IResult, Parser,
-    branch::alt,
-    bytes::complete::{tag, tag_no_case, take_while1},
+    bytes::complete::{tag_no_case, take_while1},
     character::complete::{char, multispace0, multispace1},
-    combinator::{map, opt, recognize},
+    combinator::{opt, recognize},
     sequence::preceded,
 };
 
@@ -109,9 +108,26 @@ const MAX_HEADER_NAME_LEN: usize = 256;
 /// `header.<name>` reads any SIP header by name.
 const HEADER_FIELD_PREFIX: &str = "header.";
 
-/// How the header family is written in the parse-error field list, beside the
-/// fixed names of [`FIELD_NAMES`].
-const HEADER_FIELD_HINT: &str = "header.<name>";
+/// How the header family is written in the parse-error field list and the TUI
+/// filter dialog's field help, beside the fixed names of [`FIELD_NAMES`].
+pub(crate) const HEADER_FIELD_HINT: &str = "header.<name>";
+
+/// The word that joins two terms that must both hold. Matched without regard
+/// to case.
+const AND_KEYWORD: &str = "AND";
+
+/// The word that joins two terms of which one must hold. Matched without
+/// regard to case.
+const OR_KEYWORD: &str = "OR";
+
+/// The word that negates the term after it. Matched without regard to case.
+const NOT_KEYWORD: &str = "NOT";
+
+/// The words that combine comparisons, in the parser's own spelling: the
+/// constants the `AND`, `OR` and `NOT` parsers match, listed for a help
+/// surface such as the TUI filter dialog's field help.
+#[cfg(any(test, feature = "tui"))]
+pub(crate) const LOGICAL_KEYWORDS: &[&str] = &[AND_KEYWORD, OR_KEYWORD, NOT_KEYWORD];
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -814,7 +830,7 @@ pub fn resolve_filter_text<'a>(input: &'a str, t: &AliasThresholds) -> std::borr
     if let Some(expansion) = expand_alias(input, t) {
         return std::borrow::Cow::Owned(expansion);
     }
-    resolve_references(input, super::named_filters::installed(), t)
+    resolve_references(input, &super::named_filters::installed(), t)
 }
 
 /// `input` with each `@name` replaced through `filters` (and the built-in
@@ -848,6 +864,34 @@ pub fn resolve_references<'a>(
 /// the position where parsing stopped, which names the input.
 pub fn parse_filter(input: &str, t: &AliasThresholds) -> Result<FilterExpr> {
     FilterExpr::parse(&resolve_filter_text(input, t))
+}
+
+/// The expression text a filter the user typed stands for, resolved through
+/// a given `[filters]` table: each `@name` replaced, then a diagnostic alias
+/// name expanded when it is the whole input.
+///
+/// The one rule `--filter`, `[filter] expression` and the TUI filter
+/// dialog's Expression field resolve typed text with, so the same text
+/// selects the same dialogs on each.
+///
+/// # Errors
+///
+/// The message for the first `@name` that `filters` does not define, which
+/// names the ones it does.
+pub fn resolve_typed_filter(
+    input: &str,
+    filters: &super::named_filters::NamedFilters,
+    t: &AliasThresholds,
+) -> std::result::Result<String, String> {
+    let referenced = resolve_references(input, filters, t);
+    // Said here, with the caller's table, rather than left to the parser,
+    // which knows only the table installed for the request-time surfaces.
+    if let Some(name) = super::named_filters::first_reference(&referenced) {
+        return Err(super::named_filters::unknown_reference_message(
+            name, filters,
+        ));
+    }
+    Ok(resolve_filter_text(&referenced, t).into_owned())
 }
 
 /// Whether any leaf comparison in the tree references a diagnosis-derived
@@ -1023,7 +1067,7 @@ impl FilterExpr {
                 "{}",
                 super::named_filters::unknown_reference_message(
                     name,
-                    super::named_filters::installed()
+                    &super::named_filters::installed()
                 )
             );
         }
@@ -1034,10 +1078,7 @@ impl FilterExpr {
         let (remaining, expr) = parse_or_expr(trimmed).map_err(|e| match e {
             nom::Err::Error(err) | nom::Err::Failure(err) => {
                 let pos = trimmed.len() - err.input.len();
-                anyhow::anyhow!(
-                    "{}",
-                    render_parse_error(trimmed, pos, &parse_problem(err.code))
-                )
+                SyntaxError::at(trimmed, pos, &parse_problem(err.code)).into()
             }
             nom::Err::Incomplete(_) => anyhow::anyhow!("incomplete filter expression"),
         })?;
@@ -1045,10 +1086,7 @@ impl FilterExpr {
         if !remaining.trim().is_empty() {
             // Position of the first non-space char of the unparsed tail.
             let pos = trimmed.len() - remaining.trim_start().len();
-            bail!(
-                "{}",
-                render_parse_error(trimmed, pos, trailing_input_problem(trimmed, pos))
-            );
+            return Err(SyntaxError::at(trimmed, pos, trailing_input_problem(trimmed, pos)).into());
         }
 
         // Size, not grouping depth. `check_nesting_depth` above measures
@@ -1318,8 +1356,11 @@ fn parse_or_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 
     loop {
         let trimmed = remaining.trim_start();
-        if let Ok((after_or, _)) =
-            preceded(tag_no_case::<&str, &str, NomErr<'_>>("OR"), multispace1).parse(trimmed)
+        if let Ok((after_or, _)) = preceded(
+            tag_no_case::<&str, &str, NomErr<'_>>(OR_KEYWORD),
+            multispace1,
+        )
+        .parse(trimmed)
         {
             let (rest, right) = parse_and_expr(after_or)?;
             result = Expr::Or(Box::new(result), Box::new(right));
@@ -1353,8 +1394,11 @@ fn parse_and_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 
     loop {
         let trimmed = remaining.trim_start();
-        if let Ok((after_and, _)) =
-            preceded(tag_no_case::<&str, &str, NomErr<'_>>("AND"), multispace1).parse(trimmed)
+        if let Ok((after_and, _)) = preceded(
+            tag_no_case::<&str, &str, NomErr<'_>>(AND_KEYWORD),
+            multispace1,
+        )
+        .parse(trimmed)
         {
             let (rest, right) = parse_not_expr(after_and)?;
             result = Expr::And(Box::new(result), Box::new(right));
@@ -1382,8 +1426,11 @@ fn parse_not_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
 
     // Try "NOT" followed by whitespace
-    if let Ok((after_not, _)) =
-        preceded(tag_no_case::<&str, &str, NomErr<'_>>("NOT"), multispace1).parse(input)
+    if let Ok((after_not, _)) = preceded(
+        tag_no_case::<&str, &str, NomErr<'_>>(NOT_KEYWORD),
+        multispace1,
+    )
+    .parse(input)
     {
         let (rest, inner) = parse_atom(after_not)?;
         return Ok((rest, Expr::Not(Box::new(inner))));
@@ -1797,6 +1844,54 @@ fn trailing_input_problem(expr: &str, pos: usize) -> &'static str {
     }
 }
 
+/// A syntax error [`FilterExpr::parse`] found at a known place in its input.
+///
+/// Its text is exactly what [`render_parse_error`] writes, so every surface
+/// that prints the error prints what it always did. The place is kept as a
+/// value as well, so a surface that edits the expression, such as the TUI's
+/// filter dialog, can put its cursor where the parser stopped instead of
+/// reading the number back out of the text.
+#[derive(Debug)]
+pub(crate) struct SyntaxError {
+    /// Byte offset into the TRIMMED input, on a char boundary.
+    offset: usize,
+    /// The rendered message.
+    message: String,
+}
+
+impl SyntaxError {
+    /// The error for `problem` at byte `pos` of the trimmed `expr`.
+    fn at(expr: &str, pos: usize, problem: &str) -> Self {
+        Self {
+            offset: crate::text::floor_char_boundary(expr, pos),
+            message: render_parse_error(expr, pos, problem),
+        }
+    }
+
+    /// Byte offset of the error in the input with its leading and trailing
+    /// whitespace removed, which is the text the parser read.
+    ///
+    /// Read by the TUI's filter dialog and by the REST and MCP filter
+    /// validation ([`super::filter_request::check_expression`]), so a build
+    /// with none of `tui`, `api` and `mcp` has no caller outside the tests;
+    /// the `cfg_attr` says exactly that.
+    #[cfg_attr(
+        not(any(feature = "tui", feature = "api", feature = "mcp", test)),
+        allow(dead_code)
+    )]
+    pub(crate) fn offset(&self) -> usize {
+        self.offset
+    }
+}
+
+impl std::fmt::Display for SyntaxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SyntaxError {}
+
 /// Render a filter parse error as a multi-line diagnostic: the (possibly
 /// windowed) expression, a caret under the offending position, the operator
 /// list, and a docs pointer. The position printed in the headline is the
@@ -1908,7 +2003,8 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
         ));
     }
 
-    out.push_str("\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)");
+    out.push_str("\nvalid operators: ");
+    out.push_str(&operator_footer_list());
     out.push_str("\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases");
     out
 }
@@ -1941,26 +2037,66 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// Every comparison operator, as the parser reads it, in the order it tries
+/// them: the one table [`parse_operator`] matches against and
+/// `operator_tokens` lists for help, so the two cannot disagree.
+///
+/// Two-character operators come before the one-character `<` and `>`, so a
+/// prefix is never read as the whole operator. No token is a prefix of a later
+/// one of a different length, which `operator_table_tests` checks.
+const OPERATOR_TABLE: [(&str, Operator); 8] = [
+    ("==", Operator::Eq),
+    ("!=", Operator::Ne),
+    ("<=", Operator::Le),
+    (">=", Operator::Ge),
+    ("<", Operator::Lt),
+    (">", Operator::Gt),
+    ("=~", Operator::Regex),
+    ("in_subnet", Operator::InSubnet),
+];
+
+/// The comparison operators the DSL accepts, as they are typed, in the order
+/// of [`OPERATOR_TABLE`]: `==`, `!=`, `<=`, `>=`, `<`, `>`, `=~`, `in_subnet`.
+///
+/// For a help surface that lists the language: the TUI filter dialog's
+/// field help reads it, so its list is the parser's own. The parse error
+/// footer reads the table itself ([`operator_footer_list`]), in every build.
+#[cfg(any(test, feature = "tui"))]
+pub(crate) fn operator_tokens() -> impl Iterator<Item = &'static str> {
+    OPERATOR_TABLE.iter().map(|(token, _)| *token)
+}
+
+/// The operators for a parse error's footer: every [`OPERATOR_TABLE`] token
+/// in its order, the two whose right side is not a plain value followed by
+/// what that side is (`=~ (regex)`, `in_subnet (CIDR)`).
+fn operator_footer_list() -> String {
+    OPERATOR_TABLE
+        .iter()
+        .map(|(token, op)| match op {
+            Operator::Regex => format!("{token} (regex)"),
+            Operator::InSubnet => format!("{token} (CIDR)"),
+            Operator::Eq
+            | Operator::Ne
+            | Operator::Lt
+            | Operator::Le
+            | Operator::Gt
+            | Operator::Ge => (*token).to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Parse a comparison operator token into an `Operator`.
 ///
-/// Two-character operators (`=~`, `==`, `!=`, `<=`, `>=`) are tried
-/// before single-character `<`/`>` so a prefix is never misparsed.
-/// Returns the remainder and the operator, or a nom error when no
-/// operator matches.
+/// The first entry of [`OPERATOR_TABLE`] that `input` starts with wins; the
+/// table puts each two-character operator before its one-character prefix.
+/// Returns the remainder and the operator, or a nom `Tag` error at `input`
+/// when no operator matches.
 fn parse_operator(input: &str) -> IResult<&str, Operator, NomErr<'_>> {
-    alt((
-        // Before the symbolic operators: a word operator cannot be confused
-        // with them, and putting it first keeps the longest-match rule simple.
-        map(tag("in_subnet"), |_| Operator::InSubnet),
-        map(tag("=~"), |_| Operator::Regex),
-        map(tag("=="), |_| Operator::Eq),
-        map(tag("!="), |_| Operator::Ne),
-        map(tag("<="), |_| Operator::Le),
-        map(tag(">="), |_| Operator::Ge),
-        map(tag("<"), |_| Operator::Lt),
-        map(tag(">"), |_| Operator::Gt),
-    ))
-    .parse(input)
+    OPERATOR_TABLE
+        .iter()
+        .find_map(|(token, op)| input.strip_prefix(token).map(|rest| (rest, *op)))
+        .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
 }
 
 /// Scan a quoted string body (everything after the opening `quote`),
@@ -2072,7 +2208,7 @@ fn ends_a_comparison(rest: &str) -> bool {
     if rest.is_empty() || rest.starts_with(')') {
         return true;
     }
-    ["AND", "OR"].iter().any(|word| {
+    [AND_KEYWORD, OR_KEYWORD].iter().any(|word| {
         rest.get(..word.len())
             .is_some_and(|w| w.eq_ignore_ascii_case(word))
             && rest[word.len()..]
@@ -6436,6 +6572,415 @@ mod latest_message_tests {
             !selects_the_call("duration < 1")?,
             "0.905 s, to the last message read, is not the duration"
         );
+        Ok(())
+    }
+}
+
+/// Tests for the place a syntax error carries and for the rule that resolves
+/// typed filter text (#841): the TUI's Expression field reads both.
+#[cfg(test)]
+mod typed_filter_tests {
+    use super::*;
+    use crate::sip::named_filters::NamedFilters;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The syntax error `parse` returns for `input`.
+    fn syntax_error_of(input: &str) -> Result<(usize, String), TestError> {
+        let err = match FilterExpr::parse(input) {
+            Ok(_) => return Err(format!("{input:?} must not parse").into()),
+            Err(e) => e,
+        };
+        let syntax = err
+            .downcast_ref::<SyntaxError>()
+            .ok_or_else(|| format!("{input:?}: not a syntax error: {err}"))?;
+        Ok((syntax.offset(), err.to_string()))
+    }
+
+    /// A `[filters]` table defining `sales`.
+    fn sales_table() -> Result<NamedFilters, TestError> {
+        let mut defs = std::collections::BTreeMap::new();
+        defs.insert("sales".to_string(), "to.user == '7000'".to_string());
+        Ok(NamedFilters::resolve(&defs, &AliasThresholds::default())?)
+    }
+
+    /// The offset is the place the message names: for an unquoted value
+    /// followed by more text, the value's first byte.
+    #[test]
+    fn a_syntax_error_carries_the_offset_its_message_names() -> Result<(), TestError> {
+        let (offset, message) = syntax_error_of("msg_count > 5 garbage")?;
+        assert_eq!(offset, 12, "the offset is where '5' starts");
+        assert!(
+            message.contains("at position 12: '5'"),
+            "the message is unchanged: {message}"
+        );
+        Ok(())
+    }
+
+    /// Trailing input after a complete expression: the offset is where the
+    /// tail starts.
+    #[test]
+    fn trailing_input_is_placed_at_its_start() -> Result<(), TestError> {
+        let (offset, message) = syntax_error_of("msg_count > 5 )")?;
+        assert_eq!(offset, 14, "the stray ')': {message}");
+        Ok(())
+    }
+
+    /// The offset counts in the text the parser read, without the leading
+    /// whitespace it trimmed.
+    #[test]
+    fn the_offset_is_into_the_trimmed_input() -> Result<(), TestError> {
+        let (offset, _) = syntax_error_of("   msg_count > 5 garbage  ")?;
+        assert_eq!(offset, 12, "measured from the first non-space character");
+        Ok(())
+    }
+
+    /// A single `=` is not an operator; the error is at the operator.
+    #[test]
+    fn a_single_equals_sign_is_refused_at_its_place() -> Result<(), TestError> {
+        let (offset, message) = syntax_error_of("msg_count = 5")?;
+        assert!(
+            offset >= "msg_count".len(),
+            "the error is at or after the field: {offset} in {message}"
+        );
+        assert!(
+            message.contains(&format!("at position {offset}")),
+            "the offset and the message agree for ASCII text: {offset} in {message}"
+        );
+        Ok(())
+    }
+
+    /// An error after a multibyte character lands on a char boundary.
+    #[test]
+    fn the_offset_is_on_a_char_boundary_after_multibyte_text() -> Result<(), TestError> {
+        let input = "payload =~ 'é' garbage";
+        let (offset, _) = syntax_error_of(input)?;
+        assert!(
+            input.is_char_boundary(offset),
+            "offset {offset} splits a char"
+        );
+        assert_eq!(&input[offset..], "garbage", "offset {offset}");
+        Ok(())
+    }
+
+    /// An error with no place in the text is not a syntax error.
+    #[test]
+    fn an_empty_expression_has_no_place() -> Result<(), TestError> {
+        let err = match FilterExpr::parse("   ") {
+            Ok(_) => return Err("an empty expression must not parse".into()),
+            Err(e) => e,
+        };
+        assert!(
+            err.downcast_ref::<SyntaxError>().is_none(),
+            "an empty expression has no position: {err}"
+        );
+        Ok(())
+    }
+
+    /// A plain expression resolves to itself.
+    #[test]
+    fn a_plain_expression_resolves_unchanged() -> Result<(), TestError> {
+        let text = "payload =~ 'X-Foo' AND msg_count > 5";
+        let resolved = resolve_typed_filter(text, &sales_table()?, &AliasThresholds::default())?;
+        assert_eq!(resolved, text, "nothing to resolve");
+        Ok(())
+    }
+
+    /// An `@name` resolves through the table passed in.
+    #[test]
+    fn a_reference_resolves_through_the_given_table() -> Result<(), TestError> {
+        let resolved = resolve_typed_filter(
+            "@sales AND msg_count > 5",
+            &sales_table()?,
+            &AliasThresholds::default(),
+        )?;
+        assert_eq!(
+            resolved, "(to.user == '7000') AND msg_count > 5",
+            "@sales replaced by its grouped definition"
+        );
+        Ok(())
+    }
+
+    /// A diagnostic alias name as the whole text expands, as `--filter
+    /// one-way` does.
+    #[test]
+    fn a_bare_alias_name_expands() -> Result<(), TestError> {
+        let resolved =
+            resolve_typed_filter("one-way", &sales_table()?, &AliasThresholds::default())?;
+        assert_eq!(resolved, "one_way == true", "the alias's expansion");
+        Ok(())
+    }
+
+    /// A name the table does not define is refused, naming what it defines.
+    #[test]
+    fn an_undefined_reference_is_refused_naming_the_defined_ones() -> Result<(), TestError> {
+        let err = match resolve_typed_filter("@nope", &sales_table()?, &AliasThresholds::default())
+        {
+            Ok(text) => return Err(format!("'@nope' resolved to {text:?}").into()),
+            Err(e) => e,
+        };
+        assert!(err.contains("'@nope' is not a defined filter"), "{err}");
+        assert!(err.contains("sales"), "names what is defined: {err}");
+        Ok(())
+    }
+}
+
+/// The operator and keyword lists a help surface reads are the parser's own:
+/// each listed operator parses, each operator that parses is listed, and the
+/// table's order cannot shadow a longer operator behind a shorter one.
+#[cfg(test)]
+mod operator_table_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Every listed operator is one whole operator to the parser.
+    #[test]
+    fn each_listed_operator_parses_whole() -> Result<(), TestError> {
+        let tokens: Vec<&str> = operator_tokens().collect();
+        assert_eq!(
+            tokens,
+            ["==", "!=", "<=", ">=", "<", ">", "=~", "in_subnet"],
+            "the help lists the parser's operators in its order"
+        );
+        for token in tokens {
+            let (rest, _) = parse_operator(token).map_err(|e| format!("{token}: {e}"))?;
+            assert!(
+                rest.is_empty(),
+                "'{token}' parsed only in part: rest {rest:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Every string the parser takes whole as an operator is in the list: a
+    /// new operator added to the parser cannot be left out of the help.
+    #[test]
+    fn every_operator_the_parser_takes_is_listed() {
+        let listed: Vec<&str> = operator_tokens().collect();
+        let symbols = ['=', '!', '<', '>', '~'];
+        let mut probes: Vec<String> = symbols.iter().map(char::to_string).collect();
+        for a in symbols {
+            for b in symbols {
+                probes.push(format!("{a}{b}"));
+            }
+        }
+        probes.extend(["in_subnet", "in", "IN_SUBNET", "subnet"].map(str::to_owned));
+        let mut taken = 0;
+        for probe in &probes {
+            if let Ok(("", _)) = parse_operator(probe) {
+                taken += 1;
+                assert!(
+                    listed.contains(&probe.as_str()),
+                    "the parser takes '{probe}' but the list leaves it out"
+                );
+            }
+        }
+        assert_eq!(taken, 8, "the probes reach every operator: {listed:?}");
+    }
+
+    /// No operator is a prefix of one tried after it, which would make the
+    /// later one unreachable.
+    #[test]
+    fn no_operator_shadows_a_later_one() {
+        for (i, (first, _)) in OPERATOR_TABLE.iter().enumerate() {
+            for (later, _) in &OPERATOR_TABLE[i + 1..] {
+                assert!(
+                    !later.starts_with(first),
+                    "'{first}' is tried before '{later}' and would cut it short"
+                );
+            }
+        }
+    }
+
+    /// A string that is not an operator is refused, as before the table.
+    #[test]
+    fn a_non_operator_is_refused() {
+        for probe in ["", "=", "!", "~", "<>", "in", " ==", "IN_SUBNET"] {
+            assert!(
+                !matches!(parse_operator(probe), Ok(("", _))),
+                "'{probe}' must not parse as a whole operator"
+            );
+        }
+    }
+
+    /// The listed combining words are the ones the parser joins terms with,
+    /// in any case, and a word it does not know is refused.
+    #[test]
+    fn the_listed_keywords_combine_terms() -> Result<(), TestError> {
+        assert_eq!(
+            LOGICAL_KEYWORDS,
+            ["AND", "OR", "NOT"],
+            "the parser's three words"
+        );
+        for word in LOGICAL_KEYWORDS {
+            for spelled in [word.to_string(), word.to_lowercase()] {
+                let text = if *word == NOT_KEYWORD {
+                    format!("{spelled} method == 'BYE'")
+                } else {
+                    format!("method == 'BYE' {spelled} method == 'ACK'")
+                };
+                FilterExpr::parse(&text).map_err(|e| format!("{text}: {e}"))?;
+            }
+        }
+        assert!(
+            FilterExpr::parse("method == 'BYE' XOR method == 'ACK'").is_err(),
+            "a word the parser does not know is refused"
+        );
+        Ok(())
+    }
+}
+
+/// The "valid operators" footer of a parse error is built from
+/// [`OPERATOR_TABLE`], so it names every operator the parser accepts,
+/// `in_subnet` included, in every build.
+#[cfg(test)]
+mod operator_footer_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The footer line of a rendered error, without its leading newline.
+    fn footer_of(rendered: &str) -> Result<&str, TestError> {
+        Ok(rendered
+            .lines()
+            .find(|l| l.starts_with("valid operators: "))
+            .ok_or_else(|| format!("no footer line in:\n{rendered}"))?)
+    }
+
+    /// The footer of a real parse error names `in_subnet`.
+    #[test]
+    fn a_parse_error_footer_names_in_subnet() -> Result<(), TestError> {
+        let err = FilterExpr::parse("src.ip @@ '198.51.100.0/24'")
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
+        assert!(
+            footer_of(&err)?.contains("in_subnet"),
+            "the footer must list in_subnet, got:\n{err}"
+        );
+        Ok(())
+    }
+
+    /// Every operator of the table appears in the footer.
+    #[test]
+    fn the_footer_lists_every_table_operator() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        let footer = footer_of(&out)?;
+        for (token, _) in OPERATOR_TABLE {
+            assert!(footer.contains(token), "footer lacks '{token}': {footer}");
+        }
+        Ok(())
+    }
+
+    /// The footer lists the operators in the table's order.
+    #[test]
+    fn the_footer_keeps_the_table_order() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        let footer = footer_of(&out)?;
+        let listed: Vec<&str> = footer
+            .trim_start_matches("valid operators: ")
+            .split(", ")
+            .map(|item| item.split(' ').next().unwrap_or(item))
+            .collect();
+        let table: Vec<&str> = OPERATOR_TABLE.iter().map(|(t, _)| *t).collect();
+        assert_eq!(listed, table, "footer order must be the table's: {footer}");
+        Ok(())
+    }
+
+    /// The exact footer: each token once, `=~` and `in_subnet` explained.
+    #[test]
+    fn the_footer_text_is_exact() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        assert_eq!(
+            footer_of(&out)?,
+            "valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)",
+            "the footer wording"
+        );
+        Ok(())
+    }
+
+    /// The footer appears once per rendered error.
+    #[test]
+    fn the_footer_appears_once() -> Result<(), TestError> {
+        let out = render_parse_error("a == ", 5, "unexpected end of input");
+        let count = out
+            .lines()
+            .filter(|l| l.starts_with("valid operators: "))
+            .count();
+        assert_eq!(count, 1, "one footer line in:\n{out}");
+        Ok(())
+    }
+
+    /// The unknown-field hint path still ends with the same footer.
+    #[test]
+    fn the_unknown_field_error_has_the_same_footer() -> Result<(), TestError> {
+        let err = FilterExpr::parse("frm.user == 'alice'")
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
+        let plain = render_parse_error("a", 0, "unexpected input");
+        assert_eq!(
+            footer_of(&err)?,
+            footer_of(&plain)?,
+            "every error carries one footer"
+        );
+        Ok(())
+    }
+
+    /// The footer is followed by the docs pointer line, as before.
+    #[test]
+    fn the_docs_pointer_follows_the_footer() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        let lines: Vec<&str> = out.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("valid operators: "))
+            .ok_or("no footer")?;
+        assert!(
+            lines
+                .get(at + 1)
+                .is_some_and(|l| l.starts_with("see docs/filter-dsl.md")),
+            "the docs pointer follows the footer:\n{out}"
+        );
+        Ok(())
+    }
+
+    /// A typed `in_subnet` with a bad value still names the operator list
+    /// that holds it.
+    #[test]
+    fn an_in_subnet_value_error_lists_in_subnet() -> Result<(), TestError> {
+        let err = FilterExpr::parse("src.ip in_subnet")
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
+        assert!(footer_of(&err)?.contains("in_subnet (CIDR)"), "got:\n{err}");
+        Ok(())
+    }
+
+    /// Every page and example that quotes the footer quotes the parser's
+    /// own line, so a reader never sees an operator list the parser does
+    /// not print.
+    #[test]
+    fn every_quoted_footer_matches_the_parser() -> Result<(), TestError> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let rendered = render_parse_error("a", 0, "unexpected input");
+        let want = footer_of(&rendered)?;
+        let mut seen = 0;
+        for rel in [
+            "docs/filter-dsl.md",
+            "docs/rest-api.md",
+            "docs/mcp-tools-signaling.md",
+            "examples/filter_dialogs.rs",
+        ] {
+            let text = std::fs::read_to_string(root.join(rel))?;
+            for (at, _) in text.match_indices("valid operators: ") {
+                let line = text[at..].split(['\n', '\\']).next().ok_or("empty match")?;
+                assert_eq!(line, want, "{rel} quotes a stale footer");
+                seen += 1;
+            }
+        }
+        assert!(seen >= 5, "the four files quote the footer {seen} times");
         Ok(())
     }
 }

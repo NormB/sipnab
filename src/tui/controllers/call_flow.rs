@@ -5,7 +5,7 @@
 //! (raw message, message diff, combined detail).
 
 use crate::tui::{
-    App, Arc, KeyCode, KeyEvent, KeyModifiers, Keymap, Popup, RelayStatsMode, View, call_flow,
+    App, Arc, KeyCode, KeyEvent, KeyModifiers, Keymap, RelayStatsMode, View, call_flow,
     open_name_dialog_for, open_note_editor, open_save_popup,
 };
 
@@ -634,10 +634,7 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
                 Some("Compare: press Space on first message, then Space on second".to_string());
         }
         CallFlowAction::OpenFilterDialog => {
-            app.filter_dialog.focused_field = 0;
-            app.filter_dialog.sync_cursor();
-            app.filter_dialog.error = None;
-            app.active_popup = Some(Popup::FilterDialog);
+            crate::tui::controllers::filter_dialog::open_filter_dialog(app);
         }
         CallFlowAction::ClearFilter => {
             app.filter_dialog.clear();
@@ -1553,6 +1550,7 @@ mod tests {
     use crate::capture::parse::TransportProto;
     use crate::sip::SipMessage;
     use crate::sip::parser::parse_sip;
+    use crate::tui::Popup;
     use crate::tui::controllers::test_support::*;
     use chrono::{DateTime, TimeDelta, Utc};
 

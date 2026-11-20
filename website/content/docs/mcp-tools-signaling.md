@@ -23,9 +23,10 @@ the other bundles and finds any tool by name.
 | Tool | Parameters | Returns |
 |---|---|---|
 | [`timeline`](#timeline) | `bucket_seconds?` | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
-| [`group_dialogs`](#group-dialogs) | `by`, `metrics?`, `filter?`, `top_n?` | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
-| [`search_by_time`](#search-by-time) | `start`, `end?`, `filter?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) window |
-| [`validate_filter`](#validate-filter) | `expr` | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
+| [`group_dialogs`](#group-dialogs) | `by`, `metrics?`, `filter?`, `named?`, `top_n?` | Carrier metrics per group — ASR, NER, ACD, post-dial delay, MOS, retransmissions — each beside the population it rests on |
+| [`search_by_time`](#search-by-time) | `start`, `end?`, `filter?`, `named?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | Dialogs whose first message falls in an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) window |
+| [`validate_filter`](#validate-filter) | `expr` | Whether a filter DSL expression parses, the parser's message and position when it does not, and how many dialogs it selects — with no rows |
+| [`list_named_filters`](#list-named-filters) | (none) | The operator's named filters from the `[filters]` table, each name with its definition as written |
 | [`tail_dialogs`](#tail-dialogs) | `cursor?`, `limit?`, `fields?`, `max_response_bytes?` | Cursor-based incremental dialog fetch |
 | [`await_condition`](#await-condition) | `filter`, `timeout_seconds?`, `poll_interval_ms?` | Waits until a filter matches or a deadline passes, whichever is first, so a live capture costs one call instead of a polling loop |
 | [`find_correlated`](#find-correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
@@ -131,6 +132,7 @@ rests on.
 | `by` | string | ONE of `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`, `to_domain`, `hour`, `next_hop`. Anything else — including two names in one string, such as `"src.ip,hour"` — fails with `invalid_params` naming all twelve. | Required. |
 | `metrics?` | string[]? | Any of `count`, `asr`, `ner`, `acd`, `pdd_p50`, `pdd_p95`, `mos_p10`, `retransmit_rate`. The tool sorts and de-duplicates the list, so the key order in the answer never depends on the order you wrote. An unknown name fails naming all eight. | All eight. |
 | `filter?` | string? | Alias or DSL, applied before grouping — the same vocabulary [`list_dialogs`](@/docs/mcp-tools-core.md#list-dialogs) takes. | No filter — the whole store. |
+| `named?` | string? | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](@/docs/mcp-tools-core.md#list-dialogs) takes it. | `filter` decides. |
 | `top_n?` | integer? | Bounded by `--mcp-max-rows`, the same knob that bounds dialog rows. Everything past it lands in `other_count` rather than disappearing. | 50, the same default as any row limit. |
 
 The example runs against
@@ -265,6 +267,7 @@ Returns dialogs whose first message falls in the window, oldest first.
 | `start` | string | An inclusive RFC 3339 instant, such as `"2026-07-31T14:00:00Z"`. A malformed one fails with `start 'x' is not RFC 3339`. | Required — the call fails. |
 | `end?` | string? | An exclusive RFC 3339 instant after `start`. At or before `start` fails with `invalid_params` (-32602). | Everything from `start` onward. |
 | `filter?` | string? | An alias name or a raw [DSL](@/docs/filter-dsl.md) expression, ANDed with the window. | The window alone decides the page. |
+| `named?` | string? | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](@/docs/mcp-tools-core.md#list-dialogs) takes it. | `filter` decides. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor?` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog in the window. |
 | `fields?` | string[]? | Field names to keep on each row, plus `call_id`. The row here is already narrow, so name one of the four below — see [Narrowing a row with `fields`](@/docs/mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
@@ -351,13 +354,23 @@ with `invalid_params`. This one answers `valid: false` with the parser's own
 text in `error`, position, caret and hint included. It raises a JSON-RPC
 error only for an internal failure.
 
+`position` is the place the parser stopped as a number: the 0-based
+character column in `expr` with its leading and trailing whitespace removed,
+the number `error` prints after `at position`. It is `null` when the
+expression parsed, when the parser names no place (an empty expression, an
+undefined `@name`, a depth or size limit), and when the error is inside the
+expansion of an alias or an `@name`. [`GET
+/v1/filters/validate`](@/docs/api.md#get-v1-filters-validate) reports the same
+`position` over REST.
+
 ```jsonc
 // validate_filter { "expr": "state = Failed" }
 {
   "schema_version": 1,
   "expr": "state = Failed",
   "valid": false,
-  "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
+  "error": "invalid filter 'state = Failed': unexpected input at position 6: '='\n  state = Failed\n        ^\nvalid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases",
+  "position": 6,
   "total_matched": null,
   "total_dialogs": 2,
   "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
@@ -379,6 +392,7 @@ cursor and no truncation. The example runs against
   "expr": "state == 'Completed' and rtp.mos < 4.5",
   "valid": true,
   "error": null,
+  "position": null,
   "total_matched": 1,
   "total_dialogs": 2,
   "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
@@ -396,6 +410,72 @@ Aliases expand here as they do in every other tool, and this tool uses the
 same filter compiler, so `list_dialogs` accepts an expression that validates
 here. The response carries no provenance note, because it contains
 nothing read from the capture.
+
+### `list_named_filters`
+
+Lists the [named filters](@/docs/filter-dsl.md#named-filters) the operator defined
+in the config file's `[filters]` table: each name and its definition as
+written. It takes no arguments and reads no dialog. The answer is the one
+[`GET /v1/filters`](@/docs/api.md#get-v1-filters) serializes.
+
+Every tool that takes `filter` also takes `named`: the name of one entry, or
+of a diagnostic alias, in place of `filter`. `named: "lab-failed"` selects
+what `filter: "@lab-failed"` selects, and sipnab accepts a leading `@`. The
+tools are [`list_dialogs`](@/docs/mcp-tools-core.md#list-dialogs),
+[`aggregate_dialogs`](@/docs/mcp-tools-core.md#aggregate-dialogs),
+[`find_problems`](@/docs/mcp-tools-core.md#find-problems),
+[`search_by_time`](#search-by-time), [`group_dialogs`](#group-dialogs),
+[`top_talkers`](@/docs/mcp-tools-security.md#top-talkers) and
+[`export_vcon`](@/docs/mcp-tools-vcon.md#export-vcon).
+
+**Prerequisites.** A config file with a
+[`[filters]`](@/docs/config.md#filters) table, passed with `--config` to
+the run that serves MCP. sipnab reads the table when it starts, and a name
+saved with `F2` in the terminal UI of the same run joins it at once. Nothing
+changes on any other system.
+
+**Steps.** With this `sipnab.toml`:
+
+```toml
+[filters]
+lab-net    = "src.ip in_subnet '192.0.2.0/24'"
+lab-failed = "@lab-net AND state == 'Failed'"
+```
+
+serve MCP over
+[`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap)
+with `sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config
+sipnab.toml --mcp`, then call:
+
+```jsonc
+// list_named_filters {}
+{
+  "schema_version": 1,
+  "filters": [
+    { "name": "lab-failed", "definition": "@lab-net AND state == 'Failed'" },
+    { "name": "lab-net", "definition": "src.ip in_subnet '192.0.2.0/24'" }
+  ]
+}
+```
+
+**Verify.** `list_dialogs { "named": "lab-failed" }` returns the two failed
+calls from `192.0.2.0/24`, `busy-3a2b1c@192.0.2.30` and
+`unavail-4e5f60@192.0.2.50`, the dialogs `filter: "@lab-failed"` returns.
+
+**Troubleshoot.**
+
+- **`invalid_choice` on `named`.** No entry or alias has that name. The
+  message lists the defined names, and `data.valid_values` carries every name
+  `named` accepts, the `[filters]` names first:
+
+  ```json
+  {"param": "named", "reason": "invalid_choice", "valid_values": ["lab-failed", "lab-net", "problems", "slow-setup", "short-calls", "one-way", "nat-issues", "codec-asym", "ptime-asym", "payload-asym", "duration-asym", "late-media"]}
+  ```
+
+- **`conflicting_params`.** The call gave `filter` and `named` together. Give
+  one, or write the name into the expression as `@name`.
+- **An empty `filters` list.** The run read no `[filters]` table: check the
+  `--config` path.
 
 ### `tail_dialogs`
 

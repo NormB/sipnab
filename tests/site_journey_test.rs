@@ -6954,7 +6954,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 334 -> 335 (cross pinned): release.yml's comment on "Install cross
     // (Linux)" names scripts/check-binary-size.sh. Measurement: the scan read
     // 335 with it staged.
-    const EXPECTED_REFERENCES: usize = 335;
+    // 335 -> 337 (DCO): pr-text.yml's `dco` job names
+    // `scripts/check-dco.py` in its comment and in its command (+2).
+    // 337 -> 338 (CLA retired): the `dco` job's comment in pr-text.yml names
+    // `tests/branch_protection_drift_test.rs`.
+    const EXPECTED_REFERENCES: usize = 338;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -8793,84 +8797,9 @@ fn cla_page_reproduces_the_agreement() -> Result<(), TestError> {
     Ok(())
 }
 
-/// Every route to the signing flow names THIS repository, and the sentence that
-/// signs the agreement stays verbatim.
-///
-/// Two failures hide here, and neither one announces itself.
-///
-/// CLA Assistant keys signatures on `<owner>/<repo>` in the URL. A fork, a
-/// rename, or a copied badge line leaves a link that loads a perfectly normal
-/// signing page for a DIFFERENT project — the contributor signs, sees success,
-/// and this repository records nothing. So the owner and repository come from
-/// `Cargo.toml`'s `repository` field rather than a literal here: one identity,
-/// declared once.
-///
-/// The second is the sign-off sentence. The bot matches the whole string, so
-/// house-style editing — dropping "Document", lowercasing "CLA", trimming "I
-/// hereby" — turns a signature into an ordinary comment. Nothing rejects it and
-/// nothing tells the contributor, who has done the one thing asked of them and
-/// is still blocked.
-#[test]
-fn the_signing_route_names_this_repository_and_quotes_the_bot_verbatim() -> Result<(), TestError> {
-    // The exact string CLA Assistant accepts as a signature. Editing this line
-    // does not change what the bot matches; it only stops the docs from saying
-    // so.
-    const SIGN_OFF: &str = "I have read the CLA Document and I hereby sign the CLA";
-
-    let contributing = read("CONTRIBUTING.md")?;
-    assert!(
-        contributing.contains(SIGN_OFF),
-        "CONTRIBUTING.md no longer quotes the sentence CLA Assistant accepts:\n  \
-         {SIGN_OFF:?}\n\
-         The bot matches it whole, so a contributor who posts a reworded \
-         version signs nothing and is told nothing."
-    );
-
-    let slug = regex::Regex::new(r"https://github\.com/([\w.-]+)/([\w.-]+)")?
-        .captures(&read("Cargo.toml")?)
-        .map(|c| format!("{}/{}", &c[1], &c[2]))
-        .ok_or("Cargo.toml has no github.com `repository` URL to take the slug from")?;
-
-    // Both shapes the service uses: the signing page `cla-assistant.io/o/r` and
-    // the README badge `cla-assistant.io/readme/badge/o/r`.
-    let link = regex::Regex::new(r"cla-assistant\.io/(?:readme/badge/)?([\w.-]+)/([\w.-]+)")?;
-
-    let mut wrong = Vec::new();
-    let mut seen = 0usize;
-    for file in [
-        "README.md",
-        "CONTRIBUTING.md",
-        "MAINTAINERS.md",
-        "website/content/cla.md",
-    ] {
-        for (i, line) in read(file)?.lines().enumerate() {
-            for c in link.captures_iter(line) {
-                seen += 1;
-                let found = format!("{}/{}", &c[1], &c[2]);
-                if found != slug {
-                    wrong.push(format!("{file}:{}: names {found}", i + 1));
-                }
-            }
-        }
-    }
-
-    // A regex that matches nothing reports every link correct.
-    assert!(
-        seen >= 4,
-        "only {seen} cla-assistant.io repository links found across README, \
-         CONTRIBUTING, MAINTAINERS and the site page — the links were removed \
-         or reshaped, and this gate is checking almost nothing"
-    );
-    assert!(
-        wrong.is_empty(),
-        "these links send a contributor to the signing page for a repository \
-         other than {slug}:\n  {}\n\
-         The signature lands against whatever project the URL names, so this \
-         one records none of it.",
-        wrong.join("\n  ")
-    );
-    Ok(())
-}
+// The signing-route test retired with the CLA: no page sends a contributor to
+// CLA Assistant now. tests/security_policy_doc_test.rs (`mod agreement`)
+// refuses a page that does.
 
 /// `website/README.md` describes the deploy that actually happens.
 ///

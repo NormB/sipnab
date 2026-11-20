@@ -90,7 +90,8 @@ Any other key leaves the question on screen.
 
 ## Copying text
 
-Clipboard copies (`y` in the Raw Message view, `E` in the Call Flow view) use
+Clipboard copies (`y` in the Raw Message view, `E` in the Call Flow view, `Y`
+in the Call List) use
 **OSC 52**. This is an escape sequence the terminal maps to your system
 clipboard.
 
@@ -156,6 +157,7 @@ To start every session with capture off, set `mouse_capture = false` under
 | S | Open the **Relay statistics** view — asks the live relay for its own counters (`s` asks what this capture saw, `S` asks what the relay says). See [Relay statistics](#relay-statistics) |
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | T | Open the call timeline for the selected dialog (Esc / q closes it) |
+| Y | Copy the view filter in force as a `sipnab` command line with `--filter`, and show it. See [Run the same filter from a shell](@/docs/tui.md#run-the-same-filter-from-a-shell) |
 | O | Open pcap file (File Open dialog) |
 | F8 | Open Settings popup **(configurable: `settings`)** |
 | Tab | Switch to RTP Streams view |
@@ -712,11 +714,13 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 | Enter | Apply filter (or cancel if Cancel button focused) |
 | Tab | Focus next field |
 | Shift+Tab / BackTab | Focus previous field |
-| Down | Next field (or checkbox down) |
-| Up | Previous field (or checkbox up) |
+| Down | Next field (or checkbox down). In Expression during a recall: the next newer expression, then the text you typed |
+| Up | Previous field (or checkbox up). In Expression: the expression applied before, newest first; past the oldest, the previous field |
 | Left / Right | Move within checkboxes or text cursor |
 | Space | Toggle checkbox / activate button |
-| F9 | Clear all fields and active filter, close popup |
+| F1 | Show or hide the Filter DSL field names and operators in place of the method boxes. Esc hides them first |
+| F2 | Save the dialog's filter as a `[filters]` entry: type the name, Enter saves, Esc closes the prompt. See [Save the dialog's filter under a name](@/docs/tui.md#save-the-dialog-s-filter-under-a-name) |
+| F9 | Clear all fields, the Expression field included, and the active filter, close popup |
 | Backspace / Delete | Text editing in focused text field |
 | Home / End | Jump to start/end of text field |
 | (any char) | Insert character in focused text field |
@@ -1104,23 +1108,24 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Filter Dialog</span>
 </div>
-<pre class="terminal-body"><span class="t-muted"> ┌ Filter ──────────────────────────────────────────────┐</span>
-<span class="t-muted"> │</span>  <span class="t-header">From user:</span>       <span class="t-selected">[alice                          ]</span>  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">To user:</span>         [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Source IP:</span>       [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Destination IP:</span>  [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Text in message:</span> [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Header:</span>          [<span class="t-muted">Name: text</span>                     ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">After:</span>           [<span class="t-muted">2026-07-07T08:00:00Z</span>           ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Before:</span>          [<span class="t-muted">2026-07-07T09:00:00Z</span>           ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Named filter:</span>    [<span class="t-muted">sales, support      </span>           ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  ──────────────────────────────────────────────────  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  All       <span class="t-good">[*]</span>                                       <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  REGISTER  <span class="t-good">[*]</span>             OPTIONS   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  INVITE    <span class="t-good">[*]</span>             PUBLISH   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
-<span class="t-muted"> │</span>     <span class="t-good">[ Filter ]</span>                 <span class="t-muted">[ Cancel ]</span>            <span class="t-muted">│</span>
-<span class="t-muted"> └──────────────────────────────────────────────────────┘</span>
-<span class="t-muted"> Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear</span></pre>
+<pre class="terminal-body"><span class="t-muted"> ┌ Filter ──────────────────────────────────────────────────────────────────┐</span>
+<span class="t-muted"> │</span>  <span class="t-header">From user:</span>       <span class="t-selected">[alice                                              ]</span>  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">To user:</span>         [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Source IP:</span>       [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Destination IP:</span>  [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Text in message:</span> [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Header:</span>          [<span class="t-muted">Name: text</span>                                         ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">After:</span>           [<span class="t-muted">2026-07-07T08:00:00Z</span>                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Before:</span>          [<span class="t-muted">2026-07-07T09:00:00Z</span>                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Named filter:</span>    [<span class="t-muted">sales, support</span>                                     ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Expression:</span>      [<span class="t-muted">any --filter expression</span>                            ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  ──────────────────────────────────────────────────────────────────────  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  All       <span class="t-good">[*]</span>                                                           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  REGISTER  <span class="t-good">[*]</span>                       OPTIONS   <span class="t-good">[*]</span>                       <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  INVITE    <span class="t-good">[*]</span>                       PUBLISH   <span class="t-good">[*]</span>                       <span class="t-muted">│</span>
+<span class="t-muted"> │</span>     <span class="t-good">[ Filter ]</span>                           <span class="t-muted">[ Cancel ]</span>                      <span class="t-muted">│</span>
+<span class="t-muted"> └──────────────────────────────────────────────────────────────────────────┘</span>
+<span class="t-muted"> Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear  F1 Fields</span></pre>
 </div>
 
 Each label says what its field matches:
@@ -1136,10 +1141,31 @@ Each label says what its field matches:
 - Named filter takes the names of [`[filters]`](@/docs/config.md#filters)
   entries, separated by spaces, with or without the leading `@`. While it is
   empty, it lists the names the config defines.
+- Expression takes any [Filter DSL](@/docs/filter-dsl.md) expression, typed as it
+  is: the text `--filter` takes, `@name` references and alias names included.
+  - It joins the other fields with AND: a dialog must match it and every
+    other field to stay in the list.
+  - A session started with `--filter` or `[filter] expression` opens with
+    that text here, already applied.
+  - When Enter refuses it, the dialog stays open with the parser's message
+    and position, the cursor moves to that position, and the filter in force
+    stays.
+  - Up recalls the expressions applied earlier in the session, newest first,
+    and Down walks back to the text you typed. The session keeps the newest
+    50, each once.
+  - `F1` lists every field name and operator the DSL takes.
+  - [Filter with an expression](@/docs/tui.md#filter-with-an-expression)
+    walks through it.
 
-> **Tip:** Press `F9` to clear every field and the method boxes at once. For
-anything the fields cannot say, the [Filter DSL](@/docs/filter-dsl.md) takes the full
-expression.
+> **Tip:** Press `F9` to clear every field and the method boxes at once,
+the Expression field included.
+
+`F2` saves the dialog's filter under a name in `[filters]`. When sipnab may
+write no config file, it keeps the name for the session and the dialog shows
+the entry to add to a file. `F3` copies that entry, and `Esc` closes the
+note. [Save the dialog's filter under a
+name](@/docs/tui.md#save-the-dialog-s-filter-under-a-name) walks through
+it.
 
 Status line 3 shows the applied selections as a summary, one short item per
 field:
@@ -1148,6 +1174,7 @@ field:
   as in `INVITE`.
 - `From~alice` names the field and the text it matches.
 - `@sales` names a `[filters]` entry.
+- `expr msg_count > 5` repeats a typed expression.
 - `after 2026-07-07T08:00:00Z` repeats a time bound.
 
 For example, `F7: 7 methods, From~alice, To~bob · F full`.

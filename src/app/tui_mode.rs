@@ -337,6 +337,38 @@ fn tui_capture_mode(cli: &Cli, config: &Config) -> String {
     }
 }
 
+/// The words that name the session's capture source, for the command line the
+/// call list's `Y` copies.
+///
+/// The rule [`tui_capture_mode`] labels the source by: every `-I` input as
+/// given (and `--recursive`), else the interface (`-d`, or `[capture] device`)
+/// and the HEP listener (`-L`, or `[hep] listen`). Empty when the run named
+/// none, as a live capture on the default interface does.
+fn tui_capture_source(cli: &Cli, config: &Config) -> Vec<String> {
+    let mut words = Vec::new();
+    if !cli.capture_args.input.is_empty() {
+        for input in &cli.capture_args.input {
+            words.extend(["-I".to_owned(), input.clone()]);
+        }
+        if cli.capture_args.recursive {
+            words.push("--recursive".to_owned());
+        }
+        return words;
+    }
+    let device = cli
+        .capture_args
+        .device
+        .as_ref()
+        .or(config.capture.device.as_ref());
+    if let Some(device) = device {
+        words.extend(["-d".to_owned(), device.clone()]);
+    }
+    if let Some(hep) = cli.hep_listen(config) {
+        words.extend(["-L".to_owned(), hep.to_owned()]);
+    }
+    words
+}
+
 /// The From/To column's starting mode: the CLI flag wins, then the
 /// `[display] from_to` config value, else the built-in default. A value that
 /// names no mode is refused at startup by
@@ -777,6 +809,9 @@ pub fn run_tui_mode(
             capture_options: tui_pipeline_options(&cli, &config, no_rtp),
             rescan_path: (cli.capture_args.input.len() == 1)
                 .then(|| std::path::PathBuf::from(&cli.capture_args.input[0])),
+            // The source words the call list's `Y` puts in the command line
+            // it copies.
+            capture_source: tui_capture_source(&cli, &config),
             // The same test `tui_capture_mode` uses for its `Offline (...)`
             // label: any `-I` input means no live capture runs.
             offline: !cli.capture_args.input.is_empty(),
@@ -784,6 +819,10 @@ pub fn run_tui_mode(
             notes_path,
             // -c / --calls-only: the session opens filtered to calls (#474).
             calls_only: cli.mode_args.calls_only,
+            // --filter / [filter] expression: pre-filled in F7's Expression
+            // field and applied (#841).
+            filter_expression: crate::app::bootstrap::typed_filter_text(&cli, &config)
+                .map(str::to_owned),
             mouse_capture_off: tui_mouse_capture_off(&config),
             view_filter_detail: tui_view_filter_detail(&config),
         },
@@ -2657,6 +2696,74 @@ mod tests {
         assert_eq!(
             super::tui_capture_mode(&cli, &Config::default()),
             "Online (HEP listener udp:0.0.0.0:9060)"
+        );
+        Ok(())
+    }
+
+    // ── The source words of the copied command line (`Y`) ─────────────────
+
+    /// Each `-I` input is kept as given, in order, with `--recursive`.
+    #[test]
+    fn the_copied_source_names_each_input_as_given() -> Result<(), TestError> {
+        let cli = cli_from(&["-I", "/cases/a b.pcap", "-I", "dir", "--recursive"]);
+        assert_eq!(
+            super::tui_capture_source(&cli, &Config::default()),
+            ["-I", "/cases/a b.pcap", "-I", "dir", "--recursive"],
+            "the inputs as typed"
+        );
+        Ok(())
+    }
+
+    /// An input beats an interface, as it does for the status bar: `-I`
+    /// never opens one.
+    #[test]
+    fn the_copied_source_prefers_the_input_over_the_interface() -> Result<(), TestError> {
+        let cli = cli_from(&["-I", "a.pcap", "-d", "eth0"]);
+        assert_eq!(
+            super::tui_capture_source(&cli, &Config::default()),
+            ["-I", "a.pcap"],
+            "no -d with -I"
+        );
+        Ok(())
+    }
+
+    /// `-d` names the interface; the config file's device stands in for it.
+    #[test]
+    fn the_copied_source_names_the_interface() -> Result<(), TestError> {
+        let mut config = Config::default();
+        config.capture.device = Some("eth1".to_string());
+        assert_eq!(
+            super::tui_capture_source(&cli_from(&["-d", "eth0"]), &config),
+            ["-d", "eth0"],
+            "the flag wins"
+        );
+        assert_eq!(
+            super::tui_capture_source(&cli_from(&[]), &config),
+            ["-d", "eth1"],
+            "the config's device"
+        );
+        Ok(())
+    }
+
+    /// A HEP listener is named with `-L`, beside an interface.
+    #[test]
+    fn the_copied_source_names_a_hep_listener() -> Result<(), TestError> {
+        let cli = cli_from(&["-d", "eth0", "-L", "udp:0.0.0.0:9060"]);
+        assert_eq!(
+            super::tui_capture_source(&cli, &Config::default()),
+            ["-d", "eth0", "-L", "udp:0.0.0.0:9060"],
+            "both sources"
+        );
+        Ok(())
+    }
+
+    /// A run that names no source has no source words.
+    #[test]
+    fn the_copied_source_is_empty_when_none_is_named() -> Result<(), TestError> {
+        assert_eq!(
+            super::tui_capture_source(&cli_from(&[]), &Config::default()),
+            Vec::<String>::new(),
+            "the default interface needs no words"
         );
         Ok(())
     }

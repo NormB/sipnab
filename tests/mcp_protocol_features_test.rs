@@ -309,6 +309,10 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         ("tail_dialogs", json!({})),
         ("timeline", json!({"bucket_seconds": 60})),
         ("validate_filter", json!({"expr": "response_code >= 400"})),
+        // A stock server defines no `[filters]`, so this checks the empty
+        // list's shape; the rows' shape is checked in-process by
+        // `named_filters_api_test`, which installs a table.
+        ("list_named_filters", json!({})),
         ("server_capabilities", json!({})),
         ("list_tls_libraries", json!({})),
         // One second: the smallest window the tool accepts, because this is

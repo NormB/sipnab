@@ -527,6 +527,7 @@ pub(in crate::tui) fn fkey_bar_items(
             Popup::G729Install => vec![("Y", "Download"), ("N/Esc", "Not now")],
             Popup::NoteEditor => vec![("Enter", "Keep"), ("Esc", "Cancel")],
             Popup::UnsavedNotes => vec![("Y", "Open"), ("N/Esc", "Keep")],
+            Popup::CommandLine(_) => vec![("Esc/Enter", "Close")],
             Popup::ArchivePassword => vec![
                 ("Enter", "Try"),
                 ("Esc", "Skip"),
@@ -541,6 +542,8 @@ pub(in crate::tui) fn fkey_bar_items(
                     ("Enter", "Apply"),
                     ("Esc", "Cancel"),
                     ("F9", "Clear"),
+                    ("F1", "Fields"),
+                    ("F2", "Save as"),
                 ]
             }
             Popup::SettingsDialog => {
@@ -2072,6 +2075,17 @@ mod tests {
         }
         assert!(row.contains("Format"));
         Ok(())
+    }
+
+    /// The filter dialog's bar names F2, which saves the dialog's filter
+    /// under a name.
+    #[test]
+    fn the_filter_dialog_bar_names_f2() {
+        let items = fkey_bar_items(&View::CallList, &Some(Popup::FilterDialog), 120, false);
+        assert!(
+            items.contains(&("F2", "Save as")),
+            "the bar lists F2: {items:?}"
+        );
     }
 
     /// The file-open dialog's bar names the keys of the mode it is in. It

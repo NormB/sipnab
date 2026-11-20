@@ -43,6 +43,20 @@ pub enum Error {
     #[error("invalid config value: {0}")]
     ConfigInvalid(String),
 
+    /// A save from the terminal UI could not read or write its config file
+    /// for lack of permission, or on a read-only file system. Nothing was
+    /// written; what was being saved is still valid.
+    #[error("cannot {action} {path}: {source}. {advice}", advice = crate::config::SAVE_ADVICE)]
+    ConfigUnwritable {
+        /// The step that failed: `read`, `create` (the directory) or `write`.
+        action: &'static str,
+        /// The file, or for `create` the directory.
+        path: String,
+        /// The underlying I/O error (also reachable via `source()`).
+        #[source]
+        source: std::io::Error,
+    },
+
     /// Config serialization (`--dump-config`) failed.
     #[error("cannot serialize config: {0}")]
     ConfigSerialize(String),

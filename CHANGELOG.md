@@ -10,13 +10,6 @@ entry that carries them.
 
 ## [Unreleased]
 
-### Changed
-
-- **The installer and download page no longer suggest WSL or a source build on Windows.**
-  - Effect: Both say sipnab currently focuses on Linux and macOS, and that pull requests adding Windows support are welcome.
-  - Effect: The download page marks no install choice for a Windows visitor.
-  - Docs: [Contributing](CONTRIBUTING.md)
-
 ### Fixed
 
 - **sipnab drops a SIP/TCP message over `--max-tcp-buffer` whole and says so.**
@@ -33,6 +26,87 @@ entry that carries them.
   - Was: At the cap the oldest streams left every report, and no line said so.
   - Effect: A warning names the cap and the count, and the end-of-run `retention:` line gives the total.
   - Docs: [Command-line reference](docs/cli-reference.md)
+
+## [0.5.268] - 2026-11-20
+
+### Fixed
+
+- **A TUI save keeps the mode of the config file it updates.**
+  - Was: Saving a named filter (`F2`), the column layout (`F10`) or name edits made a `0664` or `0640` config `0600`.
+  - Effect: The file keeps its mode, and its group when you belong to that group; a new file is still `0600`.
+  - Effect: TUI exports that replace an existing file keep its mode too; a notes file is always `0600`.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+- **The filter dialog shows a long save notice or refusal whole.**
+  - Was: `Saved @name to <path>` and the duplicate-name refusal stopped at the dialog's right edge.
+  - Effect: The message continues on the next rows, and a path in your home directory starts with `~`.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+
+## [0.5.267] - 2026-11-19
+
+### Added
+
+- **REST and MCP list the named filters and select dialogs by name.**
+  - Effect: `GET /v1/filters` and the MCP `list_named_filters` tool list each `[filters]` name and its definition as written.
+  - Effect: `named=<name>` selects a named filter on `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates`, `/v1/talkers` and every MCP tool that takes `filter`.
+  - Limit: `filter` and `named` together are refused, and so is a name nothing defines; the refusal lists the defined names.
+  - Docs: [Select dialogs with a named filter](docs/rest-api.md#select-dialogs-with-a-named-filter)
+- **A filter expression can be checked before use, with the position of an error.**
+  - Effect: `GET /v1/filters/validate?expr=` answers `valid`, the parser's message and the character position where it stopped.
+  - Effect: The MCP `validate_filter` tool reports the same `position`.
+  - Docs: [Check a filter expression before using it](docs/rest-api.md#check-a-filter-expression-before-using-it)
+- **The TUI filter dialog saves its filter as a named filter.**
+  - Effect: `F2` in the dialog asks for a name and adds the filter to `[filters]` in your config file, keeping its comments.
+  - Effect: The name is listed beside Named filter at once; a duplicate or invalid name is refused with the reason.
+  - Effect: The REST API and MCP server of the same session resolve the new `@name` at once.
+  - Effect: With no config file sipnab may write, sipnab keeps the name for the session and shows the `[filters]` line to add; `F3` copies it.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+
+### Fixed
+
+- **A TUI save no longer replaces a config file you may not write.**
+  - Was: Saving the column layout or name edits replaced a read-only file, or another user's, when its folder was writable.
+  - Effect: sipnab leaves the file unchanged, and the message names the file, the cause, and `--config <writable file>` or `$SIPNAB_CONFIG`.
+  - Docs: [Error reference](docs/errors.md), entry `cannot {action} {path}: {source}. {advice}`
+
+- **A filter parse error lists `in_subnet` among the valid operators.**
+  - Was: The `valid operators:` line of every filter error omitted `in_subnet`, which the parser accepts.
+  - Effect: The line lists every operator the parser accepts, in the order it tries them.
+  - Docs: [Filter DSL](docs/filter-dsl.md)
+
+## [0.5.266] - 2026-11-19
+
+### Added
+
+- **The TUI filter dialog recalls expressions, lists the DSL, and copies the filter.**
+  - Effect: `Up` and `Down` in the Expression field recall the expressions applied this session, newest first, each once.
+  - Effect: `F1` in the dialog lists every Filter DSL field name, operator and combining word.
+  - Effect: `Y` in the call list copies the filter in force as a quoted `sipnab --filter` command line and shows it.
+  - Limit: The history keeps the newest 50; the command carries the capture source, not other run options.
+  - Docs: [Use an earlier expression again](docs/tui-walkthrough.md#use-an-earlier-expression-again)
+
+### Fixed
+
+- **The `F7` dialog lists the named filters when opened from any view.**
+  - Was: Opened first from the call flow or RTP streams, Named filter said `none in [filters]` though the config defined names.
+  - Effect: Every view opens the dialog the same way, with the configured names beside Named filter.
+  - Docs: [Keybindings](docs/keybindings.md#filter-popup)
+
+## [0.5.265] - 2026-11-19
+
+### Added
+
+- **The TUI filter dialog takes a typed Filter DSL expression.**
+  - Effect: The `F7` dialog's Expression field accepts any `--filter` expression and applies it with the other fields, on whole dialogs.
+  - Effect: For a refused expression the dialog shows the parser's message and position, and the filter in force stays.
+  - Effect: A session started with `--filter` or `[filter] expression` opens with it in the field and applied.
+  - Docs: [Filter with an expression](docs/tui-walkthrough.md#filter-with-an-expression)
+
+### Changed
+
+- **The installer and download page no longer suggest WSL or a source build on Windows.**
+  - Effect: Both say sipnab currently focuses on Linux and macOS, and that pull requests adding Windows support are welcome.
+  - Effect: The download page marks no install choice for a Windows visitor.
+  - Docs: [Contributing](CONTRIBUTING.md)
 
 ## [0.5.264] - 2026-11-18
 
