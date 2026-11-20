@@ -22,6 +22,10 @@ pub enum SdpDisplayMode {
     Summary,
     /// Full — show complete SDP body below the arrow.
     Full,
+    /// sngrep mode only: the arrow says the method's first three letters and
+    /// the media address, `INV (10.0.0.1)`, and one line per RTP media
+    /// follows, `audio 12220 (PCMU)`.
+    Sngrep,
 }
 
 impl SdpDisplayMode {
@@ -30,7 +34,17 @@ impl SdpDisplayMode {
         match self {
             Self::None => Self::Summary,
             Self::Summary => Self::Full,
-            Self::Full => Self::None,
+            Self::Full | Self::Sngrep => Self::None,
+        }
+    }
+
+    /// The next mode in the cycle of a session in or out of sngrep mode: in
+    /// it, `Full` is followed by `Sngrep`; out of it, the cycle is
+    /// [`Self::next`]'s three states.
+    pub fn next_in(self, sngrep: bool) -> Self {
+        match self {
+            Self::Full if sngrep => Self::Sngrep,
+            other => other.next(),
         }
     }
 
@@ -40,6 +54,7 @@ impl SdpDisplayMode {
             Self::None => "Hidden",
             Self::Summary => "Summary",
             Self::Full => "Full",
+            Self::Sngrep => "sngrep",
         }
     }
 
@@ -56,6 +71,15 @@ impl SdpDisplayMode {
             "summary" => Some(Self::Summary),
             "full" => Some(Self::Full),
             _ => None,
+        }
+    }
+
+    /// [`Self::parse`] for a session in or out of sngrep mode: in it,
+    /// `sngrep` is a fourth value.
+    pub fn parse_in(s: &str, sngrep: bool) -> Option<Self> {
+        match s {
+            "sngrep" if sngrep => Some(Self::Sngrep),
+            _ => Self::parse(s),
         }
     }
 }
@@ -294,9 +318,10 @@ impl ViewFilterDetail {
 
 // ── Session wiring passed in from CLI/config ────────────────────────
 
-/// How the TUI opens: the `[display]` preferences. Precedence, per key: a
-/// CLI flag (none of these has one today) > the user's `[display]` key >
-/// sipnab's default ([`Self::default`]).
+/// How the TUI opens: the `[display]` preferences a mode only supplies
+/// defaults for. Precedence, per key: a CLI flag (none of these has one
+/// today) > the user's `[display]` key > the mode's default
+/// ([`Self::mode_default`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayPrefs {
     /// `[display] fold`: retransmissions and auth retries folded into one
@@ -312,31 +337,54 @@ pub struct DisplayPrefs {
     pub extended_flow: bool,
 }
 
-impl Default for DisplayPrefs {
-    /// sipnab's defaults: what the TUI did before these keys existed.
-    fn default() -> Self {
-        Self {
-            fold: true,
-            autoscroll: true,
-            sdp_display: SdpDisplayMode::default(),
-            color_mode: ColorMode::default(),
-            extended_flow: false,
+impl DisplayPrefs {
+    /// The defaults of the mode the session runs in; `sngrep` is sngrep
+    /// mode, else sipnab's own.
+    pub fn mode_default(sngrep: bool) -> Self {
+        if sngrep {
+            Self {
+                // sngrep draws each retransmission and auth retry as its own
+                // arrow.
+                fold: false,
+                // sngrep starts with autoscroll off.
+                autoscroll: false,
+                // The mode's own SDP form on the arrow.
+                sdp_display: SdpDisplayMode::Sngrep,
+                // The `c` key's Call-ID coloring, and the multi-leg flow
+                // (F4), open on.
+                color_mode: ColorMode::CallId,
+                extended_flow: true,
+            }
+        } else {
+            Self {
+                fold: true,
+                autoscroll: true,
+                sdp_display: SdpDisplayMode::default(),
+                color_mode: ColorMode::default(),
+                extended_flow: false,
+            }
         }
     }
-}
 
-impl DisplayPrefs {
-    /// The user's `[display]` keys over the defaults. The config loader has
-    /// already refused a spelling `parse` does not know.
-    pub fn resolve(cfg: &crate::config::DisplayConfig) -> Self {
-        let d = Self::default();
+    /// The user's `[display]` keys over the mode's defaults. The config
+    /// loader has already refused a spelling `parse_in` does not know in
+    /// sngrep mode; `sdp_display = "sngrep"` with the mode off is ignored
+    /// with a warning.
+    pub fn resolve(cfg: &crate::config::DisplayConfig, sngrep: bool) -> Self {
+        let d = Self::mode_default(sngrep);
+        if !sngrep && cfg.sdp_display.as_deref() == Some("sngrep") {
+            tracing::warn!(
+                "ignoring [display] sdp_display = \"sngrep\": it needs sngrep mode \
+                 (--sngrep-mode or [display] sngrep_mode = true)"
+            );
+        }
         Self {
             fold: cfg.fold.unwrap_or(d.fold),
             autoscroll: cfg.autoscroll.unwrap_or(d.autoscroll),
             sdp_display: cfg
                 .sdp_display
                 .as_deref()
-                .and_then(SdpDisplayMode::parse)
+                .and_then(|s| SdpDisplayMode::parse_in(s, sngrep))
                 .unwrap_or(d.sdp_display),
             color_mode: cfg
                 .color_mode
@@ -511,8 +559,8 @@ pub struct TuiOptions {
     /// `[display] view_filter_detail`: how status line 3 opens showing the F7
     /// dialog's filter.
     pub view_filter_detail: ViewFilterDetail,
-    /// The `[display]` preferences over sipnab's defaults. `None` keeps the
-    /// defaults.
+    /// The `[display]` preferences over the mode's defaults. `None` keeps
+    /// the defaults of the mode the keymap is in.
     pub display: Option<DisplayPrefs>,
     /// The capture-mode label the status bar opens with (`Online (eth0)`,
     /// `Offline (call.pcap)`). `None` keeps the built-in `Online (any)`.
@@ -982,6 +1030,19 @@ pub(in crate::tui) struct CallFlowViewState {
     /// percentage while the rendered boundary stayed put: the key registered,
     /// the status line updated, and nothing moved (#184).
     pub(in crate::tui) raw_preview_pct_user_set: bool,
+    /// sngrep mode: the raw pane width set with `9` / `0`; `None` = the
+    /// width the ladder leaves (`T` goes back to it).
+    pub(in crate::tui) sngrep_raw_fixed: Option<u16>,
+    /// sngrep mode: `(raw pane text width, screen width)` as last drawn,
+    /// what `9` / `0` step from.
+    pub(in crate::tui) sngrep_raw_drawn: (u16, u16),
+    /// sngrep mode `D`: only the messages that carry SDP (per call).
+    pub(in crate::tui) sdp_only: bool,
+    /// sngrep mode `M`: only the media arrows.
+    pub(in crate::tui) only_media: bool,
+    /// sngrep mode `s`: `false` = compressed, one column per name; `true` =
+    /// a column per address:port.
+    pub(in crate::tui) split: bool,
     /// Whether extended (multi-leg) flow is active.
     pub(in crate::tui) extended: bool,
     /// Call-IDs of the checkbox-selected dialogs this flow merges, in
@@ -1032,6 +1093,11 @@ impl Default for CallFlowViewState {
             raw_preview: true,
             raw_preview_pct: 40,
             raw_preview_pct_user_set: false,
+            sngrep_raw_fixed: None,
+            sngrep_raw_drawn: (0, 0),
+            sdp_only: false,
+            only_media: false,
+            split: false,
             extended: false,
             fold: true,
             merged_calls: Vec::new(),
@@ -1091,6 +1157,8 @@ pub(in crate::tui) struct LadderKey {
     /// Checked dialogs a multi-selection flow merges (display order);
     /// empty for the classic single-dialog ladder.
     pub(in crate::tui) merged_calls: Vec<String>,
+    /// sngrep mode `(D, M, s)`: SDP-only, media-only, compressed columns.
+    pub(in crate::tui) sngrep_view: (bool, bool, bool),
 }
 
 /// The dialogs whose RTP streams the call flow draws: what the view shows.

@@ -621,6 +621,10 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     ("no-rotate", Link::Pending),
     ("no-rtp", Link::Key("capture", "no_rtp", Merge::Override)),
+    (
+        "no-sngrep-mode",
+        Link::Key("display", "sngrep_mode", Merge::Off),
+    ),
     ("no-tui", Link::PerRun),
     (
         "node-name",
@@ -777,6 +781,10 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("single-line", Link::PerRun),
     ("slow-setup", Link::PerRun),
     ("snaplen", Link::Key("capture", "snaplen", Merge::Override)),
+    (
+        "sngrep-mode",
+        Link::Key("display", "sngrep_mode", Merge::Override),
+    ),
     ("split", Link::Pending),
     ("split-keep", Link::Pending),
     ("srtp-keys", Link::Pending),
@@ -1936,6 +1944,7 @@ mod tests {
             ("no-hep-parse", ("capture", "hep_parse")),
             ("rtp", ("capture", "no_rtp")),
             ("no-delta-time", ("display", "delta_time")),
+            ("no-sngrep-mode", ("display", "sngrep_mode")),
             ("priv-drop", ("privilege", "no_priv_drop")),
             ("no-fraud-detect", ("security", "fraud_detect")),
             ("no-kill-scanner", ("security", "kill_scanner")),

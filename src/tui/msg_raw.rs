@@ -370,6 +370,12 @@ fn highlight_sip_message<'a>(
     )));
     lines.push(Line::from(""));
 
+    // sngrep mode draws sngrep's syntax colors; a search keeps its matches.
+    if theme.sngrep && search_query.is_empty() {
+        lines.extend(super::sngrep_mode::syntax_lines(raw_text));
+        return lines;
+    }
+
     let mut in_body = false;
     let search_lower = search_query.to_ascii_lowercase();
 

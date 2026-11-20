@@ -39,6 +39,8 @@ pub(in crate::tui) struct RenderFeedback {
     /// controller needs it to explain a press that can't move anything
     /// instead of leaving it silent (#188).
     pub(in crate::tui) flow_detail_max_hscroll: Option<u16>,
+    /// sngrep mode: `(raw pane text width, screen width)` just drawn.
+    pub(in crate::tui) sngrep_raw_drawn: Option<(u16, u16)>,
     /// `(cached_msg_count, cached_rtp_bar_indices, cached_raw_indices)`.
     pub(in crate::tui) flow_caches:
         Option<(usize, std::collections::HashSet<usize>, Vec<Option<usize>>)>,
@@ -260,7 +262,32 @@ pub(in crate::tui) fn render_app(
                 // style). The ladder width is widened past the configured split
                 // when a multi-leg (B2BUA) flow needs it, so packed participant
                 // columns don't truncate their method/status arrow labels.
-                let (ladder_area, detail_area) = if app.flow.raw_preview {
+                let (ladder_area, detail_area) = if app.flow.raw_preview && app.theme.sngrep {
+                    // sngrep mode: the raw pane takes what the ladder leaves,
+                    // 9 / 0 move it in 2-column steps, T back to that width.
+                    let last = app.flow.ladder.participants.len().saturating_sub(1);
+                    let self_loop_last = app.flow.ladder.rows.iter().any(|r| {
+                        matches!(r.kind, call_flow::prepare::RowKind::Message { .. })
+                            && r.src_col == r.dst_col
+                            && r.src_col == last
+                    });
+                    let need = crate::tui::sngrep_mode::ladder_need(
+                        app.flow.ladder.participants.len(),
+                        self_loop_last,
+                    );
+                    let raw = crate::tui::sngrep_mode::raw_width(
+                        main_area.width,
+                        need,
+                        app.flow.sngrep_raw_fixed,
+                    )
+                    .min(main_area.width.saturating_sub(2));
+                    fb.sngrep_raw_drawn = Some((raw, main_area.width));
+                    let ladder_w = main_area.width.saturating_sub(raw + 2);
+                    let [left, right] =
+                        Layout::horizontal([Constraint::Length(ladder_w), Constraint::Min(0)])
+                            .areas(main_area);
+                    (left, Some(right))
+                } else if app.flow.raw_preview {
                     // Widest per-gap demand of the arrow labels actually on
                     // screen (a retx fold header carries its "(+N retx)"
                     // count on the arrow; an arrow spanning several columns
@@ -313,7 +340,13 @@ pub(in crate::tui) fn render_app(
                 // App::sync_caches (WS4.3c) and arrives as cached rows; the
                 // render pass only runs the cheap style stage — theme, color
                 // mode and the current selection.
-                let prepared = if app.flow.ladder.rows.is_empty() {
+                // sngrep mode's `M` with no media drawn leaves the participants and
+                // their lifelines on screen, not the call-gone notice.
+                let prepared = if app.flow.ladder.rows.is_empty()
+                    && !(app.keymap.sngrep
+                        && app.flow.only_media
+                        && !app.flow.ladder.participants.is_empty())
+                {
                     None
                 } else {
                     let msgs = call_flow::style(
@@ -322,6 +355,7 @@ pub(in crate::tui) fn render_app(
                             color_mode: app.color_mode,
                             selected_msg: Some(sel),
                             theme: &app.theme,
+                            sngrep_marked: app.sngrep_marked_raw(&cid),
                         },
                     );
                     Some((app.flow.ladder.participants.clone(), msgs))
@@ -564,7 +598,8 @@ pub(in crate::tui) fn render_app(
             // the end (self-corrects an over-eager PgDn on the next frame).
             let visible = main_area.height.saturating_sub(2) as usize;
             let inner_width = main_area.width.saturating_sub(2) as usize;
-            let max_scroll = help::help_line_count(inner_width).saturating_sub(visible) as u16;
+            let max_scroll =
+                help::help_line_count(inner_width, app.theme.sngrep).saturating_sub(visible) as u16;
             let clamped = app.help_scroll.min(max_scroll);
             fb.help_scroll = Some(clamped);
             help::render_help(
@@ -686,7 +721,7 @@ pub(in crate::tui) fn render_app(
 /// ladder carries each row's own dialog in its index map, a transaction filter
 /// renders a subset of the anchor dialog, and otherwise the index is the
 /// anchor dialog's own.
-fn row_message<'s>(
+pub(in crate::tui) fn row_message<'s>(
     app: &App,
     store: &'s DialogStore,
     anchor: &str,

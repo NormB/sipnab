@@ -1082,6 +1082,8 @@ Multiple diagnostic flags combine with OR.
 | `--line-buffer` | -- | off | 0.3.0 | Flush output after each line (useful for piping) |
 | `--color` | `<WHEN>` | `auto` | 0.3.0 | Color output mode: `auto`, `always`, `never`. Config: `[display] color` |
 | `--from-to-mode` | `<MODE>` | `default` | 0.4.4 | Default TUI From/To column display: `default` (user else host:port), `host-port`, `user`, `user-host-port`. Cycle at runtime with `u`. Overrides `[display] from_to`. Config: `[display] from_to` |
+| `--sngrep-mode` | | off | Unreleased | sngrep's keys and colors in the TUI: on the call list, call flow, raw message and message compare screens every sngrep key does what it does in sngrep; sipnab commands whose keys sngrep uses move to free keys, listed at the top of the F1 help. Config: `[display] sngrep_mode` |
+| `--no-sngrep-mode` | | off | Unreleased | sipnab's own keys and colors even when `[display] sngrep_mode = true`. The last of `--sngrep-mode` / `--no-sngrep-mode` typed wins. Config: `[display] sngrep_mode` |
 | `--payload-limit` | `<BYTES>` | -- | 0.3.0 | Maximum payload bytes the per-message text printout shows for each message, with `--show-empty` and `--hexdump` too. It does not shorten `--json`, `--json-pretty` or `-T`/`--text-dump` output. Config: `[display] payload_limit` |
 | `-T`, `--text-dump` | -- | off | 0.3.0 | Dump raw SIP message text (like the CLI matcher `-T`) |
 | `--no-cli-print` | -- | off | 0.3.2 | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout). Implied by `--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` unless `--json`, `--json-pretty`, `-T` or `--fail2ban` is also given |

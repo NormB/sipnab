@@ -124,6 +124,10 @@ pub struct StyleOptions<'a> {
     pub selected_msg: Option<usize>,
     /// Color theme used for all styling decisions.
     pub theme: &'a Theme,
+    /// sngrep mode: the raw index of the message Space selected for a
+    /// compare. Its time turns cyan and the delta above the cursor's
+    /// message becomes the time from it, as sngrep's call flow.
+    pub sngrep_marked: Option<usize>,
 }
 
 impl<'a> From<&FlowDisplayOptions<'a>> for StyleOptions<'a> {
@@ -133,6 +137,7 @@ impl<'a> From<&FlowDisplayOptions<'a>> for StyleOptions<'a> {
             color_mode: o.color_mode,
             selected_msg: o.selected_msg,
             theme: o.theme,
+            sngrep_marked: None,
         }
     }
 }
@@ -224,6 +229,9 @@ pub struct LayoutRow {
     pub pdd_note: Option<String>,
     /// SDP info line texts; styled muted+italic by `style`.
     pub extra_lines: Vec<String>,
+    /// The extra lines are sngrep's media lines (`SdpDisplayMode::Sngrep`):
+    /// drawn centred between the arrow's pipes, in the arrow's color.
+    pub extra_centered: bool,
     /// Call-ID of the source message (empty for spacers).
     pub call_id: String,
     /// Whether the row renders as a response (dashed arrow).
@@ -271,6 +279,9 @@ const CID_COLORS: [Color; 6] = [
 pub(super) fn cid_style(idx: usize, theme: &Theme) -> Style {
     if theme.no_color {
         return Style::default();
+    }
+    if theme.sngrep {
+        return crate::tui::sngrep_mode::rotation_style(idx);
     }
     Style::default().fg(CID_COLORS[idx % CID_COLORS.len()])
 }
@@ -359,8 +370,22 @@ pub fn layout(
         let (timestamp, ts_class) = clock.stamp(msg.timestamp, TsClass::Muted);
 
         let mut extra_lines = Vec::new();
-        push_sdp_info_lines(&mut extra_lines, msg, msg_sdp.as_ref(), opts.sdp_mode);
-        push_siprec_lines(&mut extra_lines, msg);
+        let mut label = format_message_label(msg);
+        // sngrep's form names the arrow itself and keeps the SIPREC lines
+        // out: they would be centred as if they were media.
+        let sngrep_sdp = if opts.sdp_mode == SdpDisplayMode::Sngrep {
+            crate::tui::sngrep_mode::sdp_info(&label, &msg.body)
+        } else {
+            None
+        };
+        let extra_centered = sngrep_sdp.is_some();
+        if let Some((title, medias)) = sngrep_sdp {
+            label = title;
+            extra_lines = medias;
+        } else {
+            push_sdp_info_lines(&mut extra_lines, msg, msg_sdp.as_ref(), opts.sdp_mode);
+            push_siprec_lines(&mut extra_lines, msg);
+        }
 
         // The SDP-derived bar stands in only for a call with no captured
         // stream; captured streams draw their own rows.
@@ -373,7 +398,7 @@ pub fn layout(
         result.push(LayoutRow {
             timestamp,
             ts_class,
-            label: format_message_label(msg),
+            label,
             label_fallbacks: Vec::new(),
             kind: message_kind(msg),
             src_col: column_of(&endpoints, (msg.src_addr, msg.src_port), 0),
@@ -384,6 +409,7 @@ pub fn layout(
             ),
             pdd_note: take_pdd_note(&mut pending_pdd, msg),
             extra_lines,
+            extra_centered,
             call_id: msg.call_id().unwrap_or("").to_string(),
             is_response: !msg.is_request,
             raw_timestamp: msg.timestamp,
@@ -410,6 +436,7 @@ pub fn layout(
                 dst_col: 0,
                 pdd_note: None,
                 extra_lines: vec![],
+                extra_centered: false,
                 call_id: msg.call_id().unwrap_or("").to_string(),
                 is_response: false,
                 raw_timestamp: rtp_ts,
@@ -590,6 +617,7 @@ fn stream_row(
         dst_col: media_column(endpoints, s.key.dst.ip()),
         pdd_note: None,
         extra_lines: Vec::new(),
+        extra_centered: false,
         call_id: String::new(),
         is_response: false,
         raw_timestamp: s.first_seen,
@@ -695,7 +723,8 @@ fn push_sdp_info_lines(
                 extra_lines.push(format!("{ind}  {sl}"));
             }
         }
-        SdpDisplayMode::None => {}
+        // Drawn by `layout` from `sngrep_mode::sdp_info`.
+        SdpDisplayMode::Sngrep | SdpDisplayMode::None => {}
     }
 }
 
@@ -1015,6 +1044,7 @@ fn spacer_row(si: usize, delta_ms: u64, prev_ts_raw: chrono::DateTime<chrono::Ut
         dst_col: 0,
         pdd_note: None,
         extra_lines: Vec::new(),
+        extra_centered: false,
         call_id: String::new(),
         is_response: false,
         raw_timestamp: prev_ts_raw,
@@ -1053,6 +1083,9 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
         .iter()
         .map(|row| {
             let timestamp_style = match row.ts_class {
+                // sngrep: the time in the default color, a delta cyan.
+                TsClass::Muted | TsClass::Accent if theme.sngrep => Style::default(),
+                TsClass::Delta(_) if theme.sngrep => Style::default().fg(Color::Cyan),
                 TsClass::Muted => Style::default().fg(theme.muted),
                 TsClass::Accent => Style::default().fg(theme.accent),
                 TsClass::Delta(d) => delta_style(d, theme),
@@ -1083,8 +1116,16 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
                 extra_lines: row
                     .extra_lines
                     .iter()
-                    .map(|l| (l.clone(), sdp_line_style))
+                    .map(|l| {
+                        let line_style = if row.extra_centered {
+                            style
+                        } else {
+                            sdp_line_style
+                        };
+                        (l.clone(), line_style)
+                    })
                     .collect(),
+                extra_centered: row.extra_centered,
                 selected: false,
                 call_id: row.call_id.clone(),
                 selection_state: SelectionState::Normal,
@@ -1099,9 +1140,33 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
                 is_rtp_stream: row.kind == RowKind::RtpStream,
                 raw_index: row.raw_index,
                 diagnosis_note: row.diagnosis_note.clone(),
+                sngrep_split: false,
+                sngrep_delta: None,
             }
         })
         .collect();
+
+    // sngrep mode: every SIP message is its label row(s) plus an
+    // arrow row; the absolute time on the row above the arrow and the delta
+    // to the previous message (cyan) on the row above that.
+    if theme.sngrep {
+        let mut prev: Option<chrono::DateTime<chrono::Utc>> = None;
+        for (m, row) in result.iter_mut().zip(rows) {
+            if !matches!(row.kind, RowKind::Message { .. }) {
+                continue;
+            }
+            m.sngrep_split = true;
+            m.timestamp = format!(
+                "{:<width$}",
+                row.raw_timestamp.format("%H:%M:%S%.3f"),
+                width = TS_COL_WIDTH
+            );
+            m.timestamp_style = Style::default();
+            m.sngrep_delta =
+                prev.map(|p| crate::tui::sngrep_mode::delta_text(p, row.raw_timestamp));
+            prev = Some(row.raw_timestamp);
+        }
+    }
 
     // ── Selection: assign over VISIBLE rows ────────────────────────
     // `selected_msg` is the index the user navigated to among rendered,
@@ -1136,6 +1201,28 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
                     fm.selection_state = SelectionState::Related;
                 }
             }
+        }
+    }
+
+    // sngrep mode: with a message selected (Space), its time is cyan and the
+    // only delta drawn is the one above the cursor's message, from the
+    // selected message to it.
+    if theme.sngrep
+        && let Some(marked) = opts.sngrep_marked
+        && let Some(mark_ts) = rows
+            .iter()
+            .find(|r| r.raw_index == Some(marked) && matches!(r.kind, RowKind::Message { .. }))
+            .map(|r| r.raw_timestamp)
+    {
+        for (m, row) in result.iter_mut().zip(rows) {
+            if !m.sngrep_split {
+                continue;
+            }
+            if m.raw_index == Some(marked) {
+                m.timestamp_style = Style::default().fg(Color::Cyan);
+            }
+            m.sngrep_delta = (m.selection_state == SelectionState::Selected)
+                .then(|| crate::tui::sngrep_mode::delta_text(mark_ts, row.raw_timestamp));
         }
     }
 
@@ -1455,6 +1542,17 @@ pub fn class_style(class: MessageClass, theme: &Theme) -> Style {
             MessageClass::ServerError => Style::default().add_modifier(Modifier::BOLD),
             _ => Style::default(),
         };
+    }
+    if theme.sngrep {
+        let request = matches!(
+            class,
+            MessageClass::SessionRequest
+                | MessageClass::TeardownRequest
+                | MessageClass::AckRequest
+                | MessageClass::RegisterRequest
+                | MessageClass::OtherRequest
+        );
+        return crate::tui::sngrep_mode::arrow_style(request);
     }
     match class {
         MessageClass::SessionRequest => Style::default().fg(Color::Rgb(95, 175, 175)), // Teal
@@ -4113,6 +4211,58 @@ mod tests {
         };
         assert_eq!(raw_rows(&on), 1, "fold on: one auth-fold row");
         assert_eq!(raw_rows(&off), 5, "fold off: every message a row");
+        Ok(())
+    }
+
+    /// sngrep mode, a message selected with Space: its time turns
+    /// cyan and the only delta is above the cursor's message, from the
+    /// selected one; with nothing selected each message keeps its delta to
+    /// the previous one.
+    #[test]
+    fn sngrep_selected_message_delta_goes_to_the_cursor() -> Result<(), TestError> {
+        let theme = Theme {
+            sngrep: true,
+            ..Theme::default()
+        };
+        let o = opts(&theme);
+        let cid = "csngdelta";
+        let msgs = vec![
+            invite(cid, 1, t0())?,
+            response(
+                cid,
+                100,
+                "Trying",
+                1,
+                "INVITE",
+                t0() + TimeDelta::milliseconds(10),
+            )?,
+            response(
+                cid,
+                200,
+                "OK",
+                1,
+                "INVITE",
+                t0() + TimeDelta::milliseconds(1500),
+            )?,
+        ];
+        let (_p, rows) = layout(&msgs, t0(), None, &LayoutOptions::from(&o), &HashSet::new());
+        let so = |marked| StyleOptions {
+            color_mode: ColorMode::Method,
+            selected_msg: Some(2),
+            theme: &theme,
+            sngrep_marked: marked,
+        };
+        let plain = style(&rows, &so(None));
+        assert!(plain[1].sngrep_delta.is_some() && plain[2].sngrep_delta.is_some());
+
+        let marked = style(&rows, &so(Some(0)));
+        assert_eq!(marked[0].timestamp_style, Style::default().fg(Color::Cyan));
+        assert_eq!(marked[1].sngrep_delta, None);
+        let d = marked[2]
+            .sngrep_delta
+            .as_deref()
+            .ok_or("delta above the cursor")?;
+        assert_eq!(d.trim(), "+1.500000");
         Ok(())
     }
 

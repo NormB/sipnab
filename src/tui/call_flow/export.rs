@@ -209,6 +209,7 @@ mod tests {
             dst_col,
             pdd_note: None,
             extra_lines: Vec::new(),
+            extra_centered: false,
             selected: false,
             call_id: String::new(),
             selection_state: SelectionState::Normal,
@@ -224,6 +225,8 @@ mod tests {
             label_fallbacks: Vec::new(),
             raw_index: None,
             diagnosis_note: None,
+            sngrep_split: false,
+            sngrep_delta: None,
         }
     }
 
