@@ -1819,7 +1819,7 @@ fn wheel_call_flow(app: &mut App, down: bool) {
 /// dialog-store read lock.
 pub(in crate::tui) fn get_selected_call_id(app: &App) -> Option<String> {
     let store = app.dialog_store.read();
-    let dialogs = crate::tui::call_list::displayed_dialogs(
+    let dialogs = crate::tui::call_list::displayed_dialogs_open(
         &store,
         app.active_filter.as_ref(),
         app.active_time_after,
@@ -1827,6 +1827,7 @@ pub(in crate::tui) fn get_selected_call_id(app: &App) -> Option<String> {
         &app.search_query,
         app.call_list.sort_column(),
         app.call_list.sort_ascending(),
+        app.call_list.only_open,
     );
     let idx = app.call_list.selected();
     dialogs.get(idx).map(|d| d.call_id.clone())
@@ -1841,7 +1842,7 @@ pub(in crate::tui) fn checked_displayed_call_ids(app: &App) -> Vec<String> {
         return Vec::new();
     }
     let store = app.dialog_store.read();
-    crate::tui::call_list::displayed_dialogs(
+    crate::tui::call_list::displayed_dialogs_open(
         &store,
         app.active_filter.as_ref(),
         app.active_time_after,
@@ -1849,6 +1850,7 @@ pub(in crate::tui) fn checked_displayed_call_ids(app: &App) -> Vec<String> {
         &app.search_query,
         app.call_list.sort_column(),
         app.call_list.sort_ascending(),
+        app.call_list.only_open,
     )
     .iter()
     .filter(|d| app.call_list.selected_rows().contains(d.call_id.as_str()))
@@ -1863,7 +1865,7 @@ pub(in crate::tui) fn filtered_dialog_count(app: &App) -> usize {
     let store = app.dialog_store.read();
     // Count exactly the rows the renderer displays (filter + search), so
     // navigation clamps to what is on screen.
-    crate::tui::call_list::displayed_dialogs(
+    crate::tui::call_list::displayed_dialogs_open(
         &store,
         app.active_filter.as_ref(),
         app.active_time_after,
@@ -1871,6 +1873,7 @@ pub(in crate::tui) fn filtered_dialog_count(app: &App) -> usize {
         &app.search_query,
         app.call_list.sort_column(),
         app.call_list.sort_ascending(),
+        app.call_list.only_open,
     )
     .len()
 }
@@ -2269,6 +2272,19 @@ mod tests {
         let status = app.status_error.clone().ok_or("version status set")?;
         assert!(status.contains(env!("CARGO_PKG_VERSION")), "got: {status}");
         assert_eq!(app.current_view, View::StreamList);
+        Ok(())
+    }
+
+    /// `d` on the call list reaches the list (no global key takes it) and
+    /// toggles "only the dialogs not over"; again = all.
+    #[test]
+    fn key_event_d_toggles_only_open_on_the_call_list() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        assert_eq!(app.current_view, View::CallList);
+        handle_key_event(&mut app, key(KeyCode::Char('d')));
+        assert!(app.call_list.only_open, "d shows only the dialogs not over");
+        handle_key_event(&mut app, key(KeyCode::Char('d')));
+        assert!(!app.call_list.only_open, "d again shows all");
         Ok(())
     }
 

@@ -16,7 +16,7 @@ pub(in crate::tui) fn get_selected_dialog_endpoints(
     app: &App,
 ) -> Option<(std::net::IpAddr, std::net::IpAddr)> {
     let store = app.dialog_store.read();
-    let dialogs = crate::tui::call_list::displayed_dialogs(
+    let dialogs = crate::tui::call_list::displayed_dialogs_open(
         &store,
         app.active_filter.as_ref(),
         app.active_time_after,
@@ -24,6 +24,7 @@ pub(in crate::tui) fn get_selected_dialog_endpoints(
         &app.search_query,
         app.call_list.sort_column(),
         app.call_list.sort_ascending(),
+        app.call_list.only_open,
     );
     dialogs
         .get(app.call_list.selected())

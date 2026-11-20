@@ -126,6 +126,9 @@ pub struct CallListState {
     pub column_selector_cursor: usize,
     /// Whether autoscroll is enabled (new dialogs scroll to bottom).
     pub autoscroll: bool,
+    /// `d`: show only the dialogs not over (a call up, a registration
+    /// valid, a transaction not completed: a state that is not final).
+    pub only_open: bool,
 }
 
 impl CallListState {
@@ -142,6 +145,7 @@ impl CallListState {
             column_selector_open: false,
             column_selector_cursor: 0,
             autoscroll: true,
+            only_open: false,
         }
     }
 
@@ -601,6 +605,31 @@ pub fn displayed_dialogs<'a>(
     sort_column: SortColumn,
     sort_ascending: bool,
 ) -> Vec<&'a crate::sip::dialog::SipDialog> {
+    displayed_dialogs_open(
+        store,
+        filter,
+        after,
+        before,
+        search_query,
+        sort_column,
+        sort_ascending,
+        false,
+    )
+}
+
+/// [`displayed_dialogs`], with `only_open` (the call list's `d`) keeping
+/// only the dialogs whose state is not final.
+#[allow(clippy::too_many_arguments)]
+pub fn displayed_dialogs_open<'a>(
+    store: &'a DialogStore,
+    filter: Option<&FilterExpr>,
+    after: Option<chrono::DateTime<chrono::Utc>>,
+    before: Option<chrono::DateTime<chrono::Utc>>,
+    search_query: &str,
+    sort_column: SortColumn,
+    sort_ascending: bool,
+    only_open: bool,
+) -> Vec<&'a crate::sip::dialog::SipDialog> {
     #[cfg(test)]
     DISPLAYED_DIALOGS_CALLS.with(|c| c.set(c.get() + 1));
     let mut dialogs: Vec<_> = store
@@ -610,6 +639,7 @@ pub fn displayed_dialogs<'a>(
         // MCP `search_by_time` tool. An open bound admits everything on that
         // side.
         .filter(|d| crate::cursor::in_time_window(d.created_at, after, before))
+        .filter(|d| !only_open || !d.state().is_final())
         // This list is built from dialogs alone; with no stream data it cannot
         // testify that a call carried no media, so `rtp.*` compares as unknown
         // and no delay evidence could change an answer.

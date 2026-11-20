@@ -1398,6 +1398,7 @@ impl App {
                 && k.query == self.search_query
                 && k.sort_column == self.call_list.sort_column()
                 && k.sort_ascending == self.call_list.sort_ascending()
+                && k.only_open == self.call_list.only_open
         });
         let data_fresh = self
             .displayed
@@ -1413,7 +1414,7 @@ impl App {
         if fresh || churn_floored {
             return;
         }
-        self.displayed.ids = call_list::displayed_dialogs(
+        self.displayed.ids = call_list::displayed_dialogs_open(
             store,
             self.active_filter.as_ref(),
             self.active_time_after,
@@ -1421,6 +1422,7 @@ impl App {
             &self.search_query,
             self.call_list.sort_column(),
             self.call_list.sort_ascending(),
+            self.call_list.only_open,
         )
         .iter()
         .map(|d| d.call_id.clone())
@@ -1431,6 +1433,7 @@ impl App {
             query: self.search_query.clone(),
             sort_column: self.call_list.sort_column(),
             sort_ascending: self.call_list.sort_ascending(),
+            only_open: self.call_list.only_open,
         });
         self.displayed.floor.mark();
     }

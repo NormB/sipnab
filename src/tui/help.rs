@@ -26,6 +26,7 @@ CALL LIST:
   < / >            Change sort column (the status line shows Sort:)
   Z                Reverse sort direction
   L                Last updated last (by each dialog's last message); again = number order
+  d                Only the dialogs not over (calls up, registrations valid); again = all
   A                Toggle autoscroll
   p                Pause/resume capture
   /                Search (arrows/Space work while typing; Enter opens)
