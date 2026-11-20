@@ -1519,14 +1519,15 @@ impl DialogStore {
         self.messages_dropped_by_method
     }
 
-    /// Whether `msg`, opening a dialog, is dropped by [`Self::drop_methods`] /
-    /// [`Self::only_methods`]: kept only when its method (a reply's CSeq
-    /// method, for a dialog whose start was never seen) is in `only` (or
-    /// `only` is empty) AND not in `drop`.
+    /// Whether a `--drop-method` or `--only-method` filter is set at all.
     fn method_filter_on(&self) -> bool {
         !(self.drop_methods.is_empty() && self.only_methods.is_empty())
     }
 
+    /// Whether `msg`, opening a dialog, is dropped by [`Self::drop_methods`] /
+    /// [`Self::only_methods`]: kept only when its method (a reply's CSeq
+    /// method, for a dialog whose start was never seen) is in `only` (or
+    /// `only` is empty) AND not in `drop`.
     fn dropped_by_method(&self, msg: &SipMessage) -> bool {
         if !self.method_filter_on() {
             return false;
