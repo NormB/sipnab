@@ -825,6 +825,8 @@ pub fn run_tui_mode(
                 .map(str::to_owned),
             mouse_capture_off: tui_mouse_capture_off(&config),
             view_filter_detail: tui_view_filter_detail(&config),
+            // `[display]` keys over sipnab's defaults (CLI > key > default).
+            display: Some(crate::tui::DisplayPrefs::resolve(&config.display)),
         },
     )
     .err();
@@ -2197,6 +2199,24 @@ mod tests {
         let on: Config = toml::from_str("[display]\nmouse_capture = true\n")?;
         assert!(!super::tui_mouse_capture_off(&on));
         assert!(!super::tui_mouse_capture_off(&Config::default()));
+        Ok(())
+    }
+
+    /// The `[display]` keys: unset takes sipnab's defaults, a set key wins.
+    #[test]
+    fn display_prefs_keys_win_over_the_default() -> Result<(), TestError> {
+        use crate::tui::{ColorMode, DisplayPrefs, SdpDisplayMode};
+        let own = DisplayPrefs::resolve(&Config::default().display);
+        assert_eq!(own, DisplayPrefs::default());
+        assert!(own.fold && own.autoscroll && !own.extended_flow);
+        let set: Config = toml::from_str(
+            "[display]\nfold = false\nautoscroll = false\nsdp_display = \"full\"\n\
+             color_mode = \"cseq\"\nextended_flow = true\n",
+        )?;
+        let p = DisplayPrefs::resolve(&set.display);
+        assert!(!p.fold && !p.autoscroll && p.extended_flow);
+        assert_eq!(p.sdp_display, SdpDisplayMode::Full);
+        assert_eq!(p.color_mode, ColorMode::CSeq);
         Ok(())
     }
 
