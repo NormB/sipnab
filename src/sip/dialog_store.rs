@@ -490,6 +490,10 @@ pub struct DialogStore {
     /// too, so a tail cursor from before a clear still names a point before
     /// every later change.
     changes: u64,
+    /// The number of the last dialog opened (see [`SipDialog::number`]). Only
+    /// rises, across `clear` and eviction too, so no two dialogs this store
+    /// ever held share a number.
+    numbered: u64,
     /// Header names used for B2BUA leg correlation (`sip.xcid`). A
     /// candidate dialog whose message carries one of these headers pointing at
     /// another dialog's Call-ID (or vice versa) is correlated at score 100.
@@ -1016,6 +1020,7 @@ impl DialogStore {
             capacity_dialogs_evicted: 0,
             generation: 0,
             changes: 0,
+            numbered: 0,
             xcid_headers: Vec::new(),
             #[cfg(feature = "native")]
             admission: None,
@@ -1540,6 +1545,8 @@ impl DialogStore {
             let mut dialog = dialog;
             self.changes += 1;
             dialog.change_seq = self.changes;
+            self.numbered += 1;
+            dialog.number = self.numbered;
             self.dialogs.insert(key, dialog);
         }
     }
@@ -1757,6 +1764,8 @@ impl DialogStore {
         for (key, dialog) in std::mem::take(&mut self.dialogs) {
             fragments.entry(key).or_default().push(dialog);
         }
+        // Every dialog is numbered again below, in the merged order, from 1.
+        self.numbered = 0;
         for other in others {
             for (key, dialog) in other.dialogs {
                 fragments.entry(key).or_default().push(dialog);
@@ -1844,6 +1853,8 @@ impl DialogStore {
             let mut dialog = dialog;
             self.changes += 1;
             dialog.change_seq = self.changes;
+            self.numbered += 1;
+            dialog.number = self.numbered;
             self.dialogs.insert(key, dialog);
         }
     }

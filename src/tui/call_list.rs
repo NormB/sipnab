@@ -863,12 +863,14 @@ pub fn render_call_list(
         .and_then(|id| store.get(id))
         .map(|d| d.created_at);
 
+    let index_width = match all_widths[0] {
+        Some(Constraint::Length(n)) => usize::from(n),
+        _ => usize::MAX,
+    };
     let rows: Vec<Row> = visible_dialogs
         .iter()
         .enumerate()
         .map(|(vis_idx, dialog)| {
-            let idx = scroll_offset + vis_idx; // original index in full list
-
             // Selection checkbox: [*] when checked, [ ] otherwise.
             // The checkbox marks which dialogs an action (e.g. save) applies to.
             let checkbox = if state.selected_rows.contains(dialog.call_id.as_str()) {
@@ -927,7 +929,19 @@ pub fn render_call_list(
                 .map(|&i| match i {
                     // A space between the box and the number: `[ ]1` read as
                     // one token.
-                    0 => Cell::from(Span::raw(format!("{checkbox} {}", idx + 1))),
+                    // The number is the dialog's own (it only rises), so on a
+                    // long capture it outgrows the box: then the checkbox
+                    // shrinks to one cell (`*` checked) rather than the cell
+                    // cutting the number short and naming another dialog.
+                    0 => {
+                        let number = dialog.number.to_string();
+                        if checkbox.len() + 1 + number.len() <= index_width {
+                            Cell::from(Span::raw(format!("{checkbox} {number}")))
+                        } else {
+                            let mark = if checkbox == "[*]" { '*' } else { ' ' };
+                            Cell::from(Span::raw(format!("{mark}{number}")))
+                        }
+                    }
                     1 => Cell::from(Span::styled(dialog.method.as_str(), method_style)),
                     2 => Cell::from(Span::raw(format_from_to(
                         display.from_to_mode,
@@ -2447,6 +2461,55 @@ mod tests {
             store.process_message(msg);
         }
         Ok(store)
+    }
+
+    /// A dialog's number is given once, when it is first seen: an update does
+    /// not change it, eviction of older dialogs does not shift it, and after a
+    /// clear the next dialog takes the next number, never one already shown.
+    #[test]
+    fn a_dialog_keeps_its_number_through_updates_eviction_and_clear() -> Result<(), TestError> {
+        let mut store = DialogStore::new(2, true);
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, 0)
+            .single()
+            .ok_or("the timestamp is a single valid UTC instant")?;
+        let send = |store: &mut DialogStore, cid: &str, cseq: u32| -> Result<(), TestError> {
+            let raw = crate::test_utils::build_sip_message(
+                "REGISTER sip:example.com SIP/2.0",
+                &[
+                    "From: <sip:9004@example.com>;tag=t",
+                    "To: <sip:9004@example.com>",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} REGISTER"),
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = crate::sip::parser::parse_sip(
+                &raw,
+                ts + chrono::TimeDelta::seconds(cseq.into()),
+                "192.0.2.10".parse()?,
+                "198.51.100.20".parse()?,
+                5060,
+                5060,
+                crate::net::TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse: {e:?}"))?;
+            store.process_message(msg);
+            Ok(())
+        };
+        let numbers = |store: &DialogStore| -> Vec<(String, u64)> {
+            store.iter().map(|d| (d.call_id.clone(), d.number)).collect()
+        };
+        send(&mut store, "a@h", 1)?;
+        send(&mut store, "b@h", 2)?;
+        send(&mut store, "a@h", 3)?; // a re-REGISTER
+        assert_eq!(numbers(&store), [("a@h".into(), 1), ("b@h".into(), 2)]);
+        send(&mut store, "c@h", 4)?; // evicts a@h
+        assert_eq!(numbers(&store), [("b@h".into(), 2), ("c@h".into(), 3)]);
+        store.clear();
+        send(&mut store, "d@h", 5)?;
+        assert_eq!(numbers(&store), [("d@h".into(), 4)]);
+        Ok(())
     }
 
     /// Filter and search narrow independently and intersect: filter-only,

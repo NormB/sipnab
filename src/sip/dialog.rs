@@ -239,6 +239,12 @@ pub struct SipDialog {
     /// cursor that names it never falls behind a dialog that changed later,
     /// whatever the message's timestamp. 0 until a store stamps it.
     pub change_seq: u64,
+    /// The dialog's number in the store that holds it: 1 for the first dialog
+    /// it ever opened, 2 for the next, and so on. Assigned once, when the
+    /// dialog is first seen, and kept for good: filters, search, sorting,
+    /// eviction and `clear` never renumber, so the call list's `#` names the
+    /// same dialog for as long as it is shown. 0 until a store numbers it.
+    pub number: u64,
     /// User-supplied tags (from `--tag` CLI flag).
     pub tags: Vec<String>,
     /// Source IP address of the initial message.
@@ -525,6 +531,7 @@ impl SipDialog {
             latest_message_at: msg.timestamp,
             earliest_message_at: msg.timestamp,
             change_seq: 0,
+            number: 0,
             src_addr: msg.src_addr,
             dst_addr: msg.dst_addr,
             src_port: msg.src_port,
