@@ -1899,6 +1899,8 @@ pub(in crate::tui) struct DisplayedKey {
     pub(in crate::tui) sort_column: crate::tui::call_list::SortColumn,
     /// Sort direction in effect at derivation (`true` = ascending).
     pub(in crate::tui) sort_ascending: bool,
+    /// The call list's `d` (only dialogs not over) at derivation.
+    pub(in crate::tui) only_open: bool,
 }
 
 /// Cross-tick cache of the displayed dialog list (filter + search + sort):

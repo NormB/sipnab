@@ -338,7 +338,7 @@ impl App {
         &self,
         store: &'a DialogStore,
     ) -> Vec<&'a crate::sip::dialog::SipDialog> {
-        let displayed = call_list::displayed_dialogs(
+        let displayed = call_list::displayed_dialogs_open(
             store,
             self.active_filter.as_ref(),
             self.active_time_after,
@@ -346,6 +346,7 @@ impl App {
             &self.search_query,
             self.call_list.sort_column(),
             self.call_list.sort_ascending(),
+            self.call_list.only_open,
         );
         let selected = self.call_list.selected_rows();
         if selected.is_empty() {

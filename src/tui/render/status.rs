@@ -193,6 +193,12 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
                 "\u{25bc}"
             }
         )),
+        // Named only while it hides something, to keep line 1 short.
+        Span::raw(if app.call_list.only_open {
+            format!("{L1_GAP}Showing: not over")
+        } else {
+            String::new()
+        }),
         Span::raw(format!(
             "{L1_GAP}Autoscroll: {}",
             if app.call_list.autoscroll {

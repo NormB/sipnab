@@ -126,6 +126,10 @@ pub struct CallListState {
     pub column_selector_cursor: usize,
     /// Whether autoscroll is enabled (new dialogs scroll to bottom).
     pub autoscroll: bool,
+    /// `d`: show only the dialogs not over (a call up, a registration
+    /// valid, a transaction not completed: a state that is not final; a
+    /// REGISTER is judged by `SipDialog::state_at` the capture's clock).
+    pub only_open: bool,
 }
 
 impl CallListState {
@@ -142,6 +146,7 @@ impl CallListState {
             column_selector_open: false,
             column_selector_cursor: 0,
             autoscroll: true,
+            only_open: false,
         }
     }
 
@@ -601,8 +606,36 @@ pub fn displayed_dialogs<'a>(
     sort_column: SortColumn,
     sort_ascending: bool,
 ) -> Vec<&'a crate::sip::dialog::SipDialog> {
+    displayed_dialogs_open(
+        store,
+        filter,
+        after,
+        before,
+        search_query,
+        sort_column,
+        sort_ascending,
+        false,
+    )
+}
+
+/// [`displayed_dialogs`], with `only_open` (the call list's `d`) keeping
+/// only the dialogs whose state is not final.
+#[allow(clippy::too_many_arguments)]
+pub fn displayed_dialogs_open<'a>(
+    store: &'a DialogStore,
+    filter: Option<&FilterExpr>,
+    after: Option<chrono::DateTime<chrono::Utc>>,
+    before: Option<chrono::DateTime<chrono::Utc>>,
+    search_query: &str,
+    sort_column: SortColumn,
+    sort_ascending: bool,
+    only_open: bool,
+) -> Vec<&'a crate::sip::dialog::SipDialog> {
     #[cfg(test)]
     DISPLAYED_DIALOGS_CALLS.with(|c| c.set(c.get() + 1));
+    // The capture's clock, read once: a REGISTER whose interval ran out or
+    // whose challenge was never answered is over (`SipDialog::state_at`).
+    let now = store.capture_now();
     let mut dialogs: Vec<_> = store
         .iter()
         // Half-open `[after, before)` through the one shared rule, so the TUI's
@@ -610,6 +643,7 @@ pub fn displayed_dialogs<'a>(
         // MCP `search_by_time` tool. An open bound admits everything on that
         // side.
         .filter(|d| crate::cursor::in_time_window(d.created_at, after, before))
+        .filter(|d| !only_open || !d.state_at(now).is_final())
         // This list is built from dialogs alone; with no stream data it cannot
         // testify that a call carried no media, so `rtp.*` compares as unknown
         // and no delay evidence could change an answer.
@@ -881,6 +915,8 @@ pub fn render_call_list(
     let visible_end = (scroll_offset + visible_rows).min(total);
     // Resolve only the visible window (a cached id can miss if the dialog
     // was evicted since the tick's sync — the row simply skips one frame).
+    // The capture's clock for the State cell (`SipDialog::state_at`).
+    let capture_now = store.capture_now();
     let visible_dialogs: Vec<&crate::sip::dialog::SipDialog> = row_ids[scroll_offset..visible_end]
         .iter()
         .filter_map(|id| store.get(id))
@@ -1022,7 +1058,7 @@ pub fn render_call_list(
                     // Accepted over widening every layout for a case that needs a
                     // transfer in flight and a failed transaction at once.
                     6 => {
-                        let state = dialog.state();
+                        let state = &dialog.state_at(capture_now);
                         let mut spans = vec![Span::styled(
                             state_display_str(state),
                             state_style(state, theme),
@@ -1058,7 +1094,7 @@ pub fn render_call_list(
             let row = Row::new(visible_cells);
 
             // Row style based on state
-            let row_style = match dialog.state() {
+            let row_style = match dialog.state_at(capture_now) {
                 DialogState::Failed => Style::default().fg(theme.bad),
                 DialogState::InCall | DialogState::Active => Style::default().fg(theme.good),
                 DialogState::Canceled => Style::default().fg(theme.warning),
