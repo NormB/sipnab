@@ -763,7 +763,8 @@ impl Parser {
             let more = idx + 1 < bytes.len() || more;
             self.buffer.push(*byte);
             if !more && self.buffer.as_slice() == b"\x1b" {
-                self.escape_since.get_or_insert_with(std::time::Instant::now);
+                self.escape_since
+                    .get_or_insert_with(std::time::Instant::now);
                 return;
             }
             self.escape_since = None;
@@ -1453,11 +1454,22 @@ mod tests {
     fn success_an_arrow_split_after_its_escape_is_the_arrow() {
         let mut parser = raw();
         parser.advance(b"\x1b", false);
-        assert_eq!(parser.take(), vec![], "the lone ESC is held, not yet the Esc key");
-        assert!(parser.escape_wait().is_some(), "the held ESC bounds the next wait");
+        assert_eq!(
+            parser.take(),
+            vec![],
+            "the lone ESC is held, not yet the Esc key"
+        );
+        assert!(
+            parser.escape_wait().is_some(),
+            "the held ESC bounds the next wait"
+        );
         parser.flush_escape_if_due();
         parser.advance(b"[B", false);
-        assert_eq!(parser.take(), vec![plain(KeyCode::Down)], "ESC + [B in two reads = Down");
+        assert_eq!(
+            parser.take(),
+            vec![plain(KeyCode::Down)],
+            "ESC + [B in two reads = Down"
+        );
         assert_eq!(parser.escape_wait(), None, "nothing held after the arrow");
     }
 
@@ -1470,9 +1482,17 @@ mod tests {
         let wait = parser.escape_wait().unwrap_or_default();
         assert!(wait <= ESC_DELAY, "the wait is at most ESC_DELAY: {wait:?}");
         std::thread::sleep(ESC_DELAY + std::time::Duration::from_millis(5));
-        assert_eq!(parser.escape_wait(), Some(std::time::Duration::ZERO), "due now");
+        assert_eq!(
+            parser.escape_wait(),
+            Some(std::time::Duration::ZERO),
+            "due now"
+        );
         parser.flush_escape_if_due();
-        assert_eq!(parser.take(), vec![plain(KeyCode::Esc)], "the lone ESC is the Esc key");
+        assert_eq!(
+            parser.take(),
+            vec![plain(KeyCode::Esc)],
+            "the lone ESC is the Esc key"
+        );
         assert_eq!(parser.escape_wait(), None, "nothing held after it");
     }
 
