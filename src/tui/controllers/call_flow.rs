@@ -610,7 +610,7 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         }
         CallFlowAction::ExportMermaid => export_mermaid_to_clipboard(app),
         CallFlowAction::Close => {
-            app.flow.diff_selected = None;
+            clear_diff_selection(app);
             app.current_view = View::CallList;
         }
         CallFlowAction::Help => app.current_view = View::Help,
@@ -833,7 +833,7 @@ fn diff_select(app: &mut App, msg_count: usize) {
                     app.set_status_error("Diff across dialogs is not supported");
                     return;
                 }
-                app.flow.diff_selected = None;
+                clear_diff_selection(app);
                 app.diff_scroll = 0;
                 app.current_view = View::MessageDiff {
                     call_id: cur_cid,
@@ -845,10 +845,29 @@ fn diff_select(app: &mut App, msg_count: usize) {
             // First selection
             app.flow.diff_selected = Some((cur_cid, cur));
             app.status_error = Some(format!(
-                "Selected: message {} (press Space on another to diff)",
+                "{DIFF_HINT_PREFIX}{} (press Space on another to diff)",
                 cur + 1
             ));
         }
+    }
+}
+
+/// The start of the status-line hint the first compare press leaves.
+const DIFF_HINT_PREFIX: &str = "Selected: message ";
+
+/// Drop the pending compare selection AND its status-line hint, so the hint
+/// never outlives the selection it describes: opening the diff or leaving
+/// the ladder used to leave "Selected: message N (press Space on another to
+/// diff)" on the diff view, the ladder and the call list with nothing
+/// selected. Any other status message is left alone.
+fn clear_diff_selection(app: &mut App) {
+    app.flow.diff_selected = None;
+    if app
+        .status_error
+        .as_deref()
+        .is_some_and(|s| s.starts_with(DIFF_HINT_PREFIX))
+    {
+        app.status_error = None;
     }
 }
 
@@ -2189,6 +2208,38 @@ mod tests {
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::F(2)));
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+        Ok(())
+    }
+
+    /// The compare hint lives only as long as its selection: leaving
+    /// the ladder after one Space, or opening the diff with the second, takes
+    /// the "Selected: message N" hint away with the selection.
+    #[test]
+    fn compare_hint_goes_with_the_selection() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(app.flow.diff_selected.is_some());
+        assert!(
+            app.status_error
+                .as_deref()
+                .is_some_and(|s| s.starts_with(DIFF_HINT_PREFIX))
+        );
+        handle_call_flow_key(&mut app, key(KeyCode::Esc));
+        assert!(matches!(app.current_view, View::CallList));
+        assert_eq!(app.flow.diff_selected, None);
+        assert_eq!(app.status_error, None, "hint left on the call list");
+
+        // Second press opens the diff: the hint goes too.
+        app.status_error = Some(format!("{DIFF_HINT_PREFIX}1 (press Space on another to diff)"));
+        app.flow.diff_selected = Some(("call-1@test".to_string(), 0));
+        clear_diff_selection(&mut app);
+        assert_eq!(app.status_error, None);
+
+        // Another status message is not touched.
+        app.status_error = Some("Mark set".to_string());
+        clear_diff_selection(&mut app);
+        assert_eq!(app.status_error.as_deref(), Some("Mark set"));
         Ok(())
     }
 
