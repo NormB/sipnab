@@ -1430,6 +1430,21 @@ pub struct DiagnosticAliasArgs {
 /// 2 MiB libtest thread stack.
 #[derive(clap::Args, Debug, Clone)]
 pub struct OutputArgs {
+    /// sngrep mode: the TUI takes sngrep's keys and colors.
+    ///
+    /// On the call list, call flow, raw message and message compare screens
+    /// every sngrep key does what it does in sngrep; the sipnab commands whose
+    /// keys sngrep uses move to free keys, listed at the top of the F1 help
+    /// with the sngrep keys sipnab has no equivalent for. Off, the TUI is
+    /// unchanged. Also `[display] sngrep_mode = true`.
+    #[arg(help_heading = "Output", long, overrides_with = "no_sngrep_mode")]
+    pub sngrep_mode: bool,
+
+    /// sipnab's own keys and colors even when `[display] sngrep_mode = true`.
+    /// The last of `--sngrep-mode` / `--no-sngrep-mode` typed wins.
+    #[arg(help_heading = "Output", long, overrides_with = "sngrep_mode")]
+    pub no_sngrep_mode: bool,
+
     /// Output NDJSON: one JSON object per SIP message, pipeable to jq.
     /// Schema in docs/output-formats.md.
     #[arg(help_heading = "Output", long)]
@@ -6921,6 +6936,18 @@ impl Cli {
             self.output_args.delta_time,
             self.output_args.no_delta_time,
             config.display.delta_time,
+            false,
+        )
+    }
+
+    /// Whether the TUI runs in sngrep mode: `--sngrep-mode` /
+    /// `--no-sngrep-mode`, else `[display] sngrep_mode`, else off.
+    #[must_use]
+    pub fn sngrep_mode(&self, config: &crate::config::Config) -> bool {
+        switch(
+            self.output_args.sngrep_mode,
+            self.output_args.no_sngrep_mode,
+            config.display.sngrep_mode,
             false,
         )
     }
@@ -15718,6 +15745,12 @@ mod tests {
                 "--no-delta-time",
                 |c| c.display.delta_time = Some(true),
                 |cli, c| cli.delta_time(c),
+            ),
+            (
+                "--sngrep-mode",
+                "--no-sngrep-mode",
+                |c| c.display.sngrep_mode = Some(true),
+                |cli, c| cli.sngrep_mode(c),
             ),
             (
                 "--no-priv-drop",

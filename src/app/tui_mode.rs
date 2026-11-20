@@ -717,8 +717,12 @@ pub fn run_tui_mode(
     });
 
     // Build resolved theme and keymap from config
-    let theme = crate::tui::Theme::from_config(&config.theme);
-    let keymap = crate::tui::Keymap::from_config(&config.keybindings);
+    let mut theme = crate::tui::Theme::from_config(&config.theme);
+    let mut keymap = crate::tui::Keymap::from_config(&config.keybindings);
+    // sngrep mode: `--sngrep-mode` / `--no-sngrep-mode`, else `[display] sngrep_mode`.
+    if cli.sngrep_mode(&config) {
+        crate::tui::enable_sngrep_mode(&mut theme, &mut keymap);
+    }
     let config_save = crate::config::save_target(
         origin.source.as_deref(),
         crate::config::default_user_config_path().as_deref(),
@@ -825,8 +829,11 @@ pub fn run_tui_mode(
                 .map(str::to_owned),
             mouse_capture_off: tui_mouse_capture_off(&config),
             view_filter_detail: tui_view_filter_detail(&config),
-            // `[display]` keys over sipnab's defaults (CLI > key > default).
-            display: Some(crate::tui::DisplayPrefs::resolve(&config.display)),
+            // `[display]` keys over the mode's defaults (CLI > key > mode).
+            display: Some(crate::tui::DisplayPrefs::resolve(
+                &config.display,
+                cli.sngrep_mode(&config),
+            )),
         },
     )
     .err();
@@ -2202,21 +2209,46 @@ mod tests {
         Ok(())
     }
 
-    /// The `[display]` keys: unset takes sipnab's defaults, a set key wins.
+    /// The `[display]` keys a mode only supplies defaults for: unset takes
+    /// sipnab's own defaults, a set key wins.
     #[test]
-    fn display_prefs_keys_win_over_the_default() -> Result<(), TestError> {
+    fn display_prefs_keys_win_over_the_mode_default() -> Result<(), TestError> {
         use crate::tui::{ColorMode, DisplayPrefs, SdpDisplayMode};
-        let own = DisplayPrefs::resolve(&Config::default().display);
-        assert_eq!(own, DisplayPrefs::default());
+        let own = DisplayPrefs::resolve(&Config::default().display, false);
+        assert_eq!(own, DisplayPrefs::mode_default(false));
         assert!(own.fold && own.autoscroll && !own.extended_flow);
         let set: Config = toml::from_str(
             "[display]\nfold = false\nautoscroll = false\nsdp_display = \"full\"\n\
              color_mode = \"cseq\"\nextended_flow = true\n",
         )?;
-        let p = DisplayPrefs::resolve(&set.display);
+        let p = DisplayPrefs::resolve(&set.display, false);
         assert!(!p.fold && !p.autoscroll && p.extended_flow);
         assert_eq!(p.sdp_display, SdpDisplayMode::Full);
         assert_eq!(p.color_mode, ColorMode::CSeq);
+        Ok(())
+    }
+
+    /// sngrep mode is a set of defaults: retx/auth as separate
+    /// arrows, Call-ID coloring, the multi-leg flow, autoscroll off, sngrep's
+    /// SDP form; the user's `[display]` keys still win over each.
+    #[test]
+    fn sngrep_mode_defaults_yield_to_the_users_keys() -> Result<(), TestError> {
+        use crate::tui::{ColorMode, DisplayPrefs, SdpDisplayMode};
+        let sng = DisplayPrefs::resolve(&Config::default().display, true);
+        assert!(!sng.fold && !sng.autoscroll && sng.extended_flow);
+        assert_eq!(sng.sdp_display, SdpDisplayMode::Sngrep);
+        assert_eq!(sng.color_mode, ColorMode::CallId);
+        let set: Config = toml::from_str(
+            "[display]\nfold = true\ncolor_mode = \"method\"\nextended_flow = false\n",
+        )?;
+        let p = DisplayPrefs::resolve(&set.display, true);
+        assert!(p.fold && !p.extended_flow);
+        assert_eq!(p.color_mode, ColorMode::Method);
+        assert_eq!(
+            p.sdp_display,
+            SdpDisplayMode::Sngrep,
+            "unset keys keep sngrep's"
+        );
         Ok(())
     }
 

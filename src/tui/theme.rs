@@ -36,6 +36,12 @@ pub struct Theme {
     /// draws a color of its own, one that is not a slot above, leaves it out
     /// when this is set and marks state with a text attribute instead.
     pub no_color: bool,
+    /// sngrep mode: the views draw sngrep's colors where they have their own
+    /// (see `sngrep_mode`). Set by `sngrep_mode::apply_theme`.
+    pub sngrep: bool,
+    /// sngrep mode, `K`: the bottom key bar names each command's
+    /// letter instead of its function key.
+    pub sngrep_alt_hints: bool,
 }
 
 impl Default for Theme {
@@ -59,6 +65,8 @@ impl Default for Theme {
             border: Color::White,
             status_bg: Color::Rgb(48, 48, 64), // Dark blue-gray, readable on both dark and light
             no_color: false,
+            sngrep: false,
+            sngrep_alt_hints: false,
         }
     }
 }
@@ -131,6 +139,8 @@ impl Theme {
             border: Color::Reset,
             status_bg: Color::Reset,
             no_color: true,
+            sngrep: false,
+            sngrep_alt_hints: false,
         }
     }
 }
@@ -280,6 +290,10 @@ pub struct Keymap {
     /// the F7 dialog's filter (default `F`). Answered in every view, ahead of
     /// the view's own keys.
     pub filter_detail: KeyCode,
+    /// sngrep mode: keys on the screens sngrep has do what they do in sngrep
+    /// (see `sngrep_mode::translate`). Off unless `--sngrep-mode` or
+    /// `[display] sngrep_mode` asks for it.
+    pub sngrep: bool,
 }
 
 impl Default for Keymap {
@@ -298,6 +312,7 @@ impl Default for Keymap {
             clear_calls: KeyCode::F(5),
             column_selector: KeyCode::F(10),
             filter_detail: KeyCode::Char('F'),
+            sngrep: false,
         }
     }
 }

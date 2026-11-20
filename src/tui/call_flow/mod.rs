@@ -267,6 +267,9 @@ pub struct FormattedMessage {
     pub pdd_note: Option<String>,
     /// Optional extra lines below the arrow (SDP info, RTP markers, etc.).
     pub extra_lines: Vec<(String, Style)>,
+    /// The extra lines are sngrep's media lines: centred between the
+    /// arrow's pipes, in the arrow's color (see `LayoutRow`).
+    pub extra_centered: bool,
     /// Whether this message is selected (for highlighting).
     pub selected: bool,
     /// Call-ID of the source message (for related-row highlighting).
@@ -307,6 +310,20 @@ pub struct FormattedMessage {
     /// by marking the exact messages a finding was drawn from rather than
     /// asserting the finding somewhere else and leaving the reader to locate them.
     pub diagnosis_note: Option<String>,
+    /// sngrep mode: the label and its media lines ABOVE, then the
+    /// arrow on a row of its own (`──>` / `<──`).
+    pub sngrep_split: bool,
+    /// sngrep mode: the delta to the previous message (`+0.500000`), drawn
+    /// cyan on the row above the time.
+    pub sngrep_delta: Option<String>,
+}
+
+impl FormattedMessage {
+    /// Ladder rows this message paints: the main row, its extra lines and,
+    /// in sngrep mode, the arrow row of its own.
+    pub fn ladder_rows(&self) -> usize {
+        1 + self.extra_lines.len() + usize::from(self.sngrep_split)
+    }
 }
 
 /// Tests for `ladder_split_width` / `arrow_gap_for_label`: the split-view

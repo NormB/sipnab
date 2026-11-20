@@ -796,7 +796,7 @@ mod tests {
         let path = dir.path().join("sipnab.toml");
         std::fs::write(&path, "[display]\nfold = false\n")?;
         let mut app = App::new_test();
-        app.apply_display_prefs(crate::tui::DisplayPrefs::default());
+        app.apply_display_prefs(crate::tui::DisplayPrefs::mode_default(true));
         app.set_column_config_path(Some(path.clone()));
         app.call_list.column_selector_open = true;
         handle_call_list_key(&mut app, key(KeyCode::Char('s')));

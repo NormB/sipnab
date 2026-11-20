@@ -169,6 +169,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "delta_time",
             "visible_columns",
             "from_to",
+            "sngrep_mode",
             "mouse_capture",
             "view_filter_detail",
             "fold",
@@ -1873,6 +1874,9 @@ pub struct DisplayConfig {
     /// A call opens as the extended (multi-leg) flow (F4 toggles it). Unset
     /// means off.
     pub extended_flow: Option<bool>,
+    /// sngrep mode: the TUI takes sngrep's keys and colors on the screens
+    /// sngrep has. `--sngrep-mode` also turns it on. Unset means off.
+    pub sngrep_mode: Option<bool>,
 }
 
 impl DisplayConfig {
@@ -1920,10 +1924,11 @@ impl DisplayConfig {
                 )));
             }
             if let Some(m) = &self.sdp_display
-                && crate::tui::SdpDisplayMode::parse(m).is_none()
+                && crate::tui::SdpDisplayMode::parse_in(m, true).is_none()
             {
                 return Err(crate::Error::ConfigInvalid(format!(
-                    "[display] sdp_display must be one of none, summary, full, got {m:?}"
+                    "[display] sdp_display must be one of none, summary, full \
+                     (or sngrep, in sngrep mode), got {m:?}"
                 )));
             }
             if let Some(m) = &self.color_mode
