@@ -798,6 +798,45 @@ pub struct CaptureArgs {
     )]
     pub input: Vec<String>,
 
+    /// Drop SIP dialogs started by this method at ingest (repeatable, or a
+    /// comma list; any method, case-insensitive). The decision is made ONCE
+    /// per dialog (Call-ID), on the request that starts it: a dialog started
+    /// by a listed method opens no dialog, takes no dialog number and every
+    /// message of it (requests and replies) only counts in "dropped by
+    /// method" (TUI status line, capture report). A dialog started by
+    /// another method keeps EVERY message, whatever its method (ACK, BYE,
+    /// re-INVITE, an in-dialog OPTIONS, ...). A message whose dialog start
+    /// was never seen (capture began mid-call) is decided by its own method
+    /// (a reply by its CSeq method). Unlike `--filter`, which hides, a
+    /// dropped message is never kept in memory. Live capture, HEP and `-I`
+    /// files alike. Example: `--drop-method OPTIONS`.
+    #[arg(
+        help_heading = "Capture",
+        long = "drop-method",
+        value_name = "METHOD",
+        value_delimiter = ',',
+        action = clap::ArgAction::Append
+    )]
+    pub drop_method: Vec<String>,
+
+    /// Keep at ingest ONLY the SIP dialogs started by this method
+    /// (repeatable, or a comma list; case-insensitive), decided once per
+    /// dialog on its starting request exactly as `--drop-method` decides:
+    /// with `--only-method INVITE` a call keeps every message (ACK, BYE,
+    /// CANCEL, re-INVITE, UPDATE, INFO, in-dialog OPTIONS, ... and all the
+    /// replies), while REGISTER, OPTIONS, SUBSCRIBE, MESSAGE ... dialogs are
+    /// dropped whole (no dialog, no number, counted as dropped). With both
+    /// flags a dialog is kept only when its starting method is in
+    /// `--only-method` AND not in `--drop-method`.
+    #[arg(
+        help_heading = "Capture",
+        long = "only-method",
+        value_name = "METHOD",
+        value_delimiter = ',',
+        action = clap::ArgAction::Append
+    )]
+    pub only_method: Vec<String>,
+
     /// Descend into subdirectories when `-I` names a directory.
     ///
     /// Off by default: recursing silently can analyze several times the

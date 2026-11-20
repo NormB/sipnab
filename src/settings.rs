@@ -225,6 +225,10 @@ pub const FLAGS: &[(&str, Link)] = &[
         "dns-cache-entries",
         Link::Key("names", "dns_cache_entries", Merge::Override),
     ),
+    (
+        "drop-method",
+        Link::Key("capture", "drop_methods", Merge::Union),
+    ),
     ("dtls-keylog", Link::Pending),
     ("dtmf-cleartext", Link::PerRun),
     ("dump-config", Link::Action),
@@ -624,6 +628,10 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     ("notes", Link::Input),
     ("on-dialog-exec", Link::Pending),
+    (
+        "only-method",
+        Link::Key("capture", "only_methods", Merge::Union),
+    ),
     ("on-quality-exec", Link::Pending),
     ("one-way", Link::PerRun),
     (

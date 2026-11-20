@@ -336,6 +336,9 @@ pub struct App {
     capture_options: crate::pipeline::PipelineOptions,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
+    /// Messages dropped at ingest by method (`--drop-method`,
+    /// `--only-method`), refreshed with `cached_dialog_count`.
+    cached_dropped_by_method: u64,
     /// Displayed dialog list cache (filter+search+sort, derived per tick).
     displayed: DisplayedCache,
     /// Cached displayed dialog count (updated when lock is available).
@@ -623,6 +626,7 @@ impl App {
             bpf_filter: String::new(),
             bpf_filter_generated: false,
             cached_dialog_count: 0,
+            cached_dropped_by_method: 0,
             displayed: DisplayedCache::default(),
             cached_displayed_count: 0,
             save: SaveDialogState::default(),
@@ -1329,6 +1333,7 @@ impl App {
             return;
         };
         self.cached_dialog_count = store.len();
+        self.cached_dropped_by_method = store.total_messages_dropped_by_method();
 
         self.sync_displayed_dialogs(&store);
         self.cached_displayed_count = self.displayed.ids.len();

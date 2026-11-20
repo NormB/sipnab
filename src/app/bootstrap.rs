@@ -7124,6 +7124,16 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
     if let Some(v) = loaded.config.limits.max_messages_per_dialog {
         crate::sip::dialog_store::set_max_messages_per_dialog(v as usize);
     }
+    // `--drop-method` / `--only-method` add to `[capture] drop_methods` /
+    // `only_methods`; every DialogStore built from here on filters at ingest.
+    {
+        let cap = &loaded.config.capture;
+        let mut drop = cap.drop_methods.clone().unwrap_or_default();
+        drop.extend(cli.capture_args.drop_method.iter().cloned());
+        let mut only = cap.only_methods.clone().unwrap_or_default();
+        only.extend(cli.capture_args.only_method.iter().cloned());
+        crate::sip::dialog_store::set_method_filter(drop, only);
+    }
     if let Some(v) = loaded.config.limits.idle_compact_after_secs {
         crate::sip::dialog_store::set_idle_compact_after_secs(v as i64);
     }

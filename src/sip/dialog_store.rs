@@ -38,6 +38,35 @@ pub fn set_max_messages_per_dialog(limit: usize) {
     MAX_MESSAGES_PER_DIALOG.store(limit, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// How many dialog keys refused by method are remembered (see
+/// `DialogStore::method_refused`).
+const METHOD_REFUSED_CAP: usize = 65_536;
+
+/// The method lists applied at ingest by every [`DialogStore`] built after
+/// [`set_method_filter`]: `(drop, only)`; see [`DialogStore::set_drop_methods`]
+/// and [`DialogStore::set_only_methods`].
+static METHOD_FILTER: std::sync::OnceLock<(Vec<String>, Vec<String>)> = std::sync::OnceLock::new();
+
+/// Filter SIP messages by method at ingest, in every [`DialogStore`] built
+/// after this call: `drop` (`--drop-method`, `[capture] drop_methods`) and
+/// `only` (`--only-method`, `[capture] only_methods`). Call once at startup;
+/// a second call is ignored. Methods compare case-insensitively.
+pub fn set_method_filter(drop: Vec<String>, only: Vec<String>) {
+    let _ = METHOD_FILTER.set((normalize_methods(drop), normalize_methods(only)));
+}
+
+/// Upper-case, trimmed, empty entries removed, each method once.
+fn normalize_methods(methods: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for m in methods {
+        let m = m.trim().to_ascii_uppercase();
+        if !m.is_empty() && !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    out
+}
+
 /// Reason a dialog was correlated to another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -483,6 +512,19 @@ pub struct DialogStore {
     /// record of the latest. An operator reading "5000 dialogs lost to
     /// capacity" needs to know which end of the capture is missing.
     capacity_dialogs_evicted: u64,
+    /// Methods dropped at ingest: a request with one of these methods, and
+    /// every reply whose CSeq names one, never reaches a dialog. Upper case.
+    drop_methods: Vec<String>,
+    /// When not empty, the only methods kept at ingest (requests by their
+    /// method, replies by their CSeq method). Upper case.
+    only_methods: Vec<String>,
+    /// Lifetime count of messages dropped by [`Self::drop_methods`] and
+    /// [`Self::only_methods`].
+    messages_dropped_by_method: u64,
+    /// Dialog keys (Call-IDs) refused by method, so every later message of
+    /// such a dialog is dropped too. Bounded: at [`METHOD_REFUSED_CAP`] the
+    /// older half is forgotten.
+    method_refused: indexmap::IndexSet<String, ahash::RandomState>,
     /// Mutation counter for cache invalidation — see [`Self::generation`].
     generation: u64,
     /// The change sequence: the number of the last change stamped on a
@@ -1018,6 +1060,10 @@ impl DialogStore {
             capacity_dialogs_dropped: 0,
             refused: indexmap::IndexSet::default(),
             capacity_dialogs_evicted: 0,
+            drop_methods: METHOD_FILTER.get().map(|f| f.0.clone()).unwrap_or_default(),
+            only_methods: METHOD_FILTER.get().map(|f| f.1.clone()).unwrap_or_default(),
+            messages_dropped_by_method: 0,
+            method_refused: indexmap::IndexSet::default(),
             generation: 0,
             changes: 0,
             numbered: 0,
@@ -1442,6 +1488,63 @@ impl DialogStore {
         self.capacity_dialogs_evicted
     }
 
+    /// Drop these methods at ingest (replaces the list the store was built
+    /// with): a request whose method is listed, and every reply whose CSeq
+    /// method is listed, opens no dialog, takes no dialog number and joins no
+    /// dialog; it only bumps [`Self::total_messages_dropped_by_method`].
+    pub fn set_drop_methods(&mut self, methods: Vec<String>) {
+        self.drop_methods = normalize_methods(methods);
+    }
+
+    /// Keep ONLY these methods at ingest (replaces the list the store was
+    /// built with): a request is kept when its method is listed, a reply when
+    /// its CSeq method is listed; everything else is dropped as
+    /// [`Self::set_drop_methods`] drops. Empty = keep every method.
+    pub fn set_only_methods(&mut self, methods: Vec<String>) {
+        self.only_methods = normalize_methods(methods);
+    }
+
+    /// The methods dropped at ingest, upper case; empty when none.
+    pub fn drop_methods(&self) -> &[String] {
+        &self.drop_methods
+    }
+
+    /// The only methods kept at ingest, upper case; empty = all.
+    pub fn only_methods(&self) -> &[String] {
+        &self.only_methods
+    }
+
+    /// Lifetime count of messages dropped at ingest by method.
+    pub fn total_messages_dropped_by_method(&self) -> u64 {
+        self.messages_dropped_by_method
+    }
+
+    /// Whether a `--drop-method` or `--only-method` filter is set at all.
+    fn method_filter_on(&self) -> bool {
+        !(self.drop_methods.is_empty() && self.only_methods.is_empty())
+    }
+
+    /// Whether `msg`, opening a dialog, is dropped by [`Self::drop_methods`] /
+    /// [`Self::only_methods`]: kept only when its method (a reply's CSeq
+    /// method, for a dialog whose start was never seen) is in `only` (or
+    /// `only` is empty) AND not in `drop`.
+    fn dropped_by_method(&self, msg: &SipMessage) -> bool {
+        if !self.method_filter_on() {
+            return false;
+        }
+        let method = if msg.is_request {
+            msg.method.as_ref().map(|m| m.as_str().to_string())
+        } else {
+            msg.cseq().map(|(_, m)| m.to_string())
+        };
+        let listed = |list: &[String]| {
+            method
+                .as_deref()
+                .is_some_and(|m| list.iter().any(|d| d.eq_ignore_ascii_case(m)))
+        };
+        listed(&self.drop_methods) || (!self.only_methods.is_empty() && !listed(&self.only_methods))
+    }
+
     /// Process an incoming SIP message.
     ///
     /// This is the main entry point. It:
@@ -1491,6 +1594,24 @@ impl DialogStore {
             (None, None) => return,
         };
         let dialog_idx = self.dialogs.get_index_of(lookup);
+        // The method filter decides ONCE per dialog, on the message that
+        // would open it: a message of a dialog already kept is always kept
+        // (ACK, BYE, re-INVITE, in-dialog OPTIONS, ... and their replies);
+        // a message of a dialog refused by method is always dropped.
+        if dialog_idx.is_none() && self.method_filter_on() {
+            if self.method_refused.contains(lookup) {
+                self.messages_dropped_by_method += 1;
+                return;
+            }
+            if self.dropped_by_method(&msg) {
+                self.messages_dropped_by_method += 1;
+                if self.method_refused.len() >= METHOD_REFUSED_CAP {
+                    self.method_refused.drain(..METHOD_REFUSED_CAP / 2);
+                }
+                self.method_refused.insert(lookup.to_string());
+                return;
+            }
+        }
         #[cfg(feature = "native")]
         if dialog_idx.is_none() && self.admission.as_ref().is_some_and(|m| !m.matches(&msg)) {
             return;
@@ -1781,6 +1902,7 @@ impl DialogStore {
             self.idle_messages_evicted += other.idle_messages_evicted;
             self.capacity_dialogs_dropped += other.capacity_dialogs_dropped;
             self.capacity_dialogs_evicted += other.capacity_dialogs_evicted;
+            self.messages_dropped_by_method += other.messages_dropped_by_method;
             sightings.push(other.engine_sightings);
         }
         self.engine_sightings
@@ -5592,6 +5714,105 @@ mod tests {
             .ok_or("the INVITE dialog is kept")?;
         assert_eq!(call.messages.len(), 2, "its 200 OK is kept too");
         assert_eq!(store.len(), 1);
+        Ok(())
+    }
+
+    /// A dropped method's request AND its reply (matched by the CSeq method)
+    /// open no dialog, take no dialog number and count only as dropped.
+    #[test]
+    fn a_dropped_method_request_and_reply_open_no_dialog_and_take_no_number()
+    -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.set_drop_methods(vec![" options".into()]);
+        let t0 = base_ts()?;
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_invite_msg("call-1@test", t0)?);
+        store.process_message(make_options_with_branch("opt-1@test", 1, "z9hG4bK-o1", t0)?);
+        store.process_message(make_options_200_with_branch(
+            "opt-1@test",
+            1,
+            "z9hG4bK-o1",
+            t1,
+        )?);
+        store.process_message(make_invite_msg("call-2@test", t1)?);
+        store.process_message(make_200_ok("call-2@test", t1)?);
+        // An OPTIONS inside the call (same Call-ID) belongs to an accepted
+        // dialog: kept, with its reply.
+        store.process_message(make_options_with_branch("call-2@test", 5, "z9hG4bK-o2", t1)?);
+        store.process_message(make_options_200_with_branch(
+            "call-2@test",
+            5,
+            "z9hG4bK-o2",
+            t1,
+        )?);
+
+        assert!(store.get("opt-1@test").is_none(), "no OPTIONS dialog");
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.total_messages_dropped_by_method(), 2, "request + reply");
+        let n1 = store.get("call-1@test").ok_or("call-1")?.number;
+        let n2 = store.get("call-2@test").ok_or("call-2")?.number;
+        assert_eq!(n2, n1 + 1, "numbers stay consecutive across the drop");
+        assert_eq!(
+            store.get("call-2@test").ok_or("call-2")?.messages.len(),
+            4,
+            "the in-dialog OPTIONS and its 200 are kept"
+        );
+
+        // Without the list the old behaviour: the OPTIONS is a dialog.
+        let mut plain = DialogStore::new(100, false);
+        plain.process_message(make_options_with_branch("opt-1@test", 1, "z9hG4bK-o1", t0)?);
+        plain.process_message(make_options_200_with_branch(
+            "opt-1@test",
+            1,
+            "z9hG4bK-o1",
+            t1,
+        )?);
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain.total_messages_dropped_by_method(), 0);
+        Ok(())
+    }
+
+    /// `only = INVITE`: the INVITE dialog keeps EVERY message (its BYE and
+    /// in-dialog OPTIONS too); the stand-alone OPTIONS dialog is dropped
+    /// whole, even a later INVITE on its Call-ID. With `drop = INVITE` as
+    /// well, nothing is kept.
+    #[test]
+    fn only_methods_decide_per_dialog_on_the_starting_request() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.set_only_methods(vec!["invite".into()]);
+        let t0 = base_ts()?;
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_options_with_branch("opt-1@test", 1, "z9hG4bK-o1", t0)?);
+        store.process_message(make_options_200_with_branch(
+            "opt-1@test",
+            1,
+            "z9hG4bK-o1",
+            t1,
+        )?);
+        store.process_message(make_invite_msg("call-1@test", t0)?);
+        store.process_message(make_200_ok("call-1@test", t1)?);
+        store.process_message(make_options_with_branch("call-1@test", 3, "z9hG4bK-o3", t1)?);
+        store.process_message(make_bye_msg("call-1@test", t1)?);
+        // A message of the refused OPTIONS dialog, whatever its method.
+        store.process_message(make_invite_msg("opt-1@test", t1)?);
+        store.process_message(make_invite_msg("call-2@test", t1)?);
+        assert!(store.get("opt-1@test").is_none(), "no OPTIONS dialog");
+        assert_eq!(store.len(), 2);
+        assert_eq!(
+            store.get("call-1@test").ok_or("call-1")?.messages.len(),
+            4,
+            "INVITE, 200, in-dialog OPTIONS, BYE"
+        );
+        assert_eq!(store.get("call-1@test").ok_or("call-1")?.number, 1);
+        assert_eq!(store.get("call-2@test").ok_or("call-2")?.number, 2);
+        assert_eq!(store.total_messages_dropped_by_method(), 3, "OPTIONS, its 200, INVITE on it");
+
+        let mut both = DialogStore::new(100, false);
+        both.set_only_methods(vec!["INVITE".into()]);
+        both.set_drop_methods(vec!["Invite".into()]);
+        both.process_message(make_invite_msg("call-1@test", t0)?);
+        assert_eq!(both.len(), 0);
+        assert_eq!(both.total_messages_dropped_by_method(), 1);
         Ok(())
     }
 
