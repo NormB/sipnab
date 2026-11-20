@@ -311,7 +311,7 @@ pub(crate) fn take_input(
     parser: &mut crate::tui::input_parse::Parser,
 ) -> io::Result<Taken> {
     // A lone ESC held from an earlier read whose ESC_DELAY has passed is the
-    // Esc key, before any newer byte (sngrep / ncurses ESCDELAY).
+    // Esc key, before any newer byte.
     parser.flush_escape_if_due();
     match found {
         Wait::Gone => return Ok(Taken::Gone),

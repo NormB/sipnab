@@ -735,8 +735,8 @@ pub(crate) struct Parser {
 }
 
 /// How long a lone ESC at the end of a read waits for the rest of a key
-/// sequence before it is the Esc key: sngrep's `set_escdelay(25)`
-/// (sngrep `ui_manager.c`), the ncurses ESCDELAY.
+/// sequence before it is the Esc key (25 ms, as a terminal UI's usual
+/// short escape delay).
 pub(crate) const ESC_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl Parser {
@@ -757,7 +757,7 @@ impl Parser {
     /// arrow key is `ESC [ B`, and over ssh or tmux its bytes can arrive in
     /// two reads. The held ESC joins the next read's bytes, or is the Esc key
     /// once [`ESC_DELAY`] has passed with nothing after it
-    /// ([`Parser::flush_escape_if_due`]), as ncurses does for sngrep.
+    /// ([`Parser::flush_escape_if_due`]), as a terminal UI's escape delay does.
     pub(crate) fn advance(&mut self, bytes: &[u8], more: bool) {
         for (idx, byte) in bytes.iter().enumerate() {
             let more = idx + 1 < bytes.len() || more;
@@ -1448,7 +1448,7 @@ mod tests {
 
     /// An arrow key whose ESC arrives in one read and `[B` in the
     /// next, inside ESC_DELAY, is the arrow key, not Esc then `[` and `B`
-    /// (sngrep keeps them together with ncurses' ESCDELAY 25 ms).
+    /// (a short escape delay keeps them together).
     #[test]
     fn success_an_arrow_split_after_its_escape_is_the_arrow() {
         let mut parser = raw();
@@ -1462,7 +1462,7 @@ mod tests {
     }
 
     /// A lone Esc is the Esc key as soon as ESC_DELAY has passed with
-    /// nothing after it, as sngrep's set_escdelay(25), not later.
+    /// nothing after it, not later.
     #[test]
     fn success_a_lone_escape_is_the_esc_key_after_the_delay() {
         let mut parser = raw();
