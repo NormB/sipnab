@@ -363,6 +363,7 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
         resolver: app.resolver.as_ref(),
         name_mode: app.name_mode,
         rtp_streams: &[],
+        fold: app.flow.fold,
     };
     let (participants, msgs) = call_flow::prepare_messages(
         &messages,
@@ -1691,6 +1692,32 @@ mod tests {
         assert!(
             content.contains("<pre id=\"src\">"),
             "missing embedded Mermaid source block"
+        );
+        Ok(())
+    }
+
+    /// `[display] fold = false` reaches the Mermaid export too: a
+    /// retransmission is its own arrow in the file, as on the screen. With
+    /// folding on it folds under its original.
+    #[test]
+    fn mermaid_export_follows_the_fold_setting() -> Result<(), TestError> {
+        use crate::tui::controllers::test_support::{base_ts, make_invite};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("fold-export@test", "1001", "1002", base_ts())?,
+            make_invite("fold-export@test", "1001", "1002", base_ts())?,
+        ]);
+        let p = tmp_path("fold.html")?;
+        let path = p.to_str().ok_or("to_str() returned None")?;
+        let folded = save_to_mermaid_path(&app, path);
+        assert!(
+            folded.contains("(1 messages)"),
+            "fold on: the retx folds: {folded}"
+        );
+        app.flow.fold = false;
+        let unfolded = save_to_mermaid_path(&app, path);
+        assert!(
+            unfolded.contains("(2 messages)"),
+            "fold off: every message is an arrow: {unfolded}"
         );
         Ok(())
     }

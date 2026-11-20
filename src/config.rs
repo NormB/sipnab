@@ -1801,6 +1801,21 @@ impl CaptureConfig {
                     .to_string(),
             ));
         }
+        for (key, list) in [
+            ("drop_methods", &self.drop_methods),
+            ("only_methods", &self.only_methods),
+        ] {
+            if let Some(bad) = list
+                .iter()
+                .flatten()
+                .find(|m| !crate::sip::method::is_known_method(m))
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[capture] {key} names an unknown SIP method {bad:?}; use one of {}",
+                    crate::sip::method::KNOWN_METHOD_NAMES
+                )));
+            }
+        }
         Ok(())
     }
 }
@@ -5438,6 +5453,36 @@ from_to = "user-host-port"
         Ok(())
     }
 
+    /// `[capture] drop_methods` / `only_methods` refuse a method name sipnab
+    /// does not know, as `--drop-method` / `--only-method` do; a known name
+    /// in any case is accepted.
+    #[test]
+    fn capture_method_lists_refuse_an_unknown_name() -> Result<(), TestError> {
+        let bad: Config = toml::from_str("[capture]\nonly_methods = [\"INVTE\"]\n")?;
+        let Err(e) = bad.capture.validate() else {
+            return Err("only_methods = [\"INVTE\"] was accepted".into());
+        };
+        let text = e.to_string();
+        assert!(
+            text.contains("[capture] only_methods"),
+            "the key is named: {text}"
+        );
+        assert!(text.contains("INVTE"), "the value is named: {text}");
+        let bad: Config = toml::from_str("[capture]\ndrop_methods = [\"OPTIONS\", \"x\"]\n")?;
+        assert!(
+            bad.capture.validate().is_err(),
+            "one bad name refuses the list"
+        );
+        let ok: Config = toml::from_str(
+            "[capture]\ndrop_methods = [\"options\"]\nonly_methods = [\"Invite\"]\n",
+        )?;
+        assert!(
+            ok.capture.validate().is_ok(),
+            "known names in any case are accepted"
+        );
+        Ok(())
+    }
+
     /// `[display] sdp_display` and `color_mode` refuse a spelling the TUI
     /// does not know.
     #[test]
@@ -5445,11 +5490,17 @@ from_to = "user-host-port"
     fn display_sdp_and_color_mode_are_validated() -> Result<(), TestError> {
         let ok: Config =
             toml::from_str("[display]\nsdp_display = \"full\"\ncolor_mode = \"call_id\"\n")?;
-        assert!(ok.display.validate().is_ok());
+        assert!(ok.display.validate().is_ok(), "known spellings validate");
         let bad: Config = toml::from_str("[display]\nsdp_display = \"short\"\n")?;
-        assert!(bad.display.validate().is_err());
+        assert!(
+            bad.display.validate().is_err(),
+            "an unknown sdp_display is refused"
+        );
         let bad: Config = toml::from_str("[display]\ncolor_mode = \"callid\"\n")?;
-        assert!(bad.display.validate().is_err());
+        assert!(
+            bad.display.validate().is_err(),
+            "an unknown color_mode is refused"
+        );
         Ok(())
     }
 

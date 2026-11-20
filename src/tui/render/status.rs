@@ -550,7 +550,7 @@ pub(in crate::tui) fn fkey_bar_items(
 ) -> Vec<(&'static str, &'static str)> {
     if let Some(p) = popup {
         match p {
-            Popup::QuitConfirm => vec![("Y", "Quit"), ("N/Esc", "Cancel")],
+            Popup::QuitConfirm => vec![("Y/Enter", "Quit"), ("N/Esc", "Cancel")],
             Popup::ClearConfirm(_) => vec![("Y", "Discard"), ("N/Esc/Enter", "Keep")],
             Popup::G729Install => vec![("Y", "Download"), ("N/Esc", "Not now")],
             Popup::NoteEditor => vec![("Enter", "Keep"), ("Esc", "Cancel")],

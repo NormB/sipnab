@@ -1,8 +1,9 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 2089
 expression: output
 ---
- Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Live capture: any    Dialogs: 3 shown of 3    Sort: # ▲    Autoscroll: on
  Capture filter (BPF): none
  Time: Delta from previous | SDP: Hidden | Color: Method | Detail: 40% | Focus: Ladder (Tab)
              10.0.0.1:5060                    10.0.0.2:5060 ┌ [1/4] INVITE ────────────────────────┐

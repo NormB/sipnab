@@ -82,6 +82,7 @@
             "sip_discarded_by_portrange",
             "sip_discarded_by_websocket_ports",
             "retention_loss",
+            "dropped_by_method",
             "no_media",
             "one_way_audio",
             "stun_sdp_mismatch",

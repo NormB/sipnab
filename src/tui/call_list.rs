@@ -396,6 +396,9 @@ pub struct CallListDisplay<'a> {
     /// A file load is in progress. Selects the empty-state hint: an empty
     /// list during a load is not a file without SIP.
     pub loading: bool,
+    /// The capture's clock read with `rows` (`DialogStore::capture_now`),
+    /// for the State cell and row color (`SipDialog::state_at`).
+    pub capture_now: chrono::DateTime<chrono::Utc>,
 }
 
 /// What the call list says while it has no rows, by case: every dialog is
@@ -608,34 +611,68 @@ pub fn displayed_dialogs<'a>(
 ) -> Vec<&'a crate::sip::dialog::SipDialog> {
     displayed_dialogs_open(
         store,
+        &DisplayQuery {
+            filter,
+            after,
+            before,
+            search_query,
+            sort_column,
+            sort_ascending,
+            only_open: false,
+            capture_now: None,
+        },
+    )
+}
+
+/// What the call list shows: the inputs of [`displayed_dialogs_open`].
+#[derive(Debug, Clone, Copy)]
+pub struct DisplayQuery<'q> {
+    /// Optional display-filter expression; `None` keeps all.
+    pub filter: Option<&'q FilterExpr>,
+    /// Lower bound of the half-open time window on `created_at`.
+    pub after: Option<chrono::DateTime<chrono::Utc>>,
+    /// Upper bound of the half-open time window on `created_at`.
+    pub before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Full-text search narrowing; empty means no narrowing.
+    pub search_query: &'q str,
+    /// Column driving the final ordering.
+    pub sort_column: SortColumn,
+    /// Sort direction.
+    pub sort_ascending: bool,
+    /// The call list's `d`: keep only the dialogs whose state is not final.
+    pub only_open: bool,
+    /// The capture's clock when the caller already read it
+    /// ([`DialogStore::capture_now`], a scan of every dialog); `None` reads
+    /// it here, and only when `only_open` needs it.
+    pub capture_now: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// [`displayed_dialogs`] for a whole [`DisplayQuery`], `only_open` (the call
+/// list's `d`) included.
+pub fn displayed_dialogs_open<'a>(
+    store: &'a DialogStore,
+    q: &DisplayQuery<'_>,
+) -> Vec<&'a crate::sip::dialog::SipDialog> {
+    #[cfg(test)]
+    DISPLAYED_DIALOGS_CALLS.with(|c| c.set(c.get() + 1));
+    let DisplayQuery {
         filter,
         after,
         before,
         search_query,
         sort_column,
         sort_ascending,
-        false,
-    )
-}
-
-/// [`displayed_dialogs`], with `only_open` (the call list's `d`) keeping
-/// only the dialogs whose state is not final.
-#[allow(clippy::too_many_arguments)]
-pub fn displayed_dialogs_open<'a>(
-    store: &'a DialogStore,
-    filter: Option<&FilterExpr>,
-    after: Option<chrono::DateTime<chrono::Utc>>,
-    before: Option<chrono::DateTime<chrono::Utc>>,
-    search_query: &str,
-    sort_column: SortColumn,
-    sort_ascending: bool,
-    only_open: bool,
-) -> Vec<&'a crate::sip::dialog::SipDialog> {
-    #[cfg(test)]
-    DISPLAYED_DIALOGS_CALLS.with(|c| c.set(c.get() + 1));
-    // The capture's clock, read once: a REGISTER whose interval ran out or
-    // whose challenge was never answered is over (`SipDialog::state_at`).
-    let now = store.capture_now();
+        only_open,
+        capture_now,
+    } = *q;
+    // The capture's clock, read at most once and only for `d`: a REGISTER
+    // whose interval ran out or whose challenge was never answered is over
+    // (`SipDialog::state_at`).
+    let now = if only_open {
+        capture_now.unwrap_or_else(|| store.capture_now())
+    } else {
+        chrono::DateTime::<chrono::Utc>::MIN_UTC
+    };
     let mut dialogs: Vec<_> = store
         .iter()
         // Half-open `[after, before)` through the one shared rule, so the TUI's
@@ -915,8 +952,9 @@ pub fn render_call_list(
     let visible_end = (scroll_offset + visible_rows).min(total);
     // Resolve only the visible window (a cached id can miss if the dialog
     // was evicted since the tick's sync — the row simply skips one frame).
-    // The capture's clock for the State cell (`SipDialog::state_at`).
-    let capture_now = store.capture_now();
+    // The capture's clock for the State cell (`SipDialog::state_at`), read
+    // with the rows, not per frame.
+    let capture_now = display.capture_now;
     let visible_dialogs: Vec<&crate::sip::dialog::SipDialog> = row_ids[scroll_offset..visible_end]
         .iter()
         .filter_map(|id| store.get(id))
@@ -2567,17 +2605,32 @@ mod tests {
             Ok(())
         };
         let numbers = |store: &DialogStore| -> Vec<(String, u64)> {
-            store.iter().map(|d| (d.call_id.clone(), d.number)).collect()
+            store
+                .iter()
+                .map(|d| (d.call_id.clone(), d.number))
+                .collect()
         };
         send(&mut store, "a@h", 1)?;
         send(&mut store, "b@h", 2)?;
         send(&mut store, "a@h", 3)?; // a re-REGISTER
-        assert_eq!(numbers(&store), [("a@h".into(), 1), ("b@h".into(), 2)]);
+        assert_eq!(
+            numbers(&store),
+            [("a@h".into(), 1), ("b@h".into(), 2)],
+            "an update keeps the dialog's number"
+        );
         send(&mut store, "c@h", 4)?; // evicts a@h
-        assert_eq!(numbers(&store), [("b@h".into(), 2), ("c@h".into(), 3)]);
+        assert_eq!(
+            numbers(&store),
+            [("b@h".into(), 2), ("c@h".into(), 3)],
+            "eviction renumbers nothing; the new dialog takes the next number"
+        );
         store.clear();
         send(&mut store, "d@h", 5)?;
-        assert_eq!(numbers(&store), [("d@h".into(), 4)]);
+        assert_eq!(
+            numbers(&store),
+            [("d@h".into(), 4)],
+            "clear does not restart the numbering"
+        );
         Ok(())
     }
 
@@ -3106,51 +3159,68 @@ mod latest_message_tests {
     fn l_orders_by_the_last_message_and_back() -> Result<(), TestError> {
         let t0 = chrono::DateTime::from_timestamp(crate::test_utils::OUT_OF_ORDER_T0, 0)
             .ok_or("the fixture's epoch")?;
-        let dialog = |cid: &str, last_ms: i64| -> Result<crate::sip::dialog::SipDialog, TestError> {
-            let raw = crate::test_utils::build_sip_message(
-                "OPTIONS sip:pbx@example.com SIP/2.0",
-                &[
-                    "Via: SIP/2.0/UDP 198.51.100.7:5060;branch=z9hG4bK-l",
-                    "From: <sip:a@example.com>;tag=a",
-                    "To: <sip:pbx@example.com>",
-                    &format!("Call-ID: {cid}"),
-                    "CSeq: 1 OPTIONS",
-                    "Content-Length: 0",
-                ],
-                b"",
-            );
-            let mut d = crate::sip::dialog::SipDialog::new(
-                &crate::sip::parser::parse_sip(
-                    &raw,
-                    t0,
-                    [198, 51, 100, 7].into(),
-                    [192, 0, 2, 2].into(),
-                    5060,
-                    5060,
-                    crate::net::TransportProto::Udp,
+        let dialog =
+            |cid: &str, last_ms: i64| -> Result<crate::sip::dialog::SipDialog, TestError> {
+                let raw = crate::test_utils::build_sip_message(
+                    "OPTIONS sip:pbx@example.com SIP/2.0",
+                    &[
+                        "Via: SIP/2.0/UDP 198.51.100.7:5060;branch=z9hG4bK-l",
+                        "From: <sip:a@example.com>;tag=a",
+                        "To: <sip:pbx@example.com>",
+                        &format!("Call-ID: {cid}"),
+                        "CSeq: 1 OPTIONS",
+                        "Content-Length: 0",
+                    ],
+                    b"",
+                );
+                let mut d = crate::sip::dialog::SipDialog::new(
+                    &crate::sip::parser::parse_sip(
+                        &raw,
+                        t0,
+                        [198, 51, 100, 7].into(),
+                        [192, 0, 2, 2].into(),
+                        5060,
+                        5060,
+                        crate::net::TransportProto::Udp,
+                    )
+                    .map_err(|e| format!("parse: {e:?}"))?,
                 )
-                .map_err(|e| format!("parse: {e:?}"))?,
-            )
-            .ok_or("a dialog")?;
-            d.latest_message_at = t0 + chrono::TimeDelta::milliseconds(last_ms);
-            d.updated_at = d.latest_message_at;
-            Ok(d)
-        };
+                .ok_or("a dialog")?;
+                d.latest_message_at = t0 + chrono::TimeDelta::milliseconds(last_ms);
+                d.updated_at = d.latest_message_at;
+                Ok(d)
+            };
         let first = dialog("first@example.com", 5000)?;
         let second = dialog("second@example.com", 1000)?;
         let mut rows = vec![&first, &second];
         sort_dialogs(&mut rows, SortColumn::LastUpdate, true);
         let order: Vec<&str> = rows.iter().map(|d| d.call_id.as_str()).collect();
-        assert_eq!(order, ["second@example.com", "first@example.com"]);
+        assert_eq!(
+            order,
+            ["second@example.com", "first@example.com"],
+            "ascending last update: the one updated last is at the bottom"
+        );
 
         let mut state = CallListState::new();
         state.toggle_last_update_order();
-        assert_eq!(state.sort_column(), SortColumn::LastUpdate);
-        assert!(state.sort_ascending());
-        assert_eq!(state.sort_column().label(), "Last update");
+        assert_eq!(
+            state.sort_column(),
+            SortColumn::LastUpdate,
+            "L sorts by last update"
+        );
+        assert!(state.sort_ascending(), "L sorts ascending");
+        assert_eq!(
+            state.sort_column().label(),
+            "Last update",
+            "the status line label"
+        );
         state.toggle_last_update_order();
-        assert_eq!(state.sort_column(), SortColumn::Index);
-        assert_eq!(state.sort_column().label(), "#");
+        assert_eq!(
+            state.sort_column(),
+            SortColumn::Index,
+            "L again goes back to #"
+        );
+        assert_eq!(state.sort_column().label(), "#", "the # label");
         Ok(())
     }
 }

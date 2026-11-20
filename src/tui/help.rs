@@ -71,7 +71,7 @@ CALL FLOW:
   PgUp/PgDn       Page through messages
   Home/End         First/last message
   Enter            Full-screen raw message
-  Space            Select message for diff (press twice to compare)
+  Space            Select message for diff (press twice to compare; again on it = clear)
   a / A            Combined detail: this transaction / whole dialog
   f                Filter ladder to this transaction (toggle)
   Esc              Back to call list
@@ -233,10 +233,11 @@ TERMS:
   HEP      Homer Encapsulation Protocol: SIP mirrored by a proxy
   TFPS     Optional peer that bans sources (this view only reads it)
 
-DROP BY METHOD (start flags --drop-method / --only-method, [capture]
-drop_methods / only_methods; any methods, case-insensitive):
-Decided ONCE per dialog, on the request that starts it (INVITE, REGISTER,
-OPTIONS, SUBSCRIBE, MESSAGE, ...). Kept = its method is in only (or no
+DROP BY METHOD (--drop-method / --only-method at start):
+Start flags --drop-method / --only-method, or [capture] drop_methods /
+only_methods; known SIP methods, case-insensitive. Decided ONCE per
+dialog, on the request that starts it (INVITE, REGISTER, OPTIONS,
+SUBSCRIBE, MESSAGE, ...). Kept = its method is in only (or no
 only list) AND not in drop: then EVERY message of the dialog is kept and
 shown (ACK, BYE, CANCEL, re-INVITE, UPDATE, INFO, PRACK, REFER, NOTIFY, an
 in-dialog OPTIONS, ...) with every reply. Refused = the whole dialog is

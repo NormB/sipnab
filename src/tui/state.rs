@@ -1999,6 +1999,9 @@ pub(in crate::tui) struct DisplayedCache {
     pub(in crate::tui) key: Option<DisplayedKey>,
     /// Call-IDs in display order.
     pub(in crate::tui) ids: Vec<String>,
+    /// The capture's clock (`DialogStore::capture_now`) read when `ids` was
+    /// derived; the State cells use it so a frame never rescans the store.
+    pub(in crate::tui) capture_now: Option<chrono::DateTime<chrono::Utc>>,
     /// Floors generation-driven rebuilds (user inputs bypass it).
     pub(in crate::tui) floor: ChurnFloor,
 }

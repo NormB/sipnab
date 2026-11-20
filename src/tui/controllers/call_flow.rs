@@ -1026,6 +1026,7 @@ fn export_mermaid_to_clipboard(app: &mut App) {
                 resolver: app.resolver.as_ref(),
                 name_mode: app.name_mode,
                 rtp_streams: &rtp_streams,
+                fold: app.flow.fold,
             };
             let (participants, msgs) = call_flow::prepare_messages(
                 &d.messages,
@@ -2224,27 +2225,41 @@ mod tests {
         let mut app = app_with_dialogs()?;
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
-        assert!(app.flow.diff_selected.is_some());
+        assert!(
+            app.flow.diff_selected.is_some(),
+            "Space selects the message"
+        );
         assert!(
             app.status_error
                 .as_deref()
-                .is_some_and(|s| s.starts_with(DIFF_HINT_PREFIX))
+                .is_some_and(|s| s.starts_with(DIFF_HINT_PREFIX)),
+            "Space shows the compare hint: {:?}",
+            app.status_error
         );
         handle_call_flow_key(&mut app, key(KeyCode::Esc));
-        assert!(matches!(app.current_view, View::CallList));
-        assert_eq!(app.flow.diff_selected, None);
+        assert!(
+            matches!(app.current_view, View::CallList),
+            "Esc leaves the ladder for the call list"
+        );
+        assert_eq!(app.flow.diff_selected, None, "Esc drops the selection");
         assert_eq!(app.status_error, None, "hint left on the call list");
 
         // Second press opens the diff: the hint goes too.
-        app.status_error = Some(format!("{DIFF_HINT_PREFIX}1 (press Space on another to diff)"));
+        app.status_error = Some(format!(
+            "{DIFF_HINT_PREFIX}1 (press Space on another to diff)"
+        ));
         app.flow.diff_selected = Some(("call-1@test".to_string(), 0));
         clear_diff_selection(&mut app);
-        assert_eq!(app.status_error, None);
+        assert_eq!(app.status_error, None, "opening the diff drops the hint");
 
         // Another status message is not touched.
         app.status_error = Some("Mark set".to_string());
         clear_diff_selection(&mut app);
-        assert_eq!(app.status_error.as_deref(), Some("Mark set"));
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("Mark set"),
+            "another status message stays"
+        );
         Ok(())
     }
 
@@ -2255,7 +2270,7 @@ mod tests {
         let mut app = app_with_dialogs()?;
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
-        assert!(app.flow.diff_selected.is_some());
+        assert!(app.flow.diff_selected.is_some(), "the first Space selects");
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
         assert_eq!(app.flow.diff_selected, None, "still selected");
         assert!(
@@ -2267,7 +2282,10 @@ mod tests {
         );
         // A third Space selects it again.
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
-        assert!(app.flow.diff_selected.is_some());
+        assert!(
+            app.flow.diff_selected.is_some(),
+            "a third Space selects again"
+        );
         Ok(())
     }
 

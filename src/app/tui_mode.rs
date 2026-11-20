@@ -2207,16 +2207,30 @@ mod tests {
     fn display_prefs_keys_win_over_the_default() -> Result<(), TestError> {
         use crate::tui::{ColorMode, DisplayPrefs, SdpDisplayMode};
         let own = DisplayPrefs::resolve(&Config::default().display);
-        assert_eq!(own, DisplayPrefs::default());
-        assert!(own.fold && own.autoscroll && !own.extended_flow);
+        assert_eq!(
+            own,
+            DisplayPrefs::default(),
+            "no [display] key: the defaults"
+        );
+        assert!(
+            own.fold && own.autoscroll && !own.extended_flow,
+            "defaults: fold on, autoscroll on, extended flow off"
+        );
         let set: Config = toml::from_str(
             "[display]\nfold = false\nautoscroll = false\nsdp_display = \"full\"\n\
              color_mode = \"cseq\"\nextended_flow = true\n",
         )?;
         let p = DisplayPrefs::resolve(&set.display);
-        assert!(!p.fold && !p.autoscroll && p.extended_flow);
-        assert_eq!(p.sdp_display, SdpDisplayMode::Full);
-        assert_eq!(p.color_mode, ColorMode::CSeq);
+        assert!(
+            !p.fold && !p.autoscroll && p.extended_flow,
+            "each set boolean key wins over its default"
+        );
+        assert_eq!(
+            p.sdp_display,
+            SdpDisplayMode::Full,
+            "sdp_display = \"full\" wins"
+        );
+        assert_eq!(p.color_mode, ColorMode::CSeq, "color_mode = \"cseq\" wins");
         Ok(())
     }
 

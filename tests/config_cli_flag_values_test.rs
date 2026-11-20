@@ -245,6 +245,22 @@ static SPECS: &[Spec] = &[
     ("rtp", Kind::Switch, &[]),
     ("no-promisc", Kind::Switch, &[]),
     (
+        "drop-method",
+        Kind::Text {
+            accept: &["OPTIONS", "invite", "Notify"],
+            reject: &[("x", 2), ("INVTE", 2), ("", 2)],
+        },
+        &[],
+    ),
+    (
+        "only-method",
+        Kind::Text {
+            accept: &["INVITE", "register", "Message"],
+            reject: &[("x", 2), ("KDMQ", 2), ("", 2)],
+        },
+        &[],
+    ),
+    (
         "bpf-file",
         Kind::Text {
             accept: &["/dev/null"],
@@ -4082,6 +4098,7 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.metadata_file_byte_cap(config)),
         format!("{:?}", cli.tcp_buffer_cap(config)),
         format!("{:?}", cli.no_rtp(config)),
+        format!("{:?}", cli.method_filter(config)),
         format!("{:?}", cli.delta_time(config)),
         format!("{:?}", cli.no_priv_drop(config)),
         format!("{:?}", cli.fraud_detect(config)),

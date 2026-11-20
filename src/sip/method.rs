@@ -48,6 +48,21 @@ pub enum SipMethod {
     Custom(Box<str>),
 }
 
+/// The methods sipnab knows by name, as `--drop-method` / `--only-method`
+/// list them in a refusal: every variant of [`SipMethod`] but `Custom`.
+pub const KNOWN_METHOD_NAMES: &str = "INVITE, ACK, BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO, REFER, MESSAGE, UPDATE";
+
+/// Whether `name` (any case) is a method sipnab knows, not a `Custom` one.
+/// The one rule `--drop-method`, `--only-method` and `[capture]
+/// drop_methods` / `only_methods` check a name against.
+#[must_use]
+pub fn is_known_method(name: &str) -> bool {
+    !matches!(
+        SipMethod::parse(&name.to_ascii_uppercase()),
+        SipMethod::Custom(_)
+    )
+}
+
 impl SipMethod {
     /// Return the canonical uppercase string representation.
     ///

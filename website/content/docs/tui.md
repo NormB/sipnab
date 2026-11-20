@@ -98,6 +98,70 @@ help from any view.
 
 Land on the call you care about, then press `Enter`.
 
+### Find the dialogs that are not over
+
+On a busy capture most rows are calls that ended and registrations that
+lapsed. Press `d` to keep only the dialogs still in progress: calls up or
+ringing, valid registrations, active subscriptions and open transactions.
+
+- What you need: the TUI on any capture; nothing changes on another system.
+- Steps: start the TUI and press `d` on the call list.
+
+```sh
+sipnab -I capture.pcap
+```
+
+- Check it: status line 1 says `Showing: not over`, and `Dialogs: N shown of M` drops.
+- `d` again shows every dialog.
+- A REGISTER counts as over when its challenge got no REGISTER in answer, or
+  when its registration expired by the capture's clock (the newest message).
+- When a dialog you expect stays hidden, press `d` to show all, then open it
+  with `Enter` and read its last message: a final response ended it.
+- In the call flow, `d` still cycles the SDP display.
+
+### Watch the dialogs updated last
+
+`L` sorts the call list by each dialog's last message, the one updated last
+at the bottom. Use it on a live capture to watch where traffic happens now.
+
+- What you need: the TUI; nothing changes on another system.
+- Steps: press `L` on the call list; press `L` again to return to `#` order.
+
+```sh
+sipnab -d eth0
+```
+
+- Check it: status line 1 says `Sort: Last update ▲`; back in `#` order it says `Sort: #`.
+- When the order does not seem to change, check that autoscroll (`A`) is not
+  moving the selection, and that a search or filter is not hiding the rows.
+
+## Set how the TUI starts
+
+The `[display]` section of the configuration file sets the starting state of
+keys you would otherwise press after every start.
+
+- What you need: a writable configuration file (see
+  [Configuration reference](@/docs/config.md)); nothing changes on another
+  system.
+- Steps: add the keys you want under `[display]`, then start the TUI.
+
+```toml
+[display]
+fold = false          # every retransmission and auth retry is its own arrow
+autoscroll = false    # the selection stays where you put it
+sdp_display = "full"  # none, summary or full; `d` still cycles it
+color_mode = "cseq"   # method, call_id or cseq; `c` still cycles it
+extended_flow = true  # open the multi-leg flow by default
+```
+
+- Check it: open a call flow; with `fold = false` the ladder shows each
+  retransmission as its own row, and the F2 Mermaid export does the same.
+- When sipnab refuses to start with `[display] sdp_display must be one of`
+  or `[display] color_mode must be one of`, correct the value: the spellings
+  are lower case. See [Error reference](@/docs/errors.md).
+- `[display] autoscroll` sets the starting state; the `autoscroll` key
+  binding (`A` by default) toggles it.
+
 ## Read the call-flow ladder
 
 `Enter` opens the **Call Flow**. It is a ladder diagram of the dialog across

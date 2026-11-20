@@ -740,6 +740,19 @@ fn parse_password_encoding(s: &str) -> Result<String, String> {
     }
 }
 
+/// Parse one `--drop-method` / `--only-method` name, refusing a method
+/// sipnab does not know (any case is accepted and kept as typed).
+fn parse_method_name(s: &str) -> Result<String, String> {
+    if crate::sip::method::is_known_method(s) {
+        Ok(s.to_string())
+    } else {
+        Err(format!(
+            "unknown SIP method '{s}'; use one of {}",
+            crate::sip::method::KNOWN_METHOD_NAMES
+        ))
+    }
+}
+
 /// `Capture` flags.
 ///
 /// Split out of [`Cli`] so clap's generated parser builds this group in its
@@ -799,32 +812,38 @@ pub struct CaptureArgs {
     pub input: Vec<String>,
 
     /// Drop SIP dialogs started by this method at ingest (repeatable, or a
-    /// comma list; any method, case-insensitive). The decision is made ONCE
+    /// comma list; a SIP method sipnab knows, case-insensitive; another name
+    /// is refused at startup). The decision is made ONCE
     /// per dialog (Call-ID), on the request that starts it: a dialog started
     /// by a listed method opens no dialog, takes no dialog number and every
     /// message of it (requests and replies) only counts in "dropped by
     /// method" (TUI status line, capture report). A dialog started by
     /// another method keeps EVERY message, whatever its method (ACK, BYE,
-    /// re-INVITE, an in-dialog OPTIONS, ...). A message whose dialog start
+    /// re-INVITE or an in-dialog OPTIONS, for example). A message whose dialog start
     /// was never seen (capture began mid-call) is decided by its own method
     /// (a reply by its CSeq method). Unlike `--filter`, which hides, a
     /// dropped message is never kept in memory. Live capture, HEP and `-I`
-    /// files alike. Example: `--drop-method OPTIONS`.
+    /// files alike. The most recent 65,536 refused dialogs are remembered;
+    /// with `--cores N` the decision is made at the merge, as `--cores 1`
+    /// makes it. Example: `--drop-method OPTIONS`.
     #[arg(
         help_heading = "Capture",
         long = "drop-method",
         value_name = "METHOD",
         value_delimiter = ',',
+        value_parser = parse_method_name,
         action = clap::ArgAction::Append
     )]
     pub drop_method: Vec<String>,
 
     /// Keep at ingest ONLY the SIP dialogs started by this method
-    /// (repeatable, or a comma list; case-insensitive), decided once per
+    /// (repeatable, or a comma list; a known SIP method, case-insensitive),
+    /// decided once per
     /// dialog on its starting request exactly as `--drop-method` decides:
     /// with `--only-method INVITE` a call keeps every message (ACK, BYE,
-    /// CANCEL, re-INVITE, UPDATE, INFO, in-dialog OPTIONS, ... and all the
-    /// replies), while REGISTER, OPTIONS, SUBSCRIBE, MESSAGE ... dialogs are
+    /// CANCEL, re-INVITE, UPDATE, INFO, in-dialog OPTIONS and every other
+    /// in-dialog request, and all the replies), while dialogs started by any
+    /// other method (REGISTER, OPTIONS, SUBSCRIBE, MESSAGE and the rest) are
     /// dropped whole (no dialog, no number, counted as dropped). With both
     /// flags a dialog is kept only when its starting method is in
     /// `--only-method` AND not in `--drop-method`.
@@ -833,6 +852,7 @@ pub struct CaptureArgs {
         long = "only-method",
         value_name = "METHOD",
         value_delimiter = ',',
+        value_parser = parse_method_name,
         action = clap::ArgAction::Append
     )]
     pub only_method: Vec<String>,
@@ -6952,6 +6972,19 @@ impl Cli {
         )
     }
 
+    /// The ingest method filter, `(drop, only)`: `[capture] drop_methods`
+    /// and `only_methods` with `--drop-method` / `--only-method` added (the
+    /// settings table's `Merge::Union`). Both empty: nothing is dropped.
+    #[must_use]
+    pub fn method_filter(&self, config: &crate::config::Config) -> (Vec<String>, Vec<String>) {
+        let cap = &config.capture;
+        let mut drop = cap.drop_methods.clone().unwrap_or_default();
+        drop.extend(self.capture_args.drop_method.iter().cloned());
+        let mut only = cap.only_methods.clone().unwrap_or_default();
+        only.extend(self.capture_args.only_method.iter().cloned());
+        (drop, only)
+    }
+
     /// Whether times show as deltas: `--delta-time` / `--no-delta-time`, else
     /// `[display] delta_time`, else absolute.
     #[must_use]
@@ -9890,6 +9923,102 @@ mod tests {
     use super::*;
 
     type TestError = Box<dyn std::error::Error>;
+
+    // ── --drop-method / --only-method: the ingest method filter ─────────
+
+    /// The flags add to the keys (`Merge::Union`): config first, then the
+    /// flags, a comma list split into its methods.
+    #[test]
+    fn method_filter_flags_add_to_the_keys() -> Result<(), TestError> {
+        let config: crate::config::Config = toml::from_str(
+            "[capture]\ndrop_methods = [\"SUBSCRIBE\"]\nonly_methods = [\"INVITE\"]\n",
+        )?;
+        let cli = Cli::try_parse_from([
+            "sipnab",
+            "--drop-method",
+            "OPTIONS",
+            "--only-method",
+            "register,message",
+        ])?;
+        let (drop, only) = cli.method_filter(&config);
+        assert_eq!(drop, ["SUBSCRIBE", "OPTIONS"], "the key, then the flag");
+        assert_eq!(
+            only,
+            ["INVITE", "register", "message"],
+            "the comma list is split"
+        );
+        Ok(())
+    }
+
+    /// Failure side: with no flag and no key nothing is dropped, so the
+    /// filter stays off.
+    #[test]
+    fn method_filter_without_flags_or_keys_is_empty() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab"])?;
+        let (drop, only) = cli.method_filter(&crate::config::Config::default());
+        assert!(
+            drop.is_empty() && only.is_empty(),
+            "no list: the filter is off"
+        );
+        Ok(())
+    }
+
+    /// Edge: a flag given twice and a key alone each keep every entry.
+    #[test]
+    fn method_filter_repeated_flag_and_key_alone() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from([
+            "sipnab",
+            "--drop-method",
+            "OPTIONS",
+            "--drop-method",
+            "NOTIFY",
+        ])?;
+        let (drop, only) = cli.method_filter(&crate::config::Config::default());
+        assert_eq!(drop, ["OPTIONS", "NOTIFY"], "a repeated flag appends");
+        assert!(only.is_empty(), "no only list");
+        let keyed: crate::config::Config =
+            toml::from_str("[capture]\nonly_methods = [\"INVITE\"]\n")?;
+        let (drop, only) = Cli::try_parse_from(["sipnab"])?.method_filter(&keyed);
+        assert!(drop.is_empty(), "no drop list");
+        assert_eq!(only, ["INVITE"], "the key alone");
+        Ok(())
+    }
+
+    /// Failure: a misspelled method is refused at startup, naming the value
+    /// and the methods sipnab knows. Before, `--only-method INVTE` started
+    /// and dropped every dialog.
+    #[test]
+    fn method_filter_refuses_an_unknown_method_name() -> Result<(), TestError> {
+        for flag in ["--only-method", "--drop-method"] {
+            let Err(e) = Cli::try_parse_from(["sipnab", flag, "INVTE"]) else {
+                return Err(format!("{flag} INVTE was accepted").into());
+            };
+            let text = e.to_string();
+            assert!(text.contains("INVTE"), "{flag}: the value is named: {text}");
+            assert!(
+                text.contains("INVITE, ACK"),
+                "{flag}: the known methods are listed: {text}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Edge: one bad name in a comma list refuses the whole flag; a known
+    /// name in any case is accepted.
+    #[test]
+    fn method_filter_checks_every_name_of_a_comma_list() -> Result<(), TestError> {
+        assert!(
+            Cli::try_parse_from(["sipnab", "--drop-method", "OPTIONS,KDMQ"]).is_err(),
+            "an extension method (KDMQ) in a comma list is refused"
+        );
+        let cli = Cli::try_parse_from(["sipnab", "--drop-method", "options,Notify"])?;
+        assert_eq!(
+            cli.capture_args.drop_method,
+            ["options", "Notify"],
+            "known names in any case are kept as typed"
+        );
+        Ok(())
+    }
 
     // ── --g729-tables: where the G.729 codebook tables are ──────────────
 

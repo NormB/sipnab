@@ -812,7 +812,11 @@ mod tests {
             .ok_or("[display] kept")?;
         let mut keys: Vec<&str> = display.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["fold", "visible_columns"]);
+        assert_eq!(
+            keys,
+            ["fold", "visible_columns"],
+            "saving the columns keeps the other [display] keys"
+        );
         Ok(())
     }
 

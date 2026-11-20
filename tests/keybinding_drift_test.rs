@@ -550,6 +550,8 @@ fn page_sections_for(help_heading: &str) -> Option<Option<&'static [&'static str
         // Each key here belongs to one view; the page documents it there.
         "COPY & PASTE:" => Some(&["Raw message", "Call flow", "Call list", "Global"]),
         "TERMS:" => None,
+        // Start flags, not keys: docs/cli-reference.md documents them.
+        "DROP BY METHOD (--drop-method / --only-method at start):" => None,
         "VCON EXPORT (one call, for handing to somebody else):" => None,
         _ => return None,
     })

@@ -1404,6 +1404,22 @@ impl App {
         }
     }
 
+    /// The call list's view inputs (filter, time window, search, sort, `d`)
+    /// as one [`call_list::DisplayQuery`], so every caller asks the same
+    /// question. `capture_now` is left for the callee to read when needed.
+    pub(in crate::tui) fn display_query(&self) -> call_list::DisplayQuery<'_> {
+        call_list::DisplayQuery {
+            filter: self.active_filter.as_ref(),
+            after: self.active_time_after,
+            before: self.active_time_before,
+            search_query: &self.search_query,
+            sort_column: self.call_list.sort_column(),
+            sort_ascending: self.call_list.sort_ascending(),
+            only_open: self.call_list.only_open,
+            capture_now: None,
+        }
+    }
+
     /// The displayed dialog list (filter + search + sort), rebuilt when a
     /// user input changed, or at the churn floor when only the store did.
     fn sync_displayed_dialogs(&mut self, store: &DialogStore) {
@@ -1428,15 +1444,16 @@ impl App {
         if fresh || churn_floored {
             return;
         }
+        // The capture's clock, read once per rebuild and kept with the list:
+        // the `d` filter uses it here and the State cells on every frame.
+        let capture_now = store.capture_now();
+        self.displayed.capture_now = Some(capture_now);
         self.displayed.ids = call_list::displayed_dialogs_open(
             store,
-            self.active_filter.as_ref(),
-            self.active_time_after,
-            self.active_time_before,
-            &self.search_query,
-            self.call_list.sort_column(),
-            self.call_list.sort_ascending(),
-            self.call_list.only_open,
+            &call_list::DisplayQuery {
+                capture_now: Some(capture_now),
+                ..self.display_query()
+            },
         )
         .iter()
         .map(|d| d.call_id.clone())
@@ -3005,6 +3022,33 @@ mod tests {
         Ok(())
     }
 
+    /// The capture's clock (`DialogStore::capture_now`, a scan of every
+    /// dialog) is read when the displayed list is rebuilt, never per frame:
+    /// a frame that reuses the cached list reads it zero times, and the
+    /// State cells use the value cached with the list.
+    #[test]
+    fn call_list_frame_reads_the_capture_clock_only_on_a_rebuild() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("clock-1@test", "1001", "1002", base_ts())?,
+            make_invite("clock-2@test", "1003", "1004", base_ts())?,
+        ]);
+        let reads = || crate::sip::dialog_store::CAPTURE_NOW_CALLS.with(|c| c.get());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        let before = reads();
+        terminal.draw(|f| app.render(f))?;
+        assert!(
+            reads() - before <= 1,
+            "a frame that rebuilds the list reads the clock at most once, did {}x",
+            reads() - before
+        );
+        let mid = reads();
+        terminal.draw(|f| app.render(f))?;
+        assert_eq!(reads() - mid, 0, "a cached frame must not read the clock");
+        Ok(())
+    }
+
     /// A busy capture bumps the store generation on every ingest, so on a
     /// loaded server EVERY tick — including the one right after each arrow
     /// keypress — re-derived the displayed list (full filter-DSL pass +
@@ -3987,12 +4031,20 @@ mod tests {
                 })
                 .collect())
         };
-        assert_eq!(numbers(&mut app)?, ["1", "2", "3"]);
+        assert_eq!(
+            numbers(&mut app)?,
+            ["1", "2", "3"],
+            "every dialog shows its number"
+        );
         app.search_query = "1005".to_string();
         assert_eq!(numbers(&mut app)?, ["3"], "a search keeps the number");
         app.search_query.clear();
         app.call_list.reverse_sort();
-        assert_eq!(numbers(&mut app)?, ["3", "2", "1"], "a reversed sort keeps it");
+        assert_eq!(
+            numbers(&mut app)?,
+            ["3", "2", "1"],
+            "a reversed sort keeps it"
+        );
         // A number wider than the box is shown whole, never cut short.
         if let Some(d) = app.dialog_store.write().get_mut("num-3@test") {
             d.number = 123_456;

@@ -1384,34 +1384,11 @@ pub fn render_message_detail(
 /// the current row. Every input line yields at least one output row, so
 /// row indices stay meaningful for empty lines.
 fn wrap_styled_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
-    use unicode_width::UnicodeWidthChar;
-    let max = width as usize;
-    let mut out = Vec::with_capacity(lines.len());
-    for line in lines {
-        let mut row: Vec<Span<'static>> = Vec::new();
-        let mut cols = 0usize;
-        for span in line.spans {
-            let style = span.style;
-            let mut frag = String::new();
-            for ch in span.content.chars() {
-                let w = ch.width().unwrap_or(0);
-                if w > 0 && cols + w > max {
-                    if !frag.is_empty() {
-                        row.push(Span::styled(std::mem::take(&mut frag), style));
-                    }
-                    out.push(Line::from(std::mem::take(&mut row)));
-                    cols = 0;
-                }
-                frag.push(ch);
-                cols += w;
-            }
-            if !frag.is_empty() {
-                row.push(Span::styled(frag, style));
-            }
-        }
-        out.push(Line::from(row));
-    }
-    out
+    // One wrap rule for the detail pane and the message compare view.
+    lines
+        .into_iter()
+        .flat_map(|line| crate::tui::render::hard_wrap_line(line, width as usize))
+        .collect()
 }
 
 /// Total logical rows the ladder occupies. Each message paints `1 + extra_lines`
@@ -2233,6 +2210,7 @@ mod tests {
             resolver,
             name_mode: crate::names::NameMode::Off,
             rtp_streams: &[],
+            fold: true,
         }
     }
 
@@ -2503,6 +2481,7 @@ mod tests {
             resolver: &resolver,
             name_mode: crate::names::NameMode::Off,
             rtp_streams: &streams,
+            fold: true,
         };
         let (parts, rows) =
             prepare_messages(&msgs, t0, None, &opts, &std::collections::HashSet::new());
