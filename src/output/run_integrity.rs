@@ -387,6 +387,77 @@ pub(crate) fn incomplete_notice(reasons: &[String]) -> String {
     out
 }
 
+/// How many stopped-early lines [`record_stopped_early`] keeps; later ones
+/// are counted, not kept, so a set of many cut files cannot grow this without
+/// a bound.
+const STOPPED_EARLY_KEPT: usize = 20;
+
+/// The `Stopped reading '<file>' early: <cause>` lines of this run, the first
+/// [`STOPPED_EARLY_KEPT`] of them, and how many more there were.
+static STOPPED_EARLY: parking_lot::Mutex<(Vec<String>, u64)> =
+    parking_lot::Mutex::new((Vec::new(), 0));
+
+/// Keep one file's stopped-early line for the exit notice.
+///
+/// Called from `ReadTally::stopped_early_by`, the one place both file readers
+/// record a file they could not read to its end.
+pub(crate) fn record_stopped_early(line: String) {
+    let mut kept = STOPPED_EARLY.lock();
+    if kept.0.len() < STOPPED_EARLY_KEPT {
+        kept.0.push(line);
+    } else {
+        kept.1 += 1;
+    }
+}
+
+/// What a run that exits 1 for an incomplete input prints on stderr, or
+/// `None` when the input was complete.
+///
+/// EXIT-REASON-IN-LOG-ONLY: the reasons were log lines only, so at
+/// `SIPNAB_LOG=off` a cut capture exited 1 with an empty stderr. Pure: the
+/// record and the kept lines are arguments.
+#[must_use]
+pub(crate) fn exit_notice_of(
+    integrity: &RunIntegrity,
+    stopped: &[String],
+    more: u64,
+) -> Option<String> {
+    if integrity.input_complete() {
+        return None;
+    }
+    let mut out = String::new();
+    for line in stopped {
+        out.push_str(line);
+        out.push('\n');
+    }
+    if more > 0 {
+        out.push_str(&format!("{more} more file(s) stopped early.\n"));
+    }
+    for reason in integrity.reasons() {
+        out.push_str("Run incomplete: ");
+        out.push_str(&reason);
+        out.push_str(".\n");
+    }
+    Some(out)
+}
+
+/// `exit_notice_of` for this run.
+#[must_use]
+pub fn exit_notice() -> Option<String> {
+    let kept = STOPPED_EARLY.lock();
+    exit_notice_of(&snapshot(), &kept.0, kept.1)
+}
+
+/// Print [`exit_notice`] on stderr, when there is one.
+///
+/// Every exit site that reads [`run_failed`] calls this before it exits, so
+/// the reason for exit 1 is on stderr at any log level.
+pub fn print_exit_notice() {
+    if let Some(notice) = exit_notice() {
+        stderr_line!("{}", notice.trim_end());
+    }
+}
+
 /// Record what became of one `-I` set.
 ///
 /// Called from `ReadTally::report` in `capture::file`, which is the ONE place
@@ -521,6 +592,57 @@ mod tests {
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
+
+    /// A record of one cut file out of two.
+    fn one_of_two_cut() -> RunIntegrity {
+        RunIntegrity {
+            files_given: 2,
+            files_read_in_full: 1,
+            files_stopped_early: 1,
+            input_lost: true,
+            ..RunIntegrity::default()
+        }
+    }
+
+    /// A run that lost input gets each stopped line, then the record's reason.
+    #[test]
+    fn the_exit_notice_names_each_stopped_file_then_the_reason() -> Result<(), TestError> {
+        let line = "Stopped reading 'b.pcap' early: cut. Continuing with the rest of the set.";
+        let notice =
+            exit_notice_of(&one_of_two_cut(), &[line.to_string()], 0).ok_or("input was lost")?;
+        let mut lines = notice.lines();
+        assert_eq!(lines.next(), Some(line), "{notice}");
+        assert!(
+            lines
+                .next()
+                .is_some_and(|l| l.starts_with("Run incomplete: 1 of 2 capture file(s)")),
+            "{notice}"
+        );
+        Ok(())
+    }
+
+    /// A complete input has nothing to say, whatever lines are kept.
+    #[test]
+    fn a_complete_input_gets_no_exit_notice() {
+        let whole = RunIntegrity {
+            files_given: 1,
+            files_read_in_full: 1,
+            ..RunIntegrity::default()
+        };
+        assert_eq!(
+            exit_notice_of(&whole, &["x".to_string()], 3),
+            None,
+            "a whole input exits 0 and has no reason to give"
+        );
+    }
+
+    /// Lines past the kept number are counted in one line, not dropped.
+    #[test]
+    fn stopped_lines_past_the_kept_number_are_counted() -> Result<(), TestError> {
+        let notice = exit_notice_of(&one_of_two_cut(), &[], 7).ok_or("input was lost")?;
+        assert!(notice.contains("7 more file(s) stopped early."), "{notice}");
+        Ok(())
+    }
 
     // Every test here builds a `RunIntegrity` directly and never touches the
     // process-global counters. libtest runs the lib tests of one binary in

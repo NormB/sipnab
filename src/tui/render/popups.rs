@@ -1510,9 +1510,11 @@ pub(in crate::tui) fn render_filter_popup(
         .error
         .as_deref()
         .and_then(|err| err.lines().find(|l| l.starts_with("hint:")));
+    let keys = filter_key_line(state.save_name.as_deref(), room);
     let rows = filter_bottom_rows(
         message.as_deref(),
         hint,
+        &keys,
         room,
         all_y,
         btn_y + 1,
@@ -1633,37 +1635,108 @@ pub(in crate::tui) fn render_filter_popup(
     // right edge, and indistinguishable from one at the keyboard.
     // While the F2 prompt is open its line takes the key line's place: the
     // dialog's other keys wait for it, so their hints would misdescribe them.
-    match &state.save_name {
-        Some(name) => {
-            let prompt = format!("Save as: @{name}\u{2581} \u{b7} Enter save \u{b7} Esc back");
-            set_string_clipped(
-                buf,
-                inner,
-                ix + 2,
-                rows.key_y(),
-                &prompt,
-                Style::default().fg(theme.foreground),
-            );
-        }
-        None => set_string_clipped(
-            buf,
-            inner,
-            ix + 2,
-            rows.key_y(),
-            "Tab move \u{b7} Enter apply \u{b7} Esc cancel \u{b7} F1 fields \u{b7} F2 save",
-            Style::default().fg(theme.muted),
-        ),
+    // On a narrow dialog the line wraps between keys (`key_rows`), so every
+    // key stays readable.
+    let key_style = Style::default().fg(if state.save_name.is_some() {
+        theme.foreground
+    } else {
+        theme.muted
+    });
+    draw_filter_key_rows(buf, inner, ix + 2, &rows, key_style, theme);
+}
+
+/// Draw the filter dialog's key rows from `rows.key_y()`, then the hint
+/// below them, at column `x`.
+fn draw_filter_key_rows(
+    buf: &mut ratatui::buffer::Buffer,
+    inner: Rect,
+    x: u16,
+    rows: &FilterBottomRows,
+    key_style: Style,
+    theme: &Theme,
+) {
+    for (y, line) in (rows.key_y()..).zip(&rows.keys) {
+        set_string_clipped(buf, inner, x, y, line, key_style);
     }
     if let Some(hint) = &rows.hint {
         set_string_clipped(
             buf,
             inner,
-            ix + 2,
-            rows.key_y() + 1,
+            x,
+            rows.hint_y(),
             hint,
             Style::default().fg(theme.warning),
         );
     }
+}
+
+/// The filter dialog's key line, `room` columns wide: the "Save as"
+/// prompt while it is open, else the dialog's keys.
+fn filter_key_line(save_name: Option<&str>, room: u16) -> String {
+    match save_name {
+        Some(name) => format!(
+            "{}{HINT_SEPARATOR}Enter save{HINT_SEPARATOR}Esc back",
+            save_field(name, room)
+        ),
+        None => "Tab move \u{b7} Enter apply \u{b7} Esc cancel \u{b7} F1 fields \u{b7} F2 save"
+            .to_owned(),
+    }
+}
+
+/// The separator between the keys of the filter dialog's key line.
+const HINT_SEPARATOR: &str = " \u{b7} ";
+
+/// The filter dialog's key line laid out in rows `room` columns wide. The
+/// line breaks only between keys, so no key is cut in two; a key wider than
+/// a whole row is cut with an ellipsis. Always at least one row. Pure.
+fn key_rows(keys: &str, room: u16) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr as _;
+    let room = usize::from(room);
+    let mut rows: Vec<String> = Vec::new();
+    for key in keys.split(HINT_SEPARATOR) {
+        let key = if key.width() > room {
+            with_ellipsis(key, room)
+        } else {
+            key.to_owned()
+        };
+        match rows.last_mut() {
+            Some(row) if row.width() + HINT_SEPARATOR.width() + key.width() <= room => {
+                row.push_str(HINT_SEPARATOR);
+                row.push_str(&key);
+            }
+            _ => rows.push(key),
+        }
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows
+}
+
+/// The "Save as" field for `name`, at most `room` columns wide. A name too
+/// long for the row keeps its end, where the cursor is, and an ellipsis
+/// takes the place of its start. Pure.
+fn save_field(name: &str, room: u16) -> String {
+    use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
+    const PREFIX: &str = "Save as: @";
+    const CURSOR: &str = "\u{2581}";
+    let whole = format!("{PREFIX}{name}{CURSOR}");
+    let room = usize::from(room);
+    if whole.width() <= room {
+        return whole;
+    }
+    let mut left = room.saturating_sub(PREFIX.width() + 1 + CURSOR.width());
+    let mut tail: Vec<char> = Vec::new();
+    for ch in name.chars().rev() {
+        let w = ch.width().unwrap_or(0);
+        if w > left {
+            break;
+        }
+        left -= w;
+        tail.push(ch);
+    }
+    let tail: String = tail.into_iter().rev().collect();
+    format!("{PREFIX}\u{2026}{tail}{CURSOR}")
 }
 
 /// Where the filter dialog's bottom rows go: the message rows from `top`,
@@ -1676,49 +1749,59 @@ struct FilterBottomRows {
     message: Vec<String>,
     /// A refusal's `hint:` line, cut to the row.
     hint: Option<String>,
+    /// The key line (or the "Save as" prompt), one entry per row.
+    keys: Vec<String>,
 }
 
 impl FilterBottomRows {
-    /// The key line's row: below the message, or below its empty row.
+    /// The key line's first row: below the message, or below its empty row.
     fn key_y(&self) -> u16 {
         let rows = u16::try_from(self.message.len().max(1)).unwrap_or(u16::MAX);
         self.top.saturating_add(rows)
     }
+
+    /// The hint's row: below the key line's last row.
+    fn hint_y(&self) -> u16 {
+        let rows = u16::try_from(self.keys.len()).unwrap_or(u16::MAX);
+        self.key_y().saturating_add(rows)
+    }
 }
 
-/// Lay out the filter dialog's message, key line and hint in rows
+/// Lay out the filter dialog's message, key line `keys` and hint in rows
 /// `first..bottom` (`first` the row below the separator), `room` columns
-/// wide. A message that fits one row keeps its own row, `natural`, below
-/// the buttons. A longer one wraps and takes the rows above as it needs,
-/// never above `first`; when even those are too few, the hint is left out
-/// and the last message row ends with an ellipsis. The key line is always
-/// placed. Pure.
+/// wide. The key line wraps between keys (`key_rows`). The message wraps;
+/// with the key rows and the hint it keeps the rows from `natural`, below
+/// the buttons, when they fit there, and else takes the rows above as it
+/// needs, never above `first`; when even those are too few, the hint is
+/// left out and the last message row ends with an ellipsis. The key line is
+/// always placed. Pure.
 fn filter_bottom_rows(
     message: Option<&str>,
     hint: Option<&str>,
+    keys: &str,
     room: u16,
     first: u16,
     natural: u16,
     bottom: u16,
 ) -> FilterBottomRows {
     let cut = |line: &str| -> String { line.chars().take(usize::from(room)).collect() };
-    let mut lines = message.map_or_else(Vec::new, |m| crate::tui::render::wrap_to_width(m, room));
+    let mut lines: Vec<String> = message
+        .map_or_else(Vec::new, |m| crate::tui::render::wrap_to_width(m, room))
+        .iter()
+        .map(|line| cut(line))
+        .collect();
     let mut hint = hint.map(cut);
-    if lines.len() <= 1 {
-        return FilterBottomRows {
-            top: natural,
-            message: lines.iter().map(|line| cut(line)).collect(),
-            hint,
-        };
-    }
-    // Rows the message, the key line and the hint take.
-    let height = |lines: usize, hint: bool| lines + 1 + usize::from(hint);
     let span = usize::from(bottom.saturating_sub(first));
+    let mut keys = key_rows(keys, room);
+    keys.truncate(span.saturating_sub(1).max(1));
+    // Rows the message (or its empty row), the key rows and the hint take.
+    let height = |lines: usize, hint: bool| lines.max(1) + keys.len() + usize::from(hint);
     if height(lines.len(), hint.is_some()) > span {
         hint = None;
     }
-    if height(lines.len(), false) > span {
-        lines.truncate(span.saturating_sub(1).max(1));
+    let keep = span.saturating_sub(keys.len()).max(1);
+    if lines.len() > keep {
+        lines.truncate(keep);
         if let Some(last) = lines.last_mut() {
             *last = with_ellipsis(last, usize::from(room));
         }
@@ -1731,6 +1814,7 @@ fn filter_bottom_rows(
         top: u16::try_from(top).unwrap_or(natural),
         message: lines,
         hint,
+        keys,
     }
 }
 
@@ -3751,14 +3835,15 @@ mod tests {
         let state = with_refusal("bigcalls", DUPLICATE);
         let (rows, border) = filter_inner_rows(&state, 40, 24)?;
         assert_eq!(
-            rows[15..],
+            rows[14..],
             [
-                "  NOTIFY    [*]     REFER     [*]",
+                "  SUBSCRIBE [*]     MESSAGE   [*]",
                 "  \u{26a0} [filters] already defines",
                 "  'bigcalls'; choose another name,",
                 "  or edit that entry in the config",
                 "  file",
-                "  Save as: @bigcalls\u{2581} \u{b7} Enter save \u{b7} E",
+                "  Save as: @bigcalls\u{2581} \u{b7} Enter save",
+                "  Esc back",
             ],
             "bottom rows:\n{}",
             rows.join("\n")
@@ -3774,13 +3859,14 @@ mod tests {
         let state = with_notice(&format!("Saved @bigcalls to {PATH_62}"));
         let (rows, border) = filter_inner_rows(&state, 40, 24)?;
         assert_eq!(
-            rows[16..],
+            rows[15..],
             [
-                "  INFO      [*]     UPDATE    [*]",
+                "  NOTIFY    [*]     REFER     [*]",
                 "  Saved @bigcalls to",
                 "  /srv/example/voice-operations/shar",
                 "  ed/sipnab/site-a/sipnab.toml",
-                "  Tab move \u{b7} Enter apply \u{b7} Esc cancel",
+                "  Tab move \u{b7} Enter apply",
+                "  Esc cancel \u{b7} F1 fields \u{b7} F2 save",
             ]
             .map(str::to_owned),
             "bottom rows:\n{}",
@@ -3788,6 +3874,129 @@ mod tests {
         );
         assert!(border, "the border is whole");
         Ok(())
+    }
+
+    /// Snapshot, at the minimum size: the key line wraps between its keys,
+    /// so `F1 fields` and `F2 save` are on the screen (they were cut at the
+    /// edge).
+    #[test]
+    fn the_key_line_is_whole_at_the_minimum_size() -> Result<(), TestError> {
+        let (rows, border) = filter_inner_rows(&FilterDialogState::default(), 40, 24)?;
+        assert_eq!(
+            rows[19..],
+            [
+                "  Tab move \u{b7} Enter apply",
+                "  Esc cancel \u{b7} F1 fields \u{b7} F2 save",
+            ],
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Snapshot, at the minimum size: the "Save as" prompt wraps between
+    /// its parts, so `Esc back` is on the screen.
+    #[test]
+    fn the_save_prompt_is_whole_at_the_minimum_size() -> Result<(), TestError> {
+        let state = FilterDialogState {
+            save_name: Some("bigcalls".to_owned()),
+            ..FilterDialogState::default()
+        };
+        let (rows, border) = filter_inner_rows(&state, 40, 24)?;
+        assert_eq!(
+            rows[19..],
+            [
+                "  Save as: @bigcalls\u{2581} \u{b7} Enter save",
+                "  Esc back",
+            ],
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Failure side, at the minimum size: a name too long for its row keeps
+    /// its end and the cursor, with an ellipsis where its start was cut, and
+    /// no row leaves the dialog.
+    #[test]
+    fn a_long_save_name_keeps_its_end_and_cursor_at_the_minimum_size() -> Result<(), TestError> {
+        use unicode_width::UnicodeWidthStr as _;
+        let name = format!("{}END", "a".repeat(40));
+        let state = FilterDialogState {
+            save_name: Some(name),
+            ..FilterDialogState::default()
+        };
+        let (rows, border) = filter_inner_rows(&state, 40, 24)?;
+        let field = rows
+            .iter()
+            .find(|r| r.starts_with("  Save as: @"))
+            .ok_or_else(|| format!("no prompt row:\n{}", rows.join("\n")))?;
+        assert!(
+            field.starts_with("  Save as: @\u{2026}") && field.ends_with("END\u{2581}"),
+            "the end and the cursor stay: {field:?}"
+        );
+        let inner = usize::from(
+            Block::default()
+                .borders(Borders::ALL)
+                .inner(Rect::new(0, 0, 40, 24))
+                .width,
+        );
+        for row in &rows {
+            assert!(
+                row.width() <= inner - 2,
+                "a row wider than the text area: {row:?}"
+            );
+        }
+        assert!(
+            rows.iter().any(|r| r == "  Enter save \u{b7} Esc back"),
+            "{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Edge, pure: keys that fit one row stay on it, exactly at the width
+    /// too; past it they wrap between keys; a key wider than the row is cut
+    /// with an ellipsis.
+    #[test]
+    fn key_rows_wrap_between_keys_only() {
+        let line = "ab \u{b7} cd \u{b7} ef";
+        assert_eq!(key_rows(line, 12), vec![line.to_owned()], "exactly fits");
+        assert_eq!(
+            key_rows(line, 11),
+            vec!["ab \u{b7} cd".to_owned(), "ef".to_owned()],
+            "one short"
+        );
+        assert_eq!(
+            key_rows("abcdefgh \u{b7} cd", 5),
+            vec!["abcd\u{2026}".to_owned(), "cd".to_owned()],
+            "a key wider than the row"
+        );
+        assert_eq!(
+            key_rows("", 5),
+            vec![String::new()],
+            "no keys, one empty row"
+        );
+    }
+
+    /// Edge, pure: the field shows the whole name when it fits, and the
+    /// name's end when it does not.
+    #[test]
+    fn save_field_keeps_the_end_of_a_long_name() {
+        assert_eq!(save_field("big", 20), "Save as: @big\u{2581}", "fits");
+        assert_eq!(
+            save_field("abcdefgh", 15),
+            "Save as: @\u{2026}fgh\u{2581}",
+            "cut at the start"
+        );
+        assert_eq!(
+            save_field("abcde", 16),
+            "Save as: @abcde\u{2581}",
+            "exactly fits"
+        );
     }
 
     /// The live test's terminal, 160 x 45: the refusal is whole.
@@ -3905,7 +4114,13 @@ mod tests {
             "{}",
             rows.join("\n")
         );
-        assert!(rows[19].starts_with("  Tab move"), "{}", rows.join("\n"));
+        assert!(rows[18].starts_with("  Tab move"), "{}", rows.join("\n"));
+        assert_eq!(
+            rows[19],
+            "  Esc cancel \u{b7} F1 fields \u{b7} F2 save",
+            "{}",
+            rows.join("\n")
+        );
         Ok(())
     }
 
@@ -4041,17 +4256,19 @@ mod tests {
     /// key line below it and the hint below that.
     #[test]
     fn the_layout_keeps_a_one_row_message_on_its_row() -> Result<(), TestError> {
-        let rows = filter_bottom_rows(Some("short"), Some("hint: h"), 70, 12, 19, 22);
+        let rows = filter_bottom_rows(Some("short"), Some("hint: h"), "k", 70, 12, 19, 22);
         assert_eq!(
             rows,
             FilterBottomRows {
                 top: 19,
                 message: vec!["short".to_owned()],
                 hint: Some("hint: h".to_owned()),
+                keys: vec!["k".to_owned()],
             },
             "the natural rows"
         );
         assert_eq!(rows.key_y(), 20, "the key line below");
+        assert_eq!(rows.hint_y(), 21, "the hint below the key line");
         Ok(())
     }
 
@@ -4060,7 +4277,7 @@ mod tests {
     #[test]
     fn the_layout_drops_a_hint_without_a_row() -> Result<(), TestError> {
         let long = "word ".repeat(200);
-        let rows = filter_bottom_rows(Some(&long), Some("hint: h"), 20, 12, 19, 22);
+        let rows = filter_bottom_rows(Some(&long), Some("hint: h"), "k", 20, 12, 19, 22);
         assert_eq!(rows.hint, None, "no row for the hint");
         assert_eq!(rows.top, 12, "from the first row");
         assert_eq!(rows.message.len(), 9, "every row but the key line's");
@@ -4074,9 +4291,17 @@ mod tests {
     fn the_layout_stays_below_first_and_within_room() -> Result<(), TestError> {
         use unicode_width::UnicodeWidthStr as _;
         for bottom in 13..=30u16 {
-            let rows = filter_bottom_rows(Some(&"ab ".repeat(90)), None, 12, 12, 19, bottom);
+            let rows = filter_bottom_rows(
+                Some(&"ab ".repeat(90)),
+                None,
+                "Tab move \u{b7} Enter apply \u{b7} Esc cancel",
+                12,
+                12,
+                19,
+                bottom,
+            );
             assert!(rows.top >= 12, "bottom {bottom}: top {}", rows.top);
-            for line in &rows.message {
+            for line in rows.message.iter().chain(&rows.keys) {
                 assert!(line.width() <= 12, "bottom {bottom}: {line:?}");
             }
         }

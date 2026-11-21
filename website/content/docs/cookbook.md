@@ -4865,7 +4865,7 @@ Reading it as "sipnab saw this" is the one mistake this whole view exists to sto
   - A polled series (`--relay-stats-interval`) can step backwards. sipnab flags that as a probable restart, rather than a drop in traffic.
 - Asking transmits to the relay.
   - So this needs a live source (`-d`), never a capture file, and capturing an interface needs `sudo` or `sudo sipnab --setup-caps` once.
-  - On `-I file.pcap`, sipnab does not ask. It logs `--relay-stats will not ask a relay on a run that reads a file`, analyzes the file, and exits 0.
+  - On `-I file.pcap`, sipnab does not ask. It prints `--relay-stats will not ask a relay on a run that reads a file` on stderr and exits 2 before it reads the file.
   - `--rtpengine-control` on a file run logs a warning and transmits nothing.
 - A statistic missing from the reply was not asked for. A zero means the relay counted zero.
   - They are different answers, and never render the same.

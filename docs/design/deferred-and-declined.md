@@ -107,7 +107,7 @@ the same traffic, packets present in both are counted twice
 ```
 
 and its companion in the read path, `overlap_message`
-([`file.rs:1377`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1377)<!-- "/// anyway, so" -->), repeats the consequence for the
+([`file.rs:1389`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1389)<!-- "/// anyway, so" -->), repeats the consequence for the
 end-against-start case: *"they overlap by {by} ms, so packets present in both
 are counted twice."* The doc comment above `warn_on_overlap` is explicit that
 *"Overlap means the set is not one sequence — most often two capture runs, or
@@ -165,7 +165,7 @@ retains no record of which capture anything came from.**
   `capture_mode` ([`tui/mod.rs:274`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L274)<!-- "/// Capture mode" -->), overwritten wholesale
   on each in-TUI open ([`file_open.rs:832`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L832)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
   The `-I` set never reaches the TUI: `plan.source` is consumed by
-  `bootstrap::launch` ([`main.rs:434-437`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L434-L437)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
+  `bootstrap::launch` ([`main.rs:438-441`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L438-L441)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
   ([`state.rs:218-229`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/tui/state.rs#L218-L229)) carries no path.
 - Opening a capture from inside the TUI **clears** both stores rather than
   merging — `reset_for_load`
@@ -530,7 +530,7 @@ claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 socket opened in the privileged window and handed to the worker
 (`RawKillSocket::open`, [`process_isolation.rs:152`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L152)<!-- "/// Open the raw IPv4 and IPv6 send sockets." -->),
 `--kill-spoof {auto|raw|ephemeral}` with a loud failure for `raw`
-([`bootstrap.rs:5201-5209`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5201-L5209)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
+([`bootstrap.rs:5318-5326`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5318-L5326)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
 matters most — the forged source is never a parameter. It is always the sniffed
 packet's own destination ([`batch.rs:1775-1776`, `:1816-1817`](../../src/app/batch.rs)),
 so `-K` is a targeted transaction reply and not a general spoofer.

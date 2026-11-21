@@ -381,7 +381,10 @@ mod before_the_launch {
         ("bootstrap::apply_config(", &["config error"]),
         ("bootstrap::plan(", &["plan error"]),
         ("bootstrap::run_relay_holdings(", &["--relay-holdings"]),
-        ("bootstrap::run_relay_sessions(", &["--relay-sessions"]),
+        (
+            "bootstrap::run_relay_sessions(",
+            &["--relay-sessions", "relay question refusal"],
+        ),
         ("run_cores_file(&cli, &loaded, &mut plan)", &["--cores"]),
         ("launch_and_dispatch(cli, loaded, plan)", &[]),
         (

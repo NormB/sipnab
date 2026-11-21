@@ -57,6 +57,12 @@
     "final_status_reason": {
       "type": "string"
     },
+    "forked_answers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "The To tag of each later leg that answered a forked INVITE 2xx, in arrival order (RFC 3261 section 13.2.2.4). Absent, never empty, on a call one leg answered."
+    },
     "method": {
       "type": "string"
     },
@@ -727,6 +733,16 @@
         "mos_wideband_unavailable": {
           "type": "string",
           "enum": ["unpublished_mode", "loss_not_computable"]
+        },
+        "round_trip_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Round trip in milliseconds that an endpoint reported in RTCP XR or sipnab derived from an RTCP receiver report's sender-report echo. Omitted, never null or 0, when nothing measured one."
+        },
+        "round_trip_source": {
+          "type": "string",
+          "enum": ["xr_voip_metrics", "sender_report_echo"],
+          "description": "Where round_trip_ms came from: the far end's XR VoIP Metrics block, or the SR echo, which is a lower bound unless the capture sits with the SR sender."
         },
         "orphaned": {
           "type": "boolean"

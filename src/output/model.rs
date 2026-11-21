@@ -380,12 +380,13 @@ pub struct StreamSummary {
 }
 
 impl StreamSummary {
-    /// Attach a round-trip figure resolved from the store's provenance table.
+    /// Attach a round-trip figure resolved from the store's provenance table,
+    /// replacing the one [`Self::of`] found, for a summary built by hand.
     ///
-    /// Separate from `From<&RtpStream>` because it has to be: the conversion
-    /// sees a stream, and this number lives in the store's side-table, filed
-    /// beside the stream's own measurements rather than into them. That
-    /// separation is deliberate and load-bearing — see
+    /// [`Self::of`] already asks the store its delay evidence holds; this is
+    /// for a summary with no such store. The number lives in the store's
+    /// side-table, filed beside the stream's own measurements rather than into
+    /// them. That separation is deliberate and load-bearing — see
     /// [`StreamStore::process_rtcp`](crate::rtp::stream_store::StreamStore::process_rtcp)
     /// for the bug that came of merging a remote claim into a local one.
     #[must_use]
@@ -431,6 +432,7 @@ impl StreamSummary {
             loss_pct,
             crate::rtp::emodel_wb::declared_listening_context(),
         );
+        let round_trip = delay.round_trip(s);
         Self {
             ssrc: format!("0x{:08x}", s.key.ssrc),
             codec: s.codec.clone(),
@@ -454,13 +456,13 @@ impl StreamSummary {
             // retains no packets at all.
             frame: s.first_frame.as_ref().map(ToString::to_string),
             // Not derivable from a stream alone: a round trip is somebody
-            // else's measurement, filed in the store's provenance table.
-            // `with_round_trip` fills these in for callers that hold the
-            // store, and leaving them None here is the honest default —
-            // "nobody reported one", which is exactly what a bare stream
-            // knows.
-            round_trip_ms: None,
-            round_trip_source: None,
+            // else's measurement, filed in the store's provenance table. The
+            // delay evidence holds that store when the caller has one, so the
+            // projection asks it here, once, for every door. With no store the
+            // answer is None — "nobody reported one", which is exactly what a
+            // bare stream knows.
+            round_trip_ms: round_trip.map(|(ms, _)| ms),
+            round_trip_source: round_trip.map(|(_, source)| source.as_wire_str().to_string()),
             input_origin: s.input_origin.map(|o| o.as_str().to_string()),
             // Emitted only when the binding crossed sources, decided by the
             // one predicate that decides it everywhere.

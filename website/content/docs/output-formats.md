@@ -427,6 +427,21 @@ it holds one, otherwise the request that opened it.
 - A `SUBSCRIBE` reports the answer to the SUBSCRIBE, not to a later NOTIFY.
 - Both are absent while that request has no final response.
 
+`forked_answers` lists the other legs that answered a forked call.
+
+- A proxy that forks an INVITE can draw a `2xx` from more than one leg.
+  [RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.2.4)
+  makes each answer a dialog of its own, and the caller usually ends the extra
+  ones with a `BYE`.
+- The first answer stays the dialog. The array holds the `To` tag of each
+  later answering leg, in the order the answers arrived.
+- The key is absent on a call that one leg answered.
+
+```bash
+sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
+  | jq -c 'select(.forked_answers) | {call_id, forked_answers}'
+```
+
 For registrations, `signaling_diagnosis` says more than the code:
 
 - `final_failure.code` carries the status for any dialog.

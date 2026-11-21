@@ -7040,10 +7040,10 @@ fn stream_summary(
     s: &crate::rtp::stream::RtpStream,
     store: &crate::rtp::stream_store::StreamStore,
 ) -> Value {
-    serde_json::to_value(
-        crate::output::model::StreamSummary::of(s, quality::MosDelay::from_capture(store))
-            .with_round_trip(store.round_trip_for(s)),
-    )
+    serde_json::to_value(crate::output::model::StreamSummary::of(
+        s,
+        quality::MosDelay::from_capture(store),
+    ))
     .unwrap_or_else(|e| json!({"error": format!("serialization failed: {e}")}))
 }
 
@@ -16865,9 +16865,10 @@ mod tests {
     /// Behavioral on purpose. The parity gate in `tests/surface_parity_test.rs`
     /// scans source text, and once its REST scope had to include
     /// `src/output/model.rs` — which is where the field is DECLARED — it could
-    /// no longer tell a populated field from a declared one. Deleting
-    /// `.with_round_trip(...)` from `stream_summary` left that gate green, which
-    /// a mutation run caught and is the only reason this test exists.
+    /// no longer tell a populated field from a declared one. Deleting the
+    /// round-trip fill (then `.with_round_trip(...)` in `stream_summary`, now
+    /// the store lookup in `StreamSummary::of`) left that gate green, which a
+    /// mutation run caught and is the only reason this test exists.
     ///
     /// A text scan cannot express "the handler fills this in". This can.
     #[test]

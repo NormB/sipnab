@@ -11,7 +11,7 @@ with its pull request open. The train then drives what follows, and every run
 starts by reading where the release is from GitHub and git, so a re-run after
 a crash continues from there:
 
-    ci-wait       post the CLA status for the head, wait for the checks
+    ci-wait       wait for the checks
     land          land the pull request (land-queue, required-checks)
     tag           move this checkout to the merge commit, wait for GitHub's
                   proof of it, make the signed tag, push it in the lane
@@ -89,9 +89,10 @@ re-run resumes); 2 usage; 3 the post checks withdrew the release; 4 the
 withdrawal did not complete. After a 3 or a 4 the post checks do not run again
 without --retry-post.
 
-The state file holds two values GitHub cannot be asked for, the post checks'
-exit status and the head the CLA status was posted for, and the usual times
-with the time of their last read.
+The state file holds one value GitHub cannot be asked for, the post checks'
+exit status, and the usual times with the time of their last read. The train
+posts no license/cla status: the repository requires DCO instead since
+2026-11-20, and the tool that posted it is retired.
 
 Tested by scripts/tests/test_release_train.py, on a fake clock.
 """
@@ -546,15 +547,6 @@ def sync_window(cfg: Config, run, want: bool, now: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-def post_cla(cfg: Config, run, f: Facts) -> None:
-    if load_state(cfg).get("cla_head") == f.head:
-        return
-    r = run([tool(cfg, "cla-owner-exempt"), cfg.repo, f.head], 400)
-    if r.rc != 0:
-        raise Stopped(f"the CLA status for {f.head} was not posted: {r.out.strip()}")
-    save_state(cfg, cla_head=f.head)
-
-
 def land(cfg: Config, run, f: Facts) -> None:
     """Land the pull request: `required-checks` on the head, and the merge
     only if it passes, both under the landing lock. The train waits for the
@@ -690,8 +682,6 @@ def tick(cfg: Config, run, clock, sleep=time.sleep, announce=None) -> str:
         save_state(cfg, rerunning_said=list(f.rerunning))
     sync_window(cfg, run, window_wanted(stage, f.pending, ci_remaining(f, cfg, now), cfg, f.stuck,
                                         f.long_remaining), now)
-    if stage in ("ci-wait", "land"):
-        post_cla(cfg, run, f)
     if stage == "land":
         land(cfg, run, f)
     elif stage == "tag":

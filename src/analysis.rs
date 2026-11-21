@@ -1181,17 +1181,20 @@ pub struct RetentionCounts {
     /// Messages dropped at ingest by method (`--drop-method`,
     /// `--only-method`): never a dialog, on purpose.
     pub messages_dropped_by_method: u64,
+    /// Oldest RTP streams discarded at capacity (`--max-streams`).
+    pub streams_rotated: u64,
 }
 
 impl RetentionCounts {
-    /// Read the counters off a dialog store.
+    /// Read the counters off the dialog store and the stream store.
     #[must_use]
-    pub fn of_store(dialogs: &DialogStore) -> Self {
+    pub fn of_stores(dialogs: &DialogStore, streams: &StreamStore) -> Self {
         Self {
             messages_evicted: dialogs.total_idle_messages_evicted(),
             dialogs_refused: dialogs.total_capacity_dialogs_dropped(),
             dialogs_rotated: dialogs.total_capacity_dialogs_evicted(),
             messages_dropped_by_method: dialogs.total_messages_dropped_by_method(),
+            streams_rotated: streams.total_capacity_streams_evicted(),
         }
     }
 }
@@ -1270,7 +1273,7 @@ impl CaptureFacts {
             stun: crate::stun::report(),
             icmp: crate::pipeline::icmp_evidence_report(),
             icmp_media: crate::pipeline::icmp_media_report(stream_store),
-            retention: RetentionCounts::of_store(dialog_store),
+            retention: RetentionCounts::of_stores(dialog_store, stream_store),
             // Neither is observable from the stores: both are decisions this
             // process made, and the caller that made them sets them.
             gate_closed_during_run: false,
@@ -1880,6 +1883,16 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
                 .note("oldest dialogs discarded at capacity by rotation (--limit)"),
         );
     }
+    let streams_rotated = facts.retention.streams_rotated;
+    if streams_rotated > 0 {
+        acc.bump(
+            FindingKind::RetentionLoss,
+            streams_rotated,
+            Evidence::default()
+                .count(CountLabel::Streams, streams_rotated)
+                .note("oldest RTP streams discarded at capacity (--max-streams)"),
+        );
+    }
     let by_method = facts.retention.messages_dropped_by_method;
     if by_method > 0 {
         acc.bump(
@@ -2468,6 +2481,97 @@ mod tests {
         assert_eq!(found.occurrences, 37);
         assert_eq!(found.evidence.len(), 3);
         assert!(!analysis.complete);
+        Ok(())
+    }
+
+    /// STREAM-EVICTION-NOT-IN-ANALYSIS: RTP streams discarded at
+    /// `--max-streams` are records a cap threw away, so they are a retention
+    /// loss that names its own flag, counted in streams.
+    #[test]
+    fn streams_discarded_at_max_streams_are_a_retention_loss() -> Result<(), TestError> {
+        let (dialogs, streams) = stores();
+        let facts = CaptureFacts {
+            frames_read: 1_000,
+            retention: RetentionCounts {
+                streams_rotated: 4,
+                ..RetentionCounts::default()
+            },
+            ..CaptureFacts::default()
+        };
+        let analysis = analyze_with(&dialogs, &streams, None, &facts);
+        let found = only(&analysis.findings, FindingKind::RetentionLoss)?;
+        assert_eq!(found.occurrences, 4, "the four streams: {found:?}");
+        assert_eq!(
+            found.evidence[0].counts.get("streams"),
+            Some(&4),
+            "counted as streams: {:?}",
+            found.evidence[0]
+        );
+        let note = found.evidence[0].note.as_deref().unwrap_or_default();
+        assert!(note.contains("--max-streams"), "names the flag: {note}");
+        assert!(
+            !analysis.complete,
+            "a discarded stream is a gap in the read"
+        );
+        Ok(())
+    }
+
+    /// Failure side: a run whose caps shed only dialogs reports no stream
+    /// evidence, so a reader is not sent to raise `--max-streams`.
+    #[test]
+    fn a_dialog_only_loss_names_no_stream_cap() -> Result<(), TestError> {
+        let (dialogs, streams) = stores();
+        let facts = CaptureFacts {
+            frames_read: 1_000,
+            retention: RetentionCounts {
+                dialogs_rotated: 2,
+                ..RetentionCounts::default()
+            },
+            ..CaptureFacts::default()
+        };
+        let analysis = analyze_with(&dialogs, &streams, None, &facts);
+        let found = only(&analysis.findings, FindingKind::RetentionLoss)?;
+        assert!(
+            found
+                .evidence
+                .iter()
+                .all(|e| !e.counts.contains_key("streams")
+                    && !e
+                        .note
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("--max-streams")),
+            "no stream evidence: {:?}",
+            found.evidence
+        );
+        Ok(())
+    }
+
+    /// Edge: the stream loss folds into the one retention finding with the
+    /// dialog store's, and the count is the exact sum.
+    #[test]
+    fn a_stream_loss_and_the_dialog_losses_sum_in_one_finding() -> Result<(), TestError> {
+        let (dialogs, streams) = stores();
+        let facts = CaptureFacts {
+            frames_read: 1_000,
+            retention: RetentionCounts {
+                messages_evicted: 30,
+                dialogs_refused: 2,
+                dialogs_rotated: 5,
+                streams_rotated: 3,
+                ..RetentionCounts::default()
+            },
+            ..CaptureFacts::default()
+        };
+        let analysis = analyze_with(&dialogs, &streams, None, &facts);
+        let found = only(&analysis.findings, FindingKind::RetentionLoss)?;
+        assert_eq!(found.occurrences, 40, "30 + 2 + 5 + 3: {found:?}");
+        assert_eq!(
+            found.evidence.len(),
+            4,
+            "one row per channel: {:?}",
+            found.evidence
+        );
         Ok(())
     }
 
@@ -3843,7 +3947,7 @@ mod tests {
                 let [invite, _] = invite_answered(id, "200 OK")?;
                 ds.process_message(invite);
             }
-            Ok(RetentionCounts::of_store(&ds))
+            Ok(RetentionCounts::of_stores(&ds, &StreamStore::new(64)))
         };
 
         let rotated = fill(true)?;

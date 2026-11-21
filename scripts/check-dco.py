@@ -17,8 +17,8 @@ the one rule. A commit passes when:
   can set, so the signature is what proves the commit came from the bot;
 - or its author AND its committer are the repository owner's GitHub login and
   GitHub verified its signature. The owner holds the rights already, so these
-  commits need no statement; ~/Development/bin/cla-owner-exempt applies the
-  same rule to `license/cla`;
+  commits need no statement; the retired ~/Development/bin/cla-owner-exempt
+  applied the same rule to `license/cla`;
 - or its message has a line `Signed-off-by: Name <email>`, at the start of the
   line, with a name that is not empty and the commit's author email (compared
   without case), AND that email is a GitHub noreply address,

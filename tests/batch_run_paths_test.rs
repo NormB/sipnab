@@ -112,62 +112,224 @@ fn invite(call_id: &str, extra: &[&str]) -> Vec<u8> {
 
 // ── Relay asks on a file run ──────────────────────────────────────────────
 
-/// Every relay ask on a run that names no relay says which flag to add, and
-/// the run still completes.
+/// Each relay question a file run can be given, as the flags that ask it.
+fn relay_questions() -> [(&'static str, Vec<&'static str>); 5] {
+    [
+        ("--relay-stats", vec!["--relay-stats"]),
+        ("--relay-stats", vec!["--relay-stats-call", SIP_CALL_ID]),
+        ("--relay-stats", vec!["--relay-stats-list"]),
+        (
+            "--relay-stats-interval",
+            vec!["--relay-stats-interval", "5"],
+        ),
+        ("--relay-compare", vec!["--relay-compare", SIP_CALL_ID]),
+    ]
+}
+
+/// A relay question on a run that names no relay is refused before the
+/// capture opens: exit 2, and the reason on stderr with the log off.
+///
+/// RELAY-STATS-FILE-EXIT-0: the reason was a log line and the run exited 0, so
+/// at `SIPNAB_LOG=off` a script got no answer, no reason and a success code.
 #[test]
-fn relay_asks_naming_no_relay_are_told_which_flag_to_add() -> Result<(), TestError> {
-    let run = sipnab(&[
-        "-N",
-        "-I",
-        SIP_CALL,
-        "--relay-stats",
-        "--relay-stats-interval",
-        "5",
-        "--relay-compare",
-        SIP_CALL_ID,
-    ])?;
-    assert_eq!(run.code, Some(0), "{}", run.dump());
-    for needle in [
-        "--relay-stats needs a relay to ask",
-        "--relay-stats-interval needs a relay to poll",
-        "--relay-compare needs a relay to ask",
-    ] {
-        assert!(run.stderr.contains(needle), "{needle}\n{}", run.dump());
+fn a_relay_question_naming_no_relay_exits_2_with_the_reason_on_stderr() -> Result<(), TestError> {
+    for (flag, ask) in relay_questions() {
+        let mut args = vec!["-N", "-I", SIP_CALL];
+        args.extend(ask.iter().copied());
+        let run = sipnab_env(&args, &[("SIPNAB_LOG", "off")])?;
+        assert_eq!(run.code, Some(2), "{ask:?}: {}", run.dump());
+        let verb = if flag == "--relay-stats-interval" {
+            "poll"
+        } else {
+            "ask"
+        };
+        let needle = format!("{flag} needs a relay to {verb}");
+        assert!(
+            run.stderr.contains(&needle),
+            "{ask:?}: {needle}\n{}",
+            run.dump()
+        );
+        assert!(
+            !run.stdout.contains(SIP_CALL_ID),
+            "{ask:?}: a refused run analyzes nothing\n{}",
+            run.dump()
+        );
     }
     Ok(())
 }
 
-/// With a relay named, every ask on a file run is refused as offline -- and
+/// With a relay named, a relay question on a file run is refused before the
+/// capture opens -- exit 2, the reason on stderr with the log off -- and
 /// nothing reaches the address named, which this test owns and watches.
 #[test]
-fn relay_asks_on_a_file_run_are_refused_and_nothing_is_sent() -> Result<(), TestError> {
+fn a_relay_question_on_a_file_run_exits_2_and_nothing_is_sent() -> Result<(), TestError> {
     let watch = std::net::UdpSocket::bind("127.0.0.1:0")?;
     watch.set_nonblocking(true)?;
     let relay = watch.local_addr()?.to_string();
-    let run = sipnab(&[
-        "-N",
-        "-I",
-        SIP_CALL,
-        "--rtpengine-control",
-        &relay,
-        "--relay-stats",
-        "--relay-stats-interval",
-        "5",
-        "--relay-compare",
-        SIP_CALL_ID,
-    ])?;
-    assert_eq!(run.code, Some(0), "{}", run.dump());
-    for needle in [
-        "--relay-stats will not ask a relay on a run that reads a file",
-        "--relay-stats-interval will not poll a relay on a run that reads a file",
-        "--relay-compare will not ask a relay on a run that reads a file",
-    ] {
-        assert!(run.stderr.contains(needle), "{needle}\n{}", run.dump());
+    for (flag, ask) in relay_questions() {
+        let mut args = vec!["-N", "-I", SIP_CALL, "--rtpengine-control", relay.as_str()];
+        args.extend(ask.iter().copied());
+        let run = sipnab_env(&args, &[("SIPNAB_LOG", "off")])?;
+        assert_eq!(run.code, Some(2), "{ask:?}: {}", run.dump());
+        let verb = if flag == "--relay-stats-interval" {
+            "poll"
+        } else {
+            "ask"
+        };
+        let needle = format!("{flag} will not {verb} a relay on a run that reads a file");
+        assert!(
+            run.stderr.contains(&needle),
+            "{ask:?}: {needle}\n{}",
+            run.dump()
+        );
     }
     let mut buf = [0u8; 64];
     assert!(
         watch.recv_from(&mut buf).is_err(),
         "a file run must not transmit to the relay it names"
+    );
+    Ok(())
+}
+
+/// A relay named with no question asked is not a refusal: the file run
+/// analyzes its capture and exits 0, with nothing on stderr at
+/// `SIPNAB_LOG=off`.
+#[test]
+fn a_relay_named_with_no_question_still_reads_the_file() -> Result<(), TestError> {
+    let run = sipnab_env(
+        &[
+            "-N",
+            "-I",
+            SIP_CALL,
+            "--rtpengine-control",
+            "127.0.0.1:9",
+            "--json-dialogs",
+        ],
+        &[("SIPNAB_LOG", "off")],
+    )?;
+    assert_eq!(run.code, Some(0), "{}", run.dump());
+    assert!(
+        run.stdout.contains(SIP_CALL_ID),
+        "the run analyzed the file\n{}",
+        run.dump()
+    );
+    assert_eq!(run.stderr, "", "nothing to say on stderr\n{}", run.dump());
+    Ok(())
+}
+
+/// Several questions on one file run are refused once, for the first: one
+/// reason, one exit 2, before anything is read.
+#[test]
+fn several_relay_questions_on_a_file_run_are_refused_once() -> Result<(), TestError> {
+    let run = sipnab_env(
+        &[
+            "-N",
+            "-I",
+            SIP_CALL,
+            "--rtpengine-control",
+            "127.0.0.1:9",
+            "--relay-stats",
+            "--relay-compare",
+            SIP_CALL_ID,
+        ],
+        &[("SIPNAB_LOG", "off")],
+    )?;
+    assert_eq!(run.code, Some(2), "{}", run.dump());
+    assert_eq!(
+        run.stderr.lines().count(),
+        1,
+        "one refusal line, for the first question\n{}",
+        run.dump()
+    );
+    assert!(
+        run.stderr.contains("--relay-stats will not ask"),
+        "{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+// ── Why a file run exits 1 ────────────────────────────────────────────────
+
+/// A copy of `tests/fixtures/sip_call.pcap` cut `short` bytes before its end,
+/// written into `dir` as `name`.
+fn cut_copy(dir: &Path, name: &str, short: usize) -> Result<std::path::PathBuf, TestError> {
+    let whole = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(SIP_CALL))?;
+    let path = dir.join(name);
+    std::fs::write(&path, &whole[..whole.len() - short])?;
+    Ok(path)
+}
+
+/// EXIT-REASON-IN-LOG-ONLY: a capture file cut short exits 1, and with the log
+/// off stderr still names the file, why it stopped, and the run's verdict.
+#[test]
+fn a_file_cut_short_exits_1_with_the_reason_on_stderr_with_the_log_off() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cut = cut_copy(dir.path(), "cut.pcap", 20)?;
+    let run = sipnab_env(&["-N", "-I", s(&cut)?], &[("SIPNAB_LOG", "off")])?;
+    assert_eq!(run.code, Some(1), "{}", run.dump());
+    assert!(
+        run.stderr
+            .contains(&format!("Stopped reading '{}' early", cut.display())),
+        "the file and that it stopped early\n{}",
+        run.dump()
+    );
+    assert!(
+        run.stderr
+            .contains("1 of 1 capture file(s) was not read to the end"),
+        "the run's verdict, in the words of the run record\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+/// A whole file says nothing on stderr at `SIPNAB_LOG=off` and exits 0: the
+/// reason is printed for a run that failed, never for one that did not.
+#[test]
+fn a_whole_file_exits_0_with_nothing_on_stderr_with_the_log_off() -> Result<(), TestError> {
+    let run = sipnab_env(&["-N", "-I", SIP_CALL], &[("SIPNAB_LOG", "off")])?;
+    assert_eq!(run.code, Some(0), "{}", run.dump());
+    assert_eq!(run.stderr, "", "{}", run.dump());
+    Ok(())
+}
+
+/// The `--cores` reader ends on the same rule: a set whose second file is cut
+/// short exits 1 and names that file, and only that file, on stderr.
+#[test]
+fn a_cut_member_of_a_cores_set_is_named_on_stderr_with_the_log_off() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let whole = cut_copy(dir.path(), "a-whole.pcap", 0)?;
+    let cut = cut_copy(dir.path(), "b-cut.pcap", 20)?;
+    let run = sipnab_env(
+        &[
+            "-N",
+            "--cores",
+            "2",
+            "--report",
+            "-I",
+            s(&whole)?,
+            "-I",
+            s(&cut)?,
+        ],
+        &[("SIPNAB_LOG", "off")],
+    )?;
+    assert_eq!(run.code, Some(1), "{}", run.dump());
+    assert!(
+        run.stderr
+            .contains(&format!("Stopped reading '{}' early", cut.display())),
+        "{}",
+        run.dump()
+    );
+    assert!(
+        !run.stderr.contains("a-whole.pcap"),
+        "a whole file is not named\n{}",
+        run.dump()
+    );
+    assert!(
+        run.stderr
+            .contains("1 of 2 capture file(s) was not read to the end"),
+        "{}",
+        run.dump()
     );
     Ok(())
 }

@@ -6139,7 +6139,7 @@ Reading it as "sipnab saw this" is the one mistake this whole view exists to sto
   - A polled series (`--relay-stats-interval`) can step backwards. sipnab flags that as a probable restart, rather than a drop in traffic.
 - Asking transmits to the relay.
   - So this needs a live source (`-d`), never a capture file, and capturing an interface needs `sudo` or `sudo sipnab --setup-caps` once.
-  - On `-I file.pcap`, sipnab does not ask. It logs `--relay-stats will not ask a relay on a run that reads a file`, analyzes the file, and exits 0.
+  - On `-I file.pcap`, sipnab does not ask. It prints `--relay-stats will not ask a relay on a run that reads a file` on stderr and exits 2 before it reads the file.
   - `--rtpengine-control` on a file run logs a warning and transmits nothing.
 - A statistic missing from the reply was not asked for. A zero means the relay counted zero.
   - They are different answers, and never render the same.
@@ -8500,6 +8500,8 @@ and the detection threshold behind each.
   - In a dialog without one, it is the final response to the `REGISTER`, `PUBLISH`, `SUBSCRIBE`, `MESSAGE` or `OPTIONS` that opened it.
   - Responses to other methods in the dialog (BYE, CANCEL, NOTIFY) do not count.
   - `signaling_diagnosis.final_failure.code` also carries the status for any dialog.
+- **`forked_answers`** -- the `To` tag of each later leg that answered a forked INVITE `2xx`, in arrival order.
+  - It is absent on a call that one leg answered.
 - **`diagnosis`** -- Four booleans and a `hints` array, all five always present.
   - `one_way_audio`, `nat_mismatch` and `no_media` each name a media fault.
   - `private_media_address` is a warning rather than a fault.
@@ -16102,10 +16104,10 @@ sipnab -N -I capture.pcap --relay-stats --rtpengine-control 127.0.0.1:22222
 ```
 
 ```text
-ERROR sipnab::app::bootstrap: --relay-stats will not ask a relay on a run that reads a file: asking transmits, and a file's addresses are historical and belong to third parties. Ask from a live capture (-d <device>).
+--relay-stats will not ask a relay on a run that reads a file: asking transmits, and a file's addresses are historical and belong to third parties. Ask from a live capture (-d <device>).
 ```
 
-The rest of the analysis still runs and exits 0.
+sipnab prints this on stderr and exits 2 before it reads the file.
 
 ## Let an agent ask the relay
 
@@ -19181,6 +19183,9 @@ MCP server of the same session resolve the name at once, with no restart.
    ```text
    Save as: @▁ · Enter save · Esc back
    ```
+
+   On a narrow terminal the prompt and the key line continue on the next
+   row, between keys. A name wider than its row shows its end, behind an ellipsis mark.
 
 3. Type the name, for example `alice-big`, and press `Enter`. The dialog
    shows `Saved @alice-big to` and the file's path, and the name joins the
@@ -23456,7 +23461,7 @@ clients' as `192.0.2.21`.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `--max-streams` | `<N>` | `50000` | 0.3.0 | Maximum number of RTP streams to track simultaneously. At the cap, sipnab discards the oldest tenth of the streams to make room: a WARN line names the cap and the count (first at one, then at 10, 100 and each further power of ten), and the end-of-run `retention:` line gives the total. At least 1: sipnab refuses `0`. Config: `[limits] max_streams` |
+| `--max-streams` | `<N>` | `50000` | 0.3.0 | Maximum number of RTP streams to track simultaneously. At the cap, sipnab discards the oldest tenth of the streams to make room: a WARN line names the cap and the count (first at one, then at 10, 100 and each further power of ten), and the end-of-run `retention:` line gives the total. `--analyze` counts the same streams in its retention finding, and a vCon's completeness carrier in `streams_rotated`. At least 1: sipnab refuses `0`. Config: `[limits] max_streams` |
 | `--max-lost-sequences` | `<N>` | `1000` | 0.5.97 | Lost RTP sequence numbers retained per stream, for the Packet Loss Map and the burst/gap analysis. The default is about a minute of a call losing 1 % at 50 packets a second, so on a half-hour call the map shows the tail and marks itself truncated. The burst/gap window widens with it, and each retained loss costs two bytes per stream. Config: `[limits] max_lost_sequences`. How-to: [Measure call quality](call-quality.md#see-when-the-quality-changed) |
 | `--quality-interval` | `<SECONDS>` | `5` | 0.5.160 | Seconds between RTP quality snapshots — the resolution of the per-stream quality trend, which carries a MOS, an R-factor and an `acceptable`/`degraded`/`not_scorable` verdict per interval. The shipped five seconds averages away any burst shorter than itself, so three half-second dropouts read as a mild five-second average. The trend still covers an hour of call time whatever this is, so one second retains 3600 snapshots per stream instead of 720: resolution costs memory, never history. Accepts 1 to 300. Config: `[limits] quality_interval_secs`. How-to: [Measure call quality](call-quality.md#see-when-the-quality-changed) |
 | `--quality-threshold` | `<MOS>` | `3.0` | 0.3.0 | MOS quality threshold for alerts (1.0-5.0 scale). How-to: [Measure call quality](call-quality.md#run-a-command-when-quality-drops) |
@@ -23486,15 +23491,15 @@ clients' as `192.0.2.21`.
 - `sudo sipnab -N -d eth0 --rtpengine-control 192.0.2.50:22222 --max-streams 10000` — the relay on its own host: same question, over the network to its ng control port. To name calls sipnab sends only `list` and `query`, and asks again only when a stream turns up that the signaling does not explain — each socket once, under a ceiling it reports when it reaches
 - `sipnab -N -I capture.pcap --rtpengine-control 127.0.0.1:22222` — sends nothing to the relay: sipnab warns that a file run never transmits, then analyzes the capture and exits `0`
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats` — capture live and print the relay's own counters at startup: packets relayed, sessions held, its own loss. The header marks them `relay_reported`, because the relay reports on itself rather than sipnab measuring the wire
-- `sipnab -N -I capture.pcap --relay-stats --rtpengine-control 127.0.0.1:22222` — asks nothing on a file run. sipnab logs `--relay-stats will not ask a relay on a run that reads a file`, analyzes the capture, and exits `0`
+- `sipnab -N -I capture.pcap --relay-stats --rtpengine-control 127.0.0.1:22222` — asks nothing on a file run. sipnab prints `--relay-stats will not ask a relay on a run that reads a file` on stderr and exits `2` before it reads the capture
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-call 1-7@203.0.113.9` — the relay's own packet and byte counts for one call, by Call-ID, `relay_reported`. A header names the call and the moment asked
-- `sipnab -N -I capture.pcap --relay-stats-call 1-7@203.0.113.9 --rtpengine-control 127.0.0.1:22222` — asks nothing on a file run, and logs the same `--relay-stats will not ask a relay` line as the relay-wide form
+- `sipnab -N -I capture.pcap --relay-stats-call 1-7@203.0.113.9 --rtpengine-control 127.0.0.1:22222` — asks nothing on a file run, and prints the same `--relay-stats will not ask a relay` line as the relay-wide form, with exit `2`
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-list` — ask the relay which statistics it knows, listed by name and not by value, so a caller learns what it can ask for before a request fails on a name this build does not have. The header says the relay listed them, rather than sipnab guessing from a table
-- `sipnab -N -I capture.pcap --relay-stats-list --rtpengine-control 127.0.0.1:22222` — asks nothing on a file run, and logs the same `--relay-stats will not ask a relay` line
+- `sipnab -N -I capture.pcap --relay-stats-list --rtpengine-control 127.0.0.1:22222` — asks nothing on a file run, and prints the same `--relay-stats will not ask a relay` line, with exit `2`
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-compare 1-7@203.0.113.9` — after capture, put the relay's own RTP packet count for the call beside sipnab's measured count, each labeled with its tier, with a `match`/`differ` verdict and a note explaining that an ordinary gap is not a relay fault. It shows both counts and never sums them
-- `sipnab -N -I capture.pcap --relay-compare 1-7@203.0.113.9 --rtpengine-control 127.0.0.1:22222` — compares nothing on a file run: sipnab logs `--relay-compare will not ask a relay on a run that reads a file` and exits `0`
+- `sipnab -N -I capture.pcap --relay-compare 1-7@203.0.113.9 --rtpengine-control 127.0.0.1:22222` — compares nothing on a file run: sipnab prints `--relay-compare will not ask a relay on a run that reads a file` on stderr and exits `2` before it reads the capture
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-interval 30` — capture live and ask the relay for its own counters every thirty seconds, each reading marked `polled` with the interval so it reads as a timer's output rather than a one-shot answer. Stop it with Ctrl-C. Nothing keeps transmitting after the process ends
-- `sipnab -N -I capture.pcap --relay-stats-interval 30 --rtpengine-control 127.0.0.1:22222` — polls nothing on a file run: sipnab logs `--relay-stats-interval will not poll a relay on a run that reads a file` and exits `0`
+- `sipnab -N -I capture.pcap --relay-stats-interval 30 --rtpengine-control 127.0.0.1:22222` — polls nothing on a file run: sipnab prints `--relay-stats-interval will not poll a relay on a run that reads a file` on stderr and exits `2` before it reads the capture
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats --json` — the same relay counters as one JSON object instead of the table, each value carrying its tier and refusals listed separately with the relay's code. Both forms read the same data, so `--json` and the table cannot disagree about a number
 - `sudo sipnab -N -d eth0 --rtpengine-control 192.0.2.5:2223 --rtpengine-engine '203.0.113.5 30000-39999 192.0.2.5:2223' --rtpengine-engine '203.0.113.5 40000-49999 192.0.2.6:2223' --api 127.0.0.1:18764 --api-allow-relay-query` — two engines behind one public address, told apart by port range. A REST question about one call goes to the engine the call's newest SDP names, and its `relay` label names the row that chose it
 - `sipnab -N -I capture.pcap --rtpengine-control 192.0.2.5:2223 --rtpengine-engine '203.0.113.5 30000-39999 192.0.2.5:2223'` — sends nothing on a file run: sipnab warns that a file run never transmits, then analyzes the capture
@@ -24652,7 +24657,7 @@ Scripts can rely on these:
 |------|---------|
 | `0` | Success |
 | `1` | Runtime failure — capture error, I/O error, a capture file that was not read in full (a truncated pcap, a member that would not open, a BPF filter that would not compile against one), a `--plugin` that would not load, or sipnab could not produce a requested report (e.g. `--call-report` Call-ID not found). Also a refused configuration: a config file sipnab cannot read, or a value in it sipnab refuses, whichever startup step refuses it |
-| `2` | Invalid usage — bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code |
+| `2` | Invalid usage — bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code. A relay question the run cannot ask also exits `2` before the run reads anything: `--relay-stats`, `--relay-stats-call`, `--relay-stats-list`, `--relay-stats-interval` or `--relay-compare` with no `--rtpengine-control`, on a run that reads a capture file, or naming an address that is not `IP:port` |
 | `3` | A check failed — the tool worked and the input failed a check you asked for. `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity, an `--expect` rule failed, `--vcon-validate` found the container invalid, or the vCon forwarder stopped because the store answered `401` or `403` (`--vcon-forward`). Distinct from `1` on purpose: `1` means the tool failed, `3` means the input did |
 | `101` | Internal failure — sipnab panicked. Its panic hook writes a crash report and ends the process with `101`. With `[crash] core = true` it aborts instead, so the kernel can write a core dump, and the shell reports the signal (`134` for `SIGABRT`) |
 | `129` | Stopped by `SIGHUP`, or the terminal of a terminal interface run went away. sipnab stops as it does for `SIGTERM`, which exits `0` like `SIGINT`, and exits `129` instead, so a supervisor that restarts on failure restarts it. A run that would have exited non-zero keeps that code |
@@ -24795,11 +24800,26 @@ each one covers in full.
 |------|-------|
 | `0` | The run did what you asked. |
 | `1` | The run failed: a capture or I/O error, a capture not read in full, a report sipnab could not produce, or a configuration file sipnab refused. |
-| `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. |
+| `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. So does a relay question the run cannot ask, such as `--relay-stats` on a capture file. |
 | `3` | The tool worked and the input failed a check you asked for: `--lint-fail-on`, a failed `--expect` rule, an invalid container under `--vcon-validate`, or the vCon forwarder refused with `401` or `403`. |
 | `101` | sipnab panicked, an internal failure. Report it with the crash report sipnab wrote. With `[crash] core = true` the process aborts instead, and the shell shows the signal (`134`). |
 | `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away. `SIGTERM` and `SIGINT` stop it the same way and exit `0`. |
 | `130` | You pressed Ctrl-C at the archive password prompt. |
+
+A run that exits `1` because a capture file was not read in full says why on
+stderr at any log level, including with `SIPNAB_LOG=off`. It prints one
+`Stopped reading '<file>' early: <cause>. Continuing with the rest of the set.`
+line for each such file, then a `Run incomplete: <reason>.` line for what the
+run is missing:
+
+```text
+Stopped reading 'cut.pcap' early: <cause>. Continuing with the rest of the set.
+Run incomplete: 1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read.
+```
+
+The usual cause is a file that ends in the middle of a packet. Read a whole
+copy of the file: a capture that a writer still holds open is whole only after
+the writer stops.
 
 ## What this page covers
 
@@ -28155,7 +28175,7 @@ The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not tru
 
 **What to do:** Add `--rtpengine-control <ip:port>` with the relay's ng control port, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-compare will not ask a relay on a run that reads a file: asking transmits. Compare from a live capture (-d <device>).`
 
@@ -28163,7 +28183,7 @@ Asking the relay sends a packet. sipnab does not transmit during a run without a
 
 **What to do:** Run the comparison during a live capture, for example with `-d <device>`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `{flag} needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
 
@@ -28293,22 +28313,22 @@ An `engine not listed` reason names the engine by `homer-id`, for a HEP copy, or
 
 ### `--relay-stats-interval needs a relay to poll. Name one with --rtpengine-control <addr>.`
 
-`--relay-stats-interval` asks sipnab to poll a media relay's statistics every N seconds, but the command names no relay, so sipnab polls nothing. The rest of the run continues.
+`--relay-stats-interval` asks sipnab to poll a media relay's statistics every N seconds, but the command names no relay, so sipnab polls nothing and stops before it reads a capture.
 
 **What to do:** Add `--rtpengine-control <addr:port>` with the relay's control port (for example `127.0.0.1:22222`), or remove `--relay-stats-interval`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-stats-interval will not poll a relay on a run that reads a file: polling transmits. Poll from a live capture (-d <device>).`
 
-Polling a relay sends packets, and sipnab transmits only on a run that watches a live source. This run's source does not permit transmitting, so sipnab polls nothing, and the rest of the run continues. A live interface and a HEP listener permit transmitting. Capture files and uprobe reads do not.
+Polling a relay sends packets, and sipnab transmits only on a run that watches a live source. This run's source does not permit transmitting, so sipnab polls nothing and stops before it reads a capture. A live interface and a HEP listener permit transmitting. Capture files and uprobe reads do not.
 
 **What to do:** Do one of these:
 
 - Run the poll from a live capture (`-d <device>`) or a HEP listener (`--hep-listen`).
 - Remove `--relay-stats-interval` from runs that read files.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-stats needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
 
@@ -28316,7 +28336,7 @@ Polling a relay sends packets, and sipnab transmits only on a run that watches a
 
 **What to do:** Add `--rtpengine-control <ip:port>`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-stats will not ask a relay on a run that reads a file: asking transmits, and a file's addresses are historical and belong to third parties. Ask from a live capture (-d <device>).`
 
@@ -28327,7 +28347,7 @@ Asking the relay sends a packet. sipnab does not transmit during a run without a
 
 **What to do:** Ask from a live capture, for example `-d <device>`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--rtpengine-control {addr} asks a live relay which calls are up right now, but this run is reading a capture FILE — offline analysis never transmits. The calls in a file ended in the past; the relay's answer would describe whatever is up TODAY, which is other people's traffic. Passive decoding of any relay control plane already in the capture still runs; capture live with -d <device> to ask.`
 
@@ -28347,7 +28367,7 @@ The `--rtpengine-control` value `{addr}` is not an IP address and port, so `--re
 
 **What to do:** Give the relay's ng control address as `IP:port`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--rtpengine-control {addr} is not an address and port ({e}). It names the relay's ng control port, for example 127.0.0.1:22222. Nothing was asked, so streams this relay handles stay unattributed.`
 
@@ -28375,7 +28395,7 @@ The `--rtpengine-control` value `{addr}` is not an IP address and port, so the r
 
 **What to do:** Give the address as numeric `IP:port`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None for the statistics request: sipnab logs the error, and the run continues. 2 for `--relay-holdings`, which exits without answering.
+**Exit code:** 2. sipnab prints this on stderr and exits without answering.
 
 ### `{}: {} stepped backwards {} -> {} between polls; a cumulative counter cannot decrease, so the relay probably restarted (suspect). The counters below are since an unknown start.`
 
@@ -35039,8 +35059,21 @@ captured media. The one-way delay comes from the first of these that exists:
 4. otherwise 100 ms, labeled `assumed`.
 
 MCP `media_diagnostics` names the delay's source in each stream's `delay`
-member. MCP `rtp_stats` carries the round trip itself, as `round_trip_ms`
-and `round_trip_source`.
+member. MCP `rtp_stats`, `GET /v1/streams`, the streams of `--json-dialogs`
+and `--call-report`, and a vCon's media quality carry the round trip itself,
+as `round_trip_ms` and `round_trip_source`. Both keys are absent when nothing
+measured a round trip:
+
+```bash
+sipnab -N -I tests/fixtures/rtcp-xr-call.pcap --no-cli-print --json-dialogs | jq -c '.streams[] | {ssrc, round_trip_ms, round_trip_source}'
+```
+
+```json
+{"ssrc":"0x0a0a0a0a","round_trip_ms":180.0,"round_trip_source":"xr_voip_metrics"}
+{"ssrc":"0x0b0b0b0b","round_trip_ms":null,"round_trip_source":null}
+```
+
+`jq` prints `null` for a key the stream does not carry.
 
 What the far end reported about loss, jitter and its own quality score never
 moves sipnab's MOS. MCP `media_diagnostics` returns it separately, under
@@ -35896,6 +35929,21 @@ it holds one, otherwise the request that opened it.
 - A `PUBLISH` refused `489` reports 489.
 - A `SUBSCRIBE` reports the answer to the SUBSCRIBE, not to a later NOTIFY.
 - Both are absent while that request has no final response.
+
+`forked_answers` lists the other legs that answered a forked call.
+
+- A proxy that forks an INVITE can draw a `2xx` from more than one leg.
+  [RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.2.4)
+  makes each answer a dialog of its own, and the caller usually ends the extra
+  ones with a `BYE`.
+- The first answer stays the dialog. The array holds the `To` tag of each
+  later answering leg, in the order the answers arrived.
+- The key is absent on a call that one leg answered.
+
+```bash
+sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
+  | jq -c 'select(.forked_answers) | {call_id, forked_answers}'
+```
 
 For registrations, `signaling_diagnosis` says more than the code:
 
@@ -53637,6 +53685,7 @@ on a server started with `--node-name capture-01` and without
           "sip_discarded_by_port_gate": 0,
           "sip_discarded_by_websocket_gate": 0,
           "sipnab_version": "0.5.230",
+          "streams_rotated": 0,
           "undecodable_frames": 0
         },
         "final_status_code": 200,
@@ -54046,6 +54095,7 @@ on a server started with `--node-name capture-01` and without
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
         "sipnab_version": "0.5.230",
+        "streams_rotated": 0,
         "undecodable_frames": 0
       },
       "dialog": 0,
@@ -63119,6 +63169,7 @@ below declares `"encoding": "json"`.
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
         "sipnab_version": "0.5.231",
+        "streams_rotated": 0,
         "undecodable_frames": 0
       }
     }
@@ -63150,6 +63201,7 @@ below declares `"encoding": "json"`.
           "sip_discarded_by_port_gate": 0,
           "sip_discarded_by_websocket_gate": 0,
           "sipnab_version": "0.5.231",
+          "streams_rotated": 0,
           "undecodable_frames": 0
         },
         "final_status_code": 200,
@@ -63556,6 +63608,7 @@ jq '.attachments[] | select(.purpose == "sipnab-capture-completeness")' lost.jso
     "sip_discarded_by_port_gate": 0,
     "sip_discarded_by_websocket_gate": 0,
     "sipnab_version": "0.5.222",
+    "streams_rotated": 0,
     "undecodable_frames": 164
   }
 }
@@ -74678,9 +74731,9 @@ the relay reports 542 RTP packet(s) for call 1-61@192.0.2.21, but this capture m
 
 ## When something does not work
 
-- **`--relay-stats will not ask a relay on a run that reads a file`** (logged
-  as an error, exit 0). The run reads a capture file. Ask from a live capture
-  with `-d`. The file's analysis still runs.
+- **`--relay-stats will not ask a relay on a run that reads a file`** (on
+  stderr, exit 2). The run reads a capture file. Ask from a live capture
+  with `-d`. sipnab refuses the run before it reads the file.
 - **`--relay-holdings will not ask a relay on a run that reads a file`** and
   exit 2. The same, for `--relay-holdings`. Its live sources are `-d` and
   `-L`.
@@ -90719,7 +90772,7 @@ Every run reads where the release is from GitHub and git, so a re-run after a cr
 **Prerequisites.**
 
 - The release commit is on the branch `release/<version>`, and its pull request is open.
-- `heavy-run`, `land-queue`, `required-checks` and `cla-owner-exempt` are on `PATH`, or in the directory `--bin` names.
+- `heavy-run`, `land-queue` and `required-checks` are on `PATH`, or in the directory `--bin` names.
 - The prerequisites of [After the release](#after-the-release) hold.
 
 **Steps.** From a checkout with the tags fetched and no uncommitted changes to tracked files:
@@ -90737,7 +90790,7 @@ It runs these stages, each only when the facts say it is due:
 
 | Stage | What happens | Window |
 |---|---|---|
-| `ci-wait` | Posts the CLA status for the head, then waits for the pull request's checks. | Closed, then open for the last 15 minutes of the longest pending check |
+| `ci-wait` | Waits for the pull request's checks. The train posts no status for the retired `license/cla` check, which DCO sign-off replaced on 2026-11-20. | Closed, then open for the last 15 minutes of the longest pending check |
 | `land` | Lands the pull request through `land-queue` and `required-checks`, and prints what the two printed. | Open |
 | `tag` | Moves the checkout to the merge commit, waits for GitHub's proof of that commit, then makes the signed tag and pushes it in the lane. | Open |
 | `release-wait` | Waits for `release.yml` on the tag. | Closed |

@@ -357,6 +357,14 @@
           "final_status_reason": {
             "type": "string"
           },
+          "forked_answers": {
+            "description": "The To tag of each later leg that answered a forked INVITE 2xx, in arrival order (RFC 3261 section 13.2.2.4). Absent, never empty, on a call one leg answered.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
           "frame": {
             "description": "Pointer to the frame this dialog opened in, as `<source>#<ordinal>@<digest>`. Follow it with `sipnab --show-frame`, which checks the digest and refuses when the capture changed since the pointer was made. Optional, and absent rather than null when the dialog has no frame (live capture): absent means unknown, and a value that is present is always a real pointer.",
             "pattern": "^.+#[0-9]+(@[0-9a-f]{16})?$",
@@ -1460,6 +1468,19 @@
           },
           "r_factor": {
             "type": "number"
+          },
+          "round_trip_ms": {
+            "description": "Round trip in milliseconds that an endpoint reported in RTCP XR or sipnab derived from an RTCP receiver report's sender-report echo. Omitted, never null or 0, when nothing measured one.",
+            "minimum": 0,
+            "type": "number"
+          },
+          "round_trip_source": {
+            "description": "Where round_trip_ms came from: the far end's XR VoIP Metrics block, or the SR echo, which is a lower bound unless the capture sits with the SR sender.",
+            "enum": [
+              "xr_voip_metrics",
+              "sender_report_echo"
+            ],
+            "type": "string"
           },
           "schema_version": {
             "const": 1
@@ -5418,6 +5439,17 @@
           },
           "r_factor": {
             "type": "number"
+          },
+          "round_trip_ms": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "round_trip_source": {
+            "enum": [
+              "xr_voip_metrics",
+              "sender_report_echo"
+            ],
+            "type": "string"
           },
           "schema_version": {
             "const": 1

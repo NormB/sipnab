@@ -288,6 +288,14 @@ struct StreamJson {
     /// Why an AMR-WB stream has no wideband score.
     #[serde(skip_serializing_if = "Option::is_none")]
     mos_wideband_unavailable: Option<String>,
+    /// Round trip in milliseconds that an endpoint reported or sipnab derived
+    /// from RTCP; absent, never null or 0, when nothing measured one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    round_trip_ms: Option<f64>,
+    /// Where `round_trip_ms` came from: `xr_voip_metrics` or
+    /// `sender_report_echo`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    round_trip_source: Option<String>,
     /// True when no SIP dialog explains this stream.
     orphaned: bool,
     /// Call-ID of the owning dialog, when linked.
@@ -554,6 +562,12 @@ struct DialogJson {
     final_status_reason: Option<String>,
     /// SIP method that initiated the dialog.
     method: String,
+    /// The `To` tags of the other forks that answered the opening request
+    /// `2xx`, in the order they answered
+    /// ([`crate::sip::dialog::SipDialog::forked_answers`]). Omitted, never
+    /// empty, on a call one leg answered.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    forked_answers: Vec<String>,
     /// Number of SIP messages in the dialog.
     msg_count: usize,
     /// Wall-clock span from the first message to the newest one, seconds (0
@@ -946,6 +960,7 @@ pub fn dialog_to_json(
                 .and_then(|m| m.reason.clone())
         }),
         method: dialog.method.to_string(),
+        forked_answers: dialog.forked_answers().to_vec(),
         msg_count: dialog.messages.len(),
         duration_sec,
         tags: dialog.tags.clone(),
@@ -1106,6 +1121,8 @@ fn build_stream_json(stream: &RtpStream, delay: crate::rtp::quality::MosDelay<'_
         mos_wideband: summary.mos_wideband,
         mos_wideband_context: summary.mos_wideband_context,
         mos_wideband_unavailable: summary.mos_wideband_unavailable,
+        round_trip_ms: summary.round_trip_ms,
+        round_trip_source: summary.round_trip_source,
         schema_version: 1,
         ssrc: format!("0x{:08x}", stream.key.ssrc),
         codec: stream.codec.clone(),
@@ -2405,6 +2422,65 @@ mod tests {
         Ok(())
     }
 
+    /// `dialog` rendered by [`dialog_to_json`] with no streams, parsed.
+    fn dialog_json_of(
+        dialog: &crate::sip::dialog::SipDialog,
+    ) -> Result<serde_json::Value, TestError> {
+        let json_str = dialog_to_json(
+            dialog,
+            &[],
+            &MediaDiagnosis::default(),
+            crate::rtp::quality::MosDelay::unknown(),
+        );
+        Ok(serde_json::from_str(&json_str).map_err(|e| format!("should be valid JSON: {e:?}"))?)
+    }
+
+    /// A call answered by more than one fork names the other forks' tags.
+    #[test]
+    fn dialog_json_names_the_forked_answers() -> Result<(), TestError> {
+        let mut dialog =
+            crate::sip::dialog::SipDialog::new(&make_invite()?).ok_or("should create dialog")?;
+        dialog.forked_answers = vec!["fork-c".to_string(), "fork-b".to_string()];
+        let parsed = dialog_json_of(&dialog)?;
+        assert_eq!(
+            parsed["forked_answers"],
+            serde_json::json!(["fork-c", "fork-b"]),
+            "every other fork's tag, in arrival order"
+        );
+        Ok(())
+    }
+
+    /// A call one leg answered carries no `forked_answers` key, not an
+    /// empty array, so its JSON is the size it was.
+    #[test]
+    fn dialog_json_omits_forked_answers_when_one_leg_answered() -> Result<(), TestError> {
+        let dialog =
+            crate::sip::dialog::SipDialog::new(&make_invite()?).ok_or("should create dialog")?;
+        let parsed = dialog_json_of(&dialog)?;
+        assert!(
+            parsed.get("forked_answers").is_none(),
+            "absent, got {parsed}"
+        );
+        Ok(())
+    }
+
+    /// The key carries the tags as the wire wrote them, one array element
+    /// each, even a tag that holds JSON's own quote and backslash.
+    #[test]
+    fn dialog_json_keeps_a_forked_tag_verbatim() -> Result<(), TestError> {
+        let mut dialog =
+            crate::sip::dialog::SipDialog::new(&make_invite()?).ok_or("should create dialog")?;
+        dialog.forked_answers = vec!["a\"b\\c".to_string()];
+        let parsed = dialog_json_of(&dialog)?;
+        assert_eq!(parsed["forked_answers"][0], "a\"b\\c", "verbatim");
+        assert_eq!(
+            parsed["forked_answers"].as_array().map(Vec::len),
+            Some(1),
+            "one element"
+        );
+        Ok(())
+    }
+
     /// Dialog JSON carries schema, timing, sdp_timeline, diagnosis,
     /// streams, call_id, and state.
     #[test]
@@ -2838,6 +2914,116 @@ mod tests {
         assert_eq!(v["mos_grounded"], true, "{v}");
         assert_eq!(v["mos_grounding"], summary.mos_grounding, "{v}");
         assert!(v.get("mos_wideband").is_none(), "narrowband: {v}");
+        Ok(())
+    }
+
+    /// A store holding one PCMU stream from 10.0.0.1:29000 to 10.0.0.2:39000,
+    /// SSRC `0x77777777`, and, when `echo` is set, a receiver report about it
+    /// whose sender-report echo puts the round trip at 120 ms.
+    fn store_with_one_stream(
+        echo: bool,
+    ) -> Result<crate::rtp::stream_store::StreamStore, TestError> {
+        use crate::rtp::rtcp::{ReceiverReport, ReceptionReport, RtcpPacket};
+        let mut ss = crate::rtp::stream_store::StreamStore::new(4);
+        let at = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("ts")?;
+        let parsed = crate::capture::ParsedPacket {
+            frame_bytes: None,
+            frame: None,
+            timestamp: at,
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 29000,
+            dst_port: 39000,
+            transport: crate::capture::parse::TransportProto::Udp,
+            payload: vec![0u8; 12 + 160].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
+        };
+        let rtp = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 160,
+            ssrc: 0x7777_7777,
+            payload_offset: 12,
+        };
+        ss.process_rtp(&parsed, &rtp, at);
+        if echo {
+            let seen_at = chrono::DateTime::from_timestamp(1_700_000_100, 0).ok_or("ts")?;
+            ss.process_rtcp(
+                &[RtcpPacket::ReceiverReport(ReceiverReport {
+                    ssrc: 0x9999,
+                    reports: vec![ReceptionReport {
+                        ssrc: 0x7777_7777,
+                        fraction_lost: 0,
+                        cumulative_lost: 0,
+                        highest_seq: 10,
+                        jitter: 5,
+                        last_sr: crate::rtp::rtcp::compact_ntp_for_test(
+                            seen_at - chrono::TimeDelta::milliseconds(120),
+                        ),
+                        delay_since_sr: 0,
+                    }],
+                })],
+                seen_at,
+                None,
+            );
+        }
+        Ok(ss)
+    }
+
+    /// The stream object every JSON door prints (`--json-dialogs`, a
+    /// single-stream REST read, the exec hooks) carries a round trip the store
+    /// derived from an SR echo, labeled as such, from the one projection.
+    #[test]
+    fn the_stream_object_carries_a_derived_round_trip_with_its_source() -> Result<(), TestError> {
+        let ss = store_with_one_stream(true)?;
+        let stream = ss.iter().next().ok_or("one stream")?;
+        let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
+        let v: serde_json::Value = serde_json::from_str(&stream_to_json(stream, delay))
+            .map_err(|e| format!("JSON: {e:?}"))?;
+        let ms = v["round_trip_ms"]
+            .as_f64()
+            .ok_or_else(|| format!("the stream object must carry the round trip: {v}"))?;
+        assert!(
+            (ms - 120.0).abs() < 2.0,
+            "about 120 ms from the SR echo, got {ms}"
+        );
+        assert_eq!(v["round_trip_source"], "sender_report_echo", "{v}");
+        let summary = crate::output::model::StreamSummary::of(stream, delay);
+        assert_eq!(
+            summary.round_trip_ms,
+            v["round_trip_ms"].as_f64(),
+            "the summary every other surface serializes carries the same figure"
+        );
+        Ok(())
+    }
+
+    /// With no RTCP in the store, the stream object omits both keys.
+    #[test]
+    fn the_stream_object_omits_a_round_trip_nobody_measured() -> Result<(), TestError> {
+        let ss = store_with_one_stream(false)?;
+        let stream = ss.iter().next().ok_or("one stream")?;
+        let v: serde_json::Value = serde_json::from_str(&stream_to_json(
+            stream,
+            crate::rtp::quality::MosDelay::from_capture(&ss),
+        ))
+        .map_err(|e| format!("JSON: {e:?}"))?;
+        assert!(
+            v.get("round_trip_ms").is_none() && v.get("round_trip_source").is_none(),
+            "absent, never null or 0: {v}"
+        );
         Ok(())
     }
 

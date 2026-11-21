@@ -248,15 +248,19 @@ fn worker_stream_store(cfg: &ParallelConfig) -> StreamStore {
 ///   rtpproxy's reply names the port the relay opened for a call, and that
 ///   port's media runs between other hosts;
 /// * a pre-parsed packet that is SIP;
+/// * a packet inside a tunnel (GRE, IP-in-IP, VXLAN, GTP-U and every other
+///   one the full parse opens) whose inner packet one of these rules copies:
+///   the peek reads the outer header only, so the tunnel's host pair decides
+///   the owner, and media outside the tunnel lands on another worker
+///   (DEF28-TUNNEL). The dispatcher reads the inner packet with the full
+///   parse ([`crate::capture::parse::parse_packet`]), only for a packet whose
+///   transport the peek does not read or a datagram the UDP tunnel rule
+///   claims;
 /// * and none of these under `--no-rtp` (no stream to split) or `--no-dialog`
 ///   (no SDP is linked).
 ///
-/// # What is not copied
-///
-/// SIP inside a tunnel the peek does not open (GRE, VXLAN, IP-in-IP): the
-/// peek reads the outer header only, and the outer host pair is the tunnel's.
-/// The merge then keeps, for an endpoint the workers learned differently,
-/// the entry read last (`StreamStore::merge_in_read_order`).
+/// For an endpoint the workers learned differently, the merge keeps the
+/// entry read last (`StreamStore::merge_in_read_order`).
 #[derive(Debug, Clone, Copy)]
 struct Fanout {
     /// Whether a copy could change any worker's answer.
@@ -314,7 +318,6 @@ impl Fanout {
         transport: Option<crate::capture::parse::TransportPeek<'_>>,
     ) -> Option<CopyRead> {
         use crate::capture::parse::TransportPeek;
-        use crate::pipeline::port_in_range;
         use crate::sip::parser::starts_sip_message;
         if !self.enabled {
             return None;
@@ -322,8 +325,65 @@ impl Fanout {
         if packet.pre_parsed.is_some() {
             return starts_sip_message(&packet.data).then_some(CopyRead::Shared);
         }
+        let may_tunnel = match transport {
+            // An IP packet whose transport the peek does not read: GRE,
+            // IP-in-IP, ICMP, a header cut short.
+            None => hosts.is_some(),
+            // The one rule the full parse claims a UDP tunnel by.
+            Some(TransportPeek::Udp {
+                dst_port, payload, ..
+            }) => crate::capture::tunnel::udp::decap(payload, 0, dst_port).is_some(),
+            Some(_) => false,
+        };
+        // The outer rule still applies to a datagram on a tunnel port whose
+        // inside is not copied: a relay control socket may sit on one.
+        if may_tunnel && let Some(copy) = self.tunneled_copy(packet) {
+            return Some(copy);
+        }
+        self.transport_copy(hosts, transport?)
+    }
+
+    /// [`Self::copy_read`] for a packet in a tunnel the peek does not open:
+    /// the copy rule applied to the packet inside it, read by the full parse
+    /// that every worker runs, so the dispatcher and the workers decode a
+    /// tunnel by one rule. Only packets the peek finds a tunnel or an
+    /// unread transport in reach this, so ordinary media pays nothing.
+    fn tunneled_copy(&self, packet: &crate::capture::packet::Packet) -> Option<CopyRead> {
+        use crate::capture::parse::TransportPeek;
+        use crate::net::TransportProto;
+        let inner = crate::capture::parse::parse_packet(packet).ok()?;
+        if inner.more_fragments || inner.fragment_offset.is_some_and(|at| at != 0) {
+            return Some(CopyRead::Reassembled);
+        }
+        let (src_port, dst_port, payload) = (inner.src_port, inner.dst_port, &inner.payload[..]);
+        let transport = match inner.transport {
+            TransportProto::Udp => TransportPeek::Udp {
+                src_port,
+                dst_port,
+                payload,
+            },
+            TransportProto::Tcp => TransportPeek::Tcp {
+                src_port,
+                dst_port,
+                payload,
+            },
+            _ => return None,
+        };
+        self.transport_copy(Some((inner.src_addr, inner.dst_addr)), transport)
+    }
+
+    /// The copy rule for a whole UDP datagram, a TCP segment or a fragment
+    /// between `hosts`. See [`Fanout`].
+    fn transport_copy(
+        &self,
+        hosts: Option<(IpAddr, IpAddr)>,
+        transport: crate::capture::parse::TransportPeek<'_>,
+    ) -> Option<CopyRead> {
+        use crate::capture::parse::TransportPeek;
+        use crate::pipeline::port_in_range;
+        use crate::sip::parser::starts_sip_message;
         let is_hep = |payload: &[u8]| self.hep_parse && payload.starts_with(b"HEP3");
-        match transport? {
+        match transport {
             TransportPeek::Fragment => Some(CopyRead::Reassembled),
             TransportPeek::Tcp {
                 src_port,
@@ -1815,14 +1875,7 @@ fn tally_member_read(
             return std::ops::ControlFlow::Break(());
         }
         None => tally.complete += 1,
-        Some(e) => {
-            tally.stopped_early += 1;
-            tally.lost = true;
-            tracing::error!(
-                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                crate::capture::archive::source_name(path)
-            );
-        }
+        Some(e) => tally.stopped_early_by(path, &e),
     }
     std::ops::ControlFlow::Continue(())
 }
@@ -2461,14 +2514,7 @@ fn dispatch_in_file_order(
                         // the newest member is still being written when the
                         // capture stops. Whatever was read before the break
                         // has already been released above.
-                        Some(e) => {
-                            tally.stopped_early += 1;
-                            tally.lost = true;
-                            tracing::error!(
-                                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                                crate::capture::archive::source_name(path)
-                            );
-                        }
+                        Some(e) => tally.stopped_early_by(path, &e),
                     }
                     break;
                 }
@@ -4703,6 +4749,65 @@ mod tests {
         /// One connection from an ephemeral port to 5060, every message a
         /// pushed segment of it.
         Tcp,
+        /// One datagram per message, 5060 to 5060, inside a tunnel between
+        /// [`TUNNEL_HOSTS`]: the dispatcher's peek reads only the tunnel's
+        /// host pair, so the SIP shards by it.
+        Tunneled(Tunnel),
+    }
+
+    /// The tunnels a DEF28 fixture can carry its SIP through.
+    #[cfg(feature = "native")]
+    #[derive(Clone, Copy, Debug)]
+    enum Tunnel {
+        /// GRE ([RFC 2784](https://www.rfc-editor.org/rfc/rfc2784.html)), IP protocol 47, carrying IPv4.
+        Gre,
+        /// IPv4 in IPv4 ([RFC 2003](https://www.rfc-editor.org/rfc/rfc2003.html)), IP protocol 4.
+        IpInIp,
+        /// VXLAN ([RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html)), UDP port 4789, carrying an Ethernet frame.
+        Vxlan,
+    }
+
+    /// The tunnel endpoints of [`Signaling::Tunneled`] (RFC 5737).
+    #[cfg(feature = "native")]
+    const TUNNEL_HOSTS: ([u8; 4], [u8; 4]) = ([192, 0, 2, 1], [192, 0, 2, 2]);
+
+    /// An Ethernet frame holding an IPv4 header from `src` to `dst` with
+    /// protocol `proto`, then `payload`.
+    #[cfg(feature = "native")]
+    fn eth_ipv4_around(src: [u8; 4], dst: [u8; 4], proto: u8, payload: &[u8]) -> Vec<u8> {
+        // Ethernet (14) and IPv4 (20) of a UDP frame, re-labeled.
+        let mut frame = eth_udp_between(src, dst, 0, 0, &[])[..34].to_vec();
+        let total = u16::try_from(20 + payload.len()).unwrap_or(u16::MAX);
+        frame[16..18].copy_from_slice(&total.to_be_bytes());
+        frame[23] = proto;
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// The Ethernet frame `inner` (an Ethernet/IPv4 frame) carried through
+    /// `tunnel` between `outer`.
+    #[cfg(feature = "native")]
+    fn tunneled(tunnel: Tunnel, outer: ([u8; 4], [u8; 4]), inner: &[u8]) -> Vec<u8> {
+        let (a, b) = outer;
+        match tunnel {
+            Tunnel::Gre => {
+                // No flags, version 0, protocol IPv4.
+                let mut gre = vec![0x00, 0x00, 0x08, 0x00];
+                gre.extend_from_slice(&inner[14..]);
+                eth_ipv4_around(a, b, 47, &gre)
+            }
+            Tunnel::IpInIp => eth_ipv4_around(a, b, 4, &inner[14..]),
+            Tunnel::Vxlan => {
+                // I flag set, VNI 0x001234, every reserved field zero.
+                let mut vx = vec![0x08, 0, 0, 0, 0x00, 0x12, 0x34, 0x00];
+                vx.extend_from_slice(inner);
+                // A unicast, locally administered source MAC: the fixture's
+                // 0xBB has the group bit set, which no station sends and the
+                // VXLAN decoder refuses (IEEE 802.3 clause 3.2.3).
+                vx[8 + 6..8 + 12].copy_from_slice(&[0x02, 0, 0, 0, 0, 0x01]);
+                eth_udp_between(a, b, 49_152, 4789, &vx)
+            }
+        }
     }
 
     /// Two calls, one after the other, whose SDP negotiates the SAME two
@@ -4736,6 +4841,13 @@ mod tests {
                     uac_seq += offer.len() as u32;
                     frames.push(eth_tcp_between(uas, uac, uas_seq, 0x18, &answer));
                     uas_seq += answer.len() as u32;
+                }
+                Signaling::Tunneled(tunnel) => {
+                    let (out, back) = (TUNNEL_HOSTS, (TUNNEL_HOSTS.1, TUNNEL_HOSTS.0));
+                    let offer = eth_udp_between(uac.0, uas.0, 5060, 5060, &offer);
+                    let answer = eth_udp_between(uas.0, uac.0, 5060, 5060, &answer);
+                    frames.push(tunneled(tunnel, out, &offer));
+                    frames.push(tunneled(tunnel, back, &answer));
                 }
             }
             for seq in 0..5u16 {
@@ -4874,6 +4986,184 @@ mod tests {
         assert_one_stream_per_call(&r, "file, SIP and RTP on different workers");
         assert_counted_once(&r, frames.len(), "file, SIP and RTP on different workers");
         Ok(())
+    }
+
+    /// DEF28-TUNNEL: SIP inside a tunnel shards by the tunnel's host pair,
+    /// and its media, outside the tunnel, by its own. The worker that reads
+    /// the media must still read the SDP, so the tunneled SIP is copied to
+    /// it, and counted once.
+    #[cfg(feature = "native")]
+    fn tunneled_calls_stay_two_streams(tunnel: Tunnel) -> Result<(), TestError> {
+        use crate::capture::CaptureConfig;
+        let case = format!("SIP in {tunnel:?}, RTP outside it on another worker");
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        // Control: media between the tunnel's own hosts lands on the SIP's
+        // worker, so the fixture alone yields one stream per call.
+        let together = two_calls_on_one_flow(SIP_HOSTS, TUNNEL_HOSTS, Signaling::Tunneled(tunnel));
+        let path = write_eth_pcap(dir.path(), "tunnel-together.pcap", &together)?;
+        let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(2))?;
+        assert_one_stream_per_call(
+            &r,
+            &format!("control: SIP in {tunnel:?}, RTP on its worker"),
+        );
+        let rtp_hosts = hosts_on_the_other_worker(TUNNEL_HOSTS)?;
+        let frames = two_calls_on_one_flow(SIP_HOSTS, rtp_hosts, Signaling::Tunneled(tunnel));
+        let path = write_eth_pcap(dir.path(), "tunnel-split.pcap", &frames)?;
+        let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(2))?;
+        assert_one_stream_per_call(&r, &case);
+        assert_counted_once(&r, frames.len(), &case);
+        Ok(())
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn sip_in_gre_reaches_the_worker_that_reads_its_media() -> Result<(), TestError> {
+        tunneled_calls_stay_two_streams(Tunnel::Gre)
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn sip_in_ip_in_ip_reaches_the_worker_that_reads_its_media() -> Result<(), TestError> {
+        tunneled_calls_stay_two_streams(Tunnel::IpInIp)
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn sip_in_vxlan_reaches_the_worker_that_reads_its_media() -> Result<(), TestError> {
+        tunneled_calls_stay_two_streams(Tunnel::Vxlan)
+    }
+
+    /// The SDP-bearing INVITE of the DEF28 fixture as an Ethernet frame.
+    #[cfg(feature = "native")]
+    fn offer_frame(sport: u16, dport: u16) -> Vec<u8> {
+        let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", "t", ([10, 2, 0, 1], 20000));
+        let (a, b) = SIP_HOSTS;
+        eth_udp_between(a, b, sport, dport, &offer)
+    }
+
+    /// Inside every tunnel, the copy rule is the one outside it: SIP that
+    /// names SDP is read by every worker, as one shared read.
+    #[cfg(feature = "native")]
+    #[test]
+    fn tunneled_sdp_is_copied_as_a_shared_read() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        for tunnel in [Tunnel::Gre, Tunnel::IpInIp, Tunnel::Vxlan] {
+            let pkt = eth_packet(tunneled(tunnel, TUNNEL_HOSTS, &offer_frame(5060, 5060)));
+            assert_eq!(
+                fanout.copy_of(&pkt),
+                Some(CopyRead::Shared),
+                "{tunnel:?}: SIP with SDP inside the tunnel is copied"
+            );
+        }
+    }
+
+    /// What the rule leaves to the owner outside a tunnel it leaves to the
+    /// owner inside one: media, SIP with no SDP, SIP outside `--portrange`.
+    #[cfg(feature = "native")]
+    #[test]
+    fn tunneled_media_and_sip_without_sdp_stay_with_their_owner() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        let (a, b) = SIP_HOSTS;
+        let options = b"OPTIONS sip:b@x SIP/2.0\r\nCall-ID: o\r\nContent-Length: 0\r\n\r\n";
+        let inner = [
+            ("RTP", rtp_frame(0x1122_3344, 1)),
+            ("OPTIONS", eth_udp_between(a, b, 5060, 5060, options)),
+            ("SDP off --portrange", offer_frame(7060, 7060)),
+        ];
+        for tunnel in [Tunnel::Gre, Tunnel::IpInIp, Tunnel::Vxlan] {
+            for (what, frame) in &inner {
+                let pkt = eth_packet(tunneled(tunnel, TUNNEL_HOSTS, frame));
+                assert_eq!(
+                    fanout.copy_of(&pkt),
+                    None,
+                    "{tunnel:?}: {what} inside the tunnel stays with its owner"
+                );
+            }
+        }
+    }
+
+    /// A tunnel that does not decode copies nothing, and does not panic: a
+    /// GRE header cut short, a GRE payload type sipnab does not read, a
+    /// datagram to the VXLAN port whose header is not VXLAN's, and ICMP.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_tunnel_that_does_not_decode_copies_nothing() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        let (ta, tb) = TUNNEL_HOSTS;
+        let inner = offer_frame(5060, 5060);
+        let mut unknown_type = vec![0x00, 0x00, 0x88, 0xbe];
+        unknown_type.extend_from_slice(&inner[14..]);
+        let mut not_vxlan = vec![0xff, 0, 0, 0, 0x00, 0x12, 0x34, 0x00];
+        not_vxlan.extend_from_slice(&inner);
+        let mut icmp = vec![3, 3, 0, 0, 0, 0, 0, 0];
+        icmp.extend_from_slice(&inner[14..]);
+        let cases = [
+            ("GRE cut short", eth_ipv4_around(ta, tb, 47, &[0x00, 0x00])),
+            (
+                "GRE type 0x88be",
+                eth_ipv4_around(ta, tb, 47, &unknown_type),
+            ),
+            (
+                "not VXLAN",
+                eth_udp_between(ta, tb, 49_152, 4789, &not_vxlan),
+            ),
+            ("ICMP quoting SIP", eth_ipv4_around(ta, tb, 1, &icmp)),
+            (
+                "IP-in-IP cut short",
+                eth_ipv4_around(ta, tb, 4, &inner[14..30]),
+            ),
+        ];
+        for (what, frame) in cases {
+            assert_eq!(
+                fanout.copy_of(&eth_packet(frame)),
+                None,
+                "{what}: nothing is copied"
+            );
+        }
+    }
+
+    /// Inside a tunnel, a TCP segment on a SIP port, an IP fragment and a GRE
+    /// header with its optional key and sequence number are read as outside:
+    /// the segment and the fragment through each worker's own reassembly.
+    #[cfg(feature = "native")]
+    #[test]
+    fn tunneled_segments_fragments_and_gre_options_follow_the_rule() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        let (a, b) = SIP_HOSTS;
+        let segment = eth_tcp_between((a, 40_001), (b, 5060), 7, 0x18, b"a=rtpmap:0 PCMU/8000\r\n");
+        let mut fragment = eth_udp_between(a, b, 40_000, 40_002, b"anything");
+        fragment[20..22].copy_from_slice(&[0x00, 0xb9]); // last fragment, offset 185
+        for (what, frame) in [("TCP to 5060", &segment), ("fragment", &fragment)] {
+            let pkt = eth_packet(tunneled(Tunnel::Gre, TUNNEL_HOSTS, frame));
+            assert_eq!(
+                fanout.copy_of(&pkt),
+                Some(CopyRead::Reassembled),
+                "{what} inside GRE is read through each worker's reassembly"
+            );
+        }
+        // K and S set: four bytes of key, then four of sequence number.
+        let mut gre = vec![0x30, 0x00, 0x08, 0x00, 0, 0, 0, 7, 0, 0, 0, 1];
+        gre.extend_from_slice(&offer_frame(5060, 5060)[14..]);
+        let (ta, tb) = TUNNEL_HOSTS;
+        assert_eq!(
+            fanout.copy_of(&eth_packet(eth_ipv4_around(ta, tb, 47, &gre))),
+            Some(CopyRead::Shared),
+            "GRE with a key and a sequence number"
+        );
+        let off = ParallelConfig {
+            no_rtp: true,
+            ..pcfg_default_range()
+        };
+        let pkt = eth_packet(tunneled(
+            Tunnel::Gre,
+            TUNNEL_HOSTS,
+            &offer_frame(5060, 5060),
+        ));
+        assert_eq!(
+            Fanout::of(&off).copy_of(&pkt),
+            None,
+            "--no-rtp copies nothing"
+        );
     }
 
     /// A `ParallelConfig` with `--portrange`'s default, 5060-5061.
