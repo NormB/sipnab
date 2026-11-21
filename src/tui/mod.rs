@@ -64,6 +64,8 @@ mod input_parse;
 mod render;
 mod save;
 mod sngrep_mode;
+#[cfg(test)]
+mod sngrep_mode_tests;
 mod state;
 mod terminal_input;
 mod test_api;
@@ -97,10 +99,10 @@ use save::{
 pub use state::*;
 pub use theme::*;
 
-/// Turn on sngrep mode: sngrep's keys on the screens sngrep has and its
-/// colors (unless NO_COLOR is set). See [`sngrep_mode`].
-pub fn enable_sngrep_mode(theme: &mut Theme, keymap: &mut Keymap) {
-    keymap.sngrep = true;
+/// Turn on sngrep mode: sngrep's keys, layout, help and key bar on the
+/// screens sngrep has, and its colors unless NO_COLOR is set. The mode is
+/// the one flag [`Theme::sngrep`]. See [`sngrep_mode`].
+pub fn enable_sngrep_mode(theme: &mut Theme) {
     sngrep_mode::apply_theme(theme);
 }
 
@@ -552,7 +554,7 @@ impl App {
                 // sngrep mode starts with autoscroll off; sipnab's own mode
                 // starts it on.
                 let mut call_list = CallListState::new();
-                call_list.autoscroll = !keymap.sngrep;
+                call_list.autoscroll = !theme.sngrep;
                 call_list
             },
             stream_list: StreamListState::new(),
@@ -661,7 +663,7 @@ impl App {
             header_form: header_form::HeaderFormMode::default(),
             // sngrep mode opens on its SDP form; sipnab's own mode starts
             // hidden.
-            sdp_display_mode: if keymap.sngrep {
+            sdp_display_mode: if theme.sngrep {
                 SdpDisplayMode::Sngrep
             } else {
                 SdpDisplayMode::default()
@@ -1082,7 +1084,7 @@ impl App {
             .flow
             .diff_selected
             .as_ref()
-            .filter(|_| self.keymap.sngrep)?;
+            .filter(|_| self.theme.sngrep)?;
         if !self.flow.ladder.index_map.is_empty() {
             return self
                 .flow
@@ -1520,7 +1522,7 @@ impl App {
         self.call_list.clamp_to(displayed_len);
         // sngrep mode: sngrep's autoscroll — while on, the cursor sits on
         // the newest dialog in the current sort order, wherever it was.
-        if self.keymap.sngrep {
+        if self.theme.sngrep {
             if self.call_list.autoscroll {
                 match sngrep_mode::autoscroll_row(displayed_len, self.call_list.sort_ascending()) {
                     Some(0) => self.call_list.move_to_top(),
@@ -1835,7 +1837,7 @@ impl App {
         participants: Vec<call_flow::Participant>,
         rows: Vec<call_flow::LayoutRow>,
     ) -> (Vec<call_flow::Participant>, Vec<call_flow::LayoutRow>) {
-        if !self.keymap.sngrep {
+        if !self.theme.sngrep {
             return (participants, rows);
         }
         let (sdp_only, only_media) = (self.flow.sdp_only, self.flow.only_media);
@@ -4236,11 +4238,14 @@ mod tests {
             make_invite("sa-3@test", "1001", "1002", base_ts())?,
         ]);
         // As App::new sets it for sngrep mode.
-        app.keymap.sngrep = true;
         app.theme.sngrep = true;
         app.call_list.autoscroll = false;
         app.sync_caches();
-        assert_eq!(app.call_list.selected(), 0);
+        assert_eq!(
+            app.call_list.selected(),
+            0,
+            "the cursor starts on the first row"
+        );
 
         // Off: a new dialog leaves the cursor where it is.
         arrive(&mut app, "sa-4@test")?;
@@ -4248,7 +4253,7 @@ mod tests {
 
         // 1. A: on, and the cursor is on the newest row at the next tick.
         press(&mut app, KeyCode::Char('A'));
-        assert!(app.call_list.autoscroll);
+        assert!(app.call_list.autoscroll, "A turns autoscroll on");
         app.sync_caches();
         assert_eq!(app.call_list.selected(), 3, "A jumps to the newest");
 
@@ -4263,7 +4268,11 @@ mod tests {
                 line.contains("Method")
             })
             .ok_or("no header row")?;
-        assert_eq!(terminal.backend().buffer()[(0, header_row)].symbol(), "A");
+        assert_eq!(
+            terminal.backend().buffer()[(0, header_row)].symbol(),
+            "A",
+            "the header starts with sngrep's A while autoscroll is on"
+        );
 
         // 2. While on, a new dialog pulls the cursor wherever it was.
         app.call_list.move_to_top(); // not a key: autoscroll stays on
@@ -4305,13 +4314,21 @@ mod tests {
         // Off: the header loses its `A`, new dialogs leave the cursor.
         app.call_list.move_to_top();
         arrive(&mut app, "sa-6@test")?;
-        assert_eq!(app.call_list.selected(), 0);
+        assert_eq!(
+            app.call_list.selected(),
+            0,
+            "off: a new dialog leaves the cursor"
+        );
         terminal.draw(|f| app.render(f))?;
-        assert_ne!(terminal.backend().buffer()[(0, header_row)].symbol(), "A");
+        assert_ne!(
+            terminal.backend().buffer()[(0, header_row)].symbol(),
+            "A",
+            "off: the header loses its A"
+        );
 
         // Descending sort: sngrep's "last" is the top row.
         press(&mut app, KeyCode::Char('z')); // sngrep z = reverse sort
-        assert!(!app.call_list.sort_ascending());
+        assert!(!app.call_list.sort_ascending(), "z reverses the sort");
         app.call_list.move_down(app.displayed.ids.len());
         press(&mut app, KeyCode::Char('A'));
         app.sync_caches();
@@ -4335,10 +4352,9 @@ mod tests {
         );
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
-        let mut km = Keymap::default();
         let mut th = Theme::default();
-        enable_sngrep_mode(&mut th, &mut km);
-        let sng = App::new(ds, ss, th, km);
+        enable_sngrep_mode(&mut th);
+        let sng = App::new(ds, ss, th, Keymap::default());
         assert!(
             !sng.call_list.autoscroll,
             "sngrep mode starts with autoscroll off"
@@ -4355,7 +4371,11 @@ mod tests {
             app.call_list.autoscroll,
             "arrows keep autoscroll in sipnab mode"
         );
-        assert_eq!(app.call_list.selected(), 0);
+        assert_eq!(
+            app.call_list.selected(),
+            0,
+            "Up on the first row stays there"
+        );
         let msg = make_invite("sm-3@test", "1005", "1006", base_ts())?;
         app.dialog_store.write().process_message(msg);
         app.elapse_churn_floors_for_test();
@@ -5021,19 +5041,41 @@ mod tests {
             SdpDisplayMode::Summary,
             SdpDisplayMode::Full,
         ] {
-            assert_eq!(mode.next_in(false), mode.next());
+            assert_eq!(
+                mode.next_in(false),
+                mode.next(),
+                "out of the mode {mode:?} cycles as before"
+            );
         }
-        assert_eq!(SdpDisplayMode::Full.next_in(true), SdpDisplayMode::Sngrep);
-        assert_eq!(SdpDisplayMode::Sngrep.next_in(true), SdpDisplayMode::None);
-        assert_eq!(SdpDisplayMode::parse("sngrep"), None);
-        assert_eq!(SdpDisplayMode::parse_in("sngrep", false), None);
+        assert_eq!(
+            SdpDisplayMode::Full.next_in(true),
+            SdpDisplayMode::Sngrep,
+            "in the mode Full is followed by sngrep's form"
+        );
+        assert_eq!(
+            SdpDisplayMode::Sngrep.next_in(true),
+            SdpDisplayMode::None,
+            "sngrep's form wraps to hidden"
+        );
+        assert_eq!(
+            SdpDisplayMode::parse("sngrep"),
+            None,
+            "the mode-less parse knows no sngrep"
+        );
+        assert_eq!(
+            SdpDisplayMode::parse_in("sngrep", false),
+            None,
+            "out of the mode sngrep is not a form"
+        );
         assert_eq!(
             SdpDisplayMode::parse_in("sngrep", true),
-            Some(SdpDisplayMode::Sngrep)
+            Some(SdpDisplayMode::Sngrep),
+            "in the mode sngrep is a form"
         );
         assert_eq!(
             SdpDisplayMode::parse_in("full", false),
-            Some(SdpDisplayMode::Full)
+            Some(SdpDisplayMode::Full),
+            "the three forms parse in either mode"
         );
         Ok(())
     }
@@ -5045,12 +5087,24 @@ mod tests {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let own = App::new(ds.clone(), ss.clone(), Theme::default(), Keymap::default());
-        assert_eq!(own.sdp_display_mode, SdpDisplayMode::None);
-        let (mut theme, mut keymap) = (Theme::default(), Keymap::default());
-        enable_sngrep_mode(&mut theme, &mut keymap);
-        let sng = App::new(ds, ss, theme, keymap);
-        assert_eq!(sng.sdp_display_mode, SdpDisplayMode::Sngrep);
-        assert_eq!(SdpDisplayMode::Sngrep.label(), "SDP: sngrep");
+        assert_eq!(
+            own.sdp_display_mode,
+            SdpDisplayMode::None,
+            "sipnab's mode starts with SDP hidden"
+        );
+        let mut theme = Theme::default();
+        enable_sngrep_mode(&mut theme);
+        let sng = App::new(ds, ss, theme, Keymap::default());
+        assert_eq!(
+            sng.sdp_display_mode,
+            SdpDisplayMode::Sngrep,
+            "sngrep mode starts on its SDP form"
+        );
+        assert_eq!(
+            SdpDisplayMode::Sngrep.label(),
+            "SDP: sngrep",
+            "the status line label"
+        );
         Ok(())
     }
 

@@ -1005,7 +1005,7 @@ impl Ladder<'_> {
                 self.area.x,
                 y - 1,
                 delta,
-                Style::default().fg(Color::Cyan),
+                crate::tui::sngrep_mode::tone(self.theme, Style::default().fg(Color::Cyan)),
             );
         }
     }
@@ -1164,7 +1164,7 @@ impl RowWindow {
     }
 
     /// sngrep mode: the label
-    /// centred on the first row, the media lines under it, then the arrow
+    /// centered on the first row, the media lines under it, then the arrow
     /// on a row of its own; the time on the row above the arrow, the delta
     /// on the row above that.
     fn draw_sngrep_message(
@@ -1488,7 +1488,10 @@ pub fn render_message_detail(
     let block = if theme.sngrep {
         Block::default()
             .borders(Borders::LEFT)
-            .border_style(Style::default().fg(Color::Blue))
+            .border_style(crate::tui::sngrep_mode::tone(
+                theme,
+                Style::default().fg(Color::Blue),
+            ))
     } else {
         Block::default()
             .borders(Borders::ALL)
@@ -1681,7 +1684,10 @@ pub fn render_ladder_scrollbar(
 /// "(empty message)" placeholder line.
 fn highlight_sip_detail(raw_text: &str, theme: &Theme) -> Vec<Line<'static>> {
     if theme.sngrep && !raw_text.is_empty() {
-        return crate::tui::sngrep_mode::syntax_lines(raw_text);
+        return crate::tui::sngrep_mode::tone_lines(
+            theme,
+            crate::tui::sngrep_mode::syntax_lines(raw_text),
+        );
     }
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut in_body = false;
@@ -2647,7 +2653,7 @@ mod tests {
     }
 
     /// sngrep mode draws the call flow as sngrep's window does: the media
-    /// lines centred between the arrow's pipes in the arrow's color, the
+    /// lines centered between the arrow's pipes in the arrow's color, the
     /// current arrow and its media lines in reverse video with no band
     /// across the row, its time bold, the pipes and the other arrows in
     /// their own colors, never dimmed.
@@ -2657,7 +2663,7 @@ mod tests {
         crate::tui::sngrep_mode::apply_theme(&mut theme);
         let red = crate::tui::sngrep_mode::arrow_style(true);
         let mut inv = fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1)?;
-        inv.label = "INV (192.168.1.26)".into();
+        inv.label = "INV (192.0.2.26)".into();
         inv.style = red;
         inv.timestamp_style = Style::default();
         inv.extra_lines = vec![("audio 12220 (PCMU)".into(), red)];
@@ -2669,10 +2675,10 @@ mod tests {
         let buf = paint_two(&[inv, ok], &theme)?;
         let pipes = pipes_for(2, 120);
 
-        let (ty, tx) = find_in(&buf, "INV (192.168.1.26)").ok_or("no title")?;
+        let (ty, tx) = find_in(&buf, "INV (192.0.2.26)").ok_or("no title")?;
         let title = &buf[(tx, ty)];
         assert!(title.modifier.contains(Modifier::REVERSED), "{title:?}");
-        assert_eq!(title.fg, Color::Red);
+        assert_eq!(title.fg, Color::Red, "the request's title in red");
         assert_eq!(title.bg, Color::Reset, "no band behind the current arrow");
         assert!(
             buf[(0, ty)].modifier.contains(Modifier::BOLD),
@@ -2688,8 +2694,11 @@ mod tests {
         assert_eq!(my, ty + 1, "the media line is under its arrow");
         let len = "audio 12220 (PCMU)".len() as u16;
         let mid = pipes[0] + (pipes[1] - pipes[0]) / 2;
-        assert_eq!(mx, mid - len / 2, "centred between the pipes");
-        assert!(buf[(mx, my)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(mx, mid - len / 2, "centered between the pipes");
+        assert!(
+            buf[(mx, my)].modifier.contains(Modifier::REVERSED),
+            "the current arrow's media line is reversed too"
+        );
         assert_eq!(buf[(mx, my)].fg, Color::Red, "in the arrow's color");
         assert_eq!(
             buf[(pipes[0], my)].symbol(),
@@ -2699,9 +2708,12 @@ mod tests {
 
         let (ry, rx) = find_in(&buf, "100 Trying").ok_or("no 100")?;
         let other = &buf[(rx, ry)];
-        assert_eq!(other.fg, Color::Green);
+        assert_eq!(other.fg, Color::Green, "a response in green");
         assert!(!other.modifier.contains(Modifier::DIM), "never dimmed");
-        assert!(!other.modifier.contains(Modifier::REVERSED));
+        assert!(
+            !other.modifier.contains(Modifier::REVERSED),
+            "only the current arrow is reversed"
+        );
         Ok(())
     }
 
@@ -2717,7 +2729,10 @@ mod tests {
         let (ty, _) = find_in(&buf, "INVITE").ok_or("no INVITE")?;
         assert_eq!(buf[(0, ty)].bg, SELECTION_BG, "the band spans the row");
         let (ry, rx) = find_in(&buf, "100 Trying").ok_or("no 100")?;
-        assert!(buf[(rx, ry)].modifier.contains(Modifier::DIM));
+        assert!(
+            buf[(rx, ry)].modifier.contains(Modifier::DIM),
+            "sipnab's mode dims the other arrows"
+        );
         Ok(())
     }
 
@@ -3707,9 +3722,15 @@ mod tests {
             &o,
             &std::collections::HashSet::new(),
         );
-        assert_eq!(rows[0].label, "INV (10.0.0.1)");
-        assert_eq!(rows[0].extra_lines[0].0, "audio 20000 (PCMU)");
-        assert!(rows[0].extra_centered);
+        assert_eq!(rows[0].label, "INV (10.0.0.1)", "the sngrep SDP title");
+        assert_eq!(
+            rows[0].extra_lines[0].0, "audio 20000 (PCMU)",
+            "one media line per RTP stream"
+        );
+        assert!(
+            rows[0].extra_centered,
+            "sngrep's media lines are centered between the pipes"
+        );
         Ok(())
     }
 

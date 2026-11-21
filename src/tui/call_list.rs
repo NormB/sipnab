@@ -1003,7 +1003,10 @@ pub fn render_call_list(
 
             // Method cell colors
             let method_style = if theme.sngrep {
-                super::sngrep_mode::method_style(dialog.method.as_str())
+                super::sngrep_mode::tone(
+                    theme,
+                    super::sngrep_mode::method_style(dialog.method.as_str()),
+                )
             } else {
                 match dialog.method.as_str() {
                     "INVITE" => Style::default().fg(theme.good),
@@ -1183,7 +1186,7 @@ pub fn render_call_list(
         .header(header)
         .column_spacing(1)
         .row_highlight_style(if theme.sngrep {
-            super::sngrep_mode::list_highlight()
+            super::sngrep_mode::tone(theme, super::sngrep_mode::list_highlight())
         } else {
             Style::default().add_modifier(Modifier::REVERSED)
         })
@@ -1621,7 +1624,7 @@ fn format_delta(delta: chrono::TimeDelta) -> String {
 /// Return a style for a dialog state label.
 fn state_style(state: &DialogState, theme: &super::Theme) -> Style {
     if theme.sngrep {
-        return super::sngrep_mode::state_style(state);
+        return super::sngrep_mode::tone(theme, super::sngrep_mode::state_style(state));
     }
     match state {
         DialogState::Failed => Style::default().fg(theme.bad).add_modifier(Modifier::BOLD),

@@ -230,7 +230,7 @@ pub struct LayoutRow {
     /// SDP info line texts; styled muted+italic by `style`.
     pub extra_lines: Vec<String>,
     /// The extra lines are sngrep's media lines (`SdpDisplayMode::Sngrep`):
-    /// drawn centred between the arrow's pipes, in the arrow's color.
+    /// drawn centered between the arrow's pipes, in the arrow's color.
     pub extra_centered: bool,
     /// Call-ID of the source message (empty for spacers).
     pub call_id: String,
@@ -372,7 +372,7 @@ pub fn layout(
         let mut extra_lines = Vec::new();
         let mut label = format_message_label(msg);
         // sngrep's form names the arrow itself and keeps the SIPREC lines
-        // out: they would be centred as if they were media.
+        // out: they would be centered as if they were media.
         let sngrep_sdp = if opts.sdp_mode == SdpDisplayMode::Sngrep {
             crate::tui::sngrep_mode::sdp_info(&label, &msg.body)
         } else {
@@ -1085,7 +1085,9 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
             let timestamp_style = match row.ts_class {
                 // sngrep: the time in the default color, a delta cyan.
                 TsClass::Muted | TsClass::Accent if theme.sngrep => Style::default(),
-                TsClass::Delta(_) if theme.sngrep => Style::default().fg(Color::Cyan),
+                TsClass::Delta(_) if theme.sngrep => {
+                    crate::tui::sngrep_mode::tone(theme, Style::default().fg(Color::Cyan))
+                }
                 TsClass::Muted => Style::default().fg(theme.muted),
                 TsClass::Accent => Style::default().fg(theme.accent),
                 TsClass::Delta(d) => delta_style(d, theme),
@@ -1219,7 +1221,8 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
                 continue;
             }
             if m.raw_index == Some(marked) {
-                m.timestamp_style = Style::default().fg(Color::Cyan);
+                m.timestamp_style =
+                    crate::tui::sngrep_mode::tone(theme, Style::default().fg(Color::Cyan));
             }
             m.sngrep_delta = (m.selection_state == SelectionState::Selected)
                 .then(|| crate::tui::sngrep_mode::delta_text(mark_ts, row.raw_timestamp));
@@ -4253,16 +4256,30 @@ mod tests {
             sngrep_marked: marked,
         };
         let plain = style(&rows, &so(None));
-        assert!(plain[1].sngrep_delta.is_some() && plain[2].sngrep_delta.is_some());
+        assert!(
+            plain[1].sngrep_delta.is_some() && plain[2].sngrep_delta.is_some(),
+            "unmarked: each later message has its delta to the previous one"
+        );
 
         let marked = style(&rows, &so(Some(0)));
-        assert_eq!(marked[0].timestamp_style, Style::default().fg(Color::Cyan));
-        assert_eq!(marked[1].sngrep_delta, None);
+        assert_eq!(
+            marked[0].timestamp_style,
+            Style::default().fg(Color::Cyan),
+            "the marked message's time is cyan"
+        );
+        assert_eq!(
+            marked[1].sngrep_delta, None,
+            "marked: only the cursor's message has a delta"
+        );
         let d = marked[2]
             .sngrep_delta
             .as_deref()
             .ok_or("delta above the cursor")?;
-        assert_eq!(d.trim(), "+1.500000");
+        assert_eq!(
+            d.trim(),
+            "+1.500000",
+            "from the marked message to the cursor"
+        );
         Ok(())
     }
 
@@ -4476,6 +4493,59 @@ mod tests {
                     "SDP line italic: {text:?}"
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// Edge (sngrep mode): the delta time of an RTP bar row is sngrep's cyan,
+    /// and under NO_COLOR it has no color. A SIP message row's time is reset
+    /// by the sngrep layout, so only an RTP row reaches this style.
+    #[test]
+    fn sngrep_rtp_bar_delta_time_is_cyan_or_plain() -> Result<(), TestError> {
+        for no_color in [false, true] {
+            let mut theme = if no_color {
+                Theme::monochrome()
+            } else {
+                Theme::default()
+            };
+            crate::tui::sngrep_mode::apply_theme(&mut theme);
+            let msgs = vec![
+                invite_with_sdp(
+                    "sty7",
+                    1,
+                    "m=audio 5004 RTP/AVP 0",
+                    &["a=rtpmap:0 PCMU/8000"],
+                    t0(),
+                )?,
+                response_with_sdp(
+                    &StatusLine {
+                        cid: "sty7",
+                        status: 200,
+                        reason: "OK",
+                        cseq: 1,
+                        method: "INVITE",
+                    },
+                    &SdpLines {
+                        codecs_line: "m=audio 5006 RTP/AVP 0",
+                        rtpmaps: &["a=rtpmap:0 PCMU/8000"],
+                    },
+                    t0() + TimeDelta::seconds(1),
+                )?,
+                ack("sty7", 1, t0() + TimeDelta::seconds(2))?,
+            ];
+            let mut o = opts(&theme);
+            o.show_rtp = true;
+            o.ts_mode = TimestampMode::DeltaPrev;
+            let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+            let bar = prepared
+                .iter()
+                .find(|fm| fm.is_rtp_bar)
+                .ok_or("INVITE/200/ACK with media must draw an RTP bar")?;
+            let want = if no_color { None } else { Some(Color::Cyan) };
+            assert_eq!(
+                bar.timestamp_style.fg, want,
+                "no_color={no_color}: the RTP bar's delta time"
+            );
         }
         Ok(())
     }

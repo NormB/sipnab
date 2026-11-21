@@ -308,7 +308,7 @@ const LADDER_PER_PARTICIPANT: u16 = 28;
 const SELF_LOOP_ROOM: u16 = 12;
 
 /// The columns the ladder needs: the time column, then one
-/// [`LADDER_PER_PARTICIPANT`] per participant, plus [`SELF_LOOP_ROOM`] when
+/// `LADDER_PER_PARTICIPANT` per participant, plus `SELF_LOOP_ROOM` when
 /// the last participant sends to itself.
 pub fn ladder_need(participants: usize, self_loop_last: bool) -> u16 {
     let n = u16::try_from(participants).unwrap_or(u16::MAX);
@@ -335,7 +335,7 @@ pub fn raw_width(screen: u16, need: u16, fixed: Option<u16>) -> u16 {
 
 /// The raw pane width after one `9` (`grow`) or `0` press from `current` on
 /// a `screen` columns wide, or `None` when the press would leave the ladder
-/// less than its time column or the pane less than [`RAW_FLOOR`].
+/// less than its time column or the pane less than `RAW_FLOOR`.
 pub fn step_raw(current: u16, screen: u16, grow: bool) -> Option<u16> {
     if grow {
         let widest = screen.saturating_sub(super::call_flow::TS_COL_WIDTH as u16 + 2);
@@ -553,17 +553,56 @@ pub fn fkey_bar(view: &View, alt: bool) -> Option<Vec<(&'static str, &'static st
     )
 }
 
-/// The theme slots sngrep paints: cyan title and status bands, the current
-/// row on blue.
+/// Turn the mode on in `theme`, and paint the slots sngrep colors: cyan
+/// title and status bands, the current row on blue. Under NO_COLOR the mode
+/// is on and the slots keep the NO_COLOR theme's values.
 pub fn apply_theme(theme: &mut Theme) {
+    theme.sngrep = true;
+    theme.sngrep_alt_hints = false;
     if theme.no_color {
         return;
     }
-    theme.sngrep = true;
-    theme.sngrep_alt_hints = false;
     theme.header = Color::Cyan;
     theme.status_bg = Color::Cyan;
     theme.selected = Color::Blue;
+}
+
+/// A sngrep color as `theme` allows it: `style` itself, or under NO_COLOR
+/// its text attributes alone. A background band becomes reverse video, so
+/// the row it marks stays visible. Every sngrep color a view draws goes
+/// through here; the theme slots are left alone by [`apply_theme`] instead.
+pub fn tone(theme: &Theme, style: Style) -> Style {
+    if !theme.no_color {
+        return style;
+    }
+    let band = style.bg.is_some_and(|c| c != Color::Reset);
+    let plain = Style {
+        fg: None,
+        bg: None,
+        ..style
+    };
+    if band {
+        plain.add_modifier(Modifier::REVERSED)
+    } else {
+        plain
+    }
+}
+
+/// [`tone`] over every span and line style of `lines`.
+pub fn tone_lines(theme: &Theme, lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    if !theme.no_color {
+        return lines;
+    }
+    lines
+        .into_iter()
+        .map(|mut line| {
+            line.style = tone(theme, line.style);
+            for span in &mut line.spans {
+                span.style = tone(theme, span.style);
+            }
+            line
+        })
+        .collect()
 }
 
 /// The current call-list row: white on blue, like sngrep.
@@ -585,8 +624,8 @@ pub fn method_style(method: &str) -> Style {
     }
 }
 
-/// sngrep's call state colors: CALL SETUP yellow, IN CALL blue, COMPLETED
-/// green, CANCELLED / REJECTED red, DIVERTED cyan.
+/// sngrep's call state colors: call setup yellow, in call blue, completed
+/// green, canceled or rejected red, diverted cyan.
 pub fn state_style(state: &DialogState) -> Style {
     match state {
         DialogState::Trying | DialogState::Ringing => Style::default().fg(Color::Yellow),
@@ -617,7 +656,7 @@ pub fn flow_selection() -> Style {
 /// Characters that end a colored word in a raw SIP line.
 const WORD_END: [char; 4] = [' ', ';', '<', '>'];
 
-/// Builds one line of spans, merging neighbours of the same style.
+/// Builds one line of spans, merging neighbors of the same style.
 #[derive(Default)]
 struct LinePainter {
     spans: Vec<Span<'static>>,
@@ -647,7 +686,7 @@ fn bold(c: Color) -> Style {
 }
 
 /// Whether header name `name` is `long` or its compact form `short`
-/// (RFC 3261 section 7.3.3), in any case.
+/// ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.3)), in any case.
 fn header_is(name: &str, long: &str, short: &str) -> bool {
     name.eq_ignore_ascii_case(long) || name.eq_ignore_ascii_case(short)
 }
@@ -797,9 +836,9 @@ fn first_codec(media: &crate::sip::sdp::SdpMedia) -> Option<String> {
 /// The SDP form sngrep mode draws on a ladder arrow, for a message whose
 /// start line begins with `head` (the method, or the status code) and whose
 /// body is `body`: the arrow title is `head`'s first three letters and the
-/// first media's address (`INV (192.168.1.26)`), then one line per RTP media,
+/// first media's address (`INV (192.0.2.26)`), then one line per RTP media,
 /// `audio 12220 (PCMU)`, naming the codec it offers first. A media's address
-/// is its own `c=` line, else the session's (RFC 4566 section 5.7). Only
+/// is its own `c=` line, else the session's ([RFC 4566 section 5.7](https://www.rfc-editor.org/rfc/rfc4566.html#section-5.7)). Only
 /// media carried over RTP count (a T.38 `udptl` media does not); `None` when
 /// the body has none, and the arrow keeps its plain label.
 pub fn sdp_info(head: &str, body: &[u8]) -> Option<(String, Vec<String>)> {
@@ -859,7 +898,7 @@ SNGREP MODE \u{2014} CALL FLOW:
   Enter            Raw message (selected)
   F6, r, R         Raw messages of the whole call
   F2, d            SDP info: Hidden, Summary, Full, sngrep (starts at sngrep:\n\
-\x20                  \"INV (192.168.1.26)\" on the arrow, one \"audio 12220\n\
+\x20                  \"INV (192.0.2.26)\" on the arrow, one \"audio 12220\n\
 \x20                  (PCMU)\" line per RTP media under it)
   F3, m            Media (RTP) in the ladder
   F4, x            Extended call flow
@@ -913,6 +952,8 @@ SNGREP MODE \u{2014} SIPNAB COMMANDS ON NEW KEYS:
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
@@ -921,10 +962,12 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
-    fn to(t: Translated) -> KeyCode {
+    /// The key a translation becomes; `None` when it is not a key (an
+    /// action, a pass or a refusal), so the assertion shows the mismatch.
+    fn to(t: Translated) -> Option<KeyCode> {
         match t {
-            Translated::Key(e) => e.code,
-            other => panic!("expected a key, got {other:?}"),
+            Translated::Key(e) => Some(e.code),
+            _ => None,
         }
     }
 
@@ -936,34 +979,60 @@ mod tests {
     fn call_list_key_map_matches_sngrep() {
         let km = Keymap::default();
         let v = View::CallList;
-        let t = |c| to(translate(&v, &km, key(c)));
-        assert_eq!(t(KeyCode::Char('h')), KeyCode::F(1));
-        assert_eq!(t(KeyCode::Char('H')), KeyCode::F(1));
-        assert_eq!(t(KeyCode::Char('Q')), KeyCode::Char('q'));
-        assert_eq!(t(KeyCode::Tab), KeyCode::Char('/'));
-        assert_eq!(t(KeyCode::F(3)), KeyCode::Char('/'));
-        assert_eq!(t(KeyCode::Char('R')), KeyCode::F(6));
-        assert_eq!(t(KeyCode::Char('x')), KeyCode::F(4));
-        assert_eq!(t(KeyCode::Char('f')), KeyCode::F(7));
-        assert_eq!(t(KeyCode::Char('F')), KeyCode::F(7));
-        assert_eq!(t(KeyCode::Char('t')), KeyCode::F(10));
-        assert_eq!(t(KeyCode::Char('i')), KeyCode::Char('s'));
-        assert_eq!(t(KeyCode::Char('s')), KeyCode::F(2));
-        assert_eq!(t(KeyCode::F(9)), KeyCode::Char('i'));
-        assert_eq!(t(KeyCode::Char('z')), KeyCode::Char('Z'));
-        assert_eq!(t(KeyCode::Char('a')), KeyCode::Char('n'));
-        assert_eq!(
-            translate(&v, &km, key(KeyCode::Char('c'))),
-            Translated::Act(SngrepAction::CycleColorMode)
-        );
-        assert_eq!(
-            translate(&v, &km, key(KeyCode::Char('o'))),
-            Translated::Act(SngrepAction::OpenSettings)
-        );
-        assert_eq!(to(translate(&v, &km, ctrl('f'))), KeyCode::PageDown);
-        assert_eq!(to(translate(&v, &km, ctrl('b'))), KeyCode::PageUp);
-        assert_eq!(to(translate(&v, &km, ctrl('a'))), KeyCode::Home);
-        assert_eq!(to(translate(&v, &km, ctrl('e'))), KeyCode::End);
+        // (sngrep key, the sipnab key it becomes, what it does)
+        for (c, want, what) in [
+            (KeyCode::Char('h'), KeyCode::F(1), "help"),
+            (KeyCode::Char('H'), KeyCode::F(1), "help"),
+            (KeyCode::Char('Q'), KeyCode::Char('q'), "quit"),
+            (KeyCode::Tab, KeyCode::Char('/'), "search"),
+            (KeyCode::F(3), KeyCode::Char('/'), "search"),
+            (
+                KeyCode::Char('R'),
+                KeyCode::F(6),
+                "raw messages of the call",
+            ),
+            (KeyCode::Char('x'), KeyCode::F(4), "extended flow"),
+            (KeyCode::Char('f'), KeyCode::F(7), "filter dialog"),
+            (KeyCode::Char('F'), KeyCode::F(7), "filter dialog"),
+            (KeyCode::Char('t'), KeyCode::F(10), "column selector"),
+            (KeyCode::Char('i'), KeyCode::Char('s'), "statistics"),
+            (KeyCode::Char('s'), KeyCode::F(2), "save"),
+            (
+                KeyCode::F(9),
+                KeyCode::Char('i'),
+                "clear the calls not matching",
+            ),
+            (KeyCode::Char('z'), KeyCode::Char('Z'), "reverse sort"),
+            (KeyCode::Char('a'), KeyCode::Char('n'), "name resolution"),
+        ] {
+            assert_eq!(
+                to(translate(&v, &km, key(c))),
+                Some(want),
+                "call list {c:?} is sngrep's {what}"
+            );
+        }
+        for (c, a) in [
+            ('c', SngrepAction::CycleColorMode),
+            ('o', SngrepAction::OpenSettings),
+        ] {
+            assert_eq!(
+                translate(&v, &km, key(KeyCode::Char(c))),
+                Translated::Act(a),
+                "call list {c:?} runs sngrep's {a:?}"
+            );
+        }
+        for (c, want) in [
+            ('f', KeyCode::PageDown),
+            ('b', KeyCode::PageUp),
+            ('a', KeyCode::Home),
+            ('e', KeyCode::End),
+        ] {
+            assert_eq!(
+                to(translate(&v, &km, ctrl(c))),
+                Some(want),
+                "call list Ctrl+{c} moves as in sngrep"
+            );
+        }
         // Keys sngrep and sipnab already share pass through untouched.
         for c in [
             KeyCode::Enter,
@@ -982,44 +1051,77 @@ mod tests {
     fn moved_sipnab_keys_reach_their_command() {
         let km = Keymap::default();
         let v = View::CallList;
-        let t = |c| to(translate(&v, &km, key(KeyCode::Char(c))));
-        assert_eq!(t('L'), KeyCode::Tab);
-        assert_eq!(t('w'), KeyCode::Char('t'));
-        assert_eq!(t('W'), KeyCode::Char('S'));
-        assert_eq!(t('X'), KeyCode::Char('x'));
-        assert_eq!(t('J'), KeyCode::Char('f'));
-        assert_eq!(t('G'), KeyCode::Char('F'));
-        assert_eq!(t('Y'), KeyCode::Char('o'));
-        assert_eq!(t('U'), KeyCode::Char('O'));
-        assert_eq!(t('E'), KeyCode::Char('a'));
-        assert_eq!(t('y'), KeyCode::Char('T'));
-        assert_eq!(t('#'), KeyCode::Char('h'));
-        assert_eq!(t('='), KeyCode::Char('c'));
-        assert_eq!(t('\\'), KeyCode::F(9));
+        // (key in sngrep mode, sipnab's own key for the command)
+        for (c, want) in [
+            ('L', KeyCode::Tab),
+            ('w', KeyCode::Char('t')),
+            ('W', KeyCode::Char('S')),
+            ('X', KeyCode::Char('x')),
+            ('J', KeyCode::Char('f')),
+            ('G', KeyCode::Char('F')),
+            ('Y', KeyCode::Char('o')),
+            ('U', KeyCode::Char('O')),
+            ('E', KeyCode::Char('a')),
+            ('y', KeyCode::Char('T')),
+            ('#', KeyCode::Char('h')),
+            ('=', KeyCode::Char('c')),
+            ('\\', KeyCode::F(9)),
+        ] {
+            assert_eq!(
+                to(translate(&v, &km, key(KeyCode::Char(c)))),
+                Some(want),
+                "{c:?} reaches the sipnab command of {want:?}"
+            );
+        }
     }
 
     #[test]
     fn call_flow_key_map_matches_sngrep() {
         let km = Keymap::default();
         let v = flow();
-        let t = |c| to(translate(&v, &km, key(c)));
-        assert_eq!(t(KeyCode::Char('q')), KeyCode::Esc);
-        assert_eq!(t(KeyCode::Char('Q')), KeyCode::Esc);
-        assert_eq!(t(KeyCode::Char('h')), KeyCode::F(1));
-        assert_eq!(t(KeyCode::F(6)), KeyCode::Char('A'));
-        assert_eq!(t(KeyCode::Char('r')), KeyCode::Char('A'));
-        assert_eq!(t(KeyCode::F(2)), KeyCode::Char('d'));
-        assert_eq!(t(KeyCode::Char('m')), KeyCode::F(6));
-        assert_eq!(t(KeyCode::Char('t')), KeyCode::Char('R'));
-        assert_eq!(t(KeyCode::Char('w')), KeyCode::Char('t'));
-        assert_eq!(t(KeyCode::Char('S')), KeyCode::F(2));
-        assert_eq!(t(KeyCode::Char('f')), KeyCode::F(7));
-        assert_eq!(t(KeyCode::Char('b')), KeyCode::Char('m'));
-        assert_eq!(t(KeyCode::Char('u')), KeyCode::Char('h'));
-        assert_eq!(t(KeyCode::Char('Z')), KeyCode::Char('C'));
+        // (sngrep key, the sipnab key it becomes, what it does)
+        for (c, want, what) in [
+            (KeyCode::Char('q'), KeyCode::Esc, "back"),
+            (KeyCode::Char('Q'), KeyCode::Esc, "back"),
+            (KeyCode::Char('h'), KeyCode::F(1), "help"),
+            (
+                KeyCode::F(6),
+                KeyCode::Char('A'),
+                "raw messages of the call",
+            ),
+            (
+                KeyCode::Char('r'),
+                KeyCode::Char('A'),
+                "raw messages of the call",
+            ),
+            (KeyCode::F(2), KeyCode::Char('d'), "SDP form"),
+            (KeyCode::Char('m'), KeyCode::F(6), "media in the ladder"),
+            (KeyCode::Char('t'), KeyCode::Char('R'), "raw pane on or off"),
+            (KeyCode::Char('w'), KeyCode::Char('t'), "time form"),
+            (KeyCode::Char('S'), KeyCode::F(2), "save"),
+            (KeyCode::Char('f'), KeyCode::F(7), "filter dialog"),
+            (KeyCode::Char('b'), KeyCode::Char('m'), "sipnab's mark"),
+            (
+                KeyCode::Char('u'),
+                KeyCode::Char('h'),
+                "sipnab's header form",
+            ),
+            (
+                KeyCode::Char('Z'),
+                KeyCode::Char('C'),
+                "sipnab's operator note",
+            ),
+        ] {
+            assert_eq!(
+                to(translate(&v, &km, key(c))),
+                Some(want),
+                "call flow {c:?} is {what}"
+            );
+        }
         assert_eq!(
             translate(&v, &km, key(KeyCode::Char('C'))),
-            Translated::Act(SngrepAction::ToggleSyntax)
+            Translated::Act(SngrepAction::ToggleSyntax),
+            "call flow C toggles the syntax colors"
         );
         for (c, a) in [
             ('9', SngrepAction::IncreaseRaw),
@@ -1036,18 +1138,17 @@ mod tests {
                 "{c}"
             );
         }
-        assert_eq!(
-            translate(&v, &km, key(KeyCode::F(5))),
-            Translated::Act(SngrepAction::ClearCalls { soft: false })
-        );
-        assert_eq!(
-            translate(&v, &km, ctrl('l')),
-            Translated::Act(SngrepAction::ClearCalls { soft: false })
-        );
-        assert_eq!(
-            translate(&v, &km, key(KeyCode::F(9))),
-            Translated::Act(SngrepAction::ClearCalls { soft: true })
-        );
+        for (k, soft) in [
+            (key(KeyCode::F(5)), false),
+            (ctrl('l'), false),
+            (key(KeyCode::F(9)), true),
+        ] {
+            assert_eq!(
+                translate(&v, &km, k),
+                Translated::Act(SngrepAction::ClearCalls { soft }),
+                "call flow {k:?} clears calls (soft: {soft})"
+            );
+        }
         for c in [
             KeyCode::Enter,
             KeyCode::Char(' '),
@@ -1065,25 +1166,22 @@ mod tests {
             call_id: "cid".to_string(),
             message_index: 0,
         };
-        assert_eq!(
-            to(translate(&raw, &km, key(KeyCode::Char('s')))),
-            KeyCode::F(2)
-        );
-        assert_eq!(
-            to(translate(&raw, &km, key(KeyCode::Char('C')))),
-            KeyCode::Char('s')
-        );
-        assert_eq!(
-            to(translate(&raw, &km, key(KeyCode::F(8)))),
-            KeyCode::Char('s')
-        );
-        assert_eq!(
-            to(translate(&raw, &km, key(KeyCode::Char('q')))),
-            KeyCode::Esc
-        );
+        for (c, want, what) in [
+            (KeyCode::Char('s'), KeyCode::F(2), "save"),
+            (KeyCode::Char('C'), KeyCode::Char('s'), "syntax colors"),
+            (KeyCode::F(8), KeyCode::Char('s'), "syntax colors"),
+            (KeyCode::Char('q'), KeyCode::Esc, "back"),
+        ] {
+            assert_eq!(
+                to(translate(&raw, &km, key(c))),
+                Some(want),
+                "raw message {c:?} is {what}"
+            );
+        }
         assert_eq!(
             translate(&raw, &km, key(KeyCode::Char('/'))),
-            Translated::Pass
+            Translated::Pass,
+            "raw message / stays sipnab's search"
         );
     }
 
@@ -1095,7 +1193,8 @@ mod tests {
         };
         assert_eq!(
             to(translate(&View::CallList, &km, key(KeyCode::Char('h')))),
-            KeyCode::F(11)
+            Some(KeyCode::F(11)),
+            "h follows help rebound to F11"
         );
     }
 
@@ -1105,39 +1204,85 @@ mod tests {
         for c in ['h', 'q', 's', 'f', 't'] {
             assert_eq!(
                 translate(&View::Statistics, &km, key(KeyCode::Char(c))),
-                Translated::Pass
+                Translated::Pass,
+                "{c:?} on a view sngrep lacks stays sipnab's"
             );
         }
     }
 
     #[test]
     fn colors_match_sngrep() {
-        assert_eq!(method_style("INVITE").fg, Some(Color::Red));
-        assert!(method_style("INVITE").add_modifier.contains(Modifier::BOLD));
-        assert_eq!(method_style("REGISTER").fg, Some(Color::Magenta));
-        assert_eq!(method_style("OPTIONS").fg, Some(Color::Yellow));
-        assert_eq!(method_style("SUBSCRIBE").fg, Some(Color::Blue));
-        assert_eq!(state_style(&DialogState::InCall).fg, Some(Color::Blue));
-        assert_eq!(state_style(&DialogState::Completed).fg, Some(Color::Green));
-        assert_eq!(state_style(&DialogState::Failed).fg, Some(Color::Red));
-        assert_eq!(state_style(&DialogState::Ringing).fg, Some(Color::Yellow));
-        assert_eq!(arrow_style(true).fg, Some(Color::Red));
-        assert_eq!(arrow_style(false).fg, Some(Color::Green));
-        assert_eq!(rotation_style(0).fg, Some(Color::Cyan));
-        assert_eq!(rotation_style(7).fg, Some(Color::Cyan));
-        assert_eq!(list_highlight().bg, Some(Color::Blue));
-        assert_eq!(list_highlight().fg, Some(Color::White));
-        assert!(flow_selection().bg.is_none());
-        assert!(flow_selection().add_modifier.contains(Modifier::REVERSED));
+        for (method, want) in [
+            ("INVITE", Color::Red),
+            ("REGISTER", Color::Magenta),
+            ("OPTIONS", Color::Yellow),
+            ("SUBSCRIBE", Color::Blue),
+        ] {
+            assert_eq!(
+                method_style(method).fg,
+                Some(want),
+                "sngrep draws {method} in {want:?}"
+            );
+        }
+        assert!(
+            method_style("INVITE").add_modifier.contains(Modifier::BOLD),
+            "sngrep's INVITE is bold"
+        );
+        for (state, want) in [
+            (DialogState::InCall, Color::Blue),
+            (DialogState::Completed, Color::Green),
+            (DialogState::Failed, Color::Red),
+            (DialogState::Ringing, Color::Yellow),
+        ] {
+            assert_eq!(
+                state_style(&state).fg,
+                Some(want),
+                "sngrep draws {state:?} in {want:?}"
+            );
+        }
+        assert_eq!(arrow_style(true).fg, Some(Color::Red), "requests red");
+        assert_eq!(arrow_style(false).fg, Some(Color::Green), "responses green");
+        assert_eq!(
+            rotation_style(0).fg,
+            Some(Color::Cyan),
+            "the rotation starts at cyan"
+        );
+        assert_eq!(
+            rotation_style(7).fg,
+            Some(Color::Cyan),
+            "the rotation wraps after seven colors"
+        );
+        assert_eq!(
+            (list_highlight().fg, list_highlight().bg),
+            (Some(Color::White), Some(Color::Blue)),
+            "the current call is white on blue"
+        );
+        assert!(
+            flow_selection().bg.is_none(),
+            "the current arrow has no band"
+        );
+        assert!(
+            flow_selection().add_modifier.contains(Modifier::REVERSED),
+            "the current arrow is in reverse video"
+        );
 
         let mut theme = Theme::default();
         apply_theme(&mut theme);
-        assert!(theme.sngrep);
-        assert_eq!(theme.status_bg, Color::Cyan);
-        assert_eq!(theme.header, Color::Cyan);
+        assert!(theme.sngrep, "apply_theme turns the mode on");
+        assert_eq!(
+            (theme.status_bg, theme.header),
+            (Color::Cyan, Color::Cyan),
+            "sngrep's cyan title and status bands"
+        );
         let mut mono = Theme::monochrome();
         apply_theme(&mut mono);
-        assert!(!mono.sngrep, "NO_COLOR wins over sngrep colors");
+        let plain = Theme::monochrome();
+        assert!(mono.sngrep, "NO_COLOR keeps sngrep mode on");
+        assert_eq!(
+            (mono.header, mono.status_bg, mono.selected),
+            (plain.header, plain.status_bg, plain.selected),
+            "NO_COLOR wins over sngrep's slot colors"
+        );
     }
 
     #[test]
@@ -1145,22 +1290,35 @@ mod tests {
         let raw =
             "INVITE sip:9021@x SIP/2.0\r\nCall-ID: abc\r\nCSeq: 1 INVITE\r\nVia: v\r\n\r\nv=0\r\n";
         let l = syntax_lines(raw);
-        assert_eq!(l[0].spans[0].style.fg, Some(Color::Yellow));
-        assert_eq!(l[0].spans[2].style.fg, Some(Color::Cyan));
-        assert_eq!(l[1].spans[0].style.fg, Some(Color::Green));
-        assert_eq!(l[1].spans[2].style.fg, Some(Color::Magenta));
-        assert_eq!(l[2].spans[2].style.fg, Some(Color::Yellow));
-        assert_eq!(l[2].spans[2].content, "INVITE");
+        for (line, span, want, what) in [
+            (0, 0, Color::Yellow, "the request method"),
+            (0, 2, Color::Cyan, "the request URI"),
+            (1, 0, Color::Green, "a header name"),
+            (1, 2, Color::Magenta, "the Call-ID value"),
+            (2, 2, Color::Yellow, "the CSeq method"),
+        ] {
+            assert_eq!(
+                l[line].spans[span].style.fg,
+                Some(want),
+                "line {line} span {span}, {what}: {:?}",
+                l[line].spans[span].content
+            );
+        }
+        assert_eq!(l[2].spans[2].content, "INVITE", "the CSeq method span");
         assert_eq!(l[5].spans[0].style.fg, None, "body is plain");
         let resp = syntax_lines("SIP/2.0 486 Busy Here\r\n");
-        assert_eq!(resp[0].spans[1].style.fg, Some(Color::Red));
+        assert_eq!(
+            resp[0].spans[1].style.fg,
+            Some(Color::Red),
+            "a 4xx status code is red"
+        );
     }
 
     /// The raw pane colors: a header name WITH its colon green, `;branch`
     /// bold cyan, `;tag` bold green except on From:, where it is bold
     /// default; a space or `;` ends a run.
     #[test]
-    fn syntax_tag_branch_and_colon_match_sngrep() {
+    fn syntax_tag_branch_and_colon_match_sngrep() -> Result<(), TestError> {
         let raw = "INVITE sip:9021@x;transport=udp SIP/2.0\r\n\
                    Via: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bK1\r\n\
                    From: <sip:a@x>;tag=f1\r\n\
@@ -1174,66 +1332,96 @@ mod tests {
                 .iter()
                 .find(|s| s.content == text)
                 .map(|s| s.style)
-                .unwrap_or_else(|| panic!("no span {text:?} in {:?}", l[line]))
+                .ok_or_else(|| format!("no span {text:?} in {:?}", l[line]))
         };
         let bold = |c| Style::default().fg(c).add_modifier(Modifier::BOLD);
-        assert_eq!(span(0, "sip:9021@x"), bold(Color::Cyan), "URI up to the ;");
-        assert_eq!(span(1, "Via:"), Style::default().fg(Color::Green));
-        assert_eq!(span(1, "branch=z9hG4bK1"), bold(Color::Cyan));
+        assert_eq!(span(0, "sip:9021@x")?, bold(Color::Cyan), "URI up to the ;");
         assert_eq!(
-            span(2, "tag=f1"),
-            Style::default().add_modifier(Modifier::BOLD)
+            span(1, "Via:")?,
+            Style::default().fg(Color::Green),
+            "the header name with its colon is green"
         );
-        assert_eq!(span(3, "tag=t2"), bold(Color::Green));
+        assert_eq!(
+            span(1, "branch=z9hG4bK1")?,
+            bold(Color::Cyan),
+            ";branch is bold cyan"
+        );
+        assert_eq!(
+            span(2, "tag=f1")?,
+            Style::default().add_modifier(Modifier::BOLD),
+            "the From tag is bold in the default color"
+        );
+        assert_eq!(
+            span(3, "tag=t2")?,
+            bold(Color::Green),
+            "the To tag is bold green"
+        );
         assert_eq!(l[4].spans.len(), 0, "the blank line");
         assert_eq!(l[5].spans[0].style, Style::default(), "SDP plain");
         let resp = syntax_lines("SIP/2.0 486 Busy Here\r\n");
         assert_eq!(resp[0].spans[1].content, "486", "only the code is red");
+        Ok(())
     }
 
     /// The SDP form on the arrow: the first three letters and the first
     /// media's address, one line per RTP media naming its first codec.
     #[test]
-    fn sdp_info_names_media_and_codec() {
-        let offer = b"v=0\r\no=- 1 1 IN IP4 192.168.1.26\r\ns=-\r\n\
-                      c=IN IP4 192.168.1.26\r\nt=0 0\r\n\
+    fn sdp_info_names_media_and_codec() -> Result<(), TestError> {
+        let offer = b"v=0\r\no=- 1 1 IN IP4 192.0.2.26\r\ns=-\r\n\
+                      c=IN IP4 192.0.2.26\r\nt=0 0\r\n\
                       m=audio 12220 RTP/AVP 0 8 101\r\na=rtpmap:101 telephone-event/8000\r\n\
                       m=video 12222 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n";
-        let (title, media) = sdp_info("INVITE", offer).expect("media");
-        assert_eq!(title, "INV (192.168.1.26)");
-        assert_eq!(media, ["audio 12220 (PCMU)", "video 12222 (H264)"]);
+        let (title, media) = sdp_info("INVITE", offer).ok_or("the offer has RTP media")?;
+        assert_eq!(title, "INV (192.0.2.26)", "method prefix and session c=");
+        assert_eq!(
+            media,
+            ["audio 12220 (PCMU)", "video 12222 (H264)"],
+            "one line per RTP media, its first codec"
+        );
 
-        let answer = b"v=0\r\nc=IN IP4 192.168.1.27\r\n\
+        let answer = b"v=0\r\nc=IN IP4 192.0.2.27\r\n\
                        m=audio 30000 RTP/AVP 8 101\r\nm=video 0 RTP/AVP 96\r\n";
-        let (title, media) = sdp_info("200 OK", answer).expect("media");
-        assert_eq!(title, "200 (192.168.1.27)");
-        assert_eq!(media, ["audio 30000 (PCMA)", "video 0 (dynamic)"]);
+        let (title, media) = sdp_info("200 OK", answer).ok_or("the answer has RTP media")?;
+        assert_eq!(title, "200 (192.0.2.27)", "a response's status code prefix");
+        assert_eq!(
+            media,
+            ["audio 30000 (PCMA)", "video 0 (dynamic)"],
+            "an unmapped dynamic payload says dynamic"
+        );
 
         // A media-level c= is the media's own address (RFC 4566 5.7).
         let own = b"v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 4000 RTP/AVP 18\r\nc=IN IP4 10.0.0.9\r\n";
-        let (title, media) = sdp_info("UPDATE", own).expect("media");
-        assert_eq!(title, "UPD (10.0.0.9)");
-        assert_eq!(media, ["audio 4000 (G729)"]);
+        let (title, media) = sdp_info("UPDATE", own).ok_or("the UPDATE has RTP media")?;
+        assert_eq!(title, "UPD (10.0.0.9)", "the media-level c= wins");
+        assert_eq!(media, ["audio 4000 (G729)"], "static payload 18 is G729");
         // SRTP over DTLS is RTP too; T.38 over udptl alone is no RTP media.
         let webrtc = b"v=0\r\nc=IN IP4 10.0.0.2\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
                        a=rtpmap:111 opus/48000/2\r\n";
         assert_eq!(
-            sdp_info("INVITE", webrtc).expect("media").1,
-            ["audio 9 (opus)"]
+            sdp_info("INVITE", webrtc)
+                .ok_or("the WebRTC offer has RTP media")?
+                .1,
+            ["audio 9 (opus)"],
+            "UDP/TLS/RTP/SAVPF is RTP"
         );
         assert!(
             sdp_info(
                 "INVITE",
-                b"v=0\r\nc=IN IP4 1.2.3.4\r\nm=image 5000 udptl t38\r\n"
+                b"v=0\r\nc=IN IP4 192.0.2.4\r\nm=image 5000 udptl t38\r\n"
             )
-            .is_none()
+            .is_none(),
+            "T.38 over udptl is no RTP media"
         );
-        assert!(sdp_info("INVITE", b"").is_none());
+        assert!(
+            sdp_info("INVITE", b"").is_none(),
+            "an empty body has no SDP"
+        );
+        Ok(())
     }
 
     /// Every key the sngrep-mode bar names reaches a sipnab command.
     #[test]
-    fn every_key_on_the_sngrep_bar_is_answered() {
+    fn every_key_on_the_sngrep_bar_is_answered() -> Result<(), TestError> {
         let km = Keymap::default();
         let views = [
             View::CallList,
@@ -1244,19 +1432,17 @@ mod tests {
             },
         ];
         for (view, alt) in views.iter().flat_map(|v| [(v, false), (v, true)]) {
-            let Some(bar) = fkey_bar(view, alt) else {
-                panic!("no sngrep bar");
-            };
+            let bar = fkey_bar(view, alt).ok_or_else(|| format!("no sngrep bar on {view:?}"))?;
             for (legend, _) in bar {
                 if legend.is_empty() {
                     continue; // sngrep prints no alternative for F9
                 }
                 if legend == "^L" {
                     // sipnab's own Ctrl+L (list) or the sngrep clear (flow).
-                    assert!(!matches!(
-                        translate(view, &km, ctrl('l')),
-                        Translated::Unsupported(_)
-                    ));
+                    assert!(
+                        !matches!(translate(view, &km, ctrl('l')), Translated::Unsupported(_)),
+                        "^L is on the {view:?} bar but has no sipnab command"
+                    );
                     continue;
                 }
                 let code = match legend {
@@ -1274,6 +1460,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// `K` swaps each function key on the bar for the letter that does the
@@ -1291,33 +1478,48 @@ mod tests {
             legends(&View::CallList, true),
             [
                 "q", "h", "Enter", "Space", "s", "/", "P", "x", "^L", "f", "o", "F9", "t"
-            ]
+            ],
+            "call list bar with K: the letters"
         );
         assert_eq!(
             legends(&View::CallList, false),
             [
                 "Esc", "F1", "Enter", "Space", "F2", "F3", "P", "F4", "F5", "F7", "F8", "F9", "F10"
-            ]
+            ],
+            "call list bar: the function keys"
         );
         assert_eq!(
             legends(&flow(), true),
             [
                 "q", "h", "Enter", "Space", "d", "m", "x", "R", "s", "c", "9"
-            ]
+            ],
+            "call flow bar with K: the letters"
         );
-        assert!(fkey_bar(&View::Help, false).is_none());
+        assert!(
+            fkey_bar(&View::Help, false).is_none(),
+            "a view sngrep lacks keeps sipnab's bar"
+        );
         let km = Keymap::default();
         assert_eq!(
             translate(&View::CallList, &km, key(KeyCode::Char('K'))),
-            Translated::Act(SngrepAction::ToggleHints)
+            Translated::Act(SngrepAction::ToggleHints),
+            "K toggles the hints"
         );
     }
 
     #[test]
     fn autoscroll_row_is_sngreps_last() {
-        assert_eq!(autoscroll_row(0, true), None);
-        assert_eq!(autoscroll_row(5, true), Some(4));
-        assert_eq!(autoscroll_row(5, false), Some(0));
+        assert_eq!(autoscroll_row(0, true), None, "no rows, no autoscroll row");
+        assert_eq!(
+            autoscroll_row(5, true),
+            Some(4),
+            "ascending: the newest is the last row"
+        );
+        assert_eq!(
+            autoscroll_row(5, false),
+            Some(0),
+            "descending: the newest is the first row"
+        );
     }
 
     #[test]
@@ -1335,10 +1537,16 @@ mod tests {
             KeyCode::Char('/'),
             KeyCode::Tab,
         ] {
-            assert!(stops_autoscroll(key(c)), "{c:?}");
+            assert!(
+                stops_autoscroll(key(c)),
+                "{c:?} moves the cursor, so it stops autoscroll"
+            );
         }
         for c in ['f', 'b', 'd', 'u', 'a', 'e'] {
-            assert!(stops_autoscroll(ctrl(c)), "Ctrl+{c}");
+            assert!(
+                stops_autoscroll(ctrl(c)),
+                "Ctrl+{c} moves the cursor, so it stops autoscroll"
+            );
         }
         for c in [
             KeyCode::Char('A'),
@@ -1348,9 +1556,12 @@ mod tests {
             KeyCode::Char('z'),
             KeyCode::F(7),
         ] {
-            assert!(!stops_autoscroll(key(c)), "{c:?}");
+            assert!(!stops_autoscroll(key(c)), "{c:?} does not move the cursor");
         }
-        assert!(!stops_autoscroll(ctrl('w')));
+        assert!(
+            !stops_autoscroll(ctrl('w')),
+            "Ctrl+W does not move the cursor"
+        );
     }
 
     #[test]
@@ -1358,46 +1569,66 @@ mod tests {
         let km = Keymap::default();
         assert_eq!(
             translate(&View::CallList, &km, ctrl('w')),
-            Translated::Act(SngrepAction::UncheckAll)
+            Translated::Act(SngrepAction::UncheckAll),
+            "Ctrl+W clears every check mark"
         );
     }
 
     #[test]
     fn column_selector_minus_plus_move_a_column() {
-        assert_eq!(
-            translate_column_select(key(KeyCode::Char('-'))),
-            Translated::Act(SngrepAction::MoveColumn { down: false })
-        );
-        assert_eq!(
-            translate_column_select(key(KeyCode::Char('+'))),
-            Translated::Act(SngrepAction::MoveColumn { down: true })
-        );
-        assert_eq!(
-            translate_column_select(key(KeyCode::Char('q'))),
-            Translated::Key(key(KeyCode::Esc))
-        );
-        assert_eq!(
-            translate_column_select(key(KeyCode::Char(' '))),
-            Translated::Pass
-        );
+        for (c, want) in [
+            (
+                '-',
+                Translated::Act(SngrepAction::MoveColumn { down: false }),
+            ),
+            (
+                '+',
+                Translated::Act(SngrepAction::MoveColumn { down: true }),
+            ),
+            ('q', Translated::Key(key(KeyCode::Esc))),
+            (' ', Translated::Pass),
+        ] {
+            assert_eq!(
+                translate_column_select(key(KeyCode::Char(c))),
+                want,
+                "column selector {c:?}"
+            );
+        }
         let mut st = crate::tui::call_list::CallListState::new();
         st.column_selector_cursor = 2;
         st.move_column(true);
-        assert_eq!(st.column_selector_cursor, 3);
-        assert_eq!(&st.column_order[..4], [0, 1, 3, 2]);
+        assert_eq!(
+            st.column_selector_cursor, 3,
+            "the cursor follows the column down"
+        );
+        assert_eq!(
+            &st.column_order[..4],
+            [0, 1, 3, 2],
+            "+ swaps the column with the next one"
+        );
         st.move_column(false);
         st.move_column(false);
-        assert_eq!(&st.column_order[..4], [0, 2, 1, 3]);
+        assert_eq!(
+            &st.column_order[..4],
+            [0, 2, 1, 3],
+            "- twice moves it up two places"
+        );
         st.column_selector_cursor = 0;
         st.move_column(false);
-        assert_eq!(st.column_order[0], 0);
+        assert_eq!(st.column_order[0], 0, "the first column cannot move up");
         st.column_selector_cursor = 10;
         st.move_column(true);
-        assert_eq!(st.column_selector_cursor, 10);
+        assert_eq!(
+            st.column_selector_cursor, 10,
+            "the last column cannot move down"
+        );
         // Space toggles the column under the cursor, wherever it moved.
         st.column_selector_cursor = 1;
         st.toggle_column_visibility();
-        assert!(!st.visible_columns[2]);
+        assert!(
+            !st.visible_columns[2],
+            "Space hides the column under the cursor, by its own index"
+        );
     }
 
     /// The raw pane takes what the ladder leaves, at least 40 columns; 9 / 0
@@ -1406,9 +1637,17 @@ mod tests {
     #[test]
     fn raw_pane_takes_what_the_ladder_leaves() {
         let three = ladder_need(3, false);
-        assert_eq!(three, 13 + 3 * 28);
-        assert_eq!(ladder_need(3, true), three + 12);
-        assert_eq!(raw_width(200, three, None), 200 - three - 2);
+        assert_eq!(three, 13 + 3 * 28, "13 columns plus 28 per participant");
+        assert_eq!(
+            ladder_need(3, true),
+            three + 12,
+            "a last self-loop needs 12 more"
+        );
+        assert_eq!(
+            raw_width(200, three, None),
+            200 - three - 2,
+            "the pane takes what the ladder leaves"
+        );
         assert_eq!(
             raw_width(120, three, None),
             RAW_MIN_WIDTH,
@@ -1419,11 +1658,15 @@ mod tests {
             60,
             "a width set with 9 / 0 is kept"
         );
-        assert_eq!(step_raw(100, 200, true), Some(102));
-        assert_eq!(step_raw(100, 200, false), Some(98));
-        assert_eq!(step_raw(183, 200, true), Some(185));
+        assert_eq!(step_raw(100, 200, true), Some(102), "9 widens by two");
+        assert_eq!(step_raw(100, 200, false), Some(98), "0 narrows by two");
+        assert_eq!(
+            step_raw(183, 200, true),
+            Some(185),
+            "the last step before the time column"
+        );
         assert_eq!(step_raw(184, 200, true), None, "the time column stays");
-        assert_eq!(step_raw(12, 200, false), Some(10));
+        assert_eq!(step_raw(12, 200, false), Some(10), "down to ten columns");
         assert_eq!(step_raw(11, 200, false), None, "the pane keeps ten columns");
     }
 
@@ -1476,12 +1719,19 @@ mod tests {
         ];
         let has_sdp = |i: usize| i == 0;
         let d = filter_rows(rows.clone(), true, false, has_sdp);
-        assert_eq!(d.len(), 2);
-        assert_eq!(d[0].raw_index, Some(0));
+        assert_eq!(d.len(), 2, "D keeps two of the four rows: {d:?}");
+        assert_eq!(d[0].raw_index, Some(0), "D keeps the message with SDP");
         let m = filter_rows(rows.clone(), false, true, has_sdp);
-        assert_eq!(m.len(), 1);
-        assert!(matches!(m[0].kind, RowKind::RtpStream));
-        assert_eq!(filter_rows(rows.clone(), false, false, has_sdp).len(), 4);
+        assert_eq!(m.len(), 1, "M keeps only the media: {m:?}");
+        assert!(
+            matches!(m[0].kind, RowKind::RtpStream),
+            "M keeps the RTP stream row"
+        );
+        assert_eq!(
+            filter_rows(rows.clone(), false, false, has_sdp).len(),
+            4,
+            "neither filter keeps every row"
+        );
     }
 
     #[test]
@@ -1499,27 +1749,42 @@ mod tests {
         ];
         let rows = vec![row(msg(), Some(0), 2, 1)];
         let (m, r) = compress_participants(parts, rows, |h| format!("<{h}>"));
-        assert_eq!(m.len(), 3);
-        assert_eq!(m[0].addr, "10.0.0.1");
-        assert_eq!(m[2].label, "<2001:db8::1>");
-        assert_eq!((r[0].src_col, r[0].dst_col), (0, 1));
-        assert_eq!(host_of("sbc.example"), "sbc.example");
+        assert_eq!(m.len(), 3, "two ports of one host are one column: {m:?}");
+        assert_eq!(m[0].addr, "10.0.0.1", "the column is the host");
+        assert_eq!(
+            m[2].label, "<2001:db8::1>",
+            "an IPv6 host loses its brackets"
+        );
+        assert_eq!(
+            (r[0].src_col, r[0].dst_col),
+            (0, 1),
+            "the arrow moves to the merged columns"
+        );
+        assert_eq!(
+            host_of("sbc.example"),
+            "sbc.example",
+            "a name without a port"
+        );
         // Two addresses with one alias are one column, as in sngrep.
         let parts = vec![
             p("10.0.206.111:5070"),
-            p("5.149.35.19:15100"),
-            p("128.199.52.218:5060"),
+            p("198.51.100.19:15100"),
+            p("203.0.113.218:5060"),
         ];
         let rows = vec![row(msg(), Some(0), 2, 1)];
         let alias = |h: &str| {
-            if h == "5.149.35.19" {
+            if h == "198.51.100.19" {
                 h.to_string()
             } else {
                 "proxy".to_string()
             }
         };
         let (m, r) = compress_participants(parts, rows, alias);
-        assert_eq!(m.len(), 2);
-        assert_eq!((r[0].src_col, r[0].dst_col), (0, 1));
+        assert_eq!(m.len(), 2, "two hosts with one alias are one column: {m:?}");
+        assert_eq!(
+            (r[0].src_col, r[0].dst_col),
+            (0, 1),
+            "the arrow joins the aliased column"
+        );
     }
 }

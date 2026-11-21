@@ -528,7 +528,7 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         CallFlowAction::CombinedDetailDialog => open_combined_detail(app, true),
         CallFlowAction::ToggleTransactionFilter => toggle_transaction_filter(app),
         CallFlowAction::CycleSdpMode => {
-            app.sdp_display_mode = app.sdp_display_mode.next_in(app.keymap.sngrep);
+            app.sdp_display_mode = app.sdp_display_mode.next_in(app.theme.sngrep);
             app.status_error = Some(app.sdp_display_mode.label());
         }
         CallFlowAction::CycleTimestampMode => {

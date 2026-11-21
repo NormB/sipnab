@@ -1100,6 +1100,9 @@ Multiple diagnostic flags combine with OR.
 **Examples**
 - `sipnab -N -I capture.pcap --no-delta-time` — print absolute times when your config file sets `[display] delta_time = true`
 - `sipnab -N -I capture.pcap --delta-time --no-delta-time` — the last of the pair wins, so times print absolute
+- `sipnab -I capture.pcap --sngrep-mode` — open a capture in the TUI with sngrep's keys, colors and bottom key bar
+- `sudo sipnab -d eth0 --no-sngrep-mode` — sipnab's own keys for one run when your config file sets `[display] sngrep_mode = true`
+- `sipnab -I capture.pcap --no-sngrep-mode --sngrep-mode` — the last of the pair wins, so the TUI opens in sngrep mode
 
 - `sipnab -N -I calls.pcap --lint --no-cli-print` — run the RFC conformance linter over every dialog in a capture and print each finding with the rule identifier and the RFC section it reads from. Informational: it leaves the exit code alone
 - `sipnab -N -I calls.pcap --export-vcon-when "state == 'Failed'" --export-vcon-dir out --redact --redact-keep-prefix 4 --no-cli-print` — hand a vendor every failed call with keyed tokens standing in for the subscriber numbers and the area code intact, so they can still see which route the failures came from

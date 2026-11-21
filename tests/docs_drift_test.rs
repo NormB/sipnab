@@ -6742,7 +6742,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // has no site mirror (+1).
     // 1522 -> 1524 (WC2a): the surfaces table of docs/stability.md and its
     // site mirror (+2).
-    const EXPECTED_TABLES: usize = 1524;
+    // 1524 -> 1532 (sngrep mode, #884): the four sngrep-mode key tables of
+    // docs/keybindings.md and their site mirrors (+8).
+    const EXPECTED_TABLES: usize = 1532;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

@@ -372,7 +372,10 @@ fn highlight_sip_message<'a>(
 
     // sngrep mode draws sngrep's syntax colors; a search keeps its matches.
     if theme.sngrep && search_query.is_empty() {
-        lines.extend(super::sngrep_mode::syntax_lines(raw_text));
+        lines.extend(super::sngrep_mode::tone_lines(
+            theme,
+            super::sngrep_mode::syntax_lines(raw_text),
+        ));
         return lines;
     }
 

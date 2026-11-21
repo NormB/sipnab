@@ -270,7 +270,7 @@ pub struct FormattedMessage {
     pub pdd_note: Option<String>,
     /// Optional extra lines below the arrow (SDP info, RTP markers, etc.).
     pub extra_lines: Vec<(String, Style)>,
-    /// The extra lines are sngrep's media lines: centred between the
+    /// The extra lines are sngrep's media lines: centered between the
     /// arrow's pipes, in the arrow's color (see `LayoutRow`).
     pub extra_centered: bool,
     /// Whether this message is selected (for highlighting).

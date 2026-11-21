@@ -718,10 +718,10 @@ pub fn run_tui_mode(
 
     // Build resolved theme and keymap from config
     let mut theme = crate::tui::Theme::from_config(&config.theme);
-    let mut keymap = crate::tui::Keymap::from_config(&config.keybindings);
+    let keymap = crate::tui::Keymap::from_config(&config.keybindings);
     // sngrep mode: `--sngrep-mode` / `--no-sngrep-mode`, else `[display] sngrep_mode`.
     if cli.sngrep_mode(&config) {
-        crate::tui::enable_sngrep_mode(&mut theme, &mut keymap);
+        crate::tui::enable_sngrep_mode(&mut theme);
     }
     let config_save = crate::config::save_target(
         origin.source.as_deref(),
@@ -749,6 +749,7 @@ pub fn run_tui_mode(
             config_save: crate::tui::ConfigSave(config_save),
             startup_notice: startup_notice(
                 crate::config::config_notice(origin.source.as_deref(), &origin.shadowed),
+                crate::tui::DisplayPrefs::ignored_notice(&config.display, cli.sngrep_mode(&config)),
                 servers.as_ref().and_then(|h| h.mcp_http_addr),
                 cli.mcp_tls_files(&config).0.is_some(),
             ),
@@ -1081,14 +1082,16 @@ fn armed_kinds(armed: &[String]) -> Vec<&'static str> {
         .collect()
 }
 
-/// The status-line notice the session opens with: the config notice, and
-/// where MCP over HTTP is listening when it runs beside the TUI.
+/// The status-line notice the session opens with: the config notice, a
+/// `[display]` key the mode ignores ([`crate::tui::DisplayPrefs::ignored_notice`]),
+/// and where MCP over HTTP is listening when it runs beside the TUI.
 ///
-/// The address is on screen because nothing else in a TUI run says it: the
+/// These are on screen because nothing else in a TUI run says them: the
 /// run logs only errors, and with `--mcp-bind 127.0.0.1:0` the port is the
 /// kernel's choice.
 fn startup_notice(
     config: Option<String>,
+    display: Option<String>,
     mcp_http: Option<std::net::SocketAddr>,
     https: bool,
 ) -> Option<String> {
@@ -1098,7 +1101,7 @@ fn startup_notice(
             if https { "https" } else { "http" }
         )
     });
-    let notices: Vec<String> = config.into_iter().chain(mcp).collect();
+    let notices: Vec<String> = config.into_iter().chain(display).chain(mcp).collect();
     (!notices.is_empty()).then(|| notices.join(" | "))
 }
 
@@ -2249,15 +2252,33 @@ mod tests {
     fn sngrep_mode_defaults_yield_to_the_users_keys() -> Result<(), TestError> {
         use crate::tui::{ColorMode, DisplayPrefs, SdpDisplayMode};
         let sng = DisplayPrefs::resolve(&Config::default().display, true);
-        assert!(!sng.fold && !sng.autoscroll && sng.extended_flow);
-        assert_eq!(sng.sdp_display, SdpDisplayMode::Sngrep);
-        assert_eq!(sng.color_mode, ColorMode::CallId);
+        assert!(
+            !sng.fold && !sng.autoscroll && sng.extended_flow,
+            "sngrep defaults: no fold, no autoscroll, extended flow: {sng:?}"
+        );
+        assert_eq!(
+            sng.sdp_display,
+            SdpDisplayMode::Sngrep,
+            "sngrep's SDP form by default"
+        );
+        assert_eq!(
+            sng.color_mode,
+            ColorMode::CallId,
+            "Call-ID colors by default"
+        );
         let set: Config = toml::from_str(
             "[display]\nfold = true\ncolor_mode = \"method\"\nextended_flow = false\n",
         )?;
         let p = DisplayPrefs::resolve(&set.display, true);
-        assert!(p.fold && !p.extended_flow);
-        assert_eq!(p.color_mode, ColorMode::Method);
+        assert!(
+            p.fold && !p.extended_flow,
+            "the user's fold and extended_flow win: {p:?}"
+        );
+        assert_eq!(
+            p.color_mode,
+            ColorMode::Method,
+            "the user's color_mode wins"
+        );
         assert_eq!(
             p.sdp_display,
             SdpDisplayMode::Sngrep,
@@ -3120,18 +3141,48 @@ mod processor_tests {
     #[test]
     fn the_startup_notice_names_the_mcp_address() -> Result<(), TestError> {
         let addr: std::net::SocketAddr = "127.0.0.1:43929".parse()?;
-        assert_eq!(startup_notice(None, None, false), None);
         assert_eq!(
-            startup_notice(None, Some(addr), false).as_deref(),
+            startup_notice(None, None, None, false),
+            None,
+            "nothing to say, no notice"
+        );
+        assert_eq!(
+            startup_notice(None, None, Some(addr), false).as_deref(),
             Some("MCP over HTTP at http://127.0.0.1:43929/mcp")
         );
         assert_eq!(
-            startup_notice(Some("Reading A.".into()), Some(addr), true).as_deref(),
+            startup_notice(Some("Reading A.".into()), None, Some(addr), true).as_deref(),
             Some("Reading A. | MCP over HTTP at https://127.0.0.1:43929/mcp")
         );
         assert_eq!(
-            startup_notice(Some("Reading A.".into()), None, false).as_deref(),
+            startup_notice(Some("Reading A.".into()), None, None, false).as_deref(),
             Some("Reading A.")
+        );
+        Ok(())
+    }
+
+    /// Success (sngrep mode): a `[display]` key the mode ignores is said on
+    /// the status line, between the config notice and the MCP address; a
+    /// TUI run logs only errors, so its log warning alone is never seen.
+    #[test]
+    fn the_startup_notice_names_an_ignored_display_key() -> Result<(), TestError> {
+        let addr: std::net::SocketAddr = "127.0.0.1:43929".parse()?;
+        let cfg: Config = toml::from_str("[display]\nsdp_display = \"sngrep\"\n")?;
+        let ignored = crate::tui::DisplayPrefs::ignored_notice(&cfg.display, false);
+        let text = ignored
+            .clone()
+            .ok_or("the key is ignored with the mode off")?;
+        assert_eq!(
+            startup_notice(None, ignored.clone(), None, false).as_deref(),
+            Some(text.as_str()),
+            "the notice alone"
+        );
+        assert_eq!(
+            startup_notice(Some("Reading A.".into()), ignored, Some(addr), false),
+            Some(format!(
+                "Reading A. | {text} | MCP over HTTP at http://127.0.0.1:43929/mcp"
+            )),
+            "between the config notice and the MCP address"
         );
         Ok(())
     }

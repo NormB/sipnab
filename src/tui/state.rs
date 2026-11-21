@@ -366,17 +366,26 @@ impl DisplayPrefs {
         }
     }
 
+    /// The notice for a `[display]` key this mode ignores, for the status
+    /// line at start-up: a TUI run logs only errors, so a logged warning
+    /// alone is never seen. `None` when every key is used. The one key it
+    /// can name is `sdp_display = "sngrep"` with sngrep mode off.
+    pub fn ignored_notice(cfg: &crate::config::DisplayConfig, sngrep: bool) -> Option<String> {
+        (!sngrep && cfg.sdp_display.as_deref() == Some("sngrep")).then(|| {
+            "Ignoring [display] sdp_display = \"sngrep\": it needs sngrep mode \
+             (--sngrep-mode or [display] sngrep_mode = true)"
+                .to_string()
+        })
+    }
+
     /// The user's `[display]` keys over the mode's defaults. The config
     /// loader has already refused a spelling `parse_in` does not know in
-    /// sngrep mode; `sdp_display = "sngrep"` with the mode off is ignored
-    /// with a warning.
+    /// sngrep mode; `sdp_display = "sngrep"` with the mode off is ignored,
+    /// logged here and shown on the status line ([`Self::ignored_notice`]).
     pub fn resolve(cfg: &crate::config::DisplayConfig, sngrep: bool) -> Self {
         let d = Self::mode_default(sngrep);
-        if !sngrep && cfg.sdp_display.as_deref() == Some("sngrep") {
-            tracing::warn!(
-                "ignoring [display] sdp_display = \"sngrep\": it needs sngrep mode \
-                 (--sngrep-mode or [display] sngrep_mode = true)"
-            );
+        if let Some(notice) = Self::ignored_notice(cfg, sngrep) {
+            tracing::warn!("{notice}");
         }
         Self {
             fold: cfg.fold.unwrap_or(d.fold),

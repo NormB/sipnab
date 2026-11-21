@@ -343,7 +343,7 @@ pub(in crate::tui) fn render_app(
                 // sngrep mode's `M` with no media drawn leaves the participants and
                 // their lifelines on screen, not the call-gone notice.
                 let prepared = if app.flow.ladder.rows.is_empty()
-                    && !(app.keymap.sngrep
+                    && !(app.theme.sngrep
                         && app.flow.only_media
                         && !app.flow.ladder.participants.is_empty())
                 {

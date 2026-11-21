@@ -26,7 +26,7 @@ AssertWithoutMessage	src/app/relay_poller.rs	6
 AssertWithoutMessage	src/app/relay_reconciler.rs	2
 AssertWithoutMessage	src/app/run_provenance.rs	8
 AssertWithoutMessage	src/app/servers.rs	5
-AssertWithoutMessage	src/app/tui_mode.rs	63
+AssertWithoutMessage	src/app/tui_mode.rs	62
 AssertWithoutMessage	src/app/vcon_audio_fetch.rs	15
 AssertWithoutMessage	src/app/vcon_enrich.rs	18
 AssertWithoutMessage	src/app/vcon_fetch.rs	59

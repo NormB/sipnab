@@ -926,6 +926,100 @@ Related flags:
 See [cli-reference.md](cli-reference.md#name-resolution) and the `[names]`
 section of [config-reference.md](config-reference.md#names).
 
+## sngrep mode
+
+`--sngrep-mode` (or `[display] sngrep_mode = true`) gives the call list, call
+flow, raw message and message compare screens sngrep's keys, colors and
+bottom key bar. Keys these tables do not list work as in sipnab. Under
+`NO_COLOR` the keys, help and key bar are the same and sipnab draws no color.
+See [Use sngrep's keys and colors](tui-walkthrough.md#use-sngreps-keys-and-colors).
+
+### Call list in sngrep mode
+
+| Key | Action |
+|-----|--------|
+| Ctrl+F / Ctrl+B | Page down / up (Ctrl+D / Ctrl+U too) |
+| Ctrl+A / Ctrl+E | First / last call |
+| Enter | Call flow |
+| F4, x | Extended call flow |
+| F6, r, R | Raw messages of the call |
+| F7, f, F | Filter dialog |
+| F3, /, Tab, P | Search |
+| F10, t, T | Column selector; in it `-` and `+` move a column |
+| F8, o, O | Settings |
+| F2, s, S | Save |
+| F5, Ctrl+L | Clear calls |
+| F9 | Clear the calls that do not match the filter |
+| i | Statistics |
+| c / C | Cycle ladder colors / toggle syntax colors |
+| a | Cycle name resolution |
+| z | Reverse sort; `<` `>` change the sort column |
+| M | Sort by last update; again for `#` order (sipnab's `L`) |
+| d | Only the dialogs that are not over; again for all |
+| p, Space | Pause; check a call |
+| A | Autoscroll on or off. Moving the cursor or searching turns it off. It starts off |
+| Ctrl+W | Clear the check mark of every call |
+| K | Letters instead of function keys on the bottom bar |
+| F1, h, H, ? | Help |
+| q, Q, Esc | Quit |
+
+### Call flow in sngrep mode
+
+| Key | Action |
+|-----|--------|
+| Enter | Raw message of the selected arrow |
+| F6, r, R | Raw messages of the whole call |
+| F2, d | SDP form: hidden, summary, full, sngrep (the default: `INV (192.0.2.26)` on the arrow and one `audio 12220 (PCMU)` line per RTP stream) |
+| F3, m | RTP streams in the ladder |
+| F4, x | Extended call flow |
+| F7, f, F | Filter dialog |
+| 9 / 0 | Raw pane two columns wider / narrower |
+| T | Raw pane back to its default width |
+| t | Show or hide the raw pane |
+| D | Only the messages with SDP |
+| M | Only media |
+| s | One column per host |
+| F5, Ctrl+L, F9 | Clear calls (F9: the calls that do not match the filter) |
+| K | Letters instead of function keys on the bottom bar |
+| w | Absolute or delta time |
+| c / C, F8 | Cycle colors / toggle syntax colors |
+| Space | Compare two messages (Ctrl+W resets the choice) |
+| S | Save |
+| q, Q, Esc | Back to the call list |
+
+### Raw message in sngrep mode
+
+| Key | Action |
+|-----|--------|
+| F2, s, S | Save |
+| C, F8 | Toggle syntax colors |
+| F5, Ctrl+L, F9 | Clear calls (F9: the calls that do not match the filter) |
+| q, Q, Esc | Back |
+
+### sipnab keys that move in sngrep mode
+
+sngrep uses these keys for its own commands, so the sipnab command moves.
+
+| Key in sngrep mode | sipnab command | Its key outside the mode |
+|-----|--------|--------|
+| L | RTP streams | `Tab` (call list), `r` (call flow) |
+| w | Cycle timestamps (call list) | `t` |
+| W | Relay statistics | `S` |
+| X | TFPS observe (call list) | `x` |
+| J | RFC conformance (call list), transaction filter (call flow) | `f` |
+| G | Filter summary or full on status line 3 | `F` |
+| Y | SDP timeline (call list), wrap (call flow) | `o`, `w` |
+| U | Open a pcap file (call list) | `O` |
+| E | Security findings (call list) | `a` |
+| y | Call timeline (call list) | `T` |
+| # | Capture health (call list) | `h` |
+| = | Compare two calls (call list) | `c` |
+| Backslash | Clear the view filter and search (call list, call flow) | `F9` |
+| b / B | Mark / clear marks (call flow) | `m` / `M` |
+| g | Combined detail of the transaction (call flow) | `a` |
+| u | Header names form (call flow, raw message) | `h` |
+| Z | Operator note (call flow, raw message) | `C` |
+
 ---
 
 ## TUI views

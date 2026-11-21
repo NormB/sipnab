@@ -249,7 +249,7 @@ Output and TUI display settings.
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
 | `fold` | boolean | `true` | Retransmissions and auth retries fold into one arrow in the call flow (`e` expands one) |
 | `autoscroll` | boolean | `true` | The call list follows new dialogs (`A` toggles it) |
-| `sdp_display` | string | `"none"` | How SDP shows under its arrow: `"none"`, `"summary"`, `"full"`; with `sngrep_mode` on also `"sngrep"` (a title line and one `media port (codec)` line per RTP stream). sipnab refuses any other value, naming the key; `"sngrep"` with the mode off is ignored with a warning |
+| `sdp_display` | string | `"none"` | How SDP shows under its arrow: `"none"`, `"summary"`, `"full"`; with `sngrep_mode` on also `"sngrep"` (a title line and one `media port (codec)` line per RTP stream). sipnab refuses any other value, naming the key; with the mode off sipnab ignores `"sngrep"`, and the TUI's status line says so at start |
 | `color_mode` | string | `"method"` | What colors the call-flow arrows: `"method"`, `"call_id"`, `"cseq"`. sipnab refuses any other value, naming the key |
 | `extended_flow` | boolean | `false` | A call opens as the multi-leg (extended) flow |
 | `sngrep_mode` | boolean | `false` | sngrep's keys and colors in the TUI. `--sngrep-mode` turns it on. `--no-sngrep-mode` forces it off |

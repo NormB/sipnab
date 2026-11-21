@@ -100,7 +100,7 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, mut key: KeyEvent) {
 
     // sngrep mode: on the screens sngrep has, a sngrep key becomes the
     // sipnab key for the same action (or runs it, or says it has none).
-    if app.keymap.sngrep {
+    if app.theme.sngrep {
         use crate::tui::sngrep_mode::{
             Translated, stops_autoscroll, translate, translate_column_select,
         };
@@ -679,7 +679,7 @@ pub(in crate::tui) fn handle_settings_popup_key(app: &mut App, key: KeyEvent) {
                 }
                 Some(SettingsItem::RawPreview) => app.flow.raw_preview = !app.flow.raw_preview,
                 Some(SettingsItem::SdpDisplay) => {
-                    app.sdp_display_mode = app.sdp_display_mode.next_in(app.keymap.sngrep)
+                    app.sdp_display_mode = app.sdp_display_mode.next_in(app.theme.sngrep)
                 }
                 Some(SettingsItem::SyntaxHighlight) => app.syntax_highlight = !app.syntax_highlight,
                 None => {}
@@ -1814,7 +1814,7 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
         }
         WheelTarget::CallList => {
             // sngrep mode: a hand move switches autoscroll off (`A` resumes).
-            if app.keymap.sngrep {
+            if app.theme.sngrep {
                 app.call_list.autoscroll = false;
             }
             if down {
