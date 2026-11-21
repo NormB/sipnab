@@ -332,14 +332,24 @@ VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 
 def cut_commit(repo, version: str):
     """The oldest commit of HEAD whose CHANGELOG.md adds the line
-    `## [version]`, or None. That commit cut the release."""
+    `## [version]`, or None. That commit cut the release.
+
+    In a merge not yet committed (MERGE_HEAD exists, as it does in the merge's
+    pre-commit hook), the history read is that of the commit being made: HEAD
+    and MERGE_HEAD. The index then already holds the release the merge brings,
+    while the release commit is reachable only from MERGE_HEAD (2026-11-21,
+    backlog FLAG-SINCE-MERGE-BEFORE-TAG)."""
     # Read the same by git's basic regular expressions and by Python's: only
     # digits and dots reach here (VERSION), and `[.]` and a bare `]` are
     # literal in both.
     pattern = r"^## \[" + version.replace(".", "[.]") + "]"
     # The oldest commit whose diff touches such a line is the one that adds
     # it: a line is removed only after a commit has added it.
-    revs = git(repo, "log", "--format=%H", "--reverse", "-G", pattern, "HEAD", "--", "CHANGELOG.md").split()
+    tips = ["HEAD"]
+    if subprocess.run(["git", "-C", str(repo), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                      capture_output=True).returncode == 0:
+        tips.append("MERGE_HEAD")
+    revs = git(repo, "log", "--format=%H", "--reverse", "-G", pattern, *tips, "--", "CHANGELOG.md").split()
     return revs[0] if revs else None
 
 

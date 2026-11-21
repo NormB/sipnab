@@ -207,6 +207,70 @@ def test_a_cut_made_only_on_another_branch_is_refused(repo):
         since.flag_since(repo)
 
 
+def merging_the_untagged_release(repo, version="0.2.0", entry=True):
+    """A branch that started before the release, merging main after the
+    release commit and before its tag: what its pre-commit hook sees. The
+    branch's entry goes under a fresh [Unreleased] in the merge's tree."""
+    commit(repo, cli(DEVICE))
+    git(repo, "tag", "v0.1.0")
+    git(repo, "checkout", "-q", "-b", "feature")
+    commit_file(repo, "notes.txt", "feature work\n", message="feature")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, cli(DEVICE, DRY_RUN))
+    cut(repo, version, version)
+    release = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "feature")
+    git(repo, "merge", "-q", "--no-commit", "--no-ff", "main")
+    if entry:
+        write_changelog(repo, "Unreleased", version)
+        git(repo, "add", "CHANGELOG.md")
+    return release
+
+
+def test_a_merge_of_the_untagged_release_reads_its_version(repo):
+    # 2026-11-21: the merge of release 0.5.269 into a branch, before
+    # v0.5.269 was pushed, failed the hook: "no commit of HEAD adds".
+    merging_the_untagged_release(repo)
+    assert since.flag_since(repo) == {"device": "0.1.0", "dry-run": "0.2.0"}, \
+        "in a merge, the release commit the merge brings stands in for the tag"
+
+
+def test_a_merge_names_the_release_commit_it_brings(repo):
+    release = merging_the_untagged_release(repo)
+    assert since.pending_release(repo, ["v0.1.0"]) == ("0.2.0", release)
+
+
+def test_a_merge_of_a_branch_without_the_cut_is_still_refused(repo):
+    commit(repo, cli(DEVICE))
+    git(repo, "tag", "v0.1.0")
+    git(repo, "checkout", "-q", "-b", "other")
+    commit_file(repo, "other.txt", "no release here\n", message="other")
+    git(repo, "checkout", "-q", "main")
+    cut(repo, "Unreleased", "0.2.0")
+    git(repo, "merge", "-q", "--no-commit", "--no-ff", "other")
+    write_changelog(repo, "Unreleased", "0.2.0")
+    with pytest.raises(since.FlagSinceError, match="no commit of HEAD adds"):
+        since.flag_since(repo)
+
+
+def test_a_merge_into_a_branch_that_holds_the_release_reads_its_version(repo):
+    release = release_window(repo)
+    git(repo, "checkout", "-q", "-b", "side", "v0.1.0")
+    commit_file(repo, "side.txt", "side work\n", message="side")
+    git(repo, "checkout", "-q", "main")
+    git(repo, "merge", "-q", "--no-commit", "--no-ff", "side")
+    write_changelog(repo, "Unreleased", "0.2.0")
+    assert since.pending_release(repo, ["v0.1.0"]) == ("0.2.0", release), \
+        "HEAD's own history still counts while a merge is in progress"
+
+
+def test_the_merge_once_committed_reads_the_same(repo):
+    release = merging_the_untagged_release(repo)
+    git(repo, "commit", "-q", "-m", "merge main")
+    assert since.pending_release(repo, ["v0.1.0"]) == ("0.2.0", release)
+    assert since.flag_since(repo) == {"device": "0.1.0", "dry-run": "0.2.0"}
+
+
 def test_the_program_exits_2_and_names_the_heading_it_cannot_find(repo):
     commit(repo, cli(DEVICE))
     git(repo, "tag", "v0.1.0")
