@@ -558,7 +558,7 @@ disjunctive and cannot be widened by adding a member.
 - No cross-source correlation heuristic. Nothing keyed on timing, nothing keyed
   on Call-ID reaching media. The SDP endpoint map is the whole mechanism.
 - No TUI changes. Two reasons, and the second is the stronger one:
-  `capture_mode` ([`src/tui/mod.rs:274`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L274)<!-- "capture_mode: String," -->) is one display string with no room for a
+  `capture_mode` ([`src/tui/mod.rs:275`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L275)<!-- "capture_mode: String," -->) is one display string with no room for a
   second source, and the TUI never joins the capture handle at all — it drops it
   ([`src/app/tui_mode.rs:902`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L902)<!-- "drop(self.handle);" -->), so a capture thread that failed reports nothing.
   With one source that loses one error; with a composite it loses the answer to
@@ -855,7 +855,7 @@ Things this design could not settle from the code alone.
   [section 5.2, "What breaks"](#52-what-breaks) establishes that nothing counts it. Unmeasured, and this page follows the
   repo's standing rule against upgrading a reasoned claim to a measured one.
 - **What should the TUI show for two sources?** `capture_mode`
-  ([`src/tui/mod.rs:274`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L274)<!-- "capture_mode: String," -->) is one string rendered by
+  ([`src/tui/mod.rs:275`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L275)<!-- "capture_mode: String," -->) is one string rendered by
   [`src/tui/render/status.rs:168`](https://github.com/NormB/sipnab/blob/main/src/tui/render/status.rs#L168)<!-- "let is_online = app.capture_mode.starts_with("Online");" -->, which branches on an `Online`/`Offline` prefix.
   Deferred to stage three rather than guessed at here.
 

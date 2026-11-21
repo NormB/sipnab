@@ -101,7 +101,8 @@ pub use theme::*;
 
 /// Turn on sngrep mode: sngrep's keys, layout, help and key bar on the
 /// screens sngrep has, and its colors unless NO_COLOR is set. The mode is
-/// the one flag [`Theme::sngrep`]. See [`sngrep_mode`].
+/// the one flag [`Theme::sngrep`]. See the crate-internal `sngrep_mode`
+/// module.
 pub fn enable_sngrep_mode(theme: &mut Theme) {
     sngrep_mode::apply_theme(theme);
 }
