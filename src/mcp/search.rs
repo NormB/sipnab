@@ -34,10 +34,14 @@ use std::time::Duration;
 use super::errors::{self, Reason};
 use crate::sip::SipMessage;
 use crate::sip::dialog::SipDialog;
-use crate::sip::dsl::{REGEX_SIZE_LIMIT, compile_payload_regex};
+use crate::sip::dsl::{
+    MAX_REGEX_CLASSES, MAX_REGEX_PATTERN_BYTES, REGEX_SIZE_LIMIT, RegexBudget, RegexOverBudget,
+    compile_payload_regex, regex_class_count,
+};
 
-/// The longest `query`, in bytes, that `regex: true` accepts.
-pub(crate) const MAX_REGEX_QUERY_BYTES: usize = 1024;
+/// The longest `query`, in bytes, that `regex: true` accepts: the bytes one
+/// filter expression's regexes may hold together.
+pub(crate) const MAX_REGEX_QUERY_BYTES: usize = MAX_REGEX_PATTERN_BYTES;
 
 /// The longest time one regex search may spend scanning the store.
 pub(crate) const REGEX_SCAN_BUDGET: Duration = Duration::from_secs(5);
@@ -51,6 +55,11 @@ pub(crate) enum Refusal {
     PatternTooLong {
         /// The query's length in bytes.
         bytes: usize,
+    },
+    /// A regex query with more than [`MAX_REGEX_CLASSES`] character classes.
+    PatternTooManyClasses {
+        /// The classes the query holds.
+        classes: usize,
     },
     /// A regex query whose compiled program passes [`REGEX_SIZE_LIMIT`].
     PatternTooBig,
@@ -72,6 +81,7 @@ impl Refusal {
         match self {
             Refusal::EmptyQuery | Refusal::PatternInvalid { .. } => Reason::InvalidValue,
             Refusal::PatternTooLong { .. }
+            | Refusal::PatternTooManyClasses { .. }
             | Refusal::PatternTooBig
             | Refusal::ScanTimeLimit { .. } => Reason::LimitExceeded,
         }
@@ -84,6 +94,10 @@ impl Refusal {
             Refusal::PatternTooLong { bytes } => format!(
                 "query is {bytes} bytes; with regex true a query is at most \
                  {MAX_REGEX_QUERY_BYTES} bytes"
+            ),
+            Refusal::PatternTooManyClasses { classes } => format!(
+                "query has {classes} character classes; with regex true a query has at most \
+                 {MAX_REGEX_CLASSES} character classes (each [, \\p or \\P)"
             ),
             Refusal::PatternTooBig => format!(
                 "query compiles to more than {REGEX_SIZE_LIMIT} bytes; use fewer or smaller \
@@ -120,8 +134,8 @@ pub(crate) enum Matcher {
 /// # Errors
 ///
 /// [`Refusal::EmptyQuery`] for an empty query. With `regex` true also
-/// [`Refusal::PatternTooLong`], [`Refusal::PatternTooBig`] and
-/// [`Refusal::PatternInvalid`].
+/// [`Refusal::PatternTooLong`], [`Refusal::PatternTooManyClasses`],
+/// [`Refusal::PatternTooBig`] and [`Refusal::PatternInvalid`].
 pub(crate) fn search_matcher(query: &str, regex: bool) -> Result<Matcher, Refusal> {
     if query.is_empty() {
         return Err(Refusal::EmptyQuery);
@@ -129,9 +143,21 @@ pub(crate) fn search_matcher(query: &str, regex: bool) -> Result<Matcher, Refusa
     if !regex {
         return Ok(Matcher::Substring(query.to_ascii_lowercase().into_bytes()));
     }
-    // Length first: a pattern over the limit is never handed to the parser.
-    if query.len() > MAX_REGEX_QUERY_BYTES {
-        return Err(Refusal::PatternTooLong { bytes: query.len() });
+    // The filter DSL's regex budget, one pattern's worth: length first, then
+    // the character classes the regex crate would case-fold. A pattern past
+    // either is never handed to the parser.
+    match RegexBudget::new().spend(query) {
+        Ok(()) => {}
+        // A fresh budget always has room for one comparison, so only the
+        // length can refuse here besides the classes.
+        Err(RegexOverBudget::PatternBytes | RegexOverBudget::Comparisons) => {
+            return Err(Refusal::PatternTooLong { bytes: query.len() });
+        }
+        Err(RegexOverBudget::Classes) => {
+            return Err(Refusal::PatternTooManyClasses {
+                classes: regex_class_count(query),
+            });
+        }
     }
     match compile_payload_regex(query) {
         Ok(re) => Ok(Matcher::Regex(re)),
@@ -632,6 +658,60 @@ mod tests {
             r,
             Refusal::PatternTooLong { bytes: 2000 },
             "length is checked first"
+        );
+        Ok(())
+    }
+
+    /// A pattern within the length limit but past the class limit is refused
+    /// with the class figure, as a limit of the server.
+    #[test]
+    fn a_pattern_past_the_class_limit_is_refused() -> Result<(), TestError> {
+        let r = refusal(&"[a-z]".repeat(MAX_REGEX_CLASSES + 1))?;
+        assert_eq!(
+            r,
+            Refusal::PatternTooManyClasses { classes: 17 },
+            "one class past the limit"
+        );
+        assert_eq!(r.reason(), Reason::LimitExceeded, "a ceiling of the server");
+        assert!(
+            r.message()
+                .contains(&format!("at most {MAX_REGEX_CLASSES} character classes")),
+            "the message names the limit: {}",
+            r.message()
+        );
+        Ok(())
+    }
+
+    /// Exactly the class limit is accepted.
+    #[test]
+    fn a_pattern_at_the_class_limit_is_accepted() {
+        let pattern = format!("(?i){}", "[a-z]".repeat(MAX_REGEX_CLASSES));
+        assert!(
+            search_matcher(&pattern, true).is_ok(),
+            "{MAX_REGEX_CLASSES} classes are within the limit"
+        );
+    }
+
+    /// 1 KiB of case-folded classes took about 370 ms to compile in an
+    /// optimized build and seconds in a debug one; it is refused on its text.
+    #[test]
+    fn a_case_folded_class_pattern_is_refused_before_it_compiles() -> Result<(), TestError> {
+        let pattern = format!("(?i){}", "[\\D]".repeat(250));
+        assert!(
+            pattern.len() <= MAX_REGEX_QUERY_BYTES,
+            "within the length limit"
+        );
+        let start = std::time::Instant::now();
+        let r = refusal(&pattern)?;
+        let took = start.elapsed();
+        assert_eq!(
+            r,
+            Refusal::PatternTooManyClasses { classes: 250 },
+            "the class count refuses it"
+        );
+        assert!(
+            took < std::time::Duration::from_millis(250),
+            "refusing it took {took:?}; it must not be compiled"
         );
         Ok(())
     }
