@@ -75,16 +75,40 @@ jobs:
         # third-party actions to read. CodeQL only analyzes; nothing here
         # pushes with it.
         persist-credentials: false
-    # Add any setup steps before running the `github/codeql-action/init` action.
-    # This includes steps like installing compilers or runtimes (`actions/setup-node`
-    # or others). This is typically only required for manual builds.
-    # - name: Setup runtime (example)
-    #   uses: actions/setup-example@v1
+        # The pull request merge commit and its first parent, the base, so
+        # the next step can list what the pull request changes.
+        fetch-depth: 2
+    # A pull request's analysis is diff-informed: it reports changed lines
+    # only, so it cannot show what a new CLI's queries find in unchanged
+    # code. A pull request that changes the CodeQL setup, such as the
+    # bundle below, gets a full analysis instead
+    # (scripts/codeql-full-analysis.py).
+    - name: Turn off diff-informed analysis when the CodeQL setup changes
+      if: github.event_name == 'pull_request'
+      shell: bash
+      run: git diff --name-only HEAD^1 HEAD | python3 scripts/codeql-full-analysis.py >> "$GITHUB_ENV"
+
+    # The CodeQL bundle, named, so a new CLI and its new queries arrive only
+    # through a pull request. Without it the action chose the bundle: on
+    # 2026-11-20 main moved from CLI 2.27.4 to 2.27.5 under this same action
+    # SHA, and the new query rust/unsafe-deserialization opened two alerts on
+    # main in code no pull request had changed. The sha256 is the release's
+    # own codeql-bundle-linux64.tar.zst.checksum.txt, checked on every run.
+    - name: Fetch the CodeQL bundle (pinned, cached)
+      id: codeql-bundle
+      uses: ./.github/actions/pinned-download
+      with:
+        name: codeql-bundle
+        version: 2.27.5
+        sha256: 141e6eb4e99c8498a1258e282e6f7b59c747b4b1a7eabc7cbf7d1aa92792edf0
+        url: https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.5/codeql-bundle-linux64.tar.zst
+        file: codeql-bundle-linux64.tar.zst
 
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
       uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
       with:
+        tools: ${{ steps.codeql-bundle.outputs.path }}
         languages: ${{ matrix.language }}
         build-mode: ${{ matrix.build-mode }}
         # Scopes the noisy rules away from test code. Without it the tab

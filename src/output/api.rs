@@ -55,6 +55,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::output;
+use crate::output::api_body::{BodyRefusal, ClosedBody, ClosedObject, Field, Kind};
 use crate::output::prometheus::{self, PrometheusMetrics};
 use crate::rtp::diagnosis::{
     AsymmetryThresholds, CaptureMedia, MediaContext, diagnose_asymmetry, diagnose_media,
@@ -3851,12 +3852,11 @@ async fn get_lint(
 async fn post_vcon_validate(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    guard(&state, &headers, addr.ip())?;
+    guard(&state, request.headers(), addr.ip())?;
 
-    let bytes = vcon_body(&headers, body)?;
+    let bytes = vcon_body(request).await?;
     // A signed or encrypted container is validated by the unsigned vCon
     // inside, opened by the readers' one step. The shared validator the MCP
     // tool also runs; it needs the vendored schema, which is part of the
@@ -3916,13 +3916,12 @@ async fn post_vcon_validate(
 async fn post_vcon_analyze(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Query(params): Query<VconAnalyzeParams>,
-    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    guard(&state, &headers, addr.ip())?;
+    guard(&state, request.headers(), addr.ip())?;
 
-    let bytes = vcon_body(&headers, body)?;
+    let bytes = vcon_body(request).await?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
     let analysis = crate::output::vcon_analysis::analyze_bytes(&bytes, limit)
         .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -3944,23 +3943,13 @@ pub const VCON_BODY_TYPES: [&str; 4] = [
 /// The body of a vCon route, in any form the readers open: refused with
 /// 413 over the body limit, and with 400 when its `Content-Type` is not one
 /// of [`VCON_BODY_TYPES`] (parameters such as `charset` are ignored).
+///
+/// Called after the route's guard, which is when the body is read
+/// ([`request_body`]).
 #[cfg(feature = "vcon")]
-fn vcon_body(
-    headers: &HeaderMap,
-    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
-) -> Result<axum::body::Bytes, Problem> {
-    let bytes = match body {
-        Ok(bytes) => bytes,
-        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
-            return Err(Problem::new(StatusCode::PAYLOAD_TOO_LARGE));
-        }
-        Err(_) => {
-            return Err(Problem::detailed(
-                StatusCode::BAD_REQUEST,
-                "the body must be a JSON vCon container",
-            ));
-        }
-    };
+async fn vcon_body(request: axum::extract::Request) -> Result<axum::body::Bytes, Problem> {
+    let headers = request.headers().clone();
+    let bytes = request_body(request, "the body must be a JSON vCon container").await?;
     let media_type = headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -4636,16 +4625,31 @@ async fn get_dialog_vcon(
 
 /// The body `POST /v1/persistence` accepts.
 ///
-/// `deny_unknown_fields` so a caller who misspells the key is told, rather
-/// than getting a 200 that moved nothing. The field is required and typed:
-/// serde refuses a string, a number, and a missing key alike, and every one of
-/// those refusals leaves the gate where it was.
-#[derive(Deserialize, utoipa::ToSchema)]
+/// Unknown keys are refused, so a caller who misspells the key is told,
+/// rather than getting a 200 that moved nothing. The field is required and
+/// typed: a string, a number, `null` and a missing key are all refused, and
+/// every one of those refusals leaves the gate where it was.
+// `serde(deny_unknown_fields)` is read by `ToSchema` alone, which writes
+// `additionalProperties: false` into the published schema; the body is read
+// by `crate::output::api_body`, against `FIELDS`.
+#[derive(utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct PersistenceRequest {
     /// What the caller wants the gate to be, narrowed by the command line and
     /// config file.
     enabled: bool,
+}
+
+impl ClosedBody for PersistenceRequest {
+    const FIELDS: &'static [Field] = &[Field::required("enabled", Kind::Bool)];
+
+    fn from_object(object: ClosedObject) -> Result<Self, BodyRefusal> {
+        Ok(Self {
+            enabled: object
+                .bool("enabled")
+                .ok_or(BodyRefusal::Missing("enabled"))?,
+        })
+    }
 }
 
 /// The shape both doors of `/v1/persistence` answer with.
@@ -4718,29 +4722,16 @@ async fn get_persistence(
 async fn set_persistence(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    guard(&state, &headers, addr.ip())?;
-    // The body is extracted fallibly and AFTER the guard, in that order and
-    // for two reasons. Taken infallibly, axum would answer a malformed body
-    // itself, before the guard ran, telling an unauthenticated caller whether
-    // its JSON parsed. And a rejection has to stay a rejection: the dangerous
-    // reading of "I could not understand this request" is `enabled: true`.
-    let raw = json_body(body, None)?;
-    // A JSON object, and nothing else. Extracting straight into the struct
-    // looks equivalent and is not: a derived `Deserialize` also accepts a
-    // SEQUENCE, filling the fields in declaration order, so the body `[true]`
-    // parsed as `enabled: true` and reopened a closed gate. `deny_unknown_
-    // fields` does not catch it -- a sequence has no field names to be
-    // unknown. Nothing but this check stands between a stray array and an
-    // operator's close being undone.
-    if !raw.is_object() {
-        return Err(Problem::new(StatusCode::BAD_REQUEST));
-    }
-    let Ok(req) = serde_json::from_value::<PersistenceRequest>(raw) else {
-        return Err(Problem::new(StatusCode::BAD_REQUEST));
-    };
+    guard(&state, request.headers(), addr.ip())?;
+    // The body is read only now, after the guard, and any refusal stays a
+    // refusal: the dangerous reading of "I could not understand this
+    // request" is `enabled: true`. `json_object` refuses a JSON array, so
+    // `[true]` never reads as `enabled: true`, and a repeated key, so
+    // `{"enabled": false, "enabled": true}` never opens a gate a proxy in
+    // front of sipnab read as closed.
+    let req: PersistenceRequest = json_object(request).await?;
     state.persistence_gate.set(req.enabled);
     Ok(persistence_body(&state.persistence_gate))
 }
@@ -4757,10 +4748,11 @@ async fn set_persistence(
 
 /// The body `POST /v1/tfps/ban` accepts.
 ///
-/// `deny_unknown_fields` for the reason `PersistenceRequest` gives: a caller
-/// who misspells `ttl_secs` is told, rather than getting a ban of the wrong
-/// duration.
-#[derive(Deserialize, utoipa::ToSchema)]
+/// Unknown keys are refused for the reason `PersistenceRequest` gives: a
+/// caller who misspells `ttl_secs` is told, rather than getting a ban of the
+/// wrong duration.
+// `serde(deny_unknown_fields)` is for `ToSchema`, as on `PersistenceRequest`.
+#[derive(utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct TfpsBanRequest {
     /// The source to condemn, an IPv4 address (TFPS's block map is IPv4).
@@ -4772,16 +4764,42 @@ struct TfpsBanRequest {
     ttl_secs: Option<u64>,
 }
 
+impl ClosedBody for TfpsBanRequest {
+    const FIELDS: &'static [Field] = &[
+        Field::required("ip", Kind::String),
+        Field::optional("ttl_secs", Kind::WholeNumber),
+    ];
+
+    fn from_object(mut object: ClosedObject) -> Result<Self, BodyRefusal> {
+        Ok(Self {
+            ip: object.take_string("ip").ok_or(BodyRefusal::Missing("ip"))?,
+            ttl_secs: object.whole_number("ttl_secs"),
+        })
+    }
+}
+
 /// The body `POST /v1/tfps/unban` accepts.
-#[derive(Deserialize, utoipa::ToSchema)]
+// `serde(deny_unknown_fields)` is for `ToSchema`, as on `PersistenceRequest`.
+#[derive(utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct TfpsUnbanRequest {
     /// The source to release.
     ip: String,
 }
 
+impl ClosedBody for TfpsUnbanRequest {
+    const FIELDS: &'static [Field] = &[Field::required("ip", Kind::String)];
+
+    fn from_object(mut object: ClosedObject) -> Result<Self, BodyRefusal> {
+        Ok(Self {
+            ip: object.take_string("ip").ok_or(BodyRefusal::Missing("ip"))?,
+        })
+    }
+}
+
 /// The body `POST /v1/actions/revert` accepts: one action id, or `all`.
-#[derive(Deserialize, utoipa::ToSchema)]
+// `serde(deny_unknown_fields)` is for `ToSchema`, as on `PersistenceRequest`.
+#[derive(utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct ActionsRevertRequest {
     /// The id of the action to back out, as a ban's answer or
@@ -4790,6 +4808,20 @@ struct ActionsRevertRequest {
     /// `true` to back out every ban sipnab placed that is still in force,
     /// newest first.
     all: Option<bool>,
+}
+
+impl ClosedBody for ActionsRevertRequest {
+    const FIELDS: &'static [Field] = &[
+        Field::optional("id", Kind::String),
+        Field::optional("all", Kind::Bool),
+    ];
+
+    fn from_object(mut object: ClosedObject) -> Result<Self, BodyRefusal> {
+        Ok(Self {
+            id: object.take_string("id"),
+            all: object.bool("all"),
+        })
+    }
 }
 
 /// What a revert request asks for, or `400`: exactly one of a non-empty `id`
@@ -4846,19 +4878,61 @@ where
         .map_err(tfps_problem)
 }
 
-/// Read a request body as a JSON OBJECT of type `T`, or answer `400`.
+/// Read a request's body as the JSON object `T`, or the problem that refuses
+/// it. Every route that takes a JSON object reads it here, after its guard.
 ///
-/// The same three steps `set_persistence` spells out inline, for the same
-/// reason: a derived `Deserialize` also reads a SEQUENCE, so the body has to
-/// be extracted as a `Value`, checked to be an object, and only then typed.
-fn object_body<T: serde::de::DeserializeOwned>(
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
-) -> Result<T, Problem> {
-    let raw = json_body(body, None)?;
-    if !raw.is_object() {
-        return Err(Problem::new(StatusCode::BAD_REQUEST));
+/// A `Content-Type` other than JSON is a `400` before the body is read. A
+/// body past [`MAX_REQUEST_BODY_BYTES`] is a `413`. Then
+/// [`crate::output::api_body`] reads it against `T`'s fields, and a body it
+/// refuses is a `400` whose `detail` says why.
+async fn json_object<T: ClosedBody>(request: axum::extract::Request) -> Result<T, Problem> {
+    if !is_json_media_type(request.headers()) {
+        return Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "the body must be JSON, sent with Content-Type application/json",
+        ));
     }
-    serde_json::from_value(raw).map_err(|_| Problem::new(StatusCode::BAD_REQUEST))
+    let bytes = request_body(request, "the request body could not be read").await?;
+    crate::output::api_body::read_body(&bytes)
+        .map_err(|refusal| Problem::detailed(StatusCode::BAD_REQUEST, refusal.to_string()))
+}
+
+/// Whether `Content-Type` names JSON: `application/json`, or an
+/// `application/` type with the `+json` suffix (RFC 6839). Parameters such as
+/// `charset` are ignored. The rule axum's `Json` extractor applies.
+fn is_json_media_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .is_some_and(|t| {
+            t == "application/json"
+                || t.strip_prefix("application/")
+                    .is_some_and(|sub| sub.len() > "+json".len() && sub.ends_with("+json"))
+        })
+}
+
+/// A request's body, read only when this is called: so after the guard of
+/// every route that calls it.
+///
+/// A route that names its body in its signature has it read, and for JSON
+/// parsed, before the handler runs, so before the guard: a caller with no
+/// credential, or over the rate limit, still had the server take and parse up
+/// to [`MAX_REQUEST_BODY_BYTES`]. A body past that limit is a `413`; any other
+/// failure to read one is a `400` carrying `unreadable`.
+async fn request_body(
+    request: axum::extract::Request,
+    unreadable: &'static str,
+) -> Result<axum::body::Bytes, Problem> {
+    use axum::extract::FromRequest as _;
+    match axum::body::Bytes::from_request(request, &()).await {
+        Ok(bytes) => Ok(bytes),
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            Err(Problem::new(StatusCode::PAYLOAD_TOO_LARGE))
+        }
+        Err(_) => Err(Problem::detailed(StatusCode::BAD_REQUEST, unreadable)),
+    }
 }
 
 /// Compile the `filter` and `named` query parameters: a diagnostic alias name
@@ -5004,30 +5078,6 @@ async fn get_filter_validation(
             &state.alias_thresholds,
         ),
     ))
-}
-
-/// A JSON request body, or the problem that refuses it.
-///
-/// One rule for every route that reads a body. Each takes its body fallibly,
-/// so that the guard runs first and a rejection stays a rejection, and that
-/// used to turn the body limit's own 413 into a 400: a client whose JSON was
-/// only too long was told it was malformed. A body past
-/// [`MAX_REQUEST_BODY_BYTES`] is a 413 here, and any other rejection is a 400
-/// carrying `detail` when the route has one.
-fn json_body(
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
-    detail: Option<&str>,
-) -> Result<Value, Problem> {
-    match body {
-        Ok(Json(raw)) => Ok(raw),
-        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
-            Err(Problem::new(StatusCode::PAYLOAD_TOO_LARGE))
-        }
-        Err(_) => Err(match detail {
-            Some(detail) => Problem::detailed(StatusCode::BAD_REQUEST, detail),
-            None => Problem::new(StatusCode::BAD_REQUEST),
-        }),
-    }
 }
 
 /// Parse an address out of a request, refusing anything TFPS cannot hold.
@@ -5178,11 +5228,10 @@ async fn get_tfps_labels(
 async fn post_tfps_ban(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    let caller = action_guard(&state, &headers, addr.ip())?.name;
-    let req: TfpsBanRequest = object_body(body)?;
+    let caller = action_guard(&state, request.headers(), addr.ip())?.name;
+    let req: TfpsBanRequest = json_object(request).await?;
     let ip = tfps_ip(&req.ip)?;
     let ttl = req.ttl_secs;
     run_action(&state, move |service, now_unix, now| {
@@ -5222,11 +5271,10 @@ async fn post_tfps_ban(
 async fn post_tfps_unban(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    let caller = action_guard(&state, &headers, addr.ip())?;
-    let req: TfpsUnbanRequest = object_body(body)?;
+    let caller = action_guard(&state, request.headers(), addr.ip())?;
+    let req: TfpsUnbanRequest = json_object(request).await?;
     let ip = tfps_ip(&req.ip)?;
     run_action(&state, move |service, now_unix, now| {
         service.unban(
@@ -5264,11 +5312,10 @@ async fn post_tfps_unban(
 async fn post_actions_revert(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    let caller = action_guard(&state, &headers, addr.ip())?;
-    let req: ActionsRevertRequest = object_body(body)?;
+    let caller = action_guard(&state, request.headers(), addr.ip())?;
+    let req: ActionsRevertRequest = json_object(request).await?;
     let target = revert_target(req)?;
     run_action(&state, move |service, now_unix, now| {
         service.revert(
@@ -17686,6 +17733,279 @@ mod tests {
                 "body {body:?} was accepted"
             );
             assert!(!gate.writes_permitted(), "body {body:?} moved the gate");
+        }
+        Ok(())
+    }
+
+    /// A key given twice never moves the gate.
+    ///
+    /// [RFC 8259 section 4](https://www.rfc-editor.org/rfc/rfc8259.html#section-4) leaves a repeated name's meaning to each parser.
+    /// Read into a `serde_json::Value`, the last copy won, so a body a proxy
+    /// in front of sipnab reads as "close" opened the gate here.
+    #[tokio::test]
+    async fn a_repeated_key_never_moves_the_gate() -> Result<(), TestError> {
+        for body in [
+            "{\"enabled\":false,\"enabled\":true}",
+            "{\"enabled\":false,\"en\\u0061bled\":true}",
+        ] {
+            let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+            gate.set(false);
+            let app = build_router(make_state_with_gate(&gate));
+
+            let resp = app
+                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY)?)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "body {body:?} was accepted"
+            );
+            assert!(
+                !gate.writes_permitted(),
+                "body {body:?} reopened a closed gate"
+            );
+            let v = json_of(resp).await?;
+            assert_eq!(
+                v.to_string(),
+                "{\"detail\":\"the key `enabled` appears more than once\",\"status\":400,\
+                 \"title\":\"Bad Request\",\"type\":\"https://sipnab.com/problems/bad-request\"}",
+                "the answer docs/rest-api.md shows, body {body:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A body whose Content-Type is not JSON is refused, and told why.
+    #[tokio::test]
+    async fn a_body_that_is_not_labeled_json_is_refused_with_the_reason() -> Result<(), TestError> {
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+        gate.set(false);
+        let app = build_router(make_state_with_gate(&gate));
+        let mut req = test_post_with_key("/v1/persistence", r#"{"enabled":true}"#, GATE_KEY)?;
+        req.headers_mut().insert(
+            "content-type",
+            "text/plain"
+                .parse()
+                .map_err(|e| format!("header value: {e:?}"))?,
+        );
+
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "a text/plain body was read"
+        );
+        assert!(!gate.writes_permitted(), "a text/plain body moved the gate");
+        let v = json_of(resp).await?;
+        assert_eq!(
+            v["detail"], "the body must be JSON, sent with Content-Type application/json",
+            "the refusal names the header"
+        );
+        Ok(())
+    }
+
+    /// A request body that never finishes arriving.
+    struct BodyThatNeverEnds;
+
+    impl futures_core::Stream for BodyThatNeverEnds {
+        type Item = Result<axum::body::Bytes, std::io::Error>;
+
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// The routes that take a request body.
+    fn body_routes() -> Vec<&'static str> {
+        let routes = vec![
+            "/v1/persistence",
+            "/v1/tfps/ban",
+            "/v1/tfps/unban",
+            "/v1/actions/revert",
+        ];
+        #[cfg(feature = "vcon")]
+        let routes = {
+            let mut routes = routes;
+            routes.extend(["/v1/vcon/validate", "/v1/vcon/analyze"]);
+            routes
+        };
+        routes
+    }
+
+    /// Each JSON body's fields are the ones its published schema lists.
+    ///
+    /// The reader takes `FIELDS`; the OpenAPI document is generated from the
+    /// struct. Two lists of one body drift unless something compares them:
+    /// same keys, same required keys, same types, and no other key allowed.
+    #[test]
+    fn each_json_body_reads_the_fields_its_schema_publishes() -> Result<(), TestError> {
+        let doc: Value = serde_json::from_str(&openapi_json())?;
+        let bodies: [(&str, &[Field]); 4] = [
+            ("PersistenceRequest", PersistenceRequest::FIELDS),
+            ("TfpsBanRequest", TfpsBanRequest::FIELDS),
+            ("TfpsUnbanRequest", TfpsUnbanRequest::FIELDS),
+            ("ActionsRevertRequest", ActionsRevertRequest::FIELDS),
+        ];
+        for (name, fields) in bodies {
+            let schema = &doc["components"]["schemas"][name];
+            assert_eq!(
+                schema["additionalProperties"],
+                Value::Bool(false),
+                "{name}: the schema allows no other key"
+            );
+            let props = schema["properties"]
+                .as_object()
+                .ok_or_else(|| format!("{name}: no properties"))?;
+            let mut published: Vec<&str> = props.keys().map(String::as_str).collect();
+            published.sort_unstable();
+            let mut read: Vec<&str> = fields.iter().map(|f| f.name).collect();
+            read.sort_unstable();
+            assert_eq!(published, read, "{name}: keys");
+            let mut required: Vec<&str> = schema["required"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            required.sort_unstable();
+            let mut read_required: Vec<&str> = fields
+                .iter()
+                .filter(|f| f.required)
+                .map(|f| f.name)
+                .collect();
+            read_required.sort_unstable();
+            assert_eq!(required, read_required, "{name}: required keys");
+            for field in fields {
+                let want = match field.kind {
+                    Kind::Bool => "boolean",
+                    Kind::String => "string",
+                    Kind::WholeNumber => "integer",
+                };
+                let ty = &props[field.name]["type"];
+                let names = ty.as_str().map(|s| vec![s]).unwrap_or_else(|| {
+                    ty.as_array()
+                        .map(|a| a.iter().filter_map(Value::as_str).collect())
+                        .unwrap_or_default()
+                });
+                assert!(
+                    names.contains(&want),
+                    "{name}.{}: published type {ty} lacks {want}",
+                    field.name
+                );
+                assert_eq!(
+                    names.contains(&"null"),
+                    !field.required,
+                    "{name}.{}: null is allowed exactly when the key is optional",
+                    field.name
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// A ban body that names the address twice is refused before TFPS is asked.
+    #[tokio::test]
+    async fn a_ban_that_names_its_address_twice_is_refused() -> Result<(), TestError> {
+        // No TFPS here: a body that reached the peer would answer `502`.
+        let empty = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let app = build_router(state_without_tfps(&empty)?);
+        let resp = app
+            .oneshot(test_post_with_key(
+                "/v1/tfps/ban",
+                r#"{"ip":"192.0.2.1","ip":"192.0.2.2"}"#,
+                &tfps_action_token(),
+            )?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "a repeated ip was accepted"
+        );
+        let v = json_of(resp).await?;
+        assert_eq!(
+            v["detail"], "the key `ip` appears more than once",
+            "the refusal names the repeated key"
+        );
+        Ok(())
+    }
+
+    /// The `+json` suffix and a `charset` parameter still name JSON.
+    #[tokio::test]
+    async fn a_json_suffix_and_a_charset_still_name_json() -> Result<(), TestError> {
+        for content_type in [
+            "application/json; charset=utf-8",
+            "Application/JSON",
+            "application/merge-patch+json",
+        ] {
+            let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+            gate.set(false);
+            let app = build_router(make_state_with_gate(&gate));
+            let mut req = test_post_with_key("/v1/persistence", r#"{"enabled":true}"#, GATE_KEY)?;
+            req.headers_mut().insert(
+                "content-type",
+                content_type
+                    .parse()
+                    .map_err(|e| format!("header value: {e:?}"))?,
+            );
+            let resp = app
+                .oneshot(req)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "Content-Type {content_type} was refused"
+            );
+            assert!(
+                gate.writes_permitted(),
+                "Content-Type {content_type}: the gate did not open"
+            );
+        }
+        Ok(())
+    }
+
+    /// The guard answers before a body is read.
+    ///
+    /// A route that extracts its body in its signature has it read, and for
+    /// JSON parsed, before the handler runs, so before the guard: a caller
+    /// without a credential, or over the rate limit, still had the server
+    /// take and parse up to 1 MiB. A body that never ends shows the order: a
+    /// guard that runs first answers `401` at once, a route that reads first
+    /// waits for the body until the 30 s request timeout.
+    #[tokio::test]
+    async fn the_guard_answers_before_any_body_is_read() -> Result<(), TestError> {
+        for uri in body_routes() {
+            let app = build_router(make_state_with_key(GATE_KEY));
+            let mut req = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from_stream(BodyThatNeverEnds))
+                .map_err(|e| format!("build request: {e:?}"))?;
+            req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+                IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                12345,
+            )));
+
+            let resp = tokio::time::timeout(Duration::from_secs(10), app.oneshot(req))
+                .await
+                .map_err(|_| {
+                    format!(
+                        "{uri}: no answer in 10 s; the route waited for the body before the guard"
+                    )
+                })?
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "{uri}: a caller without a credential is refused first"
+            );
         }
         Ok(())
     }

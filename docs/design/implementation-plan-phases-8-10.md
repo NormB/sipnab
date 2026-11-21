@@ -1671,7 +1671,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | MCP tool | Wraps |
 |---|---|
-| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1825`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1825)<!-- "pub fn iter(&self) -> impl Iterator<Item = &SipDialog> {" -->) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:1156`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1156)<!-- "/// `true` when the dialog" -->) + `expand_alias` ([`src/sip/dsl.rs:780`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L780)<!-- "pub fn expand_alias(alias:" -->) |
+| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1825`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1825)<!-- "pub fn iter(&self) -> impl Iterator<Item = &SipDialog> {" -->) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:1278`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1278)<!-- "/// `true` when the dialog" -->) + `expand_alias` ([`src/sip/dsl.rs:899`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L899)<!-- "pub fn expand_alias(alias:" -->) |
 | `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1790`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1790)<!-- "pub fn get(&self," -->) + iterate `dialog.messages` + `output::json::message_to_json` |
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:55`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L55)<!-- "pub fn generate_call_report(" -->) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:757`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L757)<!-- "pub fn message_to_json(msg: &SipMessage) -> String {" -->) |
@@ -1682,17 +1682,17 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5896`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5896)<!-- "async fn get_stats(" -->) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5943`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5943)<!-- "async fn get_stats(" -->) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1248`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1248)<!-- "pub fn parse_bind_addr(addr:" -->) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1249`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1249)<!-- "pub fn parse_bind_addr(addr:" -->) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:288`](https://github.com/NormB/sipnab/blob/4eadcc9d8d9a2a8b6db252ec3d9a3a8008f0e15f/src/output/api.rs#L288), `:309`) |
-| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:586`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L586)<!-- "pub struct RateLimiter {" -->) |
+| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:587`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L587)<!-- "pub struct RateLimiter {" -->) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |
-| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:1091`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1091)<!-- "pub fn build_router(state:" -->) with new routes; reuse the existing `guard()` middleware |
+| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:1092`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1092)<!-- "pub fn build_router(state:" -->) with new routes; reuse the existing `guard()` middleware |
 
 | Phase 8.4 sink | Wraps |
 |---|---|
@@ -1737,7 +1737,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |
 | `one_sided_silence` | New analysis on decoded PCM samples from `audio_export`; energy threshold computation |
 | All six tags | Extend existing `MediaDiagnosis` struct in [`src/rtp/diagnosis.rs:239`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs#L239)<!-- "pub struct MediaDiagnosis {" --> (additive — backwards compatible JSON) |
-| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:780`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L780)<!-- "pub fn expand_alias(alias:" --> |
+| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:899`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L899)<!-- "pub fn expand_alias(alias:" --> |
 | TUI badges | Extend existing badge column in [`src/tui/call_list.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_list.rs) |
 | MCP `find_problems` integration | No code change — it consumes `expand_alias` already (Phase 8.3) |
 

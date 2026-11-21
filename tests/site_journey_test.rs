@@ -6958,7 +6958,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `scripts/check-dco.py` in its comment and in its command (+2).
     // 337 -> 338 (CLA retired): the `dco` job's comment in pr-text.yml names
     // `tests/branch_protection_drift_test.rs`.
-    const EXPECTED_REFERENCES: usize = 338;
+    // 338 -> 340 (CodeQL bundle pinned): codeql.yml names
+    // `scripts/codeql-full-analysis.py` in its comment and in its command
+    // (+2). Measurement: the scan read 340 with the change staged.
+    const EXPECTED_REFERENCES: usize = 340;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

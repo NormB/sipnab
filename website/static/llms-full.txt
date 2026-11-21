@@ -7614,6 +7614,27 @@ A body over the limit, here 1.1 MB sent to `POST /v1/persistence`, answers:
 
 A body under the limit that does not parse is a `400` instead.
 
+These routes read the body only after the rate limit and the credential
+check: a caller without a valid credential gets `401`, and a caller over the
+rate limit gets `503`, before sipnab reads any of its body.
+
+The first four routes take one flat JSON object, with
+`Content-Type: application/json`. Each of these is a `400`, and its `detail`
+says which rule the body broke:
+
+- a body that is not one JSON object, such as a JSON array,
+- a key the route does not take,
+- a key given twice, such as `{"enabled": false, "enabled": true}`,
+- an object or an array as a value,
+- a value of the wrong type, or `null` for a required key,
+- text after the object.
+
+For example, a repeated key sent to `POST /v1/persistence` answers:
+
+```json
+{"detail":"the key `enabled` appears more than once","status":400,"title":"Bad Request","type":"https://sipnab.com/problems/bad-request"}
+```
+
 Requests are additionally rate-limited to 100 per second per source IP
 (`--api-rate-limit-per-peer`, `0` for no limit). Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
@@ -13345,9 +13366,10 @@ What to know when you write a pattern:
   line end.
 - **The pattern sees the bytes of the message,** the bytes `payload =~` scans
   in a [filter expression](filter-dsl.md).
-- **Three limits bound a pattern:** it is at most 1024 bytes long, it compiles
-  to at most 1000000 bytes, and one call scans for at most 5 s. The syntax has
-  no look-around and no back references.
+- **Four limits bound a pattern:** it is at most 1024 bytes long, it holds at
+  most 16 character classes (each `[`, `\p` or `\P`), it compiles to at most
+  1000000 bytes, and one call scans for at most 5 s. The syntax has no
+  look-around and no back references.
 
 ### Check that the regex search worked
 
@@ -34173,6 +34195,9 @@ takes a filter.
 | Parenthesis nesting | 50 levels | `expression exceeds maximum nesting depth of 50` |
 | `header.<name>` name length | 256 bytes | `header name longer than 256 bytes` |
 | Regex pattern size | 1,000,000 bytes | `the regex does not compile or is larger than 1000000 bytes` |
+| Regex comparisons | 8 per expression | `too many regexes: one expression holds at most 8 regex comparisons (=~)` |
+| Regex text | 1024 bytes per expression | `regex too long: the regexes of one expression hold at most 1024 bytes together` |
+| Regex character classes | 16 per expression | `too many regex classes: the regexes of one expression hold at most 16 character classes (each [, \p or \P) together` |
 | Empty expression | not allowed | `filter expression is empty` |
 
 Each comparison, `AND`, `OR` and `NOT` counts toward the node limit. A chain
@@ -34181,6 +34206,16 @@ filter](#named-filters) expands in place, so its nodes count too. To stay under
 the limit, replace a chain of `OR` comparisons on one field with one regex,
 such as `from.user =~ '^(1001|1002|1003)$'`, or split the question across
 several runs.
+
+The three regex limits count all `=~` values of one expression together,
+named filters included, and sipnab checks them on the pattern text before it
+compiles any regex. A character class is each `[` and each `\p` or `\P`. An
+escaped `\[` is a literal and does not count. The limits exist because the
+regex engine compiles a class under `(?i)` by case-folding every character it
+covers: 1 KiB of `(?i)[\D]` takes about 0.4 s of CPU to compile, and sipnab
+compiles every regex of a filter when it reads the filter. To stay under the limits, join
+alternatives into one regex, write a literal in place of a one-character
+class (`a` for `[a]`), or use `\d` and `\w`, which do not count.
 
 Errors that point into the expression print its text with a caret under the
 position, a 0-based character column:
@@ -46807,12 +46842,13 @@ is the how-to.
 - **The page is the same.** `limit`, `cursor`, `max_response_bytes`,
   `total_matched` and the order of the hits do not change.
 
-Three limits bound a pattern. Each refusal is `invalid_params` (-32602) with
+Four limits bound a pattern. Each refusal is `invalid_params` (-32602) with
 `data.param` `query`:
 
 | Limit | Value | Message | `data.reason` |
 |---|---|---|---|
 | Pattern length | 1024 bytes | `query is <n> bytes; with regex true a query is at most 1024 bytes` | `limit_exceeded` |
+| Character classes (each `[`, `\p` or `\P`) | 16 | `query has <n> character classes; with regex true a query has at most 16 character classes (each [, \p or \P)` | `limit_exceeded` |
 | Compiled size | 1000000 bytes | `query compiles to more than 1000000 bytes; use fewer or smaller repetitions` | `limit_exceeded` |
 | Scan time for one call | 5 s | `the regex search passed its 5 s limit after <n> messages; use a simpler pattern` | `limit_exceeded` |
 

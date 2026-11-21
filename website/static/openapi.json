@@ -4375,7 +4375,7 @@
       },
       "PersistenceRequest": {
         "additionalProperties": false,
-        "description": "The body `POST /v1/persistence` accepts.\n\n`deny_unknown_fields` so a caller who misspells the key is told, rather\nthan getting a 200 that moved nothing. The field is required and typed:\nserde refuses a string, a number, and a missing key alike, and every one of\nthose refusals leaves the gate where it was.",
+        "description": "The body `POST /v1/persistence` accepts.\n\nUnknown keys are refused, so a caller who misspells the key is told,\nrather than getting a 200 that moved nothing. The field is required and\ntyped: a string, a number, `null` and a missing key are all refused, and\nevery one of those refusals leaves the gate where it was.",
         "properties": {
           "enabled": {
             "description": "What the caller wants the gate to be, narrowed by the command line and\nconfig file.",
@@ -7272,7 +7272,7 @@
       },
       "TfpsBanRequest": {
         "additionalProperties": false,
-        "description": "The body `POST /v1/tfps/ban` accepts.\n\n`deny_unknown_fields` for the reason `PersistenceRequest` gives: a caller\nwho misspells `ttl_secs` is told, rather than getting a ban of the wrong\nduration.",
+        "description": "The body `POST /v1/tfps/ban` accepts.\n\nUnknown keys are refused for the reason `PersistenceRequest` gives: a\ncaller who misspells `ttl_secs` is told, rather than getting a ban of the\nwrong duration.",
         "properties": {
           "ip": {
             "description": "The source to condemn, an IPv4 address (TFPS's block map is IPv4).",

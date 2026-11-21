@@ -49,6 +49,8 @@
 pub mod analysis_report;
 #[cfg(feature = "api")]
 pub mod api;
+#[cfg(feature = "api")]
+pub(crate) mod api_body;
 pub mod call_report;
 pub mod cli_print;
 pub mod dialog_report;

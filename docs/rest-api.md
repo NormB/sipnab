@@ -548,6 +548,27 @@ A body over the limit, here 1.1 MB sent to `POST /v1/persistence`, answers:
 
 A body under the limit that does not parse is a `400` instead.
 
+These routes read the body only after the rate limit and the credential
+check: a caller without a valid credential gets `401`, and a caller over the
+rate limit gets `503`, before sipnab reads any of its body.
+
+The first four routes take one flat JSON object, with
+`Content-Type: application/json`. Each of these is a `400`, and its `detail`
+says which rule the body broke:
+
+- a body that is not one JSON object, such as a JSON array,
+- a key the route does not take,
+- a key given twice, such as `{"enabled": false, "enabled": true}`,
+- an object or an array as a value,
+- a value of the wrong type, or `null` for a required key,
+- text after the object.
+
+For example, a repeated key sent to `POST /v1/persistence` answers:
+
+```json
+{"detail":"the key `enabled` appears more than once","status":400,"title":"Bad Request","type":"https://sipnab.com/problems/bad-request"}
+```
+
 Requests are additionally rate-limited to 100 per second per source IP
 (`--api-rate-limit-per-peer`, `0` for no limit). Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
