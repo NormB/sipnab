@@ -21515,7 +21515,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--no-rtp` | -- | off | 0.3.0 | Disable RTP capture and analysis. Config: `[capture] no_rtp` |
 | `--rtp` | -- | off | 0.5.204 | Capture and analyze RTP even when `[capture] no_rtp = true`. The last of `--no-rtp` / `--rtp` typed wins. Config: `[capture] no_rtp` |
 | `-p`, `--no-promisc` | -- | off | 0.5.8 | Do not put the interface into promiscuous mode. Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous. Config: `[capture] promisc` |
-| `--drop-method` | `<METHOD>` | -- | Unreleased | Drop at ingest the SIP dialogs STARTED by this method (repeatable or a comma list; any method, case-insensitive). Decided once per dialog (Call-ID) on its starting request: a refused dialog opens no dialog, takes no dialog number and is never kept in memory; all its messages and replies count only in "Dropped by method" (TUI status line 1, capture report). An accepted dialog keeps EVERY message, whatever its method (ACK, BYE, re-INVITE or an in-dialog OPTIONS, for example). sipnab decides a message whose dialog start it never saw by the message's own method (a reply by its CSeq method). Unlike `--filter`, which only hides. Live capture, HEP and `-I` files alike. sipnab refuses at startup a name that is not one of the SIP methods it knows (INVITE, ACK, BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO, REFER, MESSAGE, UPDATE), so no flag can name an extension method such as `KDMQ`. sipnab remembers the most recent 65,536 refused dialogs and decides a later message of an older one again by its own method. With `--cores N` the workers keep every message and sipnab decides when their results merge, in read order, so the result equals `--cores 1`. Config: `[capture] drop_methods` |
+| `--drop-method` | `<METHOD>` | -- | Unreleased | Drop at ingest the SIP dialogs STARTED by this method (repeatable or a comma list; any method, case-insensitive). Decided once per dialog (Call-ID) on its starting request: a refused dialog opens no dialog, takes no dialog number and is never kept in memory; all its messages and replies count only in "Dropped by method" (TUI status line 1, capture report). An accepted dialog keeps EVERY message, whatever its method (ACK, BYE, re-INVITE or an in-dialog OPTIONS, for example). sipnab decides a message whose dialog start it never saw by the message's own method (a reply by its CSeq method). Unlike `--filter`, which only hides. Live capture, HEP and `-I` files alike. sipnab refuses at startup a name that is not one of the SIP methods it knows (INVITE, ACK, BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO, REFER, MESSAGE, UPDATE) or one of the extension methods it accepts (KDMQ, the Kamailio DMQ replication method). sipnab remembers the most recent 65,536 refused dialogs and decides a later message of an older one again by its own method. With `--cores N` the workers keep every message and sipnab decides when their results merge, in read order, so the result equals `--cores 1`. Config: `[capture] drop_methods` |
 | `--only-method` | `<METHOD>` | -- | Unreleased | Keep at ingest ONLY the SIP dialogs started by this method (repeatable or a comma list; case-insensitive), decided as `--drop-method` decides: with `--only-method INVITE` a call keeps every message (ACK, BYE, CANCEL, re-INVITE, in-dialog OPTIONS and any other in-dialog request, and the replies) and sipnab drops every other dialog whole. With both flags sipnab keeps a dialog only when its starting method is in `--only-method` AND not in `--drop-method`. Method names, the memory of refused dialogs and `--cores N` behave as for `--drop-method`. Config: `[capture] only_methods` |
 | `--bpf-file` | `<FILE>` | -- | 0.3.0 | Read the BPF capture filter from a file. It takes precedence over the positional filter and replaces `[capture] bpf_filter`, and like them it applies to `-I` capture files as well as live capture. Config: `[capture] bpf_filter` |
 | `--capture-tunnels` | `[<PORTS>]` | off | 0.5.80 | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default: it takes every packet on those ports, which on a mobile core is the entire user plane, because a BPF filter cannot reach the inner port behind a GTP-U extension-header chain. Ignored when you supply your own filter |
@@ -21686,6 +21686,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sipnab -N -I capture.pcap --rtp --report` — analyze the media too when your config file sets `[capture] no_rtp = true`
 - `sipnab -N -I capture.pcap --no-rtp --rtp --report` — the last of the pair wins, so this run analyzes RTP
 - `sudo sipnab -d eth0 --drop-method OPTIONS` — watch a trunk without its OPTIONS keepalives: those dialogs take no memory and no number
+- `sudo sipnab -d eth0 --drop-method KDMQ` — watch a Kamailio cluster node without the DMQ replication requests its peers exchange
 - `sipnab -N -I capture.pcap --drop-method OPTIONS,REGISTER --report` — report on a file with keepalives and registrations left out; the capture analysis counts them under `dropped_by_method`
 - `sipnab -N -I capture.pcap --only-method INVITE --report` — report on the calls only; each call keeps its ACK, BYE and in-dialog requests
 - `sipnab -N -I capture.pcap --only-method INVITE,SUBSCRIBE --drop-method SUBSCRIBE --json-dialogs` — both flags: sipnab keeps a dialog when its method is in `--only-method` and not in `--drop-method`, so only the calls remain
@@ -25529,7 +25530,7 @@ The `[capture] node_name` key holds an empty string. `node_name` is the name thi
 
 ### `[capture] {key} names an unknown SIP method {bad:?}; use one of {}`
 
-`[capture] drop_methods` or `only_methods` lists a name that is not a SIP method sipnab knows. `{key}` is the key, `{bad:?}` the first unknown name, and `{}` the list of known methods. A misspelled name in `only_methods` would otherwise drop every dialog, so sipnab refuses it. The printed line starts with `invalid config value: `.
+`[capture] drop_methods` or `only_methods` lists a name that is not a SIP method sipnab knows. `{key}` is the key, `{bad:?}` the first unknown name, and `{}` the list of accepted methods: the standard ones, then the extension method KDMQ. A misspelled name in `only_methods` would otherwise drop every dialog, so sipnab refuses it. The printed line starts with `invalid config value: `.
 
 **What to do:** Correct the spelling. Case does not matter. `--drop-method` and `--only-method` refuse the same names.
 
@@ -25537,9 +25538,9 @@ The `[capture] node_name` key holds an empty string. `node_name` is the name thi
 
 ### `unknown SIP method '{s}'; use one of {}`
 
-`--drop-method` or `--only-method` names a method that is not a SIP method sipnab knows. `{s}` is the name as typed and `{}` the list of known methods. The command-line parser prints it after `invalid value '{s}' for '--drop-method <METHOD>'` (or `--only-method`). In a comma list, one unknown name refuses the whole flag.
+`--drop-method` or `--only-method` names a method that is not a SIP method sipnab knows. `{s}` is the name as typed and `{}` the list of accepted methods: the standard ones, then the extension method KDMQ. The command-line parser prints it after `invalid value '{s}' for '--drop-method <METHOD>'` (or `--only-method`). In a comma list, one unknown name refuses the whole flag.
 
-**What to do:** Correct the spelling. Case does not matter. The flags take no extension method outside the list.
+**What to do:** Correct the spelling. Case does not matter. The flags take no other extension method than the ones the list names.
 
 **Exit code:** 2.
 
@@ -36859,8 +36860,8 @@ Packet capture defaults.
 | `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` turns it on. `--rtp` forces it off |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
 | `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does: each message takes the addresses and the time the HEP packet carries, or the time sipnab captured the wrapper when the HEP packet carries none. For a proxy that mirrors HEP to a loopback port that sipnab sniffs (`device = "lo"`), so that several readers can see the same copies. Keep a receiver bound to that port: with no process bound to it, some senders lose messages, as the section below this table describes. `--no-hep-parse` turns it off for one run. Feature: `hep` |
-| `drop_methods` | array of strings | `[]` | SIP methods whose dialogs sipnab drops at ingest. sipnab decides once per dialog, on its starting request: a refused dialog opens no dialog, takes no number, and its messages count only as "Dropped by method"; an accepted dialog keeps every message, whatever its method. Case-insensitive. sipnab refuses a name that is not a SIP method it knows. `--drop-method` adds to it |
-| `only_methods` | array of strings | `[]` | When not empty, sipnab keeps at ingest only the dialogs STARTED by these methods (with every message of theirs) and drops the rest as `drop_methods` drops. Kept = in `only_methods` AND not in `drop_methods`. `--only-method` adds to it |
+| `drop_methods` | array of strings | `[]` | SIP methods whose dialogs sipnab drops at ingest. sipnab decides once per dialog, on its starting request: a refused dialog opens no dialog, takes no number, and its messages count only as "Dropped by method"; an accepted dialog keeps every message, whatever its method. Case-insensitive. sipnab accepts the standard SIP methods and the extension method `KDMQ` (Kamailio DMQ replication), and refuses another name. `--drop-method` adds to it |
+| `only_methods` | array of strings | `[]` | When not empty, sipnab keeps at ingest only the dialogs STARTED by these methods (with every message of theirs) and drops the rest as `drop_methods` drops. Kept = in `only_methods` AND not in `drop_methods`. Names as for `drop_methods`. `--only-method` adds to it |
 | `bpf_filter` | string | -- | Capture (BPF) filter, as the trailing positional filter on the command line takes, handed to libpcap as typed. Not the display filter, which is `[filter] expression`. While it holds a filter, sipnab generates none from `portrange`. The trailing positional filter (`<BPF_FILTER>`) or `--bpf-file` replaces it. It applies to capture files too, and a run that reads a file through it says so on stderr |
 
 ```toml
@@ -56851,7 +56852,8 @@ dialog number.
 - What you need: nothing on another system; the flags act on what sipnab
   reads. Names are the SIP methods sipnab knows, in any case: INVITE, ACK,
   BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO,
-  REFER, MESSAGE, UPDATE.
+  REFER, MESSAGE, UPDATE, and the extension method KDMQ (Kamailio's DMQ
+  replication between cluster nodes).
 - Steps: name the methods on the command line, or in `[capture]` of the
   configuration file. On a live capture, drop the keepalives and
   registrations:
@@ -56880,8 +56882,15 @@ drop_methods = ["OPTIONS"]
 - Check it: TUI status line 1 shows `Dropped by method: N`, and the capture
   analysis (`--json-analyze`) holds a `dropped_by_method` finding with the
   same count.
+- On a Kamailio cluster node, leave out the DMQ replication between the
+  nodes:
+
+```sh
+sipnab -d eth0 --drop-method KDMQ
+```
+
 - When sipnab refuses to start with `unknown SIP method`, correct the name.
-  The flags take no extension method outside the list.
+  The flags take no other extension method than the ones the list names.
 - When a call you expect is missing under `--only-method INVITE`, check that
   the capture holds its INVITE: sipnab decides a message whose dialog start
   it never saw by the message's own method.

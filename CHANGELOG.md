@@ -20,7 +20,7 @@ entry that carries them.
   - Docs: [Compare the REST API of two releases](docs/stability.md#compare-the-rest-api-of-two-releases)
 - **`--drop-method` and `--only-method` drop whole SIP dialogs by their starting method.**
   - Effect: A dropped dialog is never stored; status line 1 and the capture report count it under its own finding.
-  - Limit: sipnab accepts only the 14 SIP methods it knows and refuses another name at startup.
+  - Limit: sipnab accepts the 14 standard SIP methods and Kamailio's `KDMQ`, and refuses another name at startup.
   - Docs: [Drop whole dialogs by method](docs/tuning-capture.md#drop-whole-dialogs-by-method)
 - **`d` in the call list shows only the dialogs that are not over.**
   - Effect: A REGISTER with an unanswered challenge or an expired registration counts as over.

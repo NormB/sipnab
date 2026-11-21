@@ -748,7 +748,7 @@ fn parse_method_name(s: &str) -> Result<String, String> {
     } else {
         Err(format!(
             "unknown SIP method '{s}'; use one of {}",
-            crate::sip::method::KNOWN_METHOD_NAMES
+            crate::sip::method::accepted_method_names()
         ))
     }
 }
@@ -812,8 +812,9 @@ pub struct CaptureArgs {
     pub input: Vec<String>,
 
     /// Drop SIP dialogs started by this method at ingest (repeatable, or a
-    /// comma list; a SIP method sipnab knows, case-insensitive; another name
-    /// is refused at startup). The decision is made ONCE
+    /// comma list; a standard SIP method or the extension method KDMQ,
+    /// case-insensitive; another name is refused at startup). The decision
+    /// is made ONCE
     /// per dialog (Call-ID), on the request that starts it: a dialog started
     /// by a listed method opens no dialog, takes no dialog number and every
     /// message of it (requests and replies) only counts in "dropped by
@@ -825,7 +826,8 @@ pub struct CaptureArgs {
     /// dropped message is never kept in memory. Live capture, HEP and `-I`
     /// files alike. The most recent 65,536 refused dialogs are remembered;
     /// with `--cores N` the decision is made at the merge, as `--cores 1`
-    /// makes it. Example: `--drop-method OPTIONS`.
+    /// makes it. Example: `--drop-method OPTIONS`, or `--drop-method KDMQ`
+    /// on a Kamailio cluster node.
     #[arg(
         help_heading = "Capture",
         long = "drop-method",
@@ -837,7 +839,7 @@ pub struct CaptureArgs {
     pub drop_method: Vec<String>,
 
     /// Keep at ingest ONLY the SIP dialogs started by this method
-    /// (repeatable, or a comma list; a known SIP method, case-insensitive),
+    /// (repeatable, or a comma list; names as for `--drop-method`),
     /// decided once per
     /// dialog on its starting request exactly as `--drop-method` decides:
     /// with `--only-method INVITE` a call keeps every message (ACK, BYE,
@@ -10003,13 +10005,64 @@ mod tests {
         Ok(())
     }
 
+    /// Success: KDMQ, in mixed case, is accepted by both flags, kept as
+    /// typed, and joins the filter beside a key's names.
+    #[test]
+    fn method_filter_accepts_kdmq_in_either_flag_and_any_case() -> Result<(), TestError> {
+        let cli =
+            Cli::try_parse_from(["sipnab", "--drop-method", "KdMq", "--only-method", "kdmq"])?;
+        assert_eq!(
+            cli.capture_args.drop_method,
+            ["KdMq"],
+            "--drop-method KdMq is kept as typed"
+        );
+        assert_eq!(
+            cli.capture_args.only_method,
+            ["kdmq"],
+            "--only-method kdmq is kept as typed"
+        );
+        let keyed: crate::config::Config =
+            toml::from_str("[capture]\ndrop_methods = [\"OPTIONS\"]\n")?;
+        let (drop, only) =
+            Cli::try_parse_from(["sipnab", "--drop-method", "KDMQ"])?.method_filter(&keyed);
+        assert_eq!(drop, ["OPTIONS", "KDMQ"], "the flag adds KDMQ to the key");
+        assert!(only.is_empty(), "no only list");
+        Ok(())
+    }
+
+    /// Failure: a typo of KDMQ is refused by both flags, and the refusal
+    /// lists KDMQ among the accepted names.
+    #[test]
+    fn method_filter_refuses_a_kdmq_typo_and_lists_kdmq() -> Result<(), TestError> {
+        for flag in ["--only-method", "--drop-method"] {
+            for typo in ["KDQM", "kdm", "KDMQS"] {
+                let Err(e) = Cli::try_parse_from(["sipnab", flag, typo]) else {
+                    return Err(format!("{flag} {typo} was accepted").into());
+                };
+                let text = e.to_string();
+                assert!(text.contains(typo), "{flag}: the value is named: {text}");
+                assert!(
+                    text.contains("UPDATE, KDMQ"),
+                    "{flag}: KDMQ is listed after the standard names: {text}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Edge: one bad name in a comma list refuses the whole flag; a known
-    /// name in any case is accepted.
+    /// name in any case is accepted, and the extension method KDMQ is one.
     #[test]
     fn method_filter_checks_every_name_of_a_comma_list() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab", "--drop-method", "OPTIONS,KDMQ"])?;
+        assert_eq!(
+            cli.capture_args.drop_method,
+            ["OPTIONS", "KDMQ"],
+            "the extension method KDMQ in a comma list is accepted"
+        );
         assert!(
-            Cli::try_parse_from(["sipnab", "--drop-method", "OPTIONS,KDMQ"]).is_err(),
-            "an extension method (KDMQ) in a comma list is refused"
+            Cli::try_parse_from(["sipnab", "--drop-method", "OPTIONS,KDQM"]).is_err(),
+            "a typo of KDMQ (KDQM) in a comma list is refused"
         );
         let cli = Cli::try_parse_from(["sipnab", "--drop-method", "options,Notify"])?;
         assert_eq!(
