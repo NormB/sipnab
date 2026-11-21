@@ -956,6 +956,9 @@ takes a filter.
 | Parenthesis nesting | 50 levels | `expression exceeds maximum nesting depth of 50` |
 | `header.<name>` name length | 256 bytes | `header name longer than 256 bytes` |
 | Regex pattern size | 1,000,000 bytes | `the regex does not compile or is larger than 1000000 bytes` |
+| Regex comparisons | 8 per expression | `too many regexes: one expression holds at most 8 regex comparisons (=~)` |
+| Regex text | 1024 bytes per expression | `regex too long: the regexes of one expression hold at most 1024 bytes together` |
+| Regex character classes | 16 per expression | `too many regex classes: the regexes of one expression hold at most 16 character classes (each [, \p or \P) together` |
 | Empty expression | not allowed | `filter expression is empty` |
 
 Each comparison, `AND`, `OR` and `NOT` counts toward the node limit. A chain
@@ -964,6 +967,16 @@ filter](#named-filters) expands in place, so its nodes count too. To stay under
 the limit, replace a chain of `OR` comparisons on one field with one regex,
 such as `from.user =~ '^(1001|1002|1003)$'`, or split the question across
 several runs.
+
+The three regex limits count all `=~` values of one expression together,
+named filters included, and sipnab checks them on the pattern text before it
+compiles any regex. A character class is each `[` and each `\p` or `\P`. An
+escaped `\[` is a literal and does not count. The limits exist because the
+regex engine compiles a class under `(?i)` by case-folding every character it
+covers: 1 KiB of `(?i)[\D]` takes about 0.4 s of CPU to compile, and sipnab
+compiles every regex of a filter when it reads the filter. To stay under the limits, join
+alternatives into one regex, write a literal in place of a one-character
+class (`a` for `[a]`), or use `\d` and `\w`, which do not count.
 
 Errors that point into the expression print its text with a caret under the
 position, a 0-based character column:

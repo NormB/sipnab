@@ -776,12 +776,13 @@ is the how-to.
 - **The page is the same.** `limit`, `cursor`, `max_response_bytes`,
   `total_matched` and the order of the hits do not change.
 
-Three limits bound a pattern. Each refusal is `invalid_params` (-32602) with
+Four limits bound a pattern. Each refusal is `invalid_params` (-32602) with
 `data.param` `query`:
 
 | Limit | Value | Message | `data.reason` |
 |---|---|---|---|
 | Pattern length | 1024 bytes | `query is <n> bytes; with regex true a query is at most 1024 bytes` | `limit_exceeded` |
+| Character classes (each `[`, `\p` or `\P`) | 16 | `query has <n> character classes; with regex true a query has at most 16 character classes (each [, \p or \P)` | `limit_exceeded` |
 | Compiled size | 1000000 bytes | `query compiles to more than 1000000 bytes; use fewer or smaller repetitions` | `limit_exceeded` |
 | Scan time for one call | 5 s | `the regex search passed its 5 s limit after <n> messages; use a simpler pattern` | `limit_exceeded` |
 
