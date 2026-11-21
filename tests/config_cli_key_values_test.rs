@@ -202,8 +202,19 @@ static KEY_SPECS: &[KeySpec] = &[
         "capture",
         "drop_methods",
         KeyKind::Literal {
-            accept: &["[]", "[\"OPTIONS\"]", "[\"invite\", \"register\"]"],
-            reject: &["\"OPTIONS\"", "[1]", "[\"x\"]", "[\"OPTIONS\", \"INVTE\"]"],
+            accept: &[
+                "[]",
+                "[\"OPTIONS\"]",
+                "[\"invite\", \"register\"]",
+                "[\"OPTIONS\", \"kdmq\"]",
+            ],
+            reject: &[
+                "\"OPTIONS\"",
+                "[1]",
+                "[\"x\"]",
+                "[\"OPTIONS\", \"INVTE\"]",
+                "[\"KDQM\"]",
+            ],
             ctx: "",
         },
     ),
@@ -238,8 +249,13 @@ static KEY_SPECS: &[KeySpec] = &[
         "capture",
         "only_methods",
         KeyKind::Literal {
-            accept: &["[]", "[\"INVITE\"]", "[\"invite\", \"subscribe\"]"],
-            reject: &["\"INVITE\"", "[1]", "[\"x\"]", "[\"KDMQ\"]"],
+            accept: &[
+                "[]",
+                "[\"INVITE\"]",
+                "[\"invite\", \"subscribe\"]",
+                "[\"KDMQ\"]",
+            ],
+            reject: &["\"INVITE\"", "[1]", "[\"x\"]", "[\"KDQM\"]"],
             ctx: "",
         },
     ),

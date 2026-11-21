@@ -962,7 +962,7 @@ The `[capture] node_name` key holds an empty string. `node_name` is the name thi
 
 ### `[capture] {key} names an unknown SIP method {bad:?}; use one of {}`
 
-`[capture] drop_methods` or `only_methods` lists a name that is not a SIP method sipnab knows. `{key}` is the key, `{bad:?}` the first unknown name, and `{}` the list of known methods. A misspelled name in `only_methods` would otherwise drop every dialog, so sipnab refuses it. The printed line starts with `invalid config value: `.
+`[capture] drop_methods` or `only_methods` lists a name that is not a SIP method sipnab knows. `{key}` is the key, `{bad:?}` the first unknown name, and `{}` the list of accepted methods: the standard ones, then the extension method KDMQ. A misspelled name in `only_methods` would otherwise drop every dialog, so sipnab refuses it. The printed line starts with `invalid config value: `.
 
 **What to do:** Correct the spelling. Case does not matter. `--drop-method` and `--only-method` refuse the same names.
 
@@ -970,9 +970,9 @@ The `[capture] node_name` key holds an empty string. `node_name` is the name thi
 
 ### `unknown SIP method '{s}'; use one of {}`
 
-`--drop-method` or `--only-method` names a method that is not a SIP method sipnab knows. `{s}` is the name as typed and `{}` the list of known methods. The command-line parser prints it after `invalid value '{s}' for '--drop-method <METHOD>'` (or `--only-method`). In a comma list, one unknown name refuses the whole flag.
+`--drop-method` or `--only-method` names a method that is not a SIP method sipnab knows. `{s}` is the name as typed and `{}` the list of accepted methods: the standard ones, then the extension method KDMQ. The command-line parser prints it after `invalid value '{s}' for '--drop-method <METHOD>'` (or `--only-method`). In a comma list, one unknown name refuses the whole flag.
 
-**What to do:** Correct the spelling. Case does not matter. The flags take no extension method outside the list.
+**What to do:** Correct the spelling. Case does not matter. The flags take no other extension method than the ones the list names.
 
 **Exit code:** 2.
 
