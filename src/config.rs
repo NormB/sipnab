@@ -1813,7 +1813,7 @@ impl CaptureConfig {
             {
                 return Err(crate::Error::ConfigInvalid(format!(
                     "[capture] {key} names an unknown SIP method {bad:?}; use one of {}",
-                    crate::sip::method::KNOWN_METHOD_NAMES
+                    crate::sip::method::accepted_method_names()
                 )));
             }
         }
@@ -5485,6 +5485,43 @@ from_to = "user-host-port"
             ok.capture.validate().is_ok(),
             "known names in any case are accepted"
         );
+        Ok(())
+    }
+
+    /// Success: the extension method KDMQ, in any case, is accepted in both
+    /// `[capture]` method keys, as `--drop-method KDMQ` is.
+    #[test]
+    fn capture_method_lists_accept_kdmq_in_any_case() -> Result<(), TestError> {
+        for (key, value) in [
+            ("drop_methods", "KDMQ"),
+            ("drop_methods", "kdmq"),
+            ("only_methods", "KdMq"),
+            ("only_methods", "KDMQ"),
+        ] {
+            let config: Config =
+                toml::from_str(&format!("[capture]\n{key} = [\"OPTIONS\", \"{value}\"]\n"))?;
+            assert!(
+                config.capture.validate().is_ok(),
+                "{key} = [\"OPTIONS\", \"{value}\"] is accepted"
+            );
+        }
+        Ok(())
+    }
+
+    /// Failure: a typo of KDMQ in either key is refused, naming the key and
+    /// the value and listing KDMQ among the accepted names.
+    #[test]
+    fn capture_method_lists_refuse_a_kdmq_typo() -> Result<(), TestError> {
+        for key in ["drop_methods", "only_methods"] {
+            let config: Config = toml::from_str(&format!("[capture]\n{key} = [\"KDQM\"]\n"))?;
+            let Err(e) = config.capture.validate() else {
+                return Err(format!("{key} = [\"KDQM\"] was accepted").into());
+            };
+            let text = e.to_string();
+            assert!(text.contains(key), "the key is named: {text}");
+            assert!(text.contains("KDQM"), "the value is named: {text}");
+            assert!(text.contains("UPDATE, KDMQ"), "KDMQ is listed: {text}");
+        }
         Ok(())
     }
 
