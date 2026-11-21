@@ -67,7 +67,11 @@ fi
 BIN="${1:?$USAGE}"
 CORPUS="${2:-$(mktemp -d)/corpus.pcap}"
 ROUNDS="${SIPNAB_BENCH_ROUNDS:-5}"
-BASELINE_FILE="bench/baseline.json"
+# SIPNAB_BENCH_BASELINE_FILE names another baseline file, for the gate's own
+# tests: with the committed baseline, a stand-in on a loaded host can trip the
+# "too loaded to judge" refusal before the ratio is judged. Empty or unset reads
+# the committed file.
+BASELINE_FILE="${SIPNAB_BENCH_BASELINE_FILE:-bench/baseline.json}"
 # Read from the baseline file, where the twelve lines of reasoning for this
 # number already live. It used to be a literal 80 here with an env override,
 # so `floor_pct` in bench/baseline.json was a knob nothing read: editing the
@@ -87,9 +91,10 @@ if [ ! -r "$CORPUS" ]; then
 fi
 
 PACKETS=535000
-BASE=$(python3 -c "import json,sys; print(json.load(open('$BASELINE_FILE'))['cores_4_pkts_per_s'])")
+# The path is an argument, never text inside the python code.
+BASE=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['cores_4_pkts_per_s'])" "$BASELINE_FILE")
 if [ -z "$FLOOR_PCT" ]; then
-	FLOOR_PCT=$(python3 -c "import json; print(json.load(open('$BASELINE_FILE'))['floor_pct'])")
+	FLOOR_PCT=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['floor_pct'])" "$BASELINE_FILE")
 fi
 FLOOR=$(python3 -c "print($BASE * $FLOOR_PCT / 100)")
 
