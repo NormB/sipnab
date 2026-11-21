@@ -10137,7 +10137,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-11-20.yang analysis.json
 ```
 
 It is the same analysis in a different encoding. The YANG section of
@@ -18755,6 +18755,70 @@ help from any view.
 
 Land on the call you care about, then press `Enter`.
 
+### Find the dialogs that are not over
+
+On a busy capture most rows are calls that ended and registrations that
+lapsed. Press `d` to keep only the dialogs still in progress: calls up or
+ringing, valid registrations, active subscriptions and open transactions.
+
+- What you need: the TUI on any capture; nothing changes on another system.
+- Steps: start the TUI and press `d` on the call list.
+
+```sh
+sipnab -I capture.pcap
+```
+
+- Check it: status line 1 says `Showing: not over`, and `Dialogs: N shown of M` drops.
+- `d` again shows every dialog.
+- A REGISTER counts as over when its challenge got no REGISTER in answer, or
+  when its registration expired by the capture's clock (the newest message).
+- When a dialog you expect stays hidden, press `d` to show all, then open it
+  with `Enter` and read its last message: a final response ended it.
+- In the call flow, `d` still cycles the SDP display.
+
+### Watch the dialogs updated last
+
+`L` sorts the call list by each dialog's last message, the one updated last
+at the bottom. Use it on a live capture to watch where traffic happens now.
+
+- What you need: the TUI; nothing changes on another system.
+- Steps: press `L` on the call list; press `L` again to return to `#` order.
+
+```sh
+sipnab -d eth0
+```
+
+- Check it: status line 1 says `Sort: Last update ▲`; back in `#` order it says `Sort: #`.
+- When the order does not seem to change, check that autoscroll (`A`) is not
+  moving the selection, and that a search or filter is not hiding the rows.
+
+## Set how the TUI starts
+
+The `[display]` section of the configuration file sets the starting state of
+keys you would otherwise press after every start.
+
+- What you need: a writable configuration file (see
+  [Configuration reference](config-reference.md)); nothing changes on another
+  system.
+- Steps: add the keys you want under `[display]`, then start the TUI.
+
+```toml
+[display]
+fold = false          # every retransmission and auth retry is its own arrow
+autoscroll = false    # the selection stays where you put it
+sdp_display = "full"  # none, summary or full; `d` still cycles it
+color_mode = "cseq"   # method, call_id or cseq; `c` still cycles it
+extended_flow = true  # open the multi-leg flow by default
+```
+
+- Check it: open a call flow; with `fold = false` the ladder shows each
+  retransmission as its own row, and the F2 Mermaid export does the same.
+- When sipnab refuses to start with `[display] sdp_display must be one of`
+  or `[display] color_mode must be one of`, correct the value: the spellings
+  are lower case. See [Error reference](errors.md).
+- `[display] autoscroll` sets the starting state; the `autoscroll` key
+  binding (`A` by default) toggles it.
+
 ## Read the call-flow ladder
 
 `Enter` opens the **Call Flow**. It is a ladder diagram of the dialog across
@@ -19584,6 +19648,8 @@ To start every session with capture off, set `mouse_capture = false` under
 | < | Sort by previous column |
 | > | Sort by next column |
 | Z | Reverse sort direction |
+| L | Sort by each dialog's last message, the one updated last at the bottom; `L` again returns to `#` order. Status line 1 always names the sort (`Sort: Last update ▲`) |
+| d | Show only the dialogs that are not over; `d` again shows all. A REGISTER whose challenge got no answering REGISTER, or whose registration expired by the capture's clock, counts as over. Status line 1 says `Showing: not over` while it is on |
 | A | Toggle autoscroll **(configurable: `autoscroll`)** |
 | p | Pause/resume capture **(configurable: `pause`)** |
 | / | Activate search **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list, Space stars rows, and Enter commits the query and opens the selection in one press |
@@ -19643,7 +19709,7 @@ active filter.
 | Home | Jump to first message (or top of detail when focused) |
 | End | Jump to last message (or bottom of detail when focused) |
 | Enter | Open full-screen raw message view — or, with the cursor on an RTP stream's row, that stream's Stream Detail view (MOS, jitter, quality intervals, burst/gap analysis, silence detection, sparklines) |
-| Space | Select message for diff (press on two messages to compare) |
+| Space | Select message for diff (press on two messages to compare). `Space` again on the selected message clears the selection and its hint |
 | q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call list |
 | d | Cycle SDP display mode (hidden / summary / full) |
@@ -20448,6 +20514,7 @@ way out, and fewer of them on a narrow terminal.
 
 > **Tip:**
 >
+> - The `#` column is the dialog's own number, given when sipnab first sees it. It stays the same through a filter, a search, a sort, eviction and a clear.
 > - Press `Space` to star dialogs. A starred row shows `[*]` in the `#` column (the `▸` above is just the cursor).
 > - `F2` then saves only the starred dialogs.
 > - `Enter` opens two or more of them as a single merged flow.
@@ -21426,6 +21493,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--no-rtp` | -- | off | 0.3.0 | Disable RTP capture and analysis. Config: `[capture] no_rtp` |
 | `--rtp` | -- | off | 0.5.204 | Capture and analyze RTP even when `[capture] no_rtp = true`. The last of `--no-rtp` / `--rtp` typed wins. Config: `[capture] no_rtp` |
 | `-p`, `--no-promisc` | -- | off | 0.5.8 | Do not put the interface into promiscuous mode. Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous. Config: `[capture] promisc` |
+| `--drop-method` | `<METHOD>` | -- | Unreleased | Drop at ingest the SIP dialogs STARTED by this method (repeatable or a comma list; any method, case-insensitive). Decided once per dialog (Call-ID) on its starting request: a refused dialog opens no dialog, takes no dialog number and is never kept in memory; all its messages and replies count only in "Dropped by method" (TUI status line 1, capture report). An accepted dialog keeps EVERY message, whatever its method (ACK, BYE, re-INVITE or an in-dialog OPTIONS, for example). sipnab decides a message whose dialog start it never saw by the message's own method (a reply by its CSeq method). Unlike `--filter`, which only hides. Live capture, HEP and `-I` files alike. sipnab refuses at startup a name that is not one of the SIP methods it knows (INVITE, ACK, BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO, REFER, MESSAGE, UPDATE), so no flag can name an extension method such as `KDMQ`. sipnab remembers the most recent 65,536 refused dialogs and decides a later message of an older one again by its own method. With `--cores N` the workers keep every message and sipnab decides when their results merge, in read order, so the result equals `--cores 1`. Config: `[capture] drop_methods` |
+| `--only-method` | `<METHOD>` | -- | Unreleased | Keep at ingest ONLY the SIP dialogs started by this method (repeatable or a comma list; case-insensitive), decided as `--drop-method` decides: with `--only-method INVITE` a call keeps every message (ACK, BYE, CANCEL, re-INVITE, in-dialog OPTIONS and any other in-dialog request, and the replies) and sipnab drops every other dialog whole. With both flags sipnab keeps a dialog only when its starting method is in `--only-method` AND not in `--drop-method`. Method names, the memory of refused dialogs and `--cores N` behave as for `--drop-method`. Config: `[capture] only_methods` |
 | `--bpf-file` | `<FILE>` | -- | 0.3.0 | Read the BPF capture filter from a file. It takes precedence over the positional filter and replaces `[capture] bpf_filter`, and like them it applies to `-I` capture files as well as live capture. Config: `[capture] bpf_filter` |
 | `--capture-tunnels` | `[<PORTS>]` | off | 0.5.80 | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default: it takes every packet on those ports, which on a mobile core is the entire user plane, because a BPF filter cannot reach the inner port behind a GTP-U extension-header chain. Ignored when you supply your own filter |
 | `-n`, `--count` | `<N>` | -- | 0.3.0 | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth). At least 1: sipnab refuses `0` |
@@ -21594,6 +21663,10 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sudo sipnab -N -d eth0 --count 5000 --seccomp log && auditctl -s` — record the calls a LIVE capture makes, bounded by `--count` so the log cannot run away, then check where the records went. A connected audit daemon has them in `ausearch -m SECCOMP`. A pid of 0 means they are in `dmesg`
 - `sipnab -N -I capture.pcap --rtp --report` — analyze the media too when your config file sets `[capture] no_rtp = true`
 - `sipnab -N -I capture.pcap --no-rtp --rtp --report` — the last of the pair wins, so this run analyzes RTP
+- `sudo sipnab -d eth0 --drop-method OPTIONS` — watch a trunk without its OPTIONS keepalives: those dialogs take no memory and no number
+- `sipnab -N -I capture.pcap --drop-method OPTIONS,REGISTER --report` — report on a file with keepalives and registrations left out; the capture analysis counts them under `dropped_by_method`
+- `sipnab -N -I capture.pcap --only-method INVITE --report` — report on the calls only; each call keeps its ACK, BYE and in-dialog requests
+- `sipnab -N -I capture.pcap --only-method INVITE,SUBSCRIBE --drop-method SUBSCRIBE --json-dialogs` — both flags: sipnab keeps a dialog when its method is in `--only-method` and not in `--drop-method`, so only the calls remain
 - `sipnab -N -I capture.pcap -e INVITE udp port 5060` — the `sngrep` habit `sngrep INVITE udp port 5060`, written for sipnab: the match expression goes after `-e` and the words after the options are the capture filter
 - `sipnab -N -I 0192d6a4-1b2c-8d3e-9f40-5a6b7c8d9e0f.vcon.json --vcon-key recipient.key --json-dialogs` — analyze an encrypted vCon sipnab wrote: decrypt it with the recipient's private key, verify its signature, and print its dialogs
 - `sipnab --mcp -N -I capture.pcap --vcon-key /etc/sipnab/vcon-recipient.key` — serve the MCP tools with a key, so `analyze_vcon` and `validate_vcon` read encrypted containers an agent hands over
@@ -22235,9 +22308,9 @@ Multiple diagnostic flags combine with OR.
 - `sipnab -N -I capture.pcap --analyze --filter "state == 'Failed'" --no-cli-print` — narrow the DIALOG findings to failed calls. The capture-level evidence (undecodable frames, discarded ports, dropped records) is deliberately not narrowed, because it bounds every count in the report
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.findings[] | select(.severity == "critical")'` — the critical findings only, for a pipeline
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'` — whether the capture decoded fully. `false` means every count in the analysis is a floor, so do not trust a clean-looking verdict
-- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document. `yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json` validates it
+- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document. `yanglint -t data sipnab-diagnosis@2026-11-20.yang analysis.json` validates it
 - `sipnab -N -I capture.pcap --json-analyze --yang-analyze --no-cli-print` — both encodings of ONE analysis, one line each: the same findings, the same counts, the same `rank` order
-- `sipnab --print-yang-module > sipnab-diagnosis@2026-11-08.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950.html) gives it, for `yanglint` or `pyang`
+- `sipnab --print-yang-module > sipnab-diagnosis@2026-11-20.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950.html) gives it, for `yanglint` or `pyang`
 - `sipnab --print-yang-module | pyang -f tree` — the shape of the capture analysis as a YANG tree: every node, its type, and which are lists
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet | jq -c 'select(.state == "Failed")'` — one line per failed call, each carrying the code that failed it, instead of every message of every failed dialog
 - `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --line-buffer > calls.ndjson` — record one summary object per call from live traffic, flushed per line for a downstream collector
@@ -25432,6 +25505,22 @@ The `[capture] node_name` key holds an empty string. `node_name` is the name thi
 
 **Exit code:** 1.
 
+### `[capture] {key} names an unknown SIP method {bad:?}; use one of {}`
+
+`[capture] drop_methods` or `only_methods` lists a name that is not a SIP method sipnab knows. `{key}` is the key, `{bad:?}` the first unknown name, and `{}` the list of known methods. A misspelled name in `only_methods` would otherwise drop every dialog, so sipnab refuses it. The printed line starts with `invalid config value: `.
+
+**What to do:** Correct the spelling. Case does not matter. `--drop-method` and `--only-method` refuse the same names.
+
+**Exit code:** 1.
+
+### `unknown SIP method '{s}'; use one of {}`
+
+`--drop-method` or `--only-method` names a method that is not a SIP method sipnab knows. `{s}` is the name as typed and `{}` the list of known methods. The command-line parser prints it after `invalid value '{s}' for '--drop-method <METHOD>'` (or `--only-method`). In a comma list, one unknown name refuses the whole flag.
+
+**What to do:** Correct the spelling. Case does not matter. The flags take no extension method outside the list.
+
+**Exit code:** 2.
+
 ### `config file not found: {path}`
 
 The file that `-f`/`--config` names does not exist. `{path}` is the path you gave. A missing file named by `$SIPNAB_CONFIG` is not an error: the search moves on to the default locations.
@@ -25548,6 +25637,28 @@ A `[diagnosis]` threshold is 0, negative, infinity or NaN (not-a-number).
 - The printed line starts with `invalid config value: `.
 
 **What to do:** Set `view_filter_detail` to `summary` or `full`, or remove the key.
+
+### `[display] sdp_display must be one of none, summary, full, got {m:?}`
+
+`[display] sdp_display` names an SDP form the call flow does not have.
+
+- `{m:?}` is the value in the file.
+- `none`, `summary` and `full` are the forms the `d` key cycles through in the call flow; the key sets the one it starts in.
+- sipnab checks this key only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `sdp_display` to `none`, `summary` or `full`, in lower case, or remove the key.
+
+### `[display] color_mode must be one of method, call_id, cseq, got {m:?}`
+
+`[display] color_mode` names a way to color the call flow arrows that the terminal UI does not have.
+
+- `{m:?}` is the value in the file.
+- `method`, `call_id` and `cseq` are the modes the `c` key cycles through in the call flow; the key sets the one it starts in.
+- sipnab checks this key only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `color_mode` to `method`, `call_id` or `cseq`, in lower case, or remove the key.
 
 **Exit code:** 1.
 
@@ -36172,16 +36283,16 @@ To check it, save the module this sipnab writes against. Then hand both to
 `yanglint`:
 
 ```bash
-sipnab --print-yang-module > sipnab-diagnosis@2026-11-08.yang
+sipnab --print-yang-module > sipnab-diagnosis@2026-11-20.yang
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-11-20.yang analysis.json
 ```
 
 `--print-yang-module` prints the module this sipnab validates against. The
 repository commits the same file at
-[`yang/sipnab-diagnosis@2026-11-08.yang`](../yang/sipnab-diagnosis@2026-11-08.yang).
+[`yang/sipnab-diagnosis@2026-11-20.yang`](../yang/sipnab-diagnosis@2026-11-20.yang).
 
 The document has one member, `sipnab-diagnosis:capture-analysis`. It differs
 from the `--json-analyze` object only in how it writes the same facts:
@@ -36713,6 +36824,8 @@ Packet capture defaults.
 | `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` turns it on. `--rtp` forces it off |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
 | `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does: each message takes the addresses and the time the HEP packet carries, or the time sipnab captured the wrapper when the HEP packet carries none. For a proxy that mirrors HEP to a loopback port that sipnab sniffs (`device = "lo"`), so that several readers can see the same copies. Keep a receiver bound to that port: with no process bound to it, some senders lose messages, as the section below this table describes. `--no-hep-parse` turns it off for one run. Feature: `hep` |
+| `drop_methods` | array of strings | `[]` | SIP methods whose dialogs sipnab drops at ingest. sipnab decides once per dialog, on its starting request: a refused dialog opens no dialog, takes no number, and its messages count only as "Dropped by method"; an accepted dialog keeps every message, whatever its method. Case-insensitive. sipnab refuses a name that is not a SIP method it knows. `--drop-method` adds to it |
+| `only_methods` | array of strings | `[]` | When not empty, sipnab keeps at ingest only the dialogs STARTED by these methods (with every message of theirs) and drops the rest as `drop_methods` drops. Kept = in `only_methods` AND not in `drop_methods`. `--only-method` adds to it |
 | `bpf_filter` | string | -- | Capture (BPF) filter, as the trailing positional filter on the command line takes, handed to libpcap as typed. Not the display filter, which is `[filter] expression`. While it holds a filter, sipnab generates none from `portrange`. The trailing positional filter (`<BPF_FILTER>`) or `--bpf-file` replaces it. It applies to capture files too, and a run that reads a file through it says so on stderr |
 
 ```toml
@@ -36789,6 +36902,11 @@ Output and TUI display settings.
 | `payload_limit` | integer | -- | Maximum payload bytes the `-N` text output prints for each message; a longer payload ends with `[truncated]`. Does not change `--json` or `--json-pretty` output. `--payload-limit` overrides it |
 | `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` turns it on. `--no-delta-time` forces it off |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
+| `fold` | boolean | `true` | Retransmissions and auth retries fold into one arrow in the call flow (`e` expands one) |
+| `autoscroll` | boolean | `true` | The call list follows new dialogs (`A` toggles it) |
+| `sdp_display` | string | `"none"` | How SDP shows under its arrow: `"none"`, `"summary"`, `"full"`. sipnab refuses any other value, naming the key |
+| `color_mode` | string | `"method"` | What colors the call-flow arrows: `"method"`, `"call_id"`, `"cseq"`. sipnab refuses any other value, naming the key |
+| `extended_flow` | boolean | `false` | A call opens as the multi-leg (extended) flow |
 | `mouse_capture` | boolean | `true` | Whether the TUI captures the mouse when it starts. `false` opens it with capture off, so the terminal's own drag-to-select works; `F12` toggles capture at runtime. With capture on, the mouse wheel scrolls |
 | `view_filter_detail` | string | `"summary"` | How status line 3 shows the filter the F7 dialog built. `"summary"` names each selection in a few words, such as `F7: 7 methods, From~alice`. `"full"` shows the expression. A filter typed as an expression is always shown in full. The `filter_detail` key (default `F`) toggles it at runtime. sipnab refuses any other value, naming the key |
 | `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout into the config file this run loaded (or the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`) when none was), so it persists across sessions. sipnab refuses that save when the settings came from `/etc/sipnab/sipnab.toml` |
@@ -56685,6 +56803,54 @@ If any SIP endpoint answers on `127.0.0.1` or a container bridge, add `lo` or
 - Avoid per-message output (`--json`, `--text-dump`) on a high-rate live
   capture unless you are consuming it.
   - Formatting and writing every message is real work on the capture path.
+
+### Drop whole dialogs by method
+
+A trunk's OPTIONS keepalives or a registrar's REGISTER traffic can fill the
+dialog store and hide the calls you came for. `--drop-method` drops every
+dialog started by a method at ingest, and `--only-method` keeps only the dialogs
+started by the methods you name. A dropped dialog takes no memory and no
+dialog number.
+
+- What you need: nothing on another system; the flags act on what sipnab
+  reads. Names are the SIP methods sipnab knows, in any case: INVITE, ACK,
+  BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO,
+  REFER, MESSAGE, UPDATE.
+- Steps: name the methods on the command line, or in `[capture]` of the
+  configuration file. On a live capture, drop the keepalives and
+  registrations:
+
+```sh
+sipnab -d eth0 --drop-method OPTIONS,REGISTER
+```
+
+- On a file, keep only the calls:
+
+```sh
+sipnab -N -I capture.pcap --only-method INVITE --report
+```
+
+- In the configuration file:
+
+```toml
+[capture]
+drop_methods = ["OPTIONS"]
+```
+
+- A kept dialog keeps every message, whatever its method: a call keeps its
+  ACK, BYE, re-INVITE and in-dialog OPTIONS.
+- With `--cores N` the workers keep every message and the decision happens
+  when their results merge, so the result equals `--cores 1`.
+- Check it: TUI status line 1 shows `Dropped by method: N`, and the capture
+  analysis (`--json-analyze`) holds a `dropped_by_method` finding with the
+  same count.
+- When sipnab refuses to start with `unknown SIP method`, correct the name.
+  The flags take no extension method outside the list.
+- When a call you expect is missing under `--only-method INVITE`, check that
+  the capture holds its INVITE: sipnab decides a message whose dialog start
+  it never saw by the message's own method.
+- sipnab remembers the most recent 65,536 refused dialogs. It decides a later
+  message of an older one again by its own method.
 
 ---
 
@@ -88025,7 +88191,7 @@ It also runs on a push to `main` that changes a file those suites compile.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 156 `unsafe` blocks are libc FFI.
+- Most of this crate's 160 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.

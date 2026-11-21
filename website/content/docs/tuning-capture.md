@@ -592,6 +592,54 @@ If any SIP endpoint answers on `127.0.0.1` or a container bridge, add `lo` or
   capture unless you are consuming it.
   - Formatting and writing every message is real work on the capture path.
 
+### Drop whole dialogs by method
+
+A trunk's OPTIONS keepalives or a registrar's REGISTER traffic can fill the
+dialog store and hide the calls you came for. `--drop-method` drops every
+dialog started by a method at ingest, and `--only-method` keeps only the dialogs
+started by the methods you name. A dropped dialog takes no memory and no
+dialog number.
+
+- What you need: nothing on another system; the flags act on what sipnab
+  reads. Names are the SIP methods sipnab knows, in any case: INVITE, ACK,
+  BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO,
+  REFER, MESSAGE, UPDATE.
+- Steps: name the methods on the command line, or in `[capture]` of the
+  configuration file. On a live capture, drop the keepalives and
+  registrations:
+
+```sh
+sipnab -d eth0 --drop-method OPTIONS,REGISTER
+```
+
+- On a file, keep only the calls:
+
+```sh
+sipnab -N -I capture.pcap --only-method INVITE --report
+```
+
+- In the configuration file:
+
+```toml
+[capture]
+drop_methods = ["OPTIONS"]
+```
+
+- A kept dialog keeps every message, whatever its method: a call keeps its
+  ACK, BYE, re-INVITE and in-dialog OPTIONS.
+- With `--cores N` the workers keep every message and the decision happens
+  when their results merge, so the result equals `--cores 1`.
+- Check it: TUI status line 1 shows `Dropped by method: N`, and the capture
+  analysis (`--json-analyze`) holds a `dropped_by_method` finding with the
+  same count.
+- When sipnab refuses to start with `unknown SIP method`, correct the name.
+  The flags take no extension method outside the list.
+- When a call you expect is missing under `--only-method INVITE`, check that
+  the capture holds its INVITE: sipnab decides a message whose dialog start
+  it never saw by the message's own method.
+- sipnab remembers the most recent 65,536 refused dialogs. It decides a later
+  message of an older one again by its own method.
+
 ---
 
 ## Interface and driver drops

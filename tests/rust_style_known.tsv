@@ -549,7 +549,7 @@ AssertWithoutMessage	tests/tui_operator_notes_test.rs	7
 AssertWithoutMessage	tests/tui_output_test.rs	3
 AssertWithoutMessage	tests/tui_relay_stats_test.rs	12
 AssertWithoutMessage	tests/tui_snapshot_test.rs	4
-AssertWithoutMessage	tests/tui_state_test.rs	435
+AssertWithoutMessage	tests/tui_state_test.rs	433
 AssertWithoutMessage	tests/tunnel_integration_test.rs	1
 AssertWithoutMessage	tests/turn_test.rs	18
 AssertWithoutMessage	tests/undecodable_frames_test.rs	1

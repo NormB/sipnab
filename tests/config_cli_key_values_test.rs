@@ -198,6 +198,15 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    (
+        "capture",
+        "drop_methods",
+        KeyKind::Literal {
+            accept: &["[]", "[\"OPTIONS\"]", "[\"invite\", \"register\"]"],
+            reject: &["\"OPTIONS\"", "[1]", "[\"x\"]", "[\"OPTIONS\", \"INVTE\"]"],
+            ctx: "",
+        },
+    ),
     ("capture", "hep_parse", KeyKind::Bool),
     ("capture", "no_rtp", KeyKind::Bool),
     (
@@ -222,6 +231,15 @@ static KEY_SPECS: &[KeySpec] = &[
                 "\"127.0.0.1:9999\"",
                 "\"/var/tmp\"",
             ],
+            ctx: "",
+        },
+    ),
+    (
+        "capture",
+        "only_methods",
+        KeyKind::Literal {
+            accept: &["[]", "[\"INVITE\"]", "[\"invite\", \"subscribe\"]"],
+            reject: &["\"INVITE\"", "[1]", "[\"x\"]", "[\"KDMQ\"]"],
             ctx: "",
         },
     ),
@@ -336,8 +354,29 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    ("display", "autoscroll", KeyKind::Bool),
+    (
+        "display",
+        "color_mode",
+        KeyKind::Literal {
+            accept: &["\"method\"", "\"call_id\"", "\"cseq\""],
+            reject: &["\"x\"", "\"\"", "\"callid\"", "\"Method\""],
+            ctx: "",
+        },
+    ),
     ("display", "delta_time", KeyKind::Bool),
+    ("display", "extended_flow", KeyKind::Bool),
+    ("display", "fold", KeyKind::Bool),
     ("display", "mouse_capture", KeyKind::Bool),
+    (
+        "display",
+        "sdp_display",
+        KeyKind::Literal {
+            accept: &["\"none\"", "\"summary\"", "\"full\""],
+            reject: &["\"x\"", "\"\"", "\"short\"", "\"Full\""],
+            ctx: "",
+        },
+    ),
     (
         "display",
         "from_to",

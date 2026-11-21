@@ -1060,7 +1060,12 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // `ConfigUnwritable` variant a TUI save prints for a permission failure.
 // 688 -> 689 (IMPORT-V6 D17 parser cap): +1 in src/error.rs, ParseError::TooLong,
 // the refusal of a SIP message longer than any input path delivers.
-const EXPECTED_TEMPLATES: usize = 689;
+// 689 -> 691 (`[display]` keys, contributed): +2 in src/config.rs, an
+// unknown `[display] sdp_display` and an unknown `[display] color_mode`.
+// 691 -> 693 (`--drop-method` / `--only-method` names): +1 in src/config.rs,
+// an unknown method in `[capture] drop_methods` / `only_methods`; +1 in
+// src/cli.rs, the same refusal from the flags' parser.
+const EXPECTED_TEMPLATES: usize = 693;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -93,6 +93,9 @@ pub struct LayoutOptions<'a> {
     pub name_mode: crate::names::NameMode,
     /// The call's RTP streams, one row each when `show_rtp` is on.
     pub rtp_streams: &'a [RtpFlowStream],
+    /// Fold retransmissions and auth retries into one row (`[display]
+    /// fold`). Off keeps every message its own row.
+    pub fold: bool,
 }
 
 impl<'a> From<&FlowDisplayOptions<'a>> for LayoutOptions<'a> {
@@ -105,6 +108,7 @@ impl<'a> From<&FlowDisplayOptions<'a>> for LayoutOptions<'a> {
             resolver: o.resolver,
             name_mode: o.name_mode,
             rtp_streams: o.rtp_streams,
+            fold: o.fold,
         }
     }
 }
@@ -434,7 +438,11 @@ pub fn layout(
     // Folding runs BEFORE spacer insertion so that which rows exist is
     // identical in every timestamp mode; synthetic rows (raw_index == None)
     // are never folded.
-    let result = fold_messages(messages, result, fold_expanded);
+    let result = if opts.fold {
+        fold_messages(messages, result, fold_expanded)
+    } else {
+        result
+    };
 
     // ── Time-proportional spacer insertion (Feature 6) ─────────────
     let result = if opts.ts_mode == TimestampMode::Scaled && result.len() >= 2 {
@@ -1170,26 +1178,38 @@ fn fold_messages(
     let mut source: Vec<Option<LayoutRow>> = formatted.into_iter().map(Some).collect();
     let mut i = 0;
 
-    // Index into `result` of the most recently emitted row that can act as a
-    // retransmission fold header — a real (non-synthetic) row whose raw
-    // message is itself NOT a retransmission. Maintained as rows are pushed
-    // (`push_row`) so a retransmission storm folds in a single forward pass:
-    // the old code re-scanned the whole emitted prefix per retransmission
-    // (O(n²) when a long retx run is expanded and visible), this is O(n).
-    let mut last_header_idx: Option<usize> = None;
+    // Indices into `result` of EVERY collapsed auth fold header. A
+    // retransmission of one of a fold's hidden members (the authenticated
+    // request, typically) is counted in that auth fold, whose label keeps
+    // saying "auth retry", and expanding the fold shows it again under its
+    // original. Without this the header's count mixed the auth members with
+    // the retx and its label claimed them all as retransmissions, so
+    // expanding it showed one message fewer than the fold had promised. A
+    // set, not the last header alone: a retransmission of an earlier fold's
+    // member can arrive after a later fold (two challenged legs).
+    let mut auth_headers: HashSet<usize> = HashSet::new();
+    // A retransmission folds only into ITS OWN original: the most
+    // recent emitted non-retransmission row with the same identity (Call-ID +
+    // the CSeq/branch key the dialog store marks retransmissions by). In a
+    // multi-leg ladder the last arrow drawn is often another leg's; folding
+    // into it hid the retransmission under the wrong arrow. Maps an identity
+    // to the index in `result` that a retransmission of it folds into.
+    let mut header_by_key: HashMap<String, usize> = HashMap::new();
 
     // Push a row and, if it qualifies as a retx fold header, record its index.
     fn push_row(
         result: &mut Vec<LayoutRow>,
-        last_header_idx: &mut Option<usize>,
+        header_by_key: &mut HashMap<String, usize>,
         raw_msgs: &[SipMessage],
         row: LayoutRow,
     ) {
-        let is_header = row
+        let header_key = row
             .raw_index
-            .is_some_and(|h| raw_msgs.get(h).is_some_and(|m| !m.is_retransmission));
-        if is_header {
-            *last_header_idx = Some(result.len());
+            .and_then(|h| raw_msgs.get(h))
+            .filter(|m| !m.is_retransmission)
+            .and_then(retx_identity);
+        if let Some(k) = header_key {
+            header_by_key.insert(k, result.len());
         }
         result.push(row);
     }
@@ -1199,7 +1219,7 @@ fn fold_messages(
         // fold headers or fold members.
         let Some(ri) = source[i].as_ref().and_then(|fm| fm.raw_index) else {
             if let Some(fm) = source[i].take() {
-                push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
+                push_row(&mut result, &mut header_by_key, raw_msgs, fm);
             }
             i += 1;
             continue;
@@ -1212,7 +1232,7 @@ fn fold_messages(
                 // member rows follow normally on later iterations.
                 if let Some(mut fm) = source[i].take() {
                     fm.fold_label = Some("(auth retry expanded - press e to collapse)".to_string());
-                    push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
+                    push_row(&mut result, &mut header_by_key, raw_msgs, fm);
                 }
                 i += 1;
                 continue;
@@ -1230,15 +1250,26 @@ fn fold_messages(
                 // demo's widest label to 25 chars, an un-satisfiable 30-col
                 // gap demand at the 98-col demo geometry.
                 fm.label = format!("{} (+auth)", fm.label);
-                push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
+                push_row(&mut result, &mut header_by_key, raw_msgs, fm);
+                auth_headers.extend(result.len().checked_sub(1));
             }
+            let auth_header_idx = result
+                .len()
+                .checked_sub(1)
+                .filter(|h| auth_headers.contains(h));
             // Drop the member rows: every following row whose raw index is
-            // inside the sequence.
+            // inside the sequence. A later retransmission of a hidden member
+            // folds into the auth header.
             let end_raw = ri + fold_len;
             let mut j = i + 1;
             while j < source.len() {
                 match source[j].as_ref().and_then(|fm| fm.raw_index) {
                     Some(rj) if rj < end_raw => {
+                        if let (Some(idx), Some(k)) =
+                            (auth_header_idx, raw_msgs.get(rj).and_then(retx_identity))
+                        {
+                            header_by_key.insert(k, idx);
+                        }
                         source[j].take();
                         j += 1;
                     }
@@ -1251,14 +1282,24 @@ fn fold_messages(
 
         // --- Retransmit folding ---
         if raw_msgs.get(ri).is_some_and(|m| m.is_retransmission) {
-            // The fold header is the last emitted NON-retransmission row: a
-            // whole retx run belongs to one header, even when earlier retx
-            // rows of the run are visible because the fold is expanded. That
-            // header's index in `result` is tracked in `last_header_idx`, so
-            // no back-scan is needed (the retx row itself never becomes a
-            // header, so pushing it leaves `last_header_idx` pointing at the
-            // run's header for every subsequent retx in the run).
-            match last_header_idx {
+            // The fold header is the retransmission's own original, the last
+            // emitted NON-retransmission row with its identity (kept in
+            // `header_by_key` as rows are pushed, so a retx storm folds in one
+            // forward pass): a whole retx run belongs to one header, even when
+            // earlier retx rows of the run are visible because the fold is
+            // expanded (a retx row never becomes a header).
+            let own_header = raw_msgs
+                .get(ri)
+                .and_then(retx_identity)
+                .and_then(|k| header_by_key.get(&k).copied());
+            match own_header {
+                Some(idx) if auth_headers.contains(&idx) => {
+                    result[idx].folded_count += 1;
+                    let n = result[idx].folded_count;
+                    result[idx].fold_label =
+                        Some(format!("{n} msgs folded (auth retry) - press e to expand"));
+                    source[i].take();
+                }
                 Some(idx) => {
                     let header_raw = result[idx].raw_index.unwrap_or(usize::MAX);
                     if fold_expanded.contains(&header_raw) {
@@ -1267,7 +1308,7 @@ fn fold_messages(
                         result[idx].fold_label =
                             Some("(retx expanded - press e to collapse)".to_string());
                         if let Some(fm) = source[i].take() {
-                            push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
+                            push_row(&mut result, &mut header_by_key, raw_msgs, fm);
                         }
                     } else {
                         result[idx].folded_count += 1;
@@ -1279,7 +1320,7 @@ fn fold_messages(
                 None => {
                     // No previous message to fold into — emit normally.
                     if let Some(fm) = source[i].take() {
-                        push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
+                        push_row(&mut result, &mut header_by_key, raw_msgs, fm);
                     }
                 }
             }
@@ -1289,12 +1330,21 @@ fn fold_messages(
 
         // Not folded — emit normally
         if let Some(fm) = source[i].take() {
-            push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
+            push_row(&mut result, &mut header_by_key, raw_msgs, fm);
         }
         i += 1;
     }
 
     result
+}
+
+/// The identity a retransmission shares with its original: the Call-ID plus
+/// the dialog store's CSeq/branch key ([`crate::sip::dialog::seen_cseq_key`]).
+/// Two legs of one call never share it (each leg has its own Call-ID or its
+/// own Via branch), so a retransmission matched by it folds into its own leg.
+fn retx_identity(msg: &SipMessage) -> Option<String> {
+    let key = crate::sip::dialog::seen_cseq_key(msg)?;
+    Some(format!("{}\n{key}", msg.call_id().unwrap_or("")))
 }
 
 /// Detect an auth retry sequence starting at index `start`.
@@ -1891,6 +1941,7 @@ mod tests {
             resolver,
             name_mode: crate::names::NameMode::Off,
             rtp_streams: &[],
+            fold: true,
         }
     }
 
@@ -3822,6 +3873,246 @@ mod tests {
             4,
             "expanded auth sequence should show all rows"
         );
+        Ok(())
+    }
+
+    /// A retransmission folds only into its own message, never into the last
+    /// arrow drawn when that arrow is another leg's: leg A's INVITE,
+    /// leg B's INVITE, then a retransmission of leg A's INVITE folds under
+    /// leg A's arrow and leaves leg B's alone.
+    #[test]
+    fn retx_folds_into_its_own_leg_not_the_last_arrow() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let mut retx = invite("leg-a", 1, t0() + TimeDelta::milliseconds(500))?;
+        retx.is_retransmission = true;
+        let msgs = vec![
+            invite("leg-a", 1, t0())?,
+            invite("leg-b", 1, t0() + TimeDelta::milliseconds(10))?,
+            retx,
+        ];
+        let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(folded.len(), 2, "the retx folds away one row");
+        let a = folded
+            .iter()
+            .find(|m| m.raw_index == Some(0))
+            .ok_or("leg A's INVITE row is missing")?;
+        let b = folded
+            .iter()
+            .find(|m| m.raw_index == Some(1))
+            .ok_or("leg B's INVITE row is missing")?;
+        assert_eq!(a.folded_count, 1, "the retx folds under leg A's INVITE");
+        assert_eq!(b.folded_count, 0, "leg B's INVITE gets nothing of leg A");
+        Ok(())
+    }
+
+    /// A retransmission of the authenticated request, right after the auth
+    /// exchange, belongs to the collapsed auth fold: the fold counts
+    /// it and still says "auth retry" (it used to claim all five messages as
+    /// retransmissions), and expanding the fold accounts for every message:
+    /// the four rows plus the retx folded under its original.
+    #[test]
+    fn auth_fold_keeps_a_following_retx_of_its_member() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let cid = "cauthretx";
+        let mut retx = register(
+            cid,
+            2,
+            Some("Digest username=\"alice\""),
+            t0() + TimeDelta::milliseconds(40),
+        )?;
+        retx.is_retransmission = true;
+        let msgs = vec![
+            register(cid, 1, None, t0())?,
+            response(
+                cid,
+                401,
+                "Unauthorized",
+                1,
+                "REGISTER",
+                t0() + TimeDelta::milliseconds(10),
+            )?,
+            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20))?,
+            register(
+                cid,
+                2,
+                Some("Digest username=\"alice\""),
+                t0() + TimeDelta::milliseconds(30),
+            )?,
+            retx,
+        ];
+        let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(folded.len(), 1, "collapsed: one row");
+        assert_eq!(
+            folded[0].folded_count, 5,
+            "the fold holds all five messages"
+        );
+        let fl = folded[0].fold_label.as_deref().unwrap_or("");
+        assert!(fl.contains("auth retry"), "auth fold label lost: {fl:?}");
+
+        let mut expanded = HashSet::new();
+        expanded.insert(0usize);
+        let (_p2, shown) = prepare_messages(&msgs, t0(), None, &o, &expanded);
+        let hidden: usize = shown.iter().map(|m| m.folded_count).sum();
+        assert_eq!(
+            shown.len() + hidden,
+            msgs.len(),
+            "expanded: every message is a row or counted in a visible fold"
+        );
+        assert_eq!(shown.len(), 4, "expanded: four rows");
+        assert_eq!(
+            shown[3].folded_count, 1,
+            "the retx folds under its original"
+        );
+
+        // Collapsing again is the first picture.
+        let (_p3, again) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(again.len(), 1, "collapsed again: one row");
+        assert_eq!(
+            again[0].folded_count, 5,
+            "collapsed again: all five in the fold"
+        );
+        Ok(())
+    }
+
+    /// One auth exchange of `cid` starting `at` ms after `t0()`: REGISTER,
+    /// 401, ACK, credentialed REGISTER. Collapsed, it is one auth fold.
+    fn auth_exchange(cid: &str, at: i64) -> Result<Vec<SipMessage>, TestError> {
+        let ms = TimeDelta::milliseconds;
+        Ok(vec![
+            register(cid, 1, None, t0() + ms(at))?,
+            response(cid, 401, "Unauthorized", 1, "REGISTER", t0() + ms(at + 1))?,
+            ack_register(cid, 1, t0() + ms(at + 2))?,
+            register(cid, 2, Some("Digest username=\"alice\""), t0() + ms(at + 3))?,
+        ])
+    }
+
+    /// The credentialed REGISTER of `auth_exchange(cid, _)` again, as a
+    /// retransmission `at` ms after `t0()`.
+    fn auth_retx(cid: &str, at: i64) -> Result<SipMessage, TestError> {
+        let mut retx = register(
+            cid,
+            2,
+            Some("Digest username=\"alice\""),
+            t0() + TimeDelta::milliseconds(at),
+        )?;
+        retx.is_retransmission = true;
+        Ok(retx)
+    }
+
+    /// Regression (review of the per-leg fold): a retransmission of a member
+    /// of an EARLIER auth fold, after a later fold, still joins that earlier
+    /// fold and keeps its "auth retry" label.
+    #[test]
+    fn retx_of_an_earlier_auth_fold_member_stays_in_that_fold() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let mut msgs = auth_exchange("cfold-a", 0)?;
+        msgs.extend(auth_exchange("cfold-b", 100)?);
+        msgs.push(auth_retx("cfold-a", 500)?);
+        let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let a = folded
+            .iter()
+            .find(|m| m.raw_index == Some(0))
+            .ok_or("fold A header missing")?;
+        let fl = a.fold_label.as_deref().unwrap_or("");
+        assert!(fl.contains("auth retry"), "fold A label became: {fl:?}");
+        assert_eq!(a.folded_count, 5, "fold A counts its retransmission");
+        let b = folded
+            .iter()
+            .find(|m| m.raw_index == Some(4))
+            .ok_or("fold B header missing")?;
+        assert_eq!(b.folded_count, 4, "fold B gets nothing of leg A");
+        Ok(())
+    }
+
+    /// Failure side: a retransmission whose original is not in the list
+    /// stays its own row and folds into no other leg's arrow.
+    #[test]
+    fn retx_without_its_original_is_its_own_row() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let mut msgs = auth_exchange("cfold-b", 0)?;
+        msgs.push(auth_retx("cfold-a", 500)?);
+        let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(folded.len(), 2, "the auth fold and the lone retransmission");
+        assert_eq!(folded[0].folded_count, 4, "fold B is unchanged");
+        assert_eq!(
+            folded[1].raw_index,
+            Some(4),
+            "the retransmission is its own row"
+        );
+        Ok(())
+    }
+
+    /// Edge: two retransmissions after the fold both join it; the count is
+    /// six and the label still says "auth retry".
+    #[test]
+    fn two_retx_after_an_auth_fold_both_join_it() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let mut msgs = auth_exchange("cfold-a", 0)?;
+        msgs.push(auth_retx("cfold-a", 500)?);
+        msgs.push(auth_retx("cfold-a", 1500)?);
+        let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(folded.len(), 1, "one collapsed row");
+        assert_eq!(
+            folded[0].folded_count, 6,
+            "four members and two retransmissions"
+        );
+        let fl = folded[0].fold_label.as_deref().unwrap_or("");
+        assert!(fl.contains("auth retry"), "auth fold label lost: {fl:?}");
+        Ok(())
+    }
+
+    /// `[display] fold = false`: no fold at all, every message of an
+    /// auth retry with a retransmission is its own row.
+    #[test]
+    fn fold_off_keeps_every_message_its_own_row() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let cid = "cfoldoff";
+        let mut retx = register(
+            cid,
+            2,
+            Some("Digest username=\"alice\""),
+            t0() + TimeDelta::milliseconds(40),
+        )?;
+        retx.is_retransmission = true;
+        let msgs = vec![
+            register(cid, 1, None, t0())?,
+            response(
+                cid,
+                401,
+                "Unauthorized",
+                1,
+                "REGISTER",
+                t0() + TimeDelta::milliseconds(10),
+            )?,
+            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20))?,
+            register(
+                cid,
+                2,
+                Some("Digest username=\"alice\""),
+                t0() + TimeDelta::milliseconds(30),
+            )?,
+            retx,
+        ];
+        let on = LayoutOptions::from(&o);
+        let off = LayoutOptions {
+            fold: false,
+            ..LayoutOptions::from(&o)
+        };
+        let raw_rows = |lo: &LayoutOptions<'_>| {
+            layout(&msgs, t0(), None, lo, &HashSet::new())
+                .1
+                .iter()
+                .filter(|r| r.raw_index.is_some())
+                .count()
+        };
+        assert_eq!(raw_rows(&on), 1, "fold on: one auth-fold row");
+        assert_eq!(raw_rows(&off), 5, "fold off: every message a row");
         Ok(())
     }
 

@@ -181,6 +181,34 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
         Span::raw(format!(
             "{L1_GAP}Dialogs: {displayed_count} shown of {total_count}"
         )),
+        // The order of the rows, always named: `<`, `>`, `Z` and `L` change
+        // it, and a list sorted by some other column than the number reads
+        // as dialogs jumping around.
+        Span::raw(format!(
+            "{L1_GAP}Sort: {} {}",
+            app.call_list.sort_column().label(),
+            if app.call_list.sort_ascending() {
+                "\u{25b2}"
+            } else {
+                "\u{25bc}"
+            }
+        )),
+        // Named only while it hides something, to keep line 1 short.
+        Span::raw(if app.call_list.only_open {
+            format!("{L1_GAP}Showing: not over")
+        } else {
+            String::new()
+        }),
+        // Named only when a method filter dropped something at ingest:
+        // those messages are in no dialog and in no other count.
+        Span::raw(if app.cached_dropped_by_method > 0 {
+            format!(
+                "{L1_GAP}Dropped by method: {}",
+                app.cached_dropped_by_method
+            )
+        } else {
+            String::new()
+        }),
         Span::raw(format!(
             "{L1_GAP}Autoscroll: {}",
             if app.call_list.autoscroll {
@@ -522,7 +550,7 @@ pub(in crate::tui) fn fkey_bar_items(
 ) -> Vec<(&'static str, &'static str)> {
     if let Some(p) = popup {
         match p {
-            Popup::QuitConfirm => vec![("Y", "Quit"), ("N/Esc", "Cancel")],
+            Popup::QuitConfirm => vec![("Y/Enter", "Quit"), ("N/Esc", "Cancel")],
             Popup::ClearConfirm(_) => vec![("Y", "Discard"), ("N/Esc/Enter", "Keep")],
             Popup::G729Install => vec![("Y", "Download"), ("N/Esc", "Not now")],
             Popup::NoteEditor => vec![("Enter", "Keep"), ("Esc", "Cancel")],

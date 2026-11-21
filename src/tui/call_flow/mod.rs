@@ -86,6 +86,9 @@ pub struct FlowDisplayOptions<'a> {
     /// means no RTP was captured for the call; the ladder then shows one
     /// centered bar with the codec negotiated in SDP.
     pub rtp_streams: &'a [RtpFlowStream],
+    /// Fold retransmissions and auth retries (`[display] fold`), so an
+    /// export draws what the screen draws.
+    pub fold: bool,
 }
 
 // Re-export everything that external code uses.

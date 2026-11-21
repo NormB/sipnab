@@ -36,14 +36,14 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{self, EnterAlternateScreen};
 use parking_lot::RwLock;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::names::{NameMode, NameResolver};
 use crate::rtp::stream_store::StreamStore;
@@ -336,6 +336,9 @@ pub struct App {
     capture_options: crate::pipeline::PipelineOptions,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
+    /// Messages dropped at ingest by method (`--drop-method`,
+    /// `--only-method`), refreshed with `cached_dialog_count`.
+    cached_dropped_by_method: u64,
     /// Displayed dialog list cache (filter+search+sort, derived per tick).
     displayed: DisplayedCache,
     /// Cached displayed dialog count (updated when lock is available).
@@ -623,6 +626,7 @@ impl App {
             bpf_filter: String::new(),
             bpf_filter_generated: false,
             cached_dialog_count: 0,
+            cached_dropped_by_method: 0,
             displayed: DisplayedCache::default(),
             cached_displayed_count: 0,
             save: SaveDialogState::default(),
@@ -1051,6 +1055,15 @@ impl App {
         );
     }
 
+    /// Open the session with these `[display]` preferences.
+    pub(crate) fn apply_display_prefs(&mut self, prefs: DisplayPrefs) {
+        self.flow.fold = prefs.fold;
+        self.call_list.autoscroll = prefs.autoscroll;
+        self.sdp_display_mode = prefs.sdp_display;
+        self.color_mode = prefs.color_mode;
+        self.flow.extended = prefs.extended_flow;
+    }
+
     /// Reset all per-call transient state when entering a call flow view.
     /// Scroll, selection, fold expansion, marks and diff selection are all
     /// positions within ONE dialog's ladder; carrying them into another
@@ -1329,6 +1342,7 @@ impl App {
             return;
         };
         self.cached_dialog_count = store.len();
+        self.cached_dropped_by_method = store.total_messages_dropped_by_method();
 
         self.sync_displayed_dialogs(&store);
         self.cached_displayed_count = self.displayed.ids.len();
@@ -1390,6 +1404,22 @@ impl App {
         }
     }
 
+    /// The call list's view inputs (filter, time window, search, sort, `d`)
+    /// as one [`call_list::DisplayQuery`], so every caller asks the same
+    /// question. `capture_now` is left for the callee to read when needed.
+    pub(in crate::tui) fn display_query(&self) -> call_list::DisplayQuery<'_> {
+        call_list::DisplayQuery {
+            filter: self.active_filter.as_ref(),
+            after: self.active_time_after,
+            before: self.active_time_before,
+            search_query: &self.search_query,
+            sort_column: self.call_list.sort_column(),
+            sort_ascending: self.call_list.sort_ascending(),
+            only_open: self.call_list.only_open,
+            capture_now: None,
+        }
+    }
+
     /// The displayed dialog list (filter + search + sort), rebuilt when a
     /// user input changed, or at the churn floor when only the store did.
     fn sync_displayed_dialogs(&mut self, store: &DialogStore) {
@@ -1398,6 +1428,7 @@ impl App {
                 && k.query == self.search_query
                 && k.sort_column == self.call_list.sort_column()
                 && k.sort_ascending == self.call_list.sort_ascending()
+                && k.only_open == self.call_list.only_open
         });
         let data_fresh = self
             .displayed
@@ -1413,14 +1444,16 @@ impl App {
         if fresh || churn_floored {
             return;
         }
-        self.displayed.ids = call_list::displayed_dialogs(
+        // The capture's clock, read once per rebuild and kept with the list:
+        // the `d` filter uses it here and the State cells on every frame.
+        let capture_now = store.capture_now();
+        self.displayed.capture_now = Some(capture_now);
+        self.displayed.ids = call_list::displayed_dialogs_open(
             store,
-            self.active_filter.as_ref(),
-            self.active_time_after,
-            self.active_time_before,
-            &self.search_query,
-            self.call_list.sort_column(),
-            self.call_list.sort_ascending(),
+            &call_list::DisplayQuery {
+                capture_now: Some(capture_now),
+                ..self.display_query()
+            },
         )
         .iter()
         .map(|d| d.call_id.clone())
@@ -1431,6 +1464,7 @@ impl App {
             query: self.search_query.clone(),
             sort_column: self.call_list.sort_column(),
             sort_ascending: self.call_list.sort_ascending(),
+            only_open: self.call_list.only_open,
         });
         self.displayed.floor.mark();
     }
@@ -1904,6 +1938,7 @@ impl App {
             ts_mode: self.timestamp_mode,
             show_rtp: self.flow.show_rtp && !self.flow.ladder.rtp_streams.is_empty(),
             resolver: self.resolver.as_ref(),
+            fold: self.flow.fold,
             name_mode: self.name_mode,
             rtp_streams: &self.flow.ladder.rtp_streams,
         };
@@ -1948,6 +1983,7 @@ impl App {
             ts_mode: self.timestamp_mode,
             show_rtp: self.flow.show_rtp,
             resolver: self.resolver.as_ref(),
+            fold: self.flow.fold,
             name_mode: self.name_mode,
             // A transaction filter narrows the ladder to one transaction;
             // the call's streams are not part of it.
@@ -2262,16 +2298,9 @@ impl Drop for TerminalGuard {
     /// there is no recovery path during teardown), then tell the crash
     /// hook the terminal is sane so it won't restore twice.
     fn drop(&mut self) {
-        let _ = execute!(
-            io::stdout(),
-            crossterm::event::DisableMouseCapture,
-            // Harmless when paste was never on; restores it when the run
-            // ended with the password popup open.
-            crossterm::event::DisableBracketedPaste,
-            crossterm::cursor::Show,
-            LeaveAlternateScreen
-        );
-        let _ = terminal::disable_raw_mode();
+        // Disabling bracketed paste is harmless when it was never on; it
+        // restores it when the run ended with the password popup open.
+        crate::crash::restore_terminal();
         // The terminal is sane again; the crash hook must not restore twice.
         crate::crash::set_terminal_raw(false);
     }
@@ -2467,7 +2496,12 @@ fn event_loop(
         // terminal; its read loop never returns on one that has gone. A lost
         // terminal is the hang-up SIGHUP reports, and the run stops the way
         // SIGHUP stops it, exiting 129.
-        let found = input.wait(app.poll_timeout())?;
+        // A lone ESC held by the parser bounds the wait to its ESC_DELAY,
+        // so a lone Esc acts at once and a split arrow key stays an arrow.
+        let timeout = parser
+            .escape_wait()
+            .map_or(app.poll_timeout(), |left| left.min(app.poll_timeout()));
+        let found = input.wait(timeout)?;
         let terminal_input::Taken::Events(events) =
             terminal_input::take_input(input, found, &mut parser)?
         else {
@@ -2985,6 +3019,33 @@ mod tests {
             0,
             "unchanged data: the next frame must reuse the cached list"
         );
+        Ok(())
+    }
+
+    /// The capture's clock (`DialogStore::capture_now`, a scan of every
+    /// dialog) is read when the displayed list is rebuilt, never per frame:
+    /// a frame that reuses the cached list reads it zero times, and the
+    /// State cells use the value cached with the list.
+    #[test]
+    fn call_list_frame_reads_the_capture_clock_only_on_a_rebuild() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("clock-1@test", "1001", "1002", base_ts())?,
+            make_invite("clock-2@test", "1003", "1004", base_ts())?,
+        ]);
+        let reads = || crate::sip::dialog_store::CAPTURE_NOW_CALLS.with(|c| c.get());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        let before = reads();
+        terminal.draw(|f| app.render(f))?;
+        assert!(
+            reads() - before <= 1,
+            "a frame that rebuilds the list reads the clock at most once, did {}x",
+            reads() - before
+        );
+        let mid = reads();
+        terminal.draw(|f| app.render(f))?;
+        assert_eq!(reads() - mid, 0, "a cached frame must not read the clock");
         Ok(())
     }
 
@@ -3936,6 +3997,70 @@ mod tests {
         app.sync_caches();
         assert_eq!(app.cached_dialog_count, 2);
         assert_eq!(app.cached_displayed_count, 2);
+        Ok(())
+    }
+
+    /// The call list's `#` is the dialog's own number, given when it was
+    /// first seen: a search that hides the first two rows, or a reversed sort,
+    /// shows the third dialog as 3, never as its row position.
+    #[test]
+    fn the_index_column_is_the_dialog_number_not_the_row() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("num-1@test", "1001", "1002", base_ts())?,
+            make_invite("num-2@test", "1003", "1004", base_ts())?,
+            make_invite("num-3@test", "1005", "1006", base_ts())?,
+        ]);
+        // The number after each row's checkbox, top to bottom.
+        let numbers = |app: &mut App| -> Result<Vec<String>, TestError> {
+            app.elapse_churn_floors_for_test();
+            app.sync_caches();
+            let mut terminal = Terminal::new(TestBackend::new(120, 12))?;
+            terminal.draw(|f| app.render(f))?;
+            Ok((0..12u16)
+                .map(|y| {
+                    (0..120u16)
+                        .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .filter(|line| line.contains("INVITE"))
+                .filter_map(|line| {
+                    let (_, rest) = line.split_once(']')?;
+                    rest.split_whitespace().next().map(str::to_string)
+                })
+                .collect())
+        };
+        assert_eq!(
+            numbers(&mut app)?,
+            ["1", "2", "3"],
+            "every dialog shows its number"
+        );
+        app.search_query = "1005".to_string();
+        assert_eq!(numbers(&mut app)?, ["3"], "a search keeps the number");
+        app.search_query.clear();
+        app.call_list.reverse_sort();
+        assert_eq!(
+            numbers(&mut app)?,
+            ["3", "2", "1"],
+            "a reversed sort keeps it"
+        );
+        // A number wider than the box is shown whole, never cut short.
+        if let Some(d) = app.dialog_store.write().get_mut("num-3@test") {
+            d.number = 123_456;
+        }
+        app.dialog_store.write().retain(|_| true); // a change the tick sees
+        app.elapse_churn_floors_for_test();
+        app.sync_caches();
+        let mut terminal = Terminal::new(TestBackend::new(120, 12))?;
+        terminal.draw(|f| app.render(f))?;
+        let shown = (0..12u16).any(|y| {
+            let line: String = (0..120u16)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
+                .collect();
+            line.contains(" 123456 ") && line.contains("INVITE")
+        });
+        assert!(shown, "the six-digit number is shown whole");
         Ok(())
     }
 

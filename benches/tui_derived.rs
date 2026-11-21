@@ -284,6 +284,7 @@ fn bench_prepare_ladder(c: &mut Criterion) {
             resolver: &resolver,
             name_mode: NameMode::Off,
             rtp_streams: &[],
+            fold: true,
         };
         b.iter(|| {
             prepare_messages(&msgs, first_ts, None, &opts, &folds)
