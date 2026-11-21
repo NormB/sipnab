@@ -49,6 +49,11 @@ entry that carries them.
 
 ### Fixed
 
+- **REST routes read a request body only after the credential check.**
+  - Was: A caller without a credential still had the server read and parse up to 1 MiB of JSON.
+  - Was: `{"enabled": false, "enabled": true}` opened the persistence gate; the last copy of a key won.
+  - Effect: A key given twice, or an object or array as a value, is a `400` whose `detail` names the rule.
+  - Docs: [Bind address & connection limits](docs/rest-api.md#bind-address--connection-limits)
 - **A filter's regexes have a budget, so one filter cannot take seconds to read.**
   - Was: A filter compiled every `=~` regex on reading; `(?i)` classes such as `[\D]` cost about 0.4 s per KiB, with no total.
   - Effect: One expression holds at most 8 regexes, 1024 bytes of regex text and 16 classes, checked before compiling.
