@@ -12,8 +12,8 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
-    "@lhci/cli": "0.16.0",
-    "@playwright/test": "1.65.0"
+    "@lhci/cli": "0.16.1",
+    "@playwright/test": "1.65.1"
   },
   "overrides": {
     "uuid": "^11.1.1",
