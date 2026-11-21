@@ -1936,7 +1936,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // line for docs/stability.md) and docs/stability.md 1 (the changelog).
     // 2758 -> 2760 (contributed TUI keys, +2): docs/tui-walkthrough.md 2,
     // "Set how the TUI starts" (config-reference.md and errors.md).
-    const EXPECTED_WIKI_LINKS: usize = 2760;
+    // 2760 -> 2763 (sngrep mode, #884, +3): docs/keybindings.md 1 (its sngrep
+    // mode section links the how-to) and docs/tui-walkthrough.md 2, "Use
+    // sngrep's keys and colors" (config-reference.md and keybindings.md).
+    const EXPECTED_WIKI_LINKS: usize = 2763;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -1070,16 +1070,17 @@ A `[diagnosis]` threshold is 0, negative, infinity or NaN (not-a-number).
 
 **What to do:** Set `view_filter_detail` to `summary` or `full`, or remove the key.
 
-### `[display] sdp_display must be one of none, summary, full, got {m:?}`
+### `[display] sdp_display must be one of none, summary, full (or sngrep, in sngrep mode), got {m:?}`
 
 `[display] sdp_display` names an SDP form the call flow does not have.
 
 - `{m:?}` is the value in the file.
 - `none`, `summary` and `full` are the forms the `d` key cycles through in the call flow; the key sets the one it starts in.
+- `sngrep` is the fourth form, used only in sngrep mode. With the mode off sipnab starts, ignores the key and says so on the status line.
 - sipnab checks this key only in builds that include the terminal UI.
 - The printed line starts with `invalid config value: `.
 
-**What to do:** Set `sdp_display` to `none`, `summary` or `full`, in lower case, or remove the key.
+**What to do:** Set `sdp_display` to `none`, `summary`, `full` or `sngrep`, in lower case, or remove the key.
 
 ### `[display] color_mode must be one of method, call_id, cseq, got {m:?}`
 

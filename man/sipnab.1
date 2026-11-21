@@ -294,6 +294,12 @@ Show calls with potential one\-way audio issues.
 Show calls whose RTP arrived from an address no SDP in the dialog advertised \(em the signature of a NAT rewriting the media source.
 .SS Output
 .TP
+\fB\-\-sngrep\-mode\fR
+sngrep mode: the TUI takes sngrep's keys and colors.
+.TP
+\fB\-\-no\-sngrep\-mode\fR
+sipnab's own keys and colors even when \fB[display] sngrep_mode = true\fR. The last of \fB\-\-sngrep\-mode\fR / \fB\-\-no\-sngrep\-mode\fR typed wins.
+.TP
 \fB\-\-json\fR
 Output NDJSON: one JSON object per SIP message, pipeable to jq. Schema in docs/output\-formats.md.
 .TP

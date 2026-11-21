@@ -1091,6 +1091,8 @@ Multiple diagnostic flags combine with OR.
 | `--line-buffer` | -- | off | 0.3.0 | Flush output after each line (useful for piping) |
 | `--color` | `<WHEN>` | `auto` | 0.3.0 | Color output mode: `auto`, `always`, `never`. Config: `[display] color` |
 | `--from-to-mode` | `<MODE>` | `default` | 0.4.4 | Default TUI From/To column display: `default` (user else host:port), `host-port`, `user`, `user-host-port`. Cycle at runtime with `u`. Overrides `[display] from_to`. Config: `[display] from_to` |
+| `--sngrep-mode` | | off | Unreleased | sngrep's keys and colors in the TUI: on the call list, call flow, raw message and message compare screens every sngrep key does what it does in sngrep; sipnab commands whose keys sngrep uses move to free keys, listed at the top of the F1 help. Config: `[display] sngrep_mode` |
+| `--no-sngrep-mode` | | off | Unreleased | sipnab's own keys and colors even when `[display] sngrep_mode = true`. The last of `--sngrep-mode` / `--no-sngrep-mode` typed wins. Config: `[display] sngrep_mode` |
 | `--payload-limit` | `<BYTES>` | -- | 0.3.0 | Maximum payload bytes the per-message text printout shows for each message, with `--show-empty` and `--hexdump` too. It does not shorten `--json`, `--json-pretty` or `-T`/`--text-dump` output. Config: `[display] payload_limit` |
 | `-T`, `--text-dump` | -- | off | 0.3.0 | Dump raw SIP message text (like the CLI matcher `-T`) |
 | `--no-cli-print` | -- | off | 0.3.2 | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout). Implied by `--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` unless `--json`, `--json-pretty`, `-T` or `--fail2ban` is also given |
@@ -1107,6 +1109,9 @@ Multiple diagnostic flags combine with OR.
 **Examples**
 - `sipnab -N -I capture.pcap --no-delta-time` — print absolute times when your config file sets `[display] delta_time = true`
 - `sipnab -N -I capture.pcap --delta-time --no-delta-time` — the last of the pair wins, so times print absolute
+- `sipnab -I capture.pcap --sngrep-mode` — open a capture in the TUI with sngrep's keys, colors and bottom key bar
+- `sudo sipnab -d eth0 --no-sngrep-mode` — sipnab's own keys for one run when your config file sets `[display] sngrep_mode = true`
+- `sipnab -I capture.pcap --no-sngrep-mode --sngrep-mode` — the last of the pair wins, so the TUI opens in sngrep mode
 
 - `sipnab -N -I calls.pcap --lint --no-cli-print` — run the RFC conformance linter over every dialog in a capture and print each finding with the rule identifier and the RFC section it reads from. Informational: it leaves the exit code alone
 - `sipnab -N -I calls.pcap --export-vcon-when "state == 'Failed'" --export-vcon-dir out --redact --redact-keep-prefix 4 --no-cli-print` — hand a vendor every failed call with keyed tokens standing in for the subscriber numbers and the area code intact, so they can still see which route the failures came from

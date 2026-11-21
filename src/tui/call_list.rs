@@ -124,6 +124,9 @@ pub struct CallListState {
     pub column_selector_open: bool,
     /// Currently highlighted row in the column selector popup.
     pub column_selector_cursor: usize,
+    /// Column draw order (indices into `ALL_COLUMNS`); the column
+    /// selector's `-` / `+` (sngrep mode) move a column within it.
+    pub column_order: [usize; 11],
     /// Whether autoscroll is enabled (new dialogs scroll to bottom).
     pub autoscroll: bool,
     /// `d`: show only the dialogs not over (a call up, a registration
@@ -145,6 +148,7 @@ impl CallListState {
             visible_columns: [true; 11],
             column_selector_open: false,
             column_selector_cursor: 0,
+            column_order: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             autoscroll: true,
             only_open: false,
         }
@@ -302,9 +306,20 @@ impl CallListState {
 
     /// Toggle visibility of the column at the column selector cursor.
     pub fn toggle_column_visibility(&mut self) {
-        if self.column_selector_cursor < self.visible_columns.len() {
-            self.visible_columns[self.column_selector_cursor] =
-                !self.visible_columns[self.column_selector_cursor];
+        if let Some(&col) = self.column_order.get(self.column_selector_cursor) {
+            self.visible_columns[col] = !self.visible_columns[col];
+        }
+    }
+
+    /// Move the column under the selector cursor one place up (`down` =
+    /// false) or down in the draw order, the cursor following it (sngrep
+    /// `-` / `+` in the column selector). At either end it stays put.
+    pub fn move_column(&mut self, down: bool) {
+        let at = self.column_selector_cursor;
+        let to = if down { at + 1 } else { at.wrapping_sub(1) };
+        if at < self.column_order.len() && to < self.column_order.len() {
+            self.column_order.swap(at, to);
+            self.column_selector_cursor = to;
         }
     }
 
@@ -853,7 +868,10 @@ pub fn render_call_list(
     // width's. Note this deliberately does not touch `state.visible_columns`
     // — the user's choice is persisted to their sipnabrc, and a column
     // dropped because the terminal is narrow must come back when it grows.
-    let vis_indices: Vec<usize> = (0..COLUMN_LABELS.len())
+    let vis_indices: Vec<usize> = state
+        .column_order
+        .iter()
+        .copied()
         .filter(|&i| state.visible_columns[i] && all_widths[i].is_some())
         .collect();
 
@@ -909,6 +927,7 @@ pub fn render_call_list(
             .highlight_symbol("> ")
             .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
         frame.render_stateful_widget(empty_table, table_area, &mut state.table_state);
+        mark_autoscroll(frame, table_area, state, theme, header_style);
 
         // Render help message below the header row
         if table_area.height > 1 {
@@ -983,12 +1002,19 @@ pub fn render_call_list(
             };
 
             // Method cell colors
-            let method_style = match dialog.method.as_str() {
-                "INVITE" => Style::default().fg(theme.good),
-                "BYE" => Style::default().fg(theme.bad),
-                "CANCEL" => Style::default().fg(theme.warning),
-                "REGISTER" => Style::default().fg(theme.header),
-                _ => Style::default(),
+            let method_style = if theme.sngrep {
+                super::sngrep_mode::tone(
+                    theme,
+                    super::sngrep_mode::method_style(dialog.method.as_str()),
+                )
+            } else {
+                match dialog.method.as_str() {
+                    "INVITE" => Style::default().fg(theme.good),
+                    "BYE" => Style::default().fg(theme.bad),
+                    "CANCEL" => Style::default().fg(theme.warning),
+                    "REGISTER" => Style::default().fg(theme.header),
+                    _ => Style::default(),
+                }
             };
 
             // Date column formatting based on timestamp mode. Deferred into a
@@ -1159,14 +1185,41 @@ pub fn render_call_list(
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .row_highlight_style(if theme.sngrep {
+            super::sngrep_mode::tone(theme, super::sngrep_mode::list_highlight())
+        } else {
+            Style::default().add_modifier(Modifier::REVERSED)
+        })
         .highlight_symbol("> ");
 
     frame.render_stateful_widget(table, table_area, &mut state.table_state);
+    mark_autoscroll(frame, table_area, state, theme, header_style);
 
     // Restore absolute selected index so the rest of the app works correctly
     state.table_state.select(Some(selected));
     *state.table_state.offset_mut() = scroll_offset;
+}
+
+/// sngrep mode: an `A` in the first cell of the column header while
+/// autoscroll is on, where sngrep prints its autoscroll indicator.
+fn mark_autoscroll(
+    frame: &mut Frame,
+    table_area: Rect,
+    state: &CallListState,
+    theme: &super::Theme,
+    header_style: Style,
+) {
+    if theme.sngrep && state.autoscroll && table_area.width > 0 && table_area.height > 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("A", header_style)),
+            Rect {
+                x: table_area.x,
+                y: table_area.y,
+                width: 1,
+                height: 1,
+            },
+        );
+    }
 }
 
 // ── Column width calculation ───────────────────────────────────────
@@ -1496,8 +1549,9 @@ pub fn render_column_selector(
     theme: &super::Theme,
 ) {
     let mut lines: Vec<ratatui::text::Line<'_>> = Vec::new();
-    for (i, label) in COLUMN_LABELS.iter().enumerate() {
-        let check = if state.visible_columns[i] { "x" } else { " " };
+    for (i, &col) in state.column_order.iter().enumerate() {
+        let label = &COLUMN_LABELS[col];
+        let check = if state.visible_columns[col] { "x" } else { " " };
         let prefix = if i == state.column_selector_cursor {
             "> "
         } else {
@@ -1569,6 +1623,9 @@ fn format_delta(delta: chrono::TimeDelta) -> String {
 
 /// Return a style for a dialog state label.
 fn state_style(state: &DialogState, theme: &super::Theme) -> Style {
+    if theme.sngrep {
+        return super::sngrep_mode::tone(theme, super::sngrep_mode::state_style(state));
+    }
     match state {
         DialogState::Failed => Style::default().fg(theme.bad).add_modifier(Modifier::BOLD),
         DialogState::InCall | DialogState::Active => Style::default().fg(theme.good),

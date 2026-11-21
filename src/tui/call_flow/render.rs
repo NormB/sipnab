@@ -42,6 +42,9 @@ const SELECTION_BG: Color = Color::Rgb(40, 40, 60);
 /// dark color; painted under NO_COLOR it hid the terminal's own dark text on
 /// a light terminal.
 fn selection_style(theme: &Theme) -> Style {
+    if theme.sngrep {
+        return crate::tui::sngrep_mode::flow_selection();
+    }
     if theme.no_color {
         Style::default().add_modifier(Modifier::REVERSED)
     } else {
@@ -500,14 +503,23 @@ pub fn render_call_flow_direct(
         return;
     }
 
-    let label_style = Style::default()
-        .fg(theme.header)
-        .add_modifier(Modifier::BOLD);
+    // sngrep draws the column names and their lines in the default color.
+    let label_style = if theme.sngrep {
+        Style::default()
+    } else {
+        Style::default()
+            .fg(theme.header)
+            .add_modifier(Modifier::BOLD)
+    };
     let ladder = Ladder {
         area,
         pipes: pipe_positions,
         ts_width,
-        pipe_style: Style::default().fg(theme.muted),
+        pipe_style: if theme.sngrep {
+            Style::default()
+        } else {
+            Style::default().fg(theme.muted)
+        },
         theme,
         noted: &nav.noted,
     };
@@ -695,7 +707,12 @@ impl Ladder<'_> {
         // below) — never a leading marker glyph, which would shift the
         // whole row's content right by one column as the cursor moves.
         if !msg.timestamp.is_empty() {
+            // sngrep: the current arrow's time bold, no dimming elsewhere.
             let ts_style = match msg.selection_state {
+                SelectionState::Selected if self.theme.sngrep => {
+                    msg.timestamp_style.add_modifier(Modifier::BOLD)
+                }
+                _ if self.theme.sngrep => msg.timestamp_style,
                 SelectionState::Selected | SelectionState::Related => msg.timestamp_style,
                 SelectionState::Normal => msg.timestamp_style.add_modifier(Modifier::DIM),
             };
@@ -738,10 +755,11 @@ impl Ladder<'_> {
         // Full-row highlight for the current message: patch a background
         // across the whole row (content keeps its own fg). This marks the
         // cursor without shifting any content horizontally.
-        if msg.selection_state == SelectionState::Selected {
+        // sngrep mode highlights the arrow alone (see `draw_arrow`), not the row.
+        if msg.selection_state == SelectionState::Selected && !self.theme.sngrep {
             let row = Rect::new(area.x, y, area.width, 1).intersection(buf.area);
             buf.set_style(row, selection_style(self.theme));
-            if !self.theme.no_color {
+            if !self.theme.no_color && !self.theme.sngrep {
                 // Each character keeps its hue but must read on the band
                 // (WCAG AA): the default text color is dark on a light
                 // terminal. Runs of one color are computed once.
@@ -849,7 +867,13 @@ impl Ladder<'_> {
             Some(label.as_str())
         };
         let (arrow_str, arrow_x) = format_arrow_with_shaft(shown, src_x, dst_x, shaft);
+        // sngrep mode: the current arrow (label and shaft) highlighted, the
+        // others in their own color, never dimmed.
         let arrow_style = match msg.selection_state {
+            SelectionState::Selected if self.theme.sngrep => {
+                msg.style.patch(selection_style(self.theme))
+            }
+            _ if self.theme.sngrep => msg.style,
             SelectionState::Selected => msg
                 .style
                 .patch(selection_style(self.theme))
@@ -858,6 +882,132 @@ impl Ladder<'_> {
             SelectionState::Normal => msg.style.add_modifier(Modifier::DIM),
         };
         crate::tui::render::set_string_clipped(buf, self.area, arrow_x, y, &arrow_str, arrow_style);
+    }
+
+    /// A line written between an arrow's two pipes (`SdpDisplayMode::Sngrep`:
+    /// the arrow's title and its media lines): the pipes, then `text` with
+    /// its middle on the middle of the gap, never over the left pipe; for a
+    /// message to its own column, five columns right of the pipe. In the
+    /// arrow's style, highlighted with it.
+    fn draw_media_line(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        msg: &FormattedMessage,
+        y: u16,
+        text: &str,
+        style: Style,
+    ) {
+        self.draw_pipes(buf, y, "\u{2502}", self.pipe_style);
+        let (left, right) = self.arrow_ends(msg);
+        let width = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
+        let x = if left == right {
+            left.saturating_add(5)
+        } else {
+            let middle = left + (right - left) / 2;
+            middle.saturating_sub(width / 2).max(left + 1)
+        };
+        let style = match msg.selection_state {
+            SelectionState::Selected => style.patch(selection_style(self.theme)),
+            _ => style,
+        };
+        crate::tui::render::set_string_clipped(buf, self.area, x, y, text, style);
+    }
+
+    /// The x of the left and the right pipe a message runs between.
+    fn arrow_ends(&self, msg: &FormattedMessage) -> (u16, u16) {
+        let last = self.pipes.len().saturating_sub(1);
+        let a = self.pipes[msg.src_col.min(last)];
+        let b = self.pipes[msg.dst_col.min(last)];
+        (a.min(b), a.max(b))
+    }
+
+    /// The arrow row of sngrep mode: a shaft between the two pipes with one
+    /// blank column on each side, its head (`>` or `<`) at the destination
+    /// end, three heads (`>>>` / `<<<`) for a retransmission. A message to
+    /// its own column is a hook right of the pipe: `─┐` on the row above,
+    /// `<┘` on this one (`<┘<` for a retransmission).
+    fn draw_sngrep_arrow(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        msg: &FormattedMessage,
+        y: u16,
+        above_ok: bool,
+    ) {
+        self.draw_pipes(buf, y, "\u{2502}", self.pipe_style);
+        let style = match msg.selection_state {
+            SelectionState::Selected => msg.style.patch(selection_style(self.theme)),
+            _ => msg.style,
+        };
+        let put = |buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, s: &str| {
+            crate::tui::render::set_string_clipped(buf, self.area, x, y, s, style);
+        };
+        let (left, right) = self.arrow_ends(msg);
+        let heads = if msg.is_retransmission { 3 } else { 1 };
+        if left == right {
+            // A retransmission adds a second head after the hook.
+            let hook = if heads > 1 { "<\u{2518}<" } else { "<\u{2518}" };
+            put(buf, left + 1, y, hook);
+            if above_ok {
+                put(buf, left + 1, y - 1, "\u{2500}\u{2510}");
+            }
+            return;
+        }
+        // Columns strictly between the pipes, less one blank on each side.
+        let start = left + 2;
+        let end = right.saturating_sub(1);
+        if end <= start {
+            return;
+        }
+        let len = usize::from(end - start);
+        let heads = heads.min(len);
+        let last = self.pipes.len().saturating_sub(1);
+        let rightward = self.pipes[msg.src_col.min(last)] < self.pipes[msg.dst_col.min(last)];
+        let head = if rightward { '>' } else { '<' };
+        let shaft: String = (0..len)
+            .map(|i| {
+                let at_head = if rightward {
+                    i >= len - heads
+                } else {
+                    i < heads
+                };
+                if at_head { head } else { '\u{2500}' }
+            })
+            .collect();
+        put(buf, start, y, &shaft);
+    }
+
+    /// sngrep's times: the absolute time (bold on the current message) at
+    /// `y`, the delta to the previous message cyan on the row above.
+    fn draw_sngrep_times(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        msg: &FormattedMessage,
+        y: u16,
+        above_ok: bool,
+    ) {
+        let ts_style = if msg.selection_state == SelectionState::Selected {
+            msg.timestamp_style.add_modifier(Modifier::BOLD)
+        } else {
+            msg.timestamp_style
+        };
+        crate::tui::render::set_string_clipped(
+            buf,
+            self.area,
+            self.area.x,
+            y,
+            &msg.timestamp,
+            ts_style,
+        );
+        if above_ok && let Some(delta) = &msg.sngrep_delta {
+            crate::tui::render::set_string_clipped(
+                buf,
+                self.area,
+                self.area.x,
+                y - 1,
+                delta,
+                crate::tui::sngrep_mode::tone(self.theme, Style::default().fg(Color::Cyan)),
+            );
+        }
     }
 
     /// Annotations after the rightmost pipe: PDD, SDP delta badge, fold
@@ -963,6 +1113,9 @@ impl RowWindow {
         ladder: &Ladder<'_>,
         msg: &FormattedMessage,
     ) -> std::ops::ControlFlow<()> {
+        if msg.sngrep_split {
+            return self.draw_sngrep_message(buf, ladder, msg);
+        }
         let msg_rows = 1 + msg.extra_lines.len();
 
         // Skip if entirely before the scroll window
@@ -990,19 +1143,72 @@ impl RowWindow {
             let extra_logical = self.logical_row + 1 + ei;
             if extra_logical >= self.scroll_offset && self.row < self.max_row {
                 let y = ladder.area.y + self.row as u16;
-                crate::tui::render::set_string_clipped(
-                    buf,
-                    ladder.area,
-                    ladder.area.x,
-                    y,
-                    text,
-                    *style,
-                );
+                if msg.extra_centered {
+                    ladder.draw_media_line(buf, msg, y, text, *style);
+                } else {
+                    crate::tui::render::set_string_clipped(
+                        buf,
+                        ladder.area,
+                        ladder.area.x,
+                        y,
+                        text,
+                        *style,
+                    );
+                }
                 self.row += 1;
             }
         }
 
         self.logical_row += msg_rows;
+        self.full()
+    }
+
+    /// sngrep mode: the label
+    /// centered on the first row, the media lines under it, then the arrow
+    /// on a row of its own; the time on the row above the arrow, the delta
+    /// on the row above that.
+    fn draw_sngrep_message(
+        &mut self,
+        buf: &mut ratatui::buffer::Buffer,
+        ladder: &Ladder<'_>,
+        msg: &FormattedMessage,
+    ) -> std::ops::ControlFlow<()> {
+        let n = msg.ladder_rows();
+        let title = arrow_label(msg);
+        for k in 0..n {
+            if self.logical_row + k < self.scroll_offset || self.row >= self.max_row {
+                continue;
+            }
+            let y = ladder.area.y + self.row as u16;
+            // Row 2 is the first one under the participant header.
+            let above_ok = self.row > 2;
+            if k == n - 1 {
+                ladder.draw_sngrep_arrow(buf, msg, y, above_ok);
+            } else if k == 0 {
+                ladder.draw_media_line(buf, msg, y, &title, msg.style);
+                ladder.draw_annotations(buf, msg, y);
+            } else {
+                let (text, style) = &msg.extra_lines[k - 1];
+                if msg.extra_centered {
+                    ladder.draw_media_line(buf, msg, y, text, *style);
+                } else {
+                    ladder.draw_pipes(buf, y, "\u{2502}", ladder.pipe_style);
+                    crate::tui::render::set_string_clipped(
+                        buf,
+                        ladder.area,
+                        ladder.area.x,
+                        y,
+                        text,
+                        *style,
+                    );
+                }
+            }
+            if k == n - 2 {
+                ladder.draw_sngrep_times(buf, msg, y, above_ok);
+            }
+            self.row += 1;
+        }
+        self.logical_row += n;
         self.full()
     }
 
@@ -1277,10 +1483,21 @@ pub fn render_message_detail(
     } else {
         Style::default().fg(theme.border)
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .style(border_style);
+    // sngrep mode: one blue line left of the raw text, no box, no title, the
+    // text in its own colors.
+    let block = if theme.sngrep {
+        Block::default()
+            .borders(Borders::LEFT)
+            .border_style(crate::tui::sngrep_mode::tone(
+                theme,
+                Style::default().fg(Color::Blue),
+            ))
+    } else {
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .style(border_style)
+    };
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1395,7 +1612,7 @@ fn wrap_styled_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>
 /// rows; this matches the row accounting in `render_call_flow_direct` and so
 /// is the correct content length for the ladder scrollbar.
 pub fn ladder_total_rows(messages: &[FormattedMessage]) -> usize {
-    messages.iter().map(|m| 1 + m.extra_lines.len()).sum()
+    messages.iter().map(FormattedMessage::ladder_rows).sum()
 }
 
 /// Ladder row (in `ladder_total_rows` units) where the `visible_idx`-th
@@ -1411,7 +1628,7 @@ pub fn ladder_row_of_visible(messages: &[FormattedMessage], visible_idx: usize) 
             }
             vis += 1;
         }
-        row += 1 + m.extra_lines.len();
+        row += m.ladder_rows();
     }
     row
 }
@@ -1466,6 +1683,12 @@ pub fn render_ladder_scrollbar(
 /// italic. Returns the styled lines; an empty input yields a single
 /// "(empty message)" placeholder line.
 fn highlight_sip_detail(raw_text: &str, theme: &Theme) -> Vec<Line<'static>> {
+    if theme.sngrep && !raw_text.is_empty() {
+        return crate::tui::sngrep_mode::tone_lines(
+            theme,
+            crate::tui::sngrep_mode::syntax_lines(raw_text),
+        );
+    }
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut in_body = false;
     let mut is_first = true;
@@ -1739,6 +1962,14 @@ fn format_ladder_with_options(
             }
         };
         let label = format_message_label(msg);
+        let sngrep_sdp = if sdp_mode == SdpDisplayMode::Sngrep {
+            crate::tui::sngrep_mode::sdp_info(&label, &msg.body)
+        } else {
+            None
+        };
+        let label = sngrep_sdp
+            .as_ref()
+            .map_or(label, |(title, _)| title.clone());
         let sty = match color_mode {
             ColorMode::Method => message_style(msg, theme),
             ColorMode::CallId => {
@@ -1818,6 +2049,11 @@ fn format_ladder_with_options(
                                 .fg(theme.muted)
                                 .add_modifier(Modifier::ITALIC),
                         )));
+                    }
+                }
+                SdpDisplayMode::Sngrep => {
+                    for media in sngrep_sdp.iter().flat_map(|(_, m)| m) {
+                        lines.push(Line::from(Span::styled(format!("{ind}  {media}"), sty)));
                     }
                 }
                 SdpDisplayMode::None => {}
@@ -2302,6 +2538,7 @@ mod tests {
             dst_col,
             pdd_note: None,
             extra_lines: Vec::new(),
+            extra_centered: false,
             selected: matches!(state, SelectionState::Selected),
             call_id: "c@test".to_string(),
             selection_state: state,
@@ -2318,6 +2555,8 @@ mod tests {
             label_fallbacks: Vec::new(),
             raw_index: None,
             diagnosis_note: None,
+            sngrep_split: false,
+            sngrep_delta: None,
         })
     }
 
@@ -2374,6 +2613,125 @@ mod tests {
         assert!(
             text.contains("CANCEL"),
             "a self-addressed CANCEL must still appear in the ladder; got:\n{text}"
+        );
+        Ok(())
+    }
+
+    /// Paint a two-column ladder of `msgs` (the first selected) at 120x12.
+    fn paint_two(
+        msgs: &[FormattedMessage],
+        theme: &Theme,
+    ) -> Result<ratatui::buffer::Buffer, TestError> {
+        let parts: Vec<Participant> = ["10.99.0.1:5060", "10.99.0.2:5060"]
+            .iter()
+            .map(|a| Participant {
+                addr: (*a).into(),
+                label: (*a).into(),
+            })
+            .collect();
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+            noted: Vec::new(),
+        };
+        let mut term = terminal(120, 12)?;
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, msgs, &nav, theme);
+        })?;
+        Ok(term.backend().buffer().clone())
+    }
+
+    /// The row of `buf` holding `needle`, and the column it starts at.
+    fn find_in(buf: &ratatui::buffer::Buffer, needle: &str) -> Option<(u16, u16)> {
+        (0..buf.area.height).find_map(|y| {
+            let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            line.find(needle)
+                .map(|b| (y, line[..b].chars().count() as u16))
+        })
+    }
+
+    /// sngrep mode draws the call flow as sngrep's window does: the media
+    /// lines centered between the arrow's pipes in the arrow's color, the
+    /// current arrow and its media lines in reverse video with no band
+    /// across the row, its time bold, the pipes and the other arrows in
+    /// their own colors, never dimmed.
+    #[test]
+    fn sngrep_flow_colors_and_highlight_match_sngrep() -> Result<(), TestError> {
+        let mut theme = Theme::default();
+        crate::tui::sngrep_mode::apply_theme(&mut theme);
+        let red = crate::tui::sngrep_mode::arrow_style(true);
+        let mut inv = fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1)?;
+        inv.label = "INV (192.0.2.26)".into();
+        inv.style = red;
+        inv.timestamp_style = Style::default();
+        inv.extra_lines = vec![("audio 12220 (PCMU)".into(), red)];
+        inv.extra_centered = true;
+        let mut ok = fmt_msg("12:00:01.000", SelectionState::Normal, 1, 0)?;
+        ok.label = "100 Trying".into();
+        ok.style = crate::tui::sngrep_mode::arrow_style(false);
+        ok.timestamp_style = Style::default();
+        let buf = paint_two(&[inv, ok], &theme)?;
+        let pipes = pipes_for(2, 120);
+
+        let (ty, tx) = find_in(&buf, "INV (192.0.2.26)").ok_or("no title")?;
+        let title = &buf[(tx, ty)];
+        assert!(title.modifier.contains(Modifier::REVERSED), "{title:?}");
+        assert_eq!(title.fg, Color::Red, "the request's title in red");
+        assert_eq!(title.bg, Color::Reset, "no band behind the current arrow");
+        assert!(
+            buf[(0, ty)].modifier.contains(Modifier::BOLD),
+            "current time bold"
+        );
+        assert_eq!(
+            buf[(pipes[0], ty)].fg,
+            Color::Reset,
+            "pipes in the default color"
+        );
+
+        let (my, mx) = find_in(&buf, "audio 12220 (PCMU)").ok_or("no media line")?;
+        assert_eq!(my, ty + 1, "the media line is under its arrow");
+        let len = "audio 12220 (PCMU)".len() as u16;
+        let mid = pipes[0] + (pipes[1] - pipes[0]) / 2;
+        assert_eq!(mx, mid - len / 2, "centered between the pipes");
+        assert!(
+            buf[(mx, my)].modifier.contains(Modifier::REVERSED),
+            "the current arrow's media line is reversed too"
+        );
+        assert_eq!(buf[(mx, my)].fg, Color::Red, "in the arrow's color");
+        assert_eq!(
+            buf[(pipes[0], my)].symbol(),
+            "\u{2502}",
+            "pipes run through it"
+        );
+
+        let (ry, rx) = find_in(&buf, "100 Trying").ok_or("no 100")?;
+        let other = &buf[(rx, ry)];
+        assert_eq!(other.fg, Color::Green, "a response in green");
+        assert!(!other.modifier.contains(Modifier::DIM), "never dimmed");
+        assert!(
+            !other.modifier.contains(Modifier::REVERSED),
+            "only the current arrow is reversed"
+        );
+        Ok(())
+    }
+
+    /// sipnab's own mode keeps its own ladder: the band across the current
+    /// row and the other arrows dimmed.
+    #[test]
+    fn own_mode_flow_highlight_is_unchanged() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let sel = fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1)?;
+        let mut other = fmt_msg("12:00:01.000", SelectionState::Normal, 1, 0)?;
+        other.label = "100 Trying".into();
+        let buf = paint_two(&[sel, other], &theme)?;
+        let (ty, _) = find_in(&buf, "INVITE").ok_or("no INVITE")?;
+        assert_eq!(buf[(0, ty)].bg, SELECTION_BG, "the band spans the row");
+        let (ry, rx) = find_in(&buf, "100 Trying").ok_or("no 100")?;
+        assert!(
+            buf[(rx, ry)].modifier.contains(Modifier::DIM),
+            "sipnab's mode dims the other arrows"
         );
         Ok(())
     }
@@ -3337,6 +3695,42 @@ mod tests {
         let (_c, lines) =
             build_call_flow_lines_with_options(&store, "opt@test", 120, &o).ok_or("some")?;
         assert!(lines_to_string(&lines).contains("[SELECTED]"));
+        Ok(())
+    }
+
+    /// sngrep SDP mode names the arrow `INV (address)` and lists each
+    /// media under it, in the ladder and in its text form alike.
+    #[test]
+    fn sngrep_sdp_mode_in_ladder_and_text() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let t = base_ts()?;
+        let mut store = DialogStore::new(100, false);
+        store.process_message(invite_with_sdp("sng@test", t)?);
+        let mut o = opts(&theme);
+        o.sdp_mode = SdpDisplayMode::Sngrep;
+        let (_c, lines) =
+            build_call_flow_lines_with_options(&store, "sng@test", 120, &o).ok_or("some")?;
+        let text = lines_to_string(&lines);
+        assert!(text.contains("INV (10.0.0.1)"), "{text}");
+        assert!(text.contains("audio 20000 (PCMU)"), "{text}");
+
+        let dialog = store.get("sng@test").ok_or("dialog")?;
+        let (_p, rows) = super::super::prepare::prepare_messages(
+            &dialog.messages,
+            t,
+            None,
+            &o,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(rows[0].label, "INV (10.0.0.1)", "the sngrep SDP title");
+        assert_eq!(
+            rows[0].extra_lines[0].0, "audio 20000 (PCMU)",
+            "one media line per RTP stream"
+        );
+        assert!(
+            rows[0].extra_centered,
+            "sngrep's media lines are centered between the pipes"
+        );
         Ok(())
     }
 

@@ -325,8 +325,12 @@ pub fn render_help(
 /// under the title. Used to clamp the scroll offset, so it counts exactly
 /// what [`render_help`] draws; counting source lines instead left the end of
 /// the help unreachable once wrapped lines outnumbered the slack.
-pub fn help_line_count(inner_width: usize) -> usize {
-    build_help_lines(&super::Theme::default(), "", "", inner_width).len()
+pub fn help_line_count(inner_width: usize, sngrep: bool) -> usize {
+    let theme = super::Theme {
+        sngrep,
+        ..Default::default()
+    };
+    build_help_lines(&theme, "", "", inner_width).len()
 }
 
 /// Build styled help lines from the help text.
@@ -354,7 +358,17 @@ fn build_help_lines(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    for text_line in HELP_TEXT.lines() {
+    // In sngrep mode its key map comes first, right under the title.
+    let mut text_lines: Vec<&str> = HELP_TEXT.lines().collect();
+    if theme.sngrep {
+        let at = 2.min(text_lines.len());
+        let sngrep = super::sngrep_mode::HELP_TEXT
+            .lines()
+            .chain(std::iter::once(""));
+        text_lines.splice(at..at, sngrep);
+    }
+
+    for text_line in text_lines {
         if text_line.starts_with("sipnab") {
             // Title line
             lines.push(Line::from(Span::styled(
@@ -702,7 +716,11 @@ mod tests {
         let theme = crate::tui::Theme::default();
         for width in [40usize, 78, 120] {
             let lines = build_help_lines(&theme, "1.2.3", "libpcap version 1.2.3", width);
-            assert_eq!(lines.len(), help_line_count(width), "at {width} columns");
+            assert_eq!(
+                lines.len(),
+                help_line_count(width, false),
+                "at {width} columns"
+            );
         }
     }
 

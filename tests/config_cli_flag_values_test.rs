@@ -876,6 +876,8 @@ static SPECS: &[Spec] = &[
     ("hexdump", Kind::Switch, &[]),
     ("delta-time", Kind::Switch, &[]),
     ("no-delta-time", Kind::Switch, &[]),
+    ("sngrep-mode", Kind::Switch, &[]),
+    ("no-sngrep-mode", Kind::Switch, &[]),
     (
         "after",
         Kind::Int {
@@ -4100,6 +4102,7 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.no_rtp(config)),
         format!("{:?}", cli.method_filter(config)),
         format!("{:?}", cli.delta_time(config)),
+        format!("{:?}", cli.sngrep_mode(config)),
         format!("{:?}", cli.no_priv_drop(config)),
         format!("{:?}", cli.fraud_detect(config)),
         format!("{:?}", cli.kill_scanner(config)),

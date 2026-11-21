@@ -71,7 +71,7 @@ pub use timeline::{TimelineAction, timeline_action};
 /// `n` cycles the name-resolution mode (except during raw-view match
 /// navigation), and `?` re-dispatches as the configured help key. All
 /// remaining keys route to the current view's handler.
-pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
+pub(in crate::tui) fn handle_key_event(app: &mut App, mut key: KeyEvent) {
     // Global shortcuts (Ctrl-C always quits)
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.should_quit = true;
@@ -96,6 +96,40 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
     if app.current_view == View::BpfFilter {
         handle_bpf_filter_key(app, key);
         return;
+    }
+
+    // sngrep mode: on the screens sngrep has, a sngrep key becomes the
+    // sipnab key for the same action (or runs it, or says it has none).
+    if app.theme.sngrep {
+        use crate::tui::sngrep_mode::{
+            Translated, stops_autoscroll, translate, translate_column_select,
+        };
+        // sngrep: moving the cursor by hand or searching switches the call
+        // list's autoscroll off; `A` turns it back on.
+        if app.current_view == View::CallList
+            && !app.call_list.column_selector_open
+            && stops_autoscroll(key)
+        {
+            app.call_list.autoscroll = false;
+        }
+        let translated = if app.current_view == View::CallList && app.call_list.column_selector_open
+        {
+            translate_column_select(key)
+        } else {
+            translate(&app.current_view, &app.keymap, key)
+        };
+        match translated {
+            Translated::Pass => {}
+            Translated::Key(k) => key = k,
+            Translated::Act(a) => {
+                run_sngrep_action(app, a);
+                return;
+            }
+            Translated::Unsupported(why) => {
+                app.status_error = Some(why.to_string());
+                return;
+            }
+        }
     }
 
     // The filter-detail key switches status line 3 between the F7 filter's
@@ -147,6 +181,89 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
     }
 
     dispatch_help_or_view_key(app, key);
+}
+
+/// Run a sngrep-mode action that no single sipnab key performs on the
+/// current screen.
+///
+/// # Side effects
+/// Toggles syntax colors, cycles the color mode, pauses/resumes the capture,
+/// or opens the settings popup, announcing the change on the status line.
+fn run_sngrep_action(app: &mut App, action: crate::tui::sngrep_mode::SngrepAction) {
+    use crate::tui::sngrep_mode::SngrepAction;
+    match action {
+        SngrepAction::ToggleSyntax => {
+            app.syntax_highlight = !app.syntax_highlight;
+            app.status_error = Some(if app.syntax_highlight {
+                "Syntax colors: on".to_string()
+            } else {
+                "Syntax colors: off".to_string()
+            });
+        }
+        SngrepAction::CycleColorMode => {
+            app.color_mode = app.color_mode.next();
+            app.status_error = Some(app.color_mode.label());
+        }
+        SngrepAction::TogglePause => {
+            app.paused = !app.paused;
+            app.paused_flag
+                .store(app.paused, std::sync::atomic::Ordering::Relaxed);
+        }
+        SngrepAction::OpenSettings => {
+            app.settings_dialog.focused_item = 0;
+            app.active_popup = Some(Popup::SettingsDialog);
+        }
+        SngrepAction::ToggleHints => app.theme.sngrep_alt_hints = !app.theme.sngrep_alt_hints,
+        SngrepAction::UncheckAll => app.call_list.clear_selections(),
+        SngrepAction::IncreaseRaw | SngrepAction::DecreaseRaw => {
+            let grow = action == SngrepAction::IncreaseRaw;
+            let (shown, cols) = app.flow.sngrep_raw_drawn;
+            if !app.flow.raw_preview || cols == 0 {
+                return;
+            }
+            if let Some(w) = crate::tui::sngrep_mode::step_raw(shown, cols, grow) {
+                app.flow.sngrep_raw_fixed = Some(w);
+                app.flow.sngrep_raw_drawn.0 = w;
+                app.status_error = Some(format!("Raw pane: {w} cols"));
+            }
+        }
+        SngrepAction::ResetRaw => {
+            app.flow.sngrep_raw_fixed = None;
+            app.status_error = Some("Raw pane: default width".to_string());
+        }
+        SngrepAction::OnlySdp => {
+            app.flow.sdp_only = !app.flow.sdp_only;
+            app.status_error = Some(on_off("Only SDP messages", app.flow.sdp_only));
+        }
+        SngrepAction::OnlyMedia => {
+            app.flow.only_media = !app.flow.only_media;
+            app.status_error = Some(on_off("Only media", app.flow.only_media));
+        }
+        SngrepAction::Compress => {
+            app.flow.split = !app.flow.split;
+            app.status_error = Some(on_off("Compressed participants", !app.flow.split));
+        }
+        SngrepAction::ClearCalls { soft } => {
+            // sngrep hands F5 / F9 from the flow and raw screens to the call
+            // list, which clears; the call's screens go with its calls.
+            app.flow.diff_selected = None;
+            app.current_view = View::CallList;
+            crate::tui::controllers::clear_confirm::request_clear(
+                app,
+                if soft {
+                    crate::tui::ClearKind::NonMatching
+                } else {
+                    crate::tui::ClearKind::Calls
+                },
+            );
+        }
+        SngrepAction::MoveColumn { down } => app.call_list.move_column(down),
+    }
+}
+
+/// `"<what>: on"` / `"<what>: off"` for a toggle's status line.
+fn on_off(what: &str, on: bool) -> String {
+    format!("{what}: {}", if on { "on" } else { "off" })
 }
 
 /// Whether the user's keymap binds `code`. The global fallback keys (`v`,
@@ -562,7 +679,7 @@ pub(in crate::tui) fn handle_settings_popup_key(app: &mut App, key: KeyEvent) {
                 }
                 Some(SettingsItem::RawPreview) => app.flow.raw_preview = !app.flow.raw_preview,
                 Some(SettingsItem::SdpDisplay) => {
-                    app.sdp_display_mode = app.sdp_display_mode.next()
+                    app.sdp_display_mode = app.sdp_display_mode.next_in(app.theme.sngrep)
                 }
                 Some(SettingsItem::SyntaxHighlight) => app.syntax_highlight = !app.syntax_highlight,
                 None => {}
@@ -1696,6 +1813,10 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
             };
         }
         WheelTarget::CallList => {
+            // sngrep mode: a hand move switches autoscroll off (`A` resumes).
+            if app.theme.sngrep {
+                app.call_list.autoscroll = false;
+            }
             if down {
                 let count = filtered_dialog_count(app);
                 app.call_list.move_down(count);

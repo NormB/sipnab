@@ -385,7 +385,9 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         } else {
             ""
         };
-        let detail = if app.flow.raw_preview {
+        let detail = if app.flow.raw_preview && app.theme.sngrep {
+            format!("{} cols", app.flow.sngrep_raw_drawn.0)
+        } else if app.flow.raw_preview {
             format!("{}%", app.flow.raw_preview_pct)
         } else {
             "off".to_string()
@@ -896,7 +898,11 @@ pub(in crate::tui) fn render_fkey_bar(
 
     // Full item sets per view; items near the end are lower priority.
     // Popup-specific bars take precedence.
-    let items = fkey_bar_items(view, popup, width, file_open_manual);
+    let items = match (theme.sngrep, popup) {
+        (true, None) => crate::tui::sngrep_mode::fkey_bar(view, theme.sngrep_alt_hints),
+        _ => None,
+    }
+    .unwrap_or_else(|| fkey_bar_items(view, popup, width, file_open_manual));
 
     let mut spans: Vec<Span> = Vec::new();
     for (i, (key, label)) in items.iter().enumerate() {
