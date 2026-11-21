@@ -162,6 +162,46 @@ extended_flow = true  # open the multi-leg flow by default
 - `[display] autoscroll` sets the starting state; the `autoscroll` key
   binding (`A` by default) toggles it.
 
+## Use sngrep's keys and colors
+
+sngrep mode is for readers who know sngrep's keys. On the call list, call
+flow, raw message and message compare screens each sngrep key does what it
+does in sngrep, and those screens take sngrep's colors and bottom key bar.
+The sipnab commands whose keys sngrep uses move to free keys. Without the
+mode the TUI keeps sipnab's own keys and colors.
+
+- What you need: the TUI; nothing changes on another system. For the
+  permanent setting, a writable configuration file (see
+  [Configuration reference](@/docs/config.md)).
+- Steps: start the TUI with `--sngrep-mode`.
+
+```sh
+sipnab -I capture.pcap --sngrep-mode
+```
+
+- To keep it on, set the key; `--no-sngrep-mode` then turns it off for one run.
+
+```toml
+[display]
+sngrep_mode = true
+```
+
+- The mode starts with autoscroll off, every retransmission as its own
+  arrow, Call-ID colors, the multi-leg flow and sngrep's SDP form. A
+  `[display]` key you set wins over each of these.
+- Check it: the bottom bar reads `Esc Quit  F1 Help  Enter Open call  Space Check`,
+  and `F1` opens on the sngrep key map. In a call flow, `9` and `0` make the
+  raw pane wider and narrower, and the status line names its width.
+- The key tables are in [Keybindings: sngrep mode](@/docs/keybindings.md#sngrep-mode),
+  with the sipnab keys that move.
+- With `NO_COLOR` set, the keys, help and key bar stay sngrep's and sipnab
+  draws no color; the current row is in reverse video.
+- When the status line at start says `Ignoring [display] sdp_display = "sngrep"`,
+  the `sngrep` SDP form needs the mode: start with `--sngrep-mode`, set
+  `sngrep_mode = true`, or pick `none`, `summary` or `full`.
+- When a key does something other than in sngrep, check that you are on one
+  of the four screens above: every other view keeps sipnab's keys.
+
 ## Read the call-flow ladder
 
 `Enter` opens the **Call Flow**. It is a ladder diagram of the dialog across

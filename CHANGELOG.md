@@ -31,6 +31,11 @@ entry that carries them.
 - **New `[display]` keys set the TUI's starting fold, autoscroll, SDP form, colors and flow.**
   - Effect: `fold`, `autoscroll`, `sdp_display`, `color_mode` and `extended_flow`; the Mermaid exports follow `fold`.
   - Docs: [Set how the TUI starts](docs/tui-walkthrough.md#set-how-the-tui-starts)
+- **`--sngrep-mode` gives the TUI sngrep's keys, colors and bottom key bar.**
+  - Effect: On the call list, call flow, raw message and compare screens, each sngrep key does what it does in sngrep.
+  - Do: Start with `--sngrep-mode`, or set `[display] sngrep_mode = true`; `--no-sngrep-mode` turns it off for one run.
+  - Limit: sipnab commands whose keys sngrep uses move to other keys, listed in the F1 help.
+  - Docs: [Use sngrep's keys and colors](docs/tui-walkthrough.md#use-sngreps-keys-and-colors)
 
 ### Changed
 

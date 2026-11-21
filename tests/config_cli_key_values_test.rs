@@ -368,6 +368,7 @@ static KEY_SPECS: &[KeySpec] = &[
     ("display", "extended_flow", KeyKind::Bool),
     ("display", "fold", KeyKind::Bool),
     ("display", "mouse_capture", KeyKind::Bool),
+    ("display", "sngrep_mode", KeyKind::Bool),
     (
         "display",
         "sdp_display",
