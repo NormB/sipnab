@@ -124,6 +124,11 @@ pub enum CallListAction {
     /// `Y` — copy the filter in force as a `sipnab … --filter '…'` command
     /// line, and show it.
     CopyFilterCommand,
+    /// `L` — toggle "last updated last" (order by each dialog's last
+    /// message) against the number order.
+    ToggleLastUpdateOrder,
+    /// `d` — toggle "only dialogs not over" (state not final) against all.
+    ToggleOnlyOpen,
 }
 
 /// Pure key→action mapping for the call list view (keymap-aware).
@@ -197,6 +202,8 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         // `y` copies a message in the call flow; `Y` copies the filter that
         // chose the calls on this list.
         KeyCode::Char('Y') => CopyFilterCommand,
+        KeyCode::Char('L') => ToggleLastUpdateOrder,
+        KeyCode::Char('d') => ToggleOnlyOpen,
         _ => return None,
     })
 }
@@ -295,6 +302,10 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         CallListAction::SortPrevColumn => app.call_list.sort_prev_column(),
         CallListAction::SortNextColumn => app.call_list.sort_next_column(),
         CallListAction::ReverseSort => app.call_list.reverse_sort(),
+        CallListAction::ToggleLastUpdateOrder => app.call_list.toggle_last_update_order(),
+        CallListAction::ToggleOnlyOpen => {
+            app.call_list.only_open = !app.call_list.only_open;
+        }
         CallListAction::ToggleAutoscroll => {
             app.call_list.autoscroll = !app.call_list.autoscroll;
         }
@@ -773,6 +784,39 @@ mod tests {
             "hidden column must be absent"
         );
         assert!(cols.iter().any(|c| c == "Method"));
+        Ok(())
+    }
+
+    /// Saving the columns (and the names) writes only its own key: the
+    /// session's `[display]` defaults never land in the user's file, so the
+    /// file keeps meaning "what the user chose".
+    #[test]
+    fn config_writers_never_write_display_defaults() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "[display]\nfold = false\n")?;
+        let mut app = App::new_test();
+        app.apply_display_prefs(crate::tui::DisplayPrefs::default());
+        app.set_column_config_path(Some(path.clone()));
+        app.call_list.column_selector_open = true;
+        handle_call_list_key(&mut app, key(KeyCode::Char('s')));
+        crate::config::write_manual_mappings_file(
+            &path,
+            &[("10.0.0.1".to_string(), "pbx".to_string())],
+        )?;
+
+        let doc: toml::Table = std::fs::read_to_string(&path)?.parse()?;
+        let display = doc
+            .get("display")
+            .and_then(|d| d.as_table())
+            .ok_or("[display] kept")?;
+        let mut keys: Vec<&str> = display.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["fold", "visible_columns"],
+            "saving the columns keeps the other [display] keys"
+        );
         Ok(())
     }
 

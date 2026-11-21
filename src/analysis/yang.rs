@@ -57,7 +57,7 @@ use super::{CaptureAnalysis, CountLabel, FindingKind, Severity};
 /// committed file. Written once here; [`REVISION`] and [`REVISIONS`] read it.
 macro_rules! revision {
     () => {
-        "2026-11-08"
+        "2026-11-20"
     };
 }
 
@@ -90,7 +90,7 @@ pub const REVISION: &str = revision!();
 /// the published crate would build without `yang/` and fail on crates.io. The
 /// date is therefore written twice, and `print_yang_module_prints_the_committed_file`
 /// fails the moment the two name different revisions.
-pub const MODULE_TEXT: &str = include_str!("../../yang/sipnab-diagnosis@2026-11-08.yang");
+pub const MODULE_TEXT: &str = include_str!("../../yang/sipnab-diagnosis@2026-11-20.yang");
 
 /// The committed module's file name under `yang/`. [RFC 7950 section 5.2](https://www.rfc-editor.org/rfc/rfc7950.html#section-5.2) names a
 /// module file `name@revision.yang`.
@@ -117,6 +117,11 @@ pub struct Revision {
 pub const REVISIONS: &[Revision] = &[
     Revision {
         date: revision!(),
+        description: "The dropped-by-method finding kind: SIP messages dropped at \
+                      ingest on purpose by --drop-method or --only-method.",
+    },
+    Revision {
+        date: "2026-11-08",
         description: "US spelling in the request-failure finding's description \
                       (misdialed). Descriptions only: no node, identity or type \
                       changed.",

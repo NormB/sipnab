@@ -133,6 +133,8 @@ To start every session with capture off, set `mouse_capture = false` under
 | < | Sort by previous column |
 | > | Sort by next column |
 | Z | Reverse sort direction |
+| L | Sort by each dialog's last message, the one updated last at the bottom; `L` again returns to `#` order. Status line 1 always names the sort (`Sort: Last update ▲`) |
+| d | Show only the dialogs that are not over; `d` again shows all. A REGISTER whose challenge got no answering REGISTER, or whose registration expired by the capture's clock, counts as over. Status line 1 says `Showing: not over` while it is on |
 | A | Toggle autoscroll **(configurable: `autoscroll`)** |
 | p | Pause/resume capture **(configurable: `pause`)** |
 | / | Activate search **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list, Space stars rows, and Enter commits the query and opens the selection in one press |
@@ -192,7 +194,7 @@ active filter.
 | Home | Jump to first message (or top of detail when focused) |
 | End | Jump to last message (or bottom of detail when focused) |
 | Enter | Open full-screen raw message view — or, with the cursor on an RTP stream's row, that stream's Stream Detail view (MOS, jitter, quality intervals, burst/gap analysis, silence detection, sparklines) |
-| Space | Select message for diff (press on two messages to compare) |
+| Space | Select message for diff (press on two messages to compare). `Space` again on the selected message clears the selection and its hint |
 | q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call list |
 | d | Cycle SDP display mode (hidden / summary / full) |
@@ -997,6 +999,7 @@ way out, and fewer of them on a narrow terminal.
 
 > **Tip:**
 >
+> - The `#` column is the dialog's own number, given when sipnab first sees it. It stays the same through a filter, a search, a sort, eviction and a clear.
 > - Press `Space` to star dialogs. A starred row shows `[*]` in the `#` column (the `▸` above is just the cursor).
 > - `F2` then saves only the starred dialogs.
 > - `Enter` opens two or more of them as a single merged flow.

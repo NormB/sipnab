@@ -384,7 +384,7 @@ cost a line of `unsafe` in this crate.
 ### Where the throughput actually is, ranked
 
 #### R4 — Parallel readers, so `--cores` can exceed 2× *(P2, the big one)*
-[`parallel.rs:1478`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1478)<!-- "for (i, path) in" --> reads a multi-file `-I` set in a
+[`parallel.rs:1484`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1484)<!-- "for (i, path) in" --> reads a multi-file `-I` set in a
 **serial `for` loop on one thread**. Since the reader is the proven ceiling, and
 `-I` routinely names a directory or glob of rotated captures, N reader threads
 each opening their own file — all sharding into the same worker pool, so

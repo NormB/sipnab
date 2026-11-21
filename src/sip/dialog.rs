@@ -239,6 +239,12 @@ pub struct SipDialog {
     /// cursor that names it never falls behind a dialog that changed later,
     /// whatever the message's timestamp. 0 until a store stamps it.
     pub change_seq: u64,
+    /// The dialog's number in the store that holds it: 1 for the first dialog
+    /// it ever opened, 2 for the next, and so on. Assigned once, when the
+    /// dialog is first seen, and kept for good: filters, search, sorting,
+    /// eviction and `clear` never renumber, so the call list's `#` names the
+    /// same dialog for as long as it is shown. 0 until a store numbers it.
+    pub number: u64,
     /// User-supplied tags (from `--tag` CLI flag).
     pub tags: Vec<String>,
     /// Source IP address of the initial message.
@@ -395,6 +401,75 @@ impl SipDialog {
         &self.state
     }
 
+    /// The state as of `now` (the capture's clock), for views that ask
+    /// "is this dialog over?".
+    ///
+    /// The state machine moves only on messages, so two REGISTER dialogs
+    /// that end in silence never reach a final state there:
+    /// - one still `Trying` whose newest final answer is a non-2xx (a
+    ///   `401`/`407`, an auth loop) and that sent no REGISTER with a higher
+    ///   CSeq after it is `Failed`; a credentialed retry still waiting for
+    ///   its answer keeps it `Trying`;
+    /// - one `Registered` whose granted interval (the last `2xx`'s Contact
+    ///   `expires`, else its `Expires`, else RFC 3261's 3600 s) ran out before
+    ///   `now` with no further message is `Expired`.
+    ///
+    /// Every other dialog returns [`Self::state`] unchanged.
+    #[must_use]
+    pub fn state_at(&self, now: DateTime<Utc>) -> DialogState {
+        if self.method != SipMethod::Register {
+            return self.state.clone();
+        }
+        let final_answers = || {
+            self.messages.iter().rev().filter(|m| {
+                !m.is_request
+                    && m.status_code.is_some_and(|c| c >= 200)
+                    && m.cseq()
+                        .is_some_and(|(_, meth)| meth.eq_ignore_ascii_case("REGISTER"))
+            })
+        };
+        match self.state {
+            DialogState::Trying => {
+                // The newest final answer is a refusal, and no REGISTER with
+                // a higher CSeq answered it (a credentialed retry still in
+                // flight is not over).
+                let refused = final_answers()
+                    .next()
+                    .filter(|m| m.status_code.is_some_and(|c| c >= 300))
+                    .and_then(|m| m.cseq().map(|(n, _)| n));
+                match refused {
+                    Some(n) if !self.register_sent_after(n) => DialogState::Failed,
+                    _ => DialogState::Trying,
+                }
+            }
+            DialogState::Registered => {
+                let Some(ok) = final_answers().find(|m| m.status_code.is_some_and(|c| c < 300))
+                else {
+                    return DialogState::Registered;
+                };
+                let granted = i64::from(crate::sip::registration_expiry(ok).unwrap_or(3600));
+                if self.latest_message_at + chrono::TimeDelta::seconds(granted) < now {
+                    DialogState::Expired
+                } else {
+                    DialogState::Registered
+                }
+            }
+            _ => self.state.clone(),
+        }
+    }
+
+    /// Whether the dialog holds a REGISTER request whose CSeq number is
+    /// above `cseq`: a new transaction, such as the credentialed retry after
+    /// a challenge. A retransmission (the same CSeq) does not count. CSeq,
+    /// not capture order, decides, so reordered packets give the same answer.
+    fn register_sent_after(&self, cseq: u32) -> bool {
+        self.messages.iter().any(|m| {
+            m.is_request
+                && m.cseq()
+                    .is_some_and(|(n, meth)| n > cseq && meth.eq_ignore_ascii_case("REGISTER"))
+        })
+    }
+
     /// The final SIP response code of the transaction that decides the
     /// dialog's outcome — the code behind the [`DialogState`] word: 200 for
     /// an answered call (`InCall`/`Completed`), the 4xx/5xx/6xx for a
@@ -525,6 +600,7 @@ impl SipDialog {
             latest_message_at: msg.timestamp,
             earliest_message_at: msg.timestamp,
             change_seq: 0,
+            number: 0,
             src_addr: msg.src_addr,
             dst_addr: msg.dst_addr,
             src_port: msg.src_port,
@@ -1931,6 +2007,277 @@ mod tests {
         // The 200 races the CANCEL and wins — the call was established.
         update_state(&mut dialog, &make_response(200, "OK", "INVITE")?);
         assert_eq!(dialog.state, DialogState::InCall);
+        Ok(())
+    }
+
+    /// A REGISTER for `state_at`: the request, then each response in turn
+    /// through `update_state`, every message kept as the store keeps it.
+    fn register_with(responses: &[SipMessage]) -> Result<SipDialog, TestError> {
+        let raw = build_sip(
+            "REGISTER sip:registrar.example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=r1",
+                "To: <sip:alice@example.com>",
+                "Call-ID: register-at@example.com",
+                "CSeq: 1 REGISTER",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let register = parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?;
+        let mut dialog = SipDialog::new(&register).ok_or("should create dialog")?;
+        dialog.messages.push(register);
+        for r in responses {
+            update_state(&mut dialog, r);
+            dialog.messages.push(r.clone());
+        }
+        Ok(dialog)
+    }
+
+    /// The auth loop: a REGISTER answered only by challenges stays
+    /// `Trying` in the machine, but it is over -- `state_at` says `Failed`.
+    /// A `2xx` after the challenge makes it `Registered` again.
+    #[test]
+    fn state_at_a_register_never_answered_2xx_after_a_challenge_is_failed() -> Result<(), TestError>
+    {
+        let now = ts()?;
+        let looped = register_with(&[make_response(401, "Unauthorized", "REGISTER")?])?;
+        assert_eq!(
+            looped.state(),
+            &DialogState::Trying,
+            "the machine itself is unchanged"
+        );
+        assert_eq!(
+            looped.state_at(now),
+            DialogState::Failed,
+            "a challenge never answered is a failed registration"
+        );
+        assert!(looped.state_at(now).is_final(), "Failed is a final state");
+        let fresh = register_with(&[])?;
+        assert_eq!(
+            fresh.state_at(now),
+            DialogState::Trying,
+            "no answer yet is not over"
+        );
+        let answered = register_with(&[
+            make_response(401, "Unauthorized", "REGISTER")?,
+            make_response(200, "OK", "REGISTER")?,
+        ])?;
+        assert_eq!(
+            answered.state_at(now),
+            DialogState::Registered,
+            "a 2xx after the challenge registers"
+        );
+        Ok(())
+    }
+
+    /// A registration whose granted interval ran out with no further message
+    /// is `Expired` by the capture's clock; before that it is
+    /// `Registered`. The interval is the 2xx's Contact `expires`.
+    #[test]
+    fn state_at_a_registration_past_its_expiry_is_expired() -> Result<(), TestError> {
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:alice@example.com>;tag=r1",
+                "To: <sip:alice@example.com>;tag=t2",
+                "Call-ID: register-at@example.com",
+                "CSeq: 1 REGISTER",
+                "Contact: <sip:alice@192.0.2.1:5060>;expires=60",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let ok = parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?;
+        let dialog = register_with(&[ok])?;
+        assert_eq!(
+            dialog.state(),
+            &DialogState::Registered,
+            "the 200 registers"
+        );
+        let t0 = dialog.latest_message_at;
+        assert_eq!(
+            dialog.state_at(t0 + chrono::TimeDelta::seconds(59)),
+            DialogState::Registered,
+            "inside expires=60 it is registered"
+        );
+        assert_eq!(
+            dialog.state_at(t0 + chrono::TimeDelta::seconds(61)),
+            DialogState::Expired,
+            "past expires=60 it is expired"
+        );
+        // No Contact/Expires: RFC 3261's default 3600 s.
+        let plain = register_with(&[make_response(200, "OK", "REGISTER")?])?;
+        assert_eq!(
+            plain.state_at(t0 + chrono::TimeDelta::seconds(61)),
+            DialogState::Registered,
+            "the 3600 s default still holds at 61 s"
+        );
+        assert_eq!(
+            plain.state_at(t0 + chrono::TimeDelta::seconds(3601)),
+            DialogState::Expired,
+            "past the 3600 s default it is expired"
+        );
+        Ok(())
+    }
+
+    /// A REGISTER request of the `register_with` dialog with CSeq `cseq`,
+    /// with credentials when `authorized`.
+    fn register_request(cseq: u32, authorized: bool) -> Result<SipMessage, TestError> {
+        let cseq_line = format!("CSeq: {cseq} REGISTER");
+        let mut headers = vec![
+            "From: <sip:alice@example.com>;tag=r1",
+            "To: <sip:alice@example.com>",
+            "Call-ID: register-at@example.com",
+            cseq_line.as_str(),
+        ];
+        if authorized {
+            headers.push("Authorization: Digest username=\"alice\", realm=\"example.com\"");
+        }
+        headers.push("Content-Length: 0");
+        let raw = build_sip("REGISTER sip:registrar.example.com SIP/2.0", &headers, b"");
+        Ok(parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
+    }
+
+    /// A final answer to the REGISTER with CSeq `cseq`.
+    fn register_answer(status: u16, reason: &str, cseq: u32) -> Result<SipMessage, TestError> {
+        let cseq_line = format!("CSeq: {cseq} REGISTER");
+        let raw = build_sip(
+            &format!("SIP/2.0 {status} {reason}"),
+            &[
+                "From: <sip:alice@example.com>;tag=r1",
+                "To: <sip:alice@example.com>;tag=t2",
+                "Call-ID: register-at@example.com",
+                cseq_line.as_str(),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        Ok(parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
+    }
+
+    /// Regression (review of the `d` filter): the client answered the 401
+    /// with a credentialed REGISTER that has no answer yet. The registration
+    /// is in flight, not over: `state_at` agrees with the machine (`Trying`).
+    #[test]
+    fn state_at_a_challenge_answered_by_a_later_register_is_trying() -> Result<(), TestError> {
+        let now = ts()?;
+        let in_flight = register_with(&[
+            register_answer(401, "Unauthorized", 1)?,
+            register_request(2, true)?,
+        ])?;
+        assert_eq!(
+            in_flight.state(),
+            &DialogState::Trying,
+            "the machine says Trying"
+        );
+        assert_eq!(
+            in_flight.state_at(now),
+            DialogState::Trying,
+            "a credentialed retry in flight is not a failed registration"
+        );
+        Ok(())
+    }
+
+    /// Success: the credentialed retry is answered `200`, so the dialog is
+    /// `Registered` by both the machine and `state_at`.
+    #[test]
+    fn state_at_a_challenge_then_an_accepted_retry_is_registered() -> Result<(), TestError> {
+        let now = ts()?;
+        let done = register_with(&[
+            register_answer(401, "Unauthorized", 1)?,
+            register_request(2, true)?,
+            register_answer(200, "OK", 2)?,
+        ])?;
+        assert_eq!(
+            done.state_at(now),
+            DialogState::Registered,
+            "a retry answered 200 is a registration"
+        );
+        Ok(())
+    }
+
+    /// Failure: the retry is challenged again and nothing follows. The
+    /// newest challenge was never answered, so the registration failed.
+    #[test]
+    fn state_at_a_retry_challenged_again_and_left_is_failed() -> Result<(), TestError> {
+        let now = ts()?;
+        let looped = register_with(&[
+            register_answer(401, "Unauthorized", 1)?,
+            register_request(2, true)?,
+            register_answer(401, "Unauthorized", 2)?,
+        ])?;
+        assert_eq!(
+            looped.state_at(now),
+            DialogState::Failed,
+            "the newest challenge has no later REGISTER"
+        );
+        Ok(())
+    }
+
+    /// Edge: a retransmission of the challenged REGISTER (same CSeq) is not
+    /// an answer to the challenge, so the dialog is still `Failed`.
+    #[test]
+    fn state_at_a_retransmitted_challenged_register_is_still_failed() -> Result<(), TestError> {
+        let now = ts()?;
+        let retx = register_with(&[
+            register_answer(401, "Unauthorized", 1)?,
+            register_request(1, false)?,
+        ])?;
+        assert_eq!(
+            retx.state_at(now),
+            DialogState::Failed,
+            "the same CSeq again is a retransmission, not a new REGISTER"
+        );
+        Ok(())
+    }
+
+    /// Edge: the capture holds the retry before the challenge (packets
+    /// reordered). The retry's higher CSeq still answers the challenge.
+    #[test]
+    fn state_at_a_retry_captured_before_its_challenge_is_trying() -> Result<(), TestError> {
+        let now = ts()?;
+        let reordered = register_with(&[
+            register_request(2, true)?,
+            register_answer(401, "Unauthorized", 1)?,
+        ])?;
+        assert_eq!(
+            reordered.state_at(now),
+            DialogState::Trying,
+            "the order of capture does not decide which REGISTER came later"
+        );
         Ok(())
     }
 

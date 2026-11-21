@@ -1,8 +1,9 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 1965
 expression: output
 ---
- Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Live capture: any    Dialogs: 3 shown of 3    Sort: # ▲    Autoscroll: on
  Capture filter (BPF): none
  View filter: none
   # ▲     Method     From          To            Source       Destination  State        Msgs  +Prev    PDD      Duration

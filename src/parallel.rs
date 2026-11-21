@@ -844,6 +844,12 @@ impl Worker {
         let ds = {
             let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
             ds.set_tracking(cfg.dialog_tracking);
+            // A worker sees only its host pairs, so it cannot tell which
+            // method started a dialog whose other messages crossed another
+            // worker: it keeps every message, and the merged store decides
+            // `--drop-method` / `--only-method` in read order, as `--cores 1`.
+            ds.set_drop_methods(Vec::new());
+            ds.set_only_methods(Vec::new());
             ds
         }
         .with_xcid_headers(cfg.xcid_headers.clone())

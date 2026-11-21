@@ -1,7 +1,7 @@
 # Making `PACKET_FANOUT` reachable
 
 **Status:** WIRED. `--cores N` on a live device now asks for N capture sockets
-([`bootstrap.rs:8141`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8141)<!-- "fanout_sockets: cli.limits_args.cores.max(1)" -->), so the "no caller" table
+([`bootstrap.rs:8147`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8147)<!-- "fanout_sockets: cli.limits_args.cores.max(1)" -->), so the "no caller" table
 row in [section 1, "What exists, and the one thing that does not"](#1-what-exists-and-the-one-thing-that-does-not)
 and the flag argument in [section 2, "The flag surface"](#2-the-flag-surface)
 are history rather than proposals. What remains open is
@@ -49,7 +49,7 @@ narrower and more interesting:
 | Plan / group id | [`live.rs:223`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L223)<!-- "pub(crate) fn plan_fanout(sockets:" -->, [`:282`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L282)<!-- "pub(crate) fn fanout_group_id()" --> | pure, tested without a device |
 | Kernel probe | [`live.rs:475`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L475)<!-- "fn probe_fanout(device:" --> | throwaway handle, so refusal is discovered once |
 | N-socket driver | `capture_live_fanout`, [`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" --> | complete, joins all threads, first error wins |
-| **A caller** | [`bootstrap.rs:8141`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8141)<!-- "fanout_sockets: cli.limits_args.cores.max(1)" -->, [`native.rs:516`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L516)<!-- "let sockets = config.fanout_sockets;" --> | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
+| **A caller** | [`bootstrap.rs:8147`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8147)<!-- "fanout_sockets: cli.limits_args.cores.max(1)" -->, [`native.rs:516`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L516)<!-- "let sockets = config.fanout_sockets;" --> | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
 
 That last row is the one thing this section got to change. When the page was
 written the `Live` arm spawned exactly one thread running `capture_live`, a
@@ -79,13 +79,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:8782`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8782)<!-- "fn cores_ignored_warning(cli:" -->),
+- `cores_ignored_warning` ([`bootstrap.rs:8788`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8788)<!-- "fn cores_ignored_warning(cli:" -->),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:10827`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L10827)<!-- "fn cores_warning_is_the_exact_complement_of_the_paths_that_honor_it()" -->), which asserts the warning
+  ([`bootstrap.rs:10833`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L10833)<!-- "fn cores_warning_is_the_exact_complement_of_the_paths_that_honor_it()" -->), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -123,7 +123,7 @@ that is a log line and a help-text sentence, not a second noun.
    thread either way, live".
 2. **`cores_ignored_warning` loses its live branch and keeps its
    `--multi-device` branch.** The `--multi-device` reason
-   ([`bootstrap.rs:8799`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8799)<!-- "--multi-device opens one capture per" -->) stays true; see [section 2.1, "The resource change nobody would expect"](#21-the-resource-change-nobody-would-expect).
+   ([`bootstrap.rs:8805`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8805)<!-- "--multi-device opens one capture per" -->) stays true; see [section 2.1, "The resource change nobody would expect"](#21-the-resource-change-nobody-would-expect).
    `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it` must be rewritten
    in the same commit, not after — it is currently the gate that would catch the
    two conditions drifting, and a half-updated complement is worse than none.
@@ -271,7 +271,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
 3. **The merge replays the single-threaded path's idle-compaction sweeps.**
    Each reader records the packets at which its file's newest timestamp
    enters a new sweep interval (`SweepMark`,
-   [`parallel.rs:1354`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1354)<!-- "/// `--cores 1` sweeps" -->), the run folds them in file order into the
+   [`parallel.rs:1360`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1360)<!-- "/// `--cores 1` sweeps" -->), the run folds them in file order into the
    sweeps `--cores 1` makes, and the dialog merge compacts each dialog at
    them. [`parallel.rs:58-63`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L58-L63)<!-- "//! differently from" --> records why compaction cannot run in a
    worker: a worker *"only sees the packets of its own host pairs, so its
@@ -576,11 +576,11 @@ not mistake them for settled.
   `join_fanout_group`'s doc names `any` as a possible `ENOPROTOOPT` source
   ([`fanout.rs:77-78`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L77-L78)<!-- "/// * `ENOPROTOOPT`" -->) but marks it "on some
   kernels". The zero-argument default sniffs all interfaces via `any`
-  ([`cli.rs:990-991`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L990-L991)<!-- "/// interface. Without" -->), so this is the *default* invocation,
+  ([`cli.rs:1049-1050`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1049-L1050)<!-- "/// interface. Without" -->), so this is the *default* invocation,
   not an edge case. The probe at [`live.rs:475`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L475)<!-- "fn probe_fanout(device:" --> will
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:8172`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8172)<!-- "fn immediate_mode_for(mode:" -->) returns true only for the
+  ([`bootstrap.rs:8178`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8178)<!-- "fn immediate_mode_for(mode:" -->) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

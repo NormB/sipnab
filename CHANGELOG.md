@@ -10,12 +10,42 @@ entry that carries them.
 
 ## [Unreleased]
 
+**Held:** contributions from an outside contributor merged together before release 0.5.269, on the owner's decision (2026-11-20); the release follows at once.
+
 ### Added
 
 - **A stability page and a script that compare two releases' REST API and JSON schemas.**
   - Effect: `scripts/contract-diff.py` labels each change `breaking` or `additive` and exits 1 on a breaking one.
   - Limit: Until 1.0 a release may still change any surface; the command line, config keys, MCP tools and metrics are not compared yet.
   - Docs: [Compare the REST API of two releases](docs/stability.md#compare-the-rest-api-of-two-releases)
+- **`--drop-method` and `--only-method` drop whole SIP dialogs by their starting method.**
+  - Effect: A dropped dialog is never stored; status line 1 and the capture report count it under its own finding.
+  - Limit: sipnab accepts only the 14 SIP methods it knows and refuses another name at startup.
+  - Docs: [Drop whole dialogs by method](docs/tuning-capture.md#drop-whole-dialogs-by-method)
+- **`d` in the call list shows only the dialogs that are not over.**
+  - Effect: A REGISTER with an unanswered challenge or an expired registration counts as over.
+  - Docs: [Find the dialogs that are not over](docs/tui-walkthrough.md#find-the-dialogs-that-are-not-over)
+- **`L` in the call list sorts by each dialog's last message.**
+  - Effect: Status line 1 now always names the sort, for example `Sort: Last update ▲`.
+  - Docs: [Watch the dialogs updated last](docs/tui-walkthrough.md#watch-the-dialogs-updated-last)
+- **New `[display]` keys set the TUI's starting fold, autoscroll, SDP form, colors and flow.**
+  - Effect: `fold`, `autoscroll`, `sdp_display`, `color_mode` and `extended_flow`; the Mermaid exports follow `fold`.
+  - Docs: [Set how the TUI starts](docs/tui-walkthrough.md#set-how-the-tui-starts)
+
+### Changed
+
+- **The message compare view colors only the characters that changed.**
+  - Effect: A changed line sits beside its new form instead of on two half-empty rows.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **The call list's `#` is the dialog's own number and never changes.**
+  - Effect: Filters, searches, sorts, eviction and clearing keep each dialog's number.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **The quit prompt shows that Enter quits, with Yes preselected.**
+  - Effect: The popup and the key bar both say `Y/Enter` quits.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **`Space` on the selected message in the call flow clears the selection.**
+  - Effect: Its `Selected: message N` hint goes too.
+  - Docs: [Keybindings](docs/keybindings.md)
 
 ### Fixed
 
@@ -39,6 +69,26 @@ entry that carries them.
   - Was: At the cap the oldest streams left every report, and no line said so.
   - Effect: A warning names the cap and the count, and the end-of-run `retention:` line gives the total.
   - Docs: [Command-line reference](docs/cli-reference.md)
+- **An arrow key split by ssh or tmux no longer acts as Esc.**
+  - Was: The arrow became Esc and then the keys `[` and `B`.
+  - Effect: A lone Esc acts after 25 ms.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **A mouse wheel report split by ssh or tmux is no longer typed as keys.**
+  - Was: Its bytes reached the view as `[`, `<`, digits and `M`, which could trigger key actions.
+  - Limit: The Esc key still acts before the wheel event.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **Quitting the TUI leaves a clean screen and the prompt at column 0.**
+  - Was: Mouse reports reached the shell as typed text, and the prompt could start mid-line.
+  - Limit: sipnab discards keys you type in the first 50 ms after quitting.
+- **The message compare view keeps both messages' lines side by side.**
+  - Was: A header that wrapped on one side shifted every later line.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **The call flow folds a retransmission under its own message only.**
+  - Was: It folded under another leg's arrow, or replaced an auth retry fold's label.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **The call flow's compare hint goes away with its selection.**
+  - Was: `Selected: message N` stayed on the call list after Esc, with nothing selected.
+  - Docs: [Keybindings](docs/keybindings.md)
 
 ## [0.5.268] - 2026-11-20
 

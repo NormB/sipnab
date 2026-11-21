@@ -23,8 +23,10 @@ CALL LIST:
   Enter            Open call flow
   Space            Select/deselect dialog
   Esc, q           Quit (asks first, Ctrl+C quits at once)
-  < / >            Change sort column
+  < / >            Change sort column (the status line shows Sort:)
   Z                Reverse sort direction
+  L                Last updated last (by each dialog's last message); again = number order
+  d                Only the dialogs not over (a dead REGISTER counts as over); again = all
   A                Toggle autoscroll
   p                Pause/resume capture
   /                Search (arrows/Space work while typing; Enter opens)
@@ -69,7 +71,7 @@ CALL FLOW:
   PgUp/PgDn       Page through messages
   Home/End         First/last message
   Enter            Full-screen raw message
-  Space            Select message for diff (press twice to compare)
+  Space            Select message for diff (press twice to compare; again on it = clear)
   a / A            Combined detail: this transaction / whole dialog
   f                Filter ladder to this transaction (toggle)
   Esc              Back to call list
@@ -230,6 +232,19 @@ TERMS:
   BPF      Berkeley Packet Filter: the kernel's capture filter
   HEP      Homer Encapsulation Protocol: SIP mirrored by a proxy
   TFPS     Optional peer that bans sources (this view only reads it)
+
+DROP BY METHOD (--drop-method / --only-method at start):
+Start flags --drop-method / --only-method, or [capture] drop_methods /
+only_methods; known SIP methods, case-insensitive. Decided ONCE per
+dialog, on the request that starts it (INVITE, REGISTER, OPTIONS,
+SUBSCRIBE, MESSAGE, ...). Kept = its method is in only (or no
+only list) AND not in drop: then EVERY message of the dialog is kept and
+shown (ACK, BYE, CANCEL, re-INVITE, UPDATE, INFO, PRACK, REFER, NOTIFY, an
+in-dialog OPTIONS, ...) with every reply. Refused = the whole dialog is
+dropped at ingest: no dialog, no number, never in memory; only the
+\"Dropped by method\" count on status line 1 and in the capture report.
+A message whose dialog start was never seen (capture began mid-call) is
+decided by its own method (a reply by its CSeq method).
 
 FILTER DIALOG (F7):
   Tab, Shift+Tab   Next / previous field

@@ -376,15 +376,87 @@ pub fn set_terminal_raw(raw: bool) {
 #[cfg(feature = "tui")]
 pub fn restore_terminal_if_raw() {
     if TERMINAL_RAW.swap(false, Ordering::SeqCst) {
-        let mut out = std::io::stdout();
-        let _ = crossterm::execute!(
-            out,
-            crossterm::event::DisableMouseCapture,
-            crossterm::event::DisableBracketedPaste,
-            crossterm::cursor::Show,
-            crossterm::terminal::LeaveAlternateScreen
-        );
-        let _ = crossterm::terminal::disable_raw_mode();
+        restore_terminal();
+    }
+}
+
+/// Give the terminal back as it was before the TUI took it: mouse capture
+/// and bracketed paste off, the input the terminal still had in flight
+/// discarded, the frame wiped, the cursor shown at the top-left, the
+/// alternate screen left, raw mode off.
+/// Terminal errors are ignored: there is no recovery during teardown.
+///
+/// Mouse capture is switched off FIRST and the pending input discarded
+/// while raw mode is still on. A terminal that was reporting mouse motion
+/// keeps sending reports until it has read the switch-off (over ssh, a
+/// round trip later); read in cooked mode after exit they would be echoed
+/// to the shell as `^[[<35;80;20M` and typed into its next command line.
+#[cfg(feature = "tui")]
+pub fn restore_terminal() {
+    let mut out = std::io::stdout();
+    let _ = crossterm::execute!(
+        out,
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste
+    );
+    #[cfg(unix)]
+    discard_pending_input();
+    // The frame is wiped and the cursor put at the top-left before the
+    // alternate screen is left: a terminal without an alternate screen
+    // (GNU screen's default `altscreen off`, a serial console) would
+    // otherwise keep the last frame and start the shell prompt wherever
+    // the last draw left the cursor, mid-line. With one, the wiped screen
+    // is the alternate one and the shell's screen comes back untouched.
+    let _ = crossterm::execute!(
+        out,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::cursor::MoveTo(0, 0),
+        crossterm::cursor::Show,
+        crossterm::terminal::LeaveAlternateScreen
+    );
+    let _ = crossterm::terminal::disable_raw_mode();
+}
+
+/// Read and drop the terminal's input until it has been quiet for 50 ms
+/// (at most 300 ms in all), then flush what the kernel still holds.
+/// The terminal is standard input when it is one, else `/dev/tty`, the
+/// same rule crossterm uses for the terminal it puts in raw mode.
+#[cfg(all(feature = "tui", unix))]
+fn discard_pending_input() {
+    use std::os::fd::AsRawFd as _;
+    use std::time::{Duration, Instant};
+    // SAFETY: isatty(3) only inspects the descriptor.
+    let tty = if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
+        None
+    } else {
+        match std::fs::File::open("/dev/tty") {
+            Ok(f) => Some(f),
+            Err(_) => return,
+        }
+    };
+    let fd = tty.as_ref().map_or(libc::STDIN_FILENO, |f| f.as_raw_fd());
+    let deadline = Instant::now() + Duration::from_millis(300);
+    let mut buf = [0u8; 1024];
+    while Instant::now() < deadline {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd for the duration of the call.
+        let rc = unsafe { libc::poll(&mut pfd, 1, 50) };
+        if rc <= 0 || pfd.revents & libc::POLLIN == 0 {
+            break;
+        }
+        // SAFETY: reads at most `buf.len()` bytes into `buf`.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if n <= 0 {
+            break;
+        }
+    }
+    // SAFETY: tcflush(3) only acts on the descriptor's queues.
+    unsafe {
+        libc::tcflush(fd, libc::TCIFLUSH);
     }
 }
 
