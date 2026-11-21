@@ -1,8 +1,9 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 806
 expression: output
 ---
- Live capture: any    Dialogs: 1 shown of 1    Autoscroll: on
+ Live capture: any    Dialogs: 1 shown of 1    Sort: # ▲    Autoscroll: on
  Capture filter (BPF): none
  Note kept. F2 then NOTES saves the notes; PCAP-NG writes them into the capture
              10.0.0.1:5060                    10.0.0.2:5060 ┌ [1/2] INVITE ────────────────────────┐

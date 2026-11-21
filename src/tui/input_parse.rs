@@ -718,6 +718,25 @@ fn parse_utf8_char(buffer: &[u8]) -> io::Result<Option<char>> {
     }
 }
 
+/// Whether `bytes` start with a complete mouse report without its ESC: SGR
+/// `[ < Cb ; Cx ; Cy M` (or `m`), or normal (X10) `[ M` and three bytes.
+fn starts_with_mouse_report(bytes: &[u8]) -> bool {
+    match bytes {
+        [b'[', b'M', _, _, _, ..] => true,
+        [b'[', b'<', rest @ ..] => {
+            let Some(end) = rest.iter().position(|b| *b == b'M' || *b == b'm') else {
+                return false;
+            };
+            let fields: Vec<&[u8]> = rest[..end].split(|b| *b == b';').collect();
+            fields.len() == 3
+                && fields
+                    .iter()
+                    .all(|field| !field.is_empty() && field.iter().all(u8::is_ascii_digit))
+        }
+        _ => false,
+    }
+}
+
 /// Terminal input bytes in, events out: crossterm's `Parser`.
 ///
 /// Bytes that do not yet make a sequence are kept for the next
@@ -730,7 +749,26 @@ pub(crate) struct Parser {
     events: VecDeque<Event>,
     /// Whether the terminal is in raw mode.
     raw_mode: bool,
+    /// When the lone ESC held in `buffer` arrived, while one is held.
+    escape_since: Option<std::time::Instant>,
+    /// When a held ESC last became the Esc key because [`ESC_DELAY`] ran
+    /// out: a complete mouse report that follows within [`LATE_TAIL`] is the
+    /// rest of that sequence, not typed text.
+    escape_flushed: Option<std::time::Instant>,
 }
+
+/// How long after a held ESC became the Esc key on its delay a read that
+/// starts with a complete mouse report is still taken as the rest of that
+/// ESC's sequence. A mouse report split by ssh or tmux after more than
+/// [`ESC_DELAY`] would otherwise reach the views as typed keys: the wheel's
+/// `[<65;80;20M` ends in `M`, and each of those characters may be a command
+/// key of the view.
+pub(crate) const LATE_TAIL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How long a lone ESC at the end of a read waits for the rest of a key
+/// sequence before it is the Esc key (25 ms, as a terminal UI's usual
+/// short escape delay).
+pub(crate) const ESC_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl Parser {
     /// A parser for a terminal that is in raw mode when `raw_mode` is set.
@@ -739,15 +777,39 @@ impl Parser {
             buffer: Vec::with_capacity(256),
             events: VecDeque::with_capacity(128),
             raw_mode,
+            escape_since: None,
+            escape_flushed: None,
         }
     }
 
     /// Parse the bytes of one read. `more` says that the read filled its
     /// buffer, so more bytes may follow at once.
+    ///
+    /// A lone ESC that ends a read is held, not made the Esc key at once: an
+    /// arrow key is `ESC [ B`, and over ssh or tmux its bytes can arrive in
+    /// two reads. The held ESC joins the next read's bytes, or is the Esc key
+    /// once [`ESC_DELAY`] has passed with nothing after it
+    /// ([`Parser::flush_escape_if_due`]), as a terminal UI's escape delay does.
     pub(crate) fn advance(&mut self, bytes: &[u8], more: bool) {
+        // The rest of a mouse report whose ESC came too late: rejoin them,
+        // so the report is parsed as one and never typed. Only a complete
+        // report is joined: a `[` typed after Esc stays the `[` key.
+        if let Some(flushed) = self.escape_flushed.take()
+            && flushed.elapsed() < LATE_TAIL
+            && self.buffer.is_empty()
+            && starts_with_mouse_report(bytes)
+        {
+            self.buffer.push(0x1b);
+        }
         for (idx, byte) in bytes.iter().enumerate() {
             let more = idx + 1 < bytes.len() || more;
             self.buffer.push(*byte);
+            if !more && self.buffer.as_slice() == b"\x1b" {
+                self.escape_since
+                    .get_or_insert_with(std::time::Instant::now);
+                return;
+            }
+            self.escape_since = None;
             match parse_event(&self.buffer, more, self.raw_mode) {
                 Ok(Some(parsed)) => {
                     if let Parsed::Event(event) = parsed {
@@ -758,6 +820,30 @@ impl Parser {
                 Ok(None) => {}
                 Err(_) => self.buffer.clear(),
             }
+        }
+    }
+
+    /// How long the next terminal wait may last before a held ESC is due:
+    /// the rest of [`ESC_DELAY`], or `None` when no ESC is held.
+    pub(crate) fn escape_wait(&self) -> Option<std::time::Duration> {
+        self.escape_since
+            .map(|since| ESC_DELAY.saturating_sub(since.elapsed()))
+    }
+
+    /// A held ESC that has waited [`ESC_DELAY`] with nothing after it is
+    /// the Esc key.
+    pub(crate) fn flush_escape_if_due(&mut self) {
+        if self.escape_wait() == Some(std::time::Duration::ZERO) {
+            self.flush_escape();
+            self.escape_flushed = Some(std::time::Instant::now());
+        }
+    }
+
+    /// A held ESC is the Esc key now, whatever time has passed.
+    fn flush_escape(&mut self) {
+        if self.escape_since.take().is_some() {
+            self.buffer.clear();
+            self.events.push_back(Event::Key(KeyCode::Esc.into()));
         }
     }
 
@@ -999,6 +1085,7 @@ mod tests {
     fn events_of(bytes: &[u8]) -> Vec<Event> {
         let mut parser = raw();
         parser.advance(bytes, false);
+        parser.flush_escape();
         parser.take()
     }
 
@@ -1024,6 +1111,8 @@ mod tests {
         let mut parser = raw();
         for (index, (bytes, recorded)) in CORPUS.iter().zip(CROSSTERM_0_29).enumerate() {
             parser.advance(bytes, false);
+            // each recorded read was followed by a pause longer than ESC_DELAY
+            parser.flush_escape();
             let got = format!("{:?}", parser.take());
             assert_eq!(
                 &got, recorded,
@@ -1398,6 +1487,291 @@ mod tests {
                 KeyModifiers::SHIFT
             )],
             "left Shift alone"
+        );
+    }
+
+    /// An arrow key whose ESC arrives in one read and `[B` in the
+    /// next, inside ESC_DELAY, is the arrow key, not Esc then `[` and `B`
+    /// (a short escape delay keeps them together).
+    #[test]
+    fn success_an_arrow_split_after_its_escape_is_the_arrow() {
+        let mut parser = raw();
+        parser.advance(b"\x1b", false);
+        assert_eq!(
+            parser.take(),
+            vec![],
+            "the lone ESC is held, not yet the Esc key"
+        );
+        assert!(
+            parser.escape_wait().is_some(),
+            "the held ESC bounds the next wait"
+        );
+        parser.flush_escape_if_due();
+        parser.advance(b"[B", false);
+        assert_eq!(
+            parser.take(),
+            vec![plain(KeyCode::Down)],
+            "ESC + [B in two reads = Down"
+        );
+        assert_eq!(parser.escape_wait(), None, "nothing held after the arrow");
+    }
+
+    /// A lone Esc is the Esc key as soon as ESC_DELAY has passed with
+    /// nothing after it, not later.
+    #[test]
+    fn success_a_lone_escape_is_the_esc_key_after_the_delay() {
+        let mut parser = raw();
+        parser.advance(b"\x1b", false);
+        let wait = parser.escape_wait().unwrap_or_default();
+        assert!(wait <= ESC_DELAY, "the wait is at most ESC_DELAY: {wait:?}");
+        std::thread::sleep(ESC_DELAY + std::time::Duration::from_millis(5));
+        assert_eq!(
+            parser.escape_wait(),
+            Some(std::time::Duration::ZERO),
+            "due now"
+        );
+        parser.flush_escape_if_due();
+        assert_eq!(
+            parser.take(),
+            vec![plain(KeyCode::Esc)],
+            "the lone ESC is the Esc key"
+        );
+        assert_eq!(parser.escape_wait(), None, "nothing held after it");
+    }
+
+    /// Failure path: the held ESC's delay ran out before the next read, so
+    /// it is the Esc key and the next byte is a key of its own (Esc, then
+    /// `q`), not one sequence.
+    #[test]
+    fn failure_a_key_after_the_delay_is_not_joined_to_the_escape() {
+        let mut parser = raw();
+        parser.advance(b"\x1b", false);
+        parser.flush_escape();
+        parser.advance(b"q", false);
+        assert_eq!(
+            parser.take(),
+            vec![plain(KeyCode::Esc), plain(KeyCode::Char('q'))],
+            "Esc, then q"
+        );
+        assert_eq!(parser.escape_wait(), None, "nothing held after q");
+    }
+
+    /// Edge: an ESC that ends a FULL read (`more`) is not held with a
+    /// deadline; it waits in the buffer and joins the next read, so an arrow
+    /// split at a full read is still the arrow.
+    #[test]
+    fn edge_an_escape_at_the_end_of_a_full_read_joins_the_next_read() {
+        let mut parser = raw();
+        parser.advance(b"\x1b", true);
+        assert_eq!(parser.take(), vec![], "nothing yet");
+        assert_eq!(
+            parser.escape_wait(),
+            None,
+            "no deadline for a full read's ESC"
+        );
+        parser.advance(b"[B", false);
+        assert_eq!(parser.take(), vec![plain(KeyCode::Down)], "ESC + [B = Down");
+    }
+
+    /// Failure: only a complete SGR report (`[<` three decimal fields, then
+    /// `M` or `m`) or a complete X10 report (`[M` and three bytes) counts as
+    /// the rest of a timed-out ESC; every malformed shape is typed text.
+    #[test]
+    fn failure_malformed_mouse_report_shapes_are_not_reports() {
+        for (bytes, why) in [
+            (&b"[<65;80;20;1M"[..], "four fields"),
+            (&b"[<65;;20M"[..], "an empty field"),
+            (&b"[<6x;80;20M"[..], "a non-digit"),
+            (&b"[<65;80;20"[..], "no terminator"),
+            (&b"[M a"[..], "a short X10 report"),
+            (&b"[<"[..], "nothing after the opener"),
+            (&b"q[<65;80;20M"[..], "not at the start"),
+        ] {
+            assert!(!starts_with_mouse_report(bytes), "{why}: {bytes:?}");
+        }
+        assert!(
+            starts_with_mouse_report(b"[<65;80;20M"),
+            "a complete SGR press"
+        );
+        assert!(
+            starts_with_mouse_report(b"[<0;1;1m"),
+            "a complete SGR release"
+        );
+        assert!(starts_with_mouse_report(b"[M abc"), "a complete X10 report");
+    }
+
+    /// Edge: a report that arrives split over two reads after the ESC's
+    /// delay is not complete in either read, so it stays typed keys.
+    #[test]
+    fn edge_a_report_split_over_two_reads_after_the_delay_stays_typed() {
+        let mut parser = raw();
+        parser.advance(b"\x1b", false);
+        // What `flush_escape_if_due` does once ESC_DELAY is up, without a
+        // sleep: the Esc key, and the late-tail window opened now.
+        parser.flush_escape();
+        parser.escape_flushed = Some(std::time::Instant::now());
+        parser.advance(b"[<65;8", false);
+        let got = parser.take();
+        assert_eq!(
+            got.first(),
+            Some(&plain(KeyCode::Esc)),
+            "the Esc first: {got:?}"
+        );
+        assert_eq!(
+            got.get(1),
+            Some(&plain(KeyCode::Char('['))),
+            "the half report is typed: {got:?}"
+        );
+    }
+
+    /// A parser whose ESC was read alone and became the Esc key on its delay.
+    fn after_a_timed_out_escape() -> Parser {
+        let mut parser = raw();
+        parser.advance(b"\x1b", false);
+        std::thread::sleep(ESC_DELAY + std::time::Duration::from_millis(5));
+        parser.flush_escape_if_due();
+        parser
+    }
+
+    /// A mouse wheel report whose ESC arrived more than ESC_DELAY
+    /// before the rest is Esc then the wheel event, never the typed keys
+    /// `[`, `<`, `6`, ... `M`.
+    #[test]
+    fn success_a_mouse_report_split_after_the_delay_is_not_typed() {
+        let mut parser = after_a_timed_out_escape();
+        parser.advance(b"[<65;80;20M", false);
+        let got = parser.take();
+        assert_eq!(
+            got.first(),
+            Some(&plain(KeyCode::Esc)),
+            "the late ESC is still the Esc key"
+        );
+        assert_eq!(got.len(), 2, "Esc and one event, no typed keys: {got:?}");
+        assert!(
+            matches!(
+                got.get(1),
+                Some(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    ..
+                }))
+            ),
+            "the rest is the wheel: {got:?}"
+        );
+        // a release (`m`) and a key in the same read after the report
+        let mut parser = after_a_timed_out_escape();
+        parser.advance(b"[<0;5;6mq", false);
+        let got = parser.take();
+        assert_eq!(got.len(), 3, "Esc, the release, q: {got:?}");
+        assert!(
+            matches!(got.get(1), Some(Event::Mouse(_))),
+            "the release: {got:?}"
+        );
+        assert_eq!(
+            got.get(2),
+            Some(&plain(KeyCode::Char('q'))),
+            "the key after the report: {got:?}"
+        );
+    }
+
+    /// A normal (X10) mouse report split after the delay is joined too.
+    #[test]
+    fn success_a_normal_mouse_report_split_after_the_delay_is_not_typed() {
+        let mut parser = after_a_timed_out_escape();
+        parser.advance(b"[M `!", false);
+        let got = parser.take();
+        assert_eq!(got.len(), 2, "Esc and one event, no typed keys: {got:?}");
+        assert!(
+            matches!(got.get(1), Some(Event::Mouse(_))),
+            "the press: {got:?}"
+        );
+    }
+
+    /// Keys typed quickly after Esc are those keys: Esc, `[`, `j` and Esc,
+    /// `[`, `[`, `A` (`[` scrolls the call-flow detail up).
+    #[test]
+    fn success_keys_typed_quickly_after_escape_are_typed() {
+        let mut parser = after_a_timed_out_escape();
+        parser.advance(b"[", false);
+        parser.advance(b"j", false);
+        assert_eq!(
+            parser.take(),
+            vec![
+                plain(KeyCode::Esc),
+                plain(KeyCode::Char('[')),
+                plain(KeyCode::Char('j'))
+            ],
+            "Esc, [ and j typed in three reads"
+        );
+        let mut parser = after_a_timed_out_escape();
+        parser.advance(b"[", false);
+        parser.advance(b"[", false);
+        parser.advance(b"A", false);
+        assert_eq!(
+            parser.take(),
+            vec![
+                plain(KeyCode::Esc),
+                plain(KeyCode::Char('[')),
+                plain(KeyCode::Char('[')),
+                plain(KeyCode::Char('A'))
+            ],
+            "Esc, [, [ and A typed, not F1"
+        );
+        // the same keys in one read, and a report that is not complete
+        let mut parser = after_a_timed_out_escape();
+        parser.advance(b"[j", false);
+        assert_eq!(
+            parser.take(),
+            vec![
+                plain(KeyCode::Esc),
+                plain(KeyCode::Char('[')),
+                plain(KeyCode::Char('j'))
+            ],
+            "Esc, then [j in one read"
+        );
+        let mut parser = after_a_timed_out_escape();
+        parser.advance(b"[<6", false);
+        let got = parser.take();
+        assert!(
+            !got.iter().any(|event| matches!(event, Event::Mouse(_))),
+            "{got:?}"
+        );
+        assert_eq!(got.get(1), Some(&plain(KeyCode::Char('['))), "{got:?}");
+    }
+
+    /// A mouse report typed well after an Esc is not joined to it.
+    #[test]
+    fn success_a_bracket_typed_after_the_late_tail_is_typed() {
+        let mut parser = after_a_timed_out_escape();
+        std::thread::sleep(LATE_TAIL + std::time::Duration::from_millis(5));
+        parser.advance(b"[", false);
+        assert_eq!(
+            parser.take(),
+            vec![plain(KeyCode::Esc), plain(KeyCode::Char('['))],
+            "a [ after the late tail is typed"
+        );
+        // and a typed key in between ends the window at once
+        let mut parser = after_a_timed_out_escape();
+        parser.advance(b"q", false);
+        parser.advance(b"[<65;80;20M", false);
+        let got = parser.take();
+        assert_eq!(got.get(1), Some(&plain(KeyCode::Char('q'))), "{got:?}");
+        assert_eq!(
+            got.get(2),
+            Some(&plain(KeyCode::Char('['))),
+            "not joined: {got:?}"
+        );
+    }
+
+    /// An ESC followed by more bytes in the same read never waits.
+    #[test]
+    fn success_an_escape_inside_a_read_never_waits() {
+        let mut parser = raw();
+        parser.advance(b"\x1b[Bq", false);
+        assert_eq!(parser.escape_wait(), None, "nothing held");
+        assert_eq!(
+            parser.take(),
+            vec![plain(KeyCode::Down), plain(KeyCode::Char('q'))],
+            "Down then q"
         );
     }
 }

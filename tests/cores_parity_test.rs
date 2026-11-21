@@ -1205,3 +1205,79 @@ fn quiet_past_the_limit_only_since_the_last_message_read_is_not_compacted() -> R
     );
     Ok(())
 }
+
+// ── --drop-method / --only-method ───────────────────────────────────
+
+/// One call whose INVITE and BYE travel on two host pairs that land on
+/// different workers (a proxy in the path), and a stand-alone OPTIONS.
+fn a_call_over_two_pairs() -> Result<(tempfile::TempDir, [std::path::PathBuf; 1]), TestError> {
+    let first = leg(0);
+    let second = Leg {
+        caller: first.callee,
+        callee: pair_apart_from(&[(first.caller, first.callee)], |i| {
+            (first.callee, [192, 0, 2, i])
+        })
+        .1,
+    };
+    let opt = leg(3);
+    let mut frames = captures::answered_call(first, "split@example.com", 0);
+    frames.push((
+        SECOND,
+        captures::request(opt, "OPTIONS", "ping@example.com", 1, ""),
+    ));
+    frames.push((
+        SECOND + 1_000,
+        captures::response(opt, 200, "OPTIONS", "ping@example.com", 1, ""),
+    ));
+    frames.push((
+        2 * SECOND,
+        captures::request(second, "BYE", "split@example.com", 2, ""),
+    ));
+    frames.push((
+        2 * SECOND + 1_000,
+        captures::response(second, 200, "BYE", "split@example.com", 2, ""),
+    ));
+    assert_spread(&[(first.caller, first.callee), (second.caller, second.callee)]);
+    let dir = tempfile::tempdir()?;
+    let input = [write(dir.path(), "split.pcap", &frames)?];
+    Ok((dir, input))
+}
+
+/// `--only-method INVITE`: the call keeps its BYE although the BYE went
+/// through another worker; the OPTIONS dialog is dropped. The same at
+/// every core count.
+#[test]
+fn only_method_keeps_an_in_dialog_request_from_another_worker() -> Result<(), TestError> {
+    let (_dir, input) = a_call_over_two_pairs()?;
+    let args = ["--only-method", "INVITE"];
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&input, n, &args))?;
+    assert_eq!(
+        single.lines().count(),
+        1,
+        "only the call is kept:\n{single}"
+    );
+    assert!(
+        single.contains("split@example.com"),
+        "the call is kept:\n{single}"
+    );
+    Ok(())
+}
+
+/// `--drop-method INVITE`: the whole call is dropped, its BYE from another
+/// worker too; the OPTIONS dialog is kept. The same at every core count.
+#[test]
+fn drop_method_drops_an_in_dialog_request_from_another_worker() -> Result<(), TestError> {
+    let (_dir, input) = a_call_over_two_pairs()?;
+    let args = ["--drop-method", "INVITE"];
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&input, n, &args))?;
+    assert_eq!(
+        single.lines().count(),
+        1,
+        "only the OPTIONS is kept:\n{single}"
+    );
+    assert!(
+        single.contains("ping@example.com"),
+        "the OPTIONS is kept:\n{single}"
+    );
+    Ok(())
+}

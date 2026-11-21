@@ -2528,14 +2528,18 @@ mod tui_state {
         Ok(())
     }
 
-    /// Space twice on the same message opens no diff; the anchor stays set.
+    /// Space twice on the same message opens no diff, and the second Space
+    /// clears the selection (Space again on the selected message deselects).
     #[test]
     fn call_flow_space_same_msg_no_diff() -> Result<(), TestError> {
         let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(' ')); // select msg 0
         app.handle_key(KeyCode::Char(' ')); // same msg — no diff opened
-        assert!(matches!(app.current_view(), View::CallFlow(_)));
-        assert_eq!(app.diff_selected_msg(), Some(0)); // still set
+        assert!(
+            matches!(app.current_view(), View::CallFlow(_)),
+            "no diff view opens"
+        );
+        assert_eq!(app.diff_selected_msg(), None, "the second Space deselects");
         Ok(())
     }
 
@@ -4083,6 +4087,7 @@ mod tui_state {
             resolver: &resolver,
             name_mode: sipnab::names::NameMode::Off,
             rtp_streams: &[],
+            fold: true,
         };
 
         // No selection ⇒ default state is Normal for every rendered row.
@@ -4567,6 +4572,7 @@ mod tui_state {
             resolver: Box::leak(Box::new(sipnab::names::NameResolver::new())),
             name_mode: sipnab::names::NameMode::Off,
             rtp_streams: &[],
+            fold: true,
         };
         let (participants, formatted) =
             prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);
@@ -4961,6 +4967,7 @@ mod tui_state {
             resolver: Box::leak(Box::new(sipnab::names::NameResolver::new())),
             name_mode: sipnab::names::NameMode::Off,
             rtp_streams: &[],
+            fold: true,
         };
         let (_participants, formatted) =
             prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);
@@ -5025,6 +5032,7 @@ mod tui_state {
             resolver: Box::leak(Box::new(sipnab::names::NameResolver::new())),
             name_mode: sipnab::names::NameMode::Off,
             rtp_streams: &[],
+            fold: true,
         };
         let (_participants, formatted) =
             prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);

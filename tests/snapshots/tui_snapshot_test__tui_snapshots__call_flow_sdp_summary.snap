@@ -1,8 +1,9 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 1842
 expression: output
 ---
- Live capture: any    Dialogs: 1 shown of 1    Autoscroll: on
+ Live capture: any    Dialogs: 1 shown of 1    Sort: # ▲    Autoscroll: on
  Capture filter (BPF): none
  SDP: Summary
              10.0.0.1:5060                    10.0.0.2:5060 ┌ [1/2] INVITE (SDP) ──────────────────┐

@@ -38,6 +38,80 @@ pub fn set_max_messages_per_dialog(limit: usize) {
     MAX_MESSAGES_PER_DIALOG.store(limit, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// How many dialog keys refused by method are remembered (see
+/// `DialogStore::method_refused`).
+const METHOD_REFUSED_CAP: usize = 65_536;
+
+/// The most recent `cap` keys remembered, oldest forgotten first, one at a
+/// time: remembering one more key at the cap forgets exactly the oldest.
+/// Both operations are O(1).
+#[derive(Debug, Default)]
+struct RecentKeys {
+    /// The keys, oldest first.
+    order: std::collections::VecDeque<std::sync::Arc<str>>,
+    /// The same keys, for lookup.
+    set: std::collections::HashSet<std::sync::Arc<str>, ahash::RandomState>,
+}
+
+impl RecentKeys {
+    /// Whether `key` is among the remembered keys.
+    fn contains(&self, key: &str) -> bool {
+        self.set.contains(key)
+    }
+
+    /// Remember `key` (a key already remembered is left in place), keeping
+    /// at most `cap` keys (at least one).
+    fn remember(&mut self, key: &str, cap: usize) {
+        if self.set.contains(key) {
+            return;
+        }
+        while self.order.len() >= cap.max(1) {
+            match self.order.pop_front() {
+                Some(old) => {
+                    self.set.remove(&old);
+                }
+                None => break,
+            }
+        }
+        let key: std::sync::Arc<str> = std::sync::Arc::from(key);
+        self.set.insert(key.clone());
+        self.order.push_back(key);
+    }
+}
+
+/// The method lists applied at ingest by every [`DialogStore`] built after
+/// [`set_method_filter`]: `(drop, only)`; see [`DialogStore::set_drop_methods`]
+/// and [`DialogStore::set_only_methods`].
+static METHOD_FILTER: std::sync::OnceLock<(Vec<String>, Vec<String>)> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only per-thread count of [`DialogStore::capture_now`] calls (a
+    /// scan of every dialog), asserted by the call list's per-frame tests.
+    pub(crate) static CAPTURE_NOW_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Filter SIP messages by method at ingest, in every [`DialogStore`] built
+/// after this call: `drop` (`--drop-method`, `[capture] drop_methods`) and
+/// `only` (`--only-method`, `[capture] only_methods`). Call once at startup;
+/// a second call is ignored. Methods compare case-insensitively.
+pub fn set_method_filter(drop: Vec<String>, only: Vec<String>) {
+    let _ = METHOD_FILTER.set((normalize_methods(drop), normalize_methods(only)));
+}
+
+/// Upper-case, trimmed, empty entries removed, each method once.
+fn normalize_methods(methods: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for m in methods {
+        let m = m.trim().to_ascii_uppercase();
+        if !m.is_empty() && !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    out
+}
+
 /// Reason a dialog was correlated to another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -483,6 +557,23 @@ pub struct DialogStore {
     /// record of the latest. An operator reading "5000 dialogs lost to
     /// capacity" needs to know which end of the capture is missing.
     capacity_dialogs_evicted: u64,
+    /// Methods dropped at ingest: a request with one of these methods, and
+    /// every reply whose CSeq names one, never reaches a dialog. Upper case.
+    drop_methods: Vec<String>,
+    /// When not empty, the only methods kept at ingest (requests by their
+    /// method, replies by their CSeq method). Upper case.
+    only_methods: Vec<String>,
+    /// Lifetime count of messages dropped by [`Self::drop_methods`] and
+    /// [`Self::only_methods`].
+    messages_dropped_by_method: u64,
+    /// Dialog keys (Call-IDs) refused by method, so every later message of
+    /// such a dialog is dropped too. Bounded: the most recent
+    /// [`METHOD_REFUSED_CAP`] are remembered; one more forgets the oldest,
+    /// whose later messages are then decided again by their own method.
+    method_refused: RecentKeys,
+    /// How many keys `method_refused` remembers: [`METHOD_REFUSED_CAP`]
+    /// (tests set a smaller one).
+    method_refused_cap: usize,
     /// Mutation counter for cache invalidation — see [`Self::generation`].
     generation: u64,
     /// The change sequence: the number of the last change stamped on a
@@ -490,6 +581,10 @@ pub struct DialogStore {
     /// too, so a tail cursor from before a clear still names a point before
     /// every later change.
     changes: u64,
+    /// The number of the last dialog opened (see [`SipDialog::number`]). Only
+    /// rises, across `clear` and eviction too, so no two dialogs this store
+    /// ever held share a number.
+    numbered: u64,
     /// Header names used for B2BUA leg correlation (`sip.xcid`). A
     /// candidate dialog whose message carries one of these headers pointing at
     /// another dialog's Call-ID (or vice versa) is correlated at score 100.
@@ -1014,8 +1109,14 @@ impl DialogStore {
             capacity_dialogs_dropped: 0,
             refused: indexmap::IndexSet::default(),
             capacity_dialogs_evicted: 0,
+            drop_methods: METHOD_FILTER.get().map(|f| f.0.clone()).unwrap_or_default(),
+            only_methods: METHOD_FILTER.get().map(|f| f.1.clone()).unwrap_or_default(),
+            messages_dropped_by_method: 0,
+            method_refused: RecentKeys::default(),
+            method_refused_cap: METHOD_REFUSED_CAP,
             generation: 0,
             changes: 0,
+            numbered: 0,
             xcid_headers: Vec::new(),
             #[cfg(feature = "native")]
             admission: None,
@@ -1437,6 +1538,68 @@ impl DialogStore {
         self.capacity_dialogs_evicted
     }
 
+    /// Drop these methods at ingest (replaces the list the store was built
+    /// with): a request whose method is listed, and every reply whose CSeq
+    /// method is listed, opens no dialog, takes no dialog number and joins no
+    /// dialog; it only bumps [`Self::total_messages_dropped_by_method`].
+    pub fn set_drop_methods(&mut self, methods: Vec<String>) {
+        self.drop_methods = normalize_methods(methods);
+    }
+
+    /// Keep ONLY these methods at ingest (replaces the list the store was
+    /// built with): a request is kept when its method is listed, a reply when
+    /// its CSeq method is listed; everything else is dropped as
+    /// [`Self::set_drop_methods`] drops. Empty = keep every method.
+    pub fn set_only_methods(&mut self, methods: Vec<String>) {
+        self.only_methods = normalize_methods(methods);
+    }
+
+    /// Remember at most `cap` dialogs refused by method (tests only).
+    #[cfg(test)]
+    pub(crate) fn set_method_refused_cap(&mut self, cap: usize) {
+        self.method_refused_cap = cap.max(1);
+    }
+
+    /// The methods dropped at ingest, upper case; empty when none.
+    pub fn drop_methods(&self) -> &[String] {
+        &self.drop_methods
+    }
+
+    /// The only methods kept at ingest, upper case; empty = all.
+    pub fn only_methods(&self) -> &[String] {
+        &self.only_methods
+    }
+
+    /// Lifetime count of messages dropped at ingest by method.
+    pub fn total_messages_dropped_by_method(&self) -> u64 {
+        self.messages_dropped_by_method
+    }
+
+    /// Whether a drop or an only list is set (both empty: every message
+    /// is kept and the filter costs nothing).
+    fn method_filter_on(&self) -> bool {
+        !(self.drop_methods.is_empty() && self.only_methods.is_empty())
+    }
+
+    /// Whether `msg`, opening a dialog, is dropped by [`Self::drop_methods`] /
+    /// [`Self::only_methods`]: kept only when its method (a reply's CSeq
+    /// method, for a dialog whose start was never seen) is in `only` (or
+    /// `only` is empty) AND not in `drop`.
+    fn dropped_by_method(&self, msg: &SipMessage) -> bool {
+        if !self.method_filter_on() {
+            return false;
+        }
+        let method: Option<&str> = if msg.is_request {
+            msg.method.as_ref().map(|m| m.as_str())
+        } else {
+            msg.cseq().map(|(_, m)| m)
+        };
+        let listed = |list: &[String]| {
+            method.is_some_and(|m| list.iter().any(|d| d.eq_ignore_ascii_case(m)))
+        };
+        listed(&self.drop_methods) || (!self.only_methods.is_empty() && !listed(&self.only_methods))
+    }
+
     /// Process an incoming SIP message.
     ///
     /// This is the main entry point. It:
@@ -1486,6 +1649,22 @@ impl DialogStore {
             (None, None) => return,
         };
         let dialog_idx = self.dialogs.get_index_of(lookup);
+        // The method filter decides ONCE per dialog, on the message that
+        // would open it: a message of a dialog already kept is always kept
+        // (ACK, BYE, re-INVITE, in-dialog OPTIONS, ... and their replies);
+        // a message of a dialog refused by method is always dropped.
+        if dialog_idx.is_none() && self.method_filter_on() {
+            if self.method_refused.contains(lookup) {
+                self.messages_dropped_by_method += 1;
+                return;
+            }
+            if self.dropped_by_method(&msg) {
+                self.messages_dropped_by_method += 1;
+                self.method_refused
+                    .remember(lookup, self.method_refused_cap);
+                return;
+            }
+        }
         #[cfg(feature = "native")]
         if dialog_idx.is_none() && self.admission.as_ref().is_some_and(|m| !m.matches(&msg)) {
             return;
@@ -1540,6 +1719,8 @@ impl DialogStore {
             let mut dialog = dialog;
             self.changes += 1;
             dialog.change_seq = self.changes;
+            self.numbered += 1;
+            dialog.number = self.numbered;
             self.dialogs.insert(key, dialog);
         }
     }
@@ -1757,6 +1938,8 @@ impl DialogStore {
         for (key, dialog) in std::mem::take(&mut self.dialogs) {
             fragments.entry(key).or_default().push(dialog);
         }
+        // Every dialog is numbered again below, in the merged order, from 1.
+        self.numbered = 0;
         for other in others {
             for (key, dialog) in other.dialogs {
                 fragments.entry(key).or_default().push(dialog);
@@ -1772,11 +1955,15 @@ impl DialogStore {
             self.idle_messages_evicted += other.idle_messages_evicted;
             self.capacity_dialogs_dropped += other.capacity_dialogs_dropped;
             self.capacity_dialogs_evicted += other.capacity_dialogs_evicted;
+            self.messages_dropped_by_method += other.messages_dropped_by_method;
             sightings.push(other.engine_sightings);
         }
         self.engine_sightings
             .merge(sightings, |s| read_position(s.frame.as_ref(), s.at));
-        if fragments.len() > self.max_dialogs {
+        // A method filter decides once per dialog on the message read first,
+        // and the workers kept every message (see `crate::parallel`): only a
+        // replay in read order makes the decision `--cores 1` makes.
+        if fragments.len() > self.max_dialogs || self.method_filter_on() {
             self.replay_every_message(fragments, &message_position, sweeps);
             return;
         }
@@ -1844,6 +2031,8 @@ impl DialogStore {
             let mut dialog = dialog;
             self.changes += 1;
             dialog.change_seq = self.changes;
+            self.numbered += 1;
+            dialog.number = self.numbered;
             self.dialogs.insert(key, dialog);
         }
     }
@@ -2017,7 +2206,9 @@ impl DialogStore {
     /// anchoring to the wall clock ages every offline dialog out at once. On a
     /// live capture the newest message IS approximately now, so one rule serves
     /// both without a mode flag.
-    fn capture_now(&self) -> chrono::DateTime<chrono::Utc> {
+    pub fn capture_now(&self) -> chrono::DateTime<chrono::Utc> {
+        #[cfg(test)]
+        CAPTURE_NOW_CALLS.with(|c| c.set(c.get() + 1));
         self.dialogs
             .values()
             .map(|d| d.latest_message_at)
@@ -5581,6 +5772,199 @@ mod tests {
             .ok_or("the INVITE dialog is kept")?;
         assert_eq!(call.messages.len(), 2, "its 200 OK is kept too");
         assert_eq!(store.len(), 1);
+        Ok(())
+    }
+
+    /// A dropped method's request AND its reply (matched by the CSeq method)
+    /// open no dialog, take no dialog number and count only as dropped.
+    #[test]
+    fn a_dropped_method_request_and_reply_open_no_dialog_and_take_no_number()
+    -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.set_drop_methods(vec![" options".into()]);
+        let t0 = base_ts()?;
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_invite_msg("call-1@test", t0)?);
+        store.process_message(make_options_with_branch("opt-1@test", 1, "z9hG4bK-o1", t0)?);
+        store.process_message(make_options_200_with_branch(
+            "opt-1@test",
+            1,
+            "z9hG4bK-o1",
+            t1,
+        )?);
+        store.process_message(make_invite_msg("call-2@test", t1)?);
+        store.process_message(make_200_ok("call-2@test", t1)?);
+        // An OPTIONS inside the call (same Call-ID) belongs to an accepted
+        // dialog: kept, with its reply.
+        store.process_message(make_options_with_branch(
+            "call-2@test",
+            5,
+            "z9hG4bK-o2",
+            t1,
+        )?);
+        store.process_message(make_options_200_with_branch(
+            "call-2@test",
+            5,
+            "z9hG4bK-o2",
+            t1,
+        )?);
+
+        assert!(store.get("opt-1@test").is_none(), "no OPTIONS dialog");
+        assert_eq!(store.len(), 2, "the two INVITE dialogs are kept");
+        assert_eq!(
+            store.total_messages_dropped_by_method(),
+            2,
+            "request + reply"
+        );
+        let n1 = store.get("call-1@test").ok_or("call-1")?.number;
+        let n2 = store.get("call-2@test").ok_or("call-2")?.number;
+        assert_eq!(n2, n1 + 1, "numbers stay consecutive across the drop");
+        assert_eq!(
+            store.get("call-2@test").ok_or("call-2")?.messages.len(),
+            4,
+            "the in-dialog OPTIONS and its 200 are kept"
+        );
+
+        // Without the list the old behavior: the OPTIONS is a dialog.
+        let mut plain = DialogStore::new(100, false);
+        plain.process_message(make_options_with_branch("opt-1@test", 1, "z9hG4bK-o1", t0)?);
+        plain.process_message(make_options_200_with_branch(
+            "opt-1@test",
+            1,
+            "z9hG4bK-o1",
+            t1,
+        )?);
+        assert_eq!(
+            plain.len(),
+            1,
+            "without a drop list the OPTIONS is a dialog"
+        );
+        assert_eq!(
+            plain.total_messages_dropped_by_method(),
+            0,
+            "without a drop list nothing is dropped"
+        );
+        Ok(())
+    }
+
+    /// `only = INVITE`: the INVITE dialog keeps EVERY message (its BYE and
+    /// in-dialog OPTIONS too); the stand-alone OPTIONS dialog is dropped
+    /// whole, even a later INVITE on its Call-ID. With `drop = INVITE` as
+    /// well, nothing is kept.
+    #[test]
+    fn only_methods_decide_per_dialog_on_the_starting_request() -> Result<(), TestError> {
+        only_methods_decide_per_dialog_body()
+    }
+
+    /// The memory of refused dialogs is a window of the most recent ones:
+    /// at the cap, refusing one more forgets only the OLDEST. A later
+    /// message of a forgotten dialog is decided again by its own method;
+    /// one of a remembered dialog is still dropped.
+    #[test]
+    fn refused_dialogs_are_forgotten_oldest_first_one_at_a_time() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.set_drop_methods(vec!["INVITE".into()]);
+        store.set_method_refused_cap(4);
+        let t0 = base_ts()?;
+        for cid in ["r1@test", "r2@test", "r3@test", "r4@test", "r5@test"] {
+            store.process_message(make_invite_msg(cid, t0)?);
+        }
+        assert_eq!(store.len(), 0, "every INVITE dialog is refused");
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_bye_msg("r2@test", t1)?);
+        assert!(
+            store.get("r2@test").is_none(),
+            "the second refusal is still remembered: its BYE is dropped"
+        );
+        store.process_message(make_bye_msg("r1@test", t1)?);
+        assert!(
+            store.get("r1@test").is_some(),
+            "the oldest refusal is forgotten: its BYE is decided by its own method"
+        );
+        Ok(())
+    }
+
+    /// Edge: a cap of one remembers only the newest refusal.
+    #[test]
+    fn a_refused_cap_of_one_remembers_the_newest_refusal() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.set_drop_methods(vec!["INVITE".into()]);
+        store.set_method_refused_cap(1);
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg("s1@test", t0)?);
+        store.process_message(make_invite_msg("s2@test", t0)?);
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_bye_msg("s2@test", t1)?);
+        assert!(
+            store.get("s2@test").is_none(),
+            "the newest refusal is remembered"
+        );
+        store.process_message(make_bye_msg("s1@test", t1)?);
+        assert!(
+            store.get("s1@test").is_some(),
+            "the older refusal is forgotten"
+        );
+        Ok(())
+    }
+
+    /// `only_methods_decide_per_dialog_on_the_starting_request`'s body.
+    fn only_methods_decide_per_dialog_body() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.set_only_methods(vec!["invite".into()]);
+        let t0 = base_ts()?;
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_options_with_branch("opt-1@test", 1, "z9hG4bK-o1", t0)?);
+        store.process_message(make_options_200_with_branch(
+            "opt-1@test",
+            1,
+            "z9hG4bK-o1",
+            t1,
+        )?);
+        store.process_message(make_invite_msg("call-1@test", t0)?);
+        store.process_message(make_200_ok("call-1@test", t1)?);
+        store.process_message(make_options_with_branch(
+            "call-1@test",
+            3,
+            "z9hG4bK-o3",
+            t1,
+        )?);
+        store.process_message(make_bye_msg("call-1@test", t1)?);
+        // A message of the refused OPTIONS dialog, whatever its method.
+        store.process_message(make_invite_msg("opt-1@test", t1)?);
+        store.process_message(make_invite_msg("call-2@test", t1)?);
+        assert!(store.get("opt-1@test").is_none(), "no OPTIONS dialog");
+        assert_eq!(store.len(), 2, "only the INVITE dialogs are kept");
+        assert_eq!(
+            store.get("call-1@test").ok_or("call-1")?.messages.len(),
+            4,
+            "INVITE, 200, in-dialog OPTIONS, BYE"
+        );
+        assert_eq!(
+            store.get("call-1@test").ok_or("call-1")?.number,
+            1,
+            "the first kept dialog is number 1"
+        );
+        assert_eq!(
+            store.get("call-2@test").ok_or("call-2")?.number,
+            2,
+            "a dropped dialog takes no number"
+        );
+        assert_eq!(
+            store.total_messages_dropped_by_method(),
+            3,
+            "OPTIONS, its 200, INVITE on it"
+        );
+
+        let mut both = DialogStore::new(100, false);
+        both.set_only_methods(vec!["INVITE".into()]);
+        both.set_drop_methods(vec!["Invite".into()]);
+        both.process_message(make_invite_msg("call-1@test", t0)?);
+        assert_eq!(both.len(), 0, "drop wins over only: nothing is kept");
+        assert_eq!(
+            both.total_messages_dropped_by_method(),
+            1,
+            "the one INVITE is counted as dropped"
+        );
         Ok(())
     }
 

@@ -937,6 +937,22 @@ The `[capture] node_name` key holds an empty string. `node_name` is the name thi
 
 **Exit code:** 1.
 
+### `[capture] {key} names an unknown SIP method {bad:?}; use one of {}`
+
+`[capture] drop_methods` or `only_methods` lists a name that is not a SIP method sipnab knows. `{key}` is the key, `{bad:?}` the first unknown name, and `{}` the list of known methods. A misspelled name in `only_methods` would otherwise drop every dialog, so sipnab refuses it. The printed line starts with `invalid config value: `.
+
+**What to do:** Correct the spelling. Case does not matter. `--drop-method` and `--only-method` refuse the same names.
+
+**Exit code:** 1.
+
+### `unknown SIP method '{s}'; use one of {}`
+
+`--drop-method` or `--only-method` names a method that is not a SIP method sipnab knows. `{s}` is the name as typed and `{}` the list of known methods. The command-line parser prints it after `invalid value '{s}' for '--drop-method <METHOD>'` (or `--only-method`). In a comma list, one unknown name refuses the whole flag.
+
+**What to do:** Correct the spelling. Case does not matter. The flags take no extension method outside the list.
+
+**Exit code:** 2.
+
 ### `config file not found: {path}`
 
 The file that `-f`/`--config` names does not exist. `{path}` is the path you gave. A missing file named by `$SIPNAB_CONFIG` is not an error: the search moves on to the default locations.
@@ -1053,6 +1069,28 @@ A `[diagnosis]` threshold is 0, negative, infinity or NaN (not-a-number).
 - The printed line starts with `invalid config value: `.
 
 **What to do:** Set `view_filter_detail` to `summary` or `full`, or remove the key.
+
+### `[display] sdp_display must be one of none, summary, full, got {m:?}`
+
+`[display] sdp_display` names an SDP form the call flow does not have.
+
+- `{m:?}` is the value in the file.
+- `none`, `summary` and `full` are the forms the `d` key cycles through in the call flow; the key sets the one it starts in.
+- sipnab checks this key only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `sdp_display` to `none`, `summary` or `full`, in lower case, or remove the key.
+
+### `[display] color_mode must be one of method, call_id, cseq, got {m:?}`
+
+`[display] color_mode` names a way to color the call flow arrows that the terminal UI does not have.
+
+- `{m:?}` is the value in the file.
+- `method`, `call_id` and `cseq` are the modes the `c` key cycles through in the call flow; the key sets the one it starts in.
+- sipnab checks this key only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `color_mode` to `method`, `call_id` or `cseq`, in lower case, or remove the key.
 
 **Exit code:** 1.
 

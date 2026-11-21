@@ -195,7 +195,7 @@ Timing deserves a firmer no. "The stream started 40 ms after the 200 OK, so it
 belongs to that call" is a coincidence detector on a busy proxy, where dozens of
 calls answer per second and every one of them starts media. sipnab already
 carries a timing-based leg correlator at score 50 out of 100
-([`src/sip/dialog_store.rs:2372`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2372)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
+([`src/sip/dialog_store.rs:2563`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2563)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
 correlating *signaling to signaling* where a Call-ID is present as a
 cross-check. Using timing to attach media to a dialog has no such cross-check.
 It should stay out.
@@ -346,7 +346,7 @@ device, one per HEP *sender* — and `input_origin` reaches `SipMessage`,
 
 **Leg correlation: adjacent, and deliberately separate.**
 [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md) and the seven strategies at
-[`src/sip/dialog_store.rs:44`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L44)<!-- "pub enum CorrelationReason" --> correlate *signaling to signaling* across a B2BUA,
+[`src/sip/dialog_store.rs:118`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L118)<!-- "pub enum CorrelationReason" --> correlate *signaling to signaling* across a B2BUA,
 keyed on `Session-ID`, `P-Charging-Vector`, the SDP `o=` tuple, or `Via` branch.
 Every one of those keys is a SIP header. None exists on an RTP packet. The
 problem here is signaling-to-media across two transports, which shares the word
@@ -433,7 +433,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:155`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L155)<!-- "if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device { return RunMode::CoresFile;" -->), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:8782`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8782)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:8788`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8788)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -497,7 +497,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:2313-2326`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2313-L2326)<!-- "fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {" -->), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:8782`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8782)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:8788`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8788)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:1057`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1057)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" -->). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a
@@ -560,7 +560,7 @@ disjunctive and cannot be widened by adding a member.
 - No TUI changes. Two reasons, and the second is the stronger one:
   `capture_mode` ([`src/tui/mod.rs:264`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L264)<!-- "capture_mode: String," -->) is one display string with no room for a
   second source, and the TUI never joins the capture handle at all — it drops it
-  ([`src/app/tui_mode.rs:892`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L892)<!-- "drop(self.handle);" -->), so a capture thread that failed reports nothing.
+  ([`src/app/tui_mode.rs:894`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L894)<!-- "drop(self.handle);" -->), so a capture thread that failed reports nothing.
   With one source that loses one error; with a composite it loses the answer to
   "which member died". Batch first, and the TUI needs that join before it takes
   a composite.

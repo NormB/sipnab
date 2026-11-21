@@ -177,6 +177,9 @@ pub enum FindingKind {
     /// Records a store shed at a cap — dialogs, messages, STUN transactions,
     /// ICMP evidence.
     RetentionLoss,
+    /// SIP messages dropped at ingest on purpose, by `--drop-method` /
+    /// `--only-method`.
+    DroppedByMethod,
 
     // ── Critical: nobody could hear ──────────────────────────────────
     /// An answered call negotiated media that was expected to flow, and none
@@ -244,12 +247,13 @@ impl FindingKind {
     /// [`Self::ordinal`] is an exhaustive `match`, a new variant does not
     /// compile until it has an arm there, and the assertion below this `impl`
     /// fails the build unless every entry here sits at its own ordinal.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::RebuiltFromVcon,
         Self::UndecodableFrames,
         Self::SipDiscardedByPortRange,
         Self::SipDiscardedByWebSocketPorts,
         Self::RetentionLoss,
+        Self::DroppedByMethod,
         Self::NoMedia,
         Self::OneWayAudio,
         Self::StunSdpMismatch,
@@ -289,29 +293,30 @@ impl FindingKind {
             Self::SipDiscardedByPortRange => 2,
             Self::SipDiscardedByWebSocketPorts => 3,
             Self::RetentionLoss => 4,
-            Self::NoMedia => 5,
-            Self::OneWayAudio => 6,
-            Self::StunSdpMismatch => 7,
-            Self::IcmpUnreachableSignaling => 8,
-            Self::IcmpUnreachableMedia => 9,
-            Self::NatMismatch => 10,
-            Self::ServerFailure => 11,
-            Self::AuthLoop => 12,
-            Self::Retransmissions => 13,
-            Self::AckMissing => 14,
-            Self::RegistrationFailure => 15,
-            Self::UnansweredStunProbe => 16,
-            Self::TurnAllocationLapsed => 17,
-            Self::IceRoleConflict => 18,
-            Self::IcmpUnreachableEndpoint => 19,
-            Self::RequestFailure => 20,
-            Self::Abandoned => 21,
-            Self::PostDialDelay => 22,
-            Self::LateMedia => 23,
-            Self::CodecAsymmetry => 24,
-            Self::PtimeAsymmetry => 25,
-            Self::PayloadTypeAsymmetry => 26,
-            Self::DurationAsymmetry => 27,
+            Self::DroppedByMethod => 5,
+            Self::NoMedia => 6,
+            Self::OneWayAudio => 7,
+            Self::StunSdpMismatch => 8,
+            Self::IcmpUnreachableSignaling => 9,
+            Self::IcmpUnreachableMedia => 10,
+            Self::NatMismatch => 11,
+            Self::ServerFailure => 12,
+            Self::AuthLoop => 13,
+            Self::Retransmissions => 14,
+            Self::AckMissing => 15,
+            Self::RegistrationFailure => 16,
+            Self::UnansweredStunProbe => 17,
+            Self::TurnAllocationLapsed => 18,
+            Self::IceRoleConflict => 19,
+            Self::IcmpUnreachableEndpoint => 20,
+            Self::RequestFailure => 21,
+            Self::Abandoned => 22,
+            Self::PostDialDelay => 23,
+            Self::LateMedia => 24,
+            Self::CodecAsymmetry => 25,
+            Self::PtimeAsymmetry => 26,
+            Self::PayloadTypeAsymmetry => 27,
+            Self::DurationAsymmetry => 28,
         }
     }
 
@@ -381,6 +386,16 @@ impl FindingKind {
                 "sipnab read these and then dropped them to stay inside a size limit, so the \
                  counts in this report are what it KEPT rather than what it read. Raise \
                  --limit or --max-streams and run it again.",
+            ),
+            Self::DroppedByMethod => m(
+                "dropped_by_method",
+                Severity::Blind,
+                "SIP dropped by method on purpose",
+                "message",
+                "sipnab dropped these at ingest because --drop-method or --only-method (or \
+                 [capture] drop_methods / only_methods) asked it to: every message of a dialog \
+                 started by a refused method. They are in no dialog and no other count. Run \
+                 without those settings to analyze every dialog.",
             ),
             Self::NoMedia => m(
                 "no_media",
@@ -1163,6 +1178,9 @@ pub struct RetentionCounts {
     pub dialogs_refused: u64,
     /// Oldest dialogs discarded at capacity by rotation.
     pub dialogs_rotated: u64,
+    /// Messages dropped at ingest by method (`--drop-method`,
+    /// `--only-method`): never a dialog, on purpose.
+    pub messages_dropped_by_method: u64,
 }
 
 impl RetentionCounts {
@@ -1173,6 +1191,7 @@ impl RetentionCounts {
             messages_evicted: dialogs.total_idle_messages_evicted(),
             dialogs_refused: dialogs.total_capacity_dialogs_dropped(),
             dialogs_rotated: dialogs.total_capacity_dialogs_evicted(),
+            messages_dropped_by_method: dialogs.total_messages_dropped_by_method(),
         }
     }
 }
@@ -1861,6 +1880,16 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
                 .note("oldest dialogs discarded at capacity by rotation (--limit)"),
         );
     }
+    let by_method = facts.retention.messages_dropped_by_method;
+    if by_method > 0 {
+        acc.bump(
+            FindingKind::DroppedByMethod,
+            by_method,
+            Evidence::default()
+                .count(CountLabel::Messages, by_method)
+                .note("messages dropped at ingest by method (--drop-method / --only-method)"),
+        );
+    }
     if facts.stun.dropped > 0 {
         acc.bump(
             FindingKind::RetentionLoss,
@@ -2426,6 +2455,7 @@ mod tests {
                 messages_evicted: 30,
                 dialogs_refused: 2,
                 dialogs_rotated: 5,
+                ..RetentionCounts::default()
             },
             ..CaptureFacts::default()
         };
@@ -2438,6 +2468,73 @@ mod tests {
         assert_eq!(found.occurrences, 37);
         assert_eq!(found.evidence.len(), 3);
         assert!(!analysis.complete);
+        Ok(())
+    }
+
+    /// Messages dropped on purpose by `--drop-method` / `--only-method` are
+    /// their own finding, with its own count and remedy, not a retention
+    /// loss whose remedy says to raise `--limit`.
+    #[test]
+    fn messages_dropped_by_method_are_their_own_finding() -> Result<(), TestError> {
+        let (dialogs, streams) = stores();
+        let facts = CaptureFacts {
+            frames_read: 1_000,
+            retention: RetentionCounts {
+                messages_dropped_by_method: 12,
+                ..RetentionCounts::default()
+            },
+            ..CaptureFacts::default()
+        };
+        let analysis = analyze_with(&dialogs, &streams, None, &facts);
+        assert!(
+            !analysis
+                .findings
+                .iter()
+                .any(|f| f.kind == FindingKind::RetentionLoss),
+            "an intentional drop is not a retention loss"
+        );
+        let found = analysis
+            .findings
+            .iter()
+            .find(|f| f.kind.meta().id == "dropped_by_method")
+            .ok_or("the drop has a finding of its own")?;
+        assert_eq!(
+            found.occurrences, 12,
+            "the finding counts the dropped messages"
+        );
+        let detail = found.kind.meta().detail;
+        assert!(!detail.contains("--limit"), "no --limit remedy: {detail}");
+        assert!(
+            detail.contains("--drop-method"),
+            "names the flags: {detail}"
+        );
+        Ok(())
+    }
+
+    /// Edge: with a cap that bit as well, the retention finding counts only
+    /// the records lost at the cap, and the method drop stays separate.
+    #[test]
+    fn a_cap_and_a_method_drop_are_counted_apart() -> Result<(), TestError> {
+        let (dialogs, streams) = stores();
+        let facts = CaptureFacts {
+            frames_read: 1_000,
+            retention: RetentionCounts {
+                messages_evicted: 30,
+                messages_dropped_by_method: 4,
+                ..RetentionCounts::default()
+            },
+            ..CaptureFacts::default()
+        };
+        let analysis = analyze_with(&dialogs, &streams, None, &facts);
+        let count = |id: &str| {
+            analysis
+                .findings
+                .iter()
+                .find(|f| f.kind.meta().id == id)
+                .map(|f| f.occurrences)
+        };
+        assert_eq!(count("retention_loss"), Some(30), "only the cap's records");
+        assert_eq!(count("dropped_by_method"), Some(4), "only the method drop");
         Ok(())
     }
 

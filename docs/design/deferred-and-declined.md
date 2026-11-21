@@ -88,7 +88,7 @@ generators and proxies — where operators most want to compare two captures.
 ### What the `-I` set actually gave us, and why it is not this
 
 `-I` now accepts a file, a directory, a glob, or a repeated set
-([`cli.rs:774-799`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L774-L799)<!-- "/// Read packets from a capture file" -->), resolves it into one chronologically
+([`cli.rs:787-812`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L787-L812)<!-- "/// Read packets from a capture file" -->), resolves it into one chronologically
 ordered list (`input_set::resolve`,
 [`input_set.rs:380`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L380)<!-- "/// resolves" -->), and streams every file
 into **one** `DialogStore` through one channel
@@ -198,7 +198,7 @@ The cheap version — load both captures into one store and add a "capture A / B
 column — cannot work, because the column has nothing to read. There is no field
 to populate. Adding one means touching `Packet`, `ParsedPacket`, `SipMessage`
 and `SipDialog`, which is the zero-copy payload spine (D3) and the hot path;
-`process_message` ([`dialog_store.rs:1471-1473`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1471-L1473)<!-- "// Look up by the borrowed Call-ID" -->) is
+`process_message` ([`dialog_store.rs:1634-1636`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1634-L1636)<!-- "// Look up by the borrowed Call-ID" -->) is
 written to avoid even a single owned-key allocation per message. A per-message
 `String` source label is a straightforward regression of that work.
 
@@ -548,7 +548,7 @@ with the reason stated above it: *"a HEP sender asserts the inner src/dst
 addresses, so absent receiver-side authentication an attacker could steer the
 kill response at a chosen victim (SSRF-style)."* `--hep-allow-kill` is off by
 default and a test pins that it stays off
-([`cli.rs:11890-11895`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L11890-L11895)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
+([`cli.rs:12058-12063`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L12058-L12063)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
 be opt-in (SN-01)"*).
 
 **Field injection into the input of a ban decision.** `fail2ban.rs`'s
@@ -695,7 +695,7 @@ Three things changed since [`mcp-tool-roadmap.md`](mcp-tool-roadmap.md) filed
 state — needs the same opt-in treatment as shutdown."*
 
 **The opt-in treatment now exists and is proven.** `shutdown_server` shipped with
-a flag ([`cli.rs:4277-4290`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L4277-L4290)<!-- "/// Allow the `shutdown_server`" -->), an off-by-default field
+a flag ([`cli.rs:4336-4349`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L4336-L4349)<!-- "/// Allow the `shutdown_server`" -->), an off-by-default field
 ([`server.rs:187`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L187)<!-- "allow_shutdown: bool, /// Where" -->), a builder
 ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut self) -> Self {" -->) and a first-statement refusal
 ([`server.rs:9160`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9160)<!-- "if !self.allow_shutdown {" -->). Copying that shape costs almost
@@ -749,7 +749,7 @@ documents *"the tool server; cloned per HTTP session"* and
 ([`server.rs:64`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L64)) is a plain field, not an `Arc`,
 built once at startup ([`servers.rs:633-658`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L633-L658)<!-- "let capture_state" -->) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
-argument ([`cli.rs:8631-8633`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8631-L8633)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
+argument ([`cli.rs:8703-8705`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8703-L8705)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
 `capture_status` ([`server.rs:1548`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L1548)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
@@ -779,7 +779,7 @@ worse version of something already free.
 
 That leaves persistent HTTP, where a restart is genuinely disruptive. But there
 `-I` now takes a whole directory, a glob, or a repeated set
-([`cli.rs:774-799`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L774-L799)<!-- "/// Read packets from a capture file" -->), so the corpus can be loaded at start —
+([`cli.rs:787-812`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L787-L812)<!-- "/// Read packets from a capture file" -->), so the corpus can be loaded at start —
 subject, and this is the honest caveat, to the finding in
 [section 1 (multi-capture comparison)](#1-tui-multi-session--multi-capture-comparison)
 that the load is a union

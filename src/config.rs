@@ -158,6 +158,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "promisc",
             "hep_parse",
             "bpf_filter",
+            "drop_methods",
+            "only_methods",
         ]
         .as_slice(),
     );
@@ -171,6 +173,11 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "from_to",
             "mouse_capture",
             "view_filter_detail",
+            "fold",
+            "autoscroll",
+            "sdp_display",
+            "color_mode",
+            "extended_flow",
         ]
         .as_slice(),
     );
@@ -1763,6 +1770,17 @@ pub struct CaptureConfig {
     /// positional filter or `--bpf-file` replaces it, and while it is set no
     /// filter is generated from `portrange`.
     pub bpf_filter: Option<String>,
+    /// SIP methods dropped at ingest, decided once per dialog on its
+    /// starting request: a dialog started by one of them opens no dialog,
+    /// takes no number, and all its messages count only as "dropped by
+    /// method"; a dialog started by another method keeps every message.
+    /// Case-insensitive. `--drop-method` adds to it.
+    pub drop_methods: Option<Vec<String>>,
+    /// When set, only dialogs STARTED by these methods are kept at ingest
+    /// (with every message of theirs, whatever its method); the rest is
+    /// dropped as `drop_methods` drops. Kept = in `only_methods` AND not in
+    /// `drop_methods`. `--only-method` adds to it.
+    pub only_methods: Option<Vec<String>>,
 }
 
 impl CaptureConfig {
@@ -1782,6 +1800,21 @@ impl CaptureConfig {
                 "[capture] node_name is empty; give a name, or remove the key for the hostname"
                     .to_string(),
             ));
+        }
+        for (key, list) in [
+            ("drop_methods", &self.drop_methods),
+            ("only_methods", &self.only_methods),
+        ] {
+            if let Some(bad) = list
+                .iter()
+                .flatten()
+                .find(|m| !crate::sip::method::is_known_method(m))
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[capture] {key} names an unknown SIP method {bad:?}; use one of {}",
+                    crate::sip::method::KNOWN_METHOD_NAMES
+                )));
+            }
         }
         Ok(())
     }
@@ -1854,6 +1887,20 @@ pub struct DisplayConfig {
     /// (one short token per selection) or `"full"` (the expression). The
     /// `filter_detail` key toggles it at runtime. Unset means `"summary"`.
     pub view_filter_detail: Option<String>,
+    /// Fold retransmissions and auth retries into one ladder arrow (`e`
+    /// expands one). Unset means on.
+    pub fold: Option<bool>,
+    /// The call list follows new dialogs (`A` toggles it). Unset means on.
+    pub autoscroll: Option<bool>,
+    /// How SDP shows under its arrow: `"none"`, `"summary"` or `"full"`.
+    /// Unset means `"none"`.
+    pub sdp_display: Option<String>,
+    /// What colors the ladder arrows: `"method"`, `"call_id"` or `"cseq"`
+    /// (the `c` key cycles them). Unset means `"method"`.
+    pub color_mode: Option<String>,
+    /// A call opens as the extended (multi-leg) flow (F4 toggles it). Unset
+    /// means off.
+    pub extended_flow: Option<bool>,
 }
 
 impl DisplayConfig {
@@ -1898,6 +1945,20 @@ impl DisplayConfig {
             {
                 return Err(crate::Error::ConfigInvalid(format!(
                     "[display] view_filter_detail must be one of summary, full, got {m:?}"
+                )));
+            }
+            if let Some(m) = &self.sdp_display
+                && crate::tui::SdpDisplayMode::parse(m).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[display] sdp_display must be one of none, summary, full, got {m:?}"
+                )));
+            }
+            if let Some(m) = &self.color_mode
+                && crate::tui::ColorMode::parse(m).is_none()
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[display] color_mode must be one of method, call_id, cseq, got {m:?}"
                 )));
             }
             let labels = crate::tui::call_list::COLUMN_LABELS;
@@ -5389,6 +5450,57 @@ from_to = "user-host-port"
 "#;
         let config: Config = toml::from_str(toml_str)?;
         assert_eq!(config.display.from_to.as_deref(), Some("user-host-port"));
+        Ok(())
+    }
+
+    /// `[capture] drop_methods` / `only_methods` refuse a method name sipnab
+    /// does not know, as `--drop-method` / `--only-method` do; a known name
+    /// in any case is accepted.
+    #[test]
+    fn capture_method_lists_refuse_an_unknown_name() -> Result<(), TestError> {
+        let bad: Config = toml::from_str("[capture]\nonly_methods = [\"INVTE\"]\n")?;
+        let Err(e) = bad.capture.validate() else {
+            return Err("only_methods = [\"INVTE\"] was accepted".into());
+        };
+        let text = e.to_string();
+        assert!(
+            text.contains("[capture] only_methods"),
+            "the key is named: {text}"
+        );
+        assert!(text.contains("INVTE"), "the value is named: {text}");
+        let bad: Config = toml::from_str("[capture]\ndrop_methods = [\"OPTIONS\", \"x\"]\n")?;
+        assert!(
+            bad.capture.validate().is_err(),
+            "one bad name refuses the list"
+        );
+        let ok: Config = toml::from_str(
+            "[capture]\ndrop_methods = [\"options\"]\nonly_methods = [\"Invite\"]\n",
+        )?;
+        assert!(
+            ok.capture.validate().is_ok(),
+            "known names in any case are accepted"
+        );
+        Ok(())
+    }
+
+    /// `[display] sdp_display` and `color_mode` refuse a spelling the TUI
+    /// does not know.
+    #[test]
+    #[cfg(feature = "tui")]
+    fn display_sdp_and_color_mode_are_validated() -> Result<(), TestError> {
+        let ok: Config =
+            toml::from_str("[display]\nsdp_display = \"full\"\ncolor_mode = \"call_id\"\n")?;
+        assert!(ok.display.validate().is_ok(), "known spellings validate");
+        let bad: Config = toml::from_str("[display]\nsdp_display = \"short\"\n")?;
+        assert!(
+            bad.display.validate().is_err(),
+            "an unknown sdp_display is refused"
+        );
+        let bad: Config = toml::from_str("[display]\ncolor_mode = \"callid\"\n")?;
+        assert!(
+            bad.display.validate().is_err(),
+            "an unknown color_mode is refused"
+        );
         Ok(())
     }
 

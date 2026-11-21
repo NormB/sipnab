@@ -109,9 +109,9 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
 `SipMethod::Cancel` fall into `_`.
 
 `dialog.method` is set once, by `SipDialog::new`
-([`dialog.rs:491-503`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L491-L503)<!-- "pub fn new(msg: &SipMessage)" -->), from the request's own method
+([`dialog.rs:566-578`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L566-L578)<!-- "pub fn new(msg: &SipMessage)" -->), from the request's own method
 when the first message is a request and from CSeq when it is a response — and the
-rustdoc at [`:475-490`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L475-L490)<!-- "/// The second case" --> says plainly that it is *"set
+rustdoc at [`:550-565`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L550-L565)<!-- "/// The second case" --> says plainly that it is *"set
 once here and never corrected"*. A leading response is therefore safe: CSeq says
 INVITE, so the INVITE machine is selected. A leading **request** that is not an
 INVITE is not.
@@ -127,10 +127,10 @@ already up is the normal way this tool is used.
 ### What it costs, which is more than a wrong label
 
 `Trying` is in the **active** set
-([`dialog_store.rs:1989-1999`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1989-L1999)<!-- "fn is_active_dialog_state(state: &DialogState)" -->) and is not `InCall`,
+([`dialog_store.rs:2178-2188`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2178-L2188)<!-- "fn is_active_dialog_state(state: &DialogState)" -->) and is not `InCall`,
 so a mid-dialog-seeded call is wrong in both directions on the two numbers
 operators graph: counted in `active_dialog_count` forever, invisible to
-`active_call_count` ([`:2045-2055`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2045-L2055)<!-- "/// Count calls that are up: dialogs in `InCall`" -->), whose doc calls
+`active_call_count` ([`:2236-2246`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2236-L2246)<!-- "/// Count calls that are up: dialogs in `InCall`" -->), whose doc calls
 it *"the concurrent-call figure — the one that maps to channels in use, to a
 carrier's simultaneous-call limit, and to the alert an operator actually
 wants."*
@@ -278,9 +278,9 @@ instinct — *"dispatch-only rather than relabeling the user-visible
 the guards at the same time.
 
 **The seed method's only remaining job is the initial state**
-([`dialog.rs:500-502`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L500-L502)<!-- "let initial_state" -->), and for the two methods that
+([`dialog.rs:575-577`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L575-L577)<!-- "let initial_state" -->), and for the two methods that
 matter it barely matters: since the creation branch now applies the creating
-message's own transition ([`dialog_store.rs:2717`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2717)<!-- "update_state(&mut dialog, msg);" -->),
+message's own transition ([`dialog_store.rs:2908`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2908)<!-- "update_state(&mut dialog, msg);" -->),
 a BYE-seeded dialog goes `Trying → Completed` on its own first message, and a
 CANCEL-seeded one goes `Trying → Canceled`. Which is exactly the outcome the
 pinned defect test is waiting for.
@@ -317,7 +317,7 @@ transition or declares a no-change with a reason.** Three cell kinds:
 network is unlikely to produce. There is exactly one such family today, and it is
 already load-bearing: a message with no CSeq and no method never reaches
 `update_state` at all, because `SipDialog::new` returns `None`
-([`dialog.rs:492-497`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L492-L497)<!-- "let call_id = msg.call_id()?.to_string();" -->). The existing prover already
+([`dialog.rs:567-572`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L567-L572)<!-- "let call_id = msg.call_id()?.to_string();" -->). The existing prover already
 guards this in miniature with its `pairs` count assertion
 ([`dialog.rs:1000-1006`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L1000-L1006)): *"a method stopped
 constructing a dialog and its whole row went unchecked."*
@@ -347,7 +347,7 @@ does not exist anywhere in the 1050-cell sweep.
 **Axis 2 — starting state.** The prover builds a fresh dialog per cell and applies
 exactly one response, so `start` is only ever `Trying` or `Pending`
 (the two `SipDialog::new` initial states,
-[`dialog.rs:500-502`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L500-L502)<!-- "let initial_state" -->). **The state axis is entirely
+[`dialog.rs:575-577`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L575-L577)<!-- "let initial_state" -->). **The state axis is entirely
 unexercised.** That is not a minor gap: three of the four INVITE response arms are
 *state*-guarded, and the CANCEL-versus-200 race the domain primer documents —
 `Canceled → InCall` on a 2xx ([`dialog.rs:433-447`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L433-L447)) —
@@ -364,8 +364,8 @@ arrival = Request(method)
         | Response(cseq_method, code)
 ```
 
-with 14 methods ([`dialog.rs:1658-1673`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L1658-L1673)<!-- "const METHODS: [&str;" -->), 75 codes
-([`:1680-1686`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L1680-L1686)<!-- "const CODES: [u16;" -->), 7 response classes
+with 14 methods ([`dialog.rs:1734-1749`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L1734-L1749)<!-- "const METHODS: [&str;" -->), 75 codes
+([`:1756-1762`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L1756-L1762)<!-- "const CODES: [u16;" -->), 7 response classes
 ([`response_codes.rs:27-43`](https://github.com/NormB/sipnab/blob/main/src/sip/response_codes.rs#L27-L43)<!-- "pub enum ResponseClass" -->) and 13 dialog
 states ([`dialog.rs:24-59`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L24-L59)<!-- "pub enum DialogState" -->).
 
