@@ -576,7 +576,7 @@ not mistake them for settled.
   `join_fanout_group`'s doc names `any` as a possible `ENOPROTOOPT` source
   ([`fanout.rs:77-78`](https://github.com/NormB/sipnab/blob/main/src/capture/fanout.rs#L77-L78)<!-- "/// * `ENOPROTOOPT`" -->) but marks it "on some
   kernels". The zero-argument default sniffs all interfaces via `any`
-  ([`cli.rs:1049-1050`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1049-L1050)<!-- "/// interface. Without" -->), so this is the *default* invocation,
+  ([`cli.rs:1051-1052`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1051-L1052)<!-- "/// interface. Without" -->), so this is the *default* invocation,
   not an edge case. The probe at [`live.rs:475`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L475)<!-- "fn probe_fanout(device:" --> will
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.

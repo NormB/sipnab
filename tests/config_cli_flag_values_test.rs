@@ -247,16 +247,16 @@ static SPECS: &[Spec] = &[
     (
         "drop-method",
         Kind::Text {
-            accept: &["OPTIONS", "invite", "Notify"],
-            reject: &[("x", 2), ("INVTE", 2), ("", 2)],
+            accept: &["OPTIONS", "invite", "Notify", "KDMQ", "kdmq"],
+            reject: &[("x", 2), ("INVTE", 2), ("", 2), ("KDQM", 2)],
         },
         &[],
     ),
     (
         "only-method",
         Kind::Text {
-            accept: &["INVITE", "register", "Message"],
-            reject: &[("x", 2), ("KDMQ", 2), ("", 2)],
+            accept: &["INVITE", "register", "Message", "KdMq"],
+            reject: &[("x", 2), ("KDQM", 2), ("", 2)],
         },
         &[],
     ),

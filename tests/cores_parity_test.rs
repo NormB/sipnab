@@ -1327,6 +1327,94 @@ fn only_method_keeps_an_in_dialog_request_from_another_worker() -> Result<(), Te
     Ok(())
 }
 
+/// One call, two KDMQ replication dialogs (Kamailio DMQ, each a request
+/// and its 200) and one OPTIONS, every dialog on a host pair of its own
+/// (RFC 5737 addresses), spread over the workers.
+fn kdmq_beside_a_call() -> Result<(tempfile::TempDir, [std::path::PathBuf; 1]), TestError> {
+    let legs = [leg(0), leg(1), leg(2), leg(3)];
+    let mut frames = captures::answered_call(legs[0], "call@example.com", 0);
+    for (i, id) in [(1usize, "dmq-1@example.com"), (2, "dmq-2@example.com")] {
+        let at = i as u64 * SECOND;
+        frames.push((at, captures::request(legs[i], "KDMQ", id, 1, "")));
+        frames.push((
+            at + 1_000,
+            captures::response(legs[i], 200, "KDMQ", id, 1, ""),
+        ));
+    }
+    frames.push((
+        3 * SECOND,
+        captures::request(legs[3], "OPTIONS", "ping@example.com", 1, ""),
+    ));
+    frames.push((
+        3 * SECOND + 1_000,
+        captures::response(legs[3], 200, "OPTIONS", "ping@example.com", 1, ""),
+    ));
+    assert_spread(&legs.map(|l| (l.caller, l.callee)));
+    let dir = tempfile::tempdir()?;
+    let input = [write(dir.path(), "kdmq.pcap", &frames)?];
+    Ok((dir, input))
+}
+
+/// The Call-IDs of the `--json-dialogs` lines `out` holds, in order.
+fn call_ids(out: &str) -> Vec<&'static str> {
+    [
+        "call@example.com",
+        "dmq-1@example.com",
+        "dmq-2@example.com",
+        "ping@example.com",
+    ]
+    .into_iter()
+    .filter(|id| out.contains(id))
+    .collect()
+}
+
+/// Edge: with no method flag the KDMQ dialogs are dialogs like the others,
+/// so the drop and only tests below remove something that is there.
+#[test]
+fn kdmq_dialogs_are_kept_without_a_method_flag() -> Result<(), TestError> {
+    let (_dir, input) = kdmq_beside_a_call()?;
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&input, n, &[]))?;
+    assert_eq!(single.lines().count(), 4, "four dialogs:\n{single}");
+    assert_eq!(
+        call_ids(&single).len(),
+        4,
+        "every dialog is kept:\n{single}"
+    );
+    Ok(())
+}
+
+/// Success: `--drop-method KDMQ` drops both KDMQ dialogs whole and keeps
+/// the call and the OPTIONS. The same at every core count.
+#[test]
+fn drop_method_kdmq_drops_the_kdmq_dialogs() -> Result<(), TestError> {
+    let (_dir, input) = kdmq_beside_a_call()?;
+    let args = ["--drop-method", "KDMQ"];
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&input, n, &args))?;
+    assert_eq!(single.lines().count(), 2, "two dialogs kept:\n{single}");
+    assert_eq!(
+        call_ids(&single),
+        ["call@example.com", "ping@example.com"],
+        "the call and the OPTIONS are kept, the KDMQ dialogs dropped:\n{single}"
+    );
+    Ok(())
+}
+
+/// Success: `--only-method kdmq` (lower case) keeps only the KDMQ dialogs.
+/// The same at every core count.
+#[test]
+fn only_method_kdmq_keeps_only_the_kdmq_dialogs() -> Result<(), TestError> {
+    let (_dir, input) = kdmq_beside_a_call()?;
+    let args = ["--only-method", "kdmq"];
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&input, n, &args))?;
+    assert_eq!(single.lines().count(), 2, "two dialogs kept:\n{single}");
+    assert_eq!(
+        call_ids(&single),
+        ["dmq-1@example.com", "dmq-2@example.com"],
+        "only the KDMQ dialogs are kept:\n{single}"
+    );
+    Ok(())
+}
+
 /// `--drop-method INVITE`: the whole call is dropped, its BYE from another
 /// worker too; the OPTIONS dialog is kept. The same at every core count.
 #[test]

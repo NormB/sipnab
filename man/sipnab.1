@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.268" "User Commands"
+.TH SIPNAB 1 "2026-10-13" "sipnab 0.5.269" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -76,10 +76,10 @@ Network interface to capture on.
 Read packets from a capture file, directory, archive, or glob instead of live capture, and stored vCon containers as the SIP messages they hold. Repeatable.
 .TP
 \fB\-\-drop\-method\fR \fIMETHOD\fR
-Drop SIP dialogs started by this method at ingest (repeatable, or a comma list; a SIP method sipnab knows, case\-insensitive; another name is refused at startup). The decision is made ONCE per dialog (Call\-ID), on the request that starts it: a dialog started by a listed method opens no dialog, takes no dialog number and every message of it (requests and replies) only counts in "dropped by method" (TUI status line, capture report). A dialog started by another method keeps EVERY message, whatever its method (ACK, BYE, re\-INVITE or an in\-dialog OPTIONS, for example). A message whose dialog start was never seen (capture began mid\-call) is decided by its own method (a reply by its CSeq method). Unlike \fB\-\-filter\fR, which hides, a dropped message is never kept in memory. Live capture, HEP and \fB\-I\fR files alike. The most recent 65,536 refused dialogs are remembered; with \fB\-\-cores N\fR the decision is made at the merge, as \fB\-\-cores 1\fR makes it. Example: \fB\-\-drop\-method OPTIONS\fR.
+Drop SIP dialogs started by this method at ingest (repeatable, or a comma list; a standard SIP method or the extension method KDMQ, case\-insensitive; another name is refused at startup). The decision is made ONCE per dialog (Call\-ID), on the request that starts it: a dialog started by a listed method opens no dialog, takes no dialog number and every message of it (requests and replies) only counts in "dropped by method" (TUI status line, capture report). A dialog started by another method keeps EVERY message, whatever its method (ACK, BYE, re\-INVITE or an in\-dialog OPTIONS, for example). A message whose dialog start was never seen (capture began mid\-call) is decided by its own method (a reply by its CSeq method). Unlike \fB\-\-filter\fR, which hides, a dropped message is never kept in memory. Live capture, HEP and \fB\-I\fR files alike. The most recent 65,536 refused dialogs are remembered; with \fB\-\-cores N\fR the decision is made at the merge, as \fB\-\-cores 1\fR makes it. Example: \fB\-\-drop\-method OPTIONS\fR, or \fB\-\-drop\-method KDMQ\fR on a Kamailio cluster node.
 .TP
 \fB\-\-only\-method\fR \fIMETHOD\fR
-Keep at ingest ONLY the SIP dialogs started by this method (repeatable, or a comma list; a known SIP method, case\-insensitive), decided once per dialog on its starting request exactly as \fB\-\-drop\-method\fR decides: with \fB\-\-only\-method INVITE\fR a call keeps every message (ACK, BYE, CANCEL, re\-INVITE, UPDATE, INFO, in\-dialog OPTIONS and every other in\-dialog request, and all the replies), while dialogs started by any other method (REGISTER, OPTIONS, SUBSCRIBE, MESSAGE and the rest) are dropped whole (no dialog, no number, counted as dropped). With both flags a dialog is kept only when its starting method is in \fB\-\-only\-method\fR AND not in \fB\-\-drop\-method\fR.
+Keep at ingest ONLY the SIP dialogs started by this method (repeatable, or a comma list; names as for \fB\-\-drop\-method\fR), decided once per dialog on its starting request exactly as \fB\-\-drop\-method\fR decides: with \fB\-\-only\-method INVITE\fR a call keeps every message (ACK, BYE, CANCEL, re\-INVITE, UPDATE, INFO, in\-dialog OPTIONS and every other in\-dialog request, and all the replies), while dialogs started by any other method (REGISTER, OPTIONS, SUBSCRIBE, MESSAGE and the rest) are dropped whole (no dialog, no number, counted as dropped). With both flags a dialog is kept only when its starting method is in \fB\-\-only\-method\fR AND not in \fB\-\-drop\-method\fR.
 .TP
 \fB\-\-recursive\fR
 Descend into subdirectories when \fB\-I\fR names a directory.

@@ -10,7 +10,44 @@ entry that carries them.
 
 ## [Unreleased]
 
-**Held:** contributions from an outside contributor merged together before release 0.5.269, on the owner's decision (2026-11-20); the release follows at once.
+### Changed
+
+- **Breaking: a relay question a run cannot ask exits 2 before it reads anything.**
+  - Was: The run logged the reason, read the capture, and exited 0.
+  - Effect: `--relay-stats`, `--relay-stats-call`, `--relay-stats-list`, `--relay-stats-interval` and `--relay-compare` refuse this way.
+  - Effect: They refuse with no `--rtpengine-control`, on a capture file, or for an address that is not `IP:port`, with the reason on stderr.
+  - Do: Ask the relay from a live capture (`-d <device>`), and drop these flags from scripts that read files.
+  - Docs: [Ask a media relay about itself](docs/relay-statistics.md)
+
+### Fixed
+
+- **The F7 key line and the "Save as" prompt are whole at 40 columns.**
+  - Was: Both ended at the dialog's edge, so `F1 fields`, `F2 save` and `Esc back` did not show.
+  - Effect: Each wraps between keys onto the next row; a long name shows its end and the cursor behind an ellipsis mark.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+- **`--analyze` and vCon exports now count RTP streams discarded at `--max-streams`.**
+  - Was: Only the end-of-run `retention:` line counted them; the analysis and the vCon carrier did not count them.
+  - Effect: The retention finding has a streams row, and the vCon completeness carrier has `streams_rotated` and an `INCOMPLETE` clause.
+  - Docs: [`--max-streams`](docs/cli-reference.md)
+- **`--cores N` links media to calls whose SIP runs inside a tunnel.**
+  - Was: Media outside a GRE, IP-in-IP or VXLAN tunnel that carried the SIP could lose its call, and two calls could merge into one stream.
+  - Effect: Every worker reads the SDP of tunneled SIP, as it does for SIP outside a tunnel.
+  - Docs: [Offline: `--cores`](docs/tuning-capture.md#offline---cores)
+- **A forked call answered by more than one leg says so.**
+  - Was: sipnab kept the first `2xx` as the dialog, and every later leg's answer was not recorded anywhere.
+  - Effect: `--json-dialogs` and the REST dialog document list each later leg's `To` tag in `forked_answers`.
+  - Effect: A response from another leg no longer counts in `timing.retransmits`.
+  - Docs: [Output formats](docs/output-formats.md#one-object-per-dialog)
+- **`--json-dialogs` streams carry the round trip the far end reported in RTCP.**
+  - Was: Only `GET /v1/streams` carried `round_trip_ms`; `--json-dialogs`, the call report and vCon media quality left it out.
+  - Effect: Each stream with a measured round trip carries `round_trip_ms` and `round_trip_source`.
+  - Docs: [MOS and codecs](docs/mos-and-codecs.md)
+- **A capture file cut short says why on stderr when the run exits 1.**
+  - Was: With `SIPNAB_LOG=off` the run exited 1 and printed nothing.
+  - Effect: stderr names each file that stopped early, its cause, and what the run is missing.
+  - Docs: [Error messages](docs/errors.md)
+
+## [0.5.269] - 2026-11-21
 
 ### Added
 
@@ -20,7 +57,7 @@ entry that carries them.
   - Docs: [Compare the REST API of two releases](docs/stability.md#compare-the-rest-api-of-two-releases)
 - **`--drop-method` and `--only-method` drop whole SIP dialogs by their starting method.**
   - Effect: A dropped dialog is never stored; status line 1 and the capture report count it under its own finding.
-  - Limit: sipnab accepts only the 14 SIP methods it knows and refuses another name at startup.
+  - Limit: sipnab accepts the 14 standard SIP methods and Kamailio's `KDMQ`, and refuses another name at startup.
   - Docs: [Drop whole dialogs by method](docs/tuning-capture.md#drop-whole-dialogs-by-method)
 - **`d` in the call list shows only the dialogs that are not over.**
   - Effect: A REGISTER with an unanswered challenge or an expired registration counts as over.
@@ -39,12 +76,6 @@ entry that carries them.
 
 ### Changed
 
-- **Breaking: a relay question a run cannot ask exits 2 before it reads anything.**
-  - Was: The run logged the reason, read the capture, and exited 0.
-  - Effect: `--relay-stats`, `--relay-stats-call`, `--relay-stats-list`, `--relay-stats-interval` and `--relay-compare` refuse this way.
-  - Effect: They refuse with no `--rtpengine-control`, on a capture file, or for an address that is not `IP:port`, with the reason on stderr.
-  - Do: Ask the relay from a live capture (`-d <device>`), and drop these flags from scripts that read files.
-  - Docs: [Ask a media relay about itself](docs/relay-statistics.md)
 - **The message compare view colors only the characters that changed.**
   - Effect: A changed line sits beside its new form instead of on two half-empty rows.
   - Docs: [Keybindings](docs/keybindings.md)
@@ -60,19 +91,11 @@ entry that carries them.
 
 ### Fixed
 
-- **The F7 key line and the "Save as" prompt are whole at 40 columns.**
-  - Was: Both ended at the dialog's edge, so `F1 fields`, `F2 save` and `Esc back` did not show.
-  - Effect: Each wraps between keys onto the next row; a long name shows its end and the cursor behind an ellipsis mark.
-  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
 - **REST routes read a request body only after the credential check.**
   - Was: A caller without a credential still had the server read and parse up to 1 MiB of JSON.
   - Was: `{"enabled": false, "enabled": true}` opened the persistence gate; the last copy of a key won.
   - Effect: A key given twice, or an object or array as a value, is a `400` whose `detail` names the rule.
   - Docs: [Bind address & connection limits](docs/rest-api.md#bind-address--connection-limits)
-- **`--analyze` and vCon exports now count RTP streams discarded at `--max-streams`.**
-  - Was: Only the end-of-run `retention:` line counted them; the analysis and the vCon carrier did not count them.
-  - Effect: The retention finding has a streams row, and the vCon completeness carrier has `streams_rotated` and an `INCOMPLETE` clause.
-  - Docs: [`--max-streams`](docs/cli-reference.md)
 - **A filter's regexes have a budget, so one filter cannot take seconds to read.**
   - Was: A filter compiled every `=~` regex on reading; `(?i)` classes such as `[\D]` cost about 0.4 s per KiB, with no total.
   - Effect: One expression holds at most 8 regexes, 1024 bytes of regex text and 16 classes, checked before compiling.
@@ -113,23 +136,6 @@ entry that carries them.
 - **The call flow's compare hint goes away with its selection.**
   - Was: `Selected: message N` stayed on the call list after Esc, with nothing selected.
   - Docs: [Keybindings](docs/keybindings.md)
-- **`--cores N` links media to calls whose SIP runs inside a tunnel.**
-  - Was: Media outside a GRE, IP-in-IP or VXLAN tunnel that carried the SIP could lose its call, and two calls could merge into one stream.
-  - Effect: Every worker reads the SDP of tunneled SIP, as it does for SIP outside a tunnel.
-  - Docs: [Offline: `--cores`](docs/tuning-capture.md#offline---cores)
-- **A forked call answered by more than one leg says so.**
-  - Was: sipnab kept the first `2xx` as the dialog, and every later leg's answer was not recorded anywhere.
-  - Effect: `--json-dialogs` and the REST dialog document list each later leg's `To` tag in `forked_answers`.
-  - Effect: A response from another leg no longer counts in `timing.retransmits`.
-  - Docs: [Output formats](docs/output-formats.md#one-object-per-dialog)
-- **`--json-dialogs` streams carry the round trip the far end reported in RTCP.**
-  - Was: Only `GET /v1/streams` carried `round_trip_ms`; `--json-dialogs`, the call report and vCon media quality left it out.
-  - Effect: Each stream with a measured round trip carries `round_trip_ms` and `round_trip_source`.
-  - Docs: [MOS and codecs](docs/mos-and-codecs.md)
-- **A capture file cut short says why on stderr when the run exits 1.**
-  - Was: With `SIPNAB_LOG=off` the run exited 1 and printed nothing.
-  - Effect: stderr names each file that stopped early, its cause, and what the run is missing.
-  - Docs: [Error messages](docs/errors.md)
 
 ## [0.5.268] - 2026-11-20
 

@@ -595,7 +595,8 @@ dialog number.
 - What you need: nothing on another system; the flags act on what sipnab
   reads. Names are the SIP methods sipnab knows, in any case: INVITE, ACK,
   BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO,
-  REFER, MESSAGE, UPDATE.
+  REFER, MESSAGE, UPDATE, and the extension method KDMQ (Kamailio's DMQ
+  replication between cluster nodes).
 - Steps: name the methods on the command line, or in `[capture]` of the
   configuration file. On a live capture, drop the keepalives and
   registrations:
@@ -624,8 +625,15 @@ drop_methods = ["OPTIONS"]
 - Check it: TUI status line 1 shows `Dropped by method: N`, and the capture
   analysis (`--json-analyze`) holds a `dropped_by_method` finding with the
   same count.
+- On a Kamailio cluster node, leave out the DMQ replication between the
+  nodes:
+
+```sh
+sipnab -d eth0 --drop-method KDMQ
+```
+
 - When sipnab refuses to start with `unknown SIP method`, correct the name.
-  The flags take no extension method outside the list.
+  The flags take no other extension method than the ones the list names.
 - When a call you expect is missing under `--only-method INVITE`, check that
   the capture holds its INVITE: sipnab decides a message whose dialog start
   it never saw by the message's own method.
