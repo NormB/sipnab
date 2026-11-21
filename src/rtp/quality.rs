@@ -635,11 +635,28 @@ impl<'a> MosDelay<'a> {
             self.store
                 .and_then(|s| s.remote_voip_metrics(&stream.key))
                 .map(|xr| xr.metrics.round_trip_delay),
-            match self.store.and_then(|s| s.round_trip_for(stream)) {
+            match self.round_trip(stream) {
                 Some((ms, crate::rtp::rtcp::RttSource::SenderReportEcho)) => Some(ms),
                 _ => None,
             },
         )
+    }
+
+    /// The round trip the store holds for `stream` and where it came from, or
+    /// `None` when this evidence has no store or the store has no figure.
+    ///
+    /// The one way a projection reaches the store's round trip. The REST list
+    /// used to attach it after projecting, and the other doors that project
+    /// through [`StreamSummary::of`](crate::output::model::StreamSummary::of)
+    /// (`--json-dialogs`, the call report, a vCon's media quality, the TUI's
+    /// JSON save) never did, so they scored a MOS on a reported round trip and
+    /// left the round trip itself out (FROM-#634 defect 1).
+    #[must_use]
+    pub fn round_trip(
+        &self,
+        stream: &crate::rtp::stream::RtpStream,
+    ) -> Option<(f64, crate::rtp::rtcp::RttSource)> {
+        self.store.and_then(|s| s.round_trip_for(stream))
     }
 
     /// Just the delay from [`Self::resolve`], for a caller that has already

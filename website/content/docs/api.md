@@ -1442,6 +1442,8 @@ and the detection threshold behind each.
   - In a dialog without one, it is the final response to the `REGISTER`, `PUBLISH`, `SUBSCRIBE`, `MESSAGE` or `OPTIONS` that opened it.
   - Responses to other methods in the dialog (BYE, CANCEL, NOTIFY) do not count.
   - `signaling_diagnosis.final_failure.code` also carries the status for any dialog.
+- **`forked_answers`** -- the `To` tag of each later leg that answered a forked INVITE `2xx`, in arrival order.
+  - It is absent on a call that one leg answered.
 - **`diagnosis`** -- Four booleans and a `hints` array, all five always present.
   - `one_way_audio`, `nat_mismatch` and `no_media` each name a media fault.
   - `private_media_address` is a warning rather than a fault.

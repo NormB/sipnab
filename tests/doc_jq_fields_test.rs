@@ -102,6 +102,12 @@ const NESTED_OR_DERIVED: &[&str] = &[
     // tests/plugin_example_test.rs builds the example plugin and reads the
     // key from the real output, as docs/plugins.md does.
     "plugin_findings",
+    // OPTIONAL and absent from every fixture: a dialog's `forked_answers`
+    // (src/output/json.rs `DialogJson`) appears only on a forked call that two
+    // legs answered, and no committed capture holds one.
+    // tests/forked_answers_test.rs builds one and reads the key from the real
+    // `--json-dialogs` output.
+    "forked_answers",
 ];
 
 /// Pull `sipnab ... --json* ... | jq '...'` pairs out of fenced blocks.

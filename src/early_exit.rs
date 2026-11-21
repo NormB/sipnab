@@ -255,7 +255,7 @@ pub const EARLY_EXITS: [EarlyExit; 37] = [
 
 /// The exits after the plan is made, kept apart so [`EARLY_EXITS`] stays in
 /// step order and its length is checked by the compiler.
-pub const LATE_EXITS: [EarlyExit; 3] = [
+pub const LATE_EXITS: [EarlyExit; 4] = [
     row(
         "--relay-holdings",
         "7b",
@@ -268,6 +268,7 @@ pub const LATE_EXITS: [EarlyExit; 3] = [
         Plan::NetworkClient,
         "drops before it asks the relay",
     ),
+    row("relay question refusal", "7d", Plan::Keeps, ERROR_EXIT),
     row(
         "--cores",
         "8",

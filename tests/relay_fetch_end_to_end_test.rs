@@ -545,42 +545,38 @@ fn a_counter_that_steps_backwards_between_polls_is_flagged_suspect() -> Result<(
     Ok(())
 }
 
-/// A relay address that is not an address and port asks nothing -- and the
-/// one-shot ask, the poller and the comparison each say so, rather than
-/// reading as a relay that holds no calls.
+/// A relay address that is not an address and port asks nothing: a live run
+/// given relay questions with one is refused before it captures, exit 2, with
+/// one line that names the address, rather than reading as a relay that holds
+/// no calls.
 ///
 /// The poller used to take its permit from the reconciler, which exists only
 /// when the address parsed, so this LIVE run was told its poll was refused
 /// because it "reads a file" and to capture live instead -- a fix it had
 /// already made. The refusal has to name the address, like its siblings do.
+/// Since RELAY-STATS-FILE-EXIT-0 every relay question passes one gate before
+/// the capture opens, and the first question asked is the one refused.
 #[test]
 fn an_unparseable_relay_address_asks_nothing_and_every_form_says_so() -> Result<(), TestError> {
-    let mut run = Run::start_with_control(
+    let done = run_to_exit(&[
+        "-L",
+        "127.0.0.1:0",
+        "--rtpengine-control",
         "relay-without-a-port",
-        &[
-            "--relay-stats",
-            "--relay-stats-interval",
-            "1",
-            "--relay-compare",
-            CALL_ID,
-        ],
-    )?;
-    assert!(
-        run.wait_stderr("nothing is polled"),
-        "{}",
-        run.err.join("\n")
-    );
-    let done = run.finish();
-    assert_eq!(done.code, Some(0), "{}", done.dump());
-    for form in ["nothing was asked", "nothing is polled"] {
-        assert!(done.stderr.contains(form), "{form}: {}", done.dump());
-    }
+        "--relay-stats",
+        "--relay-stats-interval",
+        "1",
+        "--relay-compare",
+        CALL_ID,
+    ])?;
+    assert_eq!(done.code, Some(2), "{}", done.dump());
+    assert!(done.stderr.contains("nothing was asked"), "{}", done.dump());
     assert_eq!(
         done.stderr
             .matches("relay-without-a-port is not an address and port")
             .count(),
-        4,
-        "startup snapshot, one-shot ask, poller and comparison each refuse:\n{}",
+        1,
+        "one refusal, for the first question, before the capture opens:\n{}",
         done.dump()
     );
     assert!(

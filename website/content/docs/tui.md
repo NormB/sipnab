@@ -503,6 +503,9 @@ MCP server of the same session resolve the name at once, with no restart.
    Save as: @▁ · Enter save · Esc back
    ```
 
+   On a narrow terminal the prompt and the key line continue on the next
+   row, between keys. A name wider than its row shows its end, behind an ellipsis mark.
+
 3. Type the name, for example `alice-big`, and press `Enter`. The dialog
    shows `Saved @alice-big to` and the file's path, and the name joins the
    list beside Named filter. A path in your home directory starts with `~`.

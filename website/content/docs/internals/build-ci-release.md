@@ -2486,7 +2486,7 @@ Every run reads where the release is from GitHub and git, so a re-run after a cr
 **Prerequisites.**
 
 - The release commit is on the branch `release/<version>`, and its pull request is open.
-- `heavy-run`, `land-queue`, `required-checks` and `cla-owner-exempt` are on `PATH`, or in the directory `--bin` names.
+- `heavy-run`, `land-queue` and `required-checks` are on `PATH`, or in the directory `--bin` names.
 - The prerequisites of [After the release](#after-the-release) hold.
 
 **Steps.** From a checkout with the tags fetched and no uncommitted changes to tracked files:
@@ -2504,7 +2504,7 @@ It runs these stages, each only when the facts say it is due:
 
 | Stage | What happens | Window |
 |---|---|---|
-| `ci-wait` | Posts the CLA status for the head, then waits for the pull request's checks. | Closed, then open for the last 15 minutes of the longest pending check |
+| `ci-wait` | Waits for the pull request's checks. The train posts no status for the retired `license/cla` check, which DCO sign-off replaced on 2026-11-20. | Closed, then open for the last 15 minutes of the longest pending check |
 | `land` | Lands the pull request through `land-queue` and `required-checks`, and prints what the two printed. | Open |
 | `tag` | Moves the checkout to the merge commit, waits for GitHub's proof of that commit, then makes the signed tag and pushes it in the lane. | Open |
 | `release-wait` | Waits for `release.yml` on the tag. | Closed |

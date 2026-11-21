@@ -9,8 +9,9 @@ scripts/check-dco.py's `verdict` is the one rule. A commit passes when:
   (Dependabot and similar cannot sign off; GitHub names a commit's author
   from its email, which anyone can set, so the signature is what proves it),
 - or its author AND committer are the repository owner's GitHub login and
-  GitHub verified its signature (the owner holds the rights already; the same
-  rule ~/Development/bin/cla-owner-exempt applies to `license/cla`),
+  GitHub verified its signature (the owner holds the rights already; the
+  retired ~/Development/bin/cla-owner-exempt applied the same rule to
+  `license/cla`),
 - or its message carries a `Signed-off-by: Name <email>` line whose email is
   the commit's author email and whose name is not empty, AND that email is a
   GitHub noreply address (owner decision (viii), 2026-11-18): the sign-off

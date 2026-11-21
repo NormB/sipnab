@@ -74,11 +74,26 @@ each one covers in full.
 |------|-------|
 | `0` | The run did what you asked. |
 | `1` | The run failed: a capture or I/O error, a capture not read in full, a report sipnab could not produce, or a configuration file sipnab refused. |
-| `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. |
+| `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. So does a relay question the run cannot ask, such as `--relay-stats` on a capture file. |
 | `3` | The tool worked and the input failed a check you asked for: `--lint-fail-on`, a failed `--expect` rule, an invalid container under `--vcon-validate`, or the vCon forwarder refused with `401` or `403`. |
 | `101` | sipnab panicked, an internal failure. Report it with the crash report sipnab wrote. With `[crash] core = true` the process aborts instead, and the shell shows the signal (`134`). |
 | `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away. `SIGTERM` and `SIGINT` stop it the same way and exit `0`. |
 | `130` | You pressed Ctrl-C at the archive password prompt. |
+
+A run that exits `1` because a capture file was not read in full says why on
+stderr at any log level, including with `SIPNAB_LOG=off`. It prints one
+`Stopped reading '<file>' early: <cause>. Continuing with the rest of the set.`
+line for each such file, then a `Run incomplete: <reason>.` line for what the
+run is missing:
+
+```text
+Stopped reading 'cut.pcap' early: <cause>. Continuing with the rest of the set.
+Run incomplete: 1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read.
+```
+
+The usual cause is a file that ends in the middle of a packet. Read a whole
+copy of the file: a capture that a writer still holds open is whole only after
+the writer stops.
 
 ## What this page covers
 
@@ -3434,7 +3449,7 @@ The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not tru
 
 **What to do:** Add `--rtpengine-control <ip:port>` with the relay's ng control port, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-compare will not ask a relay on a run that reads a file: asking transmits. Compare from a live capture (-d <device>).`
 
@@ -3442,7 +3457,7 @@ Asking the relay sends a packet. sipnab does not transmit during a run without a
 
 **What to do:** Run the comparison during a live capture, for example with `-d <device>`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `{flag} needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
 
@@ -3572,22 +3587,22 @@ An `engine not listed` reason names the engine by `homer-id`, for a HEP copy, or
 
 ### `--relay-stats-interval needs a relay to poll. Name one with --rtpengine-control <addr>.`
 
-`--relay-stats-interval` asks sipnab to poll a media relay's statistics every N seconds, but the command names no relay, so sipnab polls nothing. The rest of the run continues.
+`--relay-stats-interval` asks sipnab to poll a media relay's statistics every N seconds, but the command names no relay, so sipnab polls nothing and stops before it reads a capture.
 
 **What to do:** Add `--rtpengine-control <addr:port>` with the relay's control port (for example `127.0.0.1:22222`), or remove `--relay-stats-interval`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-stats-interval will not poll a relay on a run that reads a file: polling transmits. Poll from a live capture (-d <device>).`
 
-Polling a relay sends packets, and sipnab transmits only on a run that watches a live source. This run's source does not permit transmitting, so sipnab polls nothing, and the rest of the run continues. A live interface and a HEP listener permit transmitting. Capture files and uprobe reads do not.
+Polling a relay sends packets, and sipnab transmits only on a run that watches a live source. This run's source does not permit transmitting, so sipnab polls nothing and stops before it reads a capture. A live interface and a HEP listener permit transmitting. Capture files and uprobe reads do not.
 
 **What to do:** Do one of these:
 
 - Run the poll from a live capture (`-d <device>`) or a HEP listener (`--hep-listen`).
 - Remove `--relay-stats-interval` from runs that read files.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-stats needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
 
@@ -3595,7 +3610,7 @@ Polling a relay sends packets, and sipnab transmits only on a run that watches a
 
 **What to do:** Add `--rtpengine-control <ip:port>`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-stats will not ask a relay on a run that reads a file: asking transmits, and a file's addresses are historical and belong to third parties. Ask from a live capture (-d <device>).`
 
@@ -3606,7 +3621,7 @@ Asking the relay sends a packet. sipnab does not transmit during a run without a
 
 **What to do:** Ask from a live capture, for example `-d <device>`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--rtpengine-control {addr} asks a live relay which calls are up right now, but this run is reading a capture FILE — offline analysis never transmits. The calls in a file ended in the past; the relay's answer would describe whatever is up TODAY, which is other people's traffic. Passive decoding of any relay control plane already in the capture still runs; capture live with -d <device> to ask.`
 
@@ -3626,7 +3641,7 @@ The `--rtpengine-control` value `{addr}` is not an IP address and port, so `--re
 
 **What to do:** Give the relay's ng control address as `IP:port`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--rtpengine-control {addr} is not an address and port ({e}). It names the relay's ng control port, for example 127.0.0.1:22222. Nothing was asked, so streams this relay handles stay unattributed.`
 
@@ -3654,7 +3669,7 @@ The `--rtpengine-control` value `{addr}` is not an IP address and port, so the r
 
 **What to do:** Give the address as numeric `IP:port`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None for the statistics request: sipnab logs the error, and the run continues. 2 for `--relay-holdings`, which exits without answering.
+**Exit code:** 2. sipnab prints this on stderr and exits without answering.
 
 ### `{}: {} stepped backwards {} -> {} between polls; a cumulative counter cannot decrease, so the relay probably restarted (suspect). The counters below are since an unknown start.`
 

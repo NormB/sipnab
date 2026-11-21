@@ -902,6 +902,23 @@ pub(crate) struct ReadTally {
 }
 
 impl ReadTally {
+    /// Count `path` as stopped early by `e`, a loss, and say why.
+    ///
+    /// The one place both file readers (this one and the `--cores` reader in
+    /// `crate::parallel`) record a file they could not read to its end. The
+    /// line goes to the log as it is read, and is kept for the notice the run
+    /// prints on stderr if it exits 1 for it (EXIT-REASON-IN-LOG-ONLY).
+    pub(crate) fn stopped_early_by<E: std::fmt::Display>(&mut self, path: &Path, e: &E) {
+        self.stopped_early += 1;
+        self.lost = true;
+        let line = format!(
+            "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
+            crate::capture::archive::source_name(path)
+        );
+        tracing::error!("{line}");
+        crate::output::run_integrity::record_stopped_early(line);
+    }
+
     /// Files the run never got to, because it stopped inside an earlier one.
     fn not_reached(&self) -> usize {
         self.given
@@ -1196,12 +1213,7 @@ fn read_member(
     ) {
         Ok(read) => read,
         Err(e) => {
-            state.tally.stopped_early += 1;
-            state.tally.lost = true;
-            tracing::error!(
-                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                crate::capture::archive::source_name(path)
-            );
+            state.tally.stopped_early_by(path, &e);
             return Ok(true);
         }
     };

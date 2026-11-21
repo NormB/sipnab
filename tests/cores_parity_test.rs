@@ -259,6 +259,70 @@ fn the_merged_stream_store_holds_no_more_than_the_cap() -> Result<(), TestError>
     Ok(())
 }
 
+/// The streams-counted evidence of the `--json-analyze` retention finding
+/// that names `--max-streams`, or `None` when there is none.
+fn analyzed_streams_discarded(
+    inputs: &[std::path::PathBuf],
+    cores: usize,
+    cap: &str,
+) -> Result<Option<u64>, TestError> {
+    let stdout = run(inputs, cores, &["--json-analyze", "--max-streams", cap])?.stdout;
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .ok_or_else(|| format!("--cores {cores}: no JSON object in:\n{stdout}"))?;
+    let json: serde_json::Value = serde_json::from_str(line)?;
+    let findings = json["findings"]
+        .as_array()
+        .ok_or_else(|| format!("--cores {cores}: findings is not an array: {json}"))?;
+    Ok(findings
+        .iter()
+        .filter(|f| f["kind"] == "retention_loss")
+        .flat_map(|f| f["evidence"].as_array().cloned().unwrap_or_default())
+        .find(|e| {
+            e["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("--max-streams"))
+        })
+        .and_then(|e| e["counts"]["streams"].as_u64()))
+}
+
+/// STREAM-EVICTION-NOT-IN-ANALYSIS, end to end: `--analyze` counts the
+/// streams discarded at `--max-streams`, the same number at every core count
+/// (every stream created is held or counted, and the merged store holds the
+/// cap).
+#[test]
+fn the_analysis_counts_the_streams_discarded_at_every_core_count() -> Result<(), TestError> {
+    let (pairs, frames) = twelve_streams();
+    let cap = stream_cap(&pairs)?;
+    let dir = tempfile::tempdir()?;
+    let input = [write(dir.path(), "streams.pcap", &frames)?];
+    let want = (pairs.len() - cap) as u64;
+    for n in std::iter::once(1).chain(CORE_COUNTS) {
+        let got = analyzed_streams_discarded(&input, n, &cap.to_string())?;
+        assert_eq!(
+            got,
+            Some(want),
+            "--cores {n}: {} streams over a cap of {cap}",
+            pairs.len()
+        );
+    }
+    Ok(())
+}
+
+/// Edge: exactly at the cap the analysis names no stream loss.
+#[test]
+fn the_analysis_names_no_stream_loss_exactly_at_the_cap() -> Result<(), TestError> {
+    let (_, frames) = twelve_streams();
+    let dir = tempfile::tempdir()?;
+    let input = [write(dir.path(), "streams.pcap", &frames)?];
+    for n in std::iter::once(1).chain(CORE_COUNTS) {
+        let got = analyzed_streams_discarded(&input, n, "12")?;
+        assert_eq!(got, None, "--cores {n}: nothing was discarded");
+    }
+    Ok(())
+}
+
 /// Exactly at `--max-streams`, nothing is evicted at any count.
 #[test]
 fn streams_exactly_at_the_cap_are_all_kept() -> Result<(), TestError> {

@@ -878,9 +878,9 @@ the relay reports 542 RTP packet(s) for call 1-61@192.0.2.21, but this capture m
 
 ## When something does not work
 
-- **`--relay-stats will not ask a relay on a run that reads a file`** (logged
-  as an error, exit 0). The run reads a capture file. Ask from a live capture
-  with `-d`. The file's analysis still runs.
+- **`--relay-stats will not ask a relay on a run that reads a file`** (on
+  stderr, exit 2). The run reads a capture file. Ask from a live capture
+  with `-d`. sipnab refuses the run before it reads the file.
 - **`--relay-holdings will not ask a relay on a run that reads a file`** and
   exit 2. The same, for `--relay-holdings`. Its live sources are `-d` and
   `-L`.
