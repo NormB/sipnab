@@ -15031,7 +15031,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.268 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+sipnab 0.5.269 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -21649,8 +21649,8 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--no-rtp` | -- | off | 0.3.0 | Disable RTP capture and analysis. Config: `[capture] no_rtp` |
 | `--rtp` | -- | off | 0.5.204 | Capture and analyze RTP even when `[capture] no_rtp = true`. The last of `--no-rtp` / `--rtp` typed wins. Config: `[capture] no_rtp` |
 | `-p`, `--no-promisc` | -- | off | 0.5.8 | Do not put the interface into promiscuous mode. Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous. Config: `[capture] promisc` |
-| `--drop-method` | `<METHOD>` | -- | Unreleased | Drop at ingest the SIP dialogs STARTED by this method (repeatable or a comma list; any method, case-insensitive). Decided once per dialog (Call-ID) on its starting request: a refused dialog opens no dialog, takes no dialog number and is never kept in memory; all its messages and replies count only in "Dropped by method" (TUI status line 1, capture report). An accepted dialog keeps EVERY message, whatever its method (ACK, BYE, re-INVITE or an in-dialog OPTIONS, for example). sipnab decides a message whose dialog start it never saw by the message's own method (a reply by its CSeq method). Unlike `--filter`, which only hides. Live capture, HEP and `-I` files alike. sipnab refuses at startup a name that is not one of the SIP methods it knows (INVITE, ACK, BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO, REFER, MESSAGE, UPDATE) or one of the extension methods it accepts (KDMQ, the Kamailio DMQ replication method). sipnab remembers the most recent 65,536 refused dialogs and decides a later message of an older one again by its own method. With `--cores N` the workers keep every message and sipnab decides when their results merge, in read order, so the result equals `--cores 1`. Config: `[capture] drop_methods` |
-| `--only-method` | `<METHOD>` | -- | Unreleased | Keep at ingest ONLY the SIP dialogs started by this method (repeatable or a comma list; case-insensitive), decided as `--drop-method` decides: with `--only-method INVITE` a call keeps every message (ACK, BYE, CANCEL, re-INVITE, in-dialog OPTIONS and any other in-dialog request, and the replies) and sipnab drops every other dialog whole. With both flags sipnab keeps a dialog only when its starting method is in `--only-method` AND not in `--drop-method`. Method names, the memory of refused dialogs and `--cores N` behave as for `--drop-method`. Config: `[capture] only_methods` |
+| `--drop-method` | `<METHOD>` | -- | 0.5.269 | Drop at ingest the SIP dialogs STARTED by this method (repeatable or a comma list; any method, case-insensitive). Decided once per dialog (Call-ID) on its starting request: a refused dialog opens no dialog, takes no dialog number and is never kept in memory; all its messages and replies count only in "Dropped by method" (TUI status line 1, capture report). An accepted dialog keeps EVERY message, whatever its method (ACK, BYE, re-INVITE or an in-dialog OPTIONS, for example). sipnab decides a message whose dialog start it never saw by the message's own method (a reply by its CSeq method). Unlike `--filter`, which only hides. Live capture, HEP and `-I` files alike. sipnab refuses at startup a name that is not one of the SIP methods it knows (INVITE, ACK, BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO, REFER, MESSAGE, UPDATE) or one of the extension methods it accepts (KDMQ, the Kamailio DMQ replication method). sipnab remembers the most recent 65,536 refused dialogs and decides a later message of an older one again by its own method. With `--cores N` the workers keep every message and sipnab decides when their results merge, in read order, so the result equals `--cores 1`. Config: `[capture] drop_methods` |
+| `--only-method` | `<METHOD>` | -- | 0.5.269 | Keep at ingest ONLY the SIP dialogs started by this method (repeatable or a comma list; case-insensitive), decided as `--drop-method` decides: with `--only-method INVITE` a call keeps every message (ACK, BYE, CANCEL, re-INVITE, in-dialog OPTIONS and any other in-dialog request, and the replies) and sipnab drops every other dialog whole. With both flags sipnab keeps a dialog only when its starting method is in `--only-method` AND not in `--drop-method`. Method names, the memory of refused dialogs and `--cores N` behave as for `--drop-method`. Config: `[capture] only_methods` |
 | `--bpf-file` | `<FILE>` | -- | 0.3.0 | Read the BPF capture filter from a file. It takes precedence over the positional filter and replaces `[capture] bpf_filter`, and like them it applies to `-I` capture files as well as live capture. Config: `[capture] bpf_filter` |
 | `--capture-tunnels` | `[<PORTS>]` | off | 0.5.80 | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default: it takes every packet on those ports, which on a mobile core is the entire user plane, because a BPF filter cannot reach the inner port behind a GTP-U extension-header chain. Ignored when you supply your own filter |
 | `-n`, `--count` | `<N>` | -- | 0.3.0 | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth). At least 1: sipnab refuses `0` |
@@ -22431,8 +22431,8 @@ Multiple diagnostic flags combine with OR.
 | `--line-buffer` | -- | off | 0.3.0 | Flush output after each line (useful for piping) |
 | `--color` | `<WHEN>` | `auto` | 0.3.0 | Color output mode: `auto`, `always`, `never`. Config: `[display] color` |
 | `--from-to-mode` | `<MODE>` | `default` | 0.4.4 | Default TUI From/To column display: `default` (user else host:port), `host-port`, `user`, `user-host-port`. Cycle at runtime with `u`. Overrides `[display] from_to`. Config: `[display] from_to` |
-| `--sngrep-mode` | | off | Unreleased | sngrep's keys and colors in the TUI: on the call list, call flow, raw message and message compare screens every sngrep key does what it does in sngrep; sipnab commands whose keys sngrep uses move to free keys, listed at the top of the F1 help. Config: `[display] sngrep_mode` |
-| `--no-sngrep-mode` | | off | Unreleased | sipnab's own keys and colors even when `[display] sngrep_mode = true`. The last of `--sngrep-mode` / `--no-sngrep-mode` typed wins. Config: `[display] sngrep_mode` |
+| `--sngrep-mode` | | off | 0.5.269 | sngrep's keys and colors in the TUI: on the call list, call flow, raw message and message compare screens every sngrep key does what it does in sngrep; sipnab commands whose keys sngrep uses move to free keys, listed at the top of the F1 help. Config: `[display] sngrep_mode` |
+| `--no-sngrep-mode` | | off | 0.5.269 | sipnab's own keys and colors even when `[display] sngrep_mode = true`. The last of `--sngrep-mode` / `--no-sngrep-mode` typed wins. Config: `[display] sngrep_mode` |
 | `--payload-limit` | `<BYTES>` | -- | 0.3.0 | Maximum payload bytes the per-message text printout shows for each message, with `--show-empty` and `--hexdump` too. It does not shorten `--json`, `--json-pretty` or `-T`/`--text-dump` output. Config: `[display] payload_limit` |
 | `-T`, `--text-dump` | -- | off | 0.3.0 | Dump raw SIP message text (like the CLI matcher `-T`) |
 | `--no-cli-print` | -- | off | 0.3.2 | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout). Implied by `--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` unless `--json`, `--json-pretty`, `-T` or `--fail2ban` is also given |
@@ -39025,7 +39025,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.268 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+   sipnab 0.5.269 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -39727,7 +39727,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.268"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.269"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -40412,7 +40412,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.268",
+  "version": "0.5.269",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -41355,7 +41355,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.268"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.269"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -53063,7 +53063,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.268",
+  "version": "0.5.269",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
