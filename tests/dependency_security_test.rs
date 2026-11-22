@@ -514,35 +514,22 @@ fn a_requirement_the_reader_cannot_place_keeps_the_override() {
     );
 }
 
-/// The `basic-ftp` override in `e2e/package.json` is still needed: the
-/// package that asks for `basic-ftp` (`get-uri`, under `@lhci/cli`) admits
-/// releases before the fix. When this fails, the parent has caught up:
-/// remove the override and this test's reason for it.
+/// The `basic-ftp` override left `e2e/package.json` once its parent caught up:
+/// every package in the lock that asks for `basic-ftp` asks for the fix or
+/// later. This holds that it stays so, so the override need not come back.
 #[test]
-fn the_basic_ftp_override_is_removed_when_its_parent_asks_for_the_fix() -> Result<(), TestError> {
+fn every_parent_of_basic_ftp_asks_for_the_fix() -> Result<(), TestError> {
     let asked = requirements_for(E2E_LOCK, "basic-ftp")?;
     assert!(
         !asked.is_empty(),
-        "no package in {E2E_LOCK} asks for basic-ftp; delete its override"
+        "no package in {E2E_LOCK} asks for basic-ftp; delete this test and its advisory entry"
     );
     assert!(
-        asked
+        !asked
             .iter()
             .any(|req| admits_affected(req, BASIC_FTP_LINES)),
-        "every package that asks for basic-ftp now asks for {BASIC_FTP_FIXED} or later \
-         ({asked:?}); remove the basic-ftp override from e2e/package.json"
-    );
-    let floor = overrides()?
-        .into_iter()
-        .find(|(pkg, _)| pkg == "basic-ftp")
-        .map(|(_, req)| req);
-    assert_eq!(
-        floor
-            .as_deref()
-            .map(|req| admits_affected(req, BASIC_FTP_LINES)),
-        Some(false),
-        "the basic-ftp override in e2e/package.json must start at {BASIC_FTP_FIXED} or later, \
-         found {floor:?}"
+        "a package in {E2E_LOCK} asks for basic-ftp below {BASIC_FTP_FIXED} ({asked:?}); \
+         put the basic-ftp override back in e2e/package.json"
     );
     Ok(())
 }
