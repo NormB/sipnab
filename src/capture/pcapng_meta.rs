@@ -257,12 +257,31 @@ fn read_from_disk(path: &Path) -> std::io::Result<PcapngMetadata> {
 /// [`read_pcapng_metadata`] from `file`, read from where it stands, for the
 /// capture `path` names.
 fn read_from(path: &Path, file: std::fs::File) -> std::io::Result<PcapngMetadata> {
+    let len = file.metadata()?.len();
+    read_from_reader(path, len, file)
+}
+
+/// [`read_from`] over any reader: `len` is the length of the file `reader`
+/// reads, which the size cap is checked against before anything is read.
+fn read_from_reader(
+    path: &Path,
+    len: u64,
+    reader: impl std::io::Read,
+) -> std::io::Result<PcapngMetadata> {
     use std::io::Read as _;
     let mut meta = PcapngMetadata::default();
-    ensure_within_size_cap(file.metadata()?.len(), max_metadata_file_bytes())?;
+    ensure_within_size_cap(len, max_metadata_file_bytes())?;
+    let mut reader = reader.take(max_metadata_file_bytes());
     let mut bytes = Vec::new();
-    file.take(max_metadata_file_bytes())
-        .read_to_end(&mut bytes)?;
+    // The first four bytes say whether the file can hold metadata at all.
+    // Only a pcapng (its Section Header Block) or a gzip stream (which may
+    // inflate to one) can; anything else, a classic pcap above all, gives
+    // empty metadata below whatever follows, so it is not read further.
+    (&mut reader).take(4).read_to_end(&mut bytes)?;
+    if !may_hold_metadata(&bytes) {
+        return Ok(meta);
+    }
+    reader.read_to_end(&mut bytes)?;
     // The file-open path hands us the ORIGINAL file, which may be
     // gzip-compressed (the packet loader gunzips separately); inflate so
     // embedded names/secrets survive compression. A corrupt gzip stream is
@@ -278,6 +297,15 @@ fn read_from(path: &Path, file: std::fs::File) -> std::io::Result<PcapngMetadata
     meta.collect_blocks(frames);
     meta.warn_about_unread_blocks(path);
     Ok(meta)
+}
+
+/// Whether a file whose first (at most four) bytes are `head` can hold
+/// pcapng metadata: it starts with the gzip magic, or with a Section Header
+/// Block. Every other file gives empty metadata, whatever else it holds:
+/// [`decompress_capture`](crate::capture::pcap_reader::decompress_capture)
+/// passes it through unchanged and [`BlockFrames::new`] refuses it.
+fn may_hold_metadata(head: &[u8]) -> bool {
+    crate::capture::pcap_reader::is_gzip(head) || head.starts_with(&SHB_BYTES)
 }
 
 impl PcapngMetadata {
@@ -1549,5 +1577,315 @@ mod malformed_block_tests {
             PcapngMetadata::default().warn_about_unread_blocks(path);
         });
         assert!(logs.is_empty(), "{logs}");
+    }
+}
+
+/// The metadata reader decides from a file's first bytes whether there is
+/// anything to read: a classic pcap, the usual input of a batch run, has no
+/// metadata blocks, and reading all of it (up to the 2 GiB cap) to find that
+/// out was 3.9% of a run's samples over a SIP capture and 5.4% over an RTP one.
+#[cfg(test)]
+mod head_peek_tests {
+    use super::*;
+    use crate::capture::{PcapExportMode, PcapWriter};
+    use std::cell::Cell;
+    use std::io::Read;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A reader that counts the bytes it hands out, and can fail once it has
+    /// handed out `fail_after` bytes.
+    struct Counting<'a> {
+        inner: std::io::Cursor<&'a [u8]>,
+        read: &'a Cell<u64>,
+        fail_after: Option<u64>,
+    }
+
+    impl Read for Counting<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.fail_after.is_some_and(|at| self.read.get() >= at) {
+                return Err(std::io::Error::other("injected read failure"));
+            }
+            let n = self.inner.read(buf)?;
+            self.read.set(self.read.get() + n as u64);
+            Ok(n)
+        }
+    }
+
+    /// The metadata of `bytes` read through [`read_from_reader`], and how
+    /// many bytes the read took from the file.
+    fn read_counting(bytes: &[u8]) -> Result<(PcapngMetadata, u64), TestError> {
+        read_counting_with(bytes, bytes.len() as u64, None)
+    }
+
+    /// [`read_counting`] with the length the size cap sees and a read failure.
+    fn read_counting_with(
+        bytes: &[u8],
+        len: u64,
+        fail_after: Option<u64>,
+    ) -> Result<(PcapngMetadata, u64), TestError> {
+        let read = Cell::new(0);
+        let reader = Counting {
+            inner: std::io::Cursor::new(bytes),
+            read: &read,
+            fail_after,
+        };
+        let meta = read_from_reader(Path::new("caps/t.pcap"), len, reader)?;
+        Ok((meta, read.get()))
+    }
+
+    /// The metadata of `bytes` as the reader computed it before it looked at
+    /// the first bytes: the whole file read, inflated, then walked.
+    fn whole_file_reference(bytes: &[u8]) -> PcapngMetadata {
+        let mut meta = PcapngMetadata::default();
+        let Ok(bytes) = crate::capture::pcap_reader::decompress_capture(bytes) else {
+            return meta;
+        };
+        let Ok(frames) = BlockFrames::new(&bytes) else {
+            return meta;
+        };
+        meta.collect_blocks(frames);
+        meta
+    }
+
+    /// A little-endian microsecond classic pcap: its 24-byte header and one
+    /// 60-byte frame.
+    fn classic_pcap(magic: [u8; 4]) -> Vec<u8> {
+        let mut bytes = magic.to_vec();
+        bytes.extend_from_slice(&[2, 0, 4, 0]); // version 2.4
+        bytes.extend_from_slice(&[0; 8]); // thiszone, sigfigs
+        bytes.extend_from_slice(&65_535u32.to_le_bytes()); // snaplen
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // Ethernet
+        bytes.extend_from_slice(&1_700_000_000u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&60u32.to_le_bytes());
+        bytes.extend_from_slice(&60u32.to_le_bytes());
+        bytes.extend_from_slice(&[0xab; 60]);
+        bytes
+    }
+
+    /// The bytes of a pcapng carrying one name-resolution block.
+    fn pcapng_with_a_name() -> Result<Vec<u8>, TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("named.pcapng");
+        let ip: IpAddr = "192.0.2.7".parse()?;
+        let mut w = PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)?;
+        w.write_name_resolution_block(&[(ip, vec!["sbc-edge".to_string()])])?;
+        w.finish()?;
+        Ok(std::fs::read(&path)?)
+    }
+
+    /// `bytes` gzip-compressed.
+    fn gzipped(bytes: &[u8]) -> Result<Vec<u8>, TestError> {
+        use std::io::Write as _;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(bytes)?;
+        Ok(enc.finish()?)
+    }
+
+    #[test]
+    fn a_classic_pcap_is_not_read_past_its_magic() -> Result<(), TestError> {
+        let bytes = classic_pcap([0xd4, 0xc3, 0xb2, 0xa1]);
+        let (meta, read) = read_counting(&bytes)?;
+        assert_eq!(
+            meta,
+            PcapngMetadata::default(),
+            "a classic pcap has no metadata"
+        );
+        assert!(
+            read <= 4,
+            "only the magic is read, not {read} of {} bytes",
+            bytes.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_classic_pcap_magic_stops_at_the_magic() -> Result<(), TestError> {
+        for magic in [
+            [0xd4, 0xc3, 0xb2, 0xa1], // microseconds, little-endian
+            [0xa1, 0xb2, 0xc3, 0xd4], // microseconds, big-endian
+            [0x4d, 0x3c, 0xb2, 0xa1], // nanoseconds, little-endian
+            [0xa1, 0xb2, 0x3c, 0x4d], // nanoseconds, big-endian
+        ] {
+            let (meta, read) = read_counting(&classic_pcap(magic))?;
+            assert_eq!(
+                meta,
+                PcapngMetadata::default(),
+                "magic {magic:02x?}: no metadata"
+            );
+            assert!(read <= 4, "magic {magic:02x?}: read {read} bytes");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_file_that_is_no_capture_stops_at_its_first_bytes() -> Result<(), TestError> {
+        let bytes = b"this is not a capture file, and it goes on for a while".to_vec();
+        let (meta, read) = read_counting(&bytes)?;
+        assert_eq!(
+            meta,
+            PcapngMetadata::default(),
+            "not a capture: no metadata"
+        );
+        assert!(read <= 4, "read {read} bytes of text");
+        Ok(())
+    }
+
+    #[test]
+    fn a_pcapng_is_read_whole_and_keeps_its_names() -> Result<(), TestError> {
+        let bytes = pcapng_with_a_name()?;
+        let (meta, read) = read_counting(&bytes)?;
+        assert_eq!(read, bytes.len() as u64, "a pcapng is read to its end");
+        assert_eq!(meta.names.len(), 1, "its name block is read");
+        assert_eq!(
+            meta,
+            whole_file_reference(&bytes),
+            "as the whole-file read found"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_gzip_pcapng_is_read_whole_and_keeps_its_names() -> Result<(), TestError> {
+        let bytes = gzipped(&pcapng_with_a_name()?)?;
+        let (meta, read) = read_counting(&bytes)?;
+        assert_eq!(read, bytes.len() as u64, "a gzip file is read to its end");
+        assert_eq!(meta.names.len(), 1, "the inflated name block is read");
+        assert_eq!(
+            meta,
+            whole_file_reference(&bytes),
+            "as the whole-file read found"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_gzip_classic_pcap_is_read_and_has_no_metadata() -> Result<(), TestError> {
+        let bytes = gzipped(&classic_pcap([0xd4, 0xc3, 0xb2, 0xa1]))?;
+        let (meta, read) = read_counting(&bytes)?;
+        assert_eq!(
+            read,
+            bytes.len() as u64,
+            "gzip is inflated before it can be judged"
+        );
+        assert_eq!(
+            meta,
+            PcapngMetadata::default(),
+            "the inflated classic pcap has none"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_file_has_no_metadata_and_nothing_to_read() -> Result<(), TestError> {
+        let (meta, read) = read_counting(&[])?;
+        assert_eq!(meta, PcapngMetadata::default(), "empty: no metadata");
+        assert_eq!(read, 0, "nothing to read");
+        Ok(())
+    }
+
+    #[test]
+    fn files_shorter_than_a_magic_match_the_whole_file_read() -> Result<(), TestError> {
+        for bytes in [
+            &[0x0a][..],
+            &[0x0a, 0x0d],
+            &[0x0a, 0x0d, 0x0d],
+            &[0x1f],
+            &[0x1f, 0x8b],
+            &[0x1f, 0x8b, 0x08],
+            &[0xd4, 0xc3, 0xb2],
+        ] {
+            let (meta, _) = read_counting(bytes)?;
+            assert_eq!(meta, whole_file_reference(bytes), "{bytes:02x?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_section_header_magic_without_a_section_matches_the_whole_file_read()
+    -> Result<(), TestError> {
+        for bytes in [
+            SHB_BYTES.to_vec(),
+            [&SHB_BYTES[..], &[0; 4]].concat(),
+            [&SHB_BYTES[..], &[0; 4], &[1, 2, 3, 4]].concat(),
+            [&SHB_BYTES[..], &[28, 0, 0, 0], &[0x4d, 0x3c, 0x2b, 0x1a]].concat(),
+        ] {
+            let (meta, read) = read_counting(&bytes)?;
+            assert_eq!(
+                read,
+                bytes.len() as u64,
+                "{bytes:02x?}: a pcapng magic is read on"
+            );
+            assert_eq!(meta, whole_file_reference(&bytes), "{bytes:02x?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_size_cap_is_checked_before_the_first_byte_is_read() -> Result<(), TestError> {
+        let bytes = classic_pcap([0xd4, 0xc3, 0xb2, 0xa1]);
+        let read = Cell::new(0);
+        let reader = Counting {
+            inner: std::io::Cursor::new(&bytes[..]),
+            read: &read,
+            fail_after: None,
+        };
+        let err = read_from_reader(
+            Path::new("caps/big.pcap"),
+            max_metadata_file_bytes() + 1,
+            reader,
+        )
+        .err()
+        .ok_or("a file over the cap is refused")?;
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "as too large");
+        assert_eq!(read.get(), 0, "before anything is read");
+        Ok(())
+    }
+
+    #[test]
+    fn a_failure_reading_the_first_bytes_is_an_error() {
+        let bytes = classic_pcap([0xd4, 0xc3, 0xb2, 0xa1]);
+        let got = read_counting_with(&bytes, bytes.len() as u64, Some(0));
+        assert!(got.is_err(), "a read that fails at once is reported");
+    }
+
+    #[test]
+    fn a_failure_reading_a_pcapng_past_its_magic_is_an_error() -> Result<(), TestError> {
+        let bytes = pcapng_with_a_name()?;
+        let got = read_counting_with(&bytes, bytes.len() as u64, Some(4));
+        assert!(
+            got.is_err(),
+            "a pcapng whose body cannot be read is reported"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_capture_fixture_reads_as_the_whole_file_read() -> Result<(), TestError> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let mut seen = 0;
+        let mut stack = vec![dir];
+        while let Some(d) = stack.pop() {
+            for entry in std::fs::read_dir(&d)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path.to_string_lossy();
+                if !(name.ends_with(".pcap") || name.ends_with(".pcapng") || name.ends_with(".gz"))
+                {
+                    continue;
+                }
+                let bytes = std::fs::read(&path)?;
+                let (meta, _) = read_counting(&bytes)?;
+                assert_eq!(meta, whole_file_reference(&bytes), "{name}");
+                seen += 1;
+            }
+        }
+        assert!(seen >= 14, "the fixtures were found ({seen})");
+        Ok(())
     }
 }
