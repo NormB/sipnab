@@ -184,7 +184,7 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | fnv | 1.0.7 | Apache-2.0 / MIT |
 | foldhash | 0.1.5 | Zlib |
 | foldhash | 0.2.0 | Zlib |
-| form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
+| form_urlencoded | 1.2.3 | MIT OR Apache-2.0 |
 | fs_extra | 1.3.0 | MIT |
 | futures | 0.3.32 | MIT OR Apache-2.0 |
 | futures-channel | 0.3.32 | MIT OR Apache-2.0 |

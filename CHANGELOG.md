@@ -47,6 +47,13 @@ entry that carries them.
   - Effect: stderr names each file that stopped early, its cause, and what the run is missing.
   - Docs: [Error messages](docs/errors.md)
 
+### Security
+
+- **url goes from 2.5.8 to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592).**
+  - Was: Its `Url::origin()` overflowed the stack on a URL of nested `blob:` prefixes.
+  - Effect: A scan of `Cargo.lock` no longer reports the advisory; `form_urlencoded`, which the binaries link, goes to 1.2.3.
+  - Limit: url is a test-only dependency, so no released binary contained it.
+
 ## [0.5.269] - 2026-11-21
 
 ### Added
