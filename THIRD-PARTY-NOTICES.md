@@ -59,7 +59,7 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 |---|---|---|---|---|
 | `src/tui/input_parse.rs` | crossterm's Unix input parser: `src/event/sys/unix/parse.rs` and the `Parser` of `src/event/source/unix/mio.rs`, changed where the file's documentation says. The TUI reads its terminal itself and parses the bytes with it. | 0.29.0, commit 36d95b26a26e64b0f8c12edfe11f410a6d56a812 | <https://github.com/crossterm-rs/crossterm> | MIT |
 
-## Rust crates (440)
+## Rust crates (442)
 
 | Crate | Version | License |
 |---|---|---|
@@ -104,7 +104,7 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | bytemuck | 1.25.0 | Zlib OR Apache-2.0 OR MIT |
 | byteorder | 1.5.0 | Unlicense OR MIT |
 | byteorder_slice | 3.0.0 | MIT |
-| bytes | 1.12.1 | MIT |
+| bytes | 1.12.2 | MIT |
 | castaway | 0.2.4 | MIT |
 | cbc | 0.2.1 | MIT OR Apache-2.0 |
 | cc | 1.2.59 | MIT OR Apache-2.0 |
@@ -239,7 +239,7 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | leb128fmt | 0.1.0 | MIT OR Apache-2.0 |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
 | libloading | 0.8.9 | ISC |
-| libloading | 0.9.0 | ISC |
+| libloading | 0.9.1 | ISC |
 | libm | 0.2.16 | MIT |
 | libmimalloc-sys | 0.1.49 | MIT |
 | line-clipping | 0.3.7 | MIT OR Apache-2.0 |
@@ -331,12 +331,12 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | redox_syscall | 0.9.5 | MIT |
 | ref-cast | 1.0.25 | MIT OR Apache-2.0 |
 | ref-cast-impl | 1.0.25 | MIT OR Apache-2.0 |
-| regex | 1.13.1 | MIT OR Apache-2.0 |
-| regex-automata | 0.4.16 | MIT OR Apache-2.0 |
-| regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
+| regex | 1.13.2 | MIT OR Apache-2.0 |
+| regex-automata | 0.4.19 | MIT OR Apache-2.0 |
+| regex-syntax | 0.8.12 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.9.0 | Apache-2.0 |
-| rmcp-macros | 3.9.0 | Apache-2.0 |
+| rmcp | 3.11.0 | Apache-2.0 |
+| rmcp-macros | 3.11.0 | Apache-2.0 |
 | rsa | 0.10.0 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -368,13 +368,14 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | sharded-slab | 0.1.7 | MIT |
 | shlex | 1.3.0 | MIT OR Apache-2.0 |
 | signal-hook | 0.3.18 | Apache-2.0/MIT |
+| signal-hook | 0.4.6 | MIT OR Apache-2.0 |
 | signal-hook-mio | 0.2.5 | MIT OR Apache-2.0 |
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 |
 | signature | 3.0.0 | Apache-2.0 OR MIT |
 | simd-adler32 | 0.3.9 | MIT |
 | siphasher | 1.0.2 | MIT/Apache-2.0 |
 | slab | 0.4.12 | MIT |
-| smallvec | 1.16.5 | MIT OR Apache-2.0 |
+| smallvec | 1.16.6 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spin | 0.9.9 | MIT |
 | spki | 0.8.1 | Apache-2.0 OR MIT |
@@ -427,6 +428,7 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | typed-path | 0.13.0 | MIT OR Apache-2.0 |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | ucd-trie | 0.1.7 | MIT OR Apache-2.0 |
+| unicode-general-category | 1.1.0 | Apache-2.0 |
 | unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-normalization | 0.1.26 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-segmentation | 1.13.2 | MIT OR Apache-2.0 |
@@ -495,9 +497,9 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | wnaf | 0.14.1 | Apache-2.0 OR MIT |
 | zerocopy | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerocopy-derive | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
-| zeroize | 1.9.1 | Apache-2.0 OR MIT |
+| zeroize | 1.9.2 | Apache-2.0 OR MIT |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
-| zip | 9.4.2 | MIT |
+| zip | 9.7.1 | MIT |
 | zlib-rs | 0.6.7 | Zlib |
 | zmij | 1.0.23 | MIT |
 | zstd | 0.14.4 | BSD-3-Clause |

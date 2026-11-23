@@ -152,7 +152,11 @@ fn main() {
         sipnab::capture::archive::release_run_and_exit(code);
     }
     // 7c. --relay-sessions: the same, for the sessions snapshot.
-    if let Some(code) = bootstrap::run_relay_sessions(&cli, &loaded.config, plan.source.as_ref()) {
+    // 7d. --relay-stats, --relay-stats-interval, --relay-compare: a question
+    //     this run cannot ask is refused here, exit 2, before a file is read.
+    if let Some(code) = bootstrap::run_relay_sessions(&cli, &loaded.config, plan.source.as_ref())
+        .or_else(|| bootstrap::refuse_unaskable_relay_questions(&cli, plan.source.as_ref()))
+    {
         sipnab::capture::archive::release_run_and_exit(code);
     }
 

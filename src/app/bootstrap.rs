@@ -2804,7 +2804,7 @@ pub fn relay_poll_plan(
 
 /// Why a relay ask that `relay_stats_action` decided on will not transmit.
 #[derive(Debug)]
-enum RelayAskBlocked {
+pub(crate) enum RelayAskBlocked {
     /// Nothing to say: the ask was not made, or (unreachable) a `Fetch` came
     /// without the permit it implies.
     Silent,
@@ -2867,31 +2867,147 @@ fn relay_ask(
     }
 }
 
-/// Report why `--relay-stats` asked nothing.
+/// Report why `--relay-stats` asked nothing, on stderr so the reason for
+/// exit 2 survives `SIPNAB_LOG=off`.
 fn report_relay_stats_blocked(blocked: &RelayAskBlocked) {
     match blocked {
         RelayAskBlocked::Silent => {}
         RelayAskBlocked::NotConfigured => {
-            tracing::error!(
+            stderr_line!(
                 "--relay-stats needs a relay to ask. Name one with \
                  --rtpengine-control <addr>, for example \
                  --rtpengine-control 127.0.0.1:22222."
             );
         }
         RelayAskBlocked::NotPermitted => {
-            tracing::error!(
+            stderr_line!(
                 "--relay-stats will not ask a relay on a run that reads a file: \
                  asking transmits, and a file's addresses are historical and \
                  belong to third parties. Ask from a live capture (-d <device>)."
             );
         }
         RelayAskBlocked::BadAddress { addr, error: e } => {
-            tracing::error!(
+            stderr_line!(
                 "--rtpengine-control {addr} is not an address and port ({e}); \
                  nothing was asked."
             );
         }
     }
+}
+
+/// Report why `--relay-stats-interval` polls nothing, on stderr so the reason
+/// for exit 2 survives `SIPNAB_LOG=off`.
+pub(crate) fn report_relay_poll_blocked(blocked: &RelayAskBlocked) {
+    match blocked {
+        RelayAskBlocked::Silent => {}
+        RelayAskBlocked::NotConfigured => {
+            stderr_line!(
+                "--relay-stats-interval needs a relay to poll. Name one with \
+                 --rtpengine-control <addr>."
+            );
+        }
+        RelayAskBlocked::NotPermitted => {
+            stderr_line!(
+                "--relay-stats-interval will not poll a relay on a run that reads a \
+                 file: polling transmits. Poll from a live capture (-d <device>)."
+            );
+        }
+        RelayAskBlocked::BadAddress { addr, error: e } => {
+            stderr_line!(
+                "--rtpengine-control {addr} is not an address and port ({e}); \
+                 nothing was asked."
+            );
+        }
+    }
+}
+
+/// A relay question a run can be given, in the order they are judged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayQuestion {
+    /// `--relay-stats`, `--relay-stats-call` or `--relay-stats-list`.
+    Stats,
+    /// `--relay-stats-interval`.
+    Poll,
+    /// `--relay-compare`.
+    Compare,
+}
+
+/// The relay questions `cli` asks, in the order [`first_unaskable`] judges
+/// them.
+fn relay_questions_asked(cli: &Cli) -> Vec<RelayQuestion> {
+    let r = &cli.rtp_args;
+    let mut asked = Vec::new();
+    if r.relay_stats || r.relay_stats_call.is_some() || r.relay_stats_list {
+        asked.push(RelayQuestion::Stats);
+    }
+    if r.relay_stats_interval.is_some() {
+        asked.push(RelayQuestion::Poll);
+    }
+    if r.relay_compare.is_some() {
+        asked.push(RelayQuestion::Compare);
+    }
+    asked
+}
+
+/// The first of `asked` that cannot be asked as written, and why.
+///
+/// Pure. Every relay question passes the one gate [`relay_stats_action`]
+/// decides, so a question with no relay named, on a run that may not
+/// transmit, or naming something that is not an address and port, is refused
+/// here for all of them alike; `None` when every question can be asked.
+fn first_unaskable(
+    asked: &[RelayQuestion],
+    relay_addr: Option<&str>,
+    may_transmit: bool,
+) -> Option<(RelayQuestion, RelayAskBlocked)> {
+    let first = *asked.first()?;
+    let blocked = match relay_stats_action(true, relay_addr, may_transmit) {
+        RelayStatsAction::Skip => return None,
+        RelayStatsAction::NotConfigured => RelayAskBlocked::NotConfigured,
+        RelayStatsAction::NotPermitted => RelayAskBlocked::NotPermitted,
+        RelayStatsAction::Fetch(addr) => match addr.parse::<std::net::SocketAddr>() {
+            Ok(_) => return None,
+            Err(error) => RelayAskBlocked::BadAddress { addr, error },
+        },
+    };
+    Some((first, blocked))
+}
+
+/// Refuse a relay question this run cannot ask, before any capture opens:
+/// exit 2, with the reason on stderr; `None` when there is none to refuse.
+///
+/// RELAY-STATS-FILE-EXIT-0: `--relay-stats`, `--relay-stats-interval` and
+/// `--relay-compare` used to log the refusal and go on to read the file, so a
+/// run that could not answer its question exited 0 with the reason only in the
+/// log. `--relay-holdings` already refused the same case with exit 2 on
+/// stderr; this is that rule for every relay question. The permit is decided
+/// from the planned source as `run_relay_listing` decides it.
+#[must_use]
+pub fn refuse_unaskable_relay_questions(cli: &Cli, planned: Option<&CaptureSource>) -> Option<i32> {
+    let asked = relay_questions_asked(cli);
+    if asked.is_empty() {
+        return None;
+    }
+    let detected;
+    let source = match planned {
+        Some(source) => source,
+        None => {
+            detected = auto_detect_source();
+            &detected
+        }
+    };
+    let may_transmit = TransmitPermit::for_source(source).is_some();
+    let (question, blocked) = first_unaskable(
+        &asked,
+        cli.rtp_args.rtpengine_control.as_deref(),
+        may_transmit,
+    )?;
+    match question {
+        RelayQuestion::Stats => report_relay_stats_blocked(&blocked),
+        RelayQuestion::Poll => report_relay_poll_blocked(&blocked),
+        RelayQuestion::Compare => report_relay_compare_blocked(&blocked),
+    }
+    Some(2)
 }
 
 /// Answer `--relay-holdings` and return the exit code, when it was asked;
@@ -3021,24 +3137,25 @@ fn report_relay_listing_blocked(flag: &str, blocked: &RelayAskBlocked) {
     }
 }
 
-/// Report why `--relay-compare` asked nothing.
+/// Report why `--relay-compare` asked nothing, on stderr so the reason for
+/// exit 2 survives `SIPNAB_LOG=off`.
 fn report_relay_compare_blocked(blocked: &RelayAskBlocked) {
     match blocked {
         RelayAskBlocked::Silent => {}
         RelayAskBlocked::NotConfigured => {
-            tracing::error!(
+            stderr_line!(
                 "--relay-compare needs a relay to ask. Name one with \
                  --rtpengine-control <addr>."
             );
         }
         RelayAskBlocked::NotPermitted => {
-            tracing::error!(
+            stderr_line!(
                 "--relay-compare will not ask a relay on a run that reads a file: \
                  asking transmits. Compare from a live capture (-d <device>)."
             );
         }
         RelayAskBlocked::BadAddress { addr, error: e } => {
-            tracing::error!("--rtpengine-control {addr} is not an address and port ({e}).");
+            stderr_line!("--rtpengine-control {addr} is not an address and port ({e}).");
         }
     }
 }
@@ -9272,6 +9389,62 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
 mod tests {
     use super::*;
     type TestError = Box<dyn std::error::Error>;
+
+    /// Every relay question, in the judged order.
+    const ALL_QUESTIONS: [RelayQuestion; 3] = [
+        RelayQuestion::Stats,
+        RelayQuestion::Poll,
+        RelayQuestion::Compare,
+    ];
+
+    /// A named relay on a run that may transmit refuses nothing.
+    #[test]
+    fn a_relay_question_with_a_relay_and_a_permit_is_not_refused() {
+        assert!(
+            first_unaskable(&ALL_QUESTIONS, Some("127.0.0.1:22222"), true).is_none(),
+            "every question can be asked"
+        );
+    }
+
+    /// A file run refuses the first question it is given, as not permitted.
+    #[test]
+    fn a_relay_question_on_a_run_that_may_not_transmit_is_refused() -> Result<(), TestError> {
+        let (q, why) = first_unaskable(
+            &[RelayQuestion::Compare, RelayQuestion::Poll],
+            Some("127.0.0.1:22222"),
+            false,
+        )
+        .ok_or("a file run cannot ask")?;
+        assert_eq!(
+            q,
+            RelayQuestion::Compare,
+            "the first question is the one named"
+        );
+        assert!(matches!(why, RelayAskBlocked::NotPermitted), "{why:?}");
+        Ok(())
+    }
+
+    /// No relay named is refused before the permit is looked at, and an
+    /// address that does not parse is refused on a run that may transmit.
+    #[test]
+    fn a_relay_question_naming_no_relay_or_no_address_is_refused() -> Result<(), TestError> {
+        let (_, why) =
+            first_unaskable(&[RelayQuestion::Stats], None, false).ok_or("no relay named")?;
+        assert!(matches!(why, RelayAskBlocked::NotConfigured), "{why:?}");
+        let (_, why) =
+            first_unaskable(&[RelayQuestion::Poll], Some("relay"), true).ok_or("not an address")?;
+        assert!(matches!(why, RelayAskBlocked::BadAddress { .. }), "{why:?}");
+        Ok(())
+    }
+
+    /// With no question asked there is nothing to refuse, whatever else holds.
+    #[test]
+    fn no_relay_question_is_never_refused() {
+        assert!(
+            first_unaskable(&[], None, false).is_none(),
+            "nothing was asked"
+        );
+    }
 
     /// A config whose one `[[vcon.rule]]`, named `to-disk`, writes every call.
     fn config_with_rule() -> Result<Config, TestError> {

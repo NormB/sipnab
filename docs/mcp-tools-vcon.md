@@ -377,6 +377,7 @@ on a server started with `--node-name capture-01` and without
           "sip_discarded_by_port_gate": 0,
           "sip_discarded_by_websocket_gate": 0,
           "sipnab_version": "0.5.230",
+          "streams_rotated": 0,
           "undecodable_frames": 0
         },
         "final_status_code": 200,
@@ -786,6 +787,7 @@ on a server started with `--node-name capture-01` and without
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
         "sipnab_version": "0.5.230",
+        "streams_rotated": 0,
         "undecodable_frames": 0
       },
       "dialog": 0,

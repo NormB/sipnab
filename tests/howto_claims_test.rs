@@ -5394,7 +5394,7 @@ fn a_relay_question_on_a_file_run_gives_the_messages_the_page_quotes() -> Result
     let relay = relay_holding(&HELD)?;
     let sample = capture(SAMPLE_CALL)?.display().to_string();
     let control = relay.addr.to_string();
-    for (flag, status) in [("--relay-stats", 0), ("--relay-holdings", 2)] {
+    for (flag, status) in [("--relay-stats", 2), ("--relay-holdings", 2)] {
         let quoted = format!("{flag} will not ask a relay on a run that reads a file");
         page_says(&listed, &quoted, "relay-statistics");
         let done =

@@ -10,7 +10,42 @@ entry that carries them.
 
 ## [Unreleased]
 
-Not released. The release build is smaller (startup-only crates built for size, one shared sort); no user of the released artifacts can see a change in behavior.
+### Changed
+
+- **Breaking: a relay question a run cannot ask exits 2 before it reads anything.**
+  - Was: The run logged the reason, read the capture, and exited 0.
+  - Effect: `--relay-stats`, `--relay-stats-call`, `--relay-stats-list`, `--relay-stats-interval` and `--relay-compare` refuse this way.
+  - Effect: They refuse with no `--rtpengine-control`, on a capture file, or for an address that is not `IP:port`, with the reason on stderr.
+  - Do: Ask the relay from a live capture (`-d <device>`), and drop these flags from scripts that read files.
+  - Docs: [Ask a media relay about itself](docs/relay-statistics.md)
+
+### Fixed
+
+- **The F7 key line and the "Save as" prompt are whole at 40 columns.**
+  - Was: Both ended at the dialog's edge, so `F1 fields`, `F2 save` and `Esc back` did not show.
+  - Effect: Each wraps between keys onto the next row; a long name shows its end and the cursor behind an ellipsis mark.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+- **`--analyze` and vCon exports now count RTP streams discarded at `--max-streams`.**
+  - Was: Only the end-of-run `retention:` line counted them; the analysis and the vCon carrier did not count them.
+  - Effect: The retention finding has a streams row, and the vCon completeness carrier has `streams_rotated` and an `INCOMPLETE` clause.
+  - Docs: [`--max-streams`](docs/cli-reference.md)
+- **`--cores N` links media to calls whose SIP runs inside a tunnel.**
+  - Was: Media outside a GRE, IP-in-IP or VXLAN tunnel that carried the SIP could lose its call, and two calls could merge into one stream.
+  - Effect: Every worker reads the SDP of tunneled SIP, as it does for SIP outside a tunnel.
+  - Docs: [Offline: `--cores`](docs/tuning-capture.md#offline---cores)
+- **A forked call answered by more than one leg says so.**
+  - Was: sipnab kept the first `2xx` as the dialog, and every later leg's answer was not recorded anywhere.
+  - Effect: `--json-dialogs` and the REST dialog document list each later leg's `To` tag in `forked_answers`.
+  - Effect: A response from another leg no longer counts in `timing.retransmits`.
+  - Docs: [Output formats](docs/output-formats.md#one-object-per-dialog)
+- **`--json-dialogs` streams carry the round trip the far end reported in RTCP.**
+  - Was: Only `GET /v1/streams` carried `round_trip_ms`; `--json-dialogs`, the call report and vCon media quality left it out.
+  - Effect: Each stream with a measured round trip carries `round_trip_ms` and `round_trip_source`.
+  - Docs: [MOS and codecs](docs/mos-and-codecs.md)
+- **A capture file cut short says why on stderr when the run exits 1.**
+  - Was: With `SIPNAB_LOG=off` the run exited 1 and printed nothing.
+  - Effect: stderr names each file that stopped early, its cause, and what the run is missing.
+  - Docs: [Error messages](docs/errors.md)
 
 ## [0.5.269] - 2026-11-21
 

@@ -847,17 +847,18 @@ fn relay_poll_target(
         permit.is_some(),
     ) {
         RelayPollPlan::Idle => return None, // Nothing polls by default.
+        // Refused before the capture opened, with exit 2
+        // (`bootstrap::refuse_unaskable_relay_questions`); reached here only
+        // when the source that opened differs from the one planned.
         RelayPollPlan::NotConfigured => {
-            tracing::error!(
-                "--relay-stats-interval needs a relay to poll. Name one with \
-                 --rtpengine-control <addr>."
+            crate::app::bootstrap::report_relay_poll_blocked(
+                &crate::app::bootstrap::RelayAskBlocked::NotConfigured,
             );
             return None;
         }
         RelayPollPlan::NotPermitted => {
-            tracing::error!(
-                "--relay-stats-interval will not poll a relay on a run that reads a \
-                 file: polling transmits. Poll from a live capture (-d <device>)."
+            crate::app::bootstrap::report_relay_poll_blocked(
+                &crate::app::bootstrap::RelayAskBlocked::NotPermitted,
             );
             return None;
         }
@@ -1434,6 +1435,7 @@ pub fn run_cores_file(
             // through the one `ReadTally::report`, so the two paths cannot
             // reach different verdicts about the same file set.
             if !reports_ok || crate::output::run_integrity::run_failed() {
+                crate::output::run_integrity::print_exit_notice();
                 crate::capture::archive::release_run_and_exit(1);
             }
             if lint_tripped {
@@ -4361,6 +4363,7 @@ impl BatchRunner {
             lint_gate_tripped,
             query_gate: crate::app::queries::gate_exit_code(),
         }) {
+            crate::output::run_integrity::print_exit_notice();
             crate::capture::archive::release_run_and_exit(code);
         }
     }

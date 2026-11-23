@@ -1589,10 +1589,11 @@ fn eth_inner(d: &[u8], inner: Inner, budget: &mut Budget) -> Option<EthPayload> 
 ///
 /// The consequence is stated rather than hidden: under `--cores N`, all
 /// traffic through one tunnel lands on one worker, because every frame of it
-/// shares the tunnel endpoints. That is a load-balance loss, not a correctness
-/// one — the worker that receives them does the full decapsulation and owns
-/// its own reassembly state — and it is the same behavior `--cores` has
-/// always had for GRE.
+/// shares the tunnel endpoints. The worker that receives them does the full
+/// decapsulation and owns its own reassembly state. Media outside the tunnel
+/// shards by its own host pair, often to another worker, so the dispatcher
+/// copies tunneled SIP that carries SDP to every worker by the inner packet
+/// (`crate::parallel`'s `Fanout`, DEF28-TUNNEL).
 ///
 /// # A payload the walk cannot name yields NO key, never a guessed offset
 ///

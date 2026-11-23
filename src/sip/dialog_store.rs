@@ -3425,7 +3425,7 @@ impl std::error::Error for TimelineTooWide {}
 ///
 /// Retransmission *detection* itself is keyed on `seen_cseq_key` in the
 /// dialog module, which additionally includes the direction, status code,
-/// and top-Via branch.
+/// top-Via branch and, for a response, the `To` tag.
 ///
 /// # Returns
 ///
@@ -6331,6 +6331,150 @@ mod tests {
         // Should have 3 messages now (original INVITE + 200 OK + retransmitted INVITE)
         assert_eq!(dialog.messages.len(), 3);
         assert!(dialog.messages[2].is_retransmission);
+        Ok(())
+    }
+
+    /// A response to `call_id`'s INVITE, `status` from the fork tagged
+    /// `to_tag`, on one Via branch, at `ts`.
+    fn fork_response(
+        call_id: &str,
+        status: &str,
+        to_tag: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
+        let raw = build_sip(
+            &format!("SIP/2.0 {status}"),
+            &[
+                "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-one",
+                "From: <sip:alice@example.com>;tag=t1",
+                &format!("To: <sip:bob@example.com>;tag={to_tag}"),
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        Ok(parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("should parse {status}: {e:?}"))?)
+    }
+
+    /// The `retransmit_counts` total of `call_id` in `store`.
+    fn retransmits(store: &DialogStore, call_id: &str) -> Result<u32, TestError> {
+        let d = store.get(call_id).ok_or("dialog should exist")?;
+        Ok(d.timing.retransmit_counts.values().sum())
+    }
+
+    /// A 2xx from a second fork of the INVITE's transaction is another
+    /// fork's answer, not a retransmission of the first (RFC 3261 section
+    /// 13.2.2.4): the store passes it to the state machine, which records it.
+    #[test]
+    fn a_second_forks_2xx_is_not_a_retransmission() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts()?;
+        let call = "fork-store@test";
+        store.process_message(make_invite_msg(call, t0)?);
+        store.process_message(fork_response(
+            call,
+            "200 OK",
+            "fork-b",
+            t0 + TimeDelta::seconds(1),
+        )?);
+        store.process_message(fork_response(
+            call,
+            "200 OK",
+            "fork-a",
+            t0 + TimeDelta::seconds(2),
+        )?);
+        let d = store.get(call).ok_or("dialog should exist")?;
+        assert_eq!(
+            d.forked_answers(),
+            ["fork-a"],
+            "the second fork's answer is recorded"
+        );
+        assert!(
+            !d.messages[2].is_retransmission,
+            "and not marked a retransmission"
+        );
+        assert_eq!(retransmits(&store, call)?, 0, "nothing was retransmitted");
+        Ok(())
+    }
+
+    /// The same fork's 2xx sent again is a retransmission, counted once, and
+    /// records no fork.
+    #[test]
+    fn the_same_forks_2xx_again_is_a_retransmission() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts()?;
+        let call = "fork-retx@test";
+        store.process_message(make_invite_msg(call, t0)?);
+        store.process_message(fork_response(
+            call,
+            "200 OK",
+            "fork-b",
+            t0 + TimeDelta::seconds(1),
+        )?);
+        store.process_message(fork_response(
+            call,
+            "200 OK",
+            "fork-b",
+            t0 + TimeDelta::seconds(2),
+        )?);
+        let d = store.get(call).ok_or("dialog should exist")?;
+        assert!(d.forked_answers().is_empty(), "{:?}", d.forked_answers());
+        assert!(
+            d.messages[2].is_retransmission,
+            "the repeat is a retransmission"
+        );
+        assert_eq!(retransmits(&store, call)?, 1, "counted once");
+        Ok(())
+    }
+
+    /// Provisional responses from two forks are two responses, not one sent
+    /// twice; a `100 Trying` carries no `To` tag, and its repeat is still a
+    /// retransmission.
+    #[test]
+    fn ringing_from_two_forks_is_not_a_retransmission() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts()?;
+        let call = "fork-ring@test";
+        store.process_message(make_invite_msg(call, t0)?);
+        store.process_message(fork_response(call, "180 Ringing", "fork-a", t0)?);
+        store.process_message(fork_response(call, "180 Ringing", "fork-b", t0)?);
+        assert_eq!(retransmits(&store, call)?, 0, "two forks ringing");
+        let raw = build_sip(
+            "SIP/2.0 100 Trying",
+            &[
+                "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-one",
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        for _ in 0..2 {
+            let trying = parse_sip(
+                &raw,
+                t0,
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .map_err(|e| format!("should parse 100: {e:?}"))?;
+            store.process_message(trying);
+        }
+        assert_eq!(retransmits(&store, call)?, 1, "the repeated 100 Trying");
         Ok(())
     }
 

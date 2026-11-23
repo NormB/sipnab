@@ -3383,6 +3383,7 @@ below declares `"encoding": "json"`.
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
         "sipnab_version": "0.5.231",
+        "streams_rotated": 0,
         "undecodable_frames": 0
       }
     }
@@ -3414,6 +3415,7 @@ below declares `"encoding": "json"`.
           "sip_discarded_by_port_gate": 0,
           "sip_discarded_by_websocket_gate": 0,
           "sipnab_version": "0.5.231",
+          "streams_rotated": 0,
           "undecodable_frames": 0
         },
         "final_status_code": 200,
@@ -3820,6 +3822,7 @@ jq '.attachments[] | select(.purpose == "sipnab-capture-completeness")' lost.jso
     "sip_discarded_by_port_gate": 0,
     "sip_discarded_by_websocket_gate": 0,
     "sipnab_version": "0.5.222",
+    "streams_rotated": 0,
     "undecodable_frames": 164
   }
 }

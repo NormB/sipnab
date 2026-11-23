@@ -7112,6 +7112,39 @@ a=rtpmap:96 H264/90000\r\n";
             }
         }
 
+        /// STREAM-EVICTION-NOT-IN-ANALYSIS: the retention counts `--analyze`
+        /// and the vCon completeness read carry the streams this store
+        /// discarded at `max_streams`, beside the dialog store's counts.
+        #[test]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+        fn retention_counts_carry_the_streams_discarded_at_the_cap() {
+            let mut store = StreamStore::new(2);
+            create_streams(&mut store, 5);
+            let dialogs = crate::sip::dialog_store::DialogStore::new(64, true);
+            let counts = crate::analysis::RetentionCounts::of_stores(&dialogs, &store);
+            assert_eq!(
+                counts.streams_rotated, 3,
+                "five streams over a cap of two: {counts:?}"
+            );
+            assert_eq!(counts.dialogs_rotated, 0, "no dialog was shed: {counts:?}");
+        }
+
+        /// Edge: exactly at the cap nothing is discarded, so nothing is
+        /// counted.
+        #[test]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+        fn retention_counts_hold_no_stream_loss_exactly_at_the_cap() {
+            let mut store = StreamStore::new(3);
+            create_streams(&mut store, 3);
+            let dialogs = crate::sip::dialog_store::DialogStore::new(64, true);
+            let counts = crate::analysis::RetentionCounts::of_stores(&dialogs, &store);
+            assert_eq!(
+                counts,
+                crate::analysis::RetentionCounts::default(),
+                "{counts:?}"
+            );
+        }
+
         /// Every stream created is either still held or counted as evicted.
         fn assert_every_stream_accounted(store: &StreamStore, created: u16) {
             assert_eq!(

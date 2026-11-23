@@ -123,8 +123,21 @@ captured media. The one-way delay comes from the first of these that exists:
 4. otherwise 100 ms, labeled `assumed`.
 
 MCP `media_diagnostics` names the delay's source in each stream's `delay`
-member. MCP `rtp_stats` carries the round trip itself, as `round_trip_ms`
-and `round_trip_source`.
+member. MCP `rtp_stats`, `GET /v1/streams`, the streams of `--json-dialogs`
+and `--call-report`, and a vCon's media quality carry the round trip itself,
+as `round_trip_ms` and `round_trip_source`. Both keys are absent when nothing
+measured a round trip:
+
+```bash
+sipnab -N -I tests/fixtures/rtcp-xr-call.pcap --no-cli-print --json-dialogs | jq -c '.streams[] | {ssrc, round_trip_ms, round_trip_source}'
+```
+
+```json
+{"ssrc":"0x0a0a0a0a","round_trip_ms":180.0,"round_trip_source":"xr_voip_metrics"}
+{"ssrc":"0x0b0b0b0b","round_trip_ms":null,"round_trip_source":null}
+```
+
+`jq` prints `null` for a key the stream does not carry.
 
 What the far end reported about loss, jitter and its own quality score never
 moves sipnab's MOS. MCP `media_diagnostics` returns it separately, under
