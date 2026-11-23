@@ -18,6 +18,10 @@ entry that carries them.
   - Effect: They refuse with no `--rtpengine-control`, on a capture file, or for an address that is not `IP:port`, with the reason on stderr.
   - Do: Ask the relay from a live capture (`-d <device>`), and drop these flags from scripts that read files.
   - Docs: [Ask a media relay about itself](docs/relay-statistics.md)
+- **MCP queries and `/metrics` over every call no longer take 18 seconds on large captures.**
+  - Effect: On 100,000 calls, MCP `aggregate_dialogs` and filtered `search_by_time` take about 30 ms instead of 18 s.
+  - Effect: A `GET /metrics` scrape takes about 0.3 s instead of 18 s; a filtered MCP `export_vcon` takes 1.3 s instead of 20 s.
+  - Effect: In the TUI, `i` and `I` (clear dialogs) and `m` (carrier metrics) no longer read every stream once per call.
 
 ### Fixed
 
