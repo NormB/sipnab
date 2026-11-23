@@ -410,6 +410,22 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/testing.md",
         ],
     ),
+    // `scripts/pin-gates.py --hook` and `--source-gates`, the testing page's
+    // "The pre-check, before the hook". Flags of a repository script.
+    (
+        "hook",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "source-gates",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
     // `scripts/hook-steps.py --runs N`, `--mean N` and `--log FILE`, in the
     // testing page's "Where a hook run spent its time". Flags of a
     // repository script, not sipnab's.

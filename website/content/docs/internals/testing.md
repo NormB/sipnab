@@ -452,6 +452,24 @@ The script runs the tests the way the hook does: the same nextest profile, featu
 It names each binary to cargo with `--test`. A nextest filter alone would build every test target first.
 [`scripts/tests/test_pin_gates.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_pin_gates.py) holds the list to the tree: a test under `tests/` that declares a count constant (a `usize` whose name begins `EXPECTED_`), or reads the list of tracked files, must appear in the list, as a binary to run or as an exclusion with a reason.
 
+**The pre-check, before the hook.** `python3 scripts/pin-gates.py --hook` runs the pre-commit hook itself with `SIPNAB_GATE_PRECHECK=1`.
+In that mode the hook runs each of its own steps (formatting, vale, codespell, clippy, the Python gates) except two: the full suite and the script tests.
+In place of the suite it runs `scripts/pin-gates.py --source-gates`: the pin gates, and every source gate.
+A source gate is a test binary that reads the tree and neither runs nor links sipnab: no `CARGO_BIN_EXE`, `sipnab::`, `use sipnab` or `extern crate sipnab` in its source or in a file it includes as a module.
+The steps are the hook's, so a step added to the hook is in the pre-check with no second list.
+
+- Purpose: meet the gates that most often failed hook runs (clippy, the policy-doc, wasm-reach, crypto-literal and assert-message gates) in one short run, before the 25-minute hook.
+- Prerequisites: those of the pin gates above, and the change staged.
+- Steps: `git add <paths>`, then `python3 scripts/pin-gates.py --hook`. On the shared build host, run it through `heavy-run` in the main slot: it runs clippy and builds the source gates.
+- Verify: the run ends with `Pre-check passed.` and exit status 0. Then commit: the hook reuses the pre-check's clippy and `sipnab-bpf-types` pass stamps and runs the full suite and the script tests.
+- Troubleshoot: a failed step prints what the hook would print. Exit status 2 from the Tests step with `untracked` names files to `git add`.
+  The pre-check refuses a line in [`.config/precheck-skip.txt`](https://github.com/NormB/sipnab/blob/main/.config/precheck-skip.txt) that names no source gate; that file names the slow source gates the pre-check leaves to the hook, one `!name reason` a line.
+  `SIPNAB_GATE_PRECHECK=1` left set under `git commit` makes the hook refuse the commit: unset it.
+
+The pre-check never writes the suite's or the hook's pass stamp, so a commit after it still runs the full suite.
+Its step times go to `sipnab-precheck-steps.log` in the git directory, apart from the hook's own log.
+[`scripts/tests/test_precheck_hook.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_precheck_hook.py) runs the real hook in this mode against a sandbox tree.
+
 **Where a hook run spent its time.** The pre-commit hook appends one line per step to `sipnab-pre-commit-steps.log` in the checkout's git directory: the run, the step under the name its heading prints, whole seconds and the exit status, separated by tabs.
 The last line of a run is the step `total`, counted from the start of the hook.
 [`scripts/hook-steps.py`](https://github.com/NormB/sipnab/blob/main/scripts/hook-steps.py) prints the table.

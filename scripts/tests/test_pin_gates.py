@@ -289,3 +289,233 @@ def test_list_prints_the_binaries_and_runs_nothing(monkeypatch, capsys):
 def test_jobs_reach_the_command(monkeypatch, capsys):
     _code, calls, _out, _err = run_main(monkeypatch, capsys, ["--jobs", "3"])
     assert calls[0][calls[0].index("--test-threads") + 1] == "3"
+
+
+# ── the pre-check: the hook's own steps, with the source gates for the suite ──
+#
+# In the week to 2026-11-21 hook runs failed on gates that read only the source
+# tree (the policy-doc sentence rule, the wasm-reach test, the crypto-literal
+# test, the assert-message count) and on clippy, none of which this script ran:
+# one agent's run reran the 25-minute hook six times. `--hook` runs the hook
+# itself with SIPNAB_GATE_PRECHECK=1, which replaces the full suite with the
+# source gates below and leaves out the script tests, so every other step is
+# the hook's own and cannot drift from it.
+
+RUNS_BINARY = '    let bin = env!("CARGO_BIN_EXE_sipnab");\n'
+USES_CRATE = "use sipnab::sip::parse;\n"
+READS_TREE = 'fn t() { let _ = std::fs::read_to_string("SECURITY.md"); }\n'
+
+
+def reader(files):
+    return files.get
+
+
+@pytest.mark.parametrize(
+    "rel, text, found",
+    [
+        # success: each way a file pulls another one in
+        ("tests/a_test.rs", '#[path = "support/run.rs"]\nmod run_support;\n', ["tests/support/run.rs"]),
+        ("tests/a_test.rs", '#[path = "../src/test_prereq.rs"]\nmod test_prereq;\n', ["src/test_prereq.rs"]),
+        ("tests/a_test.rs", "mod support;\n", ["tests/support.rs", "tests/support/mod.rs"]),
+        ("tests/support/mod.rs", "pub mod tracked;\n", ["tests/support/tracked.rs", "tests/support/tracked/mod.rs"]),
+        ("tests/support/mod.rs", '#[path = "../../src/test_prereq.rs"]\npub mod test_prereq;\n', ["src/test_prereq.rs"]),
+        ("tests/support/run.rs", "mod inner;\n", ["tests/support/run/inner.rs", "tests/support/run/inner/mod.rs"]),
+        ("tests/a_test.rs", '#[path = "support/run.rs"]\n#[allow(dead_code)]\nmod run_support;\n', ["tests/support/run.rs"]),
+        ("tests/a_test.rs", '#[path="support/x.rs"] mod x;\n', ["tests/support/x.rs"]),
+        ("tests/a_test.rs", 'pub(crate) mod helper;\n', ["tests/helper.rs", "tests/helper/mod.rs"]),
+        # edge: what is no module inclusion
+        ("tests/a_test.rs", "mod inline {\n    fn f() {}\n}\n", []),
+        ("tests/a_test.rs", '//! include it with `#[path = "support/fuzz.rs"] mod fuzz;`.\n', []),
+        ("tests/a_test.rs", '// mod support;\n', []),
+        ("tests/a_test.rs", '#[path = "support/run.rs"]\nfn not_a_module() {}\nmod later;\n', ["tests/later.rs", "tests/later/mod.rs"]),
+        ("tests/a_test.rs", '#[path = "support/run.rs"]\n// the runner\nmod run_support;\n', ["tests/support/run.rs"]),
+        ("tests/a_test.rs", "", []),
+    ],
+)
+def test_the_files_a_source_includes(rel, text, found):
+    assert pg.includes(rel, text) == found
+
+
+@pytest.mark.parametrize(
+    "files, gate",
+    [
+        # success: a test that reads the tree and no more is a source gate
+        ({"tests/a_test.rs": READS_TREE}, True),
+        ({"tests/a_test.rs": '#[path = "support/markdown.rs"]\nmod markdown;\n' + READS_TREE,
+          "tests/support/markdown.rs": "pub fn h() {}\n"}, True),
+        ({"tests/a_test.rs": "mod support;\n", "tests/support/mod.rs": "pub mod scan;\n",
+          "tests/support/scan.rs": READS_TREE}, True),
+        ({"tests/a_test.rs": "// links nothing of sipnab::sip, it only says so\n" + READS_TREE}, True),
+        ({"tests/a_test.rs": '#[path = "support/missing.rs"]\nmod missing;\n'}, True),
+        # failure: a test that runs or links sipnab is no source gate
+        ({"tests/a_test.rs": RUNS_BINARY}, False),
+        ({"tests/a_test.rs": USES_CRATE}, False),
+        ({"tests/a_test.rs": "extern crate sipnab;\n"}, False),
+        ({"tests/a_test.rs": "fn f() { sipnab::run(); }\n"}, False),
+        ({"tests/a_test.rs": '#[path = "support/run.rs"]\nmod run_support;\n', "tests/support/run.rs": RUNS_BINARY}, False),
+        ({"tests/a_test.rs": "mod support;\n", "tests/support/mod.rs": "pub mod deep;\n",
+          "tests/support/deep.rs": USES_CRATE}, False),
+        ({"tests/a_test.rs": '#[path = "../src/x.rs"]\nmod x;\n', "src/x.rs": USES_CRATE}, False),
+        # edge: a cycle of includes ends
+        ({"tests/a_test.rs": "mod support;\n", "tests/support/mod.rs": '#[path = "mod.rs"]\nmod again;\n'}, True),
+        ({"tests/a_test.rs": "fn f() { let s = \"not_sipnab::x\"; }\n"}, True),
+    ],
+)
+def test_a_source_gate_is_known_by_what_it_reaches(files, gate):
+    assert pg.is_source_gate("a_test", reader(files)) is gate
+
+
+def test_source_gates_names_every_source_gate_and_only_those():
+    files = {
+        "tests/a_test.rs": READS_TREE,
+        "tests/b_test.rs": RUNS_BINARY,
+        "tests/c_test.rs": "mod support;\n",
+        "tests/support/mod.rs": USES_CRATE,
+        "tests/d_test.rs": READS_TREE,
+    }
+    assert pg.source_gates(["a_test", "b_test", "c_test", "d_test"], reader(files)) == {"a_test", "d_test"}
+    assert pg.source_gates([], reader(files)) == set()
+
+
+@pytest.mark.parametrize(
+    "text, skipped, words",
+    [
+        # success
+        ("", {}, []),
+        ("!slow_test runs the hook harness, 110 s\n", {"slow_test": "runs the hook harness, 110 s"}, []),
+        ("# why\n!slow_test runs a shell, 50 s\n", {"slow_test": "runs a shell, 50 s"}, []),
+        # failure: every line names a binary the pre-check leaves to the hook
+        ("slow_test\n", {}, ["line 1", "leaves to the hook"]),
+        ("!slow_test\n", {}, ["no reason"]),
+        ("!Slow\n", {}, ["not a test binary name"]),
+    ],
+)
+def test_the_skip_list_is_read(text, skipped, words):
+    got, problems = pg.parse_skip_list(text)
+    assert got == skipped
+    assert len(problems) == (1 if words else 0), problems
+    for word in words:
+        assert word in problems[0], problems
+
+
+@pytest.mark.parametrize(
+    "skipped, gates, names, words",
+    [
+        ({"a_test": "slow"}, {"a_test", "b_test"}, {"a_test", "b_test"}, []),
+        ({}, set(), set(), []),
+        ({"gone_test": "slow"}, {"a_test"}, {"a_test"}, ["gone_test", "no tests/gone_test.rs"]),
+        ({"b_test": "slow"}, {"a_test"}, {"a_test", "b_test"}, ["b_test", "no source gate"]),
+    ],
+)
+def test_the_skip_list_is_held_to_the_tree(skipped, gates, names, words):
+    problems = pg.skip_drift(skipped, gates, names)
+    assert len(problems) == (1 if words else 0), problems
+    for word in words:
+        assert word in problems[0], problems
+
+
+@pytest.mark.parametrize(
+    "run, gates, skipped, chosen",
+    [
+        (["b_test"], {"a_test"}, {}, ["a_test", "b_test"]),
+        (["a_test"], {"a_test"}, {}, ["a_test"]),
+        ([], {"a_test", "z_test"}, {"z_test": "slow"}, ["a_test"]),
+        # A pin gate that is skipped as a source gate still runs: the pin list is a floor.
+        (["z_test"], {"z_test"}, {"z_test": "slow"}, ["z_test"]),
+        ([], set(), {}, []),
+    ],
+)
+def test_the_precheck_runs_the_pin_gates_and_the_source_gates(run, gates, skipped, chosen):
+    assert pg.precheck_binaries(run, gates, skipped) == chosen
+
+
+def test_the_committed_skip_list_agrees_with_the_tree():
+    read = pg.tree_reader(REPO)
+    names = set(pg.sources(REPO))
+    gates = pg.source_gates(sorted(names), read)
+    skipped, problems = pg.parse_skip_list((REPO / pg.SKIP_LIST).read_text(encoding="utf-8"))
+    assert problems == []
+    assert pg.skip_drift(skipped, gates, names) == []
+    for name, reason in skipped.items():
+        assert len(reason) >= 20, f"{name} is skipped with no real reason: {reason!r}"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # The gates that failed hook runs in the week to 2026-11-21, none of which pin-gates ran.
+        "security_policy_doc_test",
+        "attribute_attachment_test",
+        "hardcoded_crypto_material_test",
+        "rust_style_test",
+        "lint_suppression_test",
+    ],
+)
+def test_the_gates_that_failed_hook_runs_are_in_the_precheck(name):
+    names = sorted(pg.sources(REPO))
+    run, _excluded, _problems = pg.parse_list((REPO / pg.LIST).read_text(encoding="utf-8"))
+    skipped, _ = pg.parse_skip_list((REPO / pg.SKIP_LIST).read_text(encoding="utf-8"))
+    chosen = pg.precheck_binaries(run, pg.source_gates(names, pg.tree_reader(REPO)), skipped)
+    assert name in chosen, f"{name} failed hook runs and must run in the pre-check"
+
+
+def run_precheck(monkeypatch, capsys, argv, porcelain="", rc=0):
+    hooks = []
+    monkeypatch.setattr(pg, "git_status", lambda repo: porcelain)
+    monkeypatch.setattr(pg, "run_hook", lambda env: hooks.append(env) or rc)
+    code, calls, out, err = run_main(monkeypatch, capsys, argv, porcelain=porcelain, rc=rc)
+    return code, calls, hooks, out, err
+
+
+def test_source_gates_runs_the_precheck_set(monkeypatch, capsys):
+    code, calls, _out, err = run_main(monkeypatch, capsys, ["--source-gates"])
+    assert code == 0 and len(calls) == 1
+    chosen = [calls[0][i + 1] for i, word in enumerate(calls[0]) if word == "--test"]
+    assert "security_policy_doc_test" in chosen and "docs_drift_test" in chosen
+    assert "pin-gates: running" in err and "source gates" in err
+
+
+def test_source_gates_list_prints_and_runs_nothing(monkeypatch, capsys):
+    code, calls, out, _err = run_main(monkeypatch, capsys, ["--source-gates", "--list"])
+    assert code == 0 and calls == []
+    assert "rust_style_test" in out.split() and "docs_drift_test" in out.split()
+
+
+def test_source_gates_refuses_an_untracked_file(monkeypatch, capsys):
+    code, calls, _out, err = run_main(monkeypatch, capsys, ["--source-gates"], porcelain="?? new.rs\0")
+    assert code == 2 and calls == [] and "new.rs" in err
+
+
+def test_hook_runs_the_hook_in_precheck_mode(monkeypatch, capsys):
+    code, calls, hooks, _out, _err = run_precheck(monkeypatch, capsys, ["--hook"])
+    assert code == 0 and calls == [] and len(hooks) == 1
+    assert hooks[0]["SIPNAB_GATE_PRECHECK"] == "1"
+
+
+def test_hook_returns_the_hooks_status(monkeypatch, capsys):
+    code, _calls, hooks, _out, _err = run_precheck(monkeypatch, capsys, ["--hook"], rc=1)
+    assert code == 1 and len(hooks) == 1
+
+
+def test_hook_refuses_an_untracked_file_before_any_step(monkeypatch, capsys):
+    code, _calls, hooks, _out, err = run_precheck(monkeypatch, capsys, ["--hook"], porcelain="?? new.md\0")
+    assert code == 2 and hooks == [] and "new.md" in err
+
+
+def test_hook_drops_the_git_variables_of_a_calling_hook(monkeypatch, capsys):
+    monkeypatch.setenv("GIT_INDEX_FILE", "/x/index")
+    _code, _calls, hooks, _out, _err = run_precheck(monkeypatch, capsys, ["--hook"])
+    assert "GIT_INDEX_FILE" not in hooks[0], "the hook refuses the pre-check under git commit, by this variable"
+
+
+def test_source_gates_with_nothing_to_run_is_refused_not_passed(monkeypatch, capsys):
+    monkeypatch.setattr(pg, "sources", lambda repo: {})
+    monkeypatch.setattr(pg, "read_skip_list", lambda repo: "")
+    code, calls, _out, err = run_main(monkeypatch, capsys, ["--source-gates"], list_text="")
+    assert code == 2 and calls == []
+    assert "no test binary to run" in err
+
+
+def test_hook_and_source_gates_are_one_choice(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        run_precheck(monkeypatch, capsys, ["--hook", "--source-gates"])

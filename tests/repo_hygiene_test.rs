@@ -168,8 +168,38 @@ fn worth_keeping(dirty_lines: usize, commits_ahead: usize) -> bool {
 const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 /// Abandoned means nothing worth keeping AND nobody has touched it for a day.
-fn is_abandoned(dirty_lines: usize, commits_ahead: usize, idle: std::time::Duration) -> bool {
-    !worth_keeping(dirty_lines, commits_ahead) && idle >= ABANDONED_AFTER
+fn is_abandoned(
+    dirty_lines: usize,
+    commits_ahead: usize,
+    idle: std::time::Duration,
+    in_use: bool,
+) -> bool {
+    !in_use && !worth_keeping(dirty_lines, commits_ahead) && idle >= ABANDONED_AFTER
+}
+
+/// Whether a process has its working directory in `worktree`, from `cwds`.
+/// `Path::starts_with` compares whole components, so `/w/wt-2` is not in `/w/wt`.
+fn in_use(worktree: &Path, cwds: &[PathBuf]) -> bool {
+    cwds.iter().any(|cwd| cwd.starts_with(worktree))
+}
+
+/// The working directories of this host's processes, from `/proc/*/cwd`
+/// (Linux). Empty where there is no `/proc`: the idle rule alone then decides.
+/// A process this user cannot read is skipped.
+fn process_cwds() -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+        })
+        .filter_map(|e| std::fs::read_link(e.path().join("cwd")).ok())
+        .collect()
 }
 
 /// Time since anyone last moved this worktree's HEAD or index, from the mtimes
@@ -208,16 +238,101 @@ fn idle_for(path: &str) -> std::time::Duration {
 fn a_clean_worktree_is_abandoned_only_once_it_has_sat_idle() -> Result<(), TestError> {
     let hour = std::time::Duration::from_secs(3600);
     assert!(
-        !is_abandoned(0, 0, hour),
+        !is_abandoned(0, 0, hour, false),
         "a clean worktree touched an hour ago is in use"
     );
     assert!(
-        is_abandoned(0, 0, 25 * hour),
+        is_abandoned(0, 0, 25 * hour, false),
         "a clean worktree idle for over a day is abandoned"
     );
     assert!(
-        !is_abandoned(3, 0, 1000 * hour) && !is_abandoned(0, 1, 1000 * hour),
+        !is_abandoned(3, 0, 1000 * hour, false) && !is_abandoned(0, 1, 1000 * hour, false),
         "work worth keeping is never abandoned, however old"
+    );
+    Ok(())
+}
+
+/// A worktree a process is working in is in use, however old its index.
+///
+/// On 2026-11-23 the gate named a clean worktree whose index dated from two
+/// days before while a resumed agent ran `cargo test` in it, and so failed
+/// another agent's pre-check on a third checkout's state.
+#[test]
+fn a_clean_idle_worktree_a_process_works_in_is_not_abandoned() -> Result<(), TestError> {
+    let week = std::time::Duration::from_secs(7 * 24 * 3600);
+    assert!(
+        !is_abandoned(0, 0, week, true),
+        "a clean worktree idle for a week with a process in it is in use"
+    );
+    assert!(
+        is_abandoned(0, 0, week, false),
+        "the same worktree with no process in it is abandoned"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_process_in_the_worktree_root_uses_it() -> Result<(), TestError> {
+    let cwds = [PathBuf::from("/w/sipnab-docs")];
+    assert!(
+        in_use(Path::new("/w/sipnab-docs"), &cwds),
+        "a process whose cwd is the worktree uses it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_process_in_a_subdirectory_uses_the_worktree() -> Result<(), TestError> {
+    let cwds = [
+        PathBuf::from("/srv/x"),
+        PathBuf::from("/w/wt/website/content"),
+    ];
+    assert!(
+        in_use(Path::new("/w/wt"), &cwds),
+        "a process in a subdirectory of the worktree uses it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_sibling_whose_name_extends_the_worktree_name_does_not_use_it() -> Result<(), TestError> {
+    let cwds = [PathBuf::from("/w/wt-2"), PathBuf::from("/w/wtx/src")];
+    assert!(
+        !in_use(Path::new("/w/wt"), &cwds),
+        "/w/wt-2 and /w/wtx are other directories, not part of /w/wt"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_parent_directory_cwd_does_not_use_the_worktree() -> Result<(), TestError> {
+    let cwds = [PathBuf::from("/w"), PathBuf::from("/")];
+    assert!(
+        !in_use(Path::new("/w/wt"), &cwds),
+        "a shell in the parent directory is not working in the worktree"
+    );
+    Ok(())
+}
+
+#[test]
+fn no_process_means_no_use() -> Result<(), TestError> {
+    assert!(
+        !in_use(Path::new("/w/wt"), &[]),
+        "an empty process list uses nothing"
+    );
+    Ok(())
+}
+
+/// The reader is proved on this process: its own working directory is listed.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_process_reader_lists_this_tests_own_working_directory() -> Result<(), TestError> {
+    let here = std::env::current_dir()?;
+    let cwds = process_cwds();
+    assert!(
+        cwds.contains(&here),
+        "{here:?} is this process's cwd and /proc lists it; read {} cwds",
+        cwds.len()
     );
     Ok(())
 }
@@ -445,6 +560,7 @@ fn no_worktree_is_abandoned_with_nothing_worth_keeping() -> Result<(), TestError
     let listing = String::from_utf8_lossy(&out.stdout);
 
     let mut abandoned = Vec::new();
+    let cwds = process_cwds();
     for path in reportable_worktrees(&listing, &repo()) {
         let path = path.as_str();
         let dirty_lines = worktree_git(path)
@@ -474,7 +590,12 @@ fn no_worktree_is_abandoned_with_nothing_worth_keeping() -> Result<(), TestError
                     .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
                     .unwrap_or(1)
             });
-        if is_abandoned(dirty_lines, commits_ahead, idle_for(path)) {
+        if is_abandoned(
+            dirty_lines,
+            commits_ahead,
+            idle_for(path),
+            in_use(Path::new(path), &cwds),
+        ) {
             abandoned.push(path.to_string());
         }
     }

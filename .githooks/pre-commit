@@ -37,6 +37,31 @@ elif [ -n "$HOOK_TREE" ] && [ "$HOOK_OWN_DIR" != "$(CDPATH='' cd -- "$HOOK_TREE"
 	exit 1
 fi
 
+# ── The pre-check: this hook, without the suite and the script tests ──
+# `python3 scripts/pin-gates.py --hook` runs this file with
+# SIPNAB_GATE_PRECHECK=1 before a commit. In the week to 2026-11-21 hook runs
+# failed on clippy and on gates that read only the source tree after the quick
+# check run before them had passed; one agent's work reran this hook six
+# times. In this mode every step below runs as it does for a commit, except
+# two: the suite, replaced by the source gates (`pin-gates.py --source-gates`:
+# the pin gates and every test binary that neither runs nor links sipnab),
+# and the script tests. The steps are this file's, so the pre-check cannot
+# drift from the hook. A step's pass stamp is written as usual (the variable
+# is one of gate-cache.py's own and enters no key), so the commit reuses the
+# clippy stamp; the suite's and the hook's stamps are never written. Its step
+# times go to sipnab-precheck-steps.log, apart from the hook's. Under `git
+# commit` (GIT_INDEX_FILE set) it refuses: a commit is never made on the
+# pre-check alone.
+PRECHECK=0
+if [ "${SIPNAB_GATE_PRECHECK:-0}" = 1 ]; then
+	if [ -n "${GIT_INDEX_FILE:-}" ]; then
+		echo "SIPNAB_GATE_PRECHECK=1 is set under git commit: the pre-check is not the hook." >&2
+		echo "Unset it and commit again; the pre-check is: python3 scripts/pin-gates.py --hook" >&2
+		exit 1
+	fi
+	PRECHECK=1
+fi
+
 # ── Prerequisites: the gitignored inputs the gates read ─────────────
 # git carries none of them, so a fresh worktree has none. This hook used to
 # find them missing deep into its run: pre-commit 25 minutes into the suite
@@ -126,6 +151,9 @@ fi
 # A passing suite adds a note, a line of three fields: the run, `nextest`, and
 # nextest's Summary line (the tests run, passed and skipped).
 STEP_LOG="$(git rev-parse --git-dir 2>/dev/null || echo .)/sipnab-pre-commit-steps.log"
+if [ "$PRECHECK" = 1 ]; then
+	STEP_LOG="${STEP_LOG%/*}/sipnab-precheck-steps.log"
+fi
 STEP_RUN="$(date -u +%Y-%m-%dT%H:%M:%SZ).$$"
 STEP_NAME=""
 STEP_T0=0
@@ -557,6 +585,24 @@ if [ "$RELEASE_ONLY" = 1 ]; then
     echo -e "${GREEN}OK${NC} (the release test targets: $(python3 scripts/release-only.py tests | wc -w | awk '{print $1 / 2}'); the suite runs in CI)"
 elif gate_hit tests; then
 TEST_CACHED=1
+elif [ "$PRECHECK" = 1 ]; then
+    # The pre-check's suite: the source gates, through the same nextest
+    # profile and environment (pin-gates.py removes the corpus variables).
+    # Not stamped as the suite: they are not the suite.
+    PRECHECK_LIVE="$LOG_DIR/sipnab-precheck-tests.live"
+    set +e
+    python3 scripts/pin-gates.py --source-gates ${SIPNAB_TEST_JOBS:+--jobs "$SIPNAB_TEST_JOBS"} >"$PRECHECK_LIVE" 2>&1
+    TEST_RC=$?
+    set -e
+    TEST_OUTPUT=$(cat "$PRECHECK_LIVE")
+    rm -f "$PRECHECK_LIVE"
+    if [ "$TEST_RC" -ne 0 ] || printf '%s\n' "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
+        echo -e "${RED}FAIL${NC} (the source gates)"
+        report_suite_failure "$LOG_DIR/sipnab-precheck-tests.log"
+        record_suite_failures "$LOG_DIR/sipnab-precheck-tests.log"
+        exit 1
+    fi
+    echo -e "${GREEN}OK${NC} (the source gates: $(printf '%s\n' "$TEST_OUTPUT" | grep -c '^     Running ') binaries; the full suite runs in the hook)"
 else
 set +e
 # The suite has wedged twice: once for 20 minutes and once left running for
@@ -996,6 +1042,8 @@ elif [ "$RELEASE_ONLY" = 1 ]; then
     # As before this step ran on every commit: a release-only commit stages
     # nothing under scripts/, so it never ran them. CI does.
     echo -e "${YELLOW}NOT RUN (release-only commit; CI runs them)${NC}"
+elif [ "$PRECHECK" = 1 ]; then
+    echo -e "${YELLOW}NOT RUN (pre-check: about five minutes; the hook runs them)${NC}"
 else
     if command -v python3 >/dev/null 2>&1 && python3 -c "import pytest" 2>/dev/null; then
         if gate_hit script-tests; then
@@ -1051,6 +1099,8 @@ if [ -f "website/templates/index.html" ]; then
     # stamp is written only when that count succeeded.
     if [ "$RELEASE_ONLY" = 1 ]; then
         COUNT_OUT="not counted: a release-only commit runs the release test targets, not the suite"
+    elif [ "$PRECHECK" = 1 ] && [ "$TEST_CACHED" = 0 ]; then
+        COUNT_OUT="not counted: the pre-check runs the source gates, not the suite"
     elif [ "$TEST_CACHED" = 1 ]; then
         COUNT_OUT="counted when stamp $(gate_key tests | cut -c1-12) was written"
     elif [ "$COUNT_RC" -ne 0 ]; then
@@ -1173,5 +1223,9 @@ else
     echo -e "${GREEN}OK${NC}"
 fi
 
+if [ "$PRECHECK" = 1 ]; then
+    echo -e "${GREEN}Pre-check passed.${NC} Not the hook: the full suite and the script tests run at the commit."
+    exit 0
+fi
 gate_pass hook
 echo -e "${GREEN}All pre-commit checks passed.${NC}"

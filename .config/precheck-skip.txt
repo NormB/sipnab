@@ -1,0 +1,9 @@
+# The source gates the pre-check (scripts/pin-gates.py --hook, and
+# --source-gates) leaves to the pre-commit hook's full suite: `!name reason`
+# a line, for one that takes too long for a quick check. A source gate is a
+# test binary that reads the tree and neither runs nor links sipnab; every
+# other source gate runs in the pre-check. scripts/pin-gates.py and
+# scripts/tests/test_pin_gates.py refuse a line that names no source gate.
+# Times are the binary's test time in one hook run, 2026-11-21.
+!hook_test_scripts_git_env_test runs scripts/test-pre-commit.sh against sandbox trees: 110 s
+!pipefail_early_exit_test races each old and new reader form in bash over 1 MiB pipes, many runs: 50 s
