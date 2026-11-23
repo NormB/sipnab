@@ -91,7 +91,7 @@ fn replay(
         let Ok(pp) = parse_packet(&pkt) else { continue };
         let mut decrypt = pipeline::MediaDecrypt::default();
         match pipeline::classify_packet(&pp, &mut heuristic, &opts, &mut decrypt) {
-            PacketAction::Sip { msg, sdp_links } => {
+            PacketAction::Sip { msg, sdp_links, .. } => {
                 dialogs.write().process_message(*msg);
                 for (ip, port, call_id, media) in &sdp_links {
                     streams.link_to_dialog_with_sdp(*ip, *port, call_id, media);
@@ -222,7 +222,7 @@ fn corpus_ungrounded_clock_yields_no_jitter_measurement() -> Result<(), TestErro
         let Ok(pp) = parse_packet(&pkt) else { continue };
         let mut decrypt = pipeline::MediaDecrypt::default();
         match pipeline::classify_packet(&pp, &mut heuristic, &opts, &mut decrypt) {
-            PacketAction::Sip { msg, sdp_links } => {
+            PacketAction::Sip { msg, sdp_links, .. } => {
                 dialogs.write().process_message(*msg);
                 for (ip, port, call_id, media) in &sdp_links {
                     streams.link_to_dialog_with_sdp(*ip, *port, call_id, media);
@@ -361,7 +361,7 @@ fn corpus_xr_voip_metrics_are_retained_not_discarded() -> Result<(), TestError> 
         let Ok(pp) = parse_packet(&pkt) else { continue };
         let mut decrypt = pipeline::MediaDecrypt::default();
         match pipeline::classify_packet(&pp, &mut heuristic, &opts, &mut decrypt) {
-            PacketAction::Sip { msg, sdp_links } => {
+            PacketAction::Sip { msg, sdp_links, .. } => {
                 dialogs.write().process_message(*msg);
                 for (ip, port, call_id, media) in &sdp_links {
                     streams.link_to_dialog_with_sdp(*ip, *port, call_id, media);

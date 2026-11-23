@@ -189,7 +189,7 @@ cause ([`benchmarks.md:64-70`](https://github.com/NormB/sipnab/blob/789c70ca8e10
 
 And critically: **`--cores` mode holds no shared locks at all.** Each worker
 owns a thread-local `DialogStore` and `StreamStore`
-([`parallel.rs:898-915`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L898-L915)<!-- "fn new(cfg: ParallelConfig) -> Self {" -->), merged at EOF. There is no
+([`parallel.rs:903-920`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L903-L920)<!-- "fn new(cfg: ParallelConfig) -> Self {" -->), merged at EOF. There is no
 lock to bypass. Forking the workers would change nothing about the ceiling and
 would make the merge worse — it becomes serialization and IPC of two whole
 stores instead of a move.
@@ -198,7 +198,7 @@ Elsewhere, contention is **asserted but never measured**. The oldest claim,
 [`implementation-plan-v6.md:368`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/docs/design/implementation-plan-v6.md#L368), says the store
 lock is *"read-heavy, write-rare, so RwLock contention is minimal"* — which is
 simply stale: the batch loop takes `dialog_store.write()` **once per packet**
-([`batch.rs:4918`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4918)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
+([`batch.rs:4920`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4920)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
 most frequent operation in the process, not a rare one. No benchmark in
 `benches/` acquires a lock; no metric reports contention. *We do not know what
 it costs, and neither does anyone else.*
@@ -211,7 +211,7 @@ Specific to this codebase, not in general.
 
 **The stores are the product, and four surfaces read them in-process.** The
 same `Arc<RwLock<DialogStore>>` / `Arc<RwLock<StreamStore>>` is held by the
-capture loop ([`batch.rs:4068-4073`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4068-L4073)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
+capture loop ([`batch.rs:4070-4075`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4070-L4075)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
 every MCP tool ([`mcp/server.rs`](../../src/mcp/server.rs)), the Prometheus
 exporter and the TUI. Forking the capture away from the servers turns every one
 of those reads into IPC. That is not a refactor; it is a new wire protocol,
@@ -384,7 +384,7 @@ cost a line of `unsafe` in this crate.
 ### Where the throughput actually is, ranked
 
 #### R4 — Parallel readers, so `--cores` can exceed 2× *(P2, the big one)*
-[`parallel.rs:1544`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1544)<!-- "for (i, path) in" --> reads a multi-file `-I` set in a
+[`parallel.rs:1549`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1549)<!-- "for (i, path) in" --> reads a multi-file `-I` set in a
 **serial `for` loop on one thread**. Since the reader is the proven ceiling, and
 `-I` routinely names a directory or glob of rotated captures, N reader threads
 each opening their own file — all sharding into the same worker pool, so

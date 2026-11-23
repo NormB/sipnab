@@ -2351,6 +2351,10 @@ pub enum PacketAction {
         msg: Box<sip::message::SipMessage>,
         /// `(media_ip, media_port, call_id, media)` links to apply to streams.
         sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
+        /// The message's SDP as the links were read from it, for the dialog
+        /// store to take instead of parsing the body again; `Unread` under
+        /// `no_dialog`, where nothing parsed it.
+        sdp: sip::sdp::SdpRead,
     },
     /// SDP media endpoints a MEDIA RELAY asserted about its own allocation,
     /// decoded from rtpengine's `ng` control plane.
@@ -2556,10 +2560,11 @@ fn sip_action(
     ) {
         Ok(mut sip_msg) => {
             attach_packet_provenance(&mut sip_msg, pp);
-            let sdp_links = sdp_links_for(&sip_msg, opts, decrypt);
+            let (sdp_links, sdp) = sdp_links_read(&sip_msg, opts, decrypt);
             PacketAction::Sip {
                 msg: Box::new(sip_msg),
                 sdp_links,
+                sdp,
             }
         }
         Err(e) => {
@@ -2686,16 +2691,42 @@ fn sdp_links_for(
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
 ) -> Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)> {
+    sdp_links_read(sip_msg, opts, decrypt).0
+}
+
+/// [`sdp_links_for`], and the message's SDP as it was parsed for them, for
+/// the dialog store to take: [`sip::sdp::SdpRead::Unread`] under
+/// `--no-dialog`, where it is not parsed.
+#[inline]
+fn sdp_links_read(
+    sip_msg: &sip::SipMessage,
+    opts: &PipelineOptions,
+    decrypt: &mut MediaDecrypt<'_>,
+) -> (
+    Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
+    sip::sdp::SdpRead,
+) {
+    if opts.no_dialog {
+        return (Vec::new(), sip::sdp::SdpRead::Unread);
+    }
+    let Some(sdp) = sip_msg.sdp() else {
+        return (Vec::new(), sip::sdp::SdpRead::Read(None));
+    };
+    let links = sdp_links_in_sdp(sip_msg, &sdp, decrypt);
+    (links, sip::sdp::SdpRead::Read(Some(Box::new(sdp))))
+}
+
+/// The links `sdp`, the SDP of `sip_msg`, carries, learning its SDES keys.
+#[inline]
+fn sdp_links_in_sdp(
+    sip_msg: &sip::SipMessage,
+    sdp: &sip::sdp::SdpSession,
+    decrypt: &mut MediaDecrypt<'_>,
+) -> Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)> {
     // `decrypt` is only consumed by the `tls`-gated media-decryption paths.
     #[cfg(not(feature = "tls"))]
     let _ = &decrypt;
 
-    if opts.no_dialog {
-        return Vec::new();
-    }
-    let Some(sdp) = sip_msg.sdp() else {
-        return Vec::new();
-    };
     let Some(call_id) = sip_msg.call_id() else {
         return Vec::new();
     };
@@ -2704,7 +2735,7 @@ fn sdp_links_for(
     // capabilities; linking it bound a call's early media to the OPTIONS
     // dialog. The SDES keys below are still learned.
     let sdp_links = if sip_msg.sdp_sets_up_media() {
-        extract_sdp_links(&sdp, call_id)
+        extract_sdp_links(sdp, call_id)
     } else {
         Vec::new()
     };
@@ -2714,7 +2745,7 @@ fn sdp_links_for(
     // classification).
     #[cfg(feature = "tls")]
     if let Some(ctx) = decrypt.srtp.as_deref_mut() {
-        learn_sdes_keys(ctx, &sdp);
+        learn_sdes_keys(ctx, sdp);
     }
     sdp_links
 }
@@ -3242,14 +3273,19 @@ pub fn process_packet(
 ) {
     match classify_packet(pp, rtp_heuristic, opts, decrypt) {
         PacketAction::None => {}
-        PacketAction::Sip { msg, sdp_links } => {
+        PacketAction::Sip {
+            msg,
+            sdp_links,
+            sdp,
+        } => {
             // Classification returns Sip even with no_dialog (batch needs the
             // message); the live path simply drops untracked messages.
             if opts.no_dialog {
                 return;
             }
-            // Quick write to dialog store, then release.
-            dialog_store.write().process_message(*msg);
+            // Quick write to dialog store, then release. The SDP the links
+            // were read from goes with the message, so it is parsed once.
+            dialog_store.write().process_message_read(*msg, &sdp);
             // Link SDP media endpoints to RTP streams (separate lock).
             if !sdp_links.is_empty() {
                 let mut ss = stream_store.write();
@@ -6412,6 +6448,271 @@ mod ws_oversize_tests {
     fn the_warning_says_what_is_lost() -> Result<(), TestError> {
         let text = ws_oversize_warning(1 << 20, 1);
         assert!(text.contains("not analyzed"), "{text}");
+        Ok(())
+    }
+}
+
+/// A SIP message's SDP is parsed once on its way to the dialog store:
+/// classification parses it for the media links and hands the result on in
+/// [`PacketAction::Sip`], and the store's SDP timeline takes it from there.
+#[cfg(all(test, feature = "native"))]
+mod sdp_once_tests {
+    use super::*;
+    use crate::capture::parse::{ParsedPacket, TransportProto};
+    use crate::sip::sdp::{SdpRead, sdp_parses_during};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A UDP `ParsedPacket` from 10.0.0.1:5060 to 10.0.0.2:5060 carrying
+    /// `payload`, at one fixed time so two runs build equal dialogs.
+    fn packet(payload: &[u8]) -> ParsedPacket {
+        ParsedPacket {
+            frame_bytes: None,
+            frame: None,
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap_or_default(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+            payload: payload.to_vec().into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
+        }
+    }
+
+    /// A SIP message with `body` as `content_type` (no header when `None`).
+    fn message(start: &str, cseq: &str, content_type: Option<&str>, body: &str) -> Vec<u8> {
+        let mut text = format!(
+            "{start}\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-once\r\n\
+             From: <sip:alice@example.com>;tag=a\r\n\
+             To: <sip:bob@example.com>;tag=b\r\n\
+             Call-ID: sdp-once@example.com\r\n\
+             CSeq: {cseq}\r\n"
+        );
+        if let Some(ct) = content_type {
+            text.push_str(&format!("Content-Type: {ct}\r\n"));
+        }
+        text.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
+        text.into_bytes()
+    }
+
+    /// An audio offer or answer on `port`.
+    fn sdp(port: u16, direction: &str) -> String {
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na={direction}\r\n"
+        )
+    }
+
+    /// The offer, the answer and a re-INVITE putting the call on hold.
+    fn call() -> Vec<Vec<u8>> {
+        vec![
+            message(
+                "INVITE sip:bob@example.com SIP/2.0",
+                "1 INVITE",
+                Some("application/sdp"),
+                &sdp(40000, "sendrecv"),
+            ),
+            message(
+                "SIP/2.0 200 OK",
+                "1 INVITE",
+                Some("application/sdp"),
+                &sdp(40002, "sendrecv"),
+            ),
+            message(
+                "INVITE sip:bob@example.com SIP/2.0",
+                "2 INVITE",
+                Some("application/sdp"),
+                &sdp(40000, "sendonly"),
+            ),
+        ]
+    }
+
+    /// Classify every message of `messages` with `opts`.
+    fn classify_all(messages: &[Vec<u8>], opts: &PipelineOptions) -> Vec<PacketAction> {
+        let mut heur = rtp::heuristic::RtpHeuristic::new();
+        messages
+            .iter()
+            .map(|m| classify_packet(&packet(m), &mut heur, opts, &mut MediaDecrypt::default()))
+            .collect()
+    }
+
+    /// Feed `messages` through the live applier and return the dialog store.
+    fn live_store(messages: &[Vec<u8>]) -> DialogStore {
+        let dialogs = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let streams = Arc::new(RwLock::new(StreamStore::new(100)));
+        let mut heur = rtp::heuristic::RtpHeuristic::new();
+        let opts = PipelineOptions::default();
+        for m in messages {
+            process_packet(
+                &packet(m),
+                &dialogs,
+                &streams,
+                &mut heur,
+                &opts,
+                &mut MediaDecrypt::default(),
+                None,
+            );
+        }
+        std::mem::replace(&mut *dialogs.write(), DialogStore::new(1, false))
+    }
+
+    /// The dialog's SDP timeline, as text, for comparing two stores.
+    fn timeline(store: &DialogStore) -> Result<String, TestError> {
+        let d = store
+            .get("sdp-once@example.com")
+            .ok_or("the call opens a dialog")?;
+        Ok(format!("{:?}", d.sdp_timeline))
+    }
+
+    #[test]
+    fn the_live_path_parses_each_messages_sdp_once() {
+        let messages = call();
+        let (parses, _) = sdp_parses_during(|| live_store(&messages));
+        assert_eq!(parses, 3, "three messages with SDP, each parsed once");
+    }
+
+    /// The SDP `action` hands on, when it is a SIP message.
+    fn sdp_of(action: Option<&PacketAction>) -> Result<&SdpRead, TestError> {
+        match action {
+            Some(PacketAction::Sip { sdp, .. }) => Ok(sdp),
+            _ => Err("the message classifies as SIP".into()),
+        }
+    }
+
+    #[test]
+    fn classification_hands_on_the_sdp_it_parsed() -> Result<(), TestError> {
+        let actions = classify_all(&call()[..1], &PipelineOptions::default());
+        let SdpRead::Read(Some(session)) = sdp_of(actions.first())? else {
+            return Err(
+                format!("the parsed SDP rides along: {:?}", sdp_of(actions.first())?).into(),
+            );
+        };
+        assert_eq!(session.media[0].port, 40000, "the offer's own SDP");
+        Ok(())
+    }
+
+    #[test]
+    fn a_message_without_sdp_hands_on_that_it_has_none() -> Result<(), TestError> {
+        let bye = message("BYE sip:bob@example.com SIP/2.0", "3 BYE", None, "");
+        let actions = classify_all(&[bye], &PipelineOptions::default());
+        let sdp = sdp_of(actions.first())?;
+        assert!(
+            matches!(sdp, SdpRead::Read(None)),
+            "read, and empty: {sdp:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sdp_that_does_not_parse_is_handed_on_as_none() -> Result<(), TestError> {
+        let bad = message(
+            "INVITE sip:bob@example.com SIP/2.0",
+            "1 INVITE",
+            Some("application/sdp"),
+            "x=not sdp\r\n",
+        );
+        let (parses, actions) =
+            sdp_parses_during(|| classify_all(&[bad], &PipelineOptions::default()));
+        assert_eq!(parses, 1, "the body is tried once");
+        let sdp = sdp_of(actions.first())?;
+        assert!(
+            matches!(sdp, SdpRead::Read(None)),
+            "a body that fails to parse is no SDP: {sdp:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_dialog_leaves_the_sdp_unread() -> Result<(), TestError> {
+        let opts = PipelineOptions {
+            no_dialog: true,
+            ..PipelineOptions::default()
+        };
+        let (parses, actions) = sdp_parses_during(|| classify_all(&call()[..1], &opts));
+        assert_eq!(parses, 0, "--no-dialog parses no SDP");
+        let sdp = sdp_of(actions.first())?;
+        assert!(matches!(sdp, SdpRead::Unread), "nothing read it: {sdp:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_timeline_from_the_handed_on_sdp_is_the_timeline_from_a_fresh_parse()
+    -> Result<(), TestError> {
+        let messages = call();
+        let live = live_store(&messages);
+        let mut fresh = DialogStore::new(100, false);
+        for action in classify_all(&messages, &PipelineOptions::default()) {
+            if let PacketAction::Sip { msg, .. } = action {
+                fresh.process_message(*msg);
+            }
+        }
+        assert_eq!(
+            timeline(&live)?,
+            timeline(&fresh)?,
+            "the same offer, answer and hold"
+        );
+        assert!(
+            timeline(&live)?.contains("Hold"),
+            "the hold is detected: {}",
+            timeline(&live)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unread_sdp_is_parsed_by_the_store() -> Result<(), TestError> {
+        let messages = call();
+        let mut store = DialogStore::new(100, false);
+        let (parses, ()) = sdp_parses_during(|| {
+            for action in classify_all(
+                &messages,
+                &PipelineOptions {
+                    no_dialog: true,
+                    ..PipelineOptions::default()
+                },
+            ) {
+                if let PacketAction::Sip { msg, sdp, .. } = action {
+                    store.process_message_read(*msg, &sdp);
+                }
+            }
+        });
+        assert_eq!(parses, 3, "the store parses what nobody read");
+        let d = store
+            .get("sdp-once@example.com")
+            .ok_or("the call opens a dialog")?;
+        assert_eq!(d.sdp_timeline.len(), 3, "every SDP is on the timeline");
+        Ok(())
+    }
+
+    #[test]
+    fn the_dialog_store_takes_a_read_sdp_without_parsing_again() -> Result<(), TestError> {
+        let messages = call();
+        let actions = classify_all(&messages, &PipelineOptions::default());
+        let mut store = DialogStore::new(100, false);
+        let (parses, ()) = sdp_parses_during(|| {
+            for action in actions {
+                if let PacketAction::Sip { msg, sdp, .. } = action {
+                    store.process_message_read(*msg, &sdp);
+                }
+            }
+        });
+        assert_eq!(parses, 0, "the store parses nothing it was handed");
+        let d = store
+            .get("sdp-once@example.com")
+            .ok_or("the call opens a dialog")?;
+        assert_eq!(d.sdp_timeline.len(), 3, "every SDP is on the timeline");
         Ok(())
     }
 }

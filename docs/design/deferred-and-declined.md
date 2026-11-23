@@ -163,7 +163,7 @@ retains no record of which capture anything came from.**
   `SipDialog` is the operator's `--tag` string, not provenance.
 - The TUI's only notion of where its data came from is one display string,
   `capture_mode` ([`tui/mod.rs:274`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L274)<!-- "/// Capture mode" -->), overwritten wholesale
-  on each in-TUI open ([`file_open.rs:832`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L832)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
+  on each in-TUI open ([`file_open.rs:836`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L836)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
   The `-I` set never reaches the TUI: `plan.source` is consumed by
   `bootstrap::launch` ([`main.rs:438-441`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L438-L441)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
   ([`state.rs:218-229`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/tui/state.rs#L218-L229)) carries no path.
@@ -198,7 +198,7 @@ The cheap version — load both captures into one store and add a "capture A / B
 column — cannot work, because the column has nothing to read. There is no field
 to populate. Adding one means touching `Packet`, `ParsedPacket`, `SipMessage`
 and `SipDialog`, which is the zero-copy payload spine (D3) and the hot path;
-`process_message` ([`dialog_store.rs:1634-1636`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1634-L1636)<!-- "// Look up by the borrowed Call-ID" -->) is
+`process_message` ([`dialog_store.rs:1642-1644`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1642-L1644)<!-- "// Look up by the borrowed Call-ID" -->) is
 written to avoid even a single owned-key allocation per message. A per-message
 `String` source label is a straightforward regression of that work.
 

@@ -362,7 +362,7 @@ fn classify_honors_opt_outs() -> Result<(), TestError> {
     };
     let sip_pp = parsed(invite_with_sdp(), 5060, 5060);
     match classify_packet(&sip_pp, &mut heuristic, &no_dialog, &mut decrypt) {
-        PacketAction::Sip { msg, sdp_links } => {
+        PacketAction::Sip { msg, sdp_links, .. } => {
             assert_eq!(msg.call_id(), Some("pipeline-sdp@test"));
             assert!(
                 sdp_links.is_empty(),

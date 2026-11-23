@@ -9,6 +9,38 @@
 
 use crate::error::ParseError;
 
+/// A SIP message's SDP as one reader of the message already parsed it, handed
+/// to the next reader so the body is not parsed twice.
+///
+/// The packet pipeline parses a message's SDP to link its media to RTP
+/// streams, and the dialog store reads the same SDP for the call's SDP
+/// timeline. Parsing it once and passing the result saved the second parse,
+/// which was 2.9% of a run over a SIP-only capture.
+#[derive(Debug, Clone, Default)]
+pub enum SdpRead {
+    /// Nobody has parsed the message's SDP yet: a reader parses it itself.
+    #[default]
+    Unread,
+    /// [`crate::sip::SipMessage::sdp`] of the message, already computed:
+    /// `None` when it holds no SDP or the SDP does not parse.
+    Read(Option<Box<SdpSession>>),
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Calls of [`parse_sdp`] on this thread: a test counts how often a path
+    /// parses one message's SDP.
+    static SDP_PARSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times `f` called [`parse_sdp`] on this thread, and its result.
+#[cfg(test)]
+pub(crate) fn sdp_parses_during<T>(f: impl FnOnce() -> T) -> (u64, T) {
+    let before = SDP_PARSES.with(std::cell::Cell::get);
+    let out = f();
+    (SDP_PARSES.with(std::cell::Cell::get) - before, out)
+}
+
 /// A parsed SDP session description (RFC 4566).
 #[derive(Debug, Clone)]
 pub struct SdpSession {
@@ -217,6 +249,8 @@ impl SdpOriginKey {
 /// # Ok::<(), sipnab::ParseError>(())
 /// ```
 pub fn parse_sdp(body: &[u8]) -> Result<SdpSession, ParseError> {
+    #[cfg(test)]
+    SDP_PARSES.with(|n| n.set(n.get() + 1));
     if body.is_empty() {
         return Err(ParseError::Empty { what: "SDP body" });
     }
