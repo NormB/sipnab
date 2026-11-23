@@ -14,6 +14,8 @@
 #   sleep-<subcommand>  sleep that many seconds before it runs;
 #   canned-replay-junit.xml  the report of a `nextest run` given `-E` (the
 #                       replay of the last failures); canned-junit.xml otherwise.
+# A `nextest list` prints, as nextest's JSON, every binary and test that
+# canned-junit.xml holds, all matching: the replay lists before it runs.
 # It prints nextest-summary (written by default; a test may remove or replace
 # it) on standard error at the end of a `nextest run`, as nextest prints its
 # Summary line.
@@ -215,6 +217,25 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		[ -f "$_h/sleep-\$1" ] && sleep "\$(cat "$_h/sleep-\$1")"
 		case "\$1" in
 		  nextest)
+		    if [ "\$2" = list ]; then
+		      tr '>' '\n' < "$_h/canned-junit.xml" \
+		        | sed -n 's/^<testsuite name="\([^"]*\)".*/S \1/p; s/^<testcase name="\([^"]*\)".*/C \1/p' \
+		        | awk '\$1 == "S" { b = \$2; bins[++nb] = b; n[b] = 0; next }
+		          \$1 == "C" { t[b, ++n[b]] = \$2 }
+		          END {
+		            printf "{\"rust-binaries\": {"
+		            for (i = 1; i <= nb; i++) printf "%s\"%s\": {\"binary-id\": \"%s\"}", (i > 1 ? ", " : ""), bins[i], bins[i]
+		            printf "}, \"rust-suites\": {"
+		            for (i = 1; i <= nb; i++) {
+		              b = bins[i]
+		              printf "%s\"%s\": {\"binary-id\": \"%s\", \"testcases\": {", (i > 1 ? ", " : ""), b, b
+		              for (j = 1; j <= n[b]; j++) printf "%s\"%s\": {\"filter-match\": {\"status\": \"matches\"}}", (j > 1 ? ", " : ""), t[b, j]
+		              printf "}}"
+		            }
+		            print "}}"
+		          }'
+		      exit 0
+		    fi
 		    env | grep '^SIPNAB_' | sort > "$_h/pool-env"
 		    mkdir -p "\$_w/target/nextest/suite"
 		    _junit="$_h/canned-junit.xml"

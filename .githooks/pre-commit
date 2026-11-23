@@ -522,8 +522,10 @@ record_suite_failures() { # record_suite_failures <output-file>
 # run first, under nextest's --fail-fast, before clippy and the suite. A
 # failure stops the hook here. A pass goes on to every step below, the full
 # suite included, so a pass still means the full suite passed on this tree.
-# scripts/parallel-tests.py --rerun builds the command; a test renamed since
-# selects nothing and is not a failure.
+# scripts/parallel-tests.py --rerun builds the command. It first asks
+# `cargo nextest list` which recorded tests still exist and drops the rest:
+# a test renamed or deleted since made the replay fail without naming a test
+# (HOOK-REPLAY-OF-REMOVED-TEST, 2026-11-22).
 if [ "$RELEASE_ONLY" = 0 ] && [ -s "$FAILED_RECORD" ] && ! gate_hit tests --quiet; then
 	step "Tests that failed last run, first"
 	REPLAY_LIVE="$LOG_DIR/sipnab-pre-commit-replay.live"
@@ -541,6 +543,9 @@ if [ "$RELEASE_ONLY" = 0 ] && [ -s "$FAILED_RECORD" ] && ! gate_hit tests --quie
 		exit 1
 	fi
 	echo -e "${GREEN}OK${NC} (they pass now; the full suite still runs)"
+	# A recorded test that nextest no longer lists (renamed or deleted by the
+	# fix) is dropped from the replay, not failed; say which.
+	printf '%s\n' "$TEST_OUTPUT" | grep '^parallel-tests: dropped from the replay' | sed 's/^parallel-tests: /  /' || true
 fi
 
 # ── 1. Clippy must pass ────────────────────────────────────────────
