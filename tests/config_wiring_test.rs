@@ -492,11 +492,51 @@ fn cargo_toml_parquet_links_zstd_and_no_other_codec() -> Result<(), TestError> {
         .find(|l| l.starts_with("parquet = "))
         .ok_or("Cargo.toml has a parquet dependency line")?;
     assert!(
-        line.contains("version = \"=60.1.0\"")
+        line.contains("version = \"=60.2.0\"")
             && line.contains("default-features = false")
             && line.contains("features = [\"zstd\"]"),
         "parquet must be the pinned release with its default features off and zstd alone on: \
          {line}"
+    );
+    Ok(())
+}
+
+/// Verify no build can turn on Parquet modular encryption.
+///
+/// The fleet history writer turns on a Bloom filter for its filter column
+/// (`fleet_history::encode_with`). parquet before 60.2.0 wrote a Bloom
+/// filter in plaintext inside a modular-encrypted file (RUSTSEC-2026-0595),
+/// and 60.2.0 refuses that write with a runtime error. Both cases need
+/// parquet's `encryption` feature: the history files are sealed as whole
+/// objects instead (`--store-encryption sealed`). So no feature of sipnab
+/// may enable `parquet/encryption`, and no other crate of the lockfile may
+/// depend on parquet and enable it through feature unification.
+#[test]
+fn no_build_enables_parquet_modular_encryption() -> Result<(), TestError> {
+    let cargo = std::fs::read_to_string("Cargo.toml")?;
+    let enabling: Vec<&str> = cargo
+        .lines()
+        .filter(|l| l.contains("parquet/encryption") || l.contains("parquet?/encryption"))
+        .collect();
+    assert!(
+        enabling.is_empty(),
+        "a feature of sipnab enables parquet's modular encryption: {enabling:?}"
+    );
+    let lock = std::fs::read_to_string("Cargo.lock")?;
+    let dependents: Vec<&str> = lock
+        .split("\n[[package]]\n")
+        .filter(|package| {
+            package.lines().any(|l| {
+                l.trim().trim_end_matches(',') == "\"parquet\""
+                    || l.trim().starts_with("\"parquet ")
+            })
+        })
+        .filter_map(|package| package.lines().find(|l| l.starts_with("name = ")))
+        .collect();
+    assert_eq!(
+        dependents,
+        vec!["name = \"sipnab\""],
+        "sipnab must be the one package of Cargo.lock that depends on parquet"
     );
     Ok(())
 }
