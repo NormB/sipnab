@@ -6,6 +6,7 @@
     git add <the paths of the change>
     scripts/pin-gates.py [--jobs N] [--allow-untracked]
     scripts/pin-gates.py --list
+    scripts/pin-gates.py --script-tests [--shard I/N] [--budget SECONDS]
 
 Some tests hold a count of something the repository tracks (pages, links
 between them, code links, workflows, error templates), or read the list of
@@ -34,13 +35,27 @@ neither runs nor excludes one.
 
 THE PRE-CHECK. `--hook` runs .githooks/pre-commit itself with
 SIPNAB_GATE_PRECHECK=1. In that mode the hook runs every one of its steps
-(formatting, vale, codespell, clippy, the Python gates) except two: the full
-suite, which it replaces with `--source-gates`, and the script tests (about
-five minutes). The steps are the hook's own, so a step added to the hook is in
-the pre-check with no second list to keep. A step that passes writes the
-hook's own pass stamp where it has one (clippy, the sipnab-bpf-types tests),
+(formatting, vale, codespell, clippy, the Python gates, the script tests)
+except one: the full suite, which it replaces with `--source-gates`. The
+script tests run by the hook's rule (gate-cache.py script_tests_needed),
+started beside the other steps. The steps are the hook's own, so a step added
+to the hook is in the pre-check with no second list to keep. A step that passes
+writes the hook's own pass stamp where it has one (clippy, the sipnab-bpf-types
+tests, the script tests),
 so the commit's hook run does not repeat it; the suite's stamp and the hook's
 are never written, so the commit still runs the full suite.
+
+THE SCRIPT TESTS IN SHARDS. `--script-tests --shard I/N` runs shard I of N
+of the hook's script-test run, with the hook's command, in a session of its
+own that ends at `--budget` seconds. On 2026-11-23 the whole run took 370 to
+539 s alone, and at a load average near 15 a 598 s limit ended it at 90%, so
+one quick-slot job (600 s) cannot hold it. scripts/gate-cache.py holds the
+rule: the split by test file, balanced on .config/script-test-durations.txt;
+a pass record per shard, keyed on the hook's script-tests key; and the hook's
+own script-tests stamp, written when every shard of the plan has a record on
+the same key. The pre-check and the commit then skip the step. A shard that
+passed on another tree has another key and does not count. `--script-tests`
+alone is one shard of one.
 
 `--source-gates` runs the pin gates above and every source gate: a test
 binary that reads the tree and neither runs nor links sipnab (no
@@ -69,6 +84,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 LIST = ".config/pin-gates.txt"
 SKIP_LIST = ".config/precheck-skip.txt"
 HOOK = ".githooks/pre-commit"
+MESSAGE_HOOK = ".githooks/commit-msg"
 PRECHECK_ENV = "SIPNAB_GATE_PRECHECK"
 # What the pre-commit hook hands scripts/parallel-tests.py after `--`, and the
 # variables it removes; scripts/tests/test_pin_gates.py reads both from the hook.
@@ -88,6 +104,33 @@ def _parallel_tests():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _gate_cache():
+    """scripts/gate-cache.py, whose keys and stamps the hook reads."""
+    name = "gate_cache_for_pin_gates"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, REPO / "scripts" / "gate-cache.py")
+        module = importlib.util.module_from_spec(spec)
+        # dataclasses looks the module up by name while a class is built.
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def shard_spec(text: str) -> tuple[int, int]:
+    """argparse's type for --shard: gate-cache.py's rule."""
+    try:
+        return _gate_cache().parse_shard(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def run_script_test_shard(index: int, count: int, budget: float) -> int:
+    """`--script-tests`: one shard of the hook's script-test run, by gate-cache.py."""
+    gc = _gate_cache()
+    return gc.script_test_shard(REPO, dict(os.environ), REPO / HOOK, index, count, budget=budget,
+                                log=lambda line: print(f"pin-gates: {line}", file=sys.stderr, flush=True))
 
 
 def parse_list(text: str) -> tuple[list[str], dict[str, str], list[str]]:
@@ -316,6 +359,33 @@ def run_hook(env: dict[str, str]) -> int:
     return subprocess.run(["bash", HOOK], cwd=REPO, env=env, check=False).returncode
 
 
+def run_message_checks(path: str, env: dict[str, str]) -> int:
+    """The repository's commit-msg hook on `path`, as git would run it."""
+    return subprocess.run(["bash", MESSAGE_HOOK, path], cwd=REPO, env=env, check=False).returncode
+
+
+def check_message(message: str) -> int:
+    """`--message`: the commit-msg checks, before every other step.
+
+    git runs them only after the pre-commit hook passed, so one bad line cost
+    a whole hook round (2026-11-23: refused for naming the build host, after
+    every pre-commit gate had passed).
+    """
+    path = os.path.abspath(message)
+    if not os.path.exists(path):
+        print(f"pin-gates: no message file {path}", file=sys.stderr)
+        return 2
+    if not os.path.isfile(path):
+        print(f"pin-gates: {path} is not a file", file=sys.stderr)
+        return 2
+    print(f"pin-gates: running {MESSAGE_HOOK} on {path} first", file=sys.stderr)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    rc = run_message_checks(path, env)
+    if rc:
+        print("pin-gates: the message fails the commit-msg checks; reword it before the pre-check", file=sys.stderr)
+    return rc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--list", action="store_true", help="print the test binaries and run nothing")
@@ -324,7 +394,24 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--source-gates", action="store_true", help="run the pin gates and every source gate")
     mode.add_argument("--hook", action="store_true", help="run the pre-commit hook as the pre-check")
+    mode.add_argument("--script-tests", action="store_true", help="run the hook's script tests, or one shard of them")
+    parser.add_argument("--message", metavar="FILE", help="with --hook: run the commit-msg checks on FILE first")
+    parser.add_argument("--shard", metavar="I/N", type=shard_spec, help="with --script-tests: shard I of N")
+    parser.add_argument("--budget", type=float, metavar="SECONDS",
+                        help="with --script-tests: end the shard's run after SECONDS (default: gate-cache.py's)")
     args = parser.parse_args(argv)
+    if args.message is not None and not args.hook:
+        parser.error("--message goes with --hook")
+    if (args.shard is not None or args.budget is not None) and not args.script_tests:
+        parser.error("--shard goes with --script-tests" if args.shard is not None else "--budget goes with --script-tests")
+    if args.script_tests:
+        index, count = args.shard or (1, 1)
+        budget = args.budget if args.budget is not None else _gate_cache().SHARD_BUDGET
+        return run_script_test_shard(index, count, budget)
+    if args.message is not None:
+        rc = check_message(args.message)
+        if rc:
+            return rc
 
     names, excluded, problems = parse_list(read_list(REPO))
     texts = sources(REPO)

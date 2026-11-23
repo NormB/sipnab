@@ -420,7 +420,38 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "message",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
         "source-gates",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    // `scripts/pin-gates.py --script-tests --shard I/N [--budget S]`, the
+    // testing page's "The script tests in shards". Flags of a repository
+    // script, not sipnab's.
+    (
+        "script-tests",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "shard",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "budget",
         &[
             "docs/internals/testing.md",
             "website/content/docs/internals/testing.md",

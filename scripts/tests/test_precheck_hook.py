@@ -6,8 +6,9 @@
 In the week to 2026-11-21 hook runs failed on clippy and on gates that read
 only the source tree, after scripts/pin-gates.py, the quick check run before
 the hook, had passed: it ran none of them. The pre-check runs the hook's own
-steps, so the two cannot drift, with two left out: the full suite, replaced by
-`scripts/pin-gates.py --source-gates`, and the script tests. These tests run
+steps, so the two cannot drift, with one left out: the full suite, replaced by
+`scripts/pin-gates.py --source-gates`. The script tests run by the hook's own
+rule (test_script_tests_rule.py). These tests run
 the hook in scripts/lib-hook-sandbox.sh's sandbox (a stubbed cargo that logs
 every call) and observe what it did.
 """
@@ -110,16 +111,6 @@ def test_the_precheck_says_which_steps_it_leaves_to_the_hook(pre):
     assert rc == 0, out
     assert "the full suite runs in the hook" in out, out
     assert "Homepage test count generated... OK (not counted: the pre-check runs the source gates" in out, out
-
-
-def test_the_precheck_leaves_out_the_script_tests(pre):
-    (pre.tree / "scripts/tests").mkdir()
-    (pre.tree / "scripts/tests/test_fails.py").write_text("def test_x():\n    assert False\n")
-    git(pre.tree, "add", "scripts/tests")
-    git(pre.tree, "commit", "-qm", "a failing script test")
-    rc, out = pre.run(**PRECHECK)
-    assert rc == 0, out
-    assert "Script tests... NOT RUN (pre-check" in out, out
 
 
 def test_a_hook_that_passed_on_this_tree_passes_the_precheck_at_once(pre):
