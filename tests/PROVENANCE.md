@@ -415,3 +415,115 @@ leaves it by gaining a real entry here, or by the file being deleted.
   addresses. `docs/examples.md` uses it to find transferred calls. Running
   the generator again writes the same messages with other timestamps, tags
   and branches, so the hash changes with each run.
+
+### tests/fixtures/pcap-writer-golden/classic-ethernet.pcap
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `2986f6ecbf90e6b351fad38555d4045a1cf19998f36a49af838b12e617db7331`
+- **Holds:** classic pcap, Ethernet, five frames of filler bytes. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/classic-linux-sll.pcap
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `68815a06285bc53839ad361c2683f399722dbf88b6d5fbec3d75ef7a85a13a34`
+- **Holds:** classic pcap, Linux cooked capture, the same five frames. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/classic-rotated-first.pcap
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `1d5dcdbaf83c0c22bf2830124cdcea2cdd3e12d7a11fc5897e9d2c5785ddd862`
+- **Holds:** the first file of a classic pcap split by `rotate`, one frame. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/classic-rotated-second.pcap
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `16e79eb003ff9f520c92240ec34d42885cb5cad5c5312b01f6650d76e07ddf3d`
+- **Holds:** the second file of that split, one frame. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/pcapng-decryption-secrets.pcapng
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `96bacd22069aaf17ebac788a6fe28936d380bf780d392275b91906865e99126d`
+- **Holds:** pcapng with two Decryption Secrets Blocks holding made-up key log lines. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/pcapng-interfaces-interleaved.pcapng
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `f0a76ff81948cc90d815165b3157803771672b25ba7d54032d8260fa810b0fda`
+- **Holds:** pcapng with an interface per source and link type, written where each first appears. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/pcapng-name-resolution.pcapng
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `3ecde1ef4a6e8325921dfc48e7c8d076b02c631ed425147d81f8d558a9209fb3`
+- **Holds:** pcapng with a Name Resolution Block of IPv4 and IPv6 records (RFC 5737 and [RFC 3849](https://www.rfc-editor.org/rfc/rfc3849.html) addresses). A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/pcapng-named-interface.pcapng
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `60d6c4d18f1f3570565266ad3d07f01f8c62102064902fc3d50cf782b0673d56`
+- **Holds:** pcapng with one named interface and five frames. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/pcapng-packet-comments.pcapng
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `06732df701645c22a68c4fa0e4043ee60a61b587c2bb88486edbd60397061c55`
+- **Holds:** pcapng packets with one, two and no comments. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/pcapng-provenance.pcapng
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `030fdee3268cc0bd57841eb7986946ccf170c27e819cd0dcc2fb7b2c9de91da8`
+- **Holds:** pcapng whose section header carries the provenance comment. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/pcapng-rotated-first.pcapng
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `92a28369c670db408e938c23315f1e3d535e5efca26d272c659378fc8a2c61bc`
+- **Holds:** the first file of a pcapng split by `rotate`. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/pcapng-rotated-second.pcapng
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `4ecf58ae085dae974cc5223b19d81bf3149ac87d6943d39283f9cae95acf2a0c`
+- **Holds:** the second file of that split, which repeats the section header and both interfaces. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/pcapng-unnamed-interface.pcapng
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `b45b512e866baa3a18e34a6875747b407adfdda53cde088a23a8d8fce2125c18`
+- **Holds:** pcapng with one interface without a name and five frames. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.
+
+### tests/fixtures/pcap-writer-golden/pcapng-without-frames.pcapng
+
+- **Category:** synthetic
+- **Generator:** `src/capture/writer.rs` (`tests::golden`, run with `SIPNAB_GOLDEN_APPLY=1`)
+- **SHA-256:** `da9dc5e659b59dab54e5cd094231a1a0299885089451024b2359e6de1af1ac04`
+- **Holds:** pcapng with a section header and one interface, no frames. A byte-for-byte golden of what the capture
+  writer writes, first written with the pcap-file 2.0 encoder.

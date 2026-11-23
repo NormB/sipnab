@@ -537,4 +537,252 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Read-back of every block type the merged-pcapng reader takes, from
+    /// bytes built here by hand (not by `pcap-file`), so the reader is held
+    /// to the pcapng specification and not to the library that decodes it.
+    mod read_back {
+        use super::*;
+
+        /// One pcapng block of `kind` around `body`, in either byte order.
+        fn block(kind: u32, body: &[u8], be: bool) -> Vec<u8> {
+            let u32b = |v: u32| if be { v.to_be_bytes() } else { v.to_le_bytes() };
+            let pad = (4 - body.len() % 4) % 4;
+            let total = (12 + body.len() + pad) as u32;
+            let mut b = Vec::new();
+            b.extend_from_slice(&u32b(kind));
+            b.extend_from_slice(&u32b(total));
+            b.extend_from_slice(body);
+            b.extend(std::iter::repeat_n(0u8, pad));
+            b.extend_from_slice(&u32b(total));
+            b
+        }
+
+        /// One option: code, length, value, padding.
+        fn opt(code: u16, value: &[u8], be: bool) -> Vec<u8> {
+            let u16b = |v: u16| if be { v.to_be_bytes() } else { v.to_le_bytes() };
+            let mut o = Vec::new();
+            o.extend_from_slice(&u16b(code));
+            o.extend_from_slice(&u16b(value.len() as u16));
+            o.extend_from_slice(value);
+            o.extend(std::iter::repeat_n(0u8, (4 - value.len() % 4) % 4));
+            o
+        }
+
+        /// The end-of-options option.
+        fn end(be: bool) -> Vec<u8> {
+            opt(0, &[], be)
+        }
+
+        fn shb(be: bool) -> Vec<u8> {
+            let mut b = Vec::new();
+            b.extend_from_slice(&if be {
+                0x1a2b_3c4du32.to_be_bytes()
+            } else {
+                0x1a2b_3c4du32.to_le_bytes()
+            });
+            b.extend_from_slice(&if be {
+                1u16.to_be_bytes()
+            } else {
+                1u16.to_le_bytes()
+            });
+            b.extend_from_slice(&[0, 0]);
+            b.extend_from_slice(&(-1i64).to_le_bytes());
+            block(0x0a0d_0d0a, &b, be)
+        }
+
+        /// An IDB of `link_type` and `snaplen` with `options` (already
+        /// encoded, end marker included, or empty).
+        fn idb(link_type: u16, snaplen: u32, options: &[u8], be: bool) -> Vec<u8> {
+            let mut b = Vec::new();
+            b.extend_from_slice(&if be {
+                link_type.to_be_bytes()
+            } else {
+                link_type.to_le_bytes()
+            });
+            b.extend_from_slice(&[0, 0]);
+            b.extend_from_slice(&if be {
+                snaplen.to_be_bytes()
+            } else {
+                snaplen.to_le_bytes()
+            });
+            b.extend_from_slice(options);
+            block(0x0000_0001, &b, be)
+        }
+
+        /// An EPB on `iface` stamped `ticks` in that interface's resolution.
+        fn epb(
+            iface: u32,
+            ticks: u64,
+            data: &[u8],
+            origlen: u32,
+            options: &[u8],
+            be: bool,
+        ) -> Vec<u8> {
+            let u32b = |v: u32| if be { v.to_be_bytes() } else { v.to_le_bytes() };
+            let mut b = Vec::new();
+            b.extend_from_slice(&u32b(iface));
+            b.extend_from_slice(&u32b((ticks >> 32) as u32));
+            b.extend_from_slice(&u32b(ticks as u32));
+            b.extend_from_slice(&u32b(data.len() as u32));
+            b.extend_from_slice(&u32b(origlen));
+            b.extend_from_slice(data);
+            b.extend(std::iter::repeat_n(0u8, (4 - data.len() % 4) % 4));
+            b.extend_from_slice(options);
+            block(0x0000_0006, &b, be)
+        }
+
+        /// A Simple Packet Block.
+        fn spb(data: &[u8], origlen: u32, be: bool) -> Vec<u8> {
+            let mut b = Vec::new();
+            b.extend_from_slice(&if be {
+                origlen.to_be_bytes()
+            } else {
+                origlen.to_le_bytes()
+            });
+            b.extend_from_slice(data);
+            block(0x0000_0003, &b, be)
+        }
+
+        /// Decode `bytes` and return every frame and the skipped count.
+        fn read(bytes: &[u8]) -> Result<(Vec<MergedFrame>, Vec<i32>, u64), TestError> {
+            let mut r = MergedPcapNg::decode(bytes, Path::new("test.pcapng"))
+                .map_err(|e| format!("the file must decode: {e:#}"))?;
+            let mut frames = Vec::new();
+            while let Some(f) = r.next_frame() {
+                frames.push(f);
+            }
+            Ok((frames, r.link_types().to_vec(), r.skipped()))
+        }
+
+        /// 2023-11-14 22:13:20 UTC.
+        const T0: i64 = 1_700_000_000;
+
+        fn utc(secs: i64, nanos: u32) -> Result<DateTime<Utc>, TestError> {
+            Utc.timestamp_opt(secs, nanos)
+                .single()
+                .ok_or_else(|| "a valid instant".into())
+        }
+
+        #[test]
+        fn a_nanosecond_interface_stamps_each_frame_to_the_nanosecond() -> Result<(), TestError> {
+            for be in [false, true] {
+                let mut f = shb(be);
+                f.extend(idb(1, 65535, &[opt(9, &[9], be), end(be)].concat(), be));
+                let ticks = T0 as u64 * 1_000_000_000 + 123_456_789;
+                f.extend(epb(0, ticks, &[0xAB; 42], 42, &[], be));
+                let (frames, _, skipped) = read(&f)?;
+                assert_eq!(frames.len(), 1, "one frame (big-endian {be})");
+                assert_eq!(
+                    frames[0].ts,
+                    utc(T0, 123_456_789)?,
+                    "nanosecond time (big-endian {be})"
+                );
+                assert_eq!(
+                    frames[0].data,
+                    vec![0xAB; 42],
+                    "the data without its padding (big-endian {be})"
+                );
+                assert_eq!(skipped, 0, "nothing skipped (big-endian {be})");
+            }
+            Ok(())
+        }
+
+        /// A packet's options (a comment here) do not change its bytes.
+        #[test]
+        fn a_packet_with_options_keeps_its_bytes() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(idb(
+                1,
+                65535,
+                &[opt(9, &[9], false), end(false)].concat(),
+                false,
+            ));
+            let opts = [opt(1, b"a note", false), end(false)].concat();
+            f.extend(epb(0, 5, &[7; 13], 1514, &opts, false));
+            let (frames, _, _) = read(&f)?;
+            assert_eq!(frames[0].data, vec![7; 13], "the 13 captured bytes");
+            assert_eq!(frames[0].caplen, 13, "caplen is the captured length");
+            assert_eq!(frames[0].origlen, 1514, "the wire length is kept");
+            Ok(())
+        }
+
+        /// A Simple Packet Block captured to a snap length holds the snapped
+        /// bytes, and its wire length.
+        #[test]
+        fn a_simple_packet_is_cut_at_the_interface_snap_length() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(idb(1, 16, &[], false));
+            f.extend(spb(&[9; 16], 1500, false));
+            let (frames, _, _) = read(&f)?;
+            assert_eq!(frames[0].data, vec![9; 16], "the 16 snapped bytes");
+            assert_eq!(frames[0].origlen, 1500, "the wire length");
+            Ok(())
+        }
+
+        /// A Simple Packet Block in a file with no interface is counted.
+        #[test]
+        fn a_simple_packet_without_an_interface_is_counted_not_hidden() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(spb(&[9; 8], 8, false));
+            let (frames, _, skipped) = read(&f)?;
+            assert!(frames.is_empty(), "no frame");
+            assert_eq!(skipped, 1, "the packet is counted");
+            Ok(())
+        }
+
+        /// Blocks the reader does not take (name resolution, interface
+        /// statistics, decryption secrets, custom, an unknown type) are passed
+        /// over and the frames after them are read.
+        #[test]
+        fn blocks_that_carry_no_frame_are_passed_over() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(idb(
+                1,
+                65535,
+                &[opt(9, &[9], false), end(false)].concat(),
+                false,
+            ));
+            // NRB: one IPv4 record, the end record.
+            let mut nrb = Vec::new();
+            nrb.extend_from_slice(&1u16.to_le_bytes());
+            nrb.extend_from_slice(&6u16.to_le_bytes());
+            nrb.extend_from_slice(&[192, 0, 2, 1, b'a', 0]);
+            nrb.extend_from_slice(&[0, 0]);
+            nrb.extend_from_slice(&[0, 0, 0, 0]);
+            f.extend(block(0x0000_0004, &nrb, false));
+            // ISB: interface 0, time 0, no options.
+            f.extend(block(0x0000_0005, &[0; 12], false));
+            // DSB: TLS key log, 4 bytes.
+            let mut dsb = Vec::new();
+            dsb.extend_from_slice(&0x544c_534bu32.to_le_bytes());
+            dsb.extend_from_slice(&4u32.to_le_bytes());
+            dsb.extend_from_slice(b"KEY\n");
+            f.extend(block(0x0000_000A, &dsb, false));
+            // Custom block (copiable): a private enterprise number and data.
+            f.extend(block(0x0000_0BAD, &[0, 0, 0x7f, 0xff, 1, 2, 3, 4], false));
+            // A block type nobody defined.
+            f.extend(block(0x0000_7777, &[1, 2, 3, 4], false));
+            f.extend(epb(0, 1, &[5; 8], 8, &[], false));
+            let (frames, _, skipped) = read(&f)?;
+            assert_eq!(frames.len(), 1, "the frame after them is read");
+            assert_eq!(frames[0].data, vec![5; 8], "with its bytes");
+            assert_eq!(skipped, 0, "they are not packets, so not skipped packets");
+            Ok(())
+        }
+
+        /// A packet after an undescribed one is still read.
+        #[test]
+        fn a_dangling_packet_does_not_stop_the_read() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(idb(1, 65535, &[], false));
+            f.extend(epb(3, 1, &[2; 8], 8, &[], false));
+            f.extend(epb(0, 1, &[4; 8], 8, &[], false));
+            let (frames, _, skipped) = read(&f)?;
+            assert_eq!(frames.len(), 1, "the described packet");
+            assert_eq!(frames[0].data, vec![4; 8], "its bytes");
+            assert_eq!(skipped, 1, "the dangling one counted");
+            Ok(())
+        }
+    }
 }

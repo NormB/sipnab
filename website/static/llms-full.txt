@@ -84581,6 +84581,16 @@ The rest of the page is hand-written. The same test checks three things:
 - it names every environment variable sipnab reads,
 - `groff -man -ww` formats it without a warning.
 
+The files under `tests/fixtures/pcap-writer-golden/` are byte-for-byte goldens
+of what the capture writer writes. The `tests::golden` tests in
+`src/capture/writer.rs` fail when one byte of the writer's output changes.
+Rewrite them only for an intended change of the file format, say so in the
+commit, and update their hashes in `tests/PROVENANCE.md`:
+
+```bash
+SIPNAB_GOLDEN_APPLY=1 cargo test --features full --lib capture::writer::tests::golden::
+```
+
 `docs/internals/` *does* publish to the site.
 
 - It publishes ten pages under `website/content/docs/internals/`.

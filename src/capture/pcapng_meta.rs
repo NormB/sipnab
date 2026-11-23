@@ -1550,4 +1550,205 @@ mod malformed_block_tests {
         });
         assert!(logs.is_empty(), "{logs}");
     }
+
+    /// Read-back of the blocks the metadata reader takes (name resolution and
+    /// decryption secrets), from bytes built here by hand rather than by
+    /// `pcap-file`, so the reader is held to the pcapng specification and
+    /// not to the library that decodes it.
+    mod read_back {
+        use super::*;
+
+        /// A Section Header Block in either byte order.
+        fn shb(be: bool) -> Vec<u8> {
+            let mut body = Vec::new();
+            body.extend_from_slice(&if be {
+                0x1A2B_3C4Du32.to_be_bytes()
+            } else {
+                0x1A2B_3C4Du32.to_le_bytes()
+            });
+            body.extend_from_slice(&if be {
+                1u16.to_be_bytes()
+            } else {
+                1u16.to_le_bytes()
+            });
+            body.extend_from_slice(&[0, 0]);
+            body.extend_from_slice(&(-1i64).to_le_bytes());
+            framed(0x0A0D_0D0A, &body, be)
+        }
+
+        /// One NRB record (or option) of `kind` around `value`, padded.
+        fn tlv(kind: u16, value: &[u8], be: bool) -> Vec<u8> {
+            let w16 = |v: u16| if be { v.to_be_bytes() } else { v.to_le_bytes() };
+            let mut out = Vec::new();
+            out.extend_from_slice(&w16(kind));
+            out.extend_from_slice(&w16(value.len() as u16));
+            out.extend_from_slice(value);
+            out.extend(std::iter::repeat_n(0u8, (4 - value.len() % 4) % 4));
+            out
+        }
+
+        /// An IPv4 record naming `names`.
+        fn v4(addr: [u8; 4], names: &[&str], be: bool) -> Vec<u8> {
+            let mut value = addr.to_vec();
+            for n in names {
+                value.extend_from_slice(n.as_bytes());
+                value.push(0);
+            }
+            tlv(1, &value, be)
+        }
+
+        /// An IPv6 record naming `names`.
+        fn v6(addr: std::net::Ipv6Addr, names: &[&str], be: bool) -> Vec<u8> {
+            let mut value = addr.octets().to_vec();
+            for n in names {
+                value.extend_from_slice(n.as_bytes());
+                value.push(0);
+            }
+            tlv(2, &value, be)
+        }
+
+        /// A Name Resolution Block of `records`, the end record, and
+        /// `options` (already encoded, end marker included, or empty).
+        fn nrb(records: &[Vec<u8>], options: &[u8], be: bool) -> Vec<u8> {
+            let mut body = records.concat();
+            body.extend(tlv(0, &[], be));
+            body.extend_from_slice(options);
+            framed(NRB, &body, be)
+        }
+
+        /// A Decryption Secrets Block of `secrets_type` holding `data`.
+        fn dsb(secrets_type: u32, data: &[u8], be: bool) -> Vec<u8> {
+            let w32 = |v: u32| if be { v.to_be_bytes() } else { v.to_le_bytes() };
+            let mut body = Vec::new();
+            body.extend_from_slice(&w32(secrets_type));
+            body.extend_from_slice(&w32(data.len() as u32));
+            body.extend_from_slice(data);
+            framed(0x0000_000A, &body, be)
+        }
+
+        /// Write `bytes` to a file and read its metadata.
+        fn read(bytes: &[u8]) -> Result<PcapngMetadata, TestError> {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("hand-built.pcapng");
+            std::fs::write(&path, bytes)?;
+            Ok(read_pcapng_metadata(&path)?)
+        }
+
+        /// IPv4 and IPv6 records, one with two names, in either byte order.
+        #[test]
+        fn names_of_both_families_are_read_in_either_byte_order() -> Result<(), TestError> {
+            let six: std::net::Ipv6Addr = "2001:db8::5".parse()?;
+            for be in [false, true] {
+                let mut f = shb(be);
+                f.extend(nrb(
+                    &[
+                        v4([192, 0, 2, 1], &["a", "b.example.com"], be),
+                        v6(six, &["six"], be),
+                    ],
+                    &[],
+                    be,
+                ));
+                let meta = read(&f)?;
+                assert_eq!(
+                    meta.names,
+                    vec![
+                        (IpAddr::from([192, 0, 2, 1]), "a".to_string()),
+                        (IpAddr::from([192, 0, 2, 1]), "b.example.com".to_string()),
+                        (IpAddr::V6(six), "six".to_string()),
+                    ],
+                    "every name, in file order (big-endian {be})"
+                );
+                assert_eq!(
+                    meta.malformed_blocks, 0,
+                    "nothing malformed (big-endian {be})"
+                );
+            }
+            Ok(())
+        }
+
+        /// A record type the reader does not know, and the block's options
+        /// (a DNS server name and a comment), leave the other names intact.
+        #[test]
+        fn an_unknown_record_and_block_options_leave_the_names_intact() -> Result<(), TestError> {
+            let mut f = shb(false);
+            let options = [
+                tlv(2, b"dns.example.com", false),
+                tlv(1, b"names from a test", false),
+                tlv(0, &[], false),
+            ]
+            .concat();
+            f.extend(nrb(
+                &[
+                    tlv(0x7777, &[1, 2, 3], false),
+                    v4([198, 51, 100, 7], &["kept"], false),
+                ],
+                &options,
+                false,
+            ));
+            let meta = read(&f)?;
+            assert_eq!(
+                meta.names,
+                vec![(IpAddr::from([198, 51, 100, 7]), "kept".to_string())],
+                "the known record's name"
+            );
+            assert_eq!(meta.malformed_blocks, 0, "nothing malformed");
+            Ok(())
+        }
+
+        /// A TLS key log DSB in a big-endian section is read.
+        #[test]
+        fn a_key_log_in_a_big_endian_section_is_read() -> Result<(), TestError> {
+            let mut f = shb(true);
+            f.extend(dsb(0x544C_534B, b"CLIENT_RANDOM 00 11\n", true));
+            let meta = read(&f)?;
+            assert_eq!(meta.key_log_blocks, 1, "one key log");
+            assert_eq!(meta.tls_secrets.len(), 1, "one secret");
+            assert!(
+                meta.tls_secrets[0].starts_with("CLIENT_RANDOM 00 11"),
+                "the key log text was not read back intact"
+            );
+            Ok(())
+        }
+
+        /// A DSB of another secrets type (SSH here) is not a TLS key log and
+        /// is not malformed either.
+        #[test]
+        fn a_secrets_block_of_another_type_is_not_a_key_log() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(dsb(0x5353_484B, b"ssh secret\n", false));
+            let meta = read(&f)?;
+            assert_eq!(meta.key_log_blocks, 0, "not a key log");
+            assert!(meta.tls_secrets.is_empty(), "no TLS secret");
+            assert_eq!(meta.malformed_blocks, 0, "not malformed");
+            Ok(())
+        }
+
+        /// Names and key logs from two sections of opposite byte order.
+        #[test]
+        fn blocks_of_every_section_are_read() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(nrb(&[v4([192, 0, 2, 2], &["first"], false)], &[], false));
+            f.extend(shb(true));
+            f.extend(nrb(&[v4([192, 0, 2, 3], &["second"], true)], &[], true));
+            f.extend(dsb(0x544C_534B, b"CLIENT_RANDOM 22 33\n", true));
+            let meta = read(&f)?;
+            assert!(named(&meta, "first"), "section 1's name: {meta:?}");
+            assert!(named(&meta, "second"), "section 2's name: {meta:?}");
+            assert_eq!(meta.key_log_blocks, 1, "section 2's key log");
+            Ok(())
+        }
+
+        /// A record with an address and no name is malformed (pcapng 4.5: at
+        /// least one name), and the block is counted, not read in part.
+        #[test]
+        fn a_record_without_a_name_makes_its_block_malformed() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(nrb(&[tlv(1, &[192, 0, 2, 9], false)], &[], false));
+            f.extend(nrb(&[v4([192, 0, 2, 4], &["after"], false)], &[], false));
+            let meta = read(&f)?;
+            assert_eq!(meta.malformed_blocks, 1, "the nameless record's block");
+            assert!(named(&meta, "after"), "the block after it: {meta:?}");
+            Ok(())
+        }
+    }
 }
