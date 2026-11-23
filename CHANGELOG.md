@@ -21,6 +21,11 @@ entry that carries them.
 
 ### Fixed
 
+- **A pcapng with interfaces of different link types now gets the right frame times.**
+  - Was: Microsecond timestamps were read as nanoseconds (dates in January 1970), and `if_tsoffset` was not added.
+  - Was: A simple packet kept the block's padding bytes, and the second section's interfaces were numbered after the first section's.
+  - Effect: Each frame uses its own interface's resolution and offset, and each section numbers its interfaces from zero.
+  - Docs: [Link types](docs/encapsulations.md#link-types)
 - **The F7 key line and the "Save as" prompt are whole at 40 columns.**
   - Was: Both ended at the dialog's edge, so `F1 fields`, `F2 save` and `Esc back` did not show.
   - Effect: Each wraps between keys onto the next row; a long name shows its end and the cursor behind an ellipsis mark.

@@ -205,27 +205,29 @@ impl MergedPcapNg {
         let mut reader = PcapNgReader::new(bytes)
             .with_context(|| format!("Not a pcapng file: '{}'", path.display()))?;
 
-        // Interface index -> link type. The table the file already carries,
-        // which libpcap discards by insisting every interface agree.
-        //
-        // Timestamp resolution is per-interface too, but `pcap-file` has
-        // already applied each interface's own resolution by the time a block
-        // reaches here, so there is nothing to track: a file mixing microsecond
-        // and nanosecond interfaces comes back with both correct.
-        let mut ifaces: Vec<i32> = Vec::new();
+        // The interfaces of the section being read, in the order their IDBs
+        // appear: the table the file already carries, which libpcap discards
+        // by insisting every interface agree. pcapng numbers interfaces per
+        // section (4.1), so a Section Header Block starts a new table.
+        let mut section: Vec<Interface> = Vec::new();
+        // Every interface's link type, across all sections.
+        let mut link_types: Vec<i32> = Vec::new();
         let mut frames: Vec<MergedFrame> = Vec::new();
         let mut skipped: u64 = 0;
 
         while let Some(block) = reader.next_block() {
             let block = block.context("Malformed pcapng block")?;
             match block {
+                Block::SectionHeader(_) => section.clear(),
                 Block::InterfaceDescription(idb) => {
-                    ifaces.push(u32::from(idb.linktype) as i32);
+                    let iface = Interface::of(&idb);
+                    link_types.push(iface.link_type);
+                    section.push(iface);
                 }
                 Block::EnhancedPacket(epb) => {
                     let idx = epb.interface_id as usize;
-                    let Some(&link_type) = ifaces.get(idx) else {
-                        // A packet naming an interface the file never
+                    let Some(iface) = section.get(idx) else {
+                        // A packet naming an interface its section never
                         // described. Counted, not dropped in silence.
                         skipped += 1;
                         continue;
@@ -233,27 +235,31 @@ impl MergedPcapNg {
                     let data = epb.data.into_owned();
                     let caplen = data.len() as u32;
                     frames.push(MergedFrame {
-                        ts: epoch_to_utc(epb.timestamp),
+                        ts: iface.time(epb.timestamp),
                         caplen,
                         origlen: epb.original_len,
-                        link_type,
+                        link_type: iface.link_type,
                         data,
                     });
                 }
                 Block::SimplePacket(spb) => {
                     // A simple packet block names no interface, so it belongs
                     // to interface 0 by definition, and carries no timestamp.
-                    let Some(&link_type) = ifaces.first() else {
+                    let Some(iface) = section.first() else {
                         skipped += 1;
                         continue;
                     };
-                    let data = spb.data.into_owned();
+                    let mut data = spb.data.into_owned();
+                    // The block holds no captured length (pcapng 4.4): it is
+                    // the wire length cut at the interface's snap length, and
+                    // what follows it in the block is padding.
+                    data.truncate(iface.captured_len(spb.original_len));
                     let caplen = data.len() as u32;
                     frames.push(MergedFrame {
                         ts: Utc.timestamp_opt(0, 0).single().unwrap_or_default(),
                         caplen,
                         origlen: spb.original_len,
-                        link_type,
+                        link_type: iface.link_type,
                         data,
                     });
                 }
@@ -261,7 +267,6 @@ impl MergedPcapNg {
             }
         }
 
-        let mut link_types: Vec<i32> = ifaces.clone();
         link_types.sort_unstable();
         link_types.dedup();
 
@@ -293,13 +298,80 @@ impl MergedPcapNg {
     }
 }
 
-/// A pcapng timestamp is a count since the Unix epoch at the interface's own
-/// resolution; `pcap-file` has already applied that resolution and hands back a
-/// `Duration`.
-fn epoch_to_utc(d: std::time::Duration) -> DateTime<Utc> {
-    Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos())
+/// What an Interface Description Block says about the frames recorded on it.
+struct Interface {
+    /// The link type every frame of the interface is decoded with.
+    link_type: i32,
+    /// Timestamp ticks per second, from `if_tsresol` (pcapng 4.2): 10^n, or
+    /// 2^n when bit 7 is set; 10^6 when the option is absent. `None` for a
+    /// resolution too fine to count in 128 bits.
+    ticks_per_second: Option<u128>,
+    /// `if_tsoffset` (pcapng 4.2): seconds added to every timestamp.
+    offset_secs: i64,
+    /// The snap length; 0 means no limit.
+    snaplen: u32,
+}
+
+impl Interface {
+    /// The interface `idb` describes.
+    fn of(
+        idb: &pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock<'_>,
+    ) -> Self {
+        use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
+        let mut resol = 6u8;
+        let mut offset_secs = 0i64;
+        for option in &idb.options {
+            match option {
+                InterfaceDescriptionOption::IfTsResol(r) => resol = *r,
+                // The field is a signed 64-bit count; pcap-file 2 reads it
+                // unsigned, so the bits are taken back as they were written.
+                InterfaceDescriptionOption::IfTsOffset(s) => offset_secs = *s as i64,
+                _ => {}
+            }
+        }
+        let exponent = u32::from(resol & 0x7F);
+        let ticks_per_second = if resol & 0x80 == 0 {
+            10u128.checked_pow(exponent)
+        } else {
+            1u128.checked_shl(exponent)
+        };
+        Self {
+            link_type: u32::from(idb.linktype) as i32,
+            ticks_per_second,
+            offset_secs,
+            snaplen: idb.snaplen,
+        }
+    }
+
+    /// The time of a frame whose 64-bit timestamp `pcap-file` handed back as
+    /// `raw`.
+    ///
+    /// `pcap-file` 2 reads the timestamp's ticks as nanoseconds whatever the
+    /// interface's resolution, so the tick count is the nanosecond count of
+    /// `raw`, and the interface's resolution and offset are applied here.
+    fn time(&self, raw: std::time::Duration) -> DateTime<Utc> {
+        let ticks = raw.as_nanos();
+        let Some(per_second) = self.ticks_per_second else {
+            return DateTime::<Utc>::default();
+        };
+        let secs = i64::try_from(ticks / per_second).unwrap_or(i64::MAX);
+        let nanos = (ticks % per_second) * 1_000_000_000 / per_second;
+        Utc.timestamp_opt(
+            secs.saturating_add(self.offset_secs),
+            u32::try_from(nanos).unwrap_or(0),
+        )
         .single()
         .unwrap_or_default()
+    }
+
+    /// The captured length of a simple packet `original_len` long on the wire.
+    fn captured_len(&self, original_len: u32) -> usize {
+        if self.snaplen == 0 {
+            original_len as usize
+        } else {
+            original_len.min(self.snaplen) as usize
+        }
+    }
 }
 
 #[cfg(test)]
@@ -782,6 +854,157 @@ mod tests {
             assert_eq!(frames.len(), 1, "the described packet");
             assert_eq!(frames[0].data, vec![4; 8], "its bytes");
             assert_eq!(skipped, 1, "the dangling one counted");
+            Ok(())
+        }
+
+        /// No `if_tsresol` means microseconds (pcapng 4.2), the resolution
+        /// libpcap and most tools write.
+        #[test]
+        fn an_interface_without_a_resolution_counts_microseconds() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(idb(1, 65535, &[], false));
+            f.extend(epb(
+                0,
+                T0 as u64 * 1_000_000 + 654_321,
+                &[1; 20],
+                20,
+                &[],
+                false,
+            ));
+            let (frames, _, _) = read(&f)?;
+            assert_eq!(frames.len(), 1, "one frame");
+            assert_eq!(
+                frames[0].ts,
+                utc(T0, 654_321_000)?,
+                "a microsecond tick count must not be read as nanoseconds"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn an_explicit_microsecond_resolution_counts_microseconds() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(idb(
+                1,
+                65535,
+                &[opt(9, &[6], false), end(false)].concat(),
+                false,
+            ));
+            f.extend(epb(0, T0 as u64 * 1_000_000 + 1, &[1; 20], 20, &[], false));
+            let (frames, _, _) = read(&f)?;
+            assert_eq!(
+                frames[0].ts,
+                utc(T0, 1_000)?,
+                "if_tsresol 6 is microseconds"
+            );
+            Ok(())
+        }
+
+        /// Two interfaces at different resolutions in one file: each frame
+        /// in its own interface's resolution.
+        #[test]
+        fn interfaces_at_different_resolutions_each_keep_their_own() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(idb(
+                1,
+                65535,
+                &[opt(9, &[6], false), end(false)].concat(),
+                false,
+            ));
+            f.extend(idb(
+                12,
+                65535,
+                &[opt(9, &[9], false), end(false)].concat(),
+                false,
+            ));
+            f.extend(epb(0, T0 as u64 * 1_000_000 + 2, &[1; 20], 20, &[], false));
+            f.extend(epb(
+                1,
+                T0 as u64 * 1_000_000_000 + 2,
+                &[2; 20],
+                20,
+                &[],
+                false,
+            ));
+            let (frames, link_types, _) = read(&f)?;
+            assert_eq!(link_types, vec![1, 12], "both link types");
+            assert_eq!(frames[0].ts, utc(T0, 2_000)?, "frame 0 in microseconds");
+            assert_eq!(frames[1].ts, utc(T0, 2)?, "frame 1 in nanoseconds");
+            assert_eq!(frames[1].link_type, 12, "frame 1 on interface 1");
+            Ok(())
+        }
+
+        /// `if_tsoffset` (pcapng 4.2) is added to every timestamp of the
+        /// interface.
+        #[test]
+        fn an_interface_offset_is_added_to_its_timestamps() -> Result<(), TestError> {
+            let mut f = shb(false);
+            let opts = [
+                opt(9, &[9], false),
+                opt(14, &100i64.to_le_bytes(), false),
+                end(false),
+            ]
+            .concat();
+            f.extend(idb(1, 65535, &opts, false));
+            f.extend(epb(0, T0 as u64 * 1_000_000_000, &[1; 20], 20, &[], false));
+            let (frames, _, _) = read(&f)?;
+            assert_eq!(frames[0].ts, utc(T0 + 100, 0)?, "the offset is in seconds");
+            Ok(())
+        }
+
+        /// A Simple Packet Block is interface 0's, carries no time, and holds
+        /// the captured bytes only, not the block's padding.
+        #[test]
+        fn a_simple_packet_is_interface_zeros_and_holds_only_its_bytes() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(idb(113, 0, &[], false));
+            f.extend(spb(&[9; 41], 41, false));
+            let (frames, _, skipped) = read(&f)?;
+            assert_eq!(frames.len(), 1, "one frame");
+            assert_eq!(
+                frames[0].data,
+                vec![9; 41],
+                "41 bytes, without the 3 bytes of padding"
+            );
+            assert_eq!(frames[0].link_type, 113, "interface 0's link type");
+            assert_eq!(frames[0].ts, utc(0, 0)?, "no time");
+            assert_eq!(skipped, 0, "nothing skipped");
+            Ok(())
+        }
+
+        /// A second section starts a new interface table (pcapng 4.1):
+        /// interface 0 of section 2 is section 2's first IDB.
+        #[test]
+        fn each_section_numbers_its_own_interfaces() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(idb(1, 65535, &[], false));
+            f.extend(epb(0, 1, &[1; 8], 8, &[], false));
+            f.extend(shb(true));
+            f.extend(idb(12, 65535, &[], true));
+            f.extend(epb(0, 1, &[2; 8], 8, &[], true));
+            let (frames, link_types, skipped) = read(&f)?;
+            assert_eq!(frames.len(), 2, "a frame from each section");
+            assert_eq!(frames[0].link_type, 1, "section 1's interface 0");
+            assert_eq!(frames[1].link_type, 12, "section 2's interface 0");
+            assert_eq!(link_types, vec![1, 12], "both link types");
+            assert_eq!(skipped, 0, "nothing skipped");
+            Ok(())
+        }
+
+        /// A second section without interfaces: its packet is counted,
+        /// not attributed to the first section's interface.
+        #[test]
+        fn a_packet_in_a_section_without_interfaces_is_counted() -> Result<(), TestError> {
+            let mut f = shb(false);
+            f.extend(idb(1, 65535, &[], false));
+            f.extend(shb(false));
+            f.extend(epb(0, 1, &[2; 8], 8, &[], false));
+            let (frames, _, skipped) = read(&f)?;
+            assert!(
+                frames.is_empty(),
+                "no interface of its section describes it"
+            );
+            assert_eq!(skipped, 1, "counted");
             Ok(())
         }
     }
