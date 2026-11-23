@@ -722,6 +722,152 @@ fn every_help_key_has_a_row_in_the_keybindings_page() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The source of the filter dialog's key handler.
+const FILTER_DIALOG_SRC: &str = include_str!("../src/tui/controllers/filter_dialog.rs");
+
+/// The function keys a function of `source` named `name` matches, as page
+/// tokens (`F3`): each `KeyCode::F(n)` between `fn name(` and the first line
+/// that is a lone `}`.
+fn function_keys_in(source: &str, name: &str) -> Result<Vec<String>, TestError> {
+    let start = source
+        .find(&format!("fn {name}("))
+        .ok_or_else(|| format!("no fn {name} in the source"))?;
+    let body = &source[start..];
+    let end = body.find("\n}\n").unwrap_or(body.len());
+    let mut keys: Vec<String> = body[..end]
+        .split("KeyCode::F(")
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next())
+        .filter(|n| n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty())
+        .map(|n| format!("F{n}"))
+        .collect();
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
+/// Every function key the filter dialog handles has a row in the page's
+/// "Filter popup" table. The F1 help does not list the dialog's keys (the
+/// dialog shows its own key line), so the gate above, which starts from the
+/// help, cannot see a key added here: `F3`, which copies a session-only
+/// entry, shipped in 0.5.267 with no row.
+#[test]
+fn every_filter_dialog_function_key_is_on_the_page() -> Result<(), TestError> {
+    let handled = function_keys_in(FILTER_DIALOG_SRC, "handle_filter_popup_key")?;
+    assert!(
+        handled.len() >= 4,
+        "the scraper finds the dialog's F1, F2, F3 and F9 arms: {handled:?}"
+    );
+    let rows = page_key_rows(KEYBINDINGS_PAGE);
+    let documented: Vec<&String> = rows
+        .iter()
+        .filter(|(heading, _)| heading == "Filter popup")
+        .flat_map(|(_, tokens)| tokens.iter())
+        .collect();
+    let missing: Vec<&String> = handled
+        .iter()
+        .filter(|key| !documented.contains(key))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "docs/keybindings.md \"Filter popup\" has no row for {missing:?}, which \
+         handle_filter_popup_key handles"
+    );
+    Ok(())
+}
+
+/// The fields status line 1 names, in order, in `line`: each word that ends
+/// in `:` after a run of spaces (`Dialogs:`, `Sort:`, `Autoscroll:`).
+fn line1_labels(line: &str) -> Vec<String> {
+    line.split("    ")
+        .filter_map(|field| field.trim().split_once(": ").map(|(label, _)| label))
+        .map(|label| label.to_owned())
+        .collect()
+}
+
+/// Every status line 1 a docs page shows names the fields the TUI draws, in
+/// the order it draws them. The rendered line is the snapshot of the call
+/// list (`tests/snapshots/tui_snapshot_test__tui_snapshots__call_list_with_dialogs.snap`,
+/// which `tui_snapshot_test` holds to the code); a page line may add the fields
+/// shown only some of the time (`Showing:`, `Dropped by method:`). In
+/// 0.5.269 the line gained `Sort:`, and three page examples kept the older
+/// line.
+#[test]
+fn status_line_one_examples_follow_the_rendered_order() -> Result<(), TestError> {
+    let snapshot =
+        include_str!("snapshots/tui_snapshot_test__tui_snapshots__call_list_with_dialogs.snap");
+    let rendered = snapshot
+        .lines()
+        .find(|l| l.contains(" shown of "))
+        .ok_or("the call list snapshot holds status line 1")?;
+    let always = line1_labels(rendered);
+    assert!(
+        always.contains(&"Sort".to_owned()),
+        "the rendered line 1 names the sort: {rendered:?}"
+    );
+    let sometimes = ["Showing", "Dropped by method"];
+    let mut stale = Vec::new();
+    for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/docs"))? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)?;
+        for (n, line) in text.lines().enumerate() {
+            if !(line.contains(" shown of ") && line.contains("Autoscroll:")) {
+                continue;
+            }
+            let plain = line
+                .split('<')
+                .map(|part| part.split_once('>').map_or(part, |(_, after)| after))
+                .collect::<String>();
+            let labels: Vec<String> = line1_labels(&plain)
+                .into_iter()
+                .filter(|l| !sometimes.contains(&l.as_str()))
+                .collect();
+            // The first field is the source (`File:` or `Live capture:`),
+            // which differs by run; the fields after it must agree.
+            if labels.get(1..) != always.get(1..) {
+                stale.push(format!("{}:{}: {line}", path.display(), n + 1));
+            }
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "these status line 1 examples do not name {always:?} in that order:\n{}",
+        stale.join("\n")
+    );
+    Ok(())
+}
+
+/// The readers of the two gates above, on fixed text.
+#[test]
+fn the_function_key_and_line_one_readers_discriminate() -> Result<(), TestError> {
+    let source = "fn other() {\n    KeyCode::F(5)\n}\nfn handle(a: u8) {\n    KeyCode::F(3) => x,\n    KeyCode::F(1) | KeyCode::F(3) => y,\n    KeyCode::F(n) => z,\n}\nfn after() {\n    KeyCode::F(7)\n}\n";
+    assert_eq!(
+        function_keys_in(source, "handle")?,
+        ["F1", "F3"],
+        "only the named function's numbered F keys, once each"
+    );
+    assert!(
+        function_keys_in(source, "missing").is_err(),
+        "a function that is not there is an error, not an empty list"
+    );
+    assert_eq!(
+        line1_labels(
+            " File: a.pcap    Dialogs: 7 shown of 7    Sort: # \u{25b2}    Autoscroll: on"
+        ),
+        ["File", "Dialogs", "Sort", "Autoscroll"],
+        "each field's label, in order"
+    );
+    assert_eq!(
+        line1_labels(" Live capture: eth0    Dialogs: 1 shown of 1    Autoscroll: off"),
+        ["Live capture", "Dialogs", "Autoscroll"],
+        "a line without the sort lacks its label"
+    );
+    Ok(())
+}
+
 /// The page reader finds keys where a reader sees them, and the tokenizer
 /// splits the column forms the page and the help both use.
 #[test]

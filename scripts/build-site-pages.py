@@ -520,8 +520,8 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # explicit path lists in the nav_group macros, not from this number.
         26,
         "Size the kernel capture ring, read the kernel and interface drop "
-        "counters, tell the two apart, and decide between the any device "
-        "and a named interface.",
+        "counters, tell the two apart, decide between the any device "
+        "and a named interface, and drop whole dialogs by method at ingest.",
     ),
     # The least-privilege how-to (2026-11-03). Weight 85: it took 68 on its
     # branch while docs/relay-statistics.md took 68 on main; they met in the

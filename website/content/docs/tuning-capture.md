@@ -1,7 +1,7 @@
 +++
 title = "Stop a capture dropping packets"
 weight = 26
-description = "Size the kernel capture ring, read the kernel and interface drop counters, tell the two apart, and decide between the any device and a named interface."
+description = "Size the kernel capture ring, read the kernel and interface drop counters, tell the two apart, decide between the any device and a named interface, and drop whole dialogs by method at ingest."
 
 [extra]
 source = "docs/tuning-capture.md"
