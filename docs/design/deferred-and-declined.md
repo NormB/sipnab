@@ -548,7 +548,7 @@ with the reason stated above it: *"a HEP sender asserts the inner src/dst
 addresses, so absent receiver-side authentication an attacker could steer the
 kill response at a chosen victim (SSRF-style)."* `--hep-allow-kill` is off by
 default and a test pins that it stays off
-([`cli.rs:12138-12143`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L12138-L12143)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
+([`cli.rs:12140-12145`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L12140-L12145)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
 be opt-in (SN-01)"*).
 
 **Field injection into the input of a ban decision.** `fail2ban.rs`'s
@@ -695,7 +695,7 @@ Three things changed since [`mcp-tool-roadmap.md`](mcp-tool-roadmap.md) filed
 state — needs the same opt-in treatment as shutdown."*
 
 **The opt-in treatment now exists and is proven.** `shutdown_server` shipped with
-a flag ([`cli.rs:4353-4366`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L4353-L4366)<!-- "/// Allow the `shutdown_server`" -->), an off-by-default field
+a flag ([`cli.rs:4355-4368`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L4355-L4368)<!-- "/// Allow the `shutdown_server`" -->), an off-by-default field
 ([`server.rs:187`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L187)<!-- "allow_shutdown: bool, /// Where" -->), a builder
 ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut self) -> Self {" -->) and a first-statement refusal
 ([`server.rs:9160`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9160)<!-- "if !self.allow_shutdown {" -->). Copying that shape costs almost
@@ -749,7 +749,7 @@ documents *"the tool server; cloned per HTTP session"* and
 ([`server.rs:64`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L64)) is a plain field, not an `Arc`,
 built once at startup ([`servers.rs:633-658`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L633-L658)<!-- "let capture_state" -->) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
-argument ([`cli.rs:8732-8734`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8732-L8734)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
+argument ([`cli.rs:8734-8736`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8734-L8736)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
 `capture_status` ([`server.rs:1548`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L1548)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the

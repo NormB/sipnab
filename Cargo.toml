@@ -209,8 +209,10 @@ aes = { version = "0.9", optional = true }
 # written with (`fleet_history::codec`). No Arrow, no async reader. The
 # writer of this `parquet` panics when it is asked for a codec whose feature
 # is off, so the `zstd` feature here and that function change together;
-# tests/config_wiring_test.rs holds the feature.
-parquet = { version = "=60.1.0", default-features = false, features = ["zstd"], optional = true }
+# tests/config_wiring_test.rs holds the feature. 60.2.0 fixes RUSTSEC-2026-0595
+# (Bloom filters in plaintext in a modular-encrypted file); the `encryption`
+# feature stays off, and no_build_enables_parquet_modular_encryption holds it.
+parquet = { version = "=60.2.0", default-features = false, features = ["zstd"], optional = true }
 cbc = { version = "0.2", features = ["alloc"], optional = true }
 # RSA private-key (`--tls-key`) decryption of the TLS 1.2 RSA-kx pre-master
 # secret. PKCS#1 v1.5; PEM parsing for PKCS#1/#8 private keys.

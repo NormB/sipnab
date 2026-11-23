@@ -249,6 +249,138 @@ fn several_relay_questions_on_a_file_run_are_refused_once() -> Result<(), TestEr
     Ok(())
 }
 
+/// The text of `sipnab --help` under `flag`, up to the empty line before the
+/// next flag. clap indents the line between a flag's summary and its long
+/// text, so only a line with nothing on it ends the text.
+fn help_paragraph(help: &str, flag: &str) -> Option<String> {
+    let mut lines = help.lines();
+    lines.find(|line| {
+        let head = line.trim_start();
+        head == flag || head.starts_with(&format!("{flag} "))
+    })?;
+    let mut text = String::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        text.push_str(line.trim());
+        text.push('\n');
+    }
+    Some(text)
+}
+
+/// The row of `flag` in a Markdown table whose first cell is `` `flag` ``.
+fn reference_row<'a>(page: &'a str, flag: &str) -> Option<&'a str> {
+    let head = format!("| `{flag}` |");
+    page.lines().find(|line| line.starts_with(&head))
+}
+
+/// What `sipnab --help` and docs/cli-reference.md say a relay question on a
+/// file run does is what the run does: `--relay-stats` names the exit code
+/// the run returns and says the reason is on stderr, and every other relay
+/// question says it passes the same gate.
+///
+/// Found by the documentation audit of #891: the help and the reference
+/// still said a file-backed run "prints why it will not ask rather than
+/// asking", the text from before RELAY-STATS-FILE-EXIT-0, which reads as a
+/// run that goes on and exits 0. The exit code here comes from a run, so a
+/// change of the code fails this test until both texts change with it.
+#[test]
+fn the_help_and_the_reference_say_how_a_relay_question_on_a_file_run_ends() -> Result<(), TestError>
+{
+    let run = sipnab_env(
+        &[
+            "-N",
+            "-I",
+            SIP_CALL,
+            "--rtpengine-control",
+            "127.0.0.1:9",
+            "--relay-stats",
+        ],
+        &[("SIPNAB_LOG", "off")],
+    )?;
+    let code = run.code.ok_or("the refused run exits with a code")?;
+    let help = sipnab(&["--help"])?;
+    assert_eq!(help.code, Some(0), "--help succeeds\n{}", help.dump());
+    let page = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/cli-reference.md"),
+    )?;
+    let exits = format!("exits {code}");
+    let gate = "Same live-source gate as `--relay-stats`";
+    let flags = [
+        "--relay-stats",
+        "--relay-stats-call",
+        "--relay-stats-list",
+        "--relay-stats-interval",
+        "--relay-compare",
+    ];
+    for flag in flags {
+        let said = help_paragraph(&help.stdout, flag)
+            .ok_or_else(|| format!("sipnab --help has a paragraph for {flag}"))?
+            .replace('\n', " ");
+        let row = reference_row(&page, flag)
+            .ok_or_else(|| format!("docs/cli-reference.md has a row for {flag}"))?;
+        for (place, text) in [
+            ("sipnab --help", said.as_str()),
+            ("docs/cli-reference.md", row),
+        ] {
+            if flag == "--relay-stats" {
+                assert!(
+                    text.contains(&exits) && text.contains("stderr"),
+                    "{place} for {flag} says a file-backed run {exits} with the reason on \
+                     stderr, as the run does: {text}"
+                );
+                assert!(
+                    !text.contains("rather than asking"),
+                    "{place} for {flag} no longer says the run goes on: {text}"
+                );
+            } else {
+                assert!(
+                    text.contains(gate),
+                    "{place} for {flag} says it passes the gate of --relay-stats: {text}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_help_and_reference_readers_find_the_text_of_one_flag() {
+    let help = "      --a\n          One line.\n          \n          More text.\n\n      --a-b <X>\n          Other.\n\n      --c\n          Last.\n";
+    assert_eq!(
+        help_paragraph(help, "--a").as_deref(),
+        Some("One line.\n\nMore text.\n"),
+        "the text is the summary and the long text after it, not the next flag"
+    );
+    assert_eq!(
+        help_paragraph(help, "--a-b").as_deref(),
+        Some("Other.\n"),
+        "a flag that is a prefix of another, and one with a value, are found by the whole name"
+    );
+    assert_eq!(
+        help_paragraph(help, "--c").as_deref(),
+        Some("Last.\n"),
+        "a summary alone ends at the end of the help"
+    );
+    assert_eq!(
+        help_paragraph(help, "--d"),
+        None,
+        "an absent flag has no text"
+    );
+    let page = "| `--a` | x |\n| `--a-b` | y |\n";
+    assert_eq!(
+        reference_row(page, "--a"),
+        Some("| `--a` | x |"),
+        "the row of --a"
+    );
+    assert_eq!(
+        reference_row(page, "--b"),
+        None,
+        "an absent flag has no row"
+    );
+}
+
 // ── Why a file run exits 1 ────────────────────────────────────────────────
 
 /// A copy of `tests/fixtures/sip_call.pcap` cut `short` bytes before its end,

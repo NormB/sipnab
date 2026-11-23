@@ -712,7 +712,7 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 
 | Key | Action |
 |-----|--------|
-| Esc | Cancel without applying |
+| Esc | Cancel without applying. With the field help shown, Esc hides it first; with a `Kept @name for this session only` note shown, Esc closes the note first |
 | Enter | Apply filter (or cancel if Cancel button focused) |
 | Tab | Focus next field |
 | Shift+Tab / BackTab | Focus previous field |
@@ -722,6 +722,7 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 | Space | Toggle checkbox / activate button |
 | F1 | Show or hide the Filter DSL field names and operators in place of the method boxes. Esc hides them first |
 | F2 | Save the dialog's filter as a `[filters]` entry: type the name, Enter saves, Esc closes the prompt. See [Save the dialog's filter under a name](@/docs/tui.md#save-the-dialog-s-filter-under-a-name) |
+| F3 | With a `Kept @name for this session only` note shown: copy its `[filters]` entry line to the clipboard. Without the note, nothing |
 | F9 | Clear all fields, the Expression field included, and the active filter, close popup |
 | Backspace / Delete | Text editing in focused text field |
 | Home / End | Jump to start/end of text field |
@@ -1056,7 +1057,7 @@ sipnab draws into.
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Call List</span>
 </div>
-<pre class="terminal-body"><span class="t-header"> Live capture: eth0    Dialogs: 47 shown of 47    Autoscroll: on</span>
+<pre class="terminal-body"><span class="t-header"> Live capture: eth0    Dialogs: 47 shown of 47    Sort: # ▲    Autoscroll: on</span>
 <span class="t-muted"> Capture filter (BPF): port 5060</span>
 <span class="t-muted"> View filter: none</span>
 <span class="t-muted">  #  Method     From           To             Src IP         Dst IP         State        Msgs  +Prev       PDD</span>
