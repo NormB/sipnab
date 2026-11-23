@@ -184,7 +184,7 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | fnv | 1.0.7 | Apache-2.0 / MIT |
 | foldhash | 0.1.5 | Zlib |
 | foldhash | 0.2.0 | Zlib |
-| form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
+| form_urlencoded | 1.2.3 | MIT OR Apache-2.0 |
 | fs_extra | 1.3.0 | MIT |
 | futures | 0.3.32 | MIT OR Apache-2.0 |
 | futures-channel | 0.3.32 | MIT OR Apache-2.0 |
@@ -287,7 +287,7 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | parking_lot | 0.13.0 | MIT OR Apache-2.0 |
 | parking_lot_core | 0.10.0 | MIT OR Apache-2.0 |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 |
-| parquet | 60.1.0 | Apache-2.0 |
+| parquet | 60.2.0 | Apache-2.0 |
 | pastey | 0.2.2 | MIT OR Apache-2.0 |
 | pbkdf2 | 0.13.0 | MIT OR Apache-2.0 |
 | pcap | 2.5.0 | MIT OR Apache-2.0 |
@@ -451,10 +451,10 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | wasm-bindgen-macro-support | 0.2.130 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.130 | MIT OR Apache-2.0 |
 | wasm-encoder | 0.263.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasmi | 2.0.0 | MIT/Apache-2.0 |
-| wasmi_collections | 2.0.0 | MIT/Apache-2.0 |
-| wasmi_core | 2.0.0 | MIT/Apache-2.0 |
-| wasmi_ir | 2.0.0 | MIT/Apache-2.0 |
+| wasmi | 2.0.2 | MIT/Apache-2.0 |
+| wasmi_collections | 2.0.2 | MIT/Apache-2.0 |
+| wasmi_core | 2.0.2 | MIT/Apache-2.0 |
+| wasmi_ir | 2.0.2 | MIT/Apache-2.0 |
 | wasmparser | 0.228.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmparser | 0.263.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wast | 263.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |

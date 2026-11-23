@@ -50,6 +50,20 @@ entry that carries them.
   - Was: With `SIPNAB_LOG=off` the run exited 1 and printed nothing.
   - Effect: stderr names each file that stopped early, its cause, and what the run is missing.
   - Docs: [Error messages](docs/errors.md)
+- **Plugins run on `wasmi` 2.0.2.**
+  - Was: The binaries linked `wasmi` 2.0.0, which crates.io lists as yanked.
+  - Effect: `wasmi`, `wasmi_core`, `wasmi_ir` and `wasmi_collections` go to 2.0.2.
+
+### Security
+
+- **`url` goes from 2.5.8 to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592).**
+  - Was: Its `Url::origin()` overflowed the stack on a URL of nested `blob:` prefixes.
+  - Effect: A scan of `Cargo.lock` no longer reports the advisory; `form_urlencoded`, which the binaries link, goes to 1.2.3.
+  - Limit: `url` is a test-only dependency, so no released binary contained it.
+- **`parquet` goes from 60.1.0 to 60.2.0 (RUSTSEC-2026-0595).**
+  - Was: `parquet` wrote Bloom filters in plaintext inside a file with Parquet modular encryption.
+  - Effect: The affected version leaves the build; `sipnab fleet serve` writes its history files with it.
+  - Limit: sipnab never wrote modular encryption: `--store-encryption modular` and `both` exit 2, and `sealed` encrypts each whole file.
 
 ## [0.5.269] - 2026-11-21
 

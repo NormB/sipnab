@@ -131,7 +131,8 @@ at the bottom. Use it on a live capture to watch where traffic happens now.
 sipnab -d eth0
 ```
 
-- Check it: status line 1 says `Sort: Last update ▲`; back in `#` order it says `Sort: #`.
+- Check it: status line 1 says `Sort: Last update ▲`; back in `#` order it says `Sort: # ▲`.
+  `L` always starts its order ascending; `Z` reverses it (`▼`).
 - When the order does not seem to change, check that autoscroll (`A`) is not
   moving the selection, and that a search or filter is not hiding the rows.
 
@@ -149,7 +150,7 @@ keys you would otherwise press after every start.
 [display]
 fold = false          # every retransmission and auth retry is its own arrow
 autoscroll = false    # the selection stays where you put it
-sdp_display = "full"  # none, summary or full; `d` still cycles it
+sdp_display = "full"  # none, summary or full (sngrep in sngrep mode); `d` still cycles it
 color_mode = "cseq"   # method, call_id or cseq; `c` still cycles it
 extended_flow = true  # open the multi-leg flow by default
 ```
@@ -239,7 +240,10 @@ Suspect a header changed across a retransmit or a proxy hop?
 
 - Press `Space` on one message.
 - Then press `Space` on another. This opens the **Message Diff**, a
-  line-by-line comparison.
+  line-by-line comparison. It pairs a changed line with its new form and
+  colors only the characters that changed.
+- `Space` again on the message you selected first clears the selection and
+  its hint, without opening the diff.
 - `Esc` returns to the ladder.
 
 ## Search and filter
@@ -322,7 +326,7 @@ Expression field, already applied. Edit it there.
 drops:
 
 ```text
- Live capture: any    Dialogs: 2 shown of 3    Autoscroll: on
+ Live capture: any    Dialogs: 2 shown of 3    Sort: # ▲    Autoscroll: on
  Capture filter (BPF): none
  View filter: F7: expr from.user =~ '1003' OR msg_count > 3 · F full
 ```
@@ -839,10 +843,11 @@ To pick the session up later, Tab to NOTES instead. Then start sipnab again with
 
 With `sample-call.pcap` open, the first line of the screen names the file and
 counts its dialogs, and the Call List has one row for each. This is the top
-of a terminal 110 columns wide, from sipnab 0.5.244 on 2026-11-10:
+of a terminal 110 columns wide, from sipnab built from main at a6d5c3b77 on
+2026-11-21:
 
 ```text
- File: sample-call.pcap    Dialogs: 7 shown of 7    Autoscroll: on
+ File: sample-call.pcap    Dialogs: 7 shown of 7    Sort: # ▲    Autoscroll: on
  Capture filter (BPF): none
  View filter: none
   # ▲    Method    From  To     Source             Destination        State      Msgs +Prev    PDD    Duration

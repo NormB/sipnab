@@ -18812,7 +18812,8 @@ at the bottom. Use it on a live capture to watch where traffic happens now.
 sipnab -d eth0
 ```
 
-- Check it: status line 1 says `Sort: Last update ▲`; back in `#` order it says `Sort: #`.
+- Check it: status line 1 says `Sort: Last update ▲`; back in `#` order it says `Sort: # ▲`.
+  `L` always starts its order ascending; `Z` reverses it (`▼`).
 - When the order does not seem to change, check that autoscroll (`A`) is not
   moving the selection, and that a search or filter is not hiding the rows.
 
@@ -18830,7 +18831,7 @@ keys you would otherwise press after every start.
 [display]
 fold = false          # every retransmission and auth retry is its own arrow
 autoscroll = false    # the selection stays where you put it
-sdp_display = "full"  # none, summary or full; `d` still cycles it
+sdp_display = "full"  # none, summary or full (sngrep in sngrep mode); `d` still cycles it
 color_mode = "cseq"   # method, call_id or cseq; `c` still cycles it
 extended_flow = true  # open the multi-leg flow by default
 ```
@@ -18920,7 +18921,10 @@ Suspect a header changed across a retransmit or a proxy hop?
 
 - Press `Space` on one message.
 - Then press `Space` on another. This opens the **Message Diff**, a
-  line-by-line comparison.
+  line-by-line comparison. It pairs a changed line with its new form and
+  colors only the characters that changed.
+- `Space` again on the message you selected first clears the selection and
+  its hint, without opening the diff.
 - `Esc` returns to the ladder.
 
 ## Search and filter
@@ -19003,7 +19007,7 @@ Expression field, already applied. Edit it there.
 drops:
 
 ```text
- Live capture: any    Dialogs: 2 shown of 3    Autoscroll: on
+ Live capture: any    Dialogs: 2 shown of 3    Sort: # ▲    Autoscroll: on
  Capture filter (BPF): none
  View filter: F7: expr from.user =~ '1003' OR msg_count > 3 · F full
 ```
@@ -19520,10 +19524,11 @@ To pick the session up later, Tab to NOTES instead. Then start sipnab again with
 
 With `sample-call.pcap` open, the first line of the screen names the file and
 counts its dialogs, and the Call List has one row for each. This is the top
-of a terminal 110 columns wide, from sipnab 0.5.244 on 2026-11-10:
+of a terminal 110 columns wide, from sipnab built from main at a6d5c3b77 on
+2026-11-21:
 
 ```text
- File: sample-call.pcap    Dialogs: 7 shown of 7    Autoscroll: on
+ File: sample-call.pcap    Dialogs: 7 shown of 7    Sort: # ▲    Autoscroll: on
  Capture filter (BPF): none
  View filter: none
   # ▲    Method    From  To     Source             Destination        State      Msgs +Prev    PDD    Duration
@@ -20294,7 +20299,7 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 
 | Key | Action |
 |-----|--------|
-| Esc | Cancel without applying |
+| Esc | Cancel without applying. With the field help shown, Esc hides it first; with a `Kept @name for this session only` note shown, Esc closes the note first |
 | Enter | Apply filter (or cancel if Cancel button focused) |
 | Tab | Focus next field |
 | Shift+Tab / BackTab | Focus previous field |
@@ -20304,6 +20309,7 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 | Space | Toggle checkbox / activate button |
 | F1 | Show or hide the Filter DSL field names and operators in place of the method boxes. Esc hides them first |
 | F2 | Save the dialog's filter as a `[filters]` entry: type the name, Enter saves, Esc closes the prompt. See [Save the dialog's filter under a name](tui-walkthrough.md#save-the-dialogs-filter-under-a-name) |
+| F3 | With a `Kept @name for this session only` note shown: copy its `[filters]` entry line to the clipboard. Without the note, nothing |
 | F9 | Clear all fields, the Expression field included, and the active filter, close popup |
 | Backspace / Delete | Text editing in focused text field |
 | Home / End | Jump to start/end of text field |
@@ -20638,7 +20644,7 @@ sipnab draws into.
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Call List</span>
 </div>
-<pre class="terminal-body"><span class="t-header"> Live capture: eth0    Dialogs: 47 shown of 47    Autoscroll: on</span>
+<pre class="terminal-body"><span class="t-header"> Live capture: eth0    Dialogs: 47 shown of 47    Sort: # ▲    Autoscroll: on</span>
 <span class="t-muted"> Capture filter (BPF): port 5060</span>
 <span class="t-muted"> View filter: none</span>
 <span class="t-muted">  #  Method     From           To             Src IP         Dst IP         State        Msgs  +Prev       PDD</span>
@@ -23473,7 +23479,7 @@ clients' as `192.0.2.21`.
 | `--relay-previous-engine` | -- | -- | 0.5.235 | After a re-INVITE moves a call to another engine, also ask the engine the call's SDP named before, and mark a call two engines hold `held by several engines`: a session left on the old engine. Applies to the sessions view (`--relay-sessions`, `GET /v1/relay/sessions`, MCP `query_relay` with `sessions: true`, the TUI's `H`). Needs `--rtpengine-engine`, `[relay] engines`, `--rtpengine-trust-sdp-address` or `--rtpengine-ng-engine`. With ng engine rows it also asks each listed engine a call moved off with no `delete`, to confirm the leftover session. Feature: `native`. How-to: [Ask each call's rtpengine engine](relay-engines.md#find-a-session-left-on-the-old-engine) |
 | `--rtpengine-ng-engine` | `<[HOMER-ID] LISTEN-NG>` | -- | 0.5.236 | Name an rtpengine engine sipnab may ask about a call whose engine it learned from rtpengine's ng control traffic. Repeatable; quote a row with a `homer-id`, for example `--rtpengine-ng-engine '2001 192.0.2.5:2223'`. A bare address, `--rtpengine-ng-engine 192.0.2.6`, takes the port of `--rtpengine-control`. sipnab takes each call's engine from the newest `offer` it saw reach one: a HEP copy the engine sent (`homer-enable-ng = true`), named by its `homer-id`, or a request captured on the `--rtpengine-control` port, named by the address the proxy sent it to. This comes before `--rtpengine-engine`. A later `offer` at another engine marks a moved call, and sipnab flags an engine the call moved off with no `delete` as a leftover session. **The rows are the allowlist**: an engine the traffic names that no row, `--rtpengine-control` or `--rtpengine-engine` row names reads `engine not listed` and sipnab asks nothing about that call. The message ends with the row to add, as this flag and as a config line: for a captured request, the address the proxy sent it to; for a HEP copy, the `listen-ng` it reports, unless that is loopback. sipnab still sends nothing there. sipnab refuses two rows with one `homer-id` or one address. Startup reconciliation, the relay's own counters, the listings and the lists asked for a call sipnab has seen nothing for go to every row's engine too. Needs `--rtpengine-control`. Feature: `native`. How-to: [Ask each call's rtpengine engine](relay-engines.md#take-each-calls-engine-from-the-control-traffic). Config: `[relay] ng_engines` |
 | `--rtpproxy-control` | `<ADDR:PORT>` | -- | 0.5.196 | Read rtpproxy's control traffic on this UDP socket and name the call each relayed stream belongs to, even on the relay's own machine where no SIP passes. The SIP proxy's command names the call and rtpproxy's reply names the port it opened; sipnab pairs the two by the cookie they share. Recording streams (`R`, `C`) are never named as the call's media. **Name the socket; sipnab assumes none**: rtpproxy's default control socket is a UNIX socket, which a capture cannot see, so give it a UDP one with `-s udp:ADDR:PORT` (22222 when you leave out the port) and pass the same address and port here. sipnab reads only datagrams to and from exactly that socket, because they carry no credential. **Passive**: sipnab never sends rtpproxy anything, and rtpproxy has no command that lists its sessions, so sipnab names a call already up when the capture starts from its next command. Works on live captures and on files, and applies to a capture opened inside the TUI. Feature: `native`. How-to: [Let sipnab name rtpproxy's media](rtpproxy-sipnab.md) |
-| `--relay-stats` | -- | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its OWN statistics -- packets relayed, sessions, its own loss and jitter -- and print them. With `--rtpengine-engine` or `--rtpengine-ng-engine` rows, sipnab asks every listed engine and prints each engine's table. They are `relay_reported`: a claim from the box, not a measurement sipnab made, and the header says so. **Same live source `--rtpengine-control` needs**, because asking transmits; on `-I <file>` it prints why it declines to ask rather than asking, and with no `--rtpengine-control` it says to name one. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-the-relay-for-its-counters) |
+| `--relay-stats` | -- | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its OWN statistics -- packets relayed, sessions, its own loss and jitter -- and print them. With `--rtpengine-engine` or `--rtpengine-ng-engine` rows, sipnab asks every listed engine and prints each engine's table. They are `relay_reported`: a claim from the box, not a measurement sipnab made, and the header says so. **Same live source `--rtpengine-control` needs**, because asking transmits. On `-I <file>`, with no `--rtpengine-control`, or with an address that is not `IP:port`, the run exits 2 before it reads anything, with the reason on stderr. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-the-relay-for-its-counters) |
 | `--relay-stats-call` | `<CALL-ID>` | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its own counters about ONE call, by Call-ID: per-stream and per-SSRC packet and byte counts, RTP and RTCP totals, as the relay counts them (`relay_reported`). A relay not holding the call answers in its own words, which sipnab reports rather than inventing a not-found. With engine rows the run has seen no SIP for the call, so it asks each listed engine for its `list` and asks the engine whose list names the call, and the header names that engine. Same live-source gate as `--relay-stats`. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-about-one-call) |
 | `--relay-stats-list` | -- | -- | 0.5.169 | List which statistics the relay named by `--rtpengine-control` knows, rather than their values. The key set is version-specific, so "what can I ask for?" is a real question; sipnab asks the relay rather than reading a built-in table, and the header names how it got the set (for rtpengine, the relay listed them in a `statistics` reply). Same live-source gate as `--relay-stats`, because listing asks the relay and asking transmits. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#list-the-statistics-the-relay-knows) |
 | `--relay-stats-interval` | `<SECONDS>` | -- | 0.5.170 | Poll the relay named by `--rtpengine-control` for its statistics every SECONDS, for as long as the capture runs. Nothing polls by default. One transaction per interval, the next beginning only once the previous returns, so a slow relay slows the cadence rather than stacking requests. Each polled reading says it was `polled` and names the interval. With `--rtpengine-engine` or `--rtpengine-ng-engine` rows, each poll asks every listed engine in turn and prints each reading. CLI only (a poll is a standing instruction to transmit; the REST/MCP caller does not own the host). Its newest reading is readable over REST `GET /v1/relay/stats/polled` and the MCP tool `relay_stats_polled`, which send nothing and need no opt-in. Same live-source gate as `--relay-stats`. Range 1--3600. A headless run prints each reading to stdout, so `--mcp` on stdio refuses it; `--mcp-transport http` accepts it. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#watch-the-counters-move), and [Read the newest poll without asking again](relay-statistics.md#read-the-newest-poll-without-asking-again) |
@@ -90095,6 +90101,9 @@ in the release commit itself.
 - Pull requests that land before the tag reaches GitHub put a new `[Unreleased]` above `[x.y.z]`.
   - Until the tag exists, the commit that added `## [x.y.z]` to `CHANGELOG.md` stands in for it.
   - A flag that commit declares reads `x.y.z`; a flag added later reads `Unreleased`.
+  - In a merge, the script looks for that commit from both `HEAD` and `MERGE_HEAD`, the parents of
+    the merge commit, so a branch that merges the release before its tag can commit the merge
+    Reading `HEAD` alone failed the pre-commit hook of every such merge (2026-11-21, `0.5.269`).
   - Reading only the first heading made every flag of the release read `Unreleased` on every pull
     request until the tag reached GitHub (2026-10-27, `0.5.231`).
 - So run `python3 scripts/flag-since.py --write` in the release commit,
