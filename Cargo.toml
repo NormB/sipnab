@@ -187,7 +187,7 @@ crossterm = { version = "0.29", optional = true }
 # The TUI's SIGWINCH handler, which wakes its terminal wait on a resize.
 # crossterm already depends on this version; its reader, which installed the
 # handler before, is no longer used (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS).
-signal-hook = { version = "0.3.18", optional = true }
+signal-hook = { version = "0.4.6", optional = true }
 unicode-width = { version = "0.2", optional = true }
 
 # Phase 5: STIR/SHAKEN & analysis
@@ -209,8 +209,10 @@ aes = { version = "0.9", optional = true }
 # written with (`fleet_history::codec`). No Arrow, no async reader. The
 # writer of this `parquet` panics when it is asked for a codec whose feature
 # is off, so the `zstd` feature here and that function change together;
-# tests/config_wiring_test.rs holds the feature.
-parquet = { version = "=60.1.0", default-features = false, features = ["zstd"], optional = true }
+# tests/config_wiring_test.rs holds the feature. 60.2.0 fixes RUSTSEC-2026-0595
+# (Bloom filters in plaintext in a modular-encrypted file); the `encryption`
+# feature stays off, and no_build_enables_parquet_modular_encryption holds it.
+parquet = { version = "=60.2.0", default-features = false, features = ["zstd"], optional = true }
 cbc = { version = "0.2", features = ["alloc"], optional = true }
 # RSA private-key (`--tls-key`) decryption of the TLS 1.2 RSA-kx pre-master
 # secret. PKCS#1 v1.5; PEM parsing for PKCS#1/#8 private keys.
@@ -351,7 +353,7 @@ bytes = "1"
 unicode-width = "0.2"
 parking_lot = "0.13"
 proptest = "1"
-jsonschema = "0.60"
+jsonschema = "0.61"
 # Decodes the COSE_Sign1 statements the vCon forwarder registers with a
 # SCITT transparency service, in tests/vcon_scitt_test.rs: a CBOR reader
 # independent of the encoder in src/app/vcon_scitt.rs. DEV ONLY.
