@@ -115,7 +115,9 @@ pub fn origin_reused(carriers: &[OriginCarrier]) -> bool {
     // Up to the first overlap, the carriers of a hop are disjoint and in
     // order, so the one before is the one that ends last.
     let mut sorted: Vec<&OriginCarrier> = carriers.iter().collect();
-    sorted.sort_by_key(|c| (c.hop(), c.start));
+    crate::sort::sort_by_dyn(&mut sorted, &mut |a, b| {
+        (a.hop(), a.start).cmp(&(b.hop(), b.start))
+    });
     sorted
         .windows(2)
         .any(|w| w[0].hop() == w[1].hop() && w[1].start <= w[0].end)

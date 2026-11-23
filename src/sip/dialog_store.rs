@@ -2569,7 +2569,9 @@ impl DialogStore {
         }
 
         // Sort by score descending
-        results.sort_by_key(|r| std::cmp::Reverse(r.score));
+        crate::sort::sort_by_dyn(&mut results, &mut |a, b| {
+            std::cmp::Reverse(a.score).cmp(&std::cmp::Reverse(b.score))
+        });
         results
     }
 
@@ -2661,7 +2663,7 @@ impl DialogStore {
             // store order and two runs can emit legs in different orders. A tree
             // a caller diffs across polls must be stable, so the Call-ID breaks
             // the tie.
-            found.sort_by(|a, b| {
+            crate::sort::sort_by_dyn(&mut found, &mut |a, b| {
                 b.score
                     .cmp(&a.score)
                     .then_with(|| a.dialog.call_id.cmp(&b.dialog.call_id))
@@ -2712,7 +2714,7 @@ impl DialogStore {
             leg.followed = walked.contains(&leg.call_id);
             leg.th_callid = self.th_callid_status(&leg.call_id);
         }
-        legs.sort_by(|a, b| {
+        crate::sort::sort_by_dyn(&mut legs, &mut |a, b| {
             let a_created = self.get(&a.call_id).map(|d| d.created_at);
             let b_created = self.get(&b.call_id).map(|d| d.created_at);
             a.depth

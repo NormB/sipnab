@@ -422,7 +422,7 @@ impl NameResolver {
             .iter()
             .map(|(ip, n)| (*ip, n.clone()))
             .collect();
-        v.sort_by_key(|(ip, _)| *ip);
+        crate::sort::sort_by_dyn(&mut v, &mut |(a, _), (b, _)| a.cmp(b));
         v
     }
 

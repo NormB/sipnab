@@ -193,7 +193,7 @@ pub fn encode(value: &Value<'_>, out: &mut Vec<u8>) {
 #[must_use]
 pub fn encode_dict(entries: Vec<(&[u8], Value<'_>)>) -> Vec<u8> {
     let mut sorted = entries;
-    sorted.sort_by_key(|(k, _)| *k);
+    crate::sort::sort_by_dyn(&mut sorted, &mut |(a, _), (b, _)| a.cmp(b));
     let mut out = Vec::new();
     encode(&Value::Dict(sorted), &mut out);
     out

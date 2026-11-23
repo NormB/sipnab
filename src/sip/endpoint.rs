@@ -402,7 +402,7 @@ pub fn describe(
     // Newest first: an operator chasing a complaint wants what just happened.
     // By each dialog's newest message, which the last message read is not
     // when the files of an `-I` set overlap in time.
-    dialogs.sort_by(|a, b| {
+    crate::sort::sort_by_dyn(&mut dialogs, &mut |a, b| {
         b.latest_message_at
             .cmp(&a.latest_message_at)
             .then_with(|| a.call_id.cmp(&b.call_id))
@@ -457,7 +457,9 @@ pub fn describe(
             count,
         })
         .collect();
-    banner_rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
+    crate::sort::sort_by_dyn(&mut banner_rows, &mut |a, b| {
+        b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value))
+    });
 
     let total_dialogs = dialogs.len();
     let recent_call_ids: Vec<String> = dialogs

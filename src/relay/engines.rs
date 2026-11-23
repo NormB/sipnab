@@ -968,7 +968,7 @@ fn select_ng(
         .filter(|s| s.verb == EngineVerb::Offer)
         .collect();
     // Stable, so two offers of one instant keep the order they were seen in.
-    offers.sort_by_key(|s| s.at);
+    crate::sort::sort_by_dyn(&mut offers, &mut |a, b| a.at.cmp(&b.at));
     let newest = *offers.last()?;
     let current = resolve(rules, default, newest.engine).ok_or(Unknown::NgEngineNotListed {
         engine: newest.engine,
@@ -1062,7 +1062,7 @@ fn select_sdp(rule: &EngineRule, sightings: &[SdpSighting]) -> CallEngines {
     let mut sorted: Vec<&SdpSighting> = sightings.iter().collect();
     // Stable, so two sightings captured in the same instant keep the order the
     // dialog store recorded them in.
-    sorted.sort_by_key(|s| s.at);
+    crate::sort::sort_by_dyn(&mut sorted, &mut |a, b| a.at.cmp(&b.at));
 
     // Each sighting that belongs to an engine, oldest first.
     let engines: Vec<Engine> = match rule {

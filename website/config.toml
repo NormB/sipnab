@@ -356,6 +356,20 @@ macos_floor_intel = "10.12"
 # binary grew 1,094,464 bytes over six releases. 25 MB is 26,214,400 bytes and
 # leaves 1,308,480 over the 0.5.241 measurement.
 #
+# Shrunk after 0.5.269, ceiling kept at 25. 0.5.269 measured 25,934,784
+# bytes, 143,488 over 0.5.268 and 279,616 under 25 MB, close to the 262,144-byte
+# THIN_MARGIN. Two changes keep every feature and the panic strategy, and the
+# packet path's crates keep opt-level 3. (1) [profile.release] builds the crates
+# that run only at startup, while a config file is read, or while an MCP request
+# is parsed and answered (clap, TOML, rmcp, schemars, utoipa, regex-syntax) with
+# opt-level = "s". (2) src/sort.rs sorts indices through one non-generic stable
+# sort instead of one copy of the sort per element type, and 24 report-side
+# sort_by calls moved onto it. Measured on stripped release builds of the musl
+# feature set for x86_64-unknown-linux-gnu, because this host has no x86_64 musl
+# toolchain: 25,766,472 bytes at 0.5.269, 25,184,840 with (1) (-581,632), and
+# 24,836,680 with both (-348,160 more, -929,792 in all). The next release's
+# x86_64-musl measurement carries it.
+#
 binary_size_ceiling_mb = "25"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than

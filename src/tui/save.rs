@@ -330,7 +330,7 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
                     for leg in &correlated {
                         all.extend(leg.messages.iter());
                     }
-                    all.sort_by_key(|m| m.timestamp);
+                    crate::sort::sort_by_dyn(&mut all, &mut |a, b| a.timestamp.cmp(&b.timestamp));
                     all.into_iter().cloned().collect()
                 } else {
                     Vec::new()
