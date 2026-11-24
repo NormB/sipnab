@@ -330,7 +330,7 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
                     for leg in &correlated {
                         all.extend(leg.messages.iter());
                     }
-                    all.sort_by_key(|m| m.timestamp);
+                    crate::sort::sort_by_dyn(&mut all, &mut |a, b| a.timestamp.cmp(&b.timestamp));
                     all.into_iter().cloned().collect()
                 } else {
                     Vec::new()
@@ -1234,11 +1234,11 @@ mod tests {
         let bytes = std::fs::read(path)?;
         let mut reader = PcapNgReader::new(&bytes[..])?;
         let mut names = Vec::new();
-        while let Some(Ok(block)) = reader.next_block() {
+        while let Some(Ok((block, _))) = reader.next_block() {
             if let Some(nrb) = block.into_name_resolution() {
                 for rec in &nrb.records {
                     if let Record::Ipv4(r) = rec
-                        && r.ip_addr.as_ref() == ip
+                        && r.ip_addr.octets() == ip
                     {
                         names = r.names.iter().map(|n| n.to_string()).collect();
                     }
@@ -1399,7 +1399,9 @@ mod tests {
             .options
             .iter()
             .filter_map(|o| match o {
-                SectionHeaderOption::Comment(c) => Some(c.to_string()),
+                SectionHeaderOption::Common(
+                    pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+                ) => Some(c.to_string()),
                 _ => None,
             })
             .collect())

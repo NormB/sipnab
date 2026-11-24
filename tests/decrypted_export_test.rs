@@ -53,19 +53,24 @@ fn read_export(path: &Path) -> Result<Export, TestError> {
     if raw.starts_with(&[0x0a, 0x0d, 0x0d, 0x0a]) {
         let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..])?;
         for opt in &reader.section().options {
-            if let SectionHeaderOption::Comment(c) = opt {
+            if let SectionHeaderOption::Common(
+                pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+            ) = opt
+            {
                 out.section_comments.push(c.to_string());
             }
         }
         while let Some(block) = reader.next_block() {
-            match block? {
+            match block?.0 {
                 pcap_file::pcapng::Block::EnhancedPacket(epb) => out.frames.push(Frame {
                     data: epb.data.to_vec(),
                     comments: epb
                         .options
                         .iter()
                         .filter_map(|o| match o {
-                            EnhancedPacketOption::Comment(c) => Some(c.to_string()),
+                            EnhancedPacketOption::Common(
+                                pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+                            ) => Some(c.to_string()),
                             _ => None,
                         })
                         .collect(),
@@ -80,7 +85,7 @@ fn read_export(path: &Path) -> Result<Export, TestError> {
         let mut reader = pcap_file::pcap::PcapReader::new(&raw[..])?;
         while let Some(p) = reader.next_packet() {
             out.frames.push(Frame {
-                data: p?.data.to_vec(),
+                data: p?.data().to_vec(),
                 comments: Vec::new(),
             });
         }

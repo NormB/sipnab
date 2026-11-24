@@ -156,6 +156,7 @@ Only who performs hop 5 (**Apply**) differs.
 - **Classify.**
   - [`classify_packet()`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs) decides what the packet *means*.
   - It returns a `PacketAction`: `Sip { msg, sdp_links }`, `Rtp { .. }`, `Rtcp(..)` or `None`.
+  - The crate's own appliers call `classify_packet_read()`, which returns the same action plus the SIP message's parsed SDP, so the dialog store does not parse the body again.
   - All of these happen here:
     - WebSocket-SIP unwrap
     - SDP link extraction via [`extract_sdp_links()`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs)
@@ -214,7 +215,7 @@ sequenceDiagram
     participant Ch as capture::channel
     participant Proc as tui-processor
     participant PP as PacketProcessor
-    participant Cls as pipeline::classify_packet
+    participant Cls as pipeline::classify_packet_read
     participant DS as DialogStore
     participant SS as StreamStore
 
@@ -223,10 +224,10 @@ sequenceDiagram
     Ch--&gt;&gt;Proc: recv Packet, release permit
     Proc-&gt;&gt;PP: process(&amp;Packet)
     PP--&gt;&gt;Proc: ParsedPackets (decap, frag + TCP reassembly)
-    Proc-&gt;&gt;Cls: classify_packet(pp, ..)
+    Proc-&gt;&gt;Cls: classify_packet_read(pp, ..)
     Note over Cls: no store touched — side-tallies take a mutex when they fire
-    Cls--&gt;&gt;Proc: PacketAction::Sip { msg, sdp_links }
-    Proc-&gt;&gt;DS: write lock
+    Cls--&gt;&gt;Proc: ClassifiedPacket { action: Sip { msg, sdp_links }, sdp }
+    Proc-&gt;&gt;DS: write lock (the message and its parsed SDP)
     DS--&gt;&gt;Proc: release
     Proc-&gt;&gt;SS: write lock
     SS--&gt;&gt;Proc: release

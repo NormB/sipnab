@@ -92,12 +92,20 @@ fn documentation() -> Result<String, TestError> {
 /// guard below not been there. `scripts/check-unwrap.py` records the same
 /// lesson in its own comments: brace COUNTING is not brace matching, and it
 /// lexes properly rather than approximating. A four-entry table needs neither.
-const TEST_ONLY_ENV: &[(&str, &str)] = &[(
-    "SIPNAB_FANOUT_DEV",
-    "picks the interface for one #[ignore]d test that needs CAP_NET_RAW. \
+const TEST_ONLY_ENV: &[(&str, &str)] = &[
+    (
+        "SIPNAB_FANOUT_DEV",
+        "picks the interface for one #[ignore]d test that needs CAP_NET_RAW. \
      Documenting it in the CLI reference would tell an operator about a knob \
      that does nothing outside `cargo test`.",
-)];
+    ),
+    (
+        "SIPNAB_GOLDEN_APPLY",
+        "rewrites the capture writer's goldens from a `#[cfg(test)]` module of \
+         src/capture/writer.rs; CONTRIBUTING.md says when to set it. It does \
+         nothing outside `cargo test`.",
+    ),
+];
 
 /// The scanners see a real tree.
 #[test]

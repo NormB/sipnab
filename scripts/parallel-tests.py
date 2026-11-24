@@ -708,6 +708,97 @@ def rerun_commands(failures: list[tuple[str, str]], cargo_args: list[str], jobs:
     return commands
 
 
+def _replayable(failure: tuple[str, str]) -> bool:
+    """Whether nextest replays `failure` (a doctest and an unspellable name go elsewhere)."""
+    b, t = failure
+    return not b.startswith(DOC_PREFIX) and bool(_FILTER_SAFE.match(b)) and bool(_FILTER_SAFE.match(t))
+
+
+def list_command(cargo_args: list[str], selection: list[str]) -> list[str]:
+    """`nextest list` for the suite's profile and cargo arguments, as JSON, without the `cargo`.
+
+    The harness arguments (after `--`) are a run's, not a list's.
+    """
+    cargo, _harness = split_args(cargo_args)
+    return ["nextest", "list", "--profile", PROFILE, *cargo, "--message-format", "json", *selection]
+
+
+def nextest_list(cmd: list[str]) -> tuple[int, str]:
+    """Run one `cargo nextest list`; (status, standard output). Its progress goes to standard error."""
+    sys.stdout.flush()
+    done = subprocess.run(["cargo", *cmd], stdout=subprocess.PIPE, stderr=sys.stderr, text=True, check=False)
+    return done.returncode, done.stdout
+
+
+def listed_binaries(text: str) -> set[str]:
+    """The binary ids of a `nextest list --list-type binaries-only --message-format json` output."""
+    return {b.get("binary-id", key) for key, b in json.loads(text).get("rust-binaries", {}).items()}
+
+
+def listed_tests(text: str) -> set[tuple[str, str]]:
+    """(binary, test) for each test a `nextest list -E ... --message-format json` output matches.
+
+    A test the filter does not match, an ignored one included, is not listed:
+    nextest would not run it.
+    """
+    return {
+        (binary, name)
+        for binary, suite in json.loads(text).get("rust-suites", {}).items()
+        for name, case in suite.get("testcases", {}).items()
+        if case.get("filter-match", {}).get("status") == "matches"
+    }
+
+
+def list_filterset(failures: list[tuple[str, str]], binaries: set[str]) -> str | None:
+    """The filterset of the replayable `failures` whose binary still exists.
+
+    nextest refuses a filterset that names a binary it does not have, so a
+    removed binary is left out rather than spelled into it.
+    """
+    return filterset([f for f in failures if _replayable(f) and f[0] in binaries])
+
+
+def still_listed(
+    failures: list[tuple[str, str]], listed: set[tuple[str, str]]
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """(kept, dropped): the replayable failures nextest no longer lists are dropped.
+
+    A doctest and a name the filterset cannot spell are kept: nextest does not
+    replay them, so its listing says nothing about them.
+    """
+    kept = [f for f in failures if not _replayable(f) or f in listed]
+    return kept, [f for f in failures if f not in kept]
+
+
+def listed_failures(failures: list[tuple[str, str]], cargo_args: list[str]) -> tuple[int, list[tuple[str, str]]]:
+    """(status, the failures to replay): the recorded ones nextest still lists.
+
+    HOOK-REPLAY-OF-REMOVED-TEST: a fix that renamed or deleted the failing
+    test left a record that selected nothing, and the replay failed with no
+    test named. The dropped ones are printed; a failed or unreadable listing
+    stops the replay with a status that is not 0.
+    """
+    if not any(_replayable(f) for f in failures):
+        return 0, failures
+    try:
+        rc, out = nextest_list(list_command(cargo_args, ["--list-type", "binaries-only"]))
+        binaries = listed_binaries(out) if rc == 0 else set()
+        expr = list_filterset(failures, binaries) if rc == 0 else None
+        if rc == 0 and expr:
+            rc, out = nextest_list(list_command(cargo_args, ["-E", expr]))
+        listed = listed_tests(out) if rc == 0 and expr else set()
+    except (ValueError, AttributeError) as e:
+        print(f"parallel-tests: cargo nextest list printed no listing it could read: {e}", file=sys.stderr)
+        return 1, []
+    if rc != 0:
+        print(f"parallel-tests: cargo nextest list exited {rc}; nothing was replayed", file=sys.stderr)
+        return rc, []
+    kept, dropped = still_listed(failures, listed)
+    for b, t in dropped:
+        print(f"parallel-tests: dropped from the replay, nextest no longer lists it: {b} {t}", file=sys.stderr)
+    return 0, kept
+
+
 def run_rerun(commands: list[list[str]]) -> int:
     """Run each replay command in turn, stopping at the first that fails."""
     for cmd in commands:
@@ -808,13 +899,19 @@ def main() -> int:
             p.error("--shard-index, --shard-count and --manifest go together")
         return run_shard(a.shard_index, a.shard_count, a.manifest, cargo_args, a.jobs)
     if a.rerun is not None:
-        failures = read_failure_record(a.rerun)
-        commands = rerun_commands(failures or [], cargo_args, a.jobs)
-        if not commands:
+        failures = read_failure_record(a.rerun) or []
+        if not rerun_commands(failures, cargo_args, a.jobs):
             print(f"parallel-tests: {a.rerun} names no test to replay", file=sys.stderr)
             return 0
         if check_nextest():
             return 2
+        rc, failures = listed_failures(failures, cargo_args)
+        if rc != 0:
+            return rc
+        commands = rerun_commands(failures, cargo_args, a.jobs)
+        if not commands:
+            print(f"parallel-tests: nextest lists none of the tests {a.rerun} names; nothing to replay", file=sys.stderr)
+            return 0
         return run_rerun(commands)
     if check_nextest():
         return 2

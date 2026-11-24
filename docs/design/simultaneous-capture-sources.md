@@ -102,7 +102,7 @@ uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://githu
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L216)<!-- "pub struct PacketTx" -->), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
 ([`src/capture/channel.rs:278`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L278)<!-- "fn channel_with_slots(slots:" -->). The consumer is the batch receive loop at
-[`src/app/batch.rs:4603`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4603)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100)) {" -->, which stops when the channel disconnects — that
+[`src/app/batch.rs:4605`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4605)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100)) {" -->, which stops when the channel disconnects — that
 is, when the last sender clone drops.
 
 **A second source joins here and nowhere else.** The channel is already
@@ -149,9 +149,9 @@ sipnab does not correlate a dialog to a stream by capture source. It correlates
 by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 
 `extract_sdp_links` ([`src/pipeline.rs:1783`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1783)<!-- "/// by returning" -->) resolves each `m=` section's address
-through `effective_address` ([`src/sip/sdp.rs:355`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L355)<!-- "pub fn effective_address(media: &SdpMedia" -->) — media-level `c=` when
+through `effective_address` ([`src/sip/sdp.rs:397`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L397)<!-- "pub fn effective_address(media: &SdpMedia" -->) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
-tuples. `process_packet` ([`src/pipeline.rs:3225`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3225)<!-- "/// Route one" -->) feeds each one to `link_to_dialog_with_sdp`
+tuples. `process_packet` ([`src/pipeline.rs:3292`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3292)<!-- "/// Route one" -->) feeds each one to `link_to_dialog_with_sdp`
 ([`src/rtp/stream_store.rs:1956`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1956)<!-- "pub fn link_to_dialog_with_sdp(" -->), which lands in `link_endpoint_with_ptime`
 ([`src/rtp/stream_store.rs:2139`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2139)<!-- "pub fn link_endpoint_with_ptime(" -->). That function does two things:
 
@@ -195,7 +195,7 @@ Timing deserves a firmer no. "The stream started 40 ms after the 200 OK, so it
 belongs to that call" is a coincidence detector on a busy proxy, where dozens of
 calls answer per second and every one of them starts media. sipnab already
 carries a timing-based leg correlator at score 50 out of 100
-([`src/sip/dialog_store.rs:2563`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2563)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
+([`src/sip/dialog_store.rs:2572`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2572)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
 correlating *signaling to signaling* where a Call-ID is present as a
 cross-check. Using timing to attach media to a dialog has no such cross-check.
 It should stay out.
@@ -346,7 +346,7 @@ device, one per HEP *sender* — and `input_origin` reaches `SipMessage`,
 
 **Leg correlation: adjacent, and deliberately separate.**
 [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md) and the seven strategies at
-[`src/sip/dialog_store.rs:118`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L118)<!-- "pub enum CorrelationReason" --> correlate *signaling to signaling* across a B2BUA,
+[`src/sip/dialog_store.rs:119`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L119)<!-- "pub enum CorrelationReason" --> correlate *signaling to signaling* across a B2BUA,
 keyed on `Session-ID`, `P-Charging-Vector`, the SDP `o=` tuple, or `Via` branch.
 Every one of those keys is a SIP header. None exists on an RTP packet. The
 problem here is signaling-to-media across two transports, which shares the word
@@ -387,7 +387,7 @@ nothing.
 Each reader keeps a thread-local counter and stops at `config.count`
 ([`src/capture/hep.rs:4029`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4029)<!-- "let mut count: u64" --> and its check; [`src/capture/live.rs:950`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L950)<!-- "count_limit_reached(self.config.count, self.count)" -->), and the
 consumer independently breaks at `total_count >= max_count`
-([`src/app/batch.rs:4995`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4995)<!-- "if let Some(max_count) = capture_config.count && lp.total_count >= max_count" -->). Because each reader gets a clone of the same
+([`src/app/batch.rs:4997`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4997)<!-- "if let Some(max_count) = capture_config.count && lp.total_count >= max_count" -->). Because each reader gets a clone of the same
 `CaptureConfig`, the per-reader copies are per source, so a member can stop
 itself while the other keeps going. The consumer's total still bounds the run,
 so the flag does not silently double — but the per-reader stop is a source-level
@@ -399,17 +399,17 @@ own start, and the starts are within milliseconds. No shared state needed.
 
 **Shutdown.** Already correct. Every reader polls `signals::shutdown_requested`,
 the coordinator drops its `tx` clone so the channel closes when the last reader
-exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:4617`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4617)<!-- "Err(crossbeam_channel::RecvTimeoutError::Disconnected) => ControlFlow::Break(())," -->).
+exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:4619`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4619)<!-- "Err(crossbeam_channel::RecvTimeoutError::Disconnected) => ControlFlow::Break(())," -->).
 When one member ends and the other continues — a HEP sender restarting while the
 NIC keeps capturing — the loop keeps running, which is correct: `source_exhausted`
-([`src/app/batch.rs:4279`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4279)<!-- "&& let Some(ref flag) = servers.source_exhausted" -->) means every source is done, and with two sources it
+([`src/app/batch.rs:4281`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4281)<!-- "&& let Some(ref flag) = servers.source_exhausted" -->) means every source is done, and with two sources it
 should keep meaning exactly that.
 
 One consequence to accept rather than fix: **the channel carries no
 end-of-source marker.** `Item` is `One` or `Many` ([`src/capture/channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)<!-- "enum Item {" -->)
 and nothing else, so a consumer cannot tell "the HEP sender stopped" from "the
 HEP sender is quiet". A `--hep-listen` run already has the same blind spot, which
-`IdleWatch` ([`src/capture/hep_roster.rs:796`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L796)<!-- "pub struct IdleWatch" -->) papers over with a log line after a
+`IdleWatch` ([`src/capture/hep_roster.rs:798`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L798)<!-- "pub struct IdleWatch" -->) papers over with a log line after a
 silence threshold. A composite run inherits both the blind spot and the paper.
 
 **Backpressure is shared and the accounting is asymmetric.** `PacketTx::send`
@@ -439,7 +439,7 @@ nothing.
 
 **Metrics and the writer read the source as a scalar.** The `-O` writer is the
 concrete casualty. It initializes on the first packet's `link_type`
-([`src/app/batch.rs:4650`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4650)<!-- "// Lazily initialize the writer on first packet (we need link_type)" -->), and the two members disagree: live capture yields
+([`src/app/batch.rs:4652`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4652)<!-- "// Lazily initialize the writer on first packet (we need link_type)" -->), and the two members disagree: live capture yields
 `DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:1120`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L1120)<!-- "pub fn with_pre_parsed(" -->) sets
 `link_type = 0` and a `data` buffer holding the bare transport payload — no
 Ethernet, no IP, no UDP. That absence is deliberate and documented at
@@ -447,7 +447,7 @@ Ethernet, no IP, no UDP. That absence is deliberate and documented at
 read `INVITE`'s leading `0x49` as an IPv4 header with IHL 9 and drop every HEP
 message silently. So the bytes are honest and unwritable, not an oversight to
 patch. Classic pcap refuses the second member outright
-([`src/capture/writer.rs:624`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L624)<!-- "if packet.link_type" -->), and *which* member gets refused depends on which
+([`src/capture/writer.rs:625`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L625)<!-- "if packet.link_type" -->), and *which* member gets refused depends on which
 packet arrives first, so the run fails non-deterministically. pcapng is worse:
 it appends a second interface and writes the bare SIP text as if it were a frame
 of the declared link type, producing an export that decodes into something nobody

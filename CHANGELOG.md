@@ -10,6 +10,15 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A batch run with `--filter` no longer reads every RTP stream for each SIP message.**
+  - Was: At 100,000 calls, `--filter 'method == INVITE'` ran 31 times the CPU instructions of the same run with no filter.
+  - Effect: A filter on SIP fields reads no streams; a filter on `rtp.*` or a media diagnosis field reads only that call's streams.
+  - Docs: [Filter DSL reference](docs/filter-dsl.md)
+
+## [0.5.270] - 2026-11-24
+
 ### Changed
 
 - **Breaking: a relay question a run cannot ask exits 2 before it reads anything.**
@@ -23,13 +32,18 @@ entry that carries them.
   - Effect: At 100,000 dialogs, filtered MCP `export_vcon` takes 1,287 ms (was 19,745 ms); `GET /metrics` takes 266 ms (was 18,632 ms).
   - Effect: In the TUI, `i` and `I` (clear dialogs) and `m` (carrier metrics) no longer read every stream once per call.
   - Limit: The times were measured on one 14-core host at a 1-minute load of 12 to 30.
+- **Reading a capture file takes less CPU per SIP message.**
+  - Effect: Printing and tracking a SIP message do less work, and sipnab parses each SDP body once instead of twice.
+  - Effect: sipnab no longer reads a classic pcap file whole a second time to look for pcapng metadata; the output stays the same.
+  - Limit: Measured for the printing change only: a one-core `-N --report` run on a SIP-only capture used 0.90 of the CPU time, at host load 5.5-52.5.
 
 ### Fixed
 
-- **A batch run with `--filter` no longer reads every RTP stream for each SIP message.**
-  - Was: At 100,000 calls, `--filter 'method == INVITE'` ran 31 times the CPU instructions of the same run with no filter.
-  - Effect: A filter on SIP fields reads no streams; a filter on `rtp.*` or a media diagnosis field reads only that call's streams.
-  - Docs: [Filter DSL reference](docs/filter-dsl.md)
+- **A pcapng with interfaces of different link types now gets the right frame times.**
+  - Was: Microsecond timestamps were read as nanoseconds (dates in January 1970), and `if_tsoffset` was not added.
+  - Was: A simple packet kept the block's padding bytes, and the second section's interfaces were numbered after the first section's.
+  - Effect: Each frame uses its own interface's resolution and offset, and each section numbers its interfaces from zero.
+  - Docs: [Link types](docs/encapsulations.md#link-types)
 - **The F7 key line and the "Save as" prompt are whole at 40 columns.**
   - Was: Both ended at the dialog's edge, so `F1 fields`, `F2 save` and `Esc back` did not show.
   - Effect: Each wraps between keys onto the next row; a long name shows its end and the cursor behind an ellipsis mark.

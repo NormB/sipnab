@@ -107,7 +107,7 @@ pub fn th_mappings(
         })
         .filter(|r| state.is_none_or(|s| r.state == s))
         .collect();
-    rows.sort_by(|a, b| {
+    crate::sort::sort_by_dyn(&mut rows, &mut |a, b| {
         a.state
             .cmp(&b.state)
             .then_with(|| a.caller_call_id.cmp(&b.caller_call_id))

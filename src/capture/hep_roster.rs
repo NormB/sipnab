@@ -549,7 +549,7 @@ impl RosterState {
             })
             .collect();
         // Named in a stable order, so two sweeps of one state say the same.
-        silent.sort_by(|a, b| a.source.cmp(&b.source));
+        crate::sort::sort_by_dyn(&mut silent, &mut |a, b| a.source.cmp(&b.source));
         let silent_not_listed = silent.len().saturating_sub(HEP_SILENCE_LINES_PER_SWEEP);
         silent.truncate(HEP_SILENCE_LINES_PER_SWEEP);
         Sweep {
@@ -615,7 +615,7 @@ impl RosterState {
         let mut senders: Vec<&SenderEntry> = self.senders.values().collect();
         // By address, then id: a reader scanning for one host finds all of its
         // senders together, and the order does not depend on the hash map.
-        senders.sort_by(|a, b| {
+        crate::sort::sort_by_dyn(&mut senders, &mut |a, b| {
             a.peer
                 .cmp(&b.peer)
                 .then_with(|| a.capture_id.cmp(&b.capture_id))
@@ -651,7 +651,9 @@ impl RosterState {
         };
         // Most refused first: the address an operator is looking for is the
         // one sending the most, and a spoofed flood spreads thin.
-        refused.sort_by(|(pa, a), (pb, b)| total_of(b).cmp(&total_of(a)).then_with(|| pa.cmp(pb)));
+        crate::sort::sort_by_dyn(&mut refused, &mut |(pa, a), (pb, b)| {
+            total_of(b).cmp(&total_of(a)).then_with(|| pa.cmp(pb))
+        });
         let refused_rows = refused
             .into_iter()
             .take(limit)

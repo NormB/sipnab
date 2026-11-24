@@ -4028,7 +4028,9 @@ impl BatchRunner {
         let input_files = batch.input_files;
         let filter_expr = batch.filter_expr;
         let vcon_rules = batch.vcon_rules;
-        let output_opts = batch.output_opts;
+        // `auto` color is decided here, once, rather than by an `isatty`
+        // system call for every message this run prints.
+        let output_opts = batch.output_opts.resolved();
         let event_exec = batch.event_exec;
         // 16. Output writer placeholder for -O — opened lazily on the first
         //     packet in run_loop, once the link type is known.
@@ -6071,7 +6073,8 @@ fn process_parsed_packet(
     #[cfg(not(feature = "tls"))]
     let mut decrypt = crate::pipeline::MediaDecrypt::default();
 
-    let action = crate::pipeline::classify_packet(pp, state.rtp_heuristic, &opts, &mut decrypt);
+    let crate::pipeline::ClassifiedPacket { action, sdp } =
+        crate::pipeline::classify_packet_read(pp, state.rtp_heuristic, &opts, &mut decrypt);
     let mut packet = PacketPass {
         ctx,
         state,
@@ -6082,7 +6085,7 @@ fn process_parsed_packet(
     match action {
         crate::pipeline::PacketAction::None => {}
         crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
-            packet.on_sip(pp, &msg, &sdp_links);
+            packet.on_sip(pp, &msg, &sdp_links, &sdp);
         }
         crate::pipeline::PacketAction::ThMapping(event) => {
             // A mapping is call association, so `--no-dialog` opts out of it
@@ -6177,6 +6180,7 @@ impl PacketPass<'_, '_, '_> {
         pp: &ParsedPacket,
         sip_msg: &sip::SipMessage,
         sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
+        sdp: &sip::sdp::SdpRead,
     ) {
         let cli = self.ctx.cli;
         self.counters.sip_count += 1;
@@ -6186,7 +6190,7 @@ impl PacketPass<'_, '_, '_> {
 
         // Track dialog regardless of filter (needed for filter DSL evaluation)
         if !cli.dialog_args.no_dialog {
-            self.track_dialog(pp, sip_msg, sdp_links);
+            self.track_dialog(pp, sip_msg, sdp_links, sdp);
         }
 
         // Apply DSL filter (evaluated after dialog update)
@@ -6253,6 +6257,7 @@ impl PacketPass<'_, '_, '_> {
         pp: &ParsedPacket,
         sip_msg: &sip::SipMessage,
         sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
+        sdp: &sip::sdp::SdpRead,
     ) {
         let cli = self.ctx.cli;
         let dialog_store = &mut *self.state.dialog_store;
@@ -6262,7 +6267,9 @@ impl PacketPass<'_, '_, '_> {
             .and_then(|id| dialog_store.get(id))
             .map(|d| d.state().clone());
 
-        dialog_store.process_message(sip_msg.clone());
+        // With the SDP classification parsed for the links, so the dialog's
+        // SDP timeline does not parse the body again.
+        dialog_store.process_message_read(sip_msg.clone(), sdp);
 
         // Apply --tag to the dialog
         if let Some(ref tag_label) = cli.dialog_args.tag
@@ -20626,6 +20633,64 @@ mod tests {
         let pp = parsed_sip_packet(invite_bytes("ppp-1@example.com"), 5060, 5060);
         let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061))?;
         assert_eq!(sip, 1, "one SIP message should be counted");
+        Ok(())
+    }
+
+    /// An INVITE from 10.0.0.1 carrying one audio `m=` line on port 40000.
+    fn invite_with_sdp_bytes(call_id: &str) -> Vec<u8> {
+        let body = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\n\
+                    t=0 0\r\nm=audio 40000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
+        format!(
+            "INVITE sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-sdp1\r\n\
+             From: <sip:alice@example.com>;tag=a1\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: {call_id}\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Type: application/sdp\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    /// A batch run parses an INVITE's SDP once: classification reads it for
+    /// the media links and hands it to the dialog store, which used to parse
+    /// the same body a second time for the SDP timeline.
+    #[test]
+    fn a_batch_run_parses_one_messages_sdp_once() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.output_args.no_cli_print = true;
+        let pp = parsed_sip_packet(invite_with_sdp_bytes("sdp-once@example.com"), 5060, 5060);
+        let (parses, driven) = crate::sip::sdp::sdp_parses_during(|| {
+            drive_packets_kept(
+                &cli,
+                std::slice::from_ref(&pp),
+                EventExecEngine::new(
+                    None,
+                    None,
+                    0,
+                    0.0,
+                    crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+                ),
+            )
+        });
+        let driven = driven?;
+        assert_eq!(parses, 1, "the INVITE's SDP is parsed once");
+        let dialog = driven
+            .dialogs
+            .get("sdp-once@example.com")
+            .ok_or("the INVITE opens a dialog")?;
+        assert_eq!(
+            dialog.sdp_timeline.len(),
+            1,
+            "the SDP timeline still records the offer"
+        );
+        assert_eq!(
+            dialog.sdp_timeline[0].media_port,
+            Some(40000),
+            "with its media port"
+        );
         Ok(())
     }
 

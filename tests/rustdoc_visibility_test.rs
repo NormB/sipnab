@@ -96,15 +96,19 @@ fn declared(line: &str) -> Option<(String, bool)> {
         "type",
         "union",
         "macro_rules!",
+        // A module is an item a link can name: on #888 a public fn linked the
+        // private file module `sngrep_mode`, and only `cargo doc` refused it.
+        "mod",
     ];
     let t = line.trim_start();
     // Skip the visibility prefix to find the kind keyword, remembering
-    // whether that prefix made it public.
+    // whether that prefix made it public. Every restricted form,
+    // `pub(in path)` included, is one `pub(...)`.
     let public = is_public(t);
     let rest = t
-        .strip_prefix("pub(crate) ")
-        .or_else(|| t.strip_prefix("pub(super) "))
-        .or_else(|| t.strip_prefix("pub(self) "))
+        .strip_prefix("pub(")
+        .and_then(|r| r.split_once(") "))
+        .map(|(_, after)| after)
         .or_else(|| t.strip_prefix("pub "))
         .unwrap_or(t);
     // `async`, `unsafe`, `extern "C"` and a function's `const` may sit
@@ -1462,4 +1466,61 @@ text at column 0";
 mod tests {
     fn helper() {}
 "# => refused(2, "closing");
+    // A module is an item a link can name. On #888 the public
+    // `enable_sngrep_mode` linked the private file module `sngrep_mode`; this
+    // gate passed it, and only `cargo doc` in the pre-push hook refused it.
+    failure_a_link_to_a_private_file_module_offends: r#"
+mod sngrep_mode;
+
+/// See [`sngrep_mode`].
+pub fn enable() {}
+"# => offends(1, 1, &[(3, "sngrep_mode")]);
+    failure_a_link_to_a_crate_visible_file_module_offends: r#"
+pub(crate) mod sngrep_mode;
+
+/// See [`sngrep_mode`].
+pub fn enable() {}
+"# => offends(1, 1, &[(3, "sngrep_mode")]);
+    failure_a_link_to_a_private_inline_module_offends: r#"
+/// See [`inner`].
+pub fn run() {}
+
+mod inner {
+    pub fn f() {}
+}
+"# => offends(1, 1, &[(1, "inner")]);
+    failure_a_link_to_a_pub_in_path_item_offends: r#"
+/// See [`helper`].
+pub fn run() {}
+
+pub(in crate::tui) fn helper() {}
+"# => offends(1, 1, &[(1, "helper")]);
+    success_a_link_to_a_public_file_module_passes: r#"
+pub mod sngrep_mode;
+
+/// See [`sngrep_mode`].
+pub fn enable() {}
+"# => clean(1, 1);
+    success_a_link_to_a_public_inline_module_passes: r#"
+/// See [`inner`].
+pub fn run() {}
+
+pub mod inner {
+    pub fn f() {}
+}
+"# => clean(1, 1);
+    edge_a_module_of_a_nested_scope_is_not_a_root_name: r#"
+/// See [`deep`].
+pub fn run() {}
+
+pub mod inner {
+    mod deep;
+}
+"# => clean(1, 1);
+    edge_a_pub_self_module_offends: r#"
+pub(self) mod hidden;
+
+/// See [`hidden`].
+pub fn run() {}
+"# => offends(1, 1, &[(3, "hidden")]);
 }
