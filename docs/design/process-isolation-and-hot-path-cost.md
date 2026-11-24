@@ -84,7 +84,7 @@ substitution was never argued; it just happened.
 
 That bullet is no longer in `architecture.md`. The commit that added this page
 (`a58bd7b55`) replaced it, and the D15 and D16 entries now live in
-[`docs/internals/code-map.md:231-258`](https://github.com/NormB/sipnab/blob/main/docs/internals/code-map.md#L231-L258)<!-- "**D15 — Privilege drop.**" -->.
+[`docs/internals/code-map.md:233-260`](https://github.com/NormB/sipnab/blob/main/docs/internals/code-map.md#L233-L260)<!-- "**D15 — Privilege drop.**" -->.
 
 Active responses do not run in an isolated child. They run in the
 `scanner-kill` thread, in the same address space as the parsers, the stores,

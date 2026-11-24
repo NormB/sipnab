@@ -85758,6 +85758,7 @@ Only who performs hop 5 (**Apply**) differs.
 - **Classify.**
   - [`classify_packet()`](../../src/pipeline.rs) decides what the packet *means*.
   - It returns a `PacketAction`: `Sip { msg, sdp_links }`, `Rtp { .. }`, `Rtcp(..)` or `None`.
+  - The crate's own appliers call `classify_packet_read()`, which returns the same action plus the SIP message's parsed SDP, so the dialog store does not parse the body again.
   - All of these happen here:
     - WebSocket-SIP unwrap
     - SDP link extraction via [`extract_sdp_links()`](../../src/pipeline.rs)
@@ -85816,7 +85817,7 @@ sequenceDiagram
     participant Ch as capture::channel
     participant Proc as tui-processor
     participant PP as PacketProcessor
-    participant Cls as pipeline::classify_packet
+    participant Cls as pipeline::classify_packet_read
     participant DS as DialogStore
     participant SS as StreamStore
 
@@ -85825,10 +85826,10 @@ sequenceDiagram
     Ch-->>Proc: recv Packet, release permit
     Proc->>PP: process(&Packet)
     PP-->>Proc: ParsedPackets (decap, frag + TCP reassembly)
-    Proc->>Cls: classify_packet(pp, ..)
+    Proc->>Cls: classify_packet_read(pp, ..)
     Note over Cls: no store touched — side-tallies take a mutex when they fire
-    Cls-->>Proc: PacketAction::Sip { msg, sdp_links }
-    Proc->>DS: write lock
+    Cls-->>Proc: ClassifiedPacket { action: Sip { msg, sdp_links }, sdp }
+    Proc->>DS: write lock (the message and its parsed SDP)
     DS-->>Proc: release
     Proc->>SS: write lock
     SS-->>Proc: release
@@ -96882,7 +96883,7 @@ stdin        ─┘    channel     + TCP reassembly,           slice, zero-copy)
 - Payloads are `bytes::Bytes` slices of
   the captured frame end to end (see [Zero-copy payloads](zero-copy-payloads.md)).
 
-> All four packet paths classify through the one `pipeline::classify_packet` router:
+> All four packet paths classify through the one `pipeline::classify_packet_read` router:
 >
 > - live,
 > - batch,
@@ -96890,6 +96891,8 @@ stdin        ─┘    channel     + TCP reassembly,           slice, zero-copy)
 > - the `--cores` sharded path (`parallel.rs`).
 >
 > Only the per-path appliers differ.
+> The router returns the action and the SIP message's parsed SDP, which each applier hands to the dialog store, so the store does not parse the body a second time.
+> The public `pipeline::classify_packet` returns the action alone.
 
 [The subsystem guide](subsystem-guide.md) narrates the same journey packet by packet:
 

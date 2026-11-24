@@ -18,6 +18,10 @@ entry that carries them.
   - Effect: They refuse with no `--rtpengine-control`, on a capture file, or for an address that is not `IP:port`, with the reason on stderr.
   - Do: Ask the relay from a live capture (`-d <device>`), and drop these flags from scripts that read files.
   - Docs: [Ask a media relay about itself](docs/relay-statistics.md)
+- **Reading a capture file takes less CPU per SIP message.**
+  - Effect: Printing and tracking a SIP message do less work, and sipnab parses each SDP body once instead of twice.
+  - Effect: sipnab no longer reads a classic pcap file whole a second time to look for pcapng metadata; the output stays the same.
+  - Limit: Measured for the printing change only: a one-core `-N --report` run on a SIP-only capture used 0.90 of the CPU time, at host load 5.5-52.5.
 
 ### Fixed
 
