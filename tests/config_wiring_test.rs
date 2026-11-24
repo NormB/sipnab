@@ -576,6 +576,152 @@ fn cargo_toml_release_profile_optimized() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The crates the release profile builds for size (`opt-level = "s"`).
+///
+/// Each runs only at startup, while a config file is read, or while a request
+/// is parsed or answered on the MCP surface: command-line parsing (clap and its
+/// helpers), TOML, the MCP protocol and its JSON schemas, the OpenAPI
+/// document, and regex pattern parsing (`regex-syntax` compiles a pattern; the
+/// matching itself is `regex-automata`, which stays at `opt-level = 3`).
+/// Measured 2026-11-21 on the release profile and the musl feature set, built
+/// for x86_64-unknown-linux-gnu: 25,766,472 -> 25,184,840 stripped bytes.
+const SIZE_OPTIMIZED_CRATES: &[&str] = &[
+    "clap_builder",
+    "clap_complete",
+    "clap_lex",
+    "regex-syntax",
+    "rmcp",
+    "schemars",
+    "serde_spanned",
+    "strsim",
+    "toml",
+    "toml_datetime",
+    "toml_edit",
+    "toml_parser",
+    "toml_writer",
+    "utoipa",
+    "winnow",
+];
+
+/// Crates on the capture and analysis path. None of them may be built for
+/// size: they run once per packet, message or match.
+const HOT_CRATES: &[&str] = &[
+    "sipnab",
+    "regex",
+    "regex-automata",
+    "aho-corasick",
+    "memchr",
+    "serde_json",
+    "serde",
+    "etherparse",
+    "pcap",
+    "pcap-file",
+    "ring",
+    "rustls",
+    "aes",
+    "chrono",
+    "hashbrown",
+    "indexmap",
+    "crossbeam-channel",
+    "parking_lot",
+    "nom",
+    "tokio",
+    "flate2",
+];
+
+/// Every `[profile.release.package.NAME]` section of `cargo` with its body.
+fn release_package_overrides(cargo: &str) -> Vec<(String, String)> {
+    cargo
+        .split("\n[profile.release.package.")
+        .skip(1)
+        .filter_map(|rest| {
+            let (name, body) = rest.split_once("]\n")?;
+            let body = body.split("\n[").next().unwrap_or("");
+            let settings: Vec<&str> = body
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .collect();
+            Some((name.to_string(), settings.join("\n")))
+        })
+        .collect()
+}
+
+/// The release profile builds exactly the listed cold crates for size, each
+/// with one `opt-level = "s"` line and nothing else.
+#[test]
+fn release_profile_builds_only_the_cold_crates_for_size() -> Result<(), TestError> {
+    let cargo = std::fs::read_to_string("Cargo.toml")?;
+    let overrides = release_package_overrides(&cargo);
+    let mut names: Vec<&str> = overrides.iter().map(|(n, _)| n.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names, SIZE_OPTIMIZED_CRATES,
+        "the release profile's per-crate overrides must be exactly the cold crates"
+    );
+    for (name, body) in &overrides {
+        assert_eq!(
+            body, "opt-level = \"s\"",
+            "[profile.release.package.{name}] must set opt-level = \"s\" and nothing else"
+        );
+    }
+    Ok(())
+}
+
+/// No crate on the packet path is built for size, and the profile itself
+/// keeps the default `opt-level` (3) for everything not listed.
+#[test]
+fn release_profile_keeps_the_hot_crates_at_full_speed() -> Result<(), TestError> {
+    let cargo = std::fs::read_to_string("Cargo.toml")?;
+    let overrides = release_package_overrides(&cargo);
+    for hot in HOT_CRATES {
+        assert!(
+            !overrides.iter().any(|(n, _)| n == hot),
+            "{hot} runs per packet or per match and must not be built for size"
+        );
+        assert!(
+            !SIZE_OPTIMIZED_CRATES.contains(hot),
+            "{hot} is listed both as hot and as size-optimized"
+        );
+    }
+    let release = cargo
+        .split("\n[profile.release]\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n[").next())
+        .ok_or("Cargo.toml has a [profile.release] section")?;
+    assert!(
+        !release
+            .lines()
+            .any(|l| l.trim_start().starts_with("opt-level")),
+        "[profile.release] itself must keep the default opt-level: {release}"
+    );
+    assert!(
+        !cargo.contains("[profile.release.package.\"*\"]"),
+        "a wildcard override would build every dependency for size"
+    );
+    Ok(())
+}
+
+/// The override parser reads names and bodies, and finds none in a manifest
+/// that has none.
+#[test]
+fn release_package_override_parser_reads_sections() {
+    let manifest = "[profile.release]\nlto = true\n\n[profile.release.package.toml]\nopt-level = \"s\"\n\n[profile.release.package.rmcp]\nopt-level = \"z\"\n\n# a comment\n[[bin]]\nname = \"x\"\n";
+    let got = release_package_overrides(manifest);
+    assert_eq!(
+        got,
+        vec![
+            ("toml".to_string(), "opt-level = \"s\"".to_string()),
+            ("rmcp".to_string(), "opt-level = \"z\"".to_string()),
+        ],
+        "both sections must be read, each ending at the next header"
+    );
+    assert!(
+        release_package_overrides("[profile.release]\nlto = true\n").is_empty(),
+        "a manifest without overrides has none"
+    );
+}
+
 /// contrib/sipnabrc.example is the shipped starter config: it must stay
 /// parseable by the real loader and its values must land, or the first
 /// thing a new user copies breaks.

@@ -761,7 +761,7 @@ pub fn listed_files(dir: &Path) -> std::io::Result<Vec<(PathBuf, ListedKind)>> {
         }
         out.push((path, kind));
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
+    crate::sort::sort_by_dyn(&mut out, &mut |a, b| a.0.cmp(&b.0));
     Ok(out)
 }
 

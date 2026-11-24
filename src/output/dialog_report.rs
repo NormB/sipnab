@@ -834,7 +834,7 @@ pub fn vcon_containers_report(
             ..VconContainerRow::default()
         });
     }
-    rows.sort_by(|a, b| a.file.cmp(&b.file));
+    crate::sort::sort_by_dyn(&mut rows, &mut |a, b| a.file.cmp(&b.file));
     let mut dispositions: BTreeMap<String, u64> = BTreeMap::new();
     let mut duration_secs = 0i64;
     for (state, secs) in distinct.values() {

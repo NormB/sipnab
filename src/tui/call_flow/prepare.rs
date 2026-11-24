@@ -340,7 +340,7 @@ pub fn layout(
     } else {
         Vec::new()
     };
-    streams.sort_by_key(|s| s.first_seen);
+    crate::sort::sort_by_dyn(&mut streams, &mut |a, b| a.first_seen.cmp(&b.first_seen));
     let (endpoints, participants) = discover_participants(messages, &streams, opts);
 
     let mut clock = LadderClock {

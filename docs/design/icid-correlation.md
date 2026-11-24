@@ -328,7 +328,7 @@ the other leg" — a match is near-certain by construction. `related-icid` is
 standardized, which beats a vendor convention, but it is optional, one-way, and
 lives in a header the next hop is explicitly permitted to modify. A distinct
 score keeps it distinguishable in the sort at
-[`:2572`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2572)<!-- "results.sort_by_key(" --> without claiming parity.
+[`:2572`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2572)<!-- "crate::sort::sort_by_dyn(&mut results" --> without claiming parity.
 
 **85, between `sdp_origin` (90) and `via_branch` (80), for plain icid.** Below
 `sdp_origin` because the SDP origin tuple is an identifier whose uniqueness is
@@ -441,7 +441,7 @@ value of writing the section.
 
 **Message retention is not a hazard here, which is not obvious.** The header is
 usually on the initial INVITE, and sipnab drops messages in two places. The
-per-dialog cap at [`:3049-3051`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3049-L3051)<!-- "// Record the message (move instead of clone, capped per D17)" --> drops the *newest*
+per-dialog cap at [`:3051-3053`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3051-L3053)<!-- "// Record the message (move instead of clone, capped per D17)" --> drops the *newest*
 message when full, never the first. `compact_idle`'s
 [`retained_indices`](../../src/sip/dialog_store.rs) at
 [`:996`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L996)<!-- "fn retained_indices(" --> treats the opening request as an anchor

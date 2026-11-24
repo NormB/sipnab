@@ -409,7 +409,7 @@ One consequence to accept rather than fix: **the channel carries no
 end-of-source marker.** `Item` is `One` or `Many` ([`src/capture/channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)<!-- "enum Item {" -->)
 and nothing else, so a consumer cannot tell "the HEP sender stopped" from "the
 HEP sender is quiet". A `--hep-listen` run already has the same blind spot, which
-`IdleWatch` ([`src/capture/hep_roster.rs:796`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L796)<!-- "pub struct IdleWatch" -->) papers over with a log line after a
+`IdleWatch` ([`src/capture/hep_roster.rs:798`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L798)<!-- "pub struct IdleWatch" -->) papers over with a log line after a
 silence threshold. A composite run inherits both the blind spot and the paper.
 
 **Backpressure is shared and the accounting is asymmetric.** `PacketTx::send`
