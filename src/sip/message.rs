@@ -182,7 +182,9 @@ impl SipMessage {
     /// same Call-ID/CSeq but different top-Via branches belong to distinct
     /// transactions. An empty `branch=` value is treated as absent.
     pub fn top_via_branch(&self) -> Option<&str> {
-        let row = *self.via_headers().first()?;
+        // The first Via row, found without collecting every row into a
+        // `Vec`: this runs for every message a dialog takes in.
+        let row = self.header("Via")?;
         // The TOP Via is the first via-parm, not the first ROW. RFC 3261
         // §20.42 makes `Via` a comma-separated list and §7.3.1 lets any number
         // of rows be combined into one, so a single row may hold several hops
@@ -1418,6 +1420,75 @@ mod tests {
             "Content-Length: 0",
         ]);
         parse_msg("OPTIONS sip:b@example.com SIP/2.0", &headers, b"")
+    }
+
+    /// Reading the top Via's branch allocates nothing: it runs for every SIP
+    /// message, inside the retransmission key, and used to collect every Via
+    /// row into a `Vec` to take the first.
+    #[test]
+    fn the_top_via_branch_is_read_without_allocating() -> Result<(), TestError> {
+        let msg = msg_with_vias(&[
+            "Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKtop",
+            "Via: SIP/2.0/UDP b.example.com;branch=z9hG4bKnext",
+            "Via: SIP/2.0/UDP c.example.com;branch=z9hG4bKlast",
+        ])?;
+        let (allocations, branch) = crate::test_alloc::allocations_during(|| msg.top_via_branch());
+        assert_eq!(branch, Some("z9hG4bKtop"), "the first row's branch");
+        assert_eq!(
+            allocations, 0,
+            "reading the top Via branch must not allocate"
+        );
+        Ok(())
+    }
+
+    /// A message with no Via at all has no branch, and finding that out
+    /// allocates nothing either.
+    #[test]
+    fn a_message_without_via_has_no_branch_and_allocates_nothing() -> Result<(), TestError> {
+        let msg = msg_with_vias(&[])?;
+        let (allocations, branch) = crate::test_alloc::allocations_during(|| msg.top_via_branch());
+        assert_eq!(branch, None, "no Via, no branch");
+        assert_eq!(allocations, 0, "a missing Via must not allocate");
+        Ok(())
+    }
+
+    /// The top branch comes from the first Via row even when other headers
+    /// sit between Via rows, and the compact form `v:` counts as a Via row.
+    #[test]
+    fn the_top_via_branch_reads_the_first_via_row_in_message_order() -> Result<(), TestError> {
+        let msg = parse_msg(
+            "OPTIONS sip:b@example.com SIP/2.0",
+            &[
+                "From: <sip:a@example.com>;tag=1",
+                "v: SIP/2.0/UDP a.example.com;branch=z9hG4bKcompact",
+                "To: <sip:b@example.com>",
+                "Via: SIP/2.0/UDP b.example.com;branch=z9hG4bKlater",
+                "Call-ID: via-order@test",
+                "CSeq: 1 OPTIONS",
+                "Content-Length: 0",
+            ],
+            b"",
+        )?;
+        assert_eq!(
+            msg.top_via_branch(),
+            msg.via_headers().first().and_then(|row| {
+                row.split(',')
+                    .next()?
+                    .split(';')
+                    .skip(1)
+                    .filter_map(|p| p.trim().split_once('='))
+                    .find(|(n, _)| n.trim_end().eq_ignore_ascii_case("branch"))
+                    .map(|(_, v)| v.trim())
+                    .filter(|v| !v.is_empty())
+            }),
+            "the branch is the one the first of all Via rows names"
+        );
+        assert_eq!(
+            msg.top_via_branch(),
+            Some("z9hG4bKcompact"),
+            "the compact row is first"
+        );
+        Ok(())
     }
 
     /// A single Via with a branch param yields that branch.

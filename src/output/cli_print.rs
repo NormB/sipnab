@@ -123,10 +123,12 @@ pub fn format_sip_message(
     prev_timestamp: Option<DateTime<Utc>>,
 ) -> String {
     let use_color = should_use_color(opts.color);
-    let mut out = String::with_capacity(256);
+    // The summary line, then the whole message when it is shown: sized once
+    // for both, so appending the message does not grow the buffer again.
+    let mut out = String::with_capacity(160 + msg.raw.len());
 
-    // Timestamp
-    let time_str = if opts.delta_time {
+    // Timestamp, written straight into the line.
+    if opts.delta_time {
         if let Some(prev) = prev_timestamp {
             let delta = msg.timestamp.signed_duration_since(prev);
             let ms = delta.num_milliseconds();
@@ -135,13 +137,13 @@ pub fn format_sip_message(
             // render as e.g. `-0.500s`.
             let sign = if ms < 0 { "-" } else { "+" };
             let abs_ms = ms.unsigned_abs();
-            format!("{sign}{}.{:03}s", abs_ms / 1000, abs_ms % 1000)
+            let _ = write!(out, "{sign}{}.{:03}s", abs_ms / 1000, abs_ms % 1000);
         } else {
-            "+0.000s".to_string()
+            out.push_str("+0.000s");
         }
     } else {
-        msg.timestamp.format("%H:%M:%S%.3f").to_string()
-    };
+        write_clock(&mut out, &msg.timestamp);
+    }
 
     // Method or status descriptor
     let (descriptor, color_code) = if msg.is_request {
@@ -169,7 +171,7 @@ pub fn format_sip_message(
     if use_color {
         let _ = write!(
             out,
-            "{time_str} {src}:{sp} -> {dst}:{dp} {color}{desc}{reset}",
+            " {src}:{sp} -> {dst}:{dp} {color}{desc}{reset}",
             src = msg.src_addr,
             sp = msg.src_port,
             dst = msg.dst_addr,
@@ -181,7 +183,7 @@ pub fn format_sip_message(
     } else {
         let _ = write!(
             out,
-            "{time_str} {src}:{sp} -> {dst}:{dp} {desc}",
+            " {src}:{sp} -> {dst}:{dp} {desc}",
             src = msg.src_addr,
             sp = msg.src_port,
             dst = msg.dst_addr,
@@ -213,7 +215,14 @@ pub fn format_sip_message(
 
     // Payload (optional, with truncation)
     if !msg.body.is_empty() || opts.show_empty {
-        let raw_str = String::from_utf8_lossy(&msg.raw);
+        // The checked conversion first: it gives the same text when the
+        // message is UTF-8, as nearly every SIP message is, without the lossy
+        // decoder's chunk walk, which was 1.8% of a `-N` run over a SIP-only
+        // capture.
+        let raw_str = match std::str::from_utf8(&msg.raw) {
+            Ok(text) => std::borrow::Cow::Borrowed(text),
+            Err(_) => String::from_utf8_lossy(&msg.raw),
+        };
         match opts.payload_limit {
             Some(limit) if raw_str.len() > limit => {
                 // Back the cut up to a char boundary — the limit is a byte
@@ -244,13 +253,100 @@ pub fn format_sip_message(
 ///
 /// Reads `isatty(STDOUT_FILENO)` and the `NO_COLOR` environment variable.
 fn should_use_color(mode: ColorMode) -> bool {
+    use_color(mode, stdout_color_probe)
+}
+
+/// Whether stdout is a terminal, and whether `NO_COLOR` asks for no color.
+///
+/// # Side effects
+///
+/// Reads `isatty(STDOUT_FILENO)` and the `NO_COLOR` environment variable.
+fn stdout_color_probe() -> (bool, bool) {
     // SAFETY: isatty() with STDOUT_FILENO only reads kernel fd state; cannot cause UB.
     let stdout_is_terminal = unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 };
-    color_enabled(
-        mode,
+    (
         stdout_is_terminal,
         no_color_requested(std::env::var_os("NO_COLOR").as_deref()),
     )
+}
+
+/// Append `ts` as `HH:MM:SS.mmm`, the text chrono's `%H:%M:%S%.3f` writes.
+///
+/// Written digit by digit because it runs once per printed message: chrono
+/// parses the format string and builds a temporary `String` each time, which
+/// was about 3% of a `-N` run over a SIP-only capture. The rules are
+/// chrono 0.4's: a leap second (nanoseconds past 1,000,000,000) prints as
+/// second 60, and milliseconds are truncated, never rounded.
+fn write_clock(out: &mut String, ts: &DateTime<Utc>) {
+    use chrono::Timelike as _;
+    let nanos = ts.nanosecond();
+    let second = ts.second() + nanos / 1_000_000_000;
+    let millis = nanos / 1_000_000 % 1000;
+    push_two_digits(out, ts.hour());
+    out.push(':');
+    push_two_digits(out, ts.minute());
+    out.push(':');
+    push_two_digits(out, second);
+    out.push('.');
+    push_digit(out, millis / 100);
+    push_digit(out, millis / 10 % 10);
+    push_digit(out, millis % 10);
+}
+
+/// Append `n` (below 100) as two decimal digits.
+fn push_two_digits(out: &mut String, n: u32) {
+    push_digit(out, n / 10 % 10);
+    push_digit(out, n % 10);
+}
+
+/// Append the decimal digit `d` (below 10).
+fn push_digit(out: &mut String, d: u32) {
+    out.push(char::from_digit(d, 10).unwrap_or('0'));
+}
+
+/// Whether `mode` colors the message lines, asking `probe` (is the stream a
+/// terminal, is `NO_COLOR` set) only for [`ColorMode::Auto`].
+///
+/// An explicit mode needs no probe, and the probe is a system call: asking
+/// it for every printed message cost an `isatty` per SIP message.
+fn use_color(mode: ColorMode, probe: impl FnOnce() -> (bool, bool)) -> bool {
+    match mode {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => {
+            let (is_terminal, no_color) = probe();
+            color_enabled(mode, is_terminal, no_color)
+        }
+    }
+}
+
+impl OutputOptions {
+    /// These options with [`ColorMode::Auto`] decided once, for stdout and
+    /// the environment as they are now: `Always` on a terminal with
+    /// `NO_COLOR` unset, `Never` otherwise. An explicit mode is kept.
+    ///
+    /// A run that prints many messages calls this once at its start, so the
+    /// terminal is not asked again for every message.
+    ///
+    /// # Side effects
+    ///
+    /// For `Auto`, reads `isatty(STDOUT_FILENO)` and `NO_COLOR`.
+    #[must_use]
+    pub fn resolved(self) -> Self {
+        self.resolved_with(stdout_color_probe)
+    }
+
+    /// [`Self::resolved`] with the terminal and `NO_COLOR` answered by
+    /// `probe`, which is asked at most once and only for `Auto`.
+    #[must_use]
+    pub(crate) fn resolved_with(mut self, probe: impl FnOnce() -> (bool, bool)) -> Self {
+        self.color = if use_color(self.color, probe) {
+            ColorMode::Always
+        } else {
+            ColorMode::Never
+        };
+        self
+    }
 }
 
 /// Whether a stream gets ANSI color codes: the one rule for the message
@@ -918,5 +1014,347 @@ mod color_rule_tests {
             no_color_requested(Some(OsStr::new("0"))),
             "any non-empty value"
         );
+    }
+}
+
+/// Tests for [`use_color`] and [`OutputOptions::resolved_with`]: the terminal
+/// and `NO_COLOR` are read once per run, not once per printed message.
+#[cfg(test)]
+mod color_once_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A probe answering `answer` that counts how often it is asked.
+    fn counting(calls: &Cell<u32>, answer: (bool, bool)) -> impl FnOnce() -> (bool, bool) + '_ {
+        move || {
+            calls.set(calls.get() + 1);
+            answer
+        }
+    }
+
+    #[test]
+    fn always_colors_without_asking_the_terminal() {
+        let calls = Cell::new(0);
+        assert!(
+            use_color(ColorMode::Always, counting(&calls, (false, true))),
+            "--color always colors whatever the stream is"
+        );
+        assert_eq!(
+            calls.get(),
+            0,
+            "an explicit mode must not probe the terminal"
+        );
+    }
+
+    #[test]
+    fn never_does_not_color_and_does_not_ask_the_terminal() {
+        let calls = Cell::new(0);
+        assert!(
+            !use_color(ColorMode::Never, counting(&calls, (true, false))),
+            "--color never writes no escape codes"
+        );
+        assert_eq!(
+            calls.get(),
+            0,
+            "an explicit mode must not probe the terminal"
+        );
+    }
+
+    #[test]
+    fn auto_colors_a_terminal_with_no_color_unset() {
+        let calls = Cell::new(0);
+        assert!(
+            use_color(ColorMode::Auto, counting(&calls, (true, false))),
+            "auto colors a terminal"
+        );
+        assert_eq!(calls.get(), 1, "auto asks the terminal exactly once");
+    }
+
+    #[test]
+    fn auto_does_not_color_a_pipe() {
+        let calls = Cell::new(0);
+        assert!(
+            !use_color(ColorMode::Auto, counting(&calls, (false, false))),
+            "auto writes no color to a pipe or file"
+        );
+        assert_eq!(calls.get(), 1, "auto asks the terminal exactly once");
+    }
+
+    #[test]
+    fn auto_does_not_color_a_terminal_when_no_color_is_set() {
+        let calls = Cell::new(0);
+        assert!(
+            !use_color(ColorMode::Auto, counting(&calls, (true, true))),
+            "NO_COLOR turns auto color off on a terminal"
+        );
+    }
+
+    #[test]
+    fn resolving_auto_on_a_terminal_gives_always() {
+        let calls = Cell::new(0);
+        let opts = OutputOptions::default().resolved_with(counting(&calls, (true, false)));
+        assert_eq!(
+            opts.color,
+            ColorMode::Always,
+            "auto on a terminal is always"
+        );
+        assert_eq!(calls.get(), 1, "resolving asks the terminal once");
+    }
+
+    #[test]
+    fn resolving_auto_on_a_pipe_gives_never() {
+        let calls = Cell::new(0);
+        let opts = OutputOptions::default().resolved_with(counting(&calls, (false, false)));
+        assert_eq!(opts.color, ColorMode::Never, "auto on a pipe is never");
+        assert_eq!(calls.get(), 1, "resolving asks the terminal once");
+    }
+
+    #[test]
+    fn resolving_auto_with_no_color_set_gives_never() {
+        let calls = Cell::new(0);
+        let opts = OutputOptions::default().resolved_with(counting(&calls, (true, true)));
+        assert_eq!(
+            opts.color,
+            ColorMode::Never,
+            "NO_COLOR on a terminal is never"
+        );
+    }
+
+    #[test]
+    fn resolving_an_explicit_mode_keeps_it_without_asking() {
+        for mode in [ColorMode::Always, ColorMode::Never] {
+            let calls = Cell::new(0);
+            let opts = OutputOptions {
+                color: mode,
+                ..OutputOptions::default()
+            }
+            .resolved_with(counting(&calls, (true, true)));
+            assert_eq!(opts.color, mode, "an explicit {mode:?} is kept");
+            assert_eq!(
+                calls.get(),
+                0,
+                "an explicit {mode:?} must not probe the terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn resolving_keeps_every_other_option() {
+        let before = OutputOptions {
+            color: ColorMode::Auto,
+            delta_time: true,
+            payload_limit: Some(17),
+            show_empty: false,
+            show_proto_number: true,
+        };
+        let after = before.clone().resolved_with(|| (false, false));
+        assert!(after.delta_time, "delta_time is kept");
+        assert_eq!(after.payload_limit, Some(17), "payload_limit is kept");
+        assert!(!after.show_empty, "show_empty is kept");
+        assert!(after.show_proto_number, "show_proto_number is kept");
+    }
+
+    /// The batch runner resolves its options once, where it takes them from
+    /// the plan. The runner itself cannot be built in a unit test (it starts
+    /// the companion servers and takes over the kill worker), and what the
+    /// call saves, an `isatty` per printed message, is not visible in the
+    /// output; so the conversion is tested above and this holds the one call
+    /// site by its text.
+    #[test]
+    fn the_batch_runner_resolves_its_output_options_once() {
+        let batch = include_str!("../app/batch.rs");
+        assert_eq!(
+            batch
+                .matches("let output_opts = batch.output_opts.resolved();")
+                .count(),
+            1,
+            "BatchRunner::new must resolve the plan's output options"
+        );
+    }
+
+    #[test]
+    fn resolving_twice_asks_the_terminal_once() {
+        let calls = Cell::new(0);
+        let once = OutputOptions::default().resolved_with(counting(&calls, (true, false)));
+        let twice = once.resolved_with(counting(&calls, (false, false)));
+        assert_eq!(twice.color, ColorMode::Always, "the first answer stands");
+        assert_eq!(
+            calls.get(),
+            1,
+            "a resolved mode is explicit and is not probed again"
+        );
+    }
+
+    #[test]
+    fn a_resolved_mode_prints_what_the_unresolved_mode_printed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (offer, _) = crate::test_utils::sdp_offer_and_answer("color-once")?;
+        for (terminal, no_color, explicit) in [
+            (true, false, ColorMode::Always),
+            (false, false, ColorMode::Never),
+            (true, true, ColorMode::Never),
+        ] {
+            let resolved = OutputOptions::default().resolved_with(|| (terminal, no_color));
+            let direct = OutputOptions {
+                color: explicit,
+                ..OutputOptions::default()
+            };
+            assert_eq!(
+                format_sip_message(&offer, &resolved, None),
+                format_sip_message(&offer, &direct, None),
+                "terminal={terminal} no_color={no_color} prints as {explicit:?}"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Tests for [`write_clock`]: the time at the head of each printed message
+/// line is what chrono's `%H:%M:%S%.3f` printed, written without a format
+/// string being parsed for every message.
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use chrono::TimeZone as _;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The clock as chrono spells it: the reference.
+    fn chrono_clock(ts: &DateTime<Utc>) -> String {
+        ts.format("%H:%M:%S%.3f").to_string()
+    }
+
+    /// `write_clock` on its own.
+    fn clock(ts: &DateTime<Utc>) -> String {
+        let mut out = String::new();
+        write_clock(&mut out, ts);
+        out
+    }
+
+    /// A timestamp at `secs` seconds past the epoch plus `nanos`.
+    fn at(secs: i64, nanos: u32) -> Result<DateTime<Utc>, TestError> {
+        Utc.timestamp_opt(secs, nanos)
+            .single()
+            .ok_or_else(|| format!("{secs}.{nanos} is a valid timestamp").into())
+    }
+
+    #[test]
+    fn midnight_is_all_zeros() -> Result<(), TestError> {
+        assert_eq!(clock(&at(0, 0)?), "00:00:00.000", "the epoch");
+        Ok(())
+    }
+
+    #[test]
+    fn the_last_millisecond_of_a_day() -> Result<(), TestError> {
+        assert_eq!(
+            clock(&at(86_399, 999_999_999)?),
+            "23:59:59.999",
+            "milliseconds truncate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sub_millisecond_digits_are_dropped_not_rounded() -> Result<(), TestError> {
+        assert_eq!(
+            clock(&at(3_661, 1_999_999)?),
+            "01:01:01.001",
+            "1.999999 ms prints as 001"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_leap_second_prints_as_chrono_prints_it() -> Result<(), TestError> {
+        // chrono represents a leap second as nanoseconds past 1_000_000_000.
+        let leap = chrono::NaiveDate::from_ymd_opt(2016, 12, 31)
+            .and_then(|d| d.and_hms_nano_opt(23, 59, 59, 1_500_000_000))
+            .ok_or("a valid leap second")?
+            .and_utc();
+        assert_eq!(clock(&leap), chrono_clock(&leap), "leap second");
+        Ok(())
+    }
+
+    #[test]
+    fn every_millisecond_of_one_second_matches_chrono() -> Result<(), TestError> {
+        for ms in 0..1000 {
+            let ts = at(1_718_452_800 + 37, ms * 1_000_000 + 123)?;
+            assert_eq!(clock(&ts), chrono_clock(&ts), "millisecond {ms}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn every_second_of_one_day_matches_chrono() -> Result<(), TestError> {
+        for s in 0..86_400 {
+            let ts = at(1_718_409_600 + s, 456_789_000)?;
+            assert_eq!(clock(&ts), chrono_clock(&ts), "second {s} of the day");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn dates_before_the_epoch_and_far_ahead_match_chrono() -> Result<(), TestError> {
+        for secs in [-1, -86_401, -2_208_988_800, 4_102_444_800, 253_402_300_799] {
+            let ts = at(secs, 987_654_321)?;
+            assert_eq!(clock(&ts), chrono_clock(&ts), "timestamp {secs}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_clock_is_appended_after_what_the_line_holds() -> Result<(), TestError> {
+        let mut out = String::from("x ");
+        write_clock(&mut out, &at(45_296, 789_000_000)?);
+        assert_eq!(out, "x 12:34:56.789", "appended, nothing replaced");
+        Ok(())
+    }
+
+    #[test]
+    fn writing_the_clock_allocates_nothing_into_a_sized_line() -> Result<(), TestError> {
+        let ts = at(45_296, 789_000_000)?;
+        let mut out = String::with_capacity(64);
+        let (allocations, ()) =
+            crate::test_alloc::allocations_during(|| write_clock(&mut out, &ts));
+        assert_eq!(out, "12:34:56.789", "the clock");
+        assert_eq!(
+            allocations, 0,
+            "the clock must be written without a temporary String"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_printed_line_starts_with_the_clock() -> Result<(), TestError> {
+        let (offer, _) = crate::test_utils::sdp_offer_and_answer("clock-line")?;
+        let opts = OutputOptions {
+            color: ColorMode::Never,
+            ..OutputOptions::default()
+        };
+        let line = format_sip_message(&offer, &opts, None);
+        let want = chrono_clock(&offer.timestamp);
+        assert!(
+            line.starts_with(&format!("{want} ")),
+            "{line:?} starts with {want:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_body_that_is_not_utf8_prints_with_replacement_characters() -> Result<(), TestError> {
+        let (mut offer, _) = crate::test_utils::sdp_offer_and_answer("lossy-body")?;
+        let mut raw = offer.raw.to_vec();
+        raw.extend_from_slice(b"a=x-bad:\xff\xfe\r\n");
+        offer.raw = raw.into();
+        let opts = OutputOptions {
+            color: ColorMode::Never,
+            ..OutputOptions::default()
+        };
+        let line = format_sip_message(&offer, &opts, None);
+        assert!(
+            line.contains("a=x-bad:\u{fffd}\u{fffd}"),
+            "invalid bytes print as U+FFFD: {line:?}"
+        );
+        Ok(())
     }
 }

@@ -189,13 +189,31 @@ impl From<&MediaDirection> for MediaMode {
 /// Appends one `SdpExchange` to `timeline` when `msg` carries a parseable
 /// `application/sdp` body; otherwise leaves it untouched.
 pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
-    let sdp = match msg.sdp() {
-        Some(s) => s,
-        None => return,
+    track_sdp_read(timeline, msg, &sdp::SdpRead::Unread);
+}
+
+/// [`track_sdp`] with the message's SDP as a caller already parsed it, so the
+/// body is not parsed a second time; [`sdp::SdpRead::Unread`] parses it here.
+pub(crate) fn track_sdp_read(
+    timeline: &mut Vec<SdpExchange>,
+    msg: &SipMessage,
+    read: &sdp::SdpRead,
+) {
+    let parsed;
+    let sdp: &SdpSession = match read {
+        sdp::SdpRead::Read(Some(s)) => s,
+        sdp::SdpRead::Read(None) => return,
+        sdp::SdpRead::Unread => match msg.sdp() {
+            Some(s) => {
+                parsed = s;
+                &parsed
+            }
+            None => return,
+        },
     };
 
     let direction = determine_offer_answer(timeline, msg);
-    let (codecs, media_addr, media_port, mode, is_t38) = extract_media_info(&sdp);
+    let (codecs, media_addr, media_port, mode, is_t38) = extract_media_info(sdp);
 
     let mut exchange = SdpExchange {
         timestamp: msg.timestamp,

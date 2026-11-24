@@ -25,6 +25,10 @@ entry that carries them.
   - Effect: At 100,000 dialogs, filtered MCP `export_vcon` takes 1,287 ms (was 19,745 ms); `GET /metrics` takes 266 ms (was 18,632 ms).
   - Effect: In the TUI, `i` and `I` (clear dialogs) and `m` (carrier metrics) no longer read every stream once per call.
   - Limit: The times were measured on one 14-core host at a 1-minute load of 12 to 30.
+- **Reading a capture file takes less CPU per SIP message.**
+  - Effect: Printing and tracking a SIP message do less work, and sipnab parses each SDP body once instead of twice.
+  - Effect: sipnab no longer reads a classic pcap file whole a second time to look for pcapng metadata; the output stays the same.
+  - Limit: Measured for the printing change only: a one-core `-N --report` run on a SIP-only capture used 0.90 of the CPU time, at host load 5.5-52.5.
 
 ### Fixed
 

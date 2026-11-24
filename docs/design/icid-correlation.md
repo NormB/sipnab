@@ -35,20 +35,20 @@ capture was verifiable here, and none of it is asserted.
 sipnab correlates legs **seven** ways. It was five when this was written, and
 the two added since are the ones proposed below.
 [`CorrelationReason`](../../src/sip/dialog_store.rs) at
-[`dialog_store.rs:117`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L117)<!-- "#[non_exhaustive] pub enum CorrelationReason {" --> enumerates them, and
+[`dialog_store.rs:118`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L118)<!-- "#[non_exhaustive] pub enum CorrelationReason {" --> enumerates them, and
 [`find_correlated_scored`](../../src/sip/dialog_store.rs) at
-[`:2302`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2302)<!-- "pub fn find_correlated_scored(&self, call_id: &str)" --> evaluates them in a fixed order,
+[`:2311`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2311)<!-- "pub fn find_correlated_scored(&self, call_id: &str)" --> evaluates them in a fixed order,
 first match wins:
 
 | Strategy | Score | Code | Reported `identifier_match` |
 |---|---|---|---|
-| `session_id` — [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID` | 100 | [`:2379`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2379)<!-- "// Strategy 0: RFC 7989 Session-ID (score=100)" --> | `true` |
-| `x_call_id` — a configured header, none by default | 100 | [`:2438`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2438)<!-- "// Strategy 1: correlation-header match (score=100)" --> | `true` |
-| `charging_vector_related_icid` — [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `related-icid` | 95 | [`:2455`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2455)<!-- "// Strategy 1.2: RFC 7315 `related-icid` (score=95)" --> | `true` |
-| `sdp_origin` — the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) origin tuple | 90 | [`:2489`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2489)<!-- "// Strategy 1.5: SDP origin tuple (score=90)" --> | `true` |
-| `charging_vector_icid` — a shared [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `icid-value` | 85 | [`:2509`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2509)<!-- "// Strategy 1.7: plain RFC 7315 `icid-value` equality (score=85)" --> | `true` |
-| `via_branch` — a shared INVITE branch | 80 | [`:2530`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2530)<!-- "// Strategy 2: Via branch overlap (score=80)" --> | `true` |
-| `timing_heuristic` — endpoint overlap plus a 2 s window | 50 | [`:2552`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2552)<!-- "// Strategy 3: Timing heuristic (score=50)" --> | `false` |
+| `session_id` — [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID` | 100 | [`:2388`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2388)<!-- "// Strategy 0: RFC 7989 Session-ID (score=100)" --> | `true` |
+| `x_call_id` — a configured header, none by default | 100 | [`:2447`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2447)<!-- "// Strategy 1: correlation-header match (score=100)" --> | `true` |
+| `charging_vector_related_icid` — [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `related-icid` | 95 | [`:2464`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2464)<!-- "// Strategy 1.2: RFC 7315 `related-icid` (score=95)" --> | `true` |
+| `sdp_origin` — the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) origin tuple | 90 | [`:2498`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2498)<!-- "// Strategy 1.5: SDP origin tuple (score=90)" --> | `true` |
+| `charging_vector_icid` — a shared [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `icid-value` | 85 | [`:2518`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2518)<!-- "// Strategy 1.7: plain RFC 7315 `icid-value` equality (score=85)" --> | `true` |
+| `via_branch` — a shared INVITE branch | 80 | [`:2539`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2539)<!-- "// Strategy 2: Via branch overlap (score=80)" --> | `true` |
+| `timing_heuristic` — endpoint overlap plus a 2 s window | 50 | [`:2561`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2561)<!-- "// Strategy 3: Timing heuristic (score=50)" --> | `false` |
 
 The middle two rows are what this document proposed, and they are here because
 it was adopted. Evaluation order follows score, so `related-icid` sits ABOVE
@@ -207,7 +207,7 @@ The consequence for a naive design is severe and worth stating plainly:
 
 | Hop | What plain `icid-value` equality means |
 |---|---|
-| Transparent proxy, Call-ID preserved | Nothing new — the two observations already share a Call-ID and sipnab merges them into one dialog, so `find_correlated_scored` skips the candidate at [`:2375`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2375)<!-- "if candidate.call_id == call_id {" --> before any strategy runs |
+| Transparent proxy, Call-ID preserved | Nothing new — the two observations already share a Call-ID and sipnab merges them into one dialog, so `find_correlated_scored` skips the candidate at [`:2384`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2384)<!-- "if candidate.call_id == call_id {" --> before any strategy runs |
 | B2BUA, conformant | **No match** — two dialogs, so two ICIDs; the link, if any, is in `related-icid` |
 | B2BUA that copies the header verbatim onto the new leg | A match, but it is an observation about that vendor's implementation, not a property the RFC grants |
 | Call-ID-rewriting proxy that forwards the header | A match, and a useful one |
@@ -328,12 +328,12 @@ the other leg" — a match is near-certain by construction. `related-icid` is
 standardized, which beats a vendor convention, but it is optional, one-way, and
 lives in a header the next hop is explicitly permitted to modify. A distinct
 score keeps it distinguishable in the sort at
-[`:2572`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2572)<!-- "crate::sort::sort_by_dyn(&mut results" --> without claiming parity.
+[`:2581`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2581)<!-- "crate::sort::sort_by_dyn(&mut results" --> without claiming parity.
 
 **85, between `sdp_origin` (90) and `via_branch` (80), for plain icid.** Below
 `sdp_origin` because the SDP origin tuple is an identifier whose uniqueness is
 structural — the whole tuple, which
-[`dialog_store.rs:2490-2491`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2490-L2491)<!-- "it is a real identifier" --> already records as *"a
+[`dialog_store.rs:2499-2500`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2499-L2500)<!-- "it is a real identifier" --> already records as *"a
 real identifier that the RFC defines as globally unique"* — and whose failure
 mode (an SBC re-originating SDP) is a *silence*, not a false match.
 Plain icid equality is a value the next hop MAY rewrite, whose semantic scope
@@ -412,15 +412,15 @@ No parser change is required, and that is worth stating because it is the part
 people assume is expensive. [`SipMessage.headers`](../../src/sip/message.rs) at
 [`message.rs:48`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L48)<!-- "/// eagerly parsed" --> holds *"All headers in message order,
 with compact forms expanded"*, and [`header()`](../../src/sip/message.rs) at
-[`:328`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L328)<!-- "pub fn header(&self," --> is a case-insensitive lookup over that vector.
+[`:330`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L330)<!-- "pub fn header(&self," --> is a case-insensitive lookup over that vector.
 `msg.header("P-Charging-Vector")` works today and returns the raw value.
 
 The shape, by file:
 
 | File | Change |
 |---|---|
-| [`src/sip/charging_vector.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/charging_vector.rs) (new) | Parse the header value into its parameters. Sibling of [`session_id.rs`](../../src/sip/session_id.rs) and of [`SdpOriginKey`](../../src/sip/sdp.rs) at [`sdp.rs:149`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L149)<!-- "pub struct SdpOriginKey" -->, both of which model an identifier as a small owned struct with a `parse` returning `Option` |
-| [`dialog_store.rs:118`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L118)<!-- "pub enum CorrelationReason" --> | Two new `CorrelationReason` variants, each with the doc comment explaining its survival properties that the existing five carry |
+| [`src/sip/charging_vector.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/charging_vector.rs) (new) | Parse the header value into its parameters. Sibling of [`session_id.rs`](../../src/sip/session_id.rs) and of [`SdpOriginKey`](../../src/sip/sdp.rs) at [`sdp.rs:181`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L181)<!-- "pub struct SdpOriginKey" -->, both of which model an identifier as a small owned struct with a `parse` returning `Option` |
+| [`dialog_store.rs:119`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L119)<!-- "pub enum CorrelationReason" --> | Two new `CorrelationReason` variants, each with the doc comment explaining its survival properties that the existing five carry |
 | [`dialog_store.rs:1034-1058`](https://github.com/NormB/sipnab/blob/04869cf6b999741dec5d7eff8d1d0b10a6f84eee/src/sip/dialog_store.rs#L1034-L1058) | Two new candidate blocks between `sdp_origin` and `via_branch`, following the established pattern: hoist the source dialog's values into a `HashSet` once before the candidate loop (as `src_origins` does at [`:964`](https://github.com/NormB/sipnab/blob/04869cf6b999741dec5d7eff8d1d0b10a6f84eee/src/sip/dialog_store.rs#L964)), parse the candidate side lazily inside the loop |
 | [`server.rs:4501`](https://github.com/NormB/sipnab/blob/04869cf6b999741dec5d7eff8d1d0b10a6f84eee/src/mcp/server.rs#L4501) | Two new arms. **This is a compile error until written**, by design |
 | [`mcp-tools-signaling.md:809-819`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools-signaling.md#L809-L819)<!-- "Survives a B2BUA?" -->, [`mcp-estate.md:558-568`](https://github.com/NormB/sipnab/blob/main/docs/mcp-estate.md#L558-L568)<!-- "What a match is worth" -->, [`domain-primer.md:271-282`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L271-L282)<!-- "[`dialog_store.rs`](../../src/sip/dialog_store.rs)" --> | Strategy tables and the "correlates legs five ways" sentence |
@@ -430,9 +430,9 @@ Three code-level facts that a naive implementation would get wrong:
 **The existing `xcid_headers` knob cannot be repurposed for this.** It is
 tempting: [`config.rs:1542`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1542)<!-- "pub xcid_headers:" --> exposes `[sip] xcid_headers` and
 [`with_xcid_headers`](../../src/sip/dialog_store.rs) at
-[`:1372`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1372)<!-- "pub fn with_xcid_headers(mut self" --> accepts any header name, so
+[`:1373`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1373)<!-- "pub fn with_xcid_headers(mut self" --> accepts any header name, so
 `xcid_headers = ["P-Charging-Vector"]` looks like a zero-code answer. It is not.
-The strategy at [`:2438`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2438)<!-- "// Strategy 1: correlation-header match (score=100)" --> compares the header's
+The strategy at [`:2447`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2447)<!-- "// Strategy 1: correlation-header match (score=100)" --> compares the header's
 **value** against the candidate's **Call-ID**. A `P-Charging-Vector` value is
 `icid-value=…;icid-generated-at=…`, which is never equal to a Call-ID, so the
 configuration would be accepted, would never match, and would look like "we
@@ -441,10 +441,10 @@ value of writing the section.
 
 **Message retention is not a hazard here, which is not obvious.** The header is
 usually on the initial INVITE, and sipnab drops messages in two places. The
-per-dialog cap at [`:3051-3053`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3051-L3053)<!-- "// Record the message (move instead of clone, capped per D17)" --> drops the *newest*
+per-dialog cap at [`:3070-3072`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3070-L3072)<!-- "// Record the message (move instead of clone, capped per D17)" --> drops the *newest*
 message when full, never the first. `compact_idle`'s
 [`retained_indices`](../../src/sip/dialog_store.rs) at
-[`:996`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L996)<!-- "fn retained_indices(" --> treats the opening request as an anchor
+[`:997`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L997)<!-- "fn retained_indices(" --> treats the opening request as an anchor
 that takes budget first. So the INVITE — and its charging vector — survives both.
 
 **Two doc comments in the file are already stale and this work has to fix
@@ -585,7 +585,7 @@ answerable only with access this page did not have.
    preserves information about which leg came first. Not decided.
 8. **Whether an icid match should ever be allowed to correlate dialogs whose
    Call-IDs are equal.** Today the candidate loop skips same-Call-ID dialogs at
-   [`:2375`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2375)<!-- "if candidate.call_id == call_id {" --> and the store merges them anyway, so
+   [`:2384`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2384)<!-- "if candidate.call_id == call_id {" --> and the store merges them anyway, so
    the question is theoretical until capture provenance exists —
    [`multi-capture-comparison.md` section 3, *The prerequisite, restated in one line*](multi-capture-comparison.md#3-the-prerequisite-restated-in-one-line).
 9. **Whether the two reasons should be one.** This page argues two because they
@@ -594,7 +594,7 @@ answerable only with access this page did not have.
    reason plus a sub-field. The argument against is the same one that keeps
    `session_id` and `x_call_id` separate at equal scores: *"a reader deciding how
    much to trust a call tree needs to know which they have"*
-   ([`dialog_store.rs:118`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L118)<!-- "pub enum CorrelationReason" -->).
+   ([`dialog_store.rs:119`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L119)<!-- "pub enum CorrelationReason" -->).
 
 **Not verified, and not asserted anywhere above:** any claim about performance,
 about how common the header is in the wild, about which vendors implement it,

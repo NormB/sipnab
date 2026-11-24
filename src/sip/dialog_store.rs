@@ -13,7 +13,8 @@ use indexmap::IndexMap;
 use super::SipMessage;
 use super::dialog::{DialogState, SipDialog, update_state};
 use super::method::SipMethod;
-use super::sdp_timeline::{track_sdp, track_transfer};
+use super::sdp::SdpRead;
+use super::sdp_timeline::{track_sdp_read, track_transfer};
 use super::timing::update_timing;
 
 /// Default maximum messages stored per dialog (D17 defense-in-depth).
@@ -1629,6 +1630,13 @@ impl DialogStore {
     /// unknown Call-IDs are dropped (bumping the capacity-drop counter);
     /// updates to existing dialogs still land.
     pub fn process_message(&mut self, msg: SipMessage) {
+        self.process_message_read(msg, &SdpRead::Unread);
+    }
+
+    /// [`Self::process_message`] for a message whose SDP the caller already
+    /// parsed (the packet pipeline does, to link media to streams), so the
+    /// dialog's SDP timeline does not parse the body a second time.
+    pub(crate) fn process_message_read(&mut self, msg: SipMessage, sdp: &SdpRead) {
         self.generation += 1;
         self.sweep_th_mappings(msg.timestamp);
         // Look up by the borrowed Call-ID (str is Equivalent<String> for
@@ -1674,10 +1682,11 @@ impl DialogStore {
             let Some((_, dialog)) = self.dialogs.get_index_mut(idx) else {
                 return; // unreachable: idx came from get_index_of
             };
-            advance_dialog(
+            advance_dialog_read(
                 dialog,
                 msg,
                 MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed),
+                sdp,
             );
             self.changes += 1;
             dialog.change_seq = self.changes;
@@ -1685,7 +1694,7 @@ impl DialogStore {
             // A message that cannot open a dialog changes nothing, and in
             // particular neither evicts a dialog nor counts a refusal: there
             // was no new dialog to make room for.
-            let Some(dialog) = open_dialog(&msg) else {
+            let Some(dialog) = open_dialog_read(&msg, sdp) else {
                 return;
             };
             // Insert under the SAME key the lookup used, or the next
@@ -2900,6 +2909,11 @@ fn compact_dialog(dialog: &mut SipDialog, now: chrono::DateTime<chrono::Utc>) ->
 /// `None` when the message cannot open one (no Call-ID, or a response with no
 /// CSeq to take the method from); see [`SipDialog::new`].
 fn open_dialog(msg: &SipMessage) -> Option<SipDialog> {
+    open_dialog_read(msg, &SdpRead::Unread)
+}
+
+/// [`open_dialog`] with the message's SDP as the caller already parsed it.
+fn open_dialog_read(msg: &SipMessage, sdp: &SdpRead) -> Option<SipDialog> {
     let mut dialog = SipDialog::new(msg)?;
     // Apply the creating message's own state transition. Dropping it is
     // invisible in timestamp order -- the first message is the INVITE, whose
@@ -2915,7 +2929,7 @@ fn open_dialog(msg: &SipMessage) -> Option<SipDialog> {
     // The creating message's own derived state. A SIPREC INVITE carries its
     // metadata here and nowhere else, so an arm that only tracked SDP dropped
     // it for the whole dialog.
-    apply_message_derived(&mut dialog, msg);
+    apply_message_derived(&mut dialog, msg, sdp);
     Some(dialog)
 }
 
@@ -2988,7 +3002,12 @@ pub(crate) fn copy_of(stored: &[SipMessage], msg: &SipMessage) -> Option<usize> 
 ///
 /// `cap` is the most messages the dialog stores, `MAX_MESSAGES_PER_DIALOG`
 /// for every caller but a test.
-fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
+fn advance_dialog(dialog: &mut SipDialog, msg: SipMessage, cap: usize) {
+    advance_dialog_read(dialog, msg, cap, &SdpRead::Unread);
+}
+
+/// [`advance_dialog`] with the message's SDP as the caller already parsed it.
+fn advance_dialog_read(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize, sdp: &SdpRead) {
     // A copy of a stored message from another source (DEDUP-1): the wire and
     // a HEP feed of one proxy deliver every message twice. It changes nothing
     // but the sources of the message it copies and the two times; above all
@@ -3046,7 +3065,7 @@ fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
     update_timing(&mut dialog.timing, &msg, &dialog.method);
 
     // SDP, REFER and SIPREC, in the one place all three arms use.
-    apply_message_derived(dialog, &msg);
+    apply_message_derived(dialog, &msg, sdp);
 
     // Record the message (move instead of clone, capped per D17)
     let ts = msg.timestamp;
@@ -3070,8 +3089,8 @@ fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
 /// `update_state` and `update_timing` are deliberately NOT here: the creating
 /// arm runs them against a dialog `SipDialog::new` has already partly
 /// initialized, and folding them in would change that order.
-fn apply_message_derived(dialog: &mut SipDialog, msg: &SipMessage) {
-    track_sdp(&mut dialog.sdp_timeline, msg);
+fn apply_message_derived(dialog: &mut SipDialog, msg: &SipMessage, sdp: &SdpRead) {
+    track_sdp_read(&mut dialog.sdp_timeline, msg, sdp);
 
     if msg.is_request && msg.method.as_ref() == Some(&SipMethod::Refer) {
         if let Some(refer_to) = msg.header("Refer-To") {

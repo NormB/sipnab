@@ -734,7 +734,7 @@ fn reconstruct(
     sip: &mut u64,
     rtp: &mut u64,
 ) {
-    use crate::pipeline::{MediaDecrypt, PacketAction, classify_packet};
+    use crate::pipeline::{ClassifiedPacket, MediaDecrypt, PacketAction, classify_packet_read};
     let opts = pipeline_options(cfg);
     // `--hep-parse`, by the rule `--cores 1` applies. The packet was sharded
     // by its outer addresses, which for a HEP copy are the same for every
@@ -744,14 +744,16 @@ fn reconstruct(
     };
     let pp: &ParsedPacket = &pp;
     let mut decrypt = MediaDecrypt::default();
-    match classify_packet(pp, heuristic, &opts, &mut decrypt) {
+    let ClassifiedPacket { action, sdp } = classify_packet_read(pp, heuristic, &opts, &mut decrypt);
+    match action {
         PacketAction::None => {}
         PacketAction::Sip { msg, sdp_links } => {
             *sip += 1;
             if !cfg.no_dialog {
                 // The store takes the message by move — cloning a SipMessage
-                // deep-copies every header String.
-                ds.process_message(*msg);
+                // deep-copies every header String — and the SDP the links
+                // were read from, so the body is parsed once.
+                ds.process_message_read(*msg, &sdp);
                 learn_links(ss, pp, &sdp_links);
             }
         }
@@ -3626,6 +3628,57 @@ mod tests {
             ds.engine_sightings("e1@example.invalid").len(),
             1,
             "a worker records the engine a captured offer reached"
+        );
+        Ok(())
+    }
+
+    /// A `--cores` worker parses an owned offer's SDP once: classification
+    /// hands the SDP it read for the media links to the dialog store, which
+    /// used to parse the body again for the SDP timeline.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_worker_parses_an_offers_sdp_once() -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = pcfg(2);
+        let body = "v=0\r\no=- 1 1 IN IP4 192.0.2.30\r\ns=-\r\nc=IN IP4 192.0.2.30\r\n\
+                    t=0 0\r\nm=audio 40000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
+        let invite = format!(
+            "INVITE sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 192.0.2.30:5060;branch=z9hG4bK-w1\r\n\
+             From: <sip:alice@example.com>;tag=a\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: worker-sdp@example.invalid\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Type: application/sdp\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let pp = crate::test_utils::udp_parsed(
+            "192.0.2.30:5060".parse()?,
+            "192.0.2.6:5060".parse()?,
+            invite.as_bytes(),
+        );
+        let (mut ds, mut ss) = (DialogStore::new(16, false), StreamStore::new(16));
+        let (mut sip, mut rtp) = (0, 0);
+        let (parses, ()) = crate::sip::sdp::sdp_parses_during(|| {
+            reconstruct(
+                &pp,
+                &mut ds,
+                &mut ss,
+                &mut crate::rtp::heuristic::RtpHeuristic::new(),
+                &cfg,
+                &mut sip,
+                &mut rtp,
+            );
+        });
+        assert_eq!(sip, 1, "the INVITE is counted");
+        assert_eq!(parses, 1, "its SDP is parsed once");
+        let dialog = ds
+            .get("worker-sdp@example.invalid")
+            .ok_or("the INVITE opens a dialog")?;
+        assert_eq!(
+            dialog.sdp_timeline.len(),
+            1,
+            "the offer is on the SDP timeline"
         );
         Ok(())
     }
