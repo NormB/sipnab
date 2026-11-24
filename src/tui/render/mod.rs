@@ -1038,10 +1038,12 @@ pub(in crate::tui) fn carrier_metrics_text(ds: &DialogStore, ss: &StreamStore) -
     let dimension = "dst.ip";
     let delay = crate::rtp::quality::MosDelay::from_capture(ss);
     let mut tally: HashMap<String, GroupAccumulator> = HashMap::new();
+    // One grouping of the streams, not a scan of the store per dialog.
+    let by_call = ss.by_call();
     for d in ds.iter() {
-        let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
-        if let Some(value) = group_value_raw(dimension, d, &streams) {
-            tally.entry(value).or_default().add(d, &streams, delay);
+        let streams = by_call.of(&d.call_id);
+        if let Some(value) = group_value_raw(dimension, d, streams) {
+            tally.entry(value).or_default().add(d, streams, delay);
         }
     }
     let mut rows: Vec<(&String, &GroupAccumulator)> = tally.iter().collect();
@@ -3175,6 +3177,25 @@ mod tests {
         assert!(
             busy_pos < quiet_pos,
             "the busier sender (2 dialogs) must rank above the quieter (1):\n{text}"
+        );
+        Ok(())
+    }
+
+    /// The carrier-metrics view reads each dialog's streams from one grouping
+    /// of the store, not from a pass over every stream per dialog.
+    #[test]
+    fn carrier_metrics_text_groups_the_streams_once_not_once_per_dialog() -> Result<(), TestError> {
+        let (ds, ss) = crate::test_utils::calls_with_media(6)?;
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let text = carrier_metrics_text(&ds, &ss);
+        assert_eq!(
+            crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get),
+            0,
+            "no per-dialog scan of the stream store"
+        );
+        assert!(
+            text.contains("198.51.100.1"),
+            "the one destination is listed:\n{text}"
         );
         Ok(())
     }

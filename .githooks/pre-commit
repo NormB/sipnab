@@ -37,6 +37,33 @@ elif [ -n "$HOOK_TREE" ] && [ "$HOOK_OWN_DIR" != "$(CDPATH='' cd -- "$HOOK_TREE"
 	exit 1
 fi
 
+# ── The pre-check: this hook, without the suite ──
+# `python3 scripts/pin-gates.py --hook` runs this file with
+# SIPNAB_GATE_PRECHECK=1 before a commit. In the week to 2026-11-21 hook runs
+# failed on clippy and on gates that read only the source tree after the quick
+# check run before them had passed; one agent's work reran this hook six
+# times. In this mode every step below runs as it does for a commit, except
+# one: the suite, replaced by the source gates (`pin-gates.py --source-gates`:
+# the pin gates and every test binary that neither runs nor links sipnab).
+# The script tests run by the hook's own rule (see "When the script tests
+# run"), started beside the other steps. The steps are this file's, so the
+# pre-check cannot drift from the hook. A step's pass stamp is written as usual
+# (the variable is one of gate-cache.py's own and enters no key), so the commit
+# reuses the clippy and script-tests stamps; the suite's and the hook's stamps
+# are never written. Its step
+# times go to sipnab-precheck-steps.log, apart from the hook's. Under `git
+# commit` (GIT_INDEX_FILE set) it refuses: a commit is never made on the
+# pre-check alone.
+PRECHECK=0
+if [ "${SIPNAB_GATE_PRECHECK:-0}" = 1 ]; then
+	if [ -n "${GIT_INDEX_FILE:-}" ]; then
+		echo "SIPNAB_GATE_PRECHECK=1 is set under git commit: the pre-check is not the hook." >&2
+		echo "Unset it and commit again; the pre-check is: python3 scripts/pin-gates.py --hook" >&2
+		exit 1
+	fi
+	PRECHECK=1
+fi
+
 # ── Prerequisites: the gitignored inputs the gates read ─────────────
 # git carries none of them, so a fresh worktree has none. This hook used to
 # find them missing deep into its run: pre-commit 25 minutes into the suite
@@ -126,6 +153,9 @@ fi
 # A passing suite adds a note, a line of three fields: the run, `nextest`, and
 # nextest's Summary line (the tests run, passed and skipped).
 STEP_LOG="$(git rev-parse --git-dir 2>/dev/null || echo .)/sipnab-pre-commit-steps.log"
+if [ "$PRECHECK" = 1 ]; then
+	STEP_LOG="${STEP_LOG%/*}/sipnab-precheck-steps.log"
+fi
 STEP_RUN="$(date -u +%Y-%m-%dT%H:%M:%SZ).$$"
 STEP_NAME=""
 STEP_T0=0
@@ -147,8 +177,20 @@ step() { # step <name>: close the open step as passed, open this one, print its 
 	STEP_T0=$SECONDS
 	printf '  %s... ' "$1"
 }
+# The script tests the pre-check started beside the other steps (below): a run
+# that ends before their step ends their whole session, children included.
+SCRIPT_TESTS_PID=""
+SCRIPT_TESTS_LIVE=""
+script_tests_stop() {
+	[ -n "$SCRIPT_TESTS_PID" ] || return 0
+	kill -TERM -- "-$SCRIPT_TESTS_PID" 2>/dev/null || true
+	wait "$SCRIPT_TESTS_PID" 2>/dev/null || true
+	SCRIPT_TESTS_PID=""
+	rm -f "$SCRIPT_TESTS_LIVE"
+}
 hook_exit() {
 	local rc=$?
+	script_tests_stop
 	step_close "$rc"
 	step_line total "$SECONDS" "$rc"
 	gate_flush
@@ -189,6 +231,36 @@ if [ "${SIPNAB_GATE_NO_CACHE:-0}" = 0 ] && [ -f scripts/release-only.py ]; then
 		echo "  $RELEASE_ONLY_LINE"
 		echo "  Release gates only: the suite, clippy and the replay run in the pull request's CI."
 	fi
+fi
+
+# ── When the script tests run: one rule ────────────────────────────
+# scripts/gate-cache.py's script_tests_needed decides for the hook and the
+# pre-check alike: they run when the staged change reaches a path they read.
+# What they read was measured (2026-11-23: every tracked path, Rust sources
+# included; see SCRIPT_TESTS_UNREAD there), so today every change runs them.
+# Only its exit status 1 means "not needed"; an error runs them.
+SCRIPT_TESTS_NEEDED=1
+SCRIPT_TESTS_WHY="scripts/gate-cache.py is not on this branch"
+if [ -f "$GATE_CACHE" ]; then
+	if SCRIPT_TESTS_WHY=$(python3 "$GATE_CACHE" script-tests 2>&1); then
+		:
+	elif [ $? -eq 1 ]; then
+		SCRIPT_TESTS_NEEDED=0
+	fi
+fi
+# The pre-check starts them now, beside the steps below, which write no
+# tracked file, so the two overlap instead of running one after the other.
+# Measured 2026-11-23: alone, the pre-check took 412 s and the script tests
+# 370 s; started together at a load average near 15, the pre-check had not
+# ended after 595 s. They run in a session of their own (setsid), which
+# hook_exit ends; the Script tests step reads their result. Without setsid
+# (macOS) they run at their step.
+if [ "$PRECHECK" = 1 ] && [ "$SCRIPT_TESTS_NEEDED" = 1 ] && [ "$RELEASE_ONLY" = 0 ] && [ -d scripts/tests ] \
+	&& command -v setsid >/dev/null 2>&1 && python3 -c "import pytest" 2>/dev/null \
+	&& ! gate_hit script-tests --quiet; then
+	SCRIPT_TESTS_LIVE="$(git rev-parse --git-dir)/sipnab-precheck-script-tests.live"
+	(cd scripts && exec setsid -w python3 -m pytest tests/ -q) >"$SCRIPT_TESTS_LIVE" 2>&1 &
+	SCRIPT_TESTS_PID=$!
 fi
 
 # ── Naming what failed ─────────────────────────────────────────────
@@ -450,8 +522,10 @@ record_suite_failures() { # record_suite_failures <output-file>
 # run first, under nextest's --fail-fast, before clippy and the suite. A
 # failure stops the hook here. A pass goes on to every step below, the full
 # suite included, so a pass still means the full suite passed on this tree.
-# scripts/parallel-tests.py --rerun builds the command; a test renamed since
-# selects nothing and is not a failure.
+# scripts/parallel-tests.py --rerun builds the command. It first asks
+# `cargo nextest list` which recorded tests still exist and drops the rest:
+# a test renamed or deleted since made the replay fail without naming a test
+# (HOOK-REPLAY-OF-REMOVED-TEST, 2026-11-22).
 if [ "$RELEASE_ONLY" = 0 ] && [ -s "$FAILED_RECORD" ] && ! gate_hit tests --quiet; then
 	step "Tests that failed last run, first"
 	REPLAY_LIVE="$LOG_DIR/sipnab-pre-commit-replay.live"
@@ -469,6 +543,9 @@ if [ "$RELEASE_ONLY" = 0 ] && [ -s "$FAILED_RECORD" ] && ! gate_hit tests --quie
 		exit 1
 	fi
 	echo -e "${GREEN}OK${NC} (they pass now; the full suite still runs)"
+	# A recorded test that nextest no longer lists (renamed or deleted by the
+	# fix) is dropped from the replay, not failed; say which.
+	printf '%s\n' "$TEST_OUTPUT" | grep '^parallel-tests: dropped from the replay' | sed 's/^parallel-tests: /  /' || true
 fi
 
 # ── 1. Clippy must pass ────────────────────────────────────────────
@@ -557,6 +634,24 @@ if [ "$RELEASE_ONLY" = 1 ]; then
     echo -e "${GREEN}OK${NC} (the release test targets: $(python3 scripts/release-only.py tests | wc -w | awk '{print $1 / 2}'); the suite runs in CI)"
 elif gate_hit tests; then
 TEST_CACHED=1
+elif [ "$PRECHECK" = 1 ]; then
+    # The pre-check's suite: the source gates, through the same nextest
+    # profile and environment (pin-gates.py removes the corpus variables).
+    # Not stamped as the suite: they are not the suite.
+    PRECHECK_LIVE="$LOG_DIR/sipnab-precheck-tests.live"
+    set +e
+    python3 scripts/pin-gates.py --source-gates ${SIPNAB_TEST_JOBS:+--jobs "$SIPNAB_TEST_JOBS"} >"$PRECHECK_LIVE" 2>&1
+    TEST_RC=$?
+    set -e
+    TEST_OUTPUT=$(cat "$PRECHECK_LIVE")
+    rm -f "$PRECHECK_LIVE"
+    if [ "$TEST_RC" -ne 0 ] || printf '%s\n' "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
+        echo -e "${RED}FAIL${NC} (the source gates)"
+        report_suite_failure "$LOG_DIR/sipnab-precheck-tests.log"
+        record_suite_failures "$LOG_DIR/sipnab-precheck-tests.log"
+        exit 1
+    fi
+    echo -e "${GREEN}OK${NC} (the source gates: $(printf '%s\n' "$TEST_OUTPUT" | grep -c '^     Running ') binaries; the full suite runs in the hook)"
 else
 set +e
 # The suite has wedged twice: once for 20 minutes and once left running for
@@ -989,6 +1084,10 @@ fi
 # keys this step on the whole tree, so a second run on an unchanged tree is a
 # hit. Measured 2026-11-11: 2040 tests, 268 s at a load average near 25.
 # scripts/test-pre-commit.sh's Scenario S drives this step.
+# `scripts/pin-gates.py --script-tests --shard I/N` runs them in shards, one
+# quick job each, before the commit: when every shard of the plan has passed
+# on the same key, it writes this step's stamp (scripts/gate-cache.py
+# script_test_shard), and gate_hit below skips the step.
 step "Script tests"
 if [ ! -d scripts/tests ]; then
     echo -e "${YELLOW}NOT RUN (this tree has no scripts/tests)${NC}"
@@ -996,11 +1095,23 @@ elif [ "$RELEASE_ONLY" = 1 ]; then
     # As before this step ran on every commit: a release-only commit stages
     # nothing under scripts/, so it never ran them. CI does.
     echo -e "${YELLOW}NOT RUN (release-only commit; CI runs them)${NC}"
+elif [ "$SCRIPT_TESTS_NEEDED" = 0 ]; then
+    echo -e "${YELLOW}NOT RUN (the staged change reaches nothing they read; gate-cache.py script-tests: $SCRIPT_TESTS_WHY)${NC}"
 else
     if command -v python3 >/dev/null 2>&1 && python3 -c "import pytest" 2>/dev/null; then
-        if gate_hit script-tests; then
+        script_rc=""
+        if [ -n "$SCRIPT_TESTS_PID" ]; then
+            # The pre-check started them beside the steps above: their result.
+            wait "$SCRIPT_TESTS_PID" && script_rc=0 || script_rc=$?
+            SCRIPT_TESTS_PID=""
+            SCRIPT_OUT=$(cat "$SCRIPT_TESTS_LIVE" 2>/dev/null || true)
+            rm -f "$SCRIPT_TESTS_LIVE"
+        elif ! gate_hit script-tests; then
+            SCRIPT_OUT=$(cd scripts && python3 -m pytest tests/ -q 2>&1) && script_rc=0 || script_rc=$?
+        fi
+        if [ -z "$script_rc" ]; then
             :
-        elif SCRIPT_OUT=$(cd scripts && python3 -m pytest tests/ -q 2>&1); then
+        elif [ "$script_rc" = 0 ]; then
             echo -e "${GREEN}OK${NC} ($(echo "$SCRIPT_OUT" | tail -1))"
             gate_pass script-tests
         else
@@ -1051,6 +1162,8 @@ if [ -f "website/templates/index.html" ]; then
     # stamp is written only when that count succeeded.
     if [ "$RELEASE_ONLY" = 1 ]; then
         COUNT_OUT="not counted: a release-only commit runs the release test targets, not the suite"
+    elif [ "$PRECHECK" = 1 ] && [ "$TEST_CACHED" = 0 ]; then
+        COUNT_OUT="not counted: the pre-check runs the source gates, not the suite"
     elif [ "$TEST_CACHED" = 1 ]; then
         COUNT_OUT="counted when stamp $(gate_key tests | cut -c1-12) was written"
     elif [ "$COUNT_RC" -ne 0 ]; then
@@ -1173,5 +1286,9 @@ else
     echo -e "${GREEN}OK${NC}"
 fi
 
+if [ "$PRECHECK" = 1 ]; then
+    echo -e "${GREEN}Pre-check passed.${NC} Not the hook: the full suite runs at the commit."
+    exit 0
+fi
 gate_pass hook
 echo -e "${GREEN}All pre-commit checks passed.${NC}"

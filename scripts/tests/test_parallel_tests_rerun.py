@@ -13,13 +13,14 @@ still means the full suite passed on that tree.
 The filterset syntax, `--fail-fast` and `--no-tests pass` were checked against
 cargo-nextest 0.9.148, the version .config/nextest.toml pins: `binary_id(=X)`
 takes `::`, `/` and `-` unquoted, `--no-tests pass` exits 0 when a recorded
-test no longer exists, and a doctest is selected by a libtest substring filter
+test no longer exists (but writes a report with no test in it, which is why
+the replay now lists first; see the end of this file), and a doctest is selected by a libtest substring filter
 (rustdoc's names do not match `--exact`).
 """
 
 import json
 
-from conftest import load
+from conftest import SCRIPTS, load
 
 pt = load("parallel-tests")
 
@@ -147,3 +148,226 @@ def test_the_rerun_stops_at_the_first_failing_command(monkeypatch):
     monkeypatch.setattr(pt.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran on")))
     assert pt.run_rerun([["nextest", "run"], ["test", "--doc"]]) == 1
     assert ran == ["nextest"]
+
+
+# ── a recorded test nextest no longer lists ─────────────────────────────────
+#
+# HOOK-REPLAY-OF-REMOVED-TEST, 2026-11-22: a fix renamed the test its last run
+# had failed, and the hook's replay ended "without naming a test (exit 1)".
+# Measured on cargo-nextest 0.9.148 (2026-11-23): a filterset that selects no
+# test exits 0 under `--no-tests pass` but writes a report with no test in it,
+# which run_nextest refuses; a filterset naming a binary that is gone does not
+# parse at all ("no binary IDs matched this", exit 94). The replay now asks
+# nextest which recorded tests it still lists and replays only those.
+
+BINARIES_JSON = json.dumps(
+    {
+        "rust-build-meta": {},
+        "rust-binaries": {
+            "sipnab": {"binary-id": "sipnab", "kind": "lib"},
+            "sipnab::docs_drift_test": {"binary-id": "sipnab::docs_drift_test", "kind": "test"},
+            "sipnab::bin/sipnab": {"binary-id": "sipnab::bin/sipnab", "kind": "bin"},
+        },
+    }
+)
+
+
+def _suites(cases: dict[str, dict[str, str]]) -> str:
+    return json.dumps(
+        {
+            "rust-suites": {
+                binary: {
+                    "binary-id": binary,
+                    "testcases": {name: {"filter-match": {"status": status}} for name, status in tests.items()},
+                }
+                for binary, tests in cases.items()
+            }
+        }
+    )
+
+
+def _main(monkeypatch, record) -> int:
+    monkeypatch.setattr(pt.sys, "argv", ["parallel-tests.py", "--rerun", str(record), "--", "--features", "full"])
+    return pt.main()
+
+
+def _never(what):
+    def refuse(*args, **kwargs):
+        raise AssertionError(f"{what} ran: {args!r}")
+
+    return refuse
+
+
+# success
+
+
+def test_the_listed_binaries_are_read():
+    assert pt.listed_binaries(BINARIES_JSON) == {"sipnab", "sipnab::docs_drift_test", "sipnab::bin/sipnab"}
+
+
+def test_the_listed_tests_are_the_ones_the_filter_matches():
+    text = _suites({"sipnab::docs_drift_test": {"docs_match": "matches", "other": "mismatch"}})
+    assert pt.listed_tests(text) == {("sipnab::docs_drift_test", "docs_match")}
+
+
+def test_a_recorded_test_still_listed_is_kept():
+    failures = [("sipnab::docs_drift_test", "docs_match")]
+    assert pt.still_listed(failures, {("sipnab::docs_drift_test", "docs_match")}) == (failures, [])
+
+
+def test_the_list_filter_names_only_binaries_that_exist():
+    failures = [("sipnab::gone_test", "a"), ("sipnab", "app::tests::bad_one")]
+    assert pt.list_filterset(failures, {"sipnab"}) == "(binary_id(=sipnab) & test(=app::tests::bad_one))"
+
+
+def test_the_list_command_is_nextests_with_the_suites_profile():
+    cmd = pt.list_command(["--features", "full", "--color", "never", "--", "--nocapture"], ["--list-type", "binaries-only"])
+    assert cmd[:4] == ["nextest", "list", "--profile", pt.PROFILE]
+    at = cmd.index("--message-format")
+    assert cmd[at : at + 2] == ["--message-format", "json"]
+    assert "--features" in cmd and "--list-type" in cmd
+    assert "--nocapture" not in cmd, "the harness arguments go to a run, not to a list"
+
+
+def test_a_replay_of_listed_tests_runs_them(monkeypatch, tmp_path, capsys):
+    record = tmp_path / "failed.json"
+    pt.write_failure_record(record, [("sipnab::docs_drift_test", "docs_match")])
+    lists = iter([BINARIES_JSON, _suites({"sipnab::docs_drift_test": {"docs_match": "matches"}})])
+    monkeypatch.setattr(pt, "nextest_list", lambda cmd: (0, next(lists)))
+    monkeypatch.setattr(pt, "check_nextest", lambda: 0)
+    ran = []
+    monkeypatch.setattr(pt, "run_rerun", lambda commands: ran.append(commands) or 0)
+    assert _main(monkeypatch, record) == 0
+    assert "docs_match" in " ".join(ran[0][0])
+    assert "dropped" not in capsys.readouterr().err
+
+
+# failure: the record names what nextest no longer lists
+
+
+def test_a_test_removed_from_its_binary_is_dropped():
+    failures = [("sipnab::docs_drift_test", "renamed_away"), ("sipnab", "app::tests::bad_one")]
+    kept, dropped = pt.still_listed(failures, {("sipnab", "app::tests::bad_one")})
+    assert kept == [("sipnab", "app::tests::bad_one")]
+    assert dropped == [("sipnab::docs_drift_test", "renamed_away")]
+
+
+def test_a_removed_binary_drops_its_tests():
+    kept, dropped = pt.still_listed([("sipnab::gone_test", "a")], set())
+    assert (kept, dropped) == ([], [("sipnab::gone_test", "a")])
+
+
+def test_an_ignored_test_is_dropped_as_nextest_would_not_run_it():
+    text = _suites({"sipnab": {"slow_one": "mismatch"}})
+    assert pt.still_listed([("sipnab", "slow_one")], pt.listed_tests(text)) == ([], [("sipnab", "slow_one")])
+
+
+def test_a_record_of_only_removed_tests_replays_nothing_and_passes(monkeypatch, tmp_path, capsys):
+    record = tmp_path / "failed.json"
+    pt.write_failure_record(record, [("sipnab::docs_drift_test", "renamed_away")])
+    lists = iter([BINARIES_JSON, _suites({"sipnab::docs_drift_test": {"docs_match": "matches"}})])
+    monkeypatch.setattr(pt, "nextest_list", lambda cmd: (0, next(lists)))
+    monkeypatch.setattr(pt, "check_nextest", lambda: 0)
+    monkeypatch.setattr(pt, "run_rerun", _never("the replay"))
+    assert _main(monkeypatch, record) == 0
+    err = capsys.readouterr().err
+    assert "dropped from the replay" in err and "sipnab::docs_drift_test renamed_away" in err, err
+
+
+def test_a_record_naming_a_removed_binary_lists_no_filter_for_it(monkeypatch, tmp_path, capsys):
+    record = tmp_path / "failed.json"
+    pt.write_failure_record(record, [("sipnab::gone_test", "a"), ("sipnab::docs_drift_test", "docs_match")])
+    seen = []
+
+    def fake_list(cmd):
+        seen.append(cmd)
+        if "--list-type" in cmd:
+            return 0, BINARIES_JSON
+        return 0, _suites({"sipnab::docs_drift_test": {"docs_match": "matches"}})
+
+    monkeypatch.setattr(pt, "nextest_list", fake_list)
+    monkeypatch.setattr(pt, "check_nextest", lambda: 0)
+    ran = []
+    monkeypatch.setattr(pt, "run_rerun", lambda commands: ran.append(commands) or 0)
+    assert _main(monkeypatch, record) == 0
+    assert len(seen) == 2 and "gone_test" not in " ".join(seen[1])
+    assert "gone_test" not in " ".join(ran[0][0])
+    assert "sipnab::gone_test a" in capsys.readouterr().err
+
+
+def test_a_list_that_fails_stops_the_replay_with_its_status(monkeypatch, tmp_path, capsys):
+    record = tmp_path / "failed.json"
+    pt.write_failure_record(record, [("sipnab", "app::tests::bad_one")])
+    monkeypatch.setattr(pt, "nextest_list", lambda cmd: (101, ""))
+    monkeypatch.setattr(pt, "check_nextest", lambda: 0)
+    monkeypatch.setattr(pt, "run_rerun", _never("the replay"))
+    assert _main(monkeypatch, record) == 101
+    assert "nextest list" in capsys.readouterr().err
+
+
+def test_a_list_that_is_not_json_stops_the_replay(monkeypatch, tmp_path, capsys):
+    record = tmp_path / "failed.json"
+    pt.write_failure_record(record, [("sipnab", "app::tests::bad_one")])
+    monkeypatch.setattr(pt, "nextest_list", lambda cmd: (0, "not json"))
+    monkeypatch.setattr(pt, "check_nextest", lambda: 0)
+    monkeypatch.setattr(pt, "run_rerun", _never("the replay"))
+    assert _main(monkeypatch, record) == 1
+    assert "nextest list" in capsys.readouterr().err
+
+
+def test_the_hook_shows_what_the_replay_dropped():
+    hook = (SCRIPTS.parent / ".githooks" / "pre-commit").read_text(encoding="utf-8")
+    replay = hook[hook.index("0c. The tests that failed last run") : hook.index("1. Clippy must pass")]
+    code = "\n".join(line for line in replay.splitlines() if not line.lstrip().startswith("#"))
+    printed = (SCRIPTS / "parallel-tests.py").read_text(encoding="utf-8")
+    prefix = "parallel-tests: dropped from the replay"
+    assert f'print(f"{prefix}' in printed, "the script's dropped line changed; match it here"
+    assert f"grep '^{prefix}'" in code, "a passing replay must still print the names it dropped"
+
+
+# edge
+
+
+def test_a_doctest_is_kept_without_a_listing():
+    doc = (pt.DOC_PREFIX + "sipnab", "src/lib.rs - Thing (line 12)")
+    assert pt.still_listed([doc], set()) == ([doc], [])
+
+
+def test_a_record_of_doctests_only_lists_nothing(monkeypatch, tmp_path):
+    record = tmp_path / "failed.json"
+    pt.write_failure_record(record, [(pt.DOC_PREFIX + "sipnab", "src/lib.rs - Thing (line 12)")])
+    monkeypatch.setattr(pt, "nextest_list", _never("nextest list"))
+    monkeypatch.setattr(pt, "check_nextest", lambda: 0)
+    ran = []
+    monkeypatch.setattr(pt, "run_rerun", lambda commands: ran.append(commands) or 0)
+    assert _main(monkeypatch, record) == 0
+    assert ran and ran[0][0][0] == "test"
+
+
+def test_a_name_the_filterset_cannot_spell_is_neither_listed_nor_dropped():
+    odd = ("sipnab", "has space")
+    assert pt.list_filterset([odd], {"sipnab"}) is None
+    assert pt.still_listed([odd], set()) == ([odd], [])
+
+
+def test_the_kept_tests_keep_the_record_order():
+    failures = [("sipnab", "b"), ("sipnab", "a"), ("sipnab", "c")]
+    kept, _ = pt.still_listed(failures, {("sipnab", "a"), ("sipnab", "b"), ("sipnab", "c")})
+    assert kept == failures
+
+
+def test_listings_with_no_suites_or_binaries_list_nothing():
+    assert pt.listed_tests(json.dumps({})) == set()
+    assert pt.listed_binaries(json.dumps({})) == set()
+
+
+def test_a_record_with_no_binary_left_runs_only_the_binaries_list(monkeypatch, tmp_path, capsys):
+    record = tmp_path / "failed.json"
+    pt.write_failure_record(record, [("sipnab::gone_test", "a")])
+    seen = []
+    monkeypatch.setattr(pt, "nextest_list", lambda cmd: seen.append(cmd) or (0, BINARIES_JSON))
+    monkeypatch.setattr(pt, "check_nextest", lambda: 0)
+    monkeypatch.setattr(pt, "run_rerun", _never("the replay"))
+    assert _main(monkeypatch, record) == 0
+    assert len(seen) == 1, "with no recorded binary left there is no filterset to list"
+    assert "sipnab::gone_test a" in capsys.readouterr().err

@@ -1808,9 +1808,21 @@ pub fn media_quality_for(
     store: &crate::rtp::stream_store::StreamStore,
     call_id: &str,
 ) -> Vec<crate::output::model::StreamSummary> {
+    let streams: Vec<&crate::rtp::stream::RtpStream> = store.streams_for(call_id).collect();
+    media_quality_of(store, &streams)
+}
+
+/// [`media_quality_for`] over a call's `streams` already in hand (from
+/// [`crate::rtp::stream_store::StreamStore::by_call`]), for a caller that
+/// exports many calls and must not scan the store once per call.
+#[must_use]
+pub fn media_quality_of(
+    store: &crate::rtp::stream_store::StreamStore,
+    streams: &[&crate::rtp::stream::RtpStream],
+) -> Vec<crate::output::model::StreamSummary> {
     let delay = crate::rtp::quality::MosDelay::from_capture(store);
-    store
-        .streams_for(call_id)
+    streams
+        .iter()
         .map(|s| crate::output::model::StreamSummary::of(s, delay))
         .collect()
 }

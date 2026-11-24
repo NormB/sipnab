@@ -13746,7 +13746,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.268 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.269 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13769,7 +13769,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.268` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.269` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13958,7 +13958,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.268) | Plugin | `Recommends` |
+| Artifact (0.5.269) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13998,11 +13998,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.268 for the
+it first, in the same shell, to the release you want, e.g. 0.5.269 for the
 latest:
 
 ```bash
-VERSION=0.5.268
+VERSION=0.5.269
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -14142,13 +14142,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.268, as in
+you want, e.g. 0.5.269, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.268
+   VERSION=0.5.269
    ```
 
 - Download the package:
@@ -14269,25 +14269,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.268-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.269-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.268-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.269-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.268-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.269-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.268-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.269-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14773,14 +14773,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.268
+docker pull ghcr.io/normb/sipnab:0.5.269
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.268` | That release |
+| `0.5.269` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14818,7 +14818,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.268 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.269 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14831,11 +14831,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.268 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.269 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.268` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.268`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.269` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.269`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -15033,7 +15033,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.269 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+sipnab 0.5.270 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -15257,7 +15257,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.268
+docker pull ghcr.io/normb/sipnab:0.5.269
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -39079,7 +39079,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.269 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
+   sipnab 0.5.270 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729,fleet-store
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -39781,7 +39781,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.269"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.270"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -40466,7 +40466,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.269",
+  "version": "0.5.270",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -41409,7 +41409,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.269"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.270"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -53117,7 +53117,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.269",
+  "version": "0.5.270",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -64999,6 +64999,14 @@ happens to use UDP port 4789.
 | 228 | bare IPv4 (`DLT_IPV4`) | decoded — sipnab checks the version nibble against the link type and rejects a mismatch |
 | 229 | bare IPv6 (`DLT_IPV6`) | decoded — same check, the other way |
 | any other | — | **counted and named** as `unsupported link type N` |
+
+A pcapng file can hold interfaces of different link types, for example the
+output of `mergecap`. libpcap refuses such a file, so sipnab reads it itself
+and decodes each frame with its own interface's link type. Each frame's time
+uses its interface's `if_tsresol` (microseconds when the option is absent)
+and adds its `if_tsoffset`. Each section of the file numbers its interfaces
+from zero. sipnab counts a packet that names an interface its section does
+not describe, and does not read it.
 
 Loopback is `DLT_EN10MB` on Linux but `DLT_NULL` on macOS and BSD.
 That is why 0 and 108 matter for the common "SIP server listening on loopback" case.
@@ -84587,6 +84595,16 @@ The rest of the page is hand-written. The same test checks three things:
 - it names every environment variable sipnab reads,
 - `groff -man -ww` formats it without a warning.
 
+The files under `tests/fixtures/pcap-writer-golden/` are byte-for-byte goldens
+of what the capture writer writes. The `tests::golden` tests in
+`src/capture/writer.rs` fail when one byte of the writer's output changes.
+Rewrite them only for an intended change of the file format, say so in the
+commit, and update their hashes in `tests/PROVENANCE.md`:
+
+```bash
+SIPNAB_GOLDEN_APPLY=1 cargo test --features full --lib capture::writer::tests::golden::
+```
+
 `docs/internals/` *does* publish to the site.
 
 - It publishes ten pages under `website/content/docs/internals/`.
@@ -85764,6 +85782,7 @@ Only who performs hop 5 (**Apply**) differs.
 - **Classify.**
   - [`classify_packet()`](../../src/pipeline.rs) decides what the packet *means*.
   - It returns a `PacketAction`: `Sip { msg, sdp_links }`, `Rtp { .. }`, `Rtcp(..)` or `None`.
+  - The crate's own appliers call `classify_packet_read()`, which returns the same action plus the SIP message's parsed SDP, so the dialog store does not parse the body again.
   - All of these happen here:
     - WebSocket-SIP unwrap
     - SDP link extraction via [`extract_sdp_links()`](../../src/pipeline.rs)
@@ -85822,7 +85841,7 @@ sequenceDiagram
     participant Ch as capture::channel
     participant Proc as tui-processor
     participant PP as PacketProcessor
-    participant Cls as pipeline::classify_packet
+    participant Cls as pipeline::classify_packet_read
     participant DS as DialogStore
     participant SS as StreamStore
 
@@ -85831,10 +85850,10 @@ sequenceDiagram
     Ch-->>Proc: recv Packet, release permit
     Proc->>PP: process(&Packet)
     PP-->>Proc: ParsedPackets (decap, frag + TCP reassembly)
-    Proc->>Cls: classify_packet(pp, ..)
+    Proc->>Cls: classify_packet_read(pp, ..)
     Note over Cls: no store touched — side-tallies take a mutex when they fire
-    Cls-->>Proc: PacketAction::Sip { msg, sdp_links }
-    Proc->>DS: write lock
+    Cls-->>Proc: ClassifiedPacket { action: Sip { msg, sdp_links }, sdp }
+    Proc->>DS: write lock (the message and its parsed SDP)
     DS-->>Proc: release
     Proc->>SS: write lock
     SS-->>Proc: release
@@ -87408,6 +87427,45 @@ A new page, script or workflow moves those counts, and the tests that hold them 
 The script runs the tests the way the hook does: the same nextest profile, feature set and environment, so it builds no binary the hook does not build.
 It names each binary to cargo with `--test`. A nextest filter alone would build every test target first.
 [`scripts/tests/test_pin_gates.py`](../../scripts/tests/test_pin_gates.py) holds the list to the tree: a test under `tests/` that declares a count constant (a `usize` whose name begins `EXPECTED_`), or reads the list of tracked files, must appear in the list, as a binary to run or as an exclusion with a reason.
+
+**The pre-check, before the hook.** `python3 scripts/pin-gates.py --hook` runs the pre-commit hook itself with `SIPNAB_GATE_PRECHECK=1`.
+In that mode the hook runs each of its own steps (formatting, vale, codespell, clippy, the Python gates, the script tests) except one: the full suite.
+In place of the suite it runs `scripts/pin-gates.py --source-gates`: the pin gates, and every source gate.
+The script tests run by the hook's own rule, `script_tests_needed` in [`scripts/gate-cache.py`](../../scripts/gate-cache.py): when the staged change reaches a path they read.
+A measured run on 2026-11-23 opened every tracked file, Rust sources included, so today every change runs them.
+The pre-check starts them beside its other steps, in a session of their own, so the two overlap.
+On 2026-11-23 the pre-check alone took 412 seconds and the script tests 370 seconds.
+Started together at a load average near 15, the pre-check had not ended after 595 seconds.
+`python3 scripts/gate-cache.py script-tests` prints the rule's answer for the staged change.
+A source gate is a test binary that reads the tree and neither runs nor links sipnab: no `CARGO_BIN_EXE`, `sipnab::`, `use sipnab` or `extern crate sipnab` in its source or in a file it includes as a module.
+The steps are the hook's, so a step added to the hook is in the pre-check with no second list.
+
+- Purpose: meet the gates that most often failed hook runs (clippy, the policy-doc, wasm-reach, crypto-literal and assert-message gates) in one short run, before the 25-minute hook.
+- Prerequisites: those of the pin gates above, and the change staged.
+- Steps: `git add <paths>`, then `python3 scripts/pin-gates.py --hook --message <file>`, where `<file>` is the message file for `git commit -F`.
+  `--message` runs [`.githooks/commit-msg`](../../.githooks/commit-msg) on that file before every other step: git runs it only after the pre-commit hook, so a refused message would otherwise cost a whole hook run. On the shared build host, run it through `heavy-run` in the main slot: it runs clippy and builds the source gates.
+- Verify: the run ends with `Pre-check passed.` and exit status 0. Then commit: the hook reuses the pre-check's clippy, `sipnab-bpf-types` and script-tests pass stamps and runs the full suite.
+- Troubleshoot: a failed step prints what the hook would print. Exit status 2 from the Tests step with `untracked` names files to `git add`.
+  The pre-check refuses a line in [`.config/precheck-skip.txt`](../../.config/precheck-skip.txt) that names no source gate; that file names the slow source gates the pre-check leaves to the hook, one `!name reason` a line.
+  `SIPNAB_GATE_PRECHECK=1` left set under `git commit` makes the hook refuse the commit: unset it.
+
+The pre-check never writes the suite's or the hook's pass stamp, so a commit after it still runs the full suite.
+Its step times go to `sipnab-precheck-steps.log` in the git directory, apart from the hook's own log.
+[`scripts/tests/test_precheck_hook.py`](../../scripts/tests/test_precheck_hook.py) runs the real hook in this mode against a sandbox tree.
+
+**The script tests in shards.** One quick-slot job (600 seconds) cannot hold the whole script-test run under load: on 2026-11-23 it took 370 to 539 seconds alone, and at a load average near 15 a 598-second limit ended it at 90%.
+`python3 scripts/pin-gates.py --script-tests --shard I/N` runs shard I of N with the hook's own command, as a job of its own.
+The split is by test file and the same in every job: the longest file first, each file to the shard with the least time so far, by the seconds in [`.config/script-test-durations.txt`](../../.config/script-test-durations.txt).
+Each shard that passes writes a pass record on the hook's script-tests key.
+The shard that completes the set writes the hook's script-tests stamp, so the pre-check and the commit skip the Script tests step.
+A shard that passed on another tree has another key, and the stamp waits for it to pass on this one.
+Measured on 2026-11-23 at load averages from 15 to 22: 4,770 tests in 513 seconds, so N is 3, about 170 seconds a shard.
+
+- Purpose: pass the script tests in the quick slot before the commit, so the hook run in the main slot does not spend 6 to 9 minutes on them.
+- Prerequisites: the change staged, and `pytest` installed.
+- Steps: run `python3 scripts/pin-gates.py --script-tests --shard 1/3`, then `--shard 2/3` and `--shard 3/3`, each as its own `heavy-run --quick` job, in any order.
+- Verify: the last shard prints `all 3 shards passed on this tree` and the stamp's key. A commit or a pre-check on the same tree then reports the Script tests step as `CACHED`.
+- Troubleshoot: a shard that fails prints the output of its failed tests and writes no record; fix the test and run that shard again on the new tree, then the others, since a changed tree has a new key. A shard that runs past `--budget` (570 seconds by default) ends with status 124, its whole session ended. After the test files change a lot, rewrite the durations from the shards' JUnit reports: `python3 scripts/gate-cache.py script-test-durations <git dir>/sipnab-script-tests-shard-*-of-3.xml`.
 
 **Where a hook run spent its time.** The pre-commit hook appends one line per step to `sipnab-pre-commit-steps.log` in the checkout's git directory: the run, the step under the name its heading prints, whole seconds and the exit status, separated by tabs.
 The last line of a run is the step `total`, counted from the start of the hook.
@@ -94047,6 +94105,7 @@ Each successful run gets a row here.
 | 0.5.266 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-19 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.267 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-19 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.268 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-20 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.269 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-21 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it
@@ -96891,7 +96950,7 @@ stdin        ─┘    channel     + TCP reassembly,           slice, zero-copy)
 - Payloads are `bytes::Bytes` slices of
   the captured frame end to end (see [Zero-copy payloads](zero-copy-payloads.md)).
 
-> All four packet paths classify through the one `pipeline::classify_packet` router:
+> All four packet paths classify through the one `pipeline::classify_packet_read` router:
 >
 > - live,
 > - batch,
@@ -96899,6 +96958,8 @@ stdin        ─┘    channel     + TCP reassembly,           slice, zero-copy)
 > - the `--cores` sharded path (`parallel.rs`).
 >
 > Only the per-path appliers differ.
+> The router returns the action and the SIP message's parsed SDP, which each applier hands to the dialog store, so the store does not parse the body a second time.
+> The public `pipeline::classify_packet` returns the action alone.
 
 [The subsystem guide](subsystem-guide.md) narrates the same journey packet by packet:
 

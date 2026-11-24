@@ -148,18 +148,22 @@ fn read_pcapng(path: &std::path::Path) -> Result<(Frames, Vec<String>), TestErro
         .options
         .iter()
         .filter_map(|o| match o {
-            SectionHeaderOption::Comment(c) => Some(c.to_string()),
+            SectionHeaderOption::Common(
+                pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+            ) => Some(c.to_string()),
             _ => None,
         })
         .collect();
     let mut frames = Vec::new();
     while let Some(block) = reader.next_block() {
-        if let pcap_file::pcapng::Block::EnhancedPacket(epb) = block? {
+        if let pcap_file::pcapng::Block::EnhancedPacket(epb) = block?.0 {
             let comments = epb
                 .options
                 .iter()
                 .filter_map(|o| match o {
-                    EnhancedPacketOption::Comment(c) => Some(c.to_string()),
+                    EnhancedPacketOption::Common(
+                        pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+                    ) => Some(c.to_string()),
                     _ => None,
                 })
                 .collect();

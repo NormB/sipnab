@@ -1872,7 +1872,7 @@ fn a_stopped_live_decrypted_export_writes_nothing_it_held() -> Result<(), TestEr
             let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..])?;
             let mut n = 0;
             while let Some(block) = reader.next_block() {
-                if matches!(block?, pcap_file::pcapng::Block::EnhancedPacket(_)) {
+                if matches!(block?.0, pcap_file::pcapng::Block::EnhancedPacket(_)) {
                     n += 1;
                 }
             }

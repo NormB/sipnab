@@ -413,7 +413,7 @@ pub fn counter_stepped_backwards(
         })
         .collect();
     // Sorted so "the first decrease" does not depend on the reply's order.
-    steps.sort_by(|a, b| a.name.cmp(&b.name));
+    crate::sort::sort_by_dyn(&mut steps, &mut |a, b| a.name.cmp(&b.name));
     steps.into_iter().next()
 }
 

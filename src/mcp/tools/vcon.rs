@@ -1003,6 +1003,10 @@ impl SipnabMcp {
         let analysis = crate::analysis::analyze_with(&ds, &ss, None, &facts);
         let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
         let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
+        // One grouping of the streams for the match and the page: a scan of
+        // the stream store per dialog made an export by filter cost dialogs x
+        // streams steps.
+        let by_call = ss.by_call();
 
         // Every match, counted and ordered; only the page is BUILT.
         // `total_matched` is the number an agent pages against, and it cannot
@@ -1012,9 +1016,7 @@ impl SipnabMcp {
             .filter(|dialog| match selection {
                 Selection::One(id) => dialog.call_id == *id,
                 Selection::Matching(expr) => {
-                    let streams: Vec<&crate::rtp::stream::RtpStream> =
-                        ss.streams_for(&dialog.call_id).collect();
-                    expr.matches_dialog(dialog, &streams, capture, delay)
+                    expr.matches_dialog(dialog, by_call.of(&dialog.call_id), capture, delay)
                 }
             })
             .collect();
@@ -1058,8 +1060,7 @@ impl SipnabMcp {
 
         let mut containers = Vec::new();
         for dialog in page {
-            let streams: Vec<&crate::rtp::stream::RtpStream> =
-                ss.streams_for(&dialog.call_id).collect();
+            let streams = by_call.of(&dialog.call_id);
 
             // With `media: inline`, media is attempted always. When the run
             // retained no payload the decode fails, and its message -- which
@@ -1069,7 +1070,7 @@ impl SipnabMcp {
             // and the container records `not-considered`: the outcome the
             // exporter already has for an export that did not look at media.
             let decoded = match request.media {
-                VconMedia::Inline => Some(crate::rtp::audio_export::decode_dialog_audio(&streams)),
+                VconMedia::Inline => Some(crate::rtp::audio_export::decode_dialog_audio(streams)),
                 VconMedia::Omit => None,
             };
             let reason = decoded
@@ -1082,7 +1083,7 @@ impl SipnabMcp {
                 Some(Err(_)) => ObservedAudio::NothingToDecode(&reason),
             };
 
-            let media = crate::output::vcon::media_quality_for(&ss, &dialog.call_id);
+            let media = crate::output::vcon::media_quality_of(&ss, streams);
             let related = crate::output::vcon::related_legs(&ds, dialog);
             let context = ExportContext {
                 capture_id: crate::output::vcon::dialog_capture_id(dialog),
@@ -1417,6 +1418,33 @@ mod tests {
             .await
             .map_err(|e| format!("the export should succeed: {e:?}"))?;
         payload(&result)
+    }
+
+    /// An export by filter reads each dialog's streams from one grouping of
+    /// the store, for the match and for the page, not from a pass over every
+    /// stream per dialog.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn export_vcon_by_filter_groups_the_streams_once_not_once_per_dialog()
+    -> Result<(), TestError> {
+        let (ds, ss) = crate::test_utils::calls_with_media(6)?;
+        let server = SipnabMcp::new(Arc::new(RwLock::new(ds)), Arc::new(RwLock::new(ss)));
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let v = exported(
+            &server,
+            ExportVconParams {
+                filter: Some("rtp.packets > 0".to_string()),
+                ..ExportVconParams::default()
+            },
+        )
+        .await?;
+        assert_eq!(
+            crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get),
+            0,
+            "no per-dialog scan of the stream store"
+        );
+        assert_eq!(v["total_matched"], 6, "all six dialogs carry media: {v}");
+        Ok(())
     }
 
     // ── export_vcon: the single-dialog form ──────────────────────────

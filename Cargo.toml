@@ -50,7 +50,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.269"
+version = "0.5.270"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Norm Brandinger"]
@@ -171,7 +171,7 @@ toml = "1"
 # Format-preserving TOML editing for surgical writes to the user's sipnabrc
 # (updates the [names.manual] table without clobbering comments/other sections).
 toml_edit = "0.25"
-pcap-file = { version = "2", optional = true }
+pcap-file = { version = "3", optional = true }
 memmap2 = { version = "0.9", optional = true }
 nom = "8"
 indexmap = "2"
@@ -539,6 +539,46 @@ codegen-units = 1
 strip = true
 panic = "unwind"
 debug = "line-tables-only"
+
+# Crates that run only at startup, while a config file is read, or while an MCP
+# request is parsed and answered are built for size. None runs per packet:
+# command-line parsing (clap and its helpers), TOML, the MCP protocol and its
+# JSON schemas, the OpenAPI document, and regex pattern parsing (regex-syntax;
+# matching is regex-automata, which stays at opt-level 3 like every crate not
+# listed here). Measured 2026-11-21 on this profile and the musl feature set,
+# built for x86_64-unknown-linux-gnu: 25,766,472 -> 25,184,840 stripped bytes
+# (-581,632). tests/config_wiring_test.rs holds the list and keeps the packet
+# path's crates off it.
+[profile.release.package.clap_builder]
+opt-level = "s"
+[profile.release.package.clap_complete]
+opt-level = "s"
+[profile.release.package.clap_lex]
+opt-level = "s"
+[profile.release.package.regex-syntax]
+opt-level = "s"
+[profile.release.package.rmcp]
+opt-level = "s"
+[profile.release.package.schemars]
+opt-level = "s"
+[profile.release.package.serde_spanned]
+opt-level = "s"
+[profile.release.package.strsim]
+opt-level = "s"
+[profile.release.package.toml]
+opt-level = "s"
+[profile.release.package.toml_datetime]
+opt-level = "s"
+[profile.release.package.toml_edit]
+opt-level = "s"
+[profile.release.package.toml_parser]
+opt-level = "s"
+[profile.release.package.toml_writer]
+opt-level = "s"
+[profile.release.package.utoipa]
+opt-level = "s"
+[profile.release.package.winnow]
+opt-level = "s"
 
 # Release codegen + full symbols, unstripped — for profilers (perf, valgrind
 # callgrind). `cargo build --profile profiling`. panic=unwind because callgrind

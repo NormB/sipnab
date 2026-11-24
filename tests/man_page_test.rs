@@ -551,6 +551,10 @@ const TEST_ONLY_ENV: &[(&str, &str)] = &[
         "SIPNAB_SETTINGS_APPLY",
         "the settings table fixer, run as a test",
     ),
+    (
+        "SIPNAB_GOLDEN_APPLY",
+        "rewrites the capture writer's goldens, run as a test",
+    ),
 ];
 
 /// Every `SIPNAB_*` environment variable `src/` reads, found by its reading

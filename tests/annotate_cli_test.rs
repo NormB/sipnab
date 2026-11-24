@@ -105,12 +105,14 @@ fn comments_and_frames(path: &Path) -> Result<Vec<Frame>, TestError> {
     let mut reader = PcapNgReader::new(&bytes[..])?;
     let mut out = Vec::new();
     while let Some(block) = reader.next_block() {
-        if let Some(epb) = block?.into_enhanced_packet() {
+        if let Some(epb) = block?.0.into_enhanced_packet() {
             let comments = epb
                 .options
                 .iter()
                 .filter_map(|o| match o {
-                    EnhancedPacketOption::Comment(c) => Some(c.to_string()),
+                    EnhancedPacketOption::Common(
+                        pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+                    ) => Some(c.to_string()),
                     _ => None,
                 })
                 .collect();

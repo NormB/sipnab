@@ -731,15 +731,17 @@ fn load_one_capture(
         // Classify via the shared pipeline core, then apply to the app
         // stores (brief per-store write locks, as in live capture).
         let mut decrypt = crate::pipeline::MediaDecrypt::default();
-        match crate::pipeline::classify_packet(
-            &parsed,
-            &mut totals.rtp_heuristic,
-            options,
-            &mut decrypt,
-        ) {
+        let crate::pipeline::ClassifiedPacket { action, sdp } =
+            crate::pipeline::classify_packet_read(
+                &parsed,
+                &mut totals.rtp_heuristic,
+                options,
+                &mut decrypt,
+            );
+        match action {
             crate::pipeline::PacketAction::None => {}
             crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
-                dialog_store.write().process_message(*msg);
+                dialog_store.write().process_message_read(*msg, &sdp);
                 totals.sip += 1;
                 if !sdp_links.is_empty() {
                     let mut ss = stream_store.write();
@@ -1489,6 +1491,30 @@ mod tests {
             app.capture_mode.contains("Offline"),
             "got: {}",
             app.capture_mode
+        );
+        Ok(())
+    }
+
+    /// Opening a capture parses each message's SDP once: classification
+    /// hands the SDP it read for the media links to the dialog store, which
+    /// used to parse the same body again for the SDP timeline.
+    #[test]
+    fn run_pcap_load_parses_each_messages_sdp_once() -> Result<(), TestError> {
+        // A proxied call: each leg's offer and answer carry SDP.
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/opensips-proxy-signaling.pcap");
+        let progress = PcapLoadProgress::new("t");
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let (parses, loaded) = crate::sip::sdp::sdp_parses_during(|| {
+            run_pcap_load(&fixture, &ds, &ss, &progress, None, &Default::default())
+        });
+        assert!(loaded.sip_count > 0, "the fixture has SIP");
+        let on_timelines: usize = ds.read().iter().map(|d| d.sdp_timeline.len()).sum();
+        assert!(on_timelines > 0, "the fixture's call carries SDP");
+        assert_eq!(
+            parses, on_timelines as u64,
+            "one parse per SDP on the timelines, not two"
         );
         Ok(())
     }
