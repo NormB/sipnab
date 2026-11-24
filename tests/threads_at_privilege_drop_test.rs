@@ -99,7 +99,11 @@ const AFTER_OR_WITHOUT_A_DROP: [&str; 25] = [
 ];
 
 /// Files that hold only test code and no test module of their own.
-const TEST_ONLY: [&str; 2] = ["src/test_engines.rs", "src/test_utils.rs"];
+const TEST_ONLY: [&str; 3] = [
+    "src/app/batch/run_stores_tests.rs",
+    "src/test_engines.rs",
+    "src/test_utils.rs",
+];
 
 /// The heading of the page's section.
 const SECTION: &str = "## Threads that exist at the privilege drop";

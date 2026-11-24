@@ -182,12 +182,13 @@ fn main() {
     }
 
     // 9-10. Launch the capture and hand it to the selected mode.
-    launch_and_dispatch(cli, loaded, plan);
+    let stores = launch_and_dispatch(cli, loaded, plan);
 
     // A run that ends here, rather than through an earlier
     // `release_run_and_exit`, releases what `-I` extracted and exits 0, or 129
-    // when SIGHUP stopped it (OPS-5).
-    sipnab::capture::archive::release_run_and_exit(0);
+    // when SIGHUP stopped it (OPS-5). A batch run's stores are kept until the
+    // exit rather than freed just before it (see `batch::RunStores`).
+    batch::RunStores::release_run_and_exit(stores, 0);
 }
 
 /// Step 0c of [`main`]: `sipnab fleet ...`, with `sipnab fleet` as the
@@ -431,8 +432,12 @@ fn say_when_headless_only_by_the_build(cli: &Cli) {
 }
 
 /// Steps 9 and 10 of [`main`]: launch the capture, then run the TUI or the
-/// batch runner over it.
-fn launch_and_dispatch(cli: Cli, loaded: sipnab::config::LoadedConfig, plan: bootstrap::RunPlan) {
+/// batch runner over it. Returns a batch run's stores; `None` after the TUI.
+fn launch_and_dispatch(
+    cli: Cli,
+    loaded: sipnab::config::LoadedConfig,
+    plan: bootstrap::RunPlan,
+) -> Option<batch::RunStores> {
     // 9. Launch the capture: channel, capture thread, readiness handshake,
     //    chroot, privilege drop, runtime hardening.
     let launched = bootstrap::launch(
@@ -465,31 +470,30 @@ fn launch_and_dispatch(cli: Cli, loaded: sipnab::config::LoadedConfig, plan: boo
                 #[cfg(feature = "metrics")]
                 plan.metrics_bind,
             );
+            None
         }
-        RunMode::Batch => {
-            batch::run(
-                cli,
-                &loaded.config,
-                plan.capture_config,
-                batch::CaptureFeed {
-                    handle: launched.handle,
-                    rx: launched.rx,
-                    kill_worker: launched.kill_worker,
-                },
-                BatchProcessing {
-                    matcher: plan.matcher,
-                    filter_expr: plan.filter_expr,
-                    vcon_rules: plan.vcon_rules,
-                    output_opts: plan.output_opts,
-                    event_exec: plan.event_exec,
-                    input_files: launched.input_files,
-                    relay: launched.relay,
-                    #[cfg(feature = "tls")]
-                    keylog_source: launched.keylog_source,
-                },
-                plan.policy,
-            );
-        }
+        RunMode::Batch => Some(batch::run(
+            cli,
+            &loaded.config,
+            plan.capture_config,
+            batch::CaptureFeed {
+                handle: launched.handle,
+                rx: launched.rx,
+                kill_worker: launched.kill_worker,
+            },
+            BatchProcessing {
+                matcher: plan.matcher,
+                filter_expr: plan.filter_expr,
+                vcon_rules: plan.vcon_rules,
+                output_opts: plan.output_opts,
+                event_exec: plan.event_exec,
+                input_files: launched.input_files,
+                relay: launched.relay,
+                #[cfg(feature = "tls")]
+                keylog_source: launched.keylog_source,
+            },
+            plan.policy,
+        )),
         // gate: unreachable because step 8 in `main` returns for CoresFile
         // before this function is called, so this match never sees it.
         RunMode::CoresFile => unreachable!("handled before launch"),
