@@ -797,9 +797,12 @@ impl PcapWriter {
                         Cow::Borrowed("name resolution added by sipnab"),
                     ))],
                 };
-                writer
+                let nrb_bytes = writer
                     .write_pcapng_block(block)
                     .map_err(|e| anyhow::anyhow!("NRB write error: {e}"))?;
+                // Counted like every other block: `--split` and
+                // `--autostop filesize:` read this counter.
+                self.bytes_written += nrb_bytes as u64;
                 Ok(())
             }
             WriterBackend::Pcap(_) => {
@@ -882,9 +885,12 @@ impl PcapWriter {
                     length: (12 + body.len()) as u32,
                     value: Cow::Owned(body),
                 };
-                writer
+                let dsb_bytes = writer
                     .write_pcapng_block(block)
                     .map_err(|e| anyhow::anyhow!("DSB write error: {e}"))?;
+                // Counted like every other block: `--split` and
+                // `--autostop filesize:` read this counter.
+                self.bytes_written += dsb_bytes as u64;
                 Ok(())
             }
             WriterBackend::Pcap(_) => {
@@ -2492,10 +2498,13 @@ mod tests {
             w.finish()?;
             let counted = w.bytes_written();
             drop(w);
-            // The count leaves the NRB's 132 bytes out (backlog
-            // SPLIT-COUNT-MISSES-NRB-DSB). Pinned at the pcap-file 2 value
-            // so the library change cannot move it unseen.
-            assert_eq!(counted, 244, "bytes_written as pcap-file 2 gave it");
+            // The count includes the NRB's 132 bytes (backlog
+            // SPLIT-COUNT-MISSES-NRB-DSB): 376 is the length of the golden
+            // file, measured with `stat -c %s` on the fixture.
+            assert_eq!(
+                counted, 376,
+                "bytes_written must be the golden file's 376 bytes"
+            );
             check_file("pcapng-name-resolution.pcapng", &path, None)
         }
 
@@ -2527,10 +2536,13 @@ mod tests {
             w.finish()?;
             let counted = w.bytes_written();
             drop(w);
-            // The count leaves both DSBs' 144 bytes out (backlog
-            // SPLIT-COUNT-MISSES-NRB-DSB). Pinned at the pcap-file 2 value
-            // so the library change cannot move it unseen.
-            assert_eq!(counted, 320, "bytes_written as pcap-file 2 gave it");
+            // The count includes both DSBs' 144 bytes (backlog
+            // SPLIT-COUNT-MISSES-NRB-DSB): 464 is the length of the golden
+            // file, measured with `stat -c %s` on the fixture.
+            assert_eq!(
+                counted, 464,
+                "bytes_written must be the golden file's 464 bytes"
+            );
             check_file("pcapng-decryption-secrets.pcapng", &path, None)
         }
 
@@ -4568,6 +4580,356 @@ mod run_total_tests {
             w.run_bytes_written(),
             accepted * record(1000),
             "only the {accepted} accepted writes count"
+        );
+        Ok(())
+    }
+}
+
+/// Name Resolution Blocks and Decryption Secrets Blocks are bytes in the
+/// file like any other block, so the counter `--split` and
+/// `--autostop filesize:` read must count them. Every check compares the
+/// counter with the size the file has on disk, because that size is what
+/// the operator's limit is about.
+#[cfg(test)]
+mod name_and_key_block_count_tests {
+    use super::*;
+    use crate::capture::packet::Packet;
+    use std::net::IpAddr;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A `len`-byte Ethernet packet filled with `byte`, stamped "now".
+    fn pkt(byte: u8, len: usize) -> Packet {
+        Packet::new(chrono::Utc::now(), vec![byte; len], len, len, None, 1)
+    }
+
+    /// A writer of either format with an optional size split.
+    fn writer(
+        path: &Path,
+        pcapng: bool,
+        split: Option<u64>,
+        mode: PcapExportMode,
+    ) -> Result<PcapWriter, TestError> {
+        Ok(PcapWriter::with_format(path, 1, split, None, pcapng, mode)?)
+    }
+
+    /// Two NRB records: an IPv4 address with one name and an IPv6 address
+    /// with two (RFC 5737 and RFC 3849 addresses).
+    fn entries() -> Result<Vec<(IpAddr, Vec<String>)>, TestError> {
+        Ok(vec![
+            ("192.0.2.10".parse()?, vec!["sbc-edge".to_string()]),
+            (
+                "2001:db8::1".parse()?,
+                vec!["core6".to_string(), "core6.example.com".to_string()],
+            ),
+        ])
+    }
+
+    /// Key-log bytes of length `len`, minted at run time (the content is
+    /// never read back; only its length matters to the count).
+    fn secrets(len: usize) -> Vec<u8> {
+        crate::test_material::bytes_for("dsb-count", len)
+    }
+
+    /// The size of `path` on disk.
+    fn disk_len(path: &Path) -> Result<u64, TestError> {
+        Ok(std::fs::metadata(path)?.len())
+    }
+
+    // ── SUCCESS ──────────────────────────────────────────────────────────
+
+    /// An NRB adds its whole block to the counter.
+    #[test]
+    fn a_name_resolution_block_is_counted() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("names.pcapng");
+        let mut w = writer(&path, true, None, PcapExportMode::Raw)?;
+        let before = w.bytes_written();
+        w.write_name_resolution_block(&entries()?)?;
+        assert!(
+            w.bytes_written() > before,
+            "the NRB must raise the counter from {before}"
+        );
+        w.finish()?;
+        assert_eq!(
+            w.bytes_written(),
+            disk_len(&path)?,
+            "counter == on-disk size of SHB + NRB + IDB"
+        );
+        Ok(())
+    }
+
+    /// A DSB written directly adds its whole block to the counter.
+    #[test]
+    fn a_decryption_secrets_block_is_counted() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("keys.pcapng");
+        let mut w = writer(&path, true, None, PcapExportMode::Raw)?;
+        let before = w.bytes_written();
+        w.write_dsb(&secrets(64))?;
+        assert!(
+            w.bytes_written() > before,
+            "the DSB must raise the counter from {before}"
+        );
+        w.finish()?;
+        assert_eq!(
+            w.bytes_written(),
+            disk_len(&path)?,
+            "counter == on-disk size of SHB + DSB + IDB"
+        );
+        Ok(())
+    }
+
+    /// The DSB written from a key-log file (the path the capture takes)
+    /// is counted too.
+    #[test]
+    fn a_dsb_from_a_keylog_file_is_counted() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("keys.pcapng");
+        let keylog = dir.path().join("keys.txt");
+        std::fs::write(&keylog, secrets(90))?;
+        let mut w = writer(&path, true, None, PcapExportMode::EncryptedWithDsb)?;
+        w.maybe_write_keylog_dsb(&keylog)?;
+        w.write(&pkt(1, 60))?;
+        w.finish()?;
+        assert_eq!(
+            w.bytes_written(),
+            disk_len(&path)?,
+            "counter == on-disk size with the key-log DSB"
+        );
+        Ok(())
+    }
+
+    /// Names, keys and packets together: the counter is the file size.
+    #[test]
+    fn names_keys_and_packets_together_are_the_file_size() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("all.pcapng");
+        let mut w = writer(&path, true, None, PcapExportMode::Raw)?;
+        w.write_dsb(&secrets(48))?;
+        w.write_name_resolution_block(&entries()?)?;
+        for i in 0..5u8 {
+            w.write(&pkt(i, 70))?;
+        }
+        w.finish()?;
+        assert_eq!(
+            w.bytes_written(),
+            disk_len(&path)?,
+            "counter == on-disk size of every block"
+        );
+        Ok(())
+    }
+
+    /// The run total `--autostop filesize:` reads holds the blocks too.
+    #[test]
+    fn the_run_total_holds_name_and_key_blocks() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("run.pcapng");
+        let mut w = writer(&path, true, None, PcapExportMode::Raw)?;
+        w.write_name_resolution_block(&entries()?)?;
+        w.write_dsb(&secrets(32))?;
+        w.write(&pkt(2, 40))?;
+        w.finish()?;
+        assert_eq!(
+            w.run_bytes_written(),
+            disk_len(&path)?,
+            "run total == on-disk size with NRB and DSB"
+        );
+        Ok(())
+    }
+
+    /// Two NRBs in one file (names learned late) are both counted.
+    #[test]
+    fn each_of_several_name_blocks_is_counted() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("two.pcapng");
+        let mut w = writer(&path, true, None, PcapExportMode::Raw)?;
+        let early: IpAddr = "192.0.2.1".parse()?;
+        let late: IpAddr = "198.51.100.7".parse()?;
+        w.write_name_resolution_block(&[(early, vec!["early".to_string()])])?;
+        let after_one = w.bytes_written();
+        w.write_name_resolution_block(&[(late, vec!["late".to_string()])])?;
+        assert!(
+            w.bytes_written() > after_one,
+            "the second NRB must raise the counter from {after_one}"
+        );
+        w.finish()?;
+        assert_eq!(
+            w.bytes_written(),
+            disk_len(&path)?,
+            "counter == on-disk size with two NRBs"
+        );
+        Ok(())
+    }
+
+    // ── EDGE ─────────────────────────────────────────────────────────────
+
+    /// Every padding length of the DSB body (0 to 3 bytes) is counted as
+    /// written: the block length includes the padding.
+    #[test]
+    fn every_dsb_padding_length_is_counted() -> Result<(), TestError> {
+        for len in 1..=8usize {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("pad.pcapng");
+            let mut w = writer(&path, true, None, PcapExportMode::Raw)?;
+            w.write_dsb(&secrets(len))?;
+            w.finish()?;
+            assert_eq!(
+                w.bytes_written(),
+                disk_len(&path)?,
+                "{len} key-log bytes: counter == on-disk size"
+            );
+        }
+        Ok(())
+    }
+
+    /// A size split sees the blocks: a cap the header alone stays under,
+    /// but header + NRB + DSB reaches, sends the next packet to a new file.
+    #[test]
+    fn a_split_cap_reached_by_name_and_key_blocks_rotates() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("cap.pcapng");
+        // Measure the header with an unbounded writer of the same shape.
+        let header = writer(
+            &dir.path().join("probe.pcapng"),
+            true,
+            None,
+            PcapExportMode::Raw,
+        )?
+        .bytes_written();
+        std::fs::remove_file(dir.path().join("probe.pcapng"))?;
+        let mut w = writer(&path, true, Some(header + 1), PcapExportMode::Raw)?;
+        w.write_name_resolution_block(&entries()?)?;
+        w.write_dsb(&secrets(40))?;
+        w.write(&pkt(3, 60))?;
+        w.finish()?;
+        assert!(
+            dir.path().join("cap_00001.pcapng").exists(),
+            "a cap of {} bytes was passed by the NRB and DSB, so the packet \
+             must go to the next file",
+            header + 1
+        );
+        Ok(())
+    }
+
+    /// After a rotation the DSB is written again into the new file, and the
+    /// new file's counter holds it.
+    #[test]
+    fn a_dsb_written_after_rotation_is_counted_in_the_new_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("rot.pcapng");
+        let keylog = dir.path().join("keys.txt");
+        std::fs::write(&keylog, secrets(70))?;
+        let mut w = writer(&path, true, None, PcapExportMode::EncryptedWithDsb)?;
+        w.maybe_write_keylog_dsb(&keylog)?;
+        w.write(&pkt(4, 50))?;
+        w.rotate()?;
+        w.maybe_write_keylog_dsb(&keylog)?;
+        w.write(&pkt(5, 50))?;
+        w.finish()?;
+        assert_eq!(
+            w.bytes_written(),
+            disk_len(&dir.path().join("rot_00001.pcapng"))?,
+            "second file: counter == on-disk size with its DSB"
+        );
+        assert_eq!(
+            w.run_bytes_written(),
+            disk_len(&path)? + disk_len(&dir.path().join("rot_00001.pcapng"))?,
+            "run total == both files, each with its DSB"
+        );
+        Ok(())
+    }
+
+    /// An empty NRB request writes nothing and counts nothing.
+    #[test]
+    fn an_empty_name_list_counts_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(
+            &dir.path().join("e.pcapng"),
+            true,
+            None,
+            PcapExportMode::Raw,
+        )?;
+        let before = w.bytes_written();
+        w.write_name_resolution_block(&[])?;
+        assert_eq!(w.bytes_written(), before, "no NRB, no bytes");
+        Ok(())
+    }
+
+    // ── FAILURE ──────────────────────────────────────────────────────────
+
+    /// Classic pcap cannot carry either block: both are skipped and the
+    /// counter does not move.
+    #[test]
+    fn classic_pcap_skips_both_blocks_and_counts_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(&dir.path().join("p.pcap"), false, None, PcapExportMode::Raw)?;
+        let before = w.bytes_written();
+        w.write_name_resolution_block(&entries()?)?;
+        w.write_dsb(&secrets(16))?;
+        assert_eq!(
+            w.bytes_written(),
+            before,
+            "skipped blocks must not be counted"
+        );
+        Ok(())
+    }
+
+    /// A key-log file that cannot be read writes no DSB and counts nothing.
+    #[test]
+    fn an_unreadable_keylog_counts_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut w = writer(
+            &dir.path().join("k.pcapng"),
+            true,
+            None,
+            PcapExportMode::EncryptedWithDsb,
+        )?;
+        let before = w.bytes_written();
+        w.maybe_write_keylog_dsb(&dir.path().join("missing.txt"))?;
+        assert_eq!(w.bytes_written(), before, "no DSB, no bytes");
+        Ok(())
+    }
+
+    /// Blocks that fail to write (a full disk, /dev/full) add nothing: the
+    /// counter holds only the NRBs that were accepted.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_name_block_write_adds_nothing() -> Result<(), TestError> {
+        // The NRB size, measured on a real file.
+        let dir = tempfile::tempdir()?;
+        let mut probe = writer(
+            &dir.path().join("m.pcapng"),
+            true,
+            None,
+            PcapExportMode::Raw,
+        )?;
+        let header = probe.bytes_written();
+        probe.write_name_resolution_block(&entries()?)?;
+        let nrb = probe.bytes_written() - header;
+        assert!(nrb > 0, "the probe NRB must be counted");
+        drop(probe);
+
+        let mut w = writer(Path::new("/dev/full"), true, None, PcapExportMode::Raw)?;
+        let start = w.bytes_written();
+        let mut accepted = 0u64;
+        let mut failed = false;
+        // The buffer holds well under 100 000 NRBs.
+        for _ in 0..100_000 {
+            if w.write_name_resolution_block(&entries()?).is_err() {
+                failed = true;
+                break;
+            }
+            accepted += 1;
+        }
+        assert!(
+            failed,
+            "an NRB write to /dev/full fails once the buffer fills"
+        );
+        assert_eq!(
+            w.bytes_written(),
+            start + accepted * nrb,
+            "only the {accepted} accepted NRBs count"
         );
         Ok(())
     }

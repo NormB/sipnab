@@ -2864,6 +2864,31 @@ impl DialogStore {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread asked [`quiet_past_idle_window`]. Tests read
+    /// it to check which dialogs a sweep asks; per thread, so parallel tests
+    /// do not count each other's sweeps.
+    static IDLE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The value of [`IDLE_CHECKS`] on this thread.
+#[cfg(test)]
+fn idle_checks_on_this_thread() -> usize {
+    IDLE_CHECKS.with(std::cell::Cell::get)
+}
+
+/// Whether `dialog` has been quiet longer than [`idle_compact_after`] at
+/// `now`.
+///
+/// From the newest message, not the last one read: an older-stamped message
+/// read late does not make a dialog that is still talking idle.
+fn quiet_past_idle_window(dialog: &SipDialog, now: chrono::DateTime<chrono::Utc>) -> bool {
+    #[cfg(test)]
+    IDLE_CHECKS.with(|n| n.set(n.get() + 1));
+    now - dialog.latest_message_at > idle_compact_after()
+}
+
 /// Compact one dialog as [`DialogStore::compact_idle`] does at `now`: when it
 /// has been idle longer than [`idle_compact_after`], down to the messages
 /// [`retained_indices`] keeps. Returns how many messages it dropped.
@@ -2872,16 +2897,14 @@ impl DialogStore {
 /// replays the sweeps of `--cores 1` between a dialog's messages
 /// ([`DialogStore::merge_replaying`]).
 fn compact_dialog(dialog: &mut SipDialog, now: chrono::DateTime<chrono::Utc>) -> usize {
-    // From the newest message, not the last one read: an older-stamped
-    // message read late does not make a dialog that is still talking idle.
-    if now - dialog.latest_message_at <= idle_compact_after() {
+    let budget = keep_messages_per_idle_dialog();
+    // Length first: a dialog within the budget has nothing to remove
+    // (`retained_indices` answers `None` for it), and nearly every dialog is
+    // one, so the sweep skips the date arithmetic of the idle test for it.
+    if dialog.messages.len() <= budget || !quiet_past_idle_window(dialog, now) {
         return 0;
     }
-    let Some(keep) = retained_indices(
-        &dialog.messages,
-        &dialog.method,
-        keep_messages_per_idle_dialog(),
-    ) else {
+    let Some(keep) = retained_indices(&dialog.messages, &dialog.method, budget) else {
         return 0;
     };
     let before = dialog.messages.len();
@@ -3516,6 +3539,8 @@ pub fn bucket_by_start(
         .collect())
 }
 
+#[cfg(test)]
+mod compact_walk_tests;
 #[cfg(test)]
 mod sdp_origin_tests;
 

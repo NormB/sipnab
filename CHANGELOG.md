@@ -10,6 +10,25 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **Reading a capture file runs fewer instructions per SIP message.**
+  - Effect: The periodic idle-dialog sweep skips its time check for dialogs too short to compact; the output stays the same.
+  - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 0.58% fewer instructions.
+  - Effect: Measured the same way, the 0.5.270 per-message changes run 12.8% fewer instructions on 150,000 packets with RTP.
+  - Limit: callgrind counted the instructions, a count host load does not change; there is no wall-time figure, because the host stayed busy.
+
+### Fixed
+
+- **`--split` and `--autostop filesize:` count name and TLS key blocks in pcapng output.**
+  - Was: They left out the name-resolution and key-log blocks, so files and runs grew past the limit.
+  - Effect: Both limits count every byte of the file on disk.
+  - Docs: [Bound, split, and multi-interface captures](docs/cli-reference.md#bound-split-and-multi-interface-captures)
+- **A batch run with `--filter` no longer reads every RTP stream for each SIP message.**
+  - Was: At 100,000 calls, `--filter 'method == INVITE'` ran 31 times the CPU instructions of the same run with no filter.
+  - Effect: A filter on SIP fields reads no streams; a filter on `rtp.*` or a media diagnosis field reads only that call's streams.
+  - Docs: [Filter DSL reference](docs/filter-dsl.md)
+
 ### Security
 
 - **etherparse goes from 0.21.0 to 0.21.1 (RUSTSEC-2026-0596).**

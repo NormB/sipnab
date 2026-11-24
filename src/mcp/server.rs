@@ -5036,10 +5036,10 @@ impl SipnabMcp {
         let ds = self.dialog_store.read();
         let ss = self.stream_store.read();
 
-        // Group streams by Call-ID once. `streams_for` scans the whole stream
-        // store per dialog, which was affordable while these tools stopped at
-        // the first `limit` matches and is quadratic now that they must visit
-        // every dialog to count one.
+        // Group streams by Call-ID once: one pass over the store for every
+        // dialog these tools visit. `streams_for` once scanned the whole store
+        // per dialog, which was quadratic here because these tools must visit
+        // every dialog to count one; it now reads a per-call index.
         let mut by_call: std::collections::HashMap<&str, Vec<&crate::rtp::stream::RtpStream>> =
             std::collections::HashMap::new();
         for s in ss.iter() {

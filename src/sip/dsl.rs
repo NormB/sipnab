@@ -274,10 +274,15 @@ pub struct FilterExpr {
     /// Root node of the parsed expression tree.
     root: Expr,
     /// Whether the expression references any diagnosis-derived field.
-    /// Cached at parse time (via [`expr_references_diagnosis`]) so
+    /// Cached at parse time (via [`expr_references`]) so
     /// [`FilterExpr::matches_dialog`] can skip the media/asymmetry
     /// diagnosis entirely when no such field appears.
     needs_diagnosis: bool,
+    /// Whether the expression references any field read from the dialog's
+    /// RTP streams. Cached at parse time beside `needs_diagnosis`, by the
+    /// same walk, so a caller asks for a dialog's streams only when the
+    /// filter reads them ([`FilterExpr::needs_streams`]).
+    needs_streams: bool,
     /// The expression text this was compiled from, trimmed. Kept so an
     /// answer narrowed by a filter can say which one — see
     /// [`FilterExpr::source`].
@@ -575,6 +580,60 @@ impl Field {
                 | Field::DurationAsymmetry
                 | Field::LateMedia
         )
+    }
+
+    /// Whether this field's value is read from the dialog's RTP streams:
+    /// directly (the `rtp.*` fields) or through the diagnosis, which is
+    /// computed from them. Drives the parse-time `needs_streams` flag, so a
+    /// caller can skip collecting a dialog's streams for a filter that reads
+    /// none. Exhaustive, so a new field must say. Keep in step with the arms
+    /// of `eval_compare` that read `streams` or `diag`.
+    fn reads_streams(&self) -> bool {
+        match self {
+            Field::RtpMos
+            | Field::RtpJitter
+            | Field::RtpLoss
+            | Field::RtpPackets
+            | Field::RtpCodec
+            | Field::RtpCodecs
+            | Field::RtpSsrc
+            | Field::OneWay
+            | Field::NatMismatch
+            | Field::NoMedia
+            | Field::CodecAsymmetry
+            | Field::PtimeAsymmetry
+            | Field::PayloadAsymmetry
+            | Field::DurationAsymmetry
+            | Field::LateMedia => true,
+            Field::FromUser
+            | Field::ToUser
+            | Field::FromHost
+            | Field::ToHost
+            | Field::FromUri
+            | Field::ToUri
+            | Field::Ruri
+            | Field::PaiUser
+            | Field::Side
+            | Field::Endpoint
+            | Field::Method
+            | Field::Ua
+            | Field::CallId
+            | Field::Payload
+            | Field::SrcIp
+            | Field::DstIp
+            | Field::SrcPort
+            | Field::DstPort
+            | Field::State
+            | Field::Duration
+            | Field::MsgCount
+            | Field::ResponseClass
+            | Field::ResponseCode
+            | Field::Pdd
+            | Field::SetupTime
+            | Field::Retransmits
+            | Field::Time
+            | Field::Header(_) => false,
+        }
     }
 
     /// What a literal on the right of this field means.
@@ -1013,14 +1072,17 @@ pub fn resolve_typed_filter(
     Ok(resolve_filter_text(&referenced, t).into_owned())
 }
 
-/// Whether any leaf comparison in the tree references a diagnosis-derived
-/// field. Walked once at parse time to cache `FilterExpr::needs_diagnosis`.
+/// Whether any leaf comparison in the tree references a field for which
+/// `reads` is true. Walked once at parse time for each cached flag:
+/// `FilterExpr::needs_diagnosis` ([`Field::is_diagnosis`]) and
+/// `FilterExpr::needs_streams` ([`Field::reads_streams`]), so the two flags
+/// come from one walk rule.
 ///
 /// Iterative like [`count_nodes`]. `parse` only reaches it once the node cap
 /// has passed, so a stack frame per level would be survivable here — but it
 /// would be a second thing to re-argue every time that cap moves, and this
 /// walk gains nothing from the recursion.
-fn expr_references_diagnosis(expr: &Expr) -> bool {
+fn expr_references(expr: &Expr, reads: fn(&Field) -> bool) -> bool {
     let mut stack: Vec<&Expr> = vec![expr];
     while let Some(node) = stack.pop() {
         match node {
@@ -1030,7 +1092,7 @@ fn expr_references_diagnosis(expr: &Expr) -> bool {
             }
             Expr::Not(inner) => stack.push(inner),
             Expr::Compare(field, _, _) => {
-                if field.is_diagnosis() {
+                if reads(field) {
                     return true;
                 }
             }
@@ -1065,13 +1127,33 @@ impl FilterExpr {
                 Value::Bool(false),
             )),
         );
-        let needs_diagnosis = expr_references_diagnosis(&root);
+        // The tree above, written the way `parse` would read it back.
+        Self::compiled(root, "one_way == true AND one_way == false".to_string())
+    }
+
+    /// A compiled filter for `root`, its flags cached from the tree: the one
+    /// place a `FilterExpr` is built, so no constructor sets one flag and
+    /// forgets another.
+    fn compiled(root: Expr, source: String) -> Self {
+        let needs_diagnosis = expr_references(&root, Field::is_diagnosis);
+        let needs_streams = expr_references(&root, Field::reads_streams);
         FilterExpr {
             root,
             needs_diagnosis,
-            // The tree above, written the way `parse` would read it back.
-            source: "one_way == true AND one_way == false".to_string(),
+            needs_streams,
+            source,
         }
+    }
+
+    /// Whether this filter reads any field taken from a dialog's RTP streams
+    /// (`rtp.*` or a diagnosis field).
+    ///
+    /// When it is `false`, [`FilterExpr::matches_dialog`] gives the same
+    /// answer with an empty stream slice as with the dialog's streams, so a
+    /// caller judging many dialogs or messages can skip collecting them.
+    #[must_use]
+    pub fn needs_streams(&self) -> bool {
+        self.needs_streams
     }
 
     /// AND a half-open `[after, before)` time window into a compiled filter.
@@ -1117,18 +1199,13 @@ impl FilterExpr {
         .collect::<Vec<_>>()
         .join(" AND ");
         Some(match base {
-            None => FilterExpr {
-                root: window,
-                needs_diagnosis: false,
-                source: window_source,
-            },
+            None => Self::compiled(window, window_source),
             Some(mut base) => {
                 let root = std::mem::replace(&mut base.root, placeholder_leaf());
-                FilterExpr {
-                    root: Expr::And(Box::new(root), Box::new(window)),
-                    needs_diagnosis: base.needs_diagnosis,
-                    source: format!("({}) AND {window_source}", base.source),
-                }
+                Self::compiled(
+                    Expr::And(Box::new(root), Box::new(window)),
+                    format!("({}) AND {window_source}", base.source),
+                )
             }
         })
     }
@@ -1225,12 +1302,7 @@ impl FilterExpr {
             );
         }
 
-        let needs_diagnosis = expr_references_diagnosis(&expr);
-        Ok(FilterExpr {
-            root: expr,
-            needs_diagnosis,
-            source: trimmed.to_string(),
-        })
+        Ok(Self::compiled(expr, trimmed.to_string()))
     }
 
     /// Evaluate this filter against a SIP dialog and its associated RTP streams.
@@ -5317,6 +5389,184 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "INVITE")?;
         let f = FilterExpr::parse("from.user == '1001'")?;
         assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
+    }
+
+    /// The fields whose value is read from a dialog's RTP streams: the
+    /// `rtp.*` fields, and every diagnosis field (the diagnosis is computed
+    /// from the streams).
+    const STREAM_FIELDS: &[&str] = &[
+        "rtp.mos",
+        "rtp.jitter",
+        "rtp.loss",
+        "rtp.packets",
+        "rtp.codec",
+        "rtp.codecs",
+        "rtp.ssrc",
+        "one_way",
+        "nat_mismatch",
+        "no_media",
+        "codec_asymmetry",
+        "ptime_asymmetry",
+        "payload_asymmetry",
+        "duration_asymmetry",
+        "late_media",
+    ];
+
+    /// The `Field` a fixed field name parses to.
+    fn field_named(name: &str) -> Result<Field, TestError> {
+        let (rest, field) = parse_field(name).map_err(|e| format!("{name}: {e:?}"))?;
+        assert!(rest.is_empty(), "{name} parses whole, left {rest:?}");
+        Ok(field)
+    }
+
+    /// Every field name says whether its value is read from the streams, and
+    /// exactly the stream fields say yes.
+    #[test]
+    fn every_field_says_whether_it_reads_streams() -> Result<(), TestError> {
+        for name in FIELD_NAMES {
+            let field = field_named(name)?;
+            assert_eq!(
+                field.reads_streams(),
+                STREAM_FIELDS.contains(name),
+                "{name}: reads_streams"
+            );
+        }
+        for name in STREAM_FIELDS {
+            assert!(FIELD_NAMES.contains(name), "{name} is a field name");
+        }
+        assert!(
+            !Field::Header("X-Foo".into()).reads_streams(),
+            "a header field reads the dialog's messages only"
+        );
+        Ok(())
+    }
+
+    /// A diagnosis field reads the streams: the diagnosis is computed from
+    /// them, so a filter needing the diagnosis must be handed them.
+    #[test]
+    fn every_diagnosis_field_reads_streams() -> Result<(), TestError> {
+        for name in FIELD_NAMES {
+            let field = field_named(name)?;
+            if field.is_diagnosis() {
+                assert!(field.reads_streams(), "{name} is a diagnosis field");
+            }
+        }
+        Ok(())
+    }
+
+    /// The parse-time `needs_streams` flag is set iff some leaf reads a
+    /// stream field, at any depth, and a time window keeps it.
+    #[test]
+    fn needs_streams_flag_reflects_field_use() -> Result<(), TestError> {
+        for (text, want) in [
+            ("method == INVITE", false),
+            ("from.user == '1001' AND response_code >= 400", false),
+            ("header.X-Rtp == 'rtp.packets'", false),
+            ("ua =~ 'rtp'", false),
+            ("rtp.packets > 0", true),
+            (
+                "method == INVITE AND (state == 'InCall' OR rtp.mos < 3.0)",
+                true,
+            ),
+            ("NOT (rtp.codec == PCMU)", true),
+            ("no_media == true", true),
+            ("method == BYE OR late_media == true", true),
+        ] {
+            assert_eq!(FilterExpr::parse(text)?.needs_streams(), want, "{text}");
+        }
+        let after = Some(base_ts()?);
+        for (text, want) in [("method == INVITE", false), ("rtp.loss > 1", true)] {
+            let windowed =
+                FilterExpr::with_time_window(Some(FilterExpr::parse(text)?), after, None)
+                    .ok_or("a window gives a filter")?;
+            assert_eq!(windowed.needs_streams(), want, "{text} with a window");
+        }
+        let window_only =
+            FilterExpr::with_time_window(None, after, None).ok_or("a window gives a filter")?;
+        assert!(
+            !window_only.needs_streams(),
+            "a bare window reads no stream"
+        );
+        assert!(
+            FilterExpr::never().needs_streams(),
+            "never() is written with one_way, a diagnosis field"
+        );
+        Ok(())
+    }
+
+    /// Literals of each kind for `field`, written as the right-hand side of
+    /// a comparison.
+    fn literals_for(field: &Field) -> &'static [&'static str] {
+        match field.value_kind() {
+            ValueKind::Text => &["== ''", "== 'x'", "!= ''", "== PCMU", "== '0xdeadbeef'"],
+            ValueKind::Number => &["> 0", ">= 0", "== 0", "< 1", "== 1"],
+            ValueKind::Boolean => &["== true", "== false"],
+            ValueKind::Instant => &[">= '2000-01-01T00:00:00Z'", "< '2000-01-01T00:00:00Z'"],
+        }
+    }
+
+    /// A field that reads no stream gives the same verdict with the dialog's
+    /// streams as with none, for every literal tried: so a caller may skip
+    /// collecting them.
+    #[test]
+    fn a_field_that_reads_no_stream_ignores_the_streams() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let mut stream = make_rtp_stream(false)?;
+        stream.codec = Some("PCMU".to_string());
+        let streams = [&stream];
+        let mut checked = 0;
+        for name in FIELD_NAMES.iter().filter(|n| !STREAM_FIELDS.contains(n)) {
+            let field = field_named(name)?;
+            for literal in literals_for(&field) {
+                let text = format!("{name} {literal}");
+                let Ok(expr) = FilterExpr::parse(&text) else {
+                    continue;
+                };
+                for capture in [CaptureMedia::Absent, CaptureMedia::Observed] {
+                    assert_eq!(
+                        expr.matches_dialog(&dialog, &streams, capture, MosDelay::unknown()),
+                        expr.matches_dialog(&dialog, &[], capture, MosDelay::unknown()),
+                        "{text}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 28,
+            "every non-stream field was tried, {checked} expressions"
+        );
+        Ok(())
+    }
+
+    /// Each `rtp.*` field gives a different verdict with a stream than with
+    /// none for some literal: skipping the streams for it would be wrong.
+    #[test]
+    fn each_rtp_field_depends_on_the_streams() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let mut stream = make_rtp_stream(false)?;
+        stream.codec = Some("PCMU".to_string());
+        let streams = [&stream];
+        for name in STREAM_FIELDS.iter().filter(|n| n.starts_with("rtp.")) {
+            let field = field_named(name)?;
+            let differs = literals_for(&field).iter().any(|literal| {
+                FilterExpr::parse(&format!("{name} {literal}")).is_ok_and(|expr| {
+                    expr.matches_dialog(
+                        &dialog,
+                        &streams,
+                        CaptureMedia::Observed,
+                        MosDelay::unknown(),
+                    ) != expr.matches_dialog(
+                        &dialog,
+                        &[],
+                        CaptureMedia::Observed,
+                        MosDelay::unknown(),
+                    )
+                })
+            });
+            assert!(differs, "{name}: some literal must depend on the streams");
+        }
         Ok(())
     }
 

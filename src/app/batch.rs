@@ -6548,8 +6548,13 @@ fn dsl_filter_passes(
     let Some(dialog) = dialog_store.get(call_id) else {
         return false;
     };
-    let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
-        stream_store.streams_for(call_id).collect();
+    // Runs once per SIP message: a filter that reads no stream field is not
+    // handed the call's streams, and gives the same verdict without them.
+    let dialog_streams: Vec<&crate::rtp::stream::RtpStream> = if expr.needs_streams() {
+        stream_store.streams_for(call_id).collect()
+    } else {
+        Vec::new()
+    };
     expr.matches_dialog(
         dialog,
         &dialog_streams,
@@ -9206,8 +9211,11 @@ fn matched_filters<'f>(
         .iter()
         .filter(|(_, filter)| {
             legs.iter().any(|leg| {
-                let own: Vec<&crate::rtp::stream::RtpStream> =
-                    streams.streams_for(&leg.call_id).collect();
+                let own: Vec<&crate::rtp::stream::RtpStream> = if filter.needs_streams() {
+                    streams.streams_for(&leg.call_id).collect()
+                } else {
+                    Vec::new()
+                };
                 filter.matches_dialog(leg, &own, capture, delay)
             })
         })
@@ -10888,7 +10896,6 @@ mod tests {
 
     /// A final response, so a fixture dialog can carry a status code the
     /// filter language can read.
-    #[cfg(feature = "vcon")]
     fn response_msg(
         call_id: &str,
         code: u16,
@@ -10922,7 +10929,6 @@ mod tests {
     }
 
     /// Two dialogs, one of which failed.
-    #[cfg(feature = "vcon")]
     fn two_dialogs_one_failed() -> Result<DialogStore, TestError> {
         let mut store = DialogStore::new(16, true);
         store.process_message(invite_msg("ok-call@example.com")?);
@@ -10949,6 +10955,174 @@ mod tests {
         assert_eq!(calls.len(), 2, "{calls:?}");
         assert!(calls.contains(&vec!["outside@example.com"]), "{calls:?}");
         assert!(calls.contains(&vec!["ok-call@example.com"]), "{calls:?}");
+        Ok(())
+    }
+
+    // ── --filter per message (PERF-UI-BATCH-FILTER-STREAMS-PER-MESSAGE) ──
+
+    /// The two-call store with 50 PCMU frames linked to the answered call
+    /// and none to the failed one.
+    fn filter_fixture() -> Result<(DialogStore, StreamStore), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
+        let mut streams = StreamStore::new(16);
+        for seq in 0..50u16 {
+            let (packet, header) = pcmu_frame(40010, 0xF001, seq);
+            streams.process_rtp(&packet, &header, packet.timestamp);
+        }
+        streams.link_to_dialog(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            40010,
+            "ok-call@example.com",
+        );
+        Ok((dialogs, streams))
+    }
+
+    /// `dsl_filter_passes` for `call_id`'s INVITE under `filter`, and how many
+    /// times it asked the stream store for a call's streams.
+    fn filter_verdict(
+        filter: &str,
+        call_id: &str,
+        dialogs: &DialogStore,
+        streams: &StreamStore,
+    ) -> Result<(bool, usize), TestError> {
+        let expr = FilterExpr::parse(filter).map_err(|e| format!("{filter}: {e:?}"))?;
+        let msg = invite_msg(call_id)?;
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let pass = dsl_filter_passes(Some(&expr), &msg, dialogs, streams);
+        let asked = crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get);
+        Ok((pass, asked))
+    }
+
+    /// A filter that reads no stream field does not ask the stream store for
+    /// the message's streams: each such question is a pass over every stream,
+    /// and it was asked once per SIP message, which made
+    /// `--filter 'method == INVITE'` 12 times slower than no filter on a
+    /// 100,000-call capture.
+    #[test]
+    fn a_sip_only_filter_does_not_read_the_stream_store_per_message() -> Result<(), TestError> {
+        let (dialogs, streams) = filter_fixture()?;
+        for filter in [
+            "method == INVITE",
+            "response_code >= 400",
+            "from.user == '1001' OR state == 'Failed'",
+            "NOT call_id =~ 'failed'",
+            "header.X-Never == 'x'",
+        ] {
+            for call_id in ["ok-call@example.com", "failed-call@example.com"] {
+                let (_, asked) = filter_verdict(filter, call_id, &dialogs, &streams)?;
+                assert_eq!(
+                    asked, 0,
+                    "{filter} on {call_id} asked for streams {asked} times"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// A filter that reads a stream field still asks for the call's streams,
+    /// once per message, and judges by them: the answered call has 50
+    /// packets, the failed call none.
+    #[test]
+    fn a_stream_filter_reads_the_calls_streams_once() -> Result<(), TestError> {
+        let (dialogs, streams) = filter_fixture()?;
+        for (filter, ok, failed) in [
+            ("rtp.packets > 0", true, false),
+            ("rtp.packets == 0", false, true),
+            ("rtp.codec == PCMU", true, false),
+            ("method == INVITE AND rtp.ssrc == '0x0000f001'", true, false),
+            ("NOT (rtp.packets > 0)", false, true),
+            ("no_media == true OR method == BYE", false, false),
+        ] {
+            let got_ok = filter_verdict(filter, "ok-call@example.com", &dialogs, &streams)?;
+            let got_failed = filter_verdict(filter, "failed-call@example.com", &dialogs, &streams)?;
+            assert_eq!(got_ok, (ok, 1), "{filter} on the answered call");
+            assert_eq!(got_failed, (failed, 1), "{filter} on the failed call");
+        }
+        Ok(())
+    }
+
+    /// Skipping the streams changes no verdict of a filter that reads none:
+    /// each verdict equals the one the dialog gives with its streams.
+    #[test]
+    fn a_sip_only_filter_gives_the_verdict_it_gives_with_the_streams() -> Result<(), TestError> {
+        let (dialogs, streams) = filter_fixture()?;
+        let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&streams);
+        let delay = crate::rtp::quality::MosDelay::from_capture(&streams);
+        for filter in [
+            "method == INVITE",
+            "method == BYE",
+            "response_code >= 400",
+            "response_class == successful",
+            "from.user == '1001' OR state == 'Failed'",
+            "call_id =~ 'ok'",
+            "msg_count > 1",
+        ] {
+            let expr = FilterExpr::parse(filter).map_err(|e| format!("{filter}: {e:?}"))?;
+            for call_id in ["ok-call@example.com", "failed-call@example.com"] {
+                let dialog = dialogs.get(call_id).ok_or("fixture dialog")?;
+                let own: Vec<&crate::rtp::stream::RtpStream> =
+                    streams.streams_for(call_id).collect();
+                let with_streams = expr.matches_dialog(dialog, &own, capture, delay);
+                let (pass, _) = filter_verdict(filter, call_id, &dialogs, &streams)?;
+                assert_eq!(pass, with_streams, "{filter} on {call_id}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A message whose dialog the store does not hold passes no filter and
+    /// asks for no streams, SIP-only filter or not.
+    #[test]
+    fn an_untracked_message_asks_for_no_streams() -> Result<(), TestError> {
+        let (dialogs, streams) = filter_fixture()?;
+        for filter in ["method == INVITE", "rtp.packets >= 0"] {
+            let got = filter_verdict(filter, "unknown@example.com", &dialogs, &streams)?;
+            assert_eq!(got, (false, 0), "{filter} on an untracked call");
+        }
+        Ok(())
+    }
+
+    /// The `--export-vcon-when` rule match reads no streams for a filter that
+    /// reads none, and reads each leg's streams for one that does; the names
+    /// it returns are the same either way.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn matched_filters_reads_streams_only_for_a_stream_filter() -> Result<(), TestError> {
+        let (dialogs, streams) = filter_fixture()?;
+        let parse = |name: &str, text: &str| -> Result<(String, FilterExpr), TestError> {
+            Ok((
+                name.to_string(),
+                FilterExpr::parse(text).map_err(|e| format!("{text}: {e:?}"))?,
+            ))
+        };
+        let legs = [
+            dialogs.get("ok-call@example.com").ok_or("answered")?,
+            dialogs.get("failed-call@example.com").ok_or("failed")?,
+        ];
+        let sip_only = [
+            parse("invites", "method == INVITE")?,
+            parse("busy", "response_code == 486")?,
+        ];
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let names = matched_filters(&sip_only, &legs, &streams);
+        let asked = crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get);
+        assert_eq!(names, vec!["invites", "busy"], "SIP-only rule names");
+        assert_eq!(asked, 0, "SIP-only rules asked for streams {asked} times");
+
+        let media = [
+            parse("media", "rtp.packets > 0")?,
+            parse("silent", "rtp.packets > 100")?,
+        ];
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let names = matched_filters(&media, &legs[1..], &streams);
+        let asked = crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get);
+        assert!(names.is_empty(), "the failed leg has no media: {names:?}");
+        assert_eq!(asked, 2, "one question per rule for the one leg");
+        assert_eq!(
+            matched_filters(&media, &legs, &streams),
+            vec!["media"],
+            "the answered leg's 50 packets match the first rule only"
+        );
         Ok(())
     }
 
@@ -12289,7 +12463,6 @@ mod tests {
     }
 
     /// One 20 ms PCMU frame from `10.0.0.1:src_port`, sequence `seq`.
-    #[cfg(feature = "vcon")]
     fn pcmu_frame(
         src_port: u16,
         ssrc: u32,

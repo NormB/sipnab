@@ -71,10 +71,10 @@ travels over `--hep-send` as protocol type 5 (see the "Sender-side HEP" row in
 [section 2, "What already fits, verified"](#2-what-already-fits-verified)). The receiver-side half is
 open, and it is what decides whether the remote viewer shows a MOS at all.
 `--hep-send` never forwards RTP, and `StreamStore::process_rtcp`
-([`stream_store.rs:1543`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1543)<!-- "pub fn process_rtcp(" -->) files a report only
+([`stream_store.rs:1559`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1559)<!-- "pub fn process_rtcp(" -->) files a report only
 against a stream whose SSRC it has already seen from the media itself — a
 report for an unknown SSRC records nothing, which `rtcp_unknown_ssrc_is_noop`
-([`stream_store.rs:6494`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L6494)<!-- "fn rtcp_unknown_ssrc_is_noop()" -->) pins. So a
+([`stream_store.rs:6795`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L6795)<!-- "fn rtcp_unknown_ssrc_is_noop()" -->) pins. So a
 viewer fed by HEP alone decodes every RTCP report and can show no quality figure
 for any of them. Received RTCP reaches the MOS delay term (`MosDelay::resolve`,
 [`quality.rs:632`](https://github.com/NormB/sipnab/blob/main/src/rtp/quality.rs#L632)<!-- "pub fn resolve(&self," -->) only when the same
