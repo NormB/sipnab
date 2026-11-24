@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+**Held:** branches merged together in one train before release 0.5.270, on the owner's decision (2026-11-23); the release follows at once.
+
 ### Changed
 
 - **Breaking: a relay question a run cannot ask exits 2 before it reads anything.**
