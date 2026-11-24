@@ -2372,8 +2372,10 @@ pub struct RtpArgs {
     /// The counters the relay keeps about ITSELF -- packets relayed, sessions,
     /// its own loss and jitter. They are `relay_reported`: a claim from the
     /// box, not a measurement sipnab made, and the output says so. Needs the
-    /// same live source `--rtpengine-control` does, because asking transmits;
-    /// a file-backed run prints why it will not ask rather than asking.
+    /// same live source `--rtpengine-control` does, because asking transmits.
+    /// On a capture file, with no `--rtpengine-control`, or with an address
+    /// that is not `IP:port`, the run exits 2 before it reads anything, with
+    /// the reason on stderr.
     #[arg(help_heading = "RTP", long = "relay-stats")]
     pub relay_stats: bool,
 

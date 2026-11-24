@@ -1791,6 +1791,9 @@ in the release commit itself.
 - Pull requests that land before the tag reaches GitHub put a new `[Unreleased]` above `[x.y.z]`.
   - Until the tag exists, the commit that added `## [x.y.z]` to `CHANGELOG.md` stands in for it.
   - A flag that commit declares reads `x.y.z`; a flag added later reads `Unreleased`.
+  - In a merge, the script looks for that commit from both `HEAD` and `MERGE_HEAD`, the parents of
+    the merge commit, so a branch that merges the release before its tag can commit the merge
+    Reading `HEAD` alone failed the pre-commit hook of every such merge (2026-11-21, `0.5.269`).
   - Reading only the first heading made every flag of the release read `Unreleased` on every pull
     request until the tag reached GitHub (2026-10-27, `0.5.231`).
 - So run `python3 scripts/flag-since.py --write` in the release commit,
