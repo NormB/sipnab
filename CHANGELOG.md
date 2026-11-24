@@ -22,6 +22,7 @@ entry that carries them.
   - Effect: At 100,000 dialogs, MCP `aggregate_dialogs` takes 33 ms (was 18,013 ms); filtered `search_by_time` takes 28 ms (was 20,095 ms).
   - Effect: At 100,000 dialogs, filtered MCP `export_vcon` takes 1,287 ms (was 19,745 ms); `GET /metrics` takes 266 ms (was 18,632 ms).
   - Effect: In the TUI, `i` and `I` (clear dialogs) and `m` (carrier metrics) no longer read every stream once per call.
+  - Limit: The times were measured on one 14-core host at a 1-minute load of 12 to 30.
 
 ### Fixed
 
