@@ -226,10 +226,10 @@ configuration**. Enumerated from the code, everything below runs after
 | Fanout join | [`src/capture/live.rs:808`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L808)<!-- "if let Err(e) = super::fanout::join_fanout_group(cap.as_raw_fd()," --> | `setsockopt` |
 | Output pcap, created **lazily on the first packet** | [`src/app/batch.rs:4652-4657`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4652-L4657)<!-- "// Lazily initialize the writer on first packet" --> → [`src/capture/writer.rs:113-116`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L113-L116)<!-- "fn create(path: &Path, link_type: i32, mode: crate::new_file::CreateMode)" --> | file create + write |
 | `--split` rotation, mid-run | [`src/capture/writer.rs:1023-1040`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L1023-L1040)<!-- "// Drop the old backend (flushes and closes) by replacing it" --> | more file creates |
-| REST API listener bind | [`src/app/servers.rs:833`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L833)<!-- "let listener = api::prepare_listener(bind," --> | socket/bind/listen/accept |
+| REST API listener bind | [`src/app/servers.rs:834`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L834)<!-- "let listener = api::prepare_listener(bind," --> | socket/bind/listen/accept |
 | Metrics listener, raw TCP + threads | [`src/app/servers.rs:584`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L584)<!-- "let (_bound, _handle)" --> | the same, plus thread creation |
 | MCP over stdio | [`src/mcp/transport.rs:73-82`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L73-L82)<!-- "pub async fn serve_stdio(server:" --> | read/write on fds 0 and 1 |
-| MCP over HTTP, `mcp-http` | [`src/app/servers.rs:1035-1040`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L1035-L1040)<!-- "let bind_str = cli.mcp_args.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");" --> | tokio reactor: epoll, eventfd, timerfd |
+| MCP over HTTP, `mcp-http` | [`src/app/servers.rs:1036-1041`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L1036-L1041)<!-- "let bind_str = cli.mcp_args.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");" --> | tokio reactor: epoll, eventfd, timerfd |
 | Syslog, eight lines after the drop | [`src/app/bootstrap.rs:4160-4163`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4160-L4163)<!-- "// 16b. Initialize syslog if --syslog is set" --> → [`src/security/alerting.rs:1077-1088`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L1077-L1088)<!-- "pub fn init_syslog() {" --> | `AF_UNIX` connect to `/dev/log` |
 | Signing keys read from files | [`src/app/servers.rs:442`](https://github.com/NormB/sipnab/blob/52290a2f6cf7e9275a26f5149f4ca06c43600030/src/app/servers.rs#L442) | file open, after the drop *and* after any chroot |
 | `--keylog-watch` re-reads the keylog repeatedly | [`src/capture/decrypt.rs:956`](https://github.com/NormB/sipnab/blob/main/src/capture/decrypt.rs#L956)<!-- "/// Poll the keylog" --> | file open + stat, for the life of the run |
@@ -612,7 +612,7 @@ Reporting means three things:
    implemented".
 2. A field in the batch summary and in `capture_health` — the same structural
    discipline the rest of that response follows: a code, not a free string
-   ([`src/mcp/server.rs:3536-3546`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3536-L3546)<!-- "// That machine's traffic is confidential" -->).
+   ([`src/mcp/server.rs:3537-3547`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L3537-L3547)<!-- "// That machine's traffic is confidential" -->).
 3. **`--require-sandbox`**, which turns degradation into a refusal. Opt-in,
    never the default, for the operator who would rather not capture than capture
    unsandboxed. Without this flag there is no way to express that preference; with

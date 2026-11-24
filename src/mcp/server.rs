@@ -1065,6 +1065,7 @@ impl SipnabMcp {
             permit,
             routing: None,
             holdings_max: None,
+            rates: std::sync::Arc::default(),
         });
         self
     }
@@ -21113,6 +21114,11 @@ pub(crate) struct RelayQueryAccess {
     /// ask covers when the agent names no `max_calls`. See
     /// [`crate::relay::scan_cap::scan_cap`].
     pub holdings_max: Option<u32>,
+    /// The previous sample of each relay socket, shared by every clone of
+    /// this access and so by every agent, for the rate since the previous
+    /// sessions ask. Bounded per tier
+    /// ([`crate::relay::rate::RATE_MEMORY_SOCKETS`]).
+    pub rates: std::sync::Arc<parking_lot::Mutex<crate::relay::rate::RateMemories>>,
 }
 
 /// Tool handlers and protocol methods that no in-process test called.

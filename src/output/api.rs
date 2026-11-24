@@ -228,6 +228,10 @@ pub struct RelayRestConfig {
     /// ask covers when the request names no `max_calls`. See
     /// [`crate::relay::scan_cap::scan_cap`].
     pub holdings_max: Option<u32>,
+    /// The previous sample of each relay socket, shared by every caller, so
+    /// a sessions ask reports the rate since the previous ask. Bounded per
+    /// tier ([`crate::relay::rate::RATE_MEMORY_SOCKETS`]).
+    pub rates: std::sync::Arc<parking_lot::Mutex<crate::relay::rate::RateMemories>>,
 }
 
 /// Shared state passed to every axum handler via `State(...)`.
@@ -6505,15 +6509,22 @@ fn relay_rest_answer_with(
                 routing,
                 sdp_of: &sdp_of,
             });
-            relay_sessions_routed(
+            let mut snapshot = relay_sessions_routed(
                 relay.as_ref(),
                 routed.as_ref(),
                 &permit,
                 &ask,
                 &ended,
                 &chrono::Utc::now,
-            )
-            .body()
+            );
+            let ss = stream_store.read();
+            let counts = crate::output::query::relay_capture::counts_in(&ss);
+            snapshot.attach_rates(
+                &mut rq.rates.lock(),
+                Some(&counts),
+                crate::relay::rate::monotonic_now(),
+            );
+            snapshot.body()
         }
         // The answer `--relay-holdings` prints too.
         RelayAsk::Holdings { cap } => crate::output::query::relay_holdings::ask_engines(
@@ -10840,6 +10851,7 @@ mod tests {
     #[test]
     fn relay_rest_no_permit_is_not_permitted() -> Result<(), TestError> {
         let rq = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(StubRelay)),
             permit: None,
             polled: None,
@@ -10873,6 +10885,7 @@ mod tests {
             c: &str,
         ) -> anyhow::Result<ControlReply> {
             Ok(ControlReply::Call(crate::relay::types::CallView {
+                incarnation: None,
                 call_id: c.to_string(),
                 tags: vec![crate::relay::types::RelayTag {
                     tag: "from-tag".into(),
@@ -10907,6 +10920,7 @@ mod tests {
     #[test]
     fn relay_rest_holdings_lists_the_call_ids() -> Result<(), TestError> {
         let rq = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(HoldsRelay)),
             permit: Some(live_permit()?),
             polled: None,
@@ -10932,6 +10946,7 @@ mod tests {
     #[test]
     fn relay_rest_holding_shows_one_calls_tags() -> Result<(), TestError> {
         let rq = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(HoldsRelay)),
             permit: Some(live_permit()?),
             polled: None,
@@ -11091,6 +11106,7 @@ mod tests {
     /// A relay config that WILL transmit: a scripted relay behind a live permit.
     fn transmitting(wide: Scripted, per_call: Scripted) -> Result<RelayRestConfig, TestError> {
         Ok(RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(ScriptedRelay { wide, per_call })),
             permit: Some(live_permit()?),
             polled: None,
@@ -11487,6 +11503,7 @@ mod tests {
         ) -> anyhow::Result<ControlReply> {
             if self.2.contains(&c) {
                 Ok(ControlReply::Call(crate::relay::types::CallView {
+                    incarnation: None,
                     call_id: c.to_owned(),
                     tags: Vec::new(),
                 }))
@@ -11530,6 +11547,7 @@ mod tests {
             ))
         });
         Ok(RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(NamedEngine(
                 "engine-a",
                 Scripted::Timeout,
@@ -11598,6 +11616,7 @@ mod tests {
             ))
         });
         let rq = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(NamedEngine(
                 "engine-a",
                 Scripted::Timeout,
@@ -11669,6 +11688,7 @@ mod tests {
             }
         });
         let mut rq = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(NamedEngine(
                 "engine-a",
                 Scripted::Stats(vec![("sessions", "1")]),
@@ -11725,6 +11745,7 @@ mod tests {
             |fakes: &[FakeEngine]| -> Result<(serde_json::Value, std::time::Duration), TestError> {
                 let r = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
                 let rq = RelayRestConfig {
+                    rates: Default::default(),
                     relay: Some(client(r.default_engine(), TIMEOUT)),
                     permit: Some(live_permit()?),
                     polled: None,
@@ -18256,6 +18277,7 @@ mod tests {
     ) -> Result<axum::Router, TestError> {
         let mut state = make_state();
         state.relay_query = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(
                 Arc::clone(relay) as Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>
             ),
@@ -18306,6 +18328,120 @@ mod tests {
             relay.lists_and_queries()?,
             (vec!["list 32".to_string()], 32),
             "Without the flag or `max_calls`, a REST scan takes 32"
+        );
+        Ok(())
+    }
+
+    /// A relay holding c-1, whose one RTP socket always reports the same
+    /// counters.
+    struct OneCallRelay;
+
+    impl crate::relay::reconcile::ReadOnlyRelay for OneCallRelay {
+        fn list(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+            _: u32,
+        ) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Calls(crate::relay::types::Enumeration {
+                call_ids: vec!["c-1@example.invalid".to_string()],
+                truncated: false,
+            }))
+        }
+        fn query(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+            call_id: &str,
+        ) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Call(
+                crate::output::query::relay_sessions::one_rtp_socket_call(call_id, 1000, 172_000),
+            ))
+        }
+        fn statistics(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("never asked")
+        }
+        fn describe(&self) -> String {
+            "one-call relay at 192.0.2.10:22222".to_string()
+        }
+    }
+
+    fn one_call_router() -> Result<axum::Router, TestError> {
+        let mut state = make_state();
+        state.relay_query = RelayRestConfig {
+            relay: Some(Arc::new(OneCallRelay)
+                as Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>),
+            permit: Some(live_permit()?),
+            ..RelayRestConfig::default()
+        };
+        Ok(build_router(state))
+    }
+
+    /// The second sessions request reports the rate since the first, from
+    /// one memory every request shares.
+    #[tokio::test]
+    async fn success_rest_a_second_sessions_ask_reports_the_rate() -> Result<(), TestError> {
+        let app = one_call_router()?;
+        let uri = "/v1/relay/sessions?call_id=c-1@example.invalid";
+        let (_, first) = cap_get(app.clone(), uri).await?;
+        let socket = &first["calls"][0]["tags"][0]["sockets"][0];
+        assert_eq!(socket["ingress_rate"]["state"], "no_rate_yet", "{first}");
+        let (status, second) = cap_get(app, uri).await?;
+        assert_eq!(status, StatusCode::OK, "{second}");
+        let socket = &second["calls"][0]["tags"][0]["sockets"][0];
+        assert_eq!(socket["ingress_rate"]["state"], "rate", "{second}");
+        assert_eq!(
+            socket["ingress_rate"]["kbps"], 0.0,
+            "no new bytes: {second}"
+        );
+        assert_eq!(
+            socket["captured_rate"]["state"], "not_captured",
+            "the server's capture holds no stream: {second}"
+        );
+        Ok(())
+    }
+
+    /// A server whose capture holds the call's stream to the socket samples
+    /// the capture tier too: its first answer reads `no_rate_yet`, not
+    /// `not_captured`.
+    #[tokio::test]
+    async fn success_rest_the_capture_tier_reads_the_servers_stream_store() -> Result<(), TestError>
+    {
+        let mut state = make_state();
+        crate::output::query::relay_capture::add_stream_to_relay_socket(
+            &mut state.stream_store.write(),
+            7,
+            "198.51.100.5:4000",
+            "c-1@example.invalid",
+        )?;
+        state.relay_query = RelayRestConfig {
+            relay: Some(Arc::new(OneCallRelay)
+                as Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>),
+            permit: Some(live_permit()?),
+            ..RelayRestConfig::default()
+        };
+        let (_, v) = cap_get(
+            build_router(state),
+            "/v1/relay/sessions?call_id=c-1@example.invalid",
+        )
+        .await?;
+        assert_eq!(
+            v["calls"][0]["tags"][0]["sockets"][0]["captured_rate"]["state"], "no_rate_yet",
+            "the capture holds the stream: {v}"
+        );
+        Ok(())
+    }
+
+    /// Each router built from its own state has its own memory.
+    #[tokio::test]
+    async fn edge_rest_a_new_server_starts_with_no_rate_yet() -> Result<(), TestError> {
+        let uri = "/v1/relay/sessions?call_id=c-1@example.invalid";
+        cap_get(one_call_router()?, uri).await?;
+        let (_, v) = cap_get(one_call_router()?, uri).await?;
+        assert_eq!(
+            v["calls"][0]["tags"][0]["sockets"][0]["ingress_rate"]["state"], "no_rate_yet",
+            "{v}"
         );
         Ok(())
     }

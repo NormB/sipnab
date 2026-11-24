@@ -10,6 +10,15 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The relay sessions answer gives each RTP socket's rate, from the relay and the capture.**
+  - Effect: Each socket shows packets per second and kbps, and names the byte basis: UDP payload for the relay, RTP payload for the capture.
+  - Do: Ask twice over REST, MCP or the TUI, or add `--relay-stats-interval N` to `--relay-sessions`.
+  - Limit: A socket the capture holds no stream for reads `not_captured`, never 0.
+  - Docs: [Read the rate media arrives at](docs/relay-statistics.md#read-the-rate-media-arrives-at)
+  - Credit: Inspired by irontec/sngrep#581.
+
 ### Changed
 
 - **Reading a capture file runs fewer instructions per SIP message.**

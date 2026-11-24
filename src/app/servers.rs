@@ -743,6 +743,7 @@ pub fn start_servers(
             // below gets the same value.
             alias_thresholds: selection.alias_thresholds,
             relay_query: crate::output::api::RelayRestConfig {
+                rates: Default::default(),
                 // The composition root chooses the implementation; the API layer
                 // only holds the trait object. `Copy` permit, so the MCP arm
                 // below still gets its own.

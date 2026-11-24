@@ -252,6 +252,14 @@
         ],
         "type": "object"
       },
+      "ByteBasis": {
+        "description": "What a kbit/s figure counts per packet.",
+        "enum": [
+          "udp_payload",
+          "rtp_payload"
+        ],
+        "type": "string"
+      },
       "CallEngine": {
         "description": "Which engine a call was asked of, and why, when engine selection is on.",
         "properties": {
@@ -4879,6 +4887,145 @@
         ],
         "type": "object"
       },
+      "RateView": {
+        "description": "A rate as every surface shows it: the state, and for a rate its numbers.",
+        "oneOf": [
+          {
+            "description": "A rate over the measured gap.",
+            "properties": {
+              "byte_basis": {
+                "$ref": "#/components/schemas/ByteBasis",
+                "description": "What a byte of `kbps` counts."
+              },
+              "kbps": {
+                "description": "kbit/s (1000 bits per second) on `byte_basis`.",
+                "format": "double",
+                "type": "number"
+              },
+              "over_ms": {
+                "description": "The measured gap between the two samples, in milliseconds.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "packets_per_s": {
+                "description": "Packets per second.",
+                "format": "double",
+                "type": "number"
+              },
+              "state": {
+                "enum": [
+                  "rate"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "packets_per_s",
+              "kbps",
+              "byte_basis",
+              "over_ms",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Only one sample so far: ask again for a rate.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "no_rate_yet"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The counters restarted between the samples.",
+            "properties": {
+              "reason": {
+                "$ref": "#/components/schemas/ResetReason",
+                "description": "Why."
+              },
+              "state": {
+                "enum": [
+                  "reset"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The source did not report the counters.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "not_reported"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The clock did not advance between the samples.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "no_interval"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An RTCP socket: only RTP is rated.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "rtcp_not_counted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The capture holds no stream on this socket for this call.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "not_captured"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Rates": {
         "description": "Carrier metrics per group over the dialog store, one dimension.",
         "properties": {
@@ -5205,6 +5352,15 @@
           "outcome"
         ],
         "type": "object"
+      },
+      "ResetReason": {
+        "description": "Why two samples gave no rate although both carried counters.",
+        "enum": [
+          "incarnation_changed",
+          "counter_backwards",
+          "out_of_range"
+        ],
+        "type": "string"
       },
       "RevertFailure": {
         "description": "One revert that did not happen.",
@@ -6308,6 +6464,17 @@
       "SessionSocket": {
         "description": "One relay socket, as the relay counted it. Never judged on its own.",
         "properties": {
+          "captured_rate": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RateView",
+                "description": "The rate this capture saw sent to this socket for this call since the\nprevious answer, `rtp_payload` basis; `not_captured` when the capture\nholds no such stream. Absent until rates are attached."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "egress": {
             "$ref": "#/components/schemas/Counters",
             "description": "What the relay sent out of it."
@@ -6322,6 +6489,17 @@
           "ingress": {
             "$ref": "#/components/schemas/Counters",
             "description": "What arrived at this socket."
+          },
+          "ingress_rate": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RateView",
+                "description": "The rate the relay received at this socket since the previous answer\nabout it, `udp_payload` basis. Absent until rates are attached."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "kernel": {
             "$ref": "#/components/schemas/KernelVerdict",

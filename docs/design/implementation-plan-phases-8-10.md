@@ -1682,17 +1682,17 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5943`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5943)<!-- "async fn get_stats(" -->) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5947`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5947)<!-- "async fn get_stats(" -->) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1249`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1249)<!-- "pub fn parse_bind_addr(addr:" -->) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1253`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1253)<!-- "pub fn parse_bind_addr(addr:" -->) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:288`](https://github.com/NormB/sipnab/blob/4eadcc9d8d9a2a8b6db252ec3d9a3a8008f0e15f/src/output/api.rs#L288), `:309`) |
-| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:587`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L587)<!-- "pub struct RateLimiter {" -->) |
+| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:591`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L591)<!-- "pub struct RateLimiter {" -->) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |
-| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:1092`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1092)<!-- "pub fn build_router(state:" -->) with new routes; reuse the existing `guard()` middleware |
+| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:1096`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1096)<!-- "pub fn build_router(state:" -->) with new routes; reuse the existing `guard()` middleware |
 
 | Phase 8.4 sink | Wraps |
 |---|---|

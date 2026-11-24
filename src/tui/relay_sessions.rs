@@ -47,6 +47,8 @@ pub struct SessionsCache {
     pub scan_requested: bool,
     /// The row under the cursor in the list.
     pub selected: usize,
+    /// The previous sample of each socket, for its rate; bounded per tier.
+    pub rates: crate::relay::rate::RateMemories,
 }
 
 impl SessionsCache {
@@ -59,9 +61,23 @@ impl SessionsCache {
     /// Take a finished snapshot, if one landed. A snapshot the relay answered
     /// replaces the kept answer; one it did not is kept beside it.
     pub fn absorb(&mut self, now: Instant) {
+        self.absorb_rated(now, crate::relay::rate::monotonic_now(), None);
+    }
+
+    /// [`Self::absorb`], giving the landed snapshot's sockets their rates:
+    /// the relay's from the reply stamps, the capture's from `capture`
+    /// sampled at `capture_at`.
+    pub fn absorb_rated(
+        &mut self,
+        now: Instant,
+        capture_at: Duration,
+        capture: Option<&crate::output::query::relay_sessions::CaptureCounts<'_>>,
+    ) {
         let Some(snapshot) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) else {
             return;
         };
+        let mut snapshot = snapshot;
+        snapshot.attach_rates(&mut self.rates, capture, capture_at);
         self.rx = None;
         if snapshot.answered() {
             self.answered = Some(snapshot);
@@ -477,12 +493,118 @@ mod tests {
         );
     }
 
+    /// One answered call c@example.invalid whose caller socket 30000 counted
+    /// `packets` of 172 bytes, its reply stamped at `at_ms`.
+    fn counted(packets: u64, at_ms: u64) -> RelaySessions {
+        let mut s = snapshot("ok", &[]);
+        s.calls = vec![SessionCall {
+            incarnation: None,
+            answered_at: Some(Duration::from_millis(at_ms)),
+            call_id: "c@example.invalid".to_string(),
+            outcome: "ok".to_string(),
+            detail: None,
+            sip_dialog: SipDialog::NotSeenEnded,
+            directions: Vec::new(),
+            unjudged: None,
+            tags: vec![SessionTag {
+                tag: "caller-tag-1".to_string(),
+                in_dialogue_with: Vec::new(),
+                is_media_subscriber: false,
+                sockets: vec![SessionSocket {
+                    ingress_rate: None,
+                    captured_rate: None,
+                    local_address: "192.0.2.11".to_string(),
+                    local_port: 30000,
+                    media_index: Some(1),
+                    kind: "rtp".to_string(),
+                    endpoint: None,
+                    ingress: Counters {
+                        packets: Some(packets),
+                        bytes: Some(packets * 172),
+                        errors: None,
+                    },
+                    egress: Counters::default(),
+                    last_packet: None,
+                    kernel: KernelVerdict::Userspace,
+                }],
+            }],
+            engine: None,
+        }];
+        s
+    }
+
+    /// Land `snapshot` in `cache` and absorb it with `capture` at `at_ms`.
+    fn land(
+        cache: &mut SessionsCache,
+        snapshot: RelaySessions,
+        at_ms: u64,
+        capture: &crate::output::query::relay_sessions::CaptureCounts<'_>,
+    ) -> Result<(), TestError> {
+        let (tx, rx) = mpsc::channel();
+        cache.rx = Some(rx);
+        tx.send(snapshot)?;
+        cache.absorb_rated(Instant::now(), Duration::from_millis(at_ms), Some(capture));
+        Ok(())
+    }
+
+    /// The selected call's sockets carry both tiers' rates from the second
+    /// refresh, and the per-call view prints them.
+    #[test]
+    fn success_the_second_refresh_shows_both_rates_in_the_call_view() -> Result<(), TestError> {
+        let mut cache = SessionsCache::default();
+        let first = |_: &str, _: &str, _: u16| SocketCapture {
+            linked: Some(0),
+            linked_bytes: Some(0),
+            unlinked: None,
+        };
+        let second = |_: &str, _: &str, _: u16| SocketCapture {
+            linked: Some(100),
+            linked_bytes: Some(16_000),
+            unlinked: None,
+        };
+        land(&mut cache, counted(1000, 0), 0, &first)?;
+        let text = compose_call(&cache, "c@example.invalid");
+        assert!(
+            text.contains("relay no rate yet: one answer so far; capture no rate yet"),
+            "first refresh: {text}"
+        );
+        land(&mut cache, counted(1100, 2000), 2000, &second)?;
+        let text = compose_call(&cache, "c@example.invalid");
+        assert!(
+            text.contains(
+                "relay 50.0 pps, 68.8 kbps (UDP payload, RTP header included) over 2.000 s; \
+                 capture 50.0 pps, 64.0 kbps (RTP payload only) over 2.000 s"
+            ),
+            "second refresh: {text}"
+        );
+        Ok(())
+    }
+
+    /// The TUI memory is bounded: a refresh never grows it past one entry
+    /// per socket per tier.
+    #[test]
+    fn edge_refreshing_one_call_keeps_one_entry_per_tier() -> Result<(), TestError> {
+        let mut cache = SessionsCache::default();
+        let none = |_: &str, _: &str, _: u16| SocketCapture::default();
+        for n in 0..50u64 {
+            land(&mut cache, counted(n * 100, n * 2000), n * 2000, &none)?;
+        }
+        assert_eq!(cache.rates.relay.len(), 1, "one relay socket");
+        assert!(
+            cache.rates.capture.is_empty(),
+            "nothing captured, nothing kept"
+        );
+        Ok(())
+    }
+
     /// Each relay socket's counts sit beside what the capture saw on it, two
     /// tiers named and never subtracted; a socket the capture has no stream
     /// on says so instead of 0.
     #[test]
     fn the_socket_compare_sets_two_tiers_side_by_side() {
         let socket = |port: u16, packets_in: u64| SessionSocket {
+            ingress_rate: None,
+            captured_rate: None,
             local_address: "192.0.2.11".to_string(),
             local_port: port,
             media_index: Some(1),
@@ -498,6 +620,8 @@ mod tests {
             kernel: KernelVerdict::Userspace,
         };
         let call = SessionCall {
+            incarnation: None,
+            answered_at: None,
             call_id: "c@example.invalid".to_string(),
             outcome: "ok".to_string(),
             detail: None,
@@ -515,6 +639,7 @@ mod tests {
         let captured = |_: &str, port: u16, way: Way| match (port, way) {
             (30000, Way::ToRelay) => SocketCapture {
                 linked: Some(2249),
+                linked_bytes: Some(359_840),
                 unlinked: None,
             },
             _ => SocketCapture::default(),
@@ -549,6 +674,7 @@ mod tests {
         }
         fn query(&self, _: &TransmitPermit, c: &str) -> anyhow::Result<ControlReply> {
             Ok(ControlReply::Call(crate::relay::types::CallView {
+                incarnation: None,
                 call_id: c.to_string(),
                 tags: Vec::new(),
             }))

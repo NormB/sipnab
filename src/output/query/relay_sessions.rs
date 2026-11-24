@@ -38,6 +38,7 @@ use serde_json::{Value, json};
 
 use crate::output::ReportFormat;
 use crate::output::relay_statistics as fmt;
+use crate::relay::rate::RateView;
 use crate::relay::reconcile::ReadOnlyRelay;
 use crate::relay::types::{CallView, ControlReply, RelayStream, RelayStreamFacts, StreamCounters};
 use crate::security::transmit_guard::TransmitPermit;
@@ -68,7 +69,10 @@ pub const STALL_NOTE: &str = "stalled means no packet for more than 2 s while an
      and loss bursts were not measured and can also produce it";
 
 /// What one `relay_sessions` call asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not comparable: it carries a clock, and two function pointers are not
+/// reliably equal or unequal.
+#[derive(Debug, Clone, Copy)]
 pub struct SessionsAsk<'a> {
     /// The Call-ID to query on every refresh, if any.
     pub selected: Option<&'a str>,
@@ -80,6 +84,9 @@ pub struct SessionsAsk<'a> {
     pub list_limit: u32,
     /// Set when the cap asked for was above the ceiling and was lowered to it.
     pub clamped: Option<crate::relay::scan_cap::CapClamp>,
+    /// The monotonic clock each reply is stamped with, for its rate:
+    /// [`crate::relay::rate::monotonic_now`] outside tests.
+    pub clock: fn() -> std::time::Duration,
 }
 
 impl<'a> SessionsAsk<'a> {
@@ -98,6 +105,7 @@ impl<'a> SessionsAsk<'a> {
             cap: cap.cap,
             list_limit: cap.cap,
             clamped: cap.clamped,
+            clock: crate::relay::rate::monotonic_now,
         }
     }
 }
@@ -215,6 +223,15 @@ pub struct SessionSocket {
     pub last_packet: Option<i64>,
     /// Kernel or userspace forwarding.
     pub kernel: KernelVerdict,
+    /// The rate the relay received at this socket since the previous answer
+    /// about it, `udp_payload` basis. Absent until rates are attached.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingress_rate: Option<crate::relay::rate::RateView>,
+    /// The rate this capture saw sent to this socket for this call since the
+    /// previous answer, `rtp_payload` basis; `not_captured` when the capture
+    /// holds no such stream. Absent until rates are attached.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captured_rate: Option<crate::relay::rate::RateView>,
 }
 
 /// One side of the call and its sockets.
@@ -282,6 +299,12 @@ pub struct SessionCall {
     /// Which engine was asked, when engine selection is on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<CallEngine>,
+    /// The call's incarnation, from the relay's creation stamp.
+    #[serde(skip)]
+    pub incarnation: Option<crate::relay::rate::Incarnation>,
+    /// When the reply arrived, on sipnab's monotonic clock.
+    #[serde(skip)]
+    pub answered_at: Option<std::time::Duration>,
 }
 
 /// A call the relay listed and this snapshot did not query.
@@ -567,6 +590,8 @@ pub fn judge_call(view: &CallView, sip_dialog: SipDialog) -> SessionCall {
         unjudged: branched.then(|| EARLY_MEDIA_UNJUDGED.to_string()),
         tags,
         engine: None,
+        incarnation: view.incarnation,
+        answered_at: None,
     }
 }
 
@@ -588,6 +613,8 @@ fn socket_of(s: &RelayStream) -> SessionSocket {
         egress: s.facts.egress.into(),
         last_packet: s.facts.last_packet,
         kernel: kernel_verdict(s.facts.flags.as_deref()),
+        ingress_rate: None,
+        captured_rate: None,
     }
 }
 
@@ -607,6 +634,8 @@ fn unanswered_call(
         unjudged: None,
         tags: Vec::new(),
         engine: None,
+        incarnation: None,
+        answered_at: None,
     }
 }
 
@@ -660,9 +689,16 @@ fn ask_call(
     permit: &TransmitPermit,
     call_id: &str,
     sip: SipDialog,
+    clock: fn() -> std::time::Duration,
 ) -> SessionCall {
     match relay.query(permit, call_id) {
-        Ok(ControlReply::Call(view)) => judge_call(&view, sip),
+        Ok(ControlReply::Call(view)) => {
+            let mut call = judge_call(&view, sip);
+            // Stamped as the reply arrives: the rate divides by the time
+            // between two replies, not between two snapshots.
+            call.answered_at = Some(clock());
+            call
+        }
         Ok(other) => {
             let (outcome, detail) = crate::relay::types::ReplyKind::CallView
                 .unanswered_by(&other, &format!("{label} for call {call_id}"));
@@ -740,7 +776,7 @@ pub fn relay_sessions(
     for call_id in &to_query {
         let sip = sip_dialog_of(sip_ended, call_id);
         out.calls
-            .push(ask_call(relay, &label, permit, call_id, sip));
+            .push(ask_call(relay, &label, permit, call_id, sip, ask.clock));
     }
     out.not_queried = listed
         .iter()
@@ -899,7 +935,7 @@ pub fn relay_sessions_routed(
                 let mut asked = None;
                 let mut entry = None;
                 with_engine(engine.control, &mut |r, label| {
-                    entry = Some(ask_call(r, label, permit, call_id, sip));
+                    entry = Some(ask_call(r, label, permit, call_id, sip, ask.clock));
                     asked = Some(label.to_string());
                 });
                 let entry = entry.unwrap_or_else(|| {
@@ -1090,7 +1126,93 @@ fn ask_previous(
     out
 }
 
+/// What this capture saw sent to a relay socket for a call, asked as
+/// `(call_id, address, port)`: [`crate::output::query::relay_capture::captured_on`]
+/// over the call's streams, one way, [`crate::output::query::relay_capture::Way::ToRelay`].
+pub type CaptureCounts<'a> =
+    dyn Fn(&str, &str, u16) -> crate::output::query::relay_capture::SocketCapture + 'a;
+
 impl RelaySessions {
+    /// Give every socket of every answered call its two rates, from the one
+    /// rule [`crate::relay::rate::rate`]: `ingress_rate` from the relay's
+    /// counters, `captured_rate` from `capture`.
+    ///
+    /// Each RTP socket is sampled into `memory` (relay tier at the reply's
+    /// own stamp, capture tier at `capture_at`), keyed by the engine that
+    /// answered, the Call-ID and the socket, with the call's incarnation. An
+    /// RTCP socket reads `rtcp_not_counted`. `capture` is `None` on a surface
+    /// that reads no media, and every `captured_rate` then reads
+    /// `not_captured`, as does a socket the capture holds no stream for.
+    pub fn attach_rates(
+        &mut self,
+        memory: &mut crate::relay::rate::RateMemories,
+        capture: Option<&CaptureCounts<'_>>,
+        capture_at: std::time::Duration,
+    ) {
+        use crate::relay::rate::{ByteBasis, RateKey, RateOutcome, Sample};
+        if !self.answered() {
+            return;
+        }
+        for call in &mut self.calls {
+            if call.outcome != "ok" {
+                continue;
+            }
+            // The engine that answered is part of the key: a call that moved
+            // has two unrelated counter sets.
+            let engine = call
+                .engine
+                .as_ref()
+                .and_then(|e| e.asked.clone())
+                .unwrap_or_else(|| self.relay.clone());
+            let at = call.answered_at.unwrap_or(capture_at);
+            for tag in &mut call.tags {
+                for s in &mut tag.sockets {
+                    if s.kind == "rtcp" {
+                        s.ingress_rate = Some(RateOutcome::RtcpNotCounted.into());
+                        s.captured_rate = Some(RateOutcome::RtcpNotCounted.into());
+                        continue;
+                    }
+                    let key = RateKey {
+                        engine: engine.clone(),
+                        call_id: call.call_id.clone(),
+                        address: s.local_address.clone(),
+                        port: s.local_port,
+                    };
+                    let relay = if s.kind == "rtp" {
+                        memory.relay.observe(
+                            key.clone(),
+                            Sample {
+                                at,
+                                incarnation: call.incarnation,
+                                packets: s.ingress.packets,
+                                bytes: s.ingress.bytes,
+                            },
+                            ByteBasis::UdpPayload,
+                        )
+                    } else {
+                        RateOutcome::NotReported
+                    };
+                    let seen = capture.map(|f| f(&call.call_id, &s.local_address, s.local_port));
+                    let captured = match seen {
+                        Some(c) if c.linked.is_some() => memory.capture.observe(
+                            key,
+                            Sample {
+                                at: capture_at,
+                                incarnation: call.incarnation,
+                                packets: c.linked,
+                                bytes: c.linked_bytes,
+                            },
+                            ByteBasis::RtpPayload,
+                        ),
+                        _ => RateOutcome::NotCaptured,
+                    };
+                    s.ingress_rate = Some(relay.into());
+                    s.captured_rate = Some(captured.into());
+                }
+            }
+        }
+    }
+
     /// Whether the relay answered its `list`.
     #[must_use]
     pub fn answered(&self) -> bool {
@@ -1399,7 +1521,39 @@ impl SessionCall {
             ],
             &rows,
         ));
+        out.push_str(&self.render_rates());
         out
+    }
+
+    /// One line per RTP socket that carries rates: the relay's and the
+    /// capture's, each with its units and byte basis. Empty when no rate was
+    /// attached.
+    #[must_use]
+    pub fn render_rates(&self) -> String {
+        let mut lines = String::new();
+        for t in &self.tags {
+            for s in t.sockets.iter().filter(|s| s.kind != "rtcp") {
+                let Some(relay) = &s.ingress_rate else {
+                    continue;
+                };
+                let captured = s
+                    .captured_rate
+                    .as_ref()
+                    .map_or_else(|| "not captured".to_string(), RateView::words);
+                lines.push_str(&format!(
+                    "  {}:{} from {}: relay {}; capture {}\n",
+                    s.local_address,
+                    s.local_port,
+                    super::clean(&t.tag),
+                    relay.words(),
+                    captured
+                ));
+            }
+        }
+        if lines.is_empty() {
+            return lines;
+        }
+        format!("Rates (what arrived at each relay RTP socket):\n{lines}")
     }
 }
 
@@ -1480,6 +1634,45 @@ fn is_rtp(stream: &RelayStream) -> bool {
 /// script in memory and records every ask. Nothing here opens a socket. The
 /// real recorded replies are read through the real parser in the relay
 /// implementation's own tests, because this layer may not name it.
+/// A relay answer about `call_id` with one party, `caller-tag-1`, whose one
+/// RTP socket, 192.0.2.11:30000, counted `packets` in and `bytes` in: for the
+/// rate tests of the REST and MCP surfaces.
+#[cfg(all(test, any(feature = "api", feature = "mcp")))]
+pub(crate) fn one_rtp_socket_call(call_id: &str, packets: u64, bytes: u64) -> CallView {
+    CallView {
+        call_id: call_id.to_string(),
+        incarnation: Some(crate::relay::rate::Incarnation {
+            created_s: 1_787_517_788,
+            created_us: 160_191,
+        }),
+        tags: vec![crate::relay::types::RelayTag {
+            tag: "caller-tag-1".to_string(),
+            in_dialogue_with: Vec::new(),
+            media_subscriptions: Vec::new(),
+            codec: None,
+            streams: vec![RelayStream {
+                local_address: "192.0.2.11".to_string(),
+                local_port: 30000,
+                endpoint: Some("192.0.2.21:40000".to_string()),
+                advertised_endpoint: None,
+                is_rtcp: false,
+                ssrcs: Vec::new(),
+                facts: RelayStreamFacts {
+                    media_index: Some(1),
+                    ingress: StreamCounters {
+                        packets: Some(packets),
+                        bytes: Some(bytes),
+                        errors: Some(0),
+                    },
+                    egress: StreamCounters::default(),
+                    last_packet: Some(100),
+                    flags: Some(vec!["RTP".to_string(), "confirmed".to_string()]),
+                },
+            }],
+        }],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1626,6 +1819,7 @@ mod tests {
     /// `callee`, each with an RTCP socket that received nothing.
     fn two_party(caller: RelayStreamFacts, callee: RelayStreamFacts) -> CallView {
         CallView {
+            incarnation: None,
             call_id: "c-1@example.invalid".to_string(),
             tags: vec![
                 party(
@@ -1898,6 +2092,7 @@ mod tests {
 
     fn ask(selected: Option<&str>, scan: bool, cap: u32) -> SessionsAsk<'_> {
         SessionsAsk {
+            clock: crate::relay::rate::monotonic_now,
             selected,
             scan,
             cap,
@@ -3412,6 +3607,440 @@ mod tests {
             !plain.render_status().contains("ceiling"),
             "{}",
             plain.render_status()
+        );
+        Ok(())
+    }
+
+    // ── Rates ───────────────────────────────────────────────────────────
+
+    use crate::output::query::relay_capture::SocketCapture;
+    use crate::relay::rate::{Incarnation, RateMemories, RateView, ResetReason};
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    thread_local! {
+        /// The monotonic clock a rate test's replies are stamped with.
+        static NOW_MS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    fn test_clock() -> Duration {
+        NOW_MS.with(|c| Duration::from_millis(c.get()))
+    }
+
+    const INCARNATION: Incarnation = Incarnation {
+        created_s: 1_787_517_788,
+        created_us: 160_191,
+    };
+
+    /// A relay holding one two-party call whose caller socket (30000) counted
+    /// `caller` packets and callee socket (30002) `callee`, 172 bytes each.
+    struct Counting {
+        caller: u64,
+        callee: u64,
+        incarnation: Option<Incarnation>,
+        label: &'static str,
+    }
+
+    impl Counting {
+        fn new(caller: u64, callee: u64) -> Self {
+            Self {
+                caller,
+                callee,
+                incarnation: Some(INCARNATION),
+                label: "counting relay at 192.0.2.10:2223",
+            }
+        }
+    }
+
+    impl ReadOnlyRelay for Counting {
+        fn list(&self, _: &TransmitPermit, _: u32) -> anyhow::Result<ControlReply> {
+            Ok(listed(&["c-1@example.invalid"], false))
+        }
+        fn query(&self, _: &TransmitPermit, _: &str) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Call(CallView {
+                incarnation: self.incarnation,
+                ..two_party(rtp(self.caller, 140, true), rtp(self.callee, 140, true))
+            }))
+        }
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("never asked")
+        }
+        fn describe(&self) -> String {
+            self.label.to_string()
+        }
+    }
+
+    /// A snapshot of `relay` about c-1 with its replies stamped at `ms`.
+    fn snapshot_at(relay: &Counting, ms: u64) -> Result<RelaySessions, TestError> {
+        NOW_MS.with(|c| c.set(ms));
+        let mut a = ask(Some("c-1@example.invalid"), false, 32);
+        a.clock = test_clock;
+        Ok(relay_sessions(
+            relay,
+            &permit()?,
+            &a,
+            &|_| false,
+            &chrono::Utc::now,
+        ))
+    }
+
+    /// The socket at `port` of the first call.
+    fn socket(s: &RelaySessions, port: u16) -> Result<&SessionSocket, TestError> {
+        s.calls
+            .first()
+            .ok_or("no call")?
+            .tags
+            .iter()
+            .flat_map(|t| t.sockets.iter())
+            .find(|x| x.local_port == port)
+            .ok_or_else(|| format!("no socket {port}").into())
+    }
+
+    /// A capture that saw `packets` packets of 160 payload bytes sent to
+    /// port 30000 for c-1, and nothing anywhere else.
+    fn saw(packets: u64) -> impl Fn(&str, &str, u16) -> SocketCapture {
+        move |call: &str, _: &str, port: u16| {
+            if call == "c-1@example.invalid" && port == 30000 {
+                SocketCapture {
+                    linked: Some(packets),
+                    linked_bytes: Some(packets * 160),
+                    unlinked: None,
+                }
+            } else {
+                SocketCapture::default()
+            }
+        }
+    }
+
+    /// Two snapshots, `gap_ms` apart, with the caller's count going from
+    /// `from` to `to`, rated into one memory; the second is returned.
+    fn rated_pair(
+        first: &Counting,
+        second: &Counting,
+        gap_ms: u64,
+        capture: (Option<u64>, Option<u64>),
+    ) -> Result<RelaySessions, TestError> {
+        let mut memory = RateMemories::default();
+        let mut one = snapshot_at(first, 10_000)?;
+        let c1 = capture.0.map(saw);
+        one.attach_rates(
+            &mut memory,
+            c1.as_ref().map(|f| f as &CaptureCounts<'_>),
+            Duration::from_millis(10_000),
+        );
+        let mut two = snapshot_at(second, 10_000 + gap_ms)?;
+        let c2 = capture.1.map(saw);
+        two.attach_rates(
+            &mut memory,
+            c2.as_ref().map(|f| f as &CaptureCounts<'_>),
+            Duration::from_millis(10_000 + gap_ms),
+        );
+        Ok(two)
+    }
+
+    fn a_rate(packets_per_s: u64, kbps: u64, basis: ByteBasis, over_ms: u64) -> RateView {
+        RateView::Rate {
+            packets_per_s: crate::relay::rate::Tenths(packets_per_s),
+            kbps: crate::relay::rate::Tenths(kbps),
+            byte_basis: basis,
+            over_ms,
+        }
+    }
+
+    use crate::relay::rate::ByteBasis;
+
+    #[test]
+    fn success_two_snapshots_give_the_relay_rate_per_socket() -> Result<(), TestError> {
+        let two = rated_pair(
+            &Counting::new(1000, 900),
+            &Counting::new(1100, 980),
+            2000,
+            (None, None),
+        )?;
+        assert_eq!(
+            socket(&two, 30000)?.ingress_rate,
+            Some(a_rate(500, 688, ByteBasis::UdpPayload, 2000)),
+            "caller: 100 packets of 172 B in 2 s"
+        );
+        assert_eq!(
+            socket(&two, 30002)?.ingress_rate,
+            Some(a_rate(400, 550, ByteBasis::UdpPayload, 2000)),
+            "callee: 80 packets of 172 B in 2 s"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_capture_rate_sits_beside_the_relay_rate() -> Result<(), TestError> {
+        let two = rated_pair(
+            &Counting::new(1000, 900),
+            &Counting::new(1100, 980),
+            2000,
+            (Some(990), Some(1090)),
+        )?;
+        assert_eq!(
+            socket(&two, 30000)?.captured_rate,
+            Some(a_rate(500, 640, ByteBasis::RtpPayload, 2000)),
+            "100 packets of 160 payload bytes in 2 s"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_first_snapshot_reads_no_rate_yet_on_both_tiers() -> Result<(), TestError> {
+        let mut memory = RateMemories::default();
+        let mut one = snapshot_at(&Counting::new(1000, 900), 0)?;
+        let capture = saw(10);
+        one.attach_rates(&mut memory, Some(&capture), Duration::ZERO);
+        let s = socket(&one, 30000)?;
+        assert_eq!(s.ingress_rate, Some(RateView::NoRateYet), "relay tier");
+        assert_eq!(s.captured_rate, Some(RateView::NoRateYet), "capture tier");
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_text_answer_names_both_rates_with_units_and_basis() -> Result<(), TestError> {
+        let two = rated_pair(
+            &Counting::new(1000, 900),
+            &Counting::new(1100, 980),
+            2000,
+            (Some(990), Some(1090)),
+        )?;
+        let text = two.calls.first().ok_or("no call")?.render();
+        assert!(
+            text.contains(
+                "Rates (what arrived at each relay RTP socket):\n  192.0.2.11:30000 from \
+                 caller-tag-1: relay 50.0 pps, 68.8 kbps (UDP payload, RTP header included) \
+                 over 2.000 s; capture 50.0 pps, 64.0 kbps (RTP payload only) over 2.000 s\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "  192.0.2.11:30002 from callee-tag-1: relay 40.0 pps, 55.0 kbps (UDP payload, \
+                 RTP header included) over 2.000 s; capture not captured\n"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains(":30001 from"), "no line for RTCP: {text}");
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_json_answer_carries_both_rates() -> Result<(), TestError> {
+        let two = rated_pair(
+            &Counting::new(1000, 900),
+            &Counting::new(1100, 980),
+            2000,
+            (None, None),
+        )?;
+        let body = two.body();
+        let s = &body["calls"][0]["tags"][0]["sockets"][0];
+        assert_eq!(s["local_port"], 30000, "{s}");
+        assert_eq!(s["ingress_rate"]["state"], "rate", "{s}");
+        assert_eq!(s["ingress_rate"]["packets_per_s"], 50.0, "{s}");
+        assert_eq!(s["ingress_rate"]["kbps"], 68.8, "{s}");
+        assert_eq!(s["ingress_rate"]["byte_basis"], "udp_payload", "{s}");
+        assert_eq!(s["captured_rate"]["state"], "not_captured", "{s}");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_new_incarnation_between_snapshots_is_a_reset() -> Result<(), TestError> {
+        let mut later = Counting::new(1100, 980);
+        later.incarnation = Some(Incarnation {
+            created_s: 1_789_316_560,
+            created_us: 132_898,
+        });
+        let two = rated_pair(&Counting::new(1000, 900), &later, 2000, (None, None))?;
+        assert_eq!(
+            socket(&two, 30000)?.ingress_rate,
+            Some(RateView::Reset {
+                reason: ResetReason::IncarnationChanged
+            }),
+            "the Call-ID was set up again"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_relay_counter_going_backwards_is_a_reset() -> Result<(), TestError> {
+        let two = rated_pair(
+            &Counting::new(1000, 900),
+            &Counting::new(10, 980),
+            2000,
+            (None, None),
+        )?;
+        assert_eq!(
+            socket(&two, 30000)?.ingress_rate,
+            Some(RateView::Reset {
+                reason: ResetReason::CounterBackwards
+            }),
+            "never a negative rate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_surface_without_a_capture_reads_not_captured_never_zero() -> Result<(), TestError>
+    {
+        let two = rated_pair(
+            &Counting::new(1000, 900),
+            &Counting::new(1100, 980),
+            2000,
+            (None, None),
+        )?;
+        assert_eq!(
+            socket(&two, 30000)?.captured_rate,
+            Some(RateView::NotCaptured),
+            "no capture: not_captured"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_socket_the_capture_holds_nothing_for_reads_not_captured() -> Result<(), TestError>
+    {
+        let two = rated_pair(
+            &Counting::new(1000, 900),
+            &Counting::new(1100, 980),
+            2000,
+            (Some(10), Some(60)),
+        )?;
+        assert_eq!(
+            socket(&two, 30002)?.captured_rate,
+            Some(RateView::NotCaptured),
+            "the capture saw nothing sent to the callee's socket"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_counters_the_relay_did_not_report_are_not_reported() -> Result<(), TestError> {
+        let mut memory = RateMemories::default();
+        let mut one = snapshot_at(&Counting::new(1000, 900), 0)?;
+        for tag in &mut one.calls[0].tags {
+            for s in &mut tag.sockets {
+                s.ingress.packets = None;
+            }
+        }
+        one.attach_rates(&mut memory, None, Duration::ZERO);
+        assert_eq!(
+            socket(&one, 30000)?.ingress_rate,
+            Some(RateView::NotReported),
+            "never 0"
+        );
+        assert!(memory.relay.is_empty(), "nothing to rate against was kept");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_unanswered_snapshot_gets_no_rates_and_leaves_the_memory() -> Result<(), TestError>
+    {
+        let mut memory = RateMemories::default();
+        let mut one = snapshot_at(&Counting::new(1000, 900), 0)?;
+        one.reach = "unreachable".to_string();
+        one.attach_rates(&mut memory, None, Duration::ZERO);
+        assert_eq!(socket(&one, 30000)?.ingress_rate, None, "not attached");
+        assert!(memory.relay.is_empty(), "memory untouched");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_rtcp_socket_is_not_rated_on_either_tier() -> Result<(), TestError> {
+        let two = rated_pair(
+            &Counting::new(1000, 900),
+            &Counting::new(1100, 980),
+            2000,
+            (Some(1), Some(2)),
+        )?;
+        let s = socket(&two, 30001)?;
+        assert_eq!(s.ingress_rate, Some(RateView::RtcpNotCounted), "relay");
+        assert_eq!(s.captured_rate, Some(RateView::RtcpNotCounted), "capture");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_socket_without_flags_is_not_reported_by_the_relay() -> Result<(), TestError> {
+        let mut memory = RateMemories::default();
+        let mut one = snapshot_at(&Counting::new(1000, 900), 0)?;
+        for tag in &mut one.calls[0].tags {
+            for s in &mut tag.sockets {
+                s.kind = "not_reported".to_string();
+            }
+        }
+        one.attach_rates(&mut memory, None, Duration::ZERO);
+        assert_eq!(
+            socket(&one, 30000)?.ingress_rate,
+            Some(RateView::NotReported),
+            "not known to be RTP"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_same_call_on_another_engine_has_its_own_counters() -> Result<(), TestError> {
+        let mut memory = RateMemories::default();
+        let mut one = snapshot_at(&Counting::new(1000, 900), 0)?;
+        one.attach_rates(&mut memory, None, Duration::ZERO);
+        let mut moved = Counting::new(1100, 980);
+        moved.label = "counting relay at 192.0.2.20:2223";
+        let mut two = snapshot_at(&moved, 2000)?;
+        two.attach_rates(&mut memory, None, Duration::from_millis(2000));
+        assert_eq!(
+            socket(&two, 30000)?.ingress_rate,
+            Some(RateView::NoRateYet),
+            "another engine's counters are unrelated"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_relay_tier_divides_by_the_reply_stamps_not_the_capture_clock()
+    -> Result<(), TestError> {
+        let mut memory = RateMemories::default();
+        let capture = saw(0);
+        let mut one = snapshot_at(&Counting::new(1000, 900), 0)?;
+        one.attach_rates(&mut memory, Some(&capture), Duration::from_millis(500));
+        let later_capture = saw(150);
+        let mut two = snapshot_at(&Counting::new(1100, 980), 2000)?;
+        two.attach_rates(
+            &mut memory,
+            Some(&later_capture),
+            Duration::from_millis(3500),
+        );
+        let s = socket(&two, 30000)?;
+        assert_eq!(
+            s.ingress_rate,
+            Some(a_rate(500, 688, ByteBasis::UdpPayload, 2000)),
+            "relay: the replies were 2 s apart"
+        );
+        assert_eq!(
+            s.captured_rate,
+            Some(a_rate(500, 640, ByteBasis::RtpPayload, 3000)),
+            "capture: its samples were 3 s apart"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_reply_is_stamped_by_the_ask_clock() -> Result<(), TestError> {
+        let one = snapshot_at(&Counting::new(1000, 900), 4321)?;
+        assert_eq!(
+            one.calls.first().ok_or("no call")?.answered_at,
+            Some(Duration::from_millis(4321)),
+            "the stamp is the ask's clock"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_reply_carries_the_relay_incarnation_to_the_call() -> Result<(), TestError> {
+        let one = snapshot_at(&Counting::new(1000, 900), 0)?;
+        assert_eq!(
+            one.calls.first().ok_or("no call")?.incarnation,
+            Some(INCARNATION),
+            "judge_call keeps it"
         );
         Ok(())
     }

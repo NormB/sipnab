@@ -145,9 +145,9 @@ concrete rather than theoretical:
 
 - `DialogSummary.from_user` / `to_user` ([`model.rs:55-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L55-L57)<!-- "pub from_user: Option<String>," -->,
   populated at `:91-92`) are copied off the From/To URIs.
-- `get_message` ([`server.rs:5933`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5933)<!-- "pub async fn get_message(" -->) returns headers and
+- `get_message` ([`server.rs:5934`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5934)<!-- "pub async fn get_message(" -->) returns headers and
   body.
-- `search_messages` ([`server.rs:6394`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6394)<!-- "pub async fn search_messages(" -->) returns a
+- `search_messages` ([`server.rs:6395`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6395)<!-- "pub async fn search_messages(" -->) returns a
   `snippet` built at [`:1391`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/mcp/server.rs#L1391) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.
@@ -206,7 +206,7 @@ states the reasoning, and `:21-29` states why the fix is a type:
 > remembering.
 
 Both fixes reached MCP, and how they reached it is the point. `resolve_in_root`
-([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->) accepts a bare filename and rejects
+([`server.rs:1234`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1234)<!-- "pub(crate) fn resolve_in_root(" -->) accepts a bare filename and rejects
 any separator, `..`, root prefix or drive letter *before* touching the
 filesystem — its doc comment (`:163-173`) argues that requiring one component
 has no middle ground, where "every clever normaliser eventually meets a symlink,
@@ -324,7 +324,7 @@ touching the analysis at all.
   Call-IDs, a verdict per call, free text — to a bare filename under
   `--mcp-file-root`.
 - It reaches the filesystem through `resolve_in_root`
-  ([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->) exactly as `export_capture` and
+  ([`server.rs:1234`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1234)<!-- "pub(crate) fn resolve_in_root(" -->) exactly as `export_capture` and
   `export_audio` do, and therefore inherits `ProtectedInputs::check` and cannot
   land on a capture.
 - **Nothing reads it back.** No tool, no report, no REST route, no diagnosis.

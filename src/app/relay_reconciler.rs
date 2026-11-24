@@ -160,6 +160,7 @@ mod tests {
 
         fn query(&self, _permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: call_id.to_owned(),
                 tags: vec![RelayTag {
                     tag: "from-tag".to_owned(),

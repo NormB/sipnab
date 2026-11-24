@@ -22557,7 +22557,7 @@ out the end-of-run summary on stderr.
 | `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns. See [Fail a build on what a capture shows](expectations.md) |
 | `--relay-holdings` | -- | | 0.5.231 | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#list-the-calls-the-relay-holds) |
 | `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most held calls one relay ask covers: the Call-IDs `--relay-holdings` asks for, the held calls `--relay-sessions` and the TUI sessions view query, and the default of REST and MCP asks that name no `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Above 1024 every surface asks for 1024 instead, and the answer says so (`cap_clamped`). A `list` above 32 travels over TCP and needs rtpengine's `listen-tcp-ng`. Needs `--rtpengine-control`; `0` exits 2. How-to: [Choose how many held calls one ask covers](relay-statistics.md#choose-how-many-held-calls-one-ask-covers) |
-| `--relay-sessions` | -- | | 0.5.234 | Ask the relay named by `--rtpengine-control` which calls it holds and, for each, whether media reaches it each way; print the answer and exit. Sends one `list`, then one `query` per held call up to `--relay-holdings-max`. Each party's RTP socket gets a verdict from the relay's own counters and clock: `never_received`, `stalled` (no packet for more than 2 s while another socket of the call received one), `flowing` or `not_reported`. A call with an early media branch shows its counters with no verdict. Every value is `relay_reported`. Needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. Exits 0 with the answer and 1 when the relay did not answer its `list`. `--json` prints the body of `GET /v1/relay/sessions?scan=true`. See [Ask the relay whether media reaches it](#ask-the-relay-whether-media-reaches-it). Feature: `native`. How-to: [See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay) |
+| `--relay-sessions` | -- | | 0.5.234 | Ask the relay named by `--rtpengine-control` which calls it holds and, for each, whether media reaches it each way; print the answer and exit. Sends one `list`, then one `query` per held call up to `--relay-holdings-max`. Each party's RTP socket gets a verdict from the relay's own counters and clock: `never_received`, `stalled` (no packet for more than 2 s while another socket of the call received one), `flowing` or `not_reported`. A call with an early media branch shows its counters with no verdict. Every value is `relay_reported`. Needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. Exits 0 with the answer and 1 when the relay did not answer its `list`. `--json` prints the body of `GET /v1/relay/sessions?scan=true`. With `--relay-stats-interval N` it asks twice, `N` seconds apart, and prints the second answer with each RTP socket's rate in packets per second and kbit/s (UDP payload, RTP header included); how-to: [Read the rate media arrives at](relay-statistics.md#read-the-rate-media-arrives-at). See [Ask the relay whether media reaches it](#ask-the-relay-whether-media-reaches-it). Feature: `native`. How-to: [See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay) |
 | `--relay-sessions-call` | `<CALL-ID>` | | 0.5.234 | With `--relay-sessions`, ask about this Call-ID only: one `list` and one `query`, without querying the other held calls. REST's `call_id`. Needs `--relay-sessions` |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
@@ -23482,7 +23482,7 @@ clients' as `192.0.2.21`.
 | `--relay-stats` | -- | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its OWN statistics -- packets relayed, sessions, its own loss and jitter -- and print them. With `--rtpengine-engine` or `--rtpengine-ng-engine` rows, sipnab asks every listed engine and prints each engine's table. They are `relay_reported`: a claim from the box, not a measurement sipnab made, and the header says so. **Same live source `--rtpengine-control` needs**, because asking transmits. On `-I <file>`, with no `--rtpengine-control`, or with an address that is not `IP:port`, the run exits 2 before it reads anything, with the reason on stderr. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-the-relay-for-its-counters) |
 | `--relay-stats-call` | `<CALL-ID>` | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its own counters about ONE call, by Call-ID: per-stream and per-SSRC packet and byte counts, RTP and RTCP totals, as the relay counts them (`relay_reported`). A relay not holding the call answers in its own words, which sipnab reports rather than inventing a not-found. With engine rows the run has seen no SIP for the call, so it asks each listed engine for its `list` and asks the engine whose list names the call, and the header names that engine. Same live-source gate as `--relay-stats`. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-about-one-call) |
 | `--relay-stats-list` | -- | -- | 0.5.169 | List which statistics the relay named by `--rtpengine-control` knows, rather than their values. The key set is version-specific, so "what can I ask for?" is a real question; sipnab asks the relay rather than reading a built-in table, and the header names how it got the set (for rtpengine, the relay listed them in a `statistics` reply). Same live-source gate as `--relay-stats`, because listing asks the relay and asking transmits. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#list-the-statistics-the-relay-knows) |
-| `--relay-stats-interval` | `<SECONDS>` | -- | 0.5.170 | Poll the relay named by `--rtpengine-control` for its statistics every SECONDS, for as long as the capture runs. Nothing polls by default. One transaction per interval, the next beginning only once the previous returns, so a slow relay slows the cadence rather than stacking requests. Each polled reading says it was `polled` and names the interval. With `--rtpengine-engine` or `--rtpengine-ng-engine` rows, each poll asks every listed engine in turn and prints each reading. CLI only (a poll is a standing instruction to transmit; the REST/MCP caller does not own the host). Its newest reading is readable over REST `GET /v1/relay/stats/polled` and the MCP tool `relay_stats_polled`, which send nothing and need no opt-in. Same live-source gate as `--relay-stats`. Range 1--3600. A headless run prints each reading to stdout, so `--mcp` on stdio refuses it; `--mcp-transport http` accepts it. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#watch-the-counters-move), and [Read the newest poll without asking again](relay-statistics.md#read-the-newest-poll-without-asking-again) |
+| `--relay-stats-interval` | `<SECONDS>` | -- | 0.5.170 | Poll the relay named by `--rtpengine-control` for its statistics every SECONDS, for as long as the capture runs. Nothing polls by default. With `--relay-sessions` it is the gap between that answer's two asks, and the run then exits; it is also the TUI sessions view's refresh. One transaction per interval, the next beginning only once the previous returns, so a slow relay slows the cadence rather than stacking requests. Each polled reading says it was `polled` and names the interval. With `--rtpengine-engine` or `--rtpengine-ng-engine` rows, each poll asks every listed engine in turn and prints each reading. CLI only (a poll is a standing instruction to transmit; the REST/MCP caller does not own the host). Its newest reading is readable over REST `GET /v1/relay/stats/polled` and the MCP tool `relay_stats_polled`, which send nothing and need no opt-in. Same live-source gate as `--relay-stats`. Range 1--3600. A headless run prints each reading to stdout, so `--mcp` on stdio refuses it; `--mcp-transport http` accepts it. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#watch-the-counters-move), and [Read the newest poll without asking again](relay-statistics.md#read-the-newest-poll-without-asking-again) |
 | `--relay-compare` | `<CALL-ID>` | -- | 0.5.169 | Compare the relay's own RTP packet count for one call against what sipnab measured on the wire. It shows the relay's `totals.RTP.packets` for the call (`relay_reported`) beside sipnab's own count of the RTP packets it captured for it (`sipnab_measured`), both labeled, with a word verdict (`match` or `differ`) and a direction-aware note. The two count different sockets over different windows, so an ordinary gap is not a relay fault: if sipnab counted fewer the note names the undercount causes (a mirror-port drop, a mid-call restart) and points at `capture_health`; if sipnab counted more it names the usual cause -- a capture that sees both sides of the relay hairpin counts each packet twice, so a point upstream and downstream reads about twice the relay's count. It never sums the counts. Runs after capture, when sipnab's tally is final; sipnab reports a call the relay does not hold, or one it captured no RTP for, distinctly rather than comparing it against a made-up zero. Same live-source gate as `--relay-stats`. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#compare-the-relays-count-with-your-capture) |
 
 **Examples**
@@ -45438,12 +45438,12 @@ resource.
 | captures | 11 | 12,723 | 30,259 |
 | security | 6 | 10,046 | 10,046 |
 | media | 4 | 3,480 | 16,122 |
-| relay | 5 | 4,988 | 39,164 |
+| relay | 5 | 4,988 | 42,165 |
 | tfps | 7 | 5,717 | 16,267 |
 | server | 6 | 5,976 | 38,359 |
 | vcon | 7 | 10,806 | 34,674 |
 | tls | 3 | 2,903 | 5,009 |
-| full | 80 | 93,644 | 332,773 |
+| full | 80 | 93,644 | 335,774 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
@@ -74531,6 +74531,125 @@ first status line says `queried N of M`, with `N` at most the cap. A cap
 of 5000 reads `"cap": 1024` with `"cap_clamped": {"requested": 5000,
 "ceiling": 1024}`, and the text answer says `the ceiling is 1024`. The
 troubleshooting list above covers the refusals.
+
+## Read the rate media arrives at
+
+Each RTP socket in a sessions answer carries two rates: what the relay
+received there (`ingress_rate`), and what this capture saw sent to it
+(`captured_rate`). Use them to tell a party that sends at the codec's rate
+from one that sends in bursts, sends too little, or stopped, and to see
+whether the capture point is on the media path at all.
+
+sipnab gives every rate in two units:
+
+| Unit | Relay (`ingress_rate`) | Capture (`captured_rate`) |
+|---|---|---|
+| `packets_per_s` | packets the relay counted | packets the capture saw |
+| `kbps` (1000 bits per second) | `byte_basis: udp_payload`: the RTP header and its payload, 172 bytes per 20 ms G.711 packet | `byte_basis: rtp_payload`: the RTP payload only, 160 bytes per 20 ms G.711 packet |
+
+So one G.711 party at 50 packets per second reads `50.0` packets per second
+on both tiers, `kbps` `68.8` from the relay and `kbps` `64.0` from the
+capture. The 4.8 kbit/s between them is the RTP header, not lost media.
+Compare packets per second across the two tiers, and `kbps` only within one
+tier.
+
+### What the rates need
+
+- **Everything the sessions answer needs** (above): `--rtpengine-control`,
+  a live source, and `--api-allow-relay-query` or `--mcp-allow-relay-query`
+  for REST and MCP.
+- **On the other system, rtpengine: nothing to change.** The rate comes from
+  the `stats` counters rtpengine already returns to `query`. Its
+  `listen-ng` address must answer sipnab, as for every ask on this page. A
+  scan above 32 calls needs `listen-tcp-ng` on the same address.
+- **For `captured_rate`**, the RTP must pass the host where sipnab captures.
+  When it does not, for example when sipnab runs on the SIP proxy and the
+  relay is in another data center, every `captured_rate` reads
+  `not_captured`, never 0, and the relay's rate is the one to read.
+- **Two samples.** A rate needs two answers about the same socket. The first
+  answer reads `no_rate_yet`.
+
+### Ask for the rates
+
+From the command line, `--relay-stats-interval N` with `--relay-sessions`
+asks twice, `N` seconds apart, prints the second answer and exits. sipnab
+sends one `list` and the queries for each of the two answers, and nothing
+after:
+
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 --relay-sessions --relay-stats-interval 2 2>/dev/null
+```
+
+Each call's text ends with a "Rates" section, one line per RTP socket. With
+`--json`, each socket carries `ingress_rate` and `captured_rate`. The run
+reads no media, so its `captured_rate` is always `not_captured`. Without
+`--relay-stats-interval`, the one answer reads `no_rate_yet`.
+
+Over REST and MCP, sipnab keeps the previous answer about each socket, and
+each ask reports the rate since the previous ask by any caller. Ask once:
+
+```bash
+curl -s "http://127.0.0.1:18731/v1/relay/sessions?call_id=a@example.invalid"
+```
+
+Then, a few seconds later, ask again and read the rates:
+
+```bash
+curl -s "http://127.0.0.1:18731/v1/relay/sessions?call_id=a@example.invalid" \
+  | jq '.calls[].tags[].sockets[] | {local_port, ingress_rate, captured_rate}'
+```
+
+An MCP agent calls `query_relay` with `sessions: true` twice in the same way.
+
+In the terminal UI, the sessions view (`S`, then `H`) asks the call under
+the cursor every 2 seconds, or every `--relay-stats-interval` seconds. Open a
+call with Enter: its "Rates" lines show both tiers from the second refresh.
+
+### Check that the rates are there
+
+A rated socket reads, in JSON:
+
+```json
+"ingress_rate": {"state": "rate", "packets_per_s": 50.0, "kbps": 68.8,
+                 "byte_basis": "udp_payload", "over_ms": 2000}
+```
+
+and in text:
+
+```text
+Rates (what arrived at each relay RTP socket):
+  192.0.2.11:30000 from 1SIPpTag0113926: relay 50.0 pps, 68.8 kbps (UDP payload, RTP header included) over 2.000 s; capture not captured
+```
+
+`over_ms` is the measured time between the two answers, the divisor of the
+rate. The example values are the ones sipnab's tests check for one G.711
+party, not a recording of a live relay.
+
+### When the rate is not what you expect
+
+- **`no_rate_yet`.** This is the first answer about the socket since the
+  server started, or sipnab forgot the previous one. Ask again. sipnab keeps
+  at most 4096 sockets per tier and forgets the least recently asked first.
+- **`reset` with `incarnation_changed`.** The relay set the Call-ID up again
+  between the two answers. The next answer gives a rate.
+- **`reset` with `counter_backwards`.** A counter went down: the relay
+  restarted or replaced the stream. The next answer gives a rate.
+- **`reset` with `out_of_range`.** The counters grew by more than a
+  10 Gbit/s link carries in the time between the answers (the ceiling
+  `MAX_BITS_PER_SECOND`, 10,000,000,000 bits per second). sipnab reports no
+  rate for such a jump.
+- **`not_reported`.** The relay's answer carried no packet or byte counter
+  for that socket, or no flags saying it is RTP.
+- **`rtcp_not_counted`.** An RTCP socket. sipnab rates only RTP.
+- **`no_interval`.** The two answers carried the same time. Ask again.
+- **`not_captured` beside a relay rate.** The capture holds no stream sent
+  to that socket for this call: the media does not pass the capture point,
+  or the capture filter leaves it out.
+- **A rate with a large `over_ms`.** Another caller's ask, or a slow relay,
+  set the time between samples. The rate is the average over that time.
+- **With rtcp-mux**, RTCP arrives on the RTP socket. Whether rtpengine
+  counts it in that socket's `stats` was not measured, so a socket with
+  rtcp-mux may read a little above the codec's rate.
 
 ## Compare the relay's count with your capture
 
