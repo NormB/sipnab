@@ -1314,6 +1314,16 @@ pub fn analyze(
     analyze_with(dialog_store, stream_store, filter, &facts)
 }
 
+// Per-thread count of `analyze_with` runs, test-only: pins that a vCon export
+// reads its blind spots without the pass over every dialog (thread-local so
+// parallel tests cannot cross-talk).
+#[cfg(test)]
+thread_local! {
+    /// Test-only per-thread count of [`analyze_with`] runs.
+    pub(crate) static ANALYZE_WITH_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// [`analyze`] against facts supplied by the caller.
 ///
 /// The pure form: everything the verdict depends on arrives as an argument, so
@@ -1325,6 +1335,8 @@ pub fn analyze_with(
     filter: Option<&FilterExpr>,
     facts: &CaptureFacts,
 ) -> CaptureAnalysis {
+    #[cfg(test)]
+    ANALYZE_WITH_CALLS.with(|c| c.set(c.get() + 1));
     let mut acc = Accumulator::default();
 
     let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
@@ -1353,13 +1365,45 @@ pub fn analyze_with(
     // separate flag is a second place to forget, and the failure mode of
     // forgetting is a capture that did not decode reporting as a clean one —
     // which is the exact defect this module is written to be incapable of.
-    let complete = !findings.iter().any(|f| f.severity == Severity::Blind);
+    let complete = read_completely(&findings);
     CaptureAnalysis {
         schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
         filter: filter.map(|f| f.source().to_string()),
         frames_read: facts.frames_read,
         dialogs_examined: selection.dialogs.len(),
         streams_examined,
+        complete,
+        findings,
+    }
+}
+
+/// Whether sipnab read all of its input: no finding is [`Severity::Blind`].
+/// The one rule [`CaptureAnalysis::complete`] is derived by.
+fn read_completely(findings: &[Finding]) -> bool {
+    !findings.iter().any(|f| f.severity == Severity::Blind)
+}
+
+/// The [`Severity::Blind`] findings [`analyze_with`] ranks for `facts`,
+/// without its pass over every dialog.
+///
+/// Every Blind kind comes from the capture's facts alone (the incompleteness
+/// collector), so these findings, their order and `complete` are the ones the
+/// full analysis gives. A vCon export reads nothing else of the analysis, and
+/// the full one reads every dialog and stream of the capture for each export.
+/// `dialogs_examined` and `streams_examined` are 0 because no dialog was read;
+/// a caller that reports those counts runs [`analyze_with`].
+#[must_use]
+pub fn analyze_blind_spots(facts: &CaptureFacts) -> CaptureAnalysis {
+    let mut acc = Accumulator::default();
+    collect_incompleteness(&mut acc, facts);
+    let findings = acc.into_findings();
+    let complete = read_completely(&findings);
+    CaptureAnalysis {
+        schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+        filter: None,
+        frames_read: facts.frames_read,
+        dialogs_examined: 0,
+        streams_examined: 0,
         complete,
         findings,
     }
@@ -3450,6 +3494,254 @@ mod tests {
     fn facts_findings(facts: &CaptureFacts) -> CaptureAnalysis {
         let (dialogs, streams) = stores();
         analyze_with(&dialogs, &streams, None, facts)
+    }
+
+    /// `n` skipped ports, busiest first, `messages` each.
+    fn skipped_ports(n: u16, messages: u64) -> Vec<crate::pipeline::SkippedPort> {
+        (0..n)
+            .map(|i| crate::pipeline::SkippedPort {
+                port: 5060 + i,
+                messages,
+            })
+            .collect()
+    }
+
+    /// Facts that raise every Blind kind `collect_incompleteness` knows, the
+    /// port gates past the evidence cap, and two capture-level findings that
+    /// are NOT Blind (ICMP naming no call, a TURN allocation that lapsed).
+    fn every_blind_fact() -> Result<CaptureFacts, TestError> {
+        let ports = u16::try_from(EVIDENCE_CAP + 3).map_err(|e| format!("cap fits u16: {e}"))?;
+        Ok(CaptureFacts {
+            frames_read: 5_000,
+            undecodable: crate::capture::UndecodableReport {
+                frames: 9,
+                reasons: vec![crate::capture::UndecodableTally {
+                    reason: crate::capture::UndecodableReason::NotIp(Some(0x8847)),
+                    frames: 9,
+                }],
+                reasons_dropped: 2,
+            },
+            portrange: crate::pipeline::PortrangeSkipReport {
+                messages: u64::from(ports) * 4,
+                ports: skipped_ports(ports, 4),
+            },
+            websocket: crate::pipeline::WsPortSkipReport {
+                messages: 6,
+                ports: skipped_ports(2, 3),
+            },
+            stun: crate::stun::StunReport {
+                dropped: 11,
+                allocations: vec![allocation(600, 1_200)?],
+                ..crate::stun::StunReport::default()
+            },
+            icmp: crate::pipeline::IcmpEvidenceReport {
+                errors: 12,
+                unattributed: 5,
+                untracked_dialogs: 7,
+                ..crate::pipeline::IcmpEvidenceReport::default()
+            },
+            retention: RetentionCounts {
+                messages_evicted: 13,
+                dialogs_refused: 14,
+                dialogs_rotated: 15,
+                messages_dropped_by_method: 16,
+                streams_rotated: 17,
+            },
+            vcon_inputs: vec![crate::capture::vcon_input::VconProvenance {
+                source: "stored.vcon.json".to_string(),
+                uuid: Some("00000000-0000-4000-8000-000000000001".to_string()),
+                messages: 3,
+                ..crate::capture::vcon_input::VconProvenance::default()
+            }],
+            ..CaptureFacts::default()
+        })
+    }
+
+    /// The Blind findings of a full analysis, in its order.
+    fn blind_of(analysis: &CaptureAnalysis) -> Vec<Finding> {
+        analysis.at(Severity::Blind).cloned().collect()
+    }
+
+    /// The export's reduced analysis answers exactly the Blind findings the
+    /// full analysis ranks -- same kinds, counts, evidence, omitted rows and
+    /// order -- over stores holding a failed call, and the same `complete`.
+    #[test]
+    fn blind_spots_equal_the_blind_findings_of_the_full_analysis() -> Result<(), TestError> {
+        let (mut dialogs, streams) = stores();
+        for msg in invite_answered("failed@example.invalid", "503 Service Unavailable")? {
+            dialogs.process_message(msg);
+        }
+        let facts = every_blind_fact()?;
+        let full = analyze_with(&dialogs, &streams, None, &facts);
+        let blind = analyze_blind_spots(&facts);
+        assert_eq!(
+            blind.findings,
+            blind_of(&full),
+            "the Blind findings, row for row"
+        );
+        assert_eq!(blind.complete, full.complete, "one completeness verdict");
+        assert!(
+            !blind.complete,
+            "every Blind fact makes the read incomplete"
+        );
+        assert_eq!(
+            blind.findings.len(),
+            6,
+            "all six Blind kinds: {:?}",
+            blind.findings
+        );
+        Ok(())
+    }
+
+    /// The reduced analysis holds nothing that is not Blind, though the facts
+    /// and the stores raise findings at other severities.
+    #[test]
+    fn blind_spots_hold_no_finding_below_blind() -> Result<(), TestError> {
+        let (mut dialogs, streams) = stores();
+        for msg in invite_answered("failed@example.invalid", "503 Service Unavailable")? {
+            dialogs.process_message(msg);
+        }
+        let facts = every_blind_fact()?;
+        let full = analyze_with(&dialogs, &streams, None, &facts);
+        for kind in [
+            FindingKind::ServerFailure,
+            FindingKind::IcmpUnreachableEndpoint,
+            FindingKind::TurnAllocationLapsed,
+        ] {
+            assert!(
+                full.findings.iter().any(|f| f.kind == kind),
+                "the fixture raises {kind:?} in the full analysis: {:?}",
+                full.findings
+            );
+        }
+        let blind = analyze_blind_spots(&facts);
+        assert!(
+            blind.findings.iter().all(|f| f.severity == Severity::Blind),
+            "only Blind findings: {:?}",
+            blind.findings
+        );
+        Ok(())
+    }
+
+    /// The port gate past the evidence cap keeps the same rows and counts the
+    /// same omitted ones in both forms.
+    #[test]
+    fn blind_spots_cap_the_evidence_as_the_full_analysis_does() -> Result<(), TestError> {
+        let facts = every_blind_fact()?;
+        let blind = analyze_blind_spots(&facts);
+        let gate = only(&blind.findings, FindingKind::SipDiscardedByPortRange)?;
+        assert_eq!(gate.evidence.len(), EVIDENCE_CAP, "rows at the cap");
+        assert_eq!(gate.evidence_omitted, 3, "the rows past the cap, counted");
+        assert_eq!(
+            gate.occurrences,
+            (EVIDENCE_CAP as u64 + 3) * 4,
+            "every port's messages"
+        );
+        Ok(())
+    }
+
+    /// A capture that read cleanly has no blind spot and is complete, though a
+    /// non-Blind capture-level finding is present.
+    #[test]
+    fn blind_spots_of_a_clean_read_are_empty_and_complete() -> Result<(), TestError> {
+        let facts = CaptureFacts {
+            frames_read: 40,
+            icmp: crate::pipeline::IcmpEvidenceReport {
+                errors: 2,
+                unattributed: 2,
+                ..crate::pipeline::IcmpEvidenceReport::default()
+            },
+            ..CaptureFacts::default()
+        };
+        assert!(
+            !facts_findings(&facts).findings.is_empty(),
+            "the full analysis ranks the ICMP"
+        );
+        let blind = analyze_blind_spots(&facts);
+        assert!(blind.findings.is_empty(), "{:?}", blind.findings);
+        assert!(blind.complete, "nothing unread");
+        Ok(())
+    }
+
+    /// The reduced analysis states that it examined no dialog and no stream,
+    /// carries no filter, and keeps the denominator.
+    #[test]
+    fn blind_spots_examine_no_dialog_and_keep_the_denominator() -> Result<(), TestError> {
+        let blind = analyze_blind_spots(&every_blind_fact()?);
+        assert_eq!(blind.dialogs_examined, 0, "no dialog read");
+        assert_eq!(blind.streams_examined, 0, "no stream read");
+        assert_eq!(blind.filter, None, "no filter");
+        assert_eq!(blind.frames_read, 5_000, "the facts' denominator");
+        assert_eq!(
+            blind.schema_version, CAPTURE_ANALYSIS_SCHEMA_VERSION,
+            "the analysis schema"
+        );
+        Ok(())
+    }
+
+    /// The reduced analysis does not run the full one; the counter the export
+    /// doors' tests read does count a full run.
+    #[test]
+    fn blind_spots_do_not_run_the_full_analysis() -> Result<(), TestError> {
+        let facts = every_blind_fact()?;
+        ANALYZE_WITH_CALLS.with(|c| c.set(0));
+        let _ = analyze_blind_spots(&facts);
+        assert_eq!(
+            ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            0,
+            "no pass over the dialogs"
+        );
+        let _ = facts_findings(&facts);
+        assert_eq!(
+            ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            1,
+            "a full analysis is counted"
+        );
+        Ok(())
+    }
+
+    /// Each Blind fact on its own gives the same single finding in both forms.
+    #[test]
+    fn blind_spots_match_the_full_analysis_one_fact_at_a_time() -> Result<(), TestError> {
+        let all = every_blind_fact()?;
+        let singles = [
+            CaptureFacts {
+                undecodable: all.undecodable.clone(),
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                portrange: all.portrange.clone(),
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                websocket: all.websocket.clone(),
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                retention: all.retention,
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                vcon_inputs: all.vcon_inputs.clone(),
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                stun: all.stun.clone(),
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                icmp: all.icmp.clone(),
+                ..CaptureFacts::default()
+            },
+        ];
+        for facts in &singles {
+            let blind = analyze_blind_spots(facts);
+            let full = facts_findings(facts);
+            assert_eq!(blind.findings, blind_of(&full), "facts {facts:?}");
+            assert_eq!(blind.complete, full.complete, "facts {facts:?}");
+            assert!(!blind.findings.is_empty(), "each fact is Blind: {facts:?}");
+        }
+        Ok(())
     }
 
     /// A lapsed allocation names the relay, the lifetime it outlived, and the

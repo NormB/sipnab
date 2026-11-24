@@ -127,10 +127,10 @@ already up is the normal way this tool is used.
 ### What it costs, which is more than a wrong label
 
 `Trying` is in the **active** set
-([`dialog_store.rs:2187-2197`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2187-L2197)<!-- "fn is_active_dialog_state(state: &DialogState)" -->) and is not `InCall`,
+([`dialog_store.rs:2217-2227`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2217-L2227)<!-- "fn is_active_dialog_state(state: &DialogState)" -->) and is not `InCall`,
 so a mid-dialog-seeded call is wrong in both directions on the two numbers
 operators graph: counted in `active_dialog_count` forever, invisible to
-`active_call_count` ([`:2245-2255`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2245-L2255)<!-- "/// Count calls that are up: dialogs in `InCall`" -->), whose doc calls
+`active_call_count` ([`:2275-2285`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2275-L2285)<!-- "/// Count calls that are up: dialogs in `InCall`" -->), whose doc calls
 it *"the concurrent-call figure — the one that maps to channels in use, to a
 carrier's simultaneous-call limit, and to the alert an operator actually
 wants."*
@@ -280,7 +280,7 @@ the guards at the same time.
 **The seed method's only remaining job is the initial state**
 ([`dialog.rs:622-624`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L622-L624)<!-- "let initial_state" -->), and for the two methods that
 matter it barely matters: since the creation branch now applies the creating
-message's own transition ([`dialog_store.rs:2924`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2924)<!-- "update_state(&mut dialog, msg);" -->),
+message's own transition ([`dialog_store.rs:3051`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3051)<!-- "update_state(&mut dialog, msg);" -->),
 a BYE-seeded dialog goes `Trying → Completed` on its own first message, and a
 CANCEL-seeded one goes `Trying → Canceled`. Which is exactly the outcome the
 pinned defect test is waiting for.

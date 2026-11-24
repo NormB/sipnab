@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A vCon export no longer re-reads every call in the capture for each container.**
+  - Was: Each container ran the whole capture analysis again, and each container of an `export_vcon` page or `--export-vcon-when` run read every call's SDP again.
+  - Effect: At 100,000 calls an `export_vcon` page of 50 containers runs about 10 times faster; the containers are unchanged.
+  - Docs: [vCon export](docs/vcon.md)
+
 ## [0.5.270] - 2026-11-24
 
 ### Changed

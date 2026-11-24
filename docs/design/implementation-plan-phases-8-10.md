@@ -1671,8 +1671,8 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | MCP tool | Wraps |
 |---|---|
-| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1834`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1834)<!-- "pub fn iter(&self) -> impl Iterator<Item = &SipDialog> {" -->) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:1278`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1278)<!-- "/// `true` when the dialog" -->) + `expand_alias` ([`src/sip/dsl.rs:899`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L899)<!-- "pub fn expand_alias(alias:" -->) |
-| `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1799`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1799)<!-- "pub fn get(&self," -->) + iterate `dialog.messages` + `output::json::message_to_json` |
+| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1864`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1864)<!-- "pub fn iter(&self) -> impl Iterator<Item = &SipDialog> {" -->) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:1278`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1278)<!-- "/// `true` when the dialog" -->) + `expand_alias` ([`src/sip/dsl.rs:899`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L899)<!-- "pub fn expand_alias(alias:" -->) |
+| `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1829`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1829)<!-- "pub fn get(&self," -->) + iterate `dialog.messages` + `output::json::message_to_json` |
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:55`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L55)<!-- "pub fn generate_call_report(" -->) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:771`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L771)<!-- "pub fn message_to_json(msg: &SipMessage) -> String {" -->) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |
@@ -1707,7 +1707,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | Swagger UI mount | New `/docs` route on the existing axum Router |
 | OTel span on capture | `#[tracing::instrument]` on `capture::start_capture` ([`src/capture/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs)) |
 | OTel span on parse | `#[tracing::instrument]` on `sip::parser::parse_sip` ([`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs)) |
-| OTel span on dialog state | `#[tracing::instrument]` on `DialogStore::process_message` ([`src/sip/dialog_store.rs:1632`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1632)<!-- "pub fn process_message(&mut self, msg: SipMessage) {" -->) |
+| OTel span on dialog state | `#[tracing::instrument]` on `DialogStore::process_message` ([`src/sip/dialog_store.rs:1662`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1662)<!-- "pub fn process_message(&mut self, msg: SipMessage) {" -->) |
 | OTel span on API handler | `#[tracing::instrument]` on each axum handler in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) |
 | OTel span on MCP tool | `#[tracing::instrument]` on each `#[tool]` method in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) |
 | OTel metrics export | New layer on existing Prometheus endpoint ([`src/output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs)) plus OTLP exporter |

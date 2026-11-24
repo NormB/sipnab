@@ -195,7 +195,7 @@ Timing deserves a firmer no. "The stream started 40 ms after the 200 OK, so it
 belongs to that call" is a coincidence detector on a busy proxy, where dozens of
 calls answer per second and every one of them starts media. sipnab already
 carries a timing-based leg correlator at score 50 out of 100
-([`src/sip/dialog_store.rs:2572`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2572)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
+([`src/sip/dialog_store.rs:2671`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2671)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
 correlating *signaling to signaling* where a Call-ID is present as a
 cross-check. Using timing to attach media to a dialog has no such cross-check.
 It should stay out.
