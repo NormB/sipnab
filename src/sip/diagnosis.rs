@@ -567,7 +567,17 @@ type TransactionKey = (u32, String, String);
 /// happens, which is why the seven callers of it need no change and cannot
 /// disagree about the answer.
 pub fn diagnose_signaling(messages: &[SipMessage]) -> SignalingDiagnosis {
-    diagnose_signaling_with(messages, &configured())
+    diagnose_signaling_parsed(messages, &crate::sip::message::cseqs(messages))
+}
+
+/// [`diagnose_signaling`] for a caller that already parsed the messages'
+/// CSeqs (`cseqs`, from [`crate::sip::message::cseqs`]) for its other
+/// readers, so the detectors do not parse them again.
+pub(crate) fn diagnose_signaling_parsed(
+    messages: &[SipMessage],
+    cseqs: &[Option<(u32, &str)>],
+) -> SignalingDiagnosis {
+    with_thresholds(messages, cseqs, &configured())
 }
 
 /// Diagnose the signaling side of one dialog against explicit thresholds.
@@ -578,6 +588,15 @@ pub fn diagnose_signaling(messages: &[SipMessage]) -> SignalingDiagnosis {
 /// for the tests that have to pin a threshold rather than inherit the run's.
 pub fn diagnose_signaling_with(
     messages: &[SipMessage],
+    thresholds: &SignalingThresholds,
+) -> SignalingDiagnosis {
+    with_thresholds(messages, &crate::sip::message::cseqs(messages), thresholds)
+}
+
+/// [`diagnose_signaling_with`] over CSeqs parsed once by the caller.
+fn with_thresholds(
+    messages: &[SipMessage],
+    cseqs: &[Option<(u32, &str)>],
     thresholds: &SignalingThresholds,
 ) -> SignalingDiagnosis {
     // One relaxed atomic load when the capture held no ICMP, which is the
@@ -592,7 +611,7 @@ pub fn diagnose_signaling_with(
         .unwrap_or_default();
     #[cfg(target_arch = "wasm32")]
     let icmp = Default::default();
-    diagnose_signaling_with_evidence(messages, thresholds, &icmp)
+    with_evidence(messages, cseqs, thresholds, &icmp)
 }
 
 /// Diagnose one dialog against explicit thresholds and explicit ICMP evidence.
@@ -611,17 +630,36 @@ pub fn diagnose_signaling_with_evidence(
     thresholds: &SignalingThresholds,
     icmp: &crate::capture::parse::DialogIcmpEvidence,
 ) -> SignalingDiagnosis {
+    with_evidence(
+        messages,
+        &crate::sip::message::cseqs(messages),
+        thresholds,
+        icmp,
+    )
+}
+
+/// [`diagnose_signaling_with_evidence`] over CSeqs parsed once by the
+/// caller: `cseqs[i]` is `messages[i].cseq()`.
+fn with_evidence(
+    messages: &[SipMessage],
+    cseqs: &[Option<(u32, &str)>],
+    thresholds: &SignalingThresholds,
+    icmp: &crate::capture::parse::DialogIcmpEvidence,
+) -> SignalingDiagnosis {
     let mut diag = SignalingDiagnosis::default();
+    // A slice of another length would pair messages with other messages'
+    // CSeqs; the zips below would then read the wrong transaction.
+    debug_assert_eq!(cseqs.len(), messages.len(), "one CSeq per message");
 
     detect_final_failure(messages, &mut diag);
     detect_auth_loop(messages, &mut diag);
-    detect_retransmissions(messages, &mut diag, icmp);
-    detect_ack_missing(messages, &mut diag, thresholds);
+    detect_retransmissions(messages, cseqs, &mut diag, icmp);
+    detect_ack_missing(messages, cseqs, &mut diag, thresholds);
     detect_abandoned(messages, &mut diag, thresholds);
     detect_post_dial_delay(messages, &mut diag, thresholds);
-    detect_registration_failure(messages, &mut diag);
+    detect_registration_failure(messages, cseqs, &mut diag);
     detect_icmp_unreachable(messages, &mut diag, icmp);
-    detect_source_disagreement(messages, &mut diag);
+    detect_source_disagreement(messages, cseqs, &mut diag);
 
     diag
 }
@@ -793,13 +831,13 @@ type MessageIdentity<'a> = (
     Option<&'a str>,
 );
 
-/// The identity above, read off one message.
-fn message_identity(m: &SipMessage) -> MessageIdentity<'_> {
+/// The identity above, read off one message whose CSeq is `cseq`.
+fn message_identity<'a>(m: &'a SipMessage, cseq: Option<(u32, &'a str)>) -> MessageIdentity<'a> {
     (
         m.is_request,
         m.status_code,
         m.method.as_ref().map(SipMethod::as_str),
-        m.cseq(),
+        cseq,
         m.top_via_branch(),
     )
 }
@@ -898,7 +936,11 @@ fn name_a_few(items: &[UnwitnessedMessage]) -> String {
 /// both witnesses are known to have spoken, and it allocates nothing. A run
 /// with one source walks the ladder once and returns; the index, the pairing
 /// and every `String` here are past that return.
-fn detect_source_disagreement(messages: &[SipMessage], diag: &mut SignalingDiagnosis) {
+fn detect_source_disagreement<'a>(
+    messages: &'a [SipMessage],
+    cseqs: &[Option<(u32, &'a str)>],
+    diag: &mut SignalingDiagnosis,
+) {
     use crate::capture::parse::InputOrigin;
 
     // Both witnesses must have carried at least one message of THIS call.
@@ -938,12 +980,12 @@ fn detect_source_disagreement(messages: &[SipMessage], diag: &mut SignalingDiagn
     // either source authoritative.
     let mut paired: std::collections::HashMap<MessageIdentity<'_>, (Vec<usize>, Vec<usize>)> =
         std::collections::HashMap::new();
-    for (i, m) in messages.iter().enumerate() {
+    for (i, (m, cseq)) in messages.iter().zip(cseqs).enumerate() {
         let sources = m.sources();
         if sources & (hep_bit | wire_bit) == 0 {
             continue;
         }
-        let entry = paired.entry(message_identity(m)).or_default();
+        let entry = paired.entry(message_identity(m, *cseq)).or_default();
         if sources & hep_bit != 0 {
             entry.0.push(i);
         }
@@ -1094,6 +1136,7 @@ fn elapsed_sec(messages: &[SipMessage], from: usize, to: usize) -> f64 {
 /// reported as nothing at all rather than as a fault.
 fn detect_ack_missing(
     messages: &[SipMessage],
+    cseqs: &[Option<(u32, &str)>],
     diag: &mut SignalingDiagnosis,
     thresholds: &SignalingThresholds,
 ) {
@@ -1101,11 +1144,12 @@ fn detect_ack_missing(
     // UAS's own evidence that it never saw an ACK, so they are collected too.
     let answers: Vec<usize> = messages
         .iter()
+        .zip(cseqs)
         .enumerate()
-        .filter(|(_, m)| {
+        .filter(|(_, (m, cseq))| {
             !m.is_request
                 && matches!(m.status_code, Some(c) if (200..300).contains(&c))
-                && m.cseq().is_some_and(|(_, meth)| meth == "INVITE")
+                && cseq.is_some_and(|(_, meth)| meth == "INVITE")
         })
         .map(|(i, _)| i)
         .collect();
@@ -1117,11 +1161,9 @@ fn detect_ack_missing(
 
     // An ACK for the same CSeq number closes it out. The method of an ACK's own
     // CSeq is ACK, so the number is what ties it to the INVITE it acknowledges.
-    let answered_cseq = messages[first].cseq().map(|(n, _)| n);
-    let acked = messages.iter().any(|m| {
-        m.is_request
-            && m.method == Some(SipMethod::Ack)
-            && m.cseq().map(|(n, _)| n) == answered_cseq
+    let answered_cseq = cseqs.get(first).copied().flatten().map(|(n, _)| n);
+    let acked = messages.iter().zip(cseqs).any(|(m, cseq)| {
+        m.is_request && m.method == Some(SipMethod::Ack) && cseq.map(|(n, _)| n) == answered_cseq
     });
     if acked {
         return;
@@ -1305,7 +1347,11 @@ fn detect_post_dial_delay(
 /// `Expires: 0` is excluded throughout. That is a de-registration — a phone
 /// deliberately going offline ([RFC 3261 section 10.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-10.2.2)) — and flagging it would report
 /// every clean shutdown as a fault.
-fn detect_registration_failure(messages: &[SipMessage], diag: &mut SignalingDiagnosis) {
+fn detect_registration_failure(
+    messages: &[SipMessage],
+    cseqs: &[Option<(u32, &str)>],
+    diag: &mut SignalingDiagnosis,
+) {
     let Some(register) = messages
         .iter()
         .position(|m| m.is_request && m.method == Some(SipMethod::Register))
@@ -1320,12 +1366,16 @@ fn detect_registration_failure(messages: &[SipMessage], diag: &mut SignalingDiag
         return;
     }
 
-    let final_response = messages.iter().enumerate().rfind(|(_, m)| {
-        matches!(m.status_code, Some(c) if (200..700).contains(&c) && c != 401 && c != 407)
-            && m.cseq().is_some_and(|(_, meth)| meth == "REGISTER")
-    });
+    let final_response = messages
+        .iter()
+        .zip(cseqs)
+        .enumerate()
+        .rfind(|(_, (m, cseq))| {
+            matches!(m.status_code, Some(c) if (200..700).contains(&c) && c != 401 && c != 407)
+                && cseq.is_some_and(|(_, meth)| meth == "REGISTER")
+        });
 
-    let Some((idx, msg)) = final_response else {
+    let Some((idx, (msg, _))) = final_response else {
         return;
     };
     let code = msg.status_code.unwrap_or_default();
@@ -1667,13 +1717,14 @@ fn detect_auth_loop(messages: &[SipMessage], diag: &mut SignalingDiagnosis) {
 /// guess at the end of the hint gives way.
 fn detect_retransmissions(
     messages: &[SipMessage],
+    cseqs: &[Option<(u32, &str)>],
     diag: &mut SignalingDiagnosis,
     icmp: &crate::capture::parse::DialogIcmpEvidence,
 ) {
     // Group requests by (CSeq number, CSeq method, branch).
     let mut groups: Vec<(TransactionKey, Vec<usize>)> = Vec::new();
 
-    for (idx, msg) in messages.iter().enumerate() {
+    for (idx, (msg, cseq)) in messages.iter().zip(cseqs).enumerate() {
         if !msg.is_request {
             continue;
         }
@@ -1682,7 +1733,7 @@ fn detect_retransmissions(
         if msg.method == Some(SipMethod::Ack) {
             continue;
         }
-        let Some((num, method)) = msg.cseq() else {
+        let Some((num, method)) = *cseq else {
             continue;
         };
         // No top-Via branch means no way to prove two requests are the same
@@ -1715,10 +1766,8 @@ fn detect_retransmissions(
             continue;
         }
         // Any response sharing this CSeq number and method answered it.
-        let answered = messages.iter().any(|m| {
-            !m.is_request
-                && m.cseq()
-                    .is_some_and(|(n, meth)| n == key.0 && meth == key.1)
+        let answered = messages.iter().zip(cseqs).any(|(m, cseq)| {
+            !m.is_request && cseq.is_some_and(|(n, meth)| n == key.0 && meth == key.1)
         });
         if answered {
             continue;
@@ -2368,6 +2417,185 @@ mod tests {
         assert_eq!(r.kind, RegistrationFailureKind::Rejected);
         assert_eq!(r.code, 403);
         assert_eq!(r.requested_expiry_sec, Some(3600));
+        Ok(())
+    }
+
+    // -- one CSeq parse per message ----------------------------------------
+
+    /// The diagnosis of `messages`, and the most times one message's CSeq was
+    /// parsed while computing it.
+    fn diagnosed_counting(messages: &[SipMessage]) -> (SignalingDiagnosis, u32) {
+        crate::test_utils::clear_parses();
+        let d = diagnose_signaling(messages);
+        let (cseq, _, _) = crate::test_utils::worst_parses();
+        (d, cseq)
+    }
+
+    /// A retransmission storm (the grouping pass and the scan for an answer)
+    /// parses each message's CSeq once.
+    #[test]
+    fn a_retransmission_storm_parses_each_cseq_once() -> Result<(), TestError> {
+        let other = response(200, "OK", "").replace("CSeq: 1 INVITE", "CSeq: 7 OPTIONS");
+        let msgs = vec![
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&invite("z9hG4bK1", 1), 1)?,
+            msg_at(&invite("z9hG4bK1", 1), 3)?,
+            msg_at(&other, 4)?,
+        ];
+        let (d, cseq) = diagnosed_counting(&msgs);
+        let r = d.retransmissions.ok_or("the storm is still detected")?;
+        assert_eq!(r.count, 3, "three transmissions");
+        assert_eq!(cseq, 1, "one message's CSeq was parsed {cseq} times");
+        Ok(())
+    }
+
+    /// The missing-ACK detector (the answers, the answered number, the ACK
+    /// search) parses each message's CSeq once.
+    #[test]
+    fn a_missing_ack_parses_each_cseq_once() -> Result<(), TestError> {
+        let msgs = vec![
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(200, "OK", ""), 1)?,
+            msg_at(&response(200, "OK", ""), 20)?,
+            msg_at(&response(200, "OK", ""), 41)?,
+        ];
+        let (d, cseq) = diagnosed_counting(&msgs);
+        let a = d.ack_missing.ok_or("no ACK in 40s is still a fault")?;
+        assert_eq!(a.evidence, vec![1, 2, 3], "the three answers");
+        assert_eq!(cseq, 1, "one message's CSeq was parsed {cseq} times");
+        Ok(())
+    }
+
+    /// An ACK that closes the answer is matched by the CSeq number read from
+    /// the one parse of each message.
+    #[test]
+    fn an_acknowledged_answer_parses_each_cseq_once() -> Result<(), TestError> {
+        let msgs = vec![
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(200, "OK", ""), 1)?,
+            msg_at(&ack(1), 2)?,
+            msg_at(&response(200, "OK", ""), 41)?,
+        ];
+        let (d, cseq) = diagnosed_counting(&msgs);
+        assert!(d.ack_missing.is_none(), "the ACK closes the answer");
+        assert_eq!(cseq, 1, "one message's CSeq was parsed {cseq} times");
+        Ok(())
+    }
+
+    /// An ACK for another CSeq number does not close the answer: the number
+    /// is still read from the right message's parse.
+    #[test]
+    fn an_ack_for_another_number_still_leaves_the_answer_open() -> Result<(), TestError> {
+        let msgs = vec![
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(200, "OK", ""), 1)?,
+            msg_at(&ack(2), 2)?,
+            msg_at(&response(200, "OK", ""), 41)?,
+        ];
+        let (d, cseq) = diagnosed_counting(&msgs);
+        let a = d
+            .ack_missing
+            .ok_or("an ACK for CSeq 2 does not close CSeq 1")?;
+        assert_eq!(a.evidence, vec![1, 3], "the two answers");
+        assert_eq!(cseq, 1, "one message's CSeq was parsed {cseq} times");
+        Ok(())
+    }
+
+    /// A rejected registration parses each message's CSeq once.
+    #[test]
+    fn a_rejected_registration_parses_each_cseq_once() -> Result<(), TestError> {
+        let msgs = vec![
+            msg(&register("Expires: 3600\n"))?,
+            msg(&register_response(403, "Forbidden", ""))?,
+        ];
+        let (d, cseq) = diagnosed_counting(&msgs);
+        let r = d
+            .registration_failure
+            .ok_or("403 still rejects the binding")?;
+        assert_eq!(r.code, 403, "the rejection code");
+        assert_eq!(cseq, 1, "one message's CSeq was parsed {cseq} times");
+        Ok(())
+    }
+
+    /// A final response for another method is not the REGISTER's outcome,
+    /// read from the one parse of each message.
+    #[test]
+    fn a_registration_answered_only_for_another_method_is_not_a_failure() -> Result<(), TestError> {
+        let other = register_response(403, "Forbidden", "").replace("1 REGISTER", "1 OPTIONS");
+        let msgs = vec![msg(&register("Expires: 3600\n"))?, msg(&other)?];
+        let (d, cseq) = diagnosed_counting(&msgs);
+        assert!(
+            d.registration_failure.is_none(),
+            "a 403 to an OPTIONS does not reject the binding"
+        );
+        assert_eq!(cseq, 1, "one message's CSeq was parsed {cseq} times");
+        Ok(())
+    }
+
+    /// A call seen by two witnesses (the source-disagreement detector keys
+    /// on the CSeq) parses each message's CSeq once.
+    #[test]
+    fn two_witnesses_parse_each_cseq_once() -> Result<(), TestError> {
+        use crate::capture::parse::InputOrigin;
+        let msgs = vec![
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Hep)?,
+            from_source(&invite("z9hG4bK1", 1), InputOrigin::Wire)?,
+            from_source(&response(200, "OK", ""), InputOrigin::Hep)?,
+        ];
+        let (d, cseq) = diagnosed_counting(&msgs);
+        let s = d
+            .source_disagreement
+            .ok_or("the mirrored 200 is still found")?;
+        assert_eq!(s.agreed, 1, "the INVITE pairs across the witnesses");
+        assert_eq!(cseq, 1, "one message's CSeq was parsed {cseq} times");
+        Ok(())
+    }
+
+    /// The parsed entry point reads the CSeqs it is handed and parses none.
+    #[test]
+    fn the_parsed_entry_parses_no_cseq_itself() -> Result<(), TestError> {
+        let msgs = vec![
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&response(200, "OK", ""), 1)?,
+            msg_at(&response(200, "OK", ""), 41)?,
+        ];
+        let cseqs = crate::sip::message::cseqs(&msgs);
+        crate::test_utils::clear_parses();
+        let d = diagnose_signaling_parsed(&msgs, &cseqs);
+        let (cseq, _, _) = crate::test_utils::worst_parses();
+        assert_eq!(cseq, 0, "the detectors parsed a CSeq {cseq} times");
+        assert!(
+            d.ack_missing.is_some(),
+            "the slice was read: the answer is open"
+        );
+        Ok(())
+    }
+
+    /// The parsed entry point and the plain one agree.
+    #[test]
+    fn the_parsed_entry_agrees_with_the_plain_one() -> Result<(), TestError> {
+        let msgs = vec![
+            msg_at(&invite("z9hG4bK1", 1), 0)?,
+            msg_at(&invite("z9hG4bK1", 1), 1)?,
+            msg_at(&invite("z9hG4bK1", 1), 3)?,
+            msg_at(&response(200, "OK", ""), 5)?,
+            msg_at(&response(200, "OK", ""), 46)?,
+        ];
+        let plain = format!("{:?}", diagnose_signaling(&msgs));
+        let parsed = format!(
+            "{:?}",
+            diagnose_signaling_parsed(&msgs, &crate::sip::message::cseqs(&msgs))
+        );
+        assert_eq!(parsed, plain, "one diagnosis, two entry points");
+        Ok(())
+    }
+
+    /// No messages: no CSeq to parse and nothing to detect.
+    #[test]
+    fn no_messages_parse_nothing() -> Result<(), TestError> {
+        let (d, cseq) = diagnosed_counting(&[]);
+        assert!(d.is_empty(), "nothing detected");
+        assert_eq!(cseq, 0, "nothing parsed");
         Ok(())
     }
 

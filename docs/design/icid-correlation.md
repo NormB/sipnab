@@ -412,7 +412,7 @@ No parser change is required, and that is worth stating because it is the part
 people assume is expensive. [`SipMessage.headers`](../../src/sip/message.rs) at
 [`message.rs:48`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L48)<!-- "/// eagerly parsed" --> holds *"All headers in message order,
 with compact forms expanded"*, and [`header()`](../../src/sip/message.rs) at
-[`:330`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L330)<!-- "pub fn header(&self," --> is a case-insensitive lookup over that vector.
+[`:370`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L370)<!-- "pub fn header(&self," --> is a case-insensitive lookup over that vector.
 `msg.header("P-Charging-Vector")` works today and returns the raw value.
 
 The shape, by file:

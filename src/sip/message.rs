@@ -148,6 +148,42 @@ pub(crate) fn origin_bit(origin: crate::capture::parse::InputOrigin) -> u8 {
     1 << (origin as u8)
 }
 
+// Per-thread record of which messages had their CSeq or SDP parsed, test-only:
+// pins that one request over the stores parses each message's CSeq and SDP at
+// most once (thread-local so parallel tests cannot cross-talk).
+// `None` until a test starts recording, so a thread that never asks (an
+// allocation-count test, for one) sees no allocation from the record.
+#[cfg(test)]
+thread_local! {
+    /// Test-only parse counts, keyed by message address: `(cseq, sdp)`.
+    pub(crate) static PARSES: std::cell::RefCell<
+        Option<std::collections::HashMap<usize, (u32, u32)>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only: count one parse of `msg`'s CSeq (`cseq`) or SDP (`!cseq`),
+/// when this thread is recording.
+#[cfg(test)]
+fn note_parse(msg: &SipMessage, cseq: bool) {
+    PARSES.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return };
+        let entry = p.entry(std::ptr::from_ref(msg) as usize).or_default();
+        if cseq {
+            entry.0 += 1;
+        } else {
+            entry.1 += 1;
+        }
+    });
+}
+
+/// Every message's [`SipMessage::cseq`], in message order: parsed once, for a
+/// pass over one dialog whose several readers (the final status, the
+/// signaling detectors) would otherwise each parse it again.
+pub(crate) fn cseqs(messages: &[SipMessage]) -> Vec<Option<(u32, &str)>> {
+    messages.iter().map(SipMessage::cseq).collect()
+}
+
 impl SipMessage {
     /// Every source that delivered this message, as a set of [`origin_bit`]s:
     /// its own origin and those of the copies merged into it. Empty for a
@@ -209,6 +245,8 @@ impl SipMessage {
     /// Returns `None` if the header is missing or malformed.
     /// The method string borrows from the header value (zero allocation).
     pub fn cseq(&self) -> Option<(u32, &str)> {
+        #[cfg(test)]
+        note_parse(self, true);
         let val = self.header("CSeq")?;
         // RFC 3261: CSeq = 1*DIGIT LWS Method, where Method is a single
         // token. Take the first two whitespace-separated tokens and ignore
@@ -295,6 +333,8 @@ impl SipMessage {
     ///
     /// Returns `None` if the body holds no SDP or if parsing fails.
     pub fn sdp(&self) -> Option<SdpSession> {
+        #[cfg(test)]
+        note_parse(self, false);
         match self.content_type() {
             Some(ct) if is_sdp_media_type(ct) => sdp::parse_sdp(&self.body).ok(),
             Some(ct) if is_multipart_media_type(ct) => multipart_sdp(ct, &self.body),

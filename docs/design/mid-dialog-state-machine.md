@@ -109,9 +109,9 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
 `SipMethod::Cancel` fall into `_`.
 
 `dialog.method` is set once, by `SipDialog::new`
-([`dialog.rs:613-625`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L613-L625)<!-- "pub fn new(msg: &SipMessage)" -->), from the request's own method
+([`dialog.rs:623-635`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L623-L635)<!-- "pub fn new(msg: &SipMessage)" -->), from the request's own method
 when the first message is a request and from CSeq when it is a response — and the
-rustdoc at [`:597-612`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L597-L612)<!-- "/// The second case" --> says plainly that it is *"set
+rustdoc at [`:607-622`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L607-L622)<!-- "/// The second case" --> says plainly that it is *"set
 once here and never corrected"*. A leading response is therefore safe: CSeq says
 INVITE, so the INVITE machine is selected. A leading **request** that is not an
 INVITE is not.
@@ -278,7 +278,7 @@ instinct — *"dispatch-only rather than relabeling the user-visible
 the guards at the same time.
 
 **The seed method's only remaining job is the initial state**
-([`dialog.rs:622-624`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L622-L624)<!-- "let initial_state" -->), and for the two methods that
+([`dialog.rs:632-634`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L632-L634)<!-- "let initial_state" -->), and for the two methods that
 matter it barely matters: since the creation branch now applies the creating
 message's own transition ([`dialog_store.rs:3051`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3051)<!-- "update_state(&mut dialog, msg);" -->),
 a BYE-seeded dialog goes `Trying → Completed` on its own first message, and a
@@ -317,7 +317,7 @@ transition or declares a no-change with a reason.** Three cell kinds:
 network is unlikely to produce. There is exactly one such family today, and it is
 already load-bearing: a message with no CSeq and no method never reaches
 `update_state` at all, because `SipDialog::new` returns `None`
-([`dialog.rs:614-619`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L614-L619)<!-- "let call_id = msg.call_id()?.to_string();" -->). The existing prover already
+([`dialog.rs:624-629`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L624-L629)<!-- "let call_id = msg.call_id()?.to_string();" -->). The existing prover already
 guards this in miniature with its `pairs` count assertion
 ([`dialog.rs:1000-1006`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L1000-L1006)): *"a method stopped
 constructing a dialog and its whole row went unchecked."*
@@ -347,7 +347,7 @@ does not exist anywhere in the 1050-cell sweep.
 **Axis 2 — starting state.** The prover builds a fresh dialog per cell and applies
 exactly one response, so `start` is only ever `Trying` or `Pending`
 (the two `SipDialog::new` initial states,
-[`dialog.rs:622-624`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L622-L624)<!-- "let initial_state" -->). **The state axis is entirely
+[`dialog.rs:632-634`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L632-L634)<!-- "let initial_state" -->). **The state axis is entirely
 unexercised.** That is not a minor gap: three of the four INVITE response arms are
 *state*-guarded, and the CANCEL-versus-200 race the domain primer documents —
 `Canceled → InCall` on a 2xx ([`dialog.rs:433-447`](https://github.com/NormB/sipnab/blob/72c2b5b7b37f8dbce9d9702e6d24f577e70e73bc/src/sip/dialog.rs#L433-L447)) —
@@ -364,8 +364,8 @@ arrival = Request(method)
         | Response(cseq_method, code)
 ```
 
-with 14 methods ([`dialog.rs:1947-1962`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L1947-L1962)<!-- "const METHODS: [&str;" -->), 75 codes
-([`:1969-1975`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L1969-L1975)<!-- "const CODES: [u16;" -->), 7 response classes
+with 14 methods ([`dialog.rs:2024-2039`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L2024-L2039)<!-- "const METHODS: [&str;" -->), 75 codes
+([`:2046-2052`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L2046-L2052)<!-- "const CODES: [u16;" -->), 7 response classes
 ([`response_codes.rs:27-43`](https://github.com/NormB/sipnab/blob/main/src/sip/response_codes.rs#L27-L43)<!-- "pub enum ResponseClass" -->) and 13 dialog
 states ([`dialog.rs:24-59`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L24-L59)<!-- "pub enum DialogState" -->).
 

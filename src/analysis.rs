@@ -1346,7 +1346,10 @@ pub fn analyze_with(
 
     for (dialog, dialog_streams) in &selection.dialogs {
         streams_examined += dialog_streams.len();
-        let media = MediaContext::for_dialog(dialog, capture);
+        // Each message's CSeq, parsed once for the final status and the
+        // signaling detectors, which would otherwise each parse it again.
+        let cseqs = crate::sip::message::cseqs(&dialog.messages);
+        let media = MediaContext::for_dialog_parsed(dialog, &cseqs, capture);
         let mut diag = crate::rtp::diagnosis::diagnose_media(dialog_streams, &media);
         crate::rtp::diagnosis::diagnose_asymmetry(
             &mut diag,
@@ -1355,7 +1358,7 @@ pub fn analyze_with(
             &thresholds,
         );
         collect_media(&mut acc, dialog, dialog_streams, &diag);
-        collect_signaling(&mut acc, dialog);
+        collect_signaling(&mut acc, dialog, &cseqs);
     }
 
     collect_capture_level(&mut acc, facts);
@@ -1534,9 +1537,10 @@ fn collect_media(
     }
 }
 
-/// Fold one dialog's signaling diagnosis into the accumulator.
-fn collect_signaling(acc: &mut Accumulator, dialog: &SipDialog) {
-    let diag = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
+/// Fold one dialog's signaling diagnosis into the accumulator. `cseqs` is
+/// the dialog's messages' CSeqs, parsed once for every reader in the pass.
+fn collect_signaling(acc: &mut Accumulator, dialog: &SipDialog, cseqs: &[Option<(u32, &str)>]) {
+    let diag = crate::sip::diagnosis::diagnose_signaling_parsed(&dialog.messages, cseqs);
     fold_signaling(acc, dialog, &diag);
 }
 
@@ -3432,6 +3436,26 @@ mod tests {
                  To: <sip:bob@example.invalid>;tag=b1\r\nContent-Length: 0\r\n\r\n"
             ))?,
         ])
+    }
+
+    /// One analysis over the stores parses each message's CSeq and SDP at
+    /// most once: every pass over a dialog reads the same parse.
+    #[test]
+    fn one_analysis_parses_each_message_once() -> Result<(), TestError> {
+        let (mut dialogs, streams) = stores();
+        for n in 0..3 {
+            for msg in crate::test_utils::sdp_call(&format!("once-{n}@example.com"))? {
+                dialogs.process_message(msg);
+            }
+        }
+        crate::test_utils::clear_parses();
+        let analysis = analyze_with(&dialogs, &streams, None, &CaptureFacts::default());
+        assert_eq!(analysis.dialogs_examined, 3, "the three calls were read");
+        let (cseq, sdp, read) = crate::test_utils::worst_parses();
+        assert_eq!(read, 21, "the analysis read all 21 messages");
+        assert!(cseq <= 1, "one message's CSeq was parsed {cseq} times");
+        assert!(sdp <= 1, "one message's SDP was parsed {sdp} times");
+        Ok(())
     }
 
     /// The whole path, end to end: a dialog in the store that ended on a 503
