@@ -170,7 +170,7 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | errno | 0.2.8 | MIT/Apache-2.0 |
 | errno | 0.3.14 | MIT OR Apache-2.0 |
 | errno-dragonfly | 0.1.2 | MIT |
-| etherparse | 0.21.0 | MIT OR Apache-2.0 |
+| etherparse | 0.21.1 | MIT OR Apache-2.0 |
 | euclid | 0.22.14 | MIT OR Apache-2.0 |
 | fancy-regex | 0.11.0 | MIT |
 | fast-srgb8 | 1.0.0 | MIT OR Apache-2.0 OR CC0-1.0 |

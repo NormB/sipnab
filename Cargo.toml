@@ -148,7 +148,9 @@ flate2 = "1"
 glob = "0.3"
 walkdir = "2"
 tempfile = { version = "3", optional = true }
-etherparse = "0.21"
+# 0.21.1 fixes RUSTSEC-2026-0596 (out-of-bounds read iterating the IPv6
+# extension headers of a laxly parsed packet).
+etherparse = "0.21.1"
 clap = { version = "4", features = ["derive", "env", "string"], optional = true }
 clap_complete = { version = "4", optional = true }
 regex = "1"
