@@ -663,3 +663,80 @@ pub fn th_store(key: Option<&[u8]>) -> Result<crate::sip::dialog_store::DialogSt
     };
     Ok(crate::sip::dialog_store::DialogStore::new(100, false).with_th_callid(th))
 }
+
+/// `n` INVITE dialogs, `media-<i>@example.com`, each from a different
+/// RFC 5737 address, with one RTP stream from that address linked to it; and
+/// one more stream linked to no call. The fixture for a pass over every
+/// dialog that reads each dialog's streams.
+///
+/// # Errors
+///
+/// A message failing to parse, which would be a defect in the parser.
+pub fn calls_with_media(
+    n: u8,
+) -> Result<
+    (
+        crate::sip::dialog_store::DialogStore,
+        crate::rtp::stream_store::StreamStore,
+    ),
+    String,
+> {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    let mut ds = crate::sip::dialog_store::DialogStore::new(1000, false);
+    let mut ss = crate::rtp::stream_store::StreamStore::new(1000);
+    let at = chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_718_452_800);
+    let callee = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1));
+    let rtp = |ssrc: u32| crate::rtp::parser::RtpHeader {
+        version: 2,
+        padding: false,
+        extension: false,
+        csrc_count: 0,
+        marker: false,
+        payload_type: 0,
+        sequence: 1,
+        timestamp: 160,
+        ssrc,
+        payload_offset: 12,
+    };
+    for i in 0..n {
+        let caller = IpAddr::V4(Ipv4Addr::new(192, 0, 2, i.saturating_add(1)));
+        let call_id = format!("media-{i}@example.com");
+        let raw = build_sip_message(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                &format!("Via: SIP/2.0/UDP {caller}:5060;branch=z9hG4bK{i}"),
+                &format!("From: <sip:alice{i}@example.com>;tag=f{i}"),
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = crate::sip::parser::parse_sip(
+            &raw,
+            at + chrono::TimeDelta::seconds(i64::from(i)),
+            caller,
+            callee,
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .map_err(|e| format!("fixture INVITE {i} must parse: {e:?}"))?;
+        ds.process_message(msg);
+        let packet = udp_parsed(
+            SocketAddr::new(caller, 40000),
+            SocketAddr::new(callee, 50000),
+            &[0u8; 172],
+        );
+        ss.process_rtp(&packet, &rtp(0x5000 + u32::from(i)), at);
+        ss.link_to_dialog(caller, 40000, &call_id);
+    }
+    let stray = udp_parsed(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 40000),
+        SocketAddr::new(callee, 50002),
+        &[0u8; 172],
+    );
+    ss.process_rtp(&stray, &rtp(0x6000), at);
+    Ok((ds, ss))
+}

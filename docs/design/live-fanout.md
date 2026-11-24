@@ -240,7 +240,7 @@ from a headless run — `start_servers` is called with `metrics: true` and the
 real meter from [`batch.rs:4131-4147`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4131-L4147)<!-- "let servers = crate::app::servers::start_servers(" -->.
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
-`capture_health` MCP response ([`server.rs:9451`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9451)<!-- "pub async fn capture_health(" -->),
+`capture_health` MCP response ([`server.rs:9453`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9453)<!-- "pub async fn capture_health(" -->),
 carries `packets`, `kernel_dropped`, `interface_dropped`, `invalid_timestamps`
 and `undecodable_frames` — and **no queue depth and no backpressure count**. So
 the surface built for production field reports
@@ -265,7 +265,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
    fragments in capture-timestamp order and re-runs the state machine. Live,
    there is no moment at which a dialog is finished arriving.
 2. **`StreamStore::reassociate_all` links streams to dialogs globally**
-   ([`stream_store.rs:2814`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2814)<!-- "pub fn reassociate_all(&mut" -->), because SDP and RTP
+   ([`stream_store.rs:2870`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2870)<!-- "pub fn reassociate_all(&mut" -->), because SDP and RTP
    routinely land on different workers when the carrier advertises a separate
    media IP.
 3. **The merge replays the single-threaded path's idle-compaction sweeps.**

@@ -1676,7 +1676,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:55`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L55)<!-- "pub fn generate_call_report(" -->) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:771`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L771)<!-- "pub fn message_to_json(msg: &SipMessage) -> String {" -->) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |
-| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:2521`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2521)<!-- "pub fn iter(&self)" -->) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
+| `rtp_stats` | `StreamStore::iter` ([`src/rtp/stream_store.rs:2577`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2577)<!-- "pub fn iter(&self)" -->) + `rtp::diagnosis::diagnose_media` + `output::json::stream_to_json` |
 | `search_messages` | Same iteration the `--filter` CLI path uses; `FilterExpr` covers most of it |
 | `find_problems` | `list_dialogs` with each `expand_alias` result OR'd |
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |

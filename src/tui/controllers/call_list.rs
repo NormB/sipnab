@@ -584,10 +584,11 @@ pub(in crate::tui) fn clear_non_matching(app: &mut App) {
         // looking at rather than a set scored on a guessed 100 ms path.
         let delay = crate::rtp::quality::MosDelay::of_run(app.declared_one_way_delay_ms, &ss);
         let before = ds.len();
-        ds.retain(|d| {
-            let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
-            filter.matches_dialog(d, &streams, capture, delay)
-        });
+        // One grouping of the streams for the whole pass: a scan of the
+        // stream store per dialog, under the dialog store's write lock,
+        // stalled the capture for dialogs x streams steps.
+        let by_call = ss.by_call();
+        ds.retain(|d| filter.matches_dialog(d, by_call.of(&d.call_id), capture, delay));
         before - ds.len()
     };
     app.call_list.clear_selections();
@@ -623,10 +624,10 @@ pub(in crate::tui) fn clear_matching(app: &mut App) {
         // looking at rather than a set scored on a guessed 100 ms path.
         let delay = crate::rtp::quality::MosDelay::of_run(app.declared_one_way_delay_ms, &ss);
         let before = ds.len();
-        ds.retain(|d| {
-            let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
-            !filter.matches_dialog(d, &streams, capture, delay)
-        });
+        // One grouping of the streams for the whole pass (see
+        // clear_non_matching).
+        let by_call = ss.by_call();
+        ds.retain(|d| !filter.matches_dialog(d, by_call.of(&d.call_id), capture, delay));
         before - ds.len()
     };
     app.call_list.clear_selections();
@@ -700,6 +701,55 @@ mod tests {
             app.dialog_store.read().len(),
             1,
             "a dialog matching only via its RTP stream must survive clear_non_matching"
+        );
+        Ok(())
+    }
+
+    /// An app over [`crate::test_utils::calls_with_media`] with `filter` on.
+    fn app_with_media(n: u8, filter: &str) -> Result<App, TestError> {
+        let (ds, ss) = crate::test_utils::calls_with_media(n)?;
+        let mut app = App::new_test();
+        *app.dialog_store.write() = ds;
+        *app.stream_store.write() = ss;
+        app.active_filter = Some(crate::sip::dsl::FilterExpr::parse(filter)?);
+        Ok(app)
+    }
+
+    /// The `streams_for` calls `f` makes on this thread.
+    fn streams_for_calls_during(f: impl FnOnce()) -> usize {
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        f();
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get)
+    }
+
+    /// Clearing the non-matching dialogs reads each dialog's streams from one
+    /// grouping of the store. It holds the dialog store's write lock, so a
+    /// pass over every stream per dialog stalled the capture for that long.
+    #[test]
+    fn clear_non_matching_groups_the_streams_once_not_once_per_dialog() -> Result<(), TestError> {
+        let mut app = app_with_media(6, "rtp.packets > 0")?;
+        let scans = streams_for_calls_during(|| clear_non_matching(&mut app));
+        assert_eq!(scans, 0, "no per-dialog scan of the stream store");
+        assert_eq!(
+            app.dialog_store.read().len(),
+            6,
+            "every dialog matches through its stream, so none is cleared"
+        );
+        Ok(())
+    }
+
+    /// Clearing the matching dialogs reads each dialog's streams from one
+    /// grouping of the store, and still clears every dialog that matches
+    /// through its stream.
+    #[test]
+    fn clear_matching_groups_the_streams_once_not_once_per_dialog() -> Result<(), TestError> {
+        let mut app = app_with_media(6, "rtp.packets > 0")?;
+        let scans = streams_for_calls_during(|| clear_matching(&mut app));
+        assert_eq!(scans, 0, "no per-dialog scan of the stream store");
+        assert_eq!(
+            app.dialog_store.read().len(),
+            0,
+            "every dialog matches through its stream, so all are cleared"
         );
         Ok(())
     }

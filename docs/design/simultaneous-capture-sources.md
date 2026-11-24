@@ -152,13 +152,13 @@ by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 through `effective_address` ([`src/sip/sdp.rs:355`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L355)<!-- "pub fn effective_address(media: &SdpMedia" -->) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
 tuples. `process_packet` ([`src/pipeline.rs:3225`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3225)<!-- "/// Route one" -->) feeds each one to `link_to_dialog_with_sdp`
-([`src/rtp/stream_store.rs:1833`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1833)<!-- "pub fn link_to_dialog_with_sdp(" -->), which lands in `link_endpoint_with_ptime`
-([`src/rtp/stream_store.rs:2016`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2016)<!-- "pub fn link_endpoint_with_ptime(" -->). That function does two things:
+([`src/rtp/stream_store.rs:1889`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1889)<!-- "pub fn link_to_dialog_with_sdp(" -->), which lands in `link_endpoint_with_ptime`
+([`src/rtp/stream_store.rs:2072`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2072)<!-- "pub fn link_endpoint_with_ptime(" -->). That function does two things:
 
-1. `remember_sdp_endpoint` ([`src/rtp/stream_store.rs:2124`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2124)<!-- "fn remember_sdp_endpoint(" -->) records
+1. `remember_sdp_endpoint` ([`src/rtp/stream_store.rs:2180`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2180)<!-- "fn remember_sdp_endpoint(" -->) records
    `(addr, port) -> SdpEndpoint { call_id, rtpmap, ptime }`, so a stream created
    *later* resolves at creation through `resolve_from_sdp`
-   ([`src/rtp/stream_store.rs:2201`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2201)<!-- "fn resolve_from_sdp(&self," -->), called from [`src/rtp/stream_store.rs:1428`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1428)<!-- "self.resolve_from_sdp(&mut" -->.
+   ([`src/rtp/stream_store.rs:2257`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2257)<!-- "fn resolve_from_sdp(&self," -->), called from [`src/rtp/stream_store.rs:1464`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1464)<!-- "self.resolve_from_sdp(&mut" -->.
 2. It sweeps the endpoint index for streams that already exist and fills an
    unset `associated_dialog`.
 
@@ -188,7 +188,7 @@ Call-ID deserves the explicit zero. It is the obvious answer and it is not an
 answer: an RTP packet has no Call-ID field, so the identifier that makes the
 signaling side tractable does not exist on the media side. This is the same
 observation `attribute_media_quote` opens with
-([`src/rtp/stream_store.rs:2416`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2416)<!-- "pub fn attribute_media_quote(" -->): *"An ICMP error about media carries no
+([`src/rtp/stream_store.rs:2472`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2472)<!-- "pub fn attribute_media_quote(" -->): *"An ICMP error about media carries no
 Call-ID — a media datagram has none to carry."*
 
 Timing deserves a firmer no. "The stream started 40 ms after the 200 OK, so it
@@ -236,15 +236,15 @@ feature's documentation has to name the scope, not merely the topology.
 several nodes — the multi-node fan-in `hep_source_label` exists to make
 distinguishable — can be told by two nodes that `192.0.2.1:20000` belongs to two
 different calls. `remember_sdp_endpoint` overwrites `existing.call_id`
-([`src/rtp/stream_store.rs:2135`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2135)<!-- "match self.sdp_endpoints.get_full_mut(&(addr," --> onward), so the last offer wins, and
+([`src/rtp/stream_store.rs:2191`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2191)<!-- "match self.sdp_endpoints.get_full_mut(&(addr," --> onward), so the last offer wins, and
 `resolve_from_sdp` hands that winner to a stream. [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html) space repeats across
 sites, so this is ordinary rather than exotic. **This is the wrong-attribution
 mode**, and it is the reason stage one should accept HEP from exactly one node.
 
 **F3 — Endpoint reuse over time.** `associated_dialog` is set only when unset
-([`src/rtp/stream_store.rs:2070`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2070)<!-- "if stream.associated_dialog.is_none() { stream.associated_dialog = Some(call_id.to_string());" -->), and `sdp_endpoints` is bounded by insertion
+([`src/rtp/stream_store.rs:2126`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2126)<!-- "if stream.associated_dialog.is_none() { stream.associated_dialog = Some(call_id.to_string());" -->), and `sdp_endpoints` is bounded by insertion
 order with oldest-out eviction rather than by age
-([`src/rtp/stream_store.rs:2171`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2171)<!-- "if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams { let batch = (self.max_streams / 10).max(1).min(self.sdp_endpoints.len()); self.sdp_endpoints.drain(0..batch); self.endpoints_learned.drop_front(batch); } self.sdp_endpoints.insert(" -->). A media gateway cycles a finite RTP port range,
+([`src/rtp/stream_store.rs:2227`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2227)<!-- "if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams { let batch = (self.max_streams / 10).max(1).min(self.sdp_endpoints.len()); self.sdp_endpoints.drain(0..batch); self.endpoints_learned.drop_front(batch); } self.sdp_endpoints.insert(" -->). A media gateway cycles a finite RTP port range,
 so on a process running for days — which is precisely the deployment shape this
 feature is for, unlike the minutes-long pcap read the eviction policy was sized
 for — a stale entry can outlive its call and claim the next stream on that
@@ -287,9 +287,9 @@ handles SDP-then-RTP and the endpoint sweep in `link_endpoint_with_ptime` handle
 RTP-then-SDP, which is exactly the SNB-0007 ordering fix — so the association is
 order-independent. What is *not* order-independent is the clock rate: a stream
 created before its `a=rtpmap` accumulates jitter against a placeholder, and
-`link_endpoint_with_ptime` ([`src/rtp/stream_store.rs:2016`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2016)<!-- "pub fn link_endpoint_with_ptime(" -->)
+`link_endpoint_with_ptime` ([`src/rtp/stream_store.rs:2072`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2072)<!-- "pub fn link_endpoint_with_ptime(" -->)
 restarts the estimator and records where, so `measured_jitter_ms`
-([`src/rtp/stream_store.rs:1746`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1746)<!-- "pub fn measured_jitter_ms(&self," -->) withholds the figure until it
+([`src/rtp/stream_store.rs:1782`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1782)<!-- "pub fn measured_jitter_ms(&self," -->) withholds the figure until it
 reconverges. That machinery exists and covers this. Worth a test, not a design change.
 
 **F6 — Duplicate observation.** If the NIC also sees the signaling that HEP is
@@ -303,7 +303,7 @@ detector later. It is not a reason to refuse the combination.
 ### 3.4 Say how strong the tie is
 
 sipnab already has the right pattern for this and should reuse it rather than
-invent one. `MediaMatch` ([`src/rtp/stream_store.rs:30`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L30)<!-- "#[derive(Debug, Clone, Copy, PartialEq, Eq," -->) grades ICMP media
+invent one. `MediaMatch` ([`src/rtp/stream_store.rs:66`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L66)<!-- "#[derive(Debug, Clone, Copy, PartialEq, Eq," -->) grades ICMP media
 attribution across five tiers and its rustdoc states the principle directly: the
 variant travels to every surface *"rather than collapsed to a boolean because
 the tiers are not equally strong. A reader deciding whether to act on a finding
@@ -782,7 +782,7 @@ the one the design expected to have to write. Run 3 is F1 reproduced on demand.
    capture-local one. Under scope `"t"` either rule works; under `"m"` the single
    advertised endpoint is the stream's *remote* peer, so a local-only rule binds
    zero streams where a both-ends rule binds one. sipnab already does the right
-   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:2201`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2201)<!-- "fn resolve_from_sdp(&self," -->) tries `key.src`
+   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:2257`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2257)<!-- "fn resolve_from_sdp(&self," -->) tries `key.src`
    and `key.dst` — so this is a property to keep rather than one to add.
 3. The ACK is never mirrored: it is end-to-end and outside the INVITE server
    transaction. No SDP rode on it here, but a delayed-offer call puts the ANSWER

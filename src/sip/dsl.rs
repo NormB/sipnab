@@ -1375,13 +1375,7 @@ pub fn select_dialogs<'a>(
     #[cfg(not(target_arch = "wasm32"))]
     crate::pipeline::resolve_icmp_media(stream_store);
 
-    let mut by_call: std::collections::HashMap<&'a str, Vec<&'a RtpStream>> =
-        std::collections::HashMap::new();
-    for stream in stream_store.iter() {
-        if let Some(id) = stream.associated_dialog.as_deref() {
-            by_call.entry(id).or_default().push(stream);
-        }
-    }
+    let by_call = stream_store.by_call();
 
     // One run-level fact, read once rather than per dialog.
     let capture = CaptureMedia::of_store(stream_store);
@@ -1394,13 +1388,10 @@ pub fn select_dialogs<'a>(
     let dialogs: Vec<(&'a SipDialog, Vec<&'a RtpStream>)> = dialog_store
         .iter()
         .filter_map(|dialog| {
-            let streams = by_call
-                .get(dialog.call_id.as_str())
-                .cloned()
-                .unwrap_or_default();
+            let streams = by_call.of(&dialog.call_id);
             match filter {
-                Some(expr) if !expr.matches_dialog(dialog, &streams, capture, delay) => None,
-                _ => Some((dialog, streams)),
+                Some(expr) if !expr.matches_dialog(dialog, streams, capture, delay) => None,
+                _ => Some((dialog, streams.to_vec())),
             }
         })
         .collect();
