@@ -189,7 +189,7 @@ cause ([`benchmarks.md:64-70`](https://github.com/NormB/sipnab/blob/789c70ca8e10
 
 And critically: **`--cores` mode holds no shared locks at all.** Each worker
 owns a thread-local `DialogStore` and `StreamStore`
-([`parallel.rs:903-920`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L903-L920)<!-- "fn new(cfg: ParallelConfig) -> Self {" -->), merged at EOF. There is no
+([`parallel.rs:900-917`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L900-L917)<!-- "fn new(cfg: ParallelConfig) -> Self {" -->), merged at EOF. There is no
 lock to bypass. Forking the workers would change nothing about the ceiling and
 would make the merge worse — it becomes serialization and IPC of two whole
 stores instead of a move.
@@ -384,7 +384,7 @@ cost a line of `unsafe` in this crate.
 ### Where the throughput actually is, ranked
 
 #### R4 — Parallel readers, so `--cores` can exceed 2× *(P2, the big one)*
-[`parallel.rs:1549`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1549)<!-- "for (i, path) in" --> reads a multi-file `-I` set in a
+[`parallel.rs:1546`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1546)<!-- "for (i, path) in" --> reads a multi-file `-I` set in a
 **serial `for` loop on one thread**. Since the reader is the proven ceiling, and
 `-I` routinely names a directory or glob of rotated captures, N reader threads
 each opening their own file — all sharding into the same worker pool, so

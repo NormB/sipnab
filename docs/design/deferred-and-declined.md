@@ -163,7 +163,7 @@ retains no record of which capture anything came from.**
   `SipDialog` is the operator's `--tag` string, not provenance.
 - The TUI's only notion of where its data came from is one display string,
   `capture_mode` ([`tui/mod.rs:274`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L274)<!-- "/// Capture mode" -->), overwritten wholesale
-  on each in-TUI open ([`file_open.rs:836`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L836)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
+  on each in-TUI open ([`file_open.rs:834`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L834)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
   The `-I` set never reaches the TUI: `plan.source` is consumed by
   `bootstrap::launch` ([`main.rs:438-441`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L438-L441)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
   ([`state.rs:218-229`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/tui/state.rs#L218-L229)) carries no path.

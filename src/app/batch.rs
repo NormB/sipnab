@@ -6073,7 +6073,8 @@ fn process_parsed_packet(
     #[cfg(not(feature = "tls"))]
     let mut decrypt = crate::pipeline::MediaDecrypt::default();
 
-    let action = crate::pipeline::classify_packet(pp, state.rtp_heuristic, &opts, &mut decrypt);
+    let crate::pipeline::ClassifiedPacket { action, sdp } =
+        crate::pipeline::classify_packet_read(pp, state.rtp_heuristic, &opts, &mut decrypt);
     let mut packet = PacketPass {
         ctx,
         state,
@@ -6083,11 +6084,7 @@ fn process_parsed_packet(
     };
     match action {
         crate::pipeline::PacketAction::None => {}
-        crate::pipeline::PacketAction::Sip {
-            msg,
-            sdp_links,
-            sdp,
-        } => {
+        crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
             packet.on_sip(pp, &msg, &sdp_links, &sdp);
         }
         crate::pipeline::PacketAction::ThMapping(event) => {

@@ -2351,10 +2351,6 @@ pub enum PacketAction {
         msg: Box<sip::message::SipMessage>,
         /// `(media_ip, media_port, call_id, media)` links to apply to streams.
         sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
-        /// The message's SDP as the links were read from it, for the dialog
-        /// store to take instead of parsing the body again; `Unread` under
-        /// `no_dialog`, where nothing parsed it.
-        sdp: sip::sdp::SdpRead,
     },
     /// SDP media endpoints a MEDIA RELAY asserted about its own allocation,
     /// decoded from rtpengine's `ng` control plane.
@@ -2389,6 +2385,32 @@ pub enum PacketAction {
     },
 }
 
+/// A packet's [`PacketAction`] and, for a SIP message, its SDP as
+/// classification parsed it, for the crate's own appliers.
+///
+/// The parsed SDP travels beside the action, not in it: `PacketAction::Sip` is
+/// public, and a field added to it would break every caller that builds or
+/// matches it field by field. The appliers in this crate hand `sdp` to the
+/// dialog store with the message, so the body is parsed once instead of twice
+/// (2.9% of a run over a SIP-only capture); [`classify_packet`] drops it.
+pub(crate) struct ClassifiedPacket {
+    /// What the packet is, as [`classify_packet`] returns it.
+    pub(crate) action: PacketAction,
+    /// The SIP message's SDP as the links were read from it: `Unread` for
+    /// every other action, and under `no_dialog`, where nothing parsed it.
+    pub(crate) sdp: sip::sdp::SdpRead,
+}
+
+impl From<PacketAction> for ClassifiedPacket {
+    /// An action that carries no parsed SDP.
+    fn from(action: PacketAction) -> Self {
+        Self {
+            action,
+            sdp: sip::sdp::SdpRead::Unread,
+        }
+    }
+}
+
 /// Classify one parsed packet into a `PacketAction` — the store-free core of
 /// the per-packet pipeline. WebSocket unwrap, SIP parse + SDP-link extraction,
 /// DTLS/SRTP key learning, RTCP parse, and RTP (header or heuristic) detection
@@ -2413,8 +2435,19 @@ pub fn classify_packet(
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
 ) -> PacketAction {
+    classify_packet_read(pp, rtp_heuristic, opts, decrypt).action
+}
+
+/// [`classify_packet`], and the SDP it parsed, for an applier that hands the
+/// message to the dialog store: see [`ClassifiedPacket`].
+pub(crate) fn classify_packet_read(
+    pp: &ParsedPacket,
+    rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
+    opts: &PipelineOptions,
+    decrypt: &mut MediaDecrypt<'_>,
+) -> ClassifiedPacket {
     if let Some(action) = claim_th_mapping(pp) {
-        return action;
+        return action.into();
     }
     // Try WebSocket unwrapping for TCP on common WS ports
     let ws_payload = try_websocket_unwrap(pp);
@@ -2433,18 +2466,18 @@ pub fn classify_packet(
         transport: effective_transport,
     };
 
-    if let Some(action) = classify_signaling(pp, &signaling, opts, decrypt) {
-        return action;
+    if let Some(classified) = classify_signaling(pp, &signaling, opts, decrypt) {
+        return classified;
     }
     if let Some(action) = claim_control(pp, opts) {
-        return action;
+        return action.into();
     }
 
     // RTP/RTCP detection
     if opts.no_rtp || pp.transport != TransportProto::Udp {
-        return PacketAction::None;
+        return PacketAction::None.into();
     }
-    classify_media(pp, rtp_heuristic, opts, decrypt)
+    classify_media(pp, rtp_heuristic, opts, decrypt).into()
 }
 
 /// An OpenSIPS `E_SIPNAB_TH_MAP` event, claimed before anything else looks
@@ -2481,7 +2514,7 @@ fn classify_signaling(
     signaling: &Signaling<'_>,
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
-) -> Option<PacketAction> {
+) -> Option<ClassifiedPacket> {
     let effective_payload = signaling.payload;
     // SIP detection first — parse and derive links, touching no store. The
     // port gate applies to signaling only; RTP uses SDP-negotiated dynamic
@@ -2520,14 +2553,15 @@ fn classify_signaling(
 
 /// Parse a payload that looks like SIP into the `Sip` action, with the
 /// packet's provenance attached and its SDP links derived. A parse failure
-/// is the `None` action: the packet is consumed either way.
+/// is the `None` action: the packet is consumed either way. The SDP parsed
+/// for the links comes back beside the action.
 #[inline]
 fn parse_sip_action(
     pp: &ParsedPacket,
     signaling: &Signaling<'_>,
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
-) -> PacketAction {
+) -> ClassifiedPacket {
     contained_sip_action(|| sip_action(pp, signaling, opts, decrypt))
 }
 
@@ -2538,8 +2572,8 @@ fn parse_sip_action(
 /// scope (PANIC-ABORT-HOSTILE-INPUT): a panic in it is the `None` action for
 /// that one packet, as a parse failure is, instead of ending the process. The
 /// panic hook logs it.
-fn contained_sip_action(parse: impl FnOnce() -> PacketAction) -> PacketAction {
-    crate::capture::contained("SIP message", parse).unwrap_or(PacketAction::None)
+fn contained_sip_action(parse: impl FnOnce() -> ClassifiedPacket) -> ClassifiedPacket {
+    crate::capture::contained("SIP message", parse).unwrap_or_else(|_| PacketAction::None.into())
 }
 
 /// [`parse_sip_action`] without the containment.
@@ -2548,7 +2582,7 @@ fn sip_action(
     signaling: &Signaling<'_>,
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
-) -> PacketAction {
+) -> ClassifiedPacket {
     match sip::parser::parse_sip_bytes(
         signaling.payload,
         pp.timestamp,
@@ -2561,9 +2595,11 @@ fn sip_action(
         Ok(mut sip_msg) => {
             attach_packet_provenance(&mut sip_msg, pp);
             let (sdp_links, sdp) = sdp_links_read(&sip_msg, opts, decrypt);
-            PacketAction::Sip {
-                msg: Box::new(sip_msg),
-                sdp_links,
+            ClassifiedPacket {
+                action: PacketAction::Sip {
+                    msg: Box::new(sip_msg),
+                    sdp_links,
+                },
                 sdp,
             }
         }
@@ -2571,7 +2607,7 @@ fn sip_action(
             if !opts.quiet_bad_parse {
                 tracing::debug!("SIP parse error: {e}");
             }
-            PacketAction::None
+            PacketAction::None.into()
         }
     }
 }
@@ -3271,13 +3307,10 @@ pub fn process_packet(
     decrypt: &mut MediaDecrypt<'_>,
     relay_orphans: Option<&crate::relay::reconcile::OrphanSink>,
 ) {
-    match classify_packet(pp, rtp_heuristic, opts, decrypt) {
+    let ClassifiedPacket { action, sdp } = classify_packet_read(pp, rtp_heuristic, opts, decrypt);
+    match action {
         PacketAction::None => {}
-        PacketAction::Sip {
-            msg,
-            sdp_links,
-            sdp,
-        } => {
+        PacketAction::Sip { msg, sdp_links } => {
             // Classification returns Sip even with no_dialog (batch needs the
             // message); the live path simply drops untracked messages.
             if opts.no_dialog {
@@ -3396,10 +3429,15 @@ mod contained_sip_tests {
     #[test]
     fn a_sip_message_whose_parse_panics_is_dropped() -> Result<(), TestError> {
         let before = crate::crash::contained_panics();
-        let got = contained_sip_action(|| -> PacketAction { panic!("hostile sip probe") });
+        let got = contained_sip_action(|| -> ClassifiedPacket { panic!("hostile sip probe") });
         assert!(
-            matches!(got, PacketAction::None),
+            matches!(got.action, PacketAction::None),
             "a panicking parse is the None action"
+        );
+        assert!(
+            matches!(got.sdp, crate::sip::sdp::SdpRead::Unread),
+            "and hands on no SDP: {:?}",
+            got.sdp
         );
         assert!(
             crate::crash::contained_panics() > before,
@@ -6454,7 +6492,8 @@ mod ws_oversize_tests {
 
 /// A SIP message's SDP is parsed once on its way to the dialog store:
 /// classification parses it for the media links and hands the result on in
-/// [`PacketAction::Sip`], and the store's SDP timeline takes it from there.
+/// [`ClassifiedPacket`], beside the public `PacketAction::Sip`, and the store's
+/// SDP timeline takes it from there.
 #[cfg(all(test, feature = "native"))]
 mod sdp_once_tests {
     use super::*;
@@ -6539,13 +6578,42 @@ mod sdp_once_tests {
         ]
     }
 
-    /// Classify every message of `messages` with `opts`.
-    fn classify_all(messages: &[Vec<u8>], opts: &PipelineOptions) -> Vec<PacketAction> {
+    /// Classify every message of `messages` with `opts`, keeping the SDP.
+    fn classify_all(messages: &[Vec<u8>], opts: &PipelineOptions) -> Vec<ClassifiedPacket> {
+        let mut heur = rtp::heuristic::RtpHeuristic::new();
+        messages
+            .iter()
+            .map(|m| {
+                classify_packet_read(&packet(m), &mut heur, opts, &mut MediaDecrypt::default())
+            })
+            .collect()
+    }
+
+    /// Classify every message of `messages` with the public classifier.
+    fn classify_all_public(messages: &[Vec<u8>], opts: &PipelineOptions) -> Vec<PacketAction> {
         let mut heur = rtp::heuristic::RtpHeuristic::new();
         messages
             .iter()
             .map(|m| classify_packet(&packet(m), &mut heur, opts, &mut MediaDecrypt::default()))
             .collect()
+    }
+
+    /// A `Sip` action's Call-ID and the `(address, port)` of each link.
+    type SipSummary = (Option<String>, Vec<(IpAddr, u16)>);
+
+    /// The Call-ID and link ends of a `Sip` action, for comparing two
+    /// classifications; `None` for any other action.
+    fn sip_summary(action: &PacketAction) -> Option<SipSummary> {
+        match action {
+            PacketAction::Sip { msg, sdp_links } => Some((
+                msg.call_id().map(str::to_owned),
+                sdp_links
+                    .iter()
+                    .map(|(ip, port, _, _)| (*ip, *port))
+                    .collect(),
+            )),
+            _ => None,
+        }
     }
 
     /// Feed `messages` through the live applier and return the dialog store.
@@ -6583,12 +6651,78 @@ mod sdp_once_tests {
         assert_eq!(parses, 3, "three messages with SDP, each parsed once");
     }
 
-    /// The SDP `action` hands on, when it is a SIP message.
-    fn sdp_of(action: Option<&PacketAction>) -> Result<&SdpRead, TestError> {
-        match action {
-            Some(PacketAction::Sip { sdp, .. }) => Ok(sdp),
+    /// The SDP `classified` hands on, when it is a SIP message.
+    fn sdp_of(classified: Option<&ClassifiedPacket>) -> Result<&SdpRead, TestError> {
+        match classified {
+            Some(ClassifiedPacket {
+                action: PacketAction::Sip { .. },
+                sdp,
+            }) => Ok(sdp),
             _ => Err("the message classifies as SIP".into()),
         }
+    }
+
+    #[test]
+    fn the_public_classifier_gives_the_action_the_internal_one_gives() -> Result<(), TestError> {
+        let mut messages = call();
+        messages.push(message(
+            "BYE sip:bob@example.com SIP/2.0",
+            "3 BYE",
+            None,
+            "",
+        ));
+        let opts = PipelineOptions::default();
+        let internal: Vec<_> = classify_all(&messages, &opts)
+            .iter()
+            .map(|c| sip_summary(&c.action))
+            .collect();
+        let public: Vec<_> = classify_all_public(&messages, &opts)
+            .iter()
+            .map(sip_summary)
+            .collect();
+        assert_eq!(internal, public, "the same messages and links");
+        assert_eq!(public.len(), 4, "four messages: {public:?}");
+        assert!(
+            public.iter().all(Option::is_some),
+            "all four are SIP: {public:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_public_classifier_parses_each_sdp_once() {
+        let messages = call();
+        let (parses, actions) =
+            sdp_parses_during(|| classify_all_public(&messages, &PipelineOptions::default()));
+        assert_eq!(
+            parses, 3,
+            "one parse per message with SDP, as before the SDP was kept"
+        );
+        assert_eq!(actions.len(), 3, "three actions");
+    }
+
+    #[test]
+    fn a_packet_that_is_not_sip_hands_on_no_sdp() -> Result<(), TestError> {
+        let mut heur = rtp::heuristic::RtpHeuristic::new();
+        let mut pp = packet(b"\x80\x00\x00\x01\x00\x00\x00\xa0\x00\x00\x12\x34payload");
+        pp.src_port = 40000;
+        pp.dst_port = 40002;
+        let classified = classify_packet_read(
+            &pp,
+            &mut heur,
+            &PipelineOptions::default(),
+            &mut MediaDecrypt::default(),
+        );
+        assert!(
+            !matches!(classified.action, PacketAction::Sip { .. }),
+            "an RTP-shaped datagram is not SIP"
+        );
+        assert!(
+            matches!(classified.sdp, SdpRead::Unread),
+            "and carries no SDP: {:?}",
+            classified.sdp
+        );
+        Ok(())
     }
 
     #[test]
@@ -6654,7 +6788,7 @@ mod sdp_once_tests {
         let live = live_store(&messages);
         let mut fresh = DialogStore::new(100, false);
         for action in classify_all(&messages, &PipelineOptions::default()) {
-            if let PacketAction::Sip { msg, .. } = action {
+            if let PacketAction::Sip { msg, .. } = action.action {
                 fresh.process_message(*msg);
             }
         }
@@ -6683,7 +6817,11 @@ mod sdp_once_tests {
                     ..PipelineOptions::default()
                 },
             ) {
-                if let PacketAction::Sip { msg, sdp, .. } = action {
+                if let ClassifiedPacket {
+                    action: PacketAction::Sip { msg, .. },
+                    sdp,
+                } = action
+                {
                     store.process_message_read(*msg, &sdp);
                 }
             }
@@ -6703,7 +6841,11 @@ mod sdp_once_tests {
         let mut store = DialogStore::new(100, false);
         let (parses, ()) = sdp_parses_during(|| {
             for action in actions {
-                if let PacketAction::Sip { msg, sdp, .. } = action {
+                if let ClassifiedPacket {
+                    action: PacketAction::Sip { msg, .. },
+                    sdp,
+                } = action
+                {
                     store.process_message_read(*msg, &sdp);
                 }
             }

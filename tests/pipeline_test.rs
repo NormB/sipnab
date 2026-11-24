@@ -362,7 +362,7 @@ fn classify_honors_opt_outs() -> Result<(), TestError> {
     };
     let sip_pp = parsed(invite_with_sdp(), 5060, 5060);
     match classify_packet(&sip_pp, &mut heuristic, &no_dialog, &mut decrypt) {
-        PacketAction::Sip { msg, sdp_links, .. } => {
+        PacketAction::Sip { msg, sdp_links } => {
             assert_eq!(msg.call_id(), Some("pipeline-sdp@test"));
             assert!(
                 sdp_links.is_empty(),
@@ -482,5 +482,109 @@ fn classify_carries_tls_transport() -> Result<(), TestError> {
         }
         _ => return Err("TLS-decrypted SIP must classify as Sip".into()),
     }
+    Ok(())
+}
+
+/// One SDP media link of a `PacketAction::Sip`, as the public variant types it.
+type SdpLink = (IpAddr, u16, String, sipnab::sip::SdpMedia);
+
+/// `PacketAction::Sip` is public API of a library crate released as 0.5.x, so
+/// its fields are part of what a patch release must not change: a caller that
+/// builds the variant, or matches it field by field without `..`, stops
+/// compiling when a field is added. These tests name every field with no `..`,
+/// so they stop compiling first, and a change to the shape has to be made on
+/// purpose, with a version that says so.
+///
+/// The constructor names `msg` and `sdp_links` and nothing else.
+fn sip_action(
+    msg: Box<sipnab::sip::SipMessage>,
+    sdp_links: Vec<SdpLink>,
+) -> pipeline::PacketAction {
+    pipeline::PacketAction::Sip { msg, sdp_links }
+}
+
+/// The public classifier's `Sip` action destructures into exactly `msg` and
+/// `sdp_links`, and carries the offer's media link.
+#[test]
+fn packet_action_sip_destructures_into_msg_and_sdp_links_only() -> Result<(), TestError> {
+    use pipeline::{PacketAction, classify_packet};
+    let mut heuristic = RtpHeuristic::new();
+    let mut decrypt = pipeline::MediaDecrypt::default();
+    let pp = parsed(invite_with_sdp(), 5060, 5060);
+    let PacketAction::Sip { msg, sdp_links } = classify_packet(
+        &pp,
+        &mut heuristic,
+        &PipelineOptions::default(),
+        &mut decrypt,
+    ) else {
+        return Err("an INVITE with SDP must classify as Sip".into());
+    };
+    assert_eq!(
+        msg.call_id(),
+        Some("pipeline-sdp@test"),
+        "the INVITE itself"
+    );
+    let ends: Vec<(IpAddr, u16, &str)> = sdp_links
+        .iter()
+        .map(|(ip, port, call_id, _)| (*ip, *port, call_id.as_str()))
+        .collect();
+    assert_eq!(
+        ends,
+        vec![(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9)),
+            40000,
+            "pipeline-sdp@test"
+        )],
+        "the offer's one audio link"
+    );
+    Ok(())
+}
+
+/// The variant built from `msg` and `sdp_links` alone gives back both, unchanged.
+#[test]
+fn packet_action_sip_is_built_from_msg_and_sdp_links_only() -> Result<(), TestError> {
+    use pipeline::{PacketAction, classify_packet};
+    let mut heuristic = RtpHeuristic::new();
+    let mut decrypt = pipeline::MediaDecrypt::default();
+    let pp = parsed(invite_with_sdp(), 5060, 5060);
+    let PacketAction::Sip { msg, sdp_links } = classify_packet(
+        &pp,
+        &mut heuristic,
+        &PipelineOptions::default(),
+        &mut decrypt,
+    ) else {
+        return Err("an INVITE with SDP must classify as Sip".into());
+    };
+    let links = sdp_links.len();
+    let PacketAction::Sip { msg, sdp_links } = sip_action(msg, sdp_links) else {
+        return Err("the constructor builds the Sip variant".into());
+    };
+    assert_eq!(
+        msg.call_id(),
+        Some("pipeline-sdp@test"),
+        "the message is kept"
+    );
+    assert_eq!(sdp_links.len(), links, "the links are kept");
+    assert_eq!(links, 1, "the offer has one link");
+    Ok(())
+}
+
+/// A message without SDP is the same two-field variant, with no links.
+#[test]
+fn packet_action_sip_without_sdp_has_no_links() -> Result<(), TestError> {
+    use pipeline::{PacketAction, classify_packet};
+    let mut heuristic = RtpHeuristic::new();
+    let mut decrypt = pipeline::MediaDecrypt::default();
+    let pp = parsed(invite(), 5060, 5060);
+    let PacketAction::Sip { msg, sdp_links } = classify_packet(
+        &pp,
+        &mut heuristic,
+        &PipelineOptions::default(),
+        &mut decrypt,
+    ) else {
+        return Err("an INVITE must classify as Sip".into());
+    };
+    assert_eq!(msg.call_id(), Some("pipeline-1@test"), "the INVITE itself");
+    assert!(sdp_links.is_empty(), "no SDP, no links: {sdp_links:?}");
     Ok(())
 }

@@ -734,7 +734,7 @@ fn reconstruct(
     sip: &mut u64,
     rtp: &mut u64,
 ) {
-    use crate::pipeline::{MediaDecrypt, PacketAction, classify_packet};
+    use crate::pipeline::{ClassifiedPacket, MediaDecrypt, PacketAction, classify_packet_read};
     let opts = pipeline_options(cfg);
     // `--hep-parse`, by the rule `--cores 1` applies. The packet was sharded
     // by its outer addresses, which for a HEP copy are the same for every
@@ -744,13 +744,10 @@ fn reconstruct(
     };
     let pp: &ParsedPacket = &pp;
     let mut decrypt = MediaDecrypt::default();
-    match classify_packet(pp, heuristic, &opts, &mut decrypt) {
+    let ClassifiedPacket { action, sdp } = classify_packet_read(pp, heuristic, &opts, &mut decrypt);
+    match action {
         PacketAction::None => {}
-        PacketAction::Sip {
-            msg,
-            sdp_links,
-            sdp,
-        } => {
+        PacketAction::Sip { msg, sdp_links } => {
             *sip += 1;
             if !cfg.no_dialog {
                 // The store takes the message by move — cloning a SipMessage

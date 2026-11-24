@@ -271,7 +271,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
 3. **The merge replays the single-threaded path's idle-compaction sweeps.**
    Each reader records the packets at which its file's newest timestamp
    enters a new sweep interval (`SweepMark`,
-   [`parallel.rs:1425`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1425)<!-- "/// `--cores 1` sweeps" -->), the run folds them in file order into the
+   [`parallel.rs:1422`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1422)<!-- "/// `--cores 1` sweeps" -->), the run folds them in file order into the
    sweeps `--cores 1` makes, and the dialog merge compacts each dialog at
    them. [`parallel.rs:58-63`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L58-L63)<!-- "//! differently from" --> records why compaction cannot run in a
    worker: a worker *"only sees the packets of its own host pairs, so its

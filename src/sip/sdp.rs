@@ -17,7 +17,7 @@ use crate::error::ParseError;
 /// timeline. Parsing it once and passing the result saved the second parse,
 /// which was 2.9% of a run over a SIP-only capture.
 #[derive(Debug, Clone, Default)]
-pub enum SdpRead {
+pub(crate) enum SdpRead {
     /// Nobody has parsed the message's SDP yet: a reader parses it itself.
     #[default]
     Unread,

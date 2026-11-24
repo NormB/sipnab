@@ -731,18 +731,16 @@ fn load_one_capture(
         // Classify via the shared pipeline core, then apply to the app
         // stores (brief per-store write locks, as in live capture).
         let mut decrypt = crate::pipeline::MediaDecrypt::default();
-        match crate::pipeline::classify_packet(
-            &parsed,
-            &mut totals.rtp_heuristic,
-            options,
-            &mut decrypt,
-        ) {
+        let crate::pipeline::ClassifiedPacket { action, sdp } =
+            crate::pipeline::classify_packet_read(
+                &parsed,
+                &mut totals.rtp_heuristic,
+                options,
+                &mut decrypt,
+            );
+        match action {
             crate::pipeline::PacketAction::None => {}
-            crate::pipeline::PacketAction::Sip {
-                msg,
-                sdp_links,
-                sdp,
-            } => {
+            crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
                 dialog_store.write().process_message_read(*msg, &sdp);
                 totals.sip += 1;
                 if !sdp_links.is_empty() {

@@ -132,7 +132,7 @@ fn ingest(path: &Path) -> Option<Ingested> {
         let mut decrypt = MediaDecrypt::default();
         match classify_packet(&parsed, &mut heuristic, &opts, &mut decrypt) {
             PacketAction::None => {}
-            PacketAction::Sip { msg, sdp_links, .. } => {
+            PacketAction::Sip { msg, sdp_links } => {
                 out.dialogs.process_message(*msg);
                 for (ip, port, call_id, media) in &sdp_links {
                     out.streams
