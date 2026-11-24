@@ -77,7 +77,7 @@ copying. `--fail2ban` on its own now arms no detector, so it emits nothing — a
 an operator who asked for a jail log and receives an empty file will read it as
 "nothing attacked me". That is the most dangerous way for a security tool to be
 silent, so it says so, once, at startup
-([`batch.rs:3472-3477`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3472-L3477)<!-- "--fail2ban writes scanner and registration-flood detections" -->):
+([`batch.rs:3556-3561`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3556-L3561)<!-- "--fail2ban writes scanner and registration-flood detections" -->):
 
 > "--fail2ban writes scanner and registration-flood detections, but no detector
 > is running, so this run will emit nothing. An empty jail log means 'nothing was
@@ -91,7 +91,7 @@ safety.**
 
 The obvious repair for the above — arm the existing behavioral scanner detector
 from `--fail2ban` — was measured before it was made, and the measurement is
-recorded in the tree at [`batch.rs:3425-3433`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3425-L3433)<!-- "/// Deliberately NOT armed by `--fail2ban` alone." -->:
+recorded in the tree at [`batch.rs:3509-3517`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3509-L3517)<!-- "/// Deliberately NOT armed by `--fail2ban` alone." -->:
 
 > on a real carrier trunk […] produces 7008 detections naming 180 peers, because
 > the behavioral signature counts OPTIONS and the busiest "scanners" are the
@@ -123,7 +123,7 @@ suite.
 This is already how the tree behaves, and it should be written down as policy
 rather than left as a judgement call that happened to go well once. The
 `scanner_detector` is `Some` only when the kill path is active
-([`batch.rs:3423-3441`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3423-L3441)<!-- "/// The scanner detector, when `--kill-scanner`" -->), and the comment above it declines
+([`batch.rs:3507-3525`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3507-L3525)<!-- "/// The scanner detector, when `--kill-scanner`" -->), and the comment above it declines
 to arm it from `--fail2ban` "until the signature can tell a keepalive from an
 enumeration". That is the rule being applied. Section 4 is what it takes to
 satisfy it.

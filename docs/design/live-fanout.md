@@ -203,7 +203,7 @@ speculated about.
 
 `capture_live_fanout` gives every socket the same `tx`
 ([`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" -->), and there is one receiver: the
-`rx.recv_timeout` at [`batch.rs:4605`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4605)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100))" -->. So the shape is
+`rx.recv_timeout` at [`batch.rs:4702`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4702)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100))" -->. So the shape is
 N producers, one consumer, one pair of stores, one sweep.
 
 **It buys N rings and N drainers.** The overflow CT2 describes is per-socket:
@@ -237,7 +237,7 @@ distinguishable by instruments that already exist:
 instrument, fed from `CaptureMeter`
 ([`channel.rs:157-175`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L157-L175)<!-- "pub fn in_flight(&self)" -->), and they are scrapeable
 from a headless run — `start_servers` is called with `metrics: true` and the
-real meter from [`batch.rs:4133-4149`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4133-L4149)<!-- "let servers = crate::app::servers::start_servers(" -->.
+real meter from [`batch.rs:4217-4233`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4217-L4233)<!-- "let servers = crate::app::servers::start_servers(" -->.
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
 `capture_health` MCP response ([`server.rs:9454`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9454)<!-- "pub async fn capture_health(" -->),
@@ -281,7 +281,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
 Point 3 transfers verbatim to a live worker pool, and it is the one that should
 stop anyone from treating this as CT4's sequel. The live loop already sweeps
 every five seconds of capture time
-([`batch.rs:4446-4452`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4446-L4452)<!-- "/// Periodic sweep of reassembly state and idle-dialog compaction" -->) against one `SweepClock` fed by
+([`batch.rs:4543-4549`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4543-L4549)<!-- "/// Periodic sweep of reassembly state and idle-dialog compaction" -->) against one `SweepClock` fed by
 every packet the single receiver saw. Give each of N workers its own clock and
 the orphan/compaction verdict becomes a function of how the kernel hashed the
 flows. That is a wrong answer that renders as a normal report.

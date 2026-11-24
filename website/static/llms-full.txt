@@ -91860,6 +91860,10 @@ One consequence applies to callers that cannot reach the handle.
 - So its four fatal paths return a `PlanError` instead of exiting.
 - `batch::run` holds both the handle and the receiver. It does the teardown.
 - A function that cannot clean up must hand the failure to one that can.
+- The teardown drops everything the run owns except its dialog and stream stores.
+  - `batch::run` returns those as `RunStores`, and `main` passes them to `RunStores::release_run_and_exit`.
+  - That function keeps them in a static until the process exits, so they are never freed one record at a time.
+  - Neither store owns a file, socket, thread or other value whose drop writes or removes something.
 
 **How a gate holds this.**
 

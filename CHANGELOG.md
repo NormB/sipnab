@@ -19,6 +19,13 @@ entry that carries them.
   - Docs: [Read the rate media arrives at](docs/relay-statistics.md#read-the-rate-media-arrives-at)
   - Credit: Inspired by irontec/sngrep#581.
 
+### Changed
+
+- **A batch run exits without first freeing its stored calls and streams.**
+  - Effect: The operating system takes the memory back at exit; the output, the output files and the exit status stay the same.
+  - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 1.90% fewer instructions, and one with RTP 1.75% fewer.
+  - Limit: callgrind counted the instructions; there is no wall-time figure, because the host stayed busy.
+
 ## [0.5.271] - 2026-11-24
 
 ### Changed
