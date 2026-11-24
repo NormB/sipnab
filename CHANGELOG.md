@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Security
+
+- **etherparse goes from 0.21.0 to 0.21.1 (RUSTSEC-2026-0596).**
+  - Was: etherparse 0.21.0 could read past a packet when it walked the IPv6 extension headers of a packet parsed in its lax mode.
+  - Effect: A scan of `Cargo.lock` no longer reports the advisory.
+  - Limit: sipnab parses IPv6 in etherparse's strict mode, which refuses a broken extension chain, so released binaries did not reach the faulty code.
+
 ## [0.5.270] - 2026-11-24
 
 ### Changed

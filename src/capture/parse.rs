@@ -6089,6 +6089,84 @@ mod tests {
         Ok(())
     }
 
+    /// RUSTSEC-2026-0596: etherparse up to 0.21.0 read past the slice when it
+    /// iterated the IPv6 extension headers of a LAXLY parsed packet whose last
+    /// header names a header the packet does not hold. sipnab slices every
+    /// IPv6 packet with the strict `SlicedPacket::from_*`, which refuses such
+    /// a chain, so the extension walk in `extract_parsed_packet` never sees it.
+    /// These tests hold that: each crafted packet must come back as a decode
+    /// error, never as a parsed packet.
+    mod truncated_ipv6_extension_chain {
+        use super::*;
+
+        /// An IPv6 header (40 bytes) whose payload is `ext`, starting with
+        /// next header `first`.
+        fn ipv6_with(first: u8, ext: &[u8]) -> Vec<u8> {
+            let mut ip = vec![0x60, 0x00, 0x00, 0x00];
+            ip.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+            ip.push(first);
+            ip.push(64); // hop limit
+            ip.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8]); // 2001:db8::1
+            ip.extend_from_slice(&[0; 11]);
+            ip.push(1);
+            ip.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8]); // 2001:db8::2
+            ip.extend_from_slice(&[0; 11]);
+            ip.push(2);
+            ip.extend_from_slice(ext);
+            ip
+        }
+
+        /// A Hop-by-Hop Options header (8 bytes) whose next header is a
+        /// Fragment header (44).
+        const HOP_BY_HOP_TO_FRAGMENT: [u8; 8] = [44, 0, 1, 4, 0, 0, 0, 0];
+
+        fn ethernet(ip: &[u8]) -> Vec<u8> {
+            let mut pkt = vec![0xAA; 6];
+            pkt.extend_from_slice(&[0xBB; 6]);
+            pkt.extend_from_slice(&[0x86, 0xDD]);
+            pkt.extend_from_slice(ip);
+            pkt
+        }
+
+        fn assert_decode_error(data: Vec<u8>, link: i32, case: &str) -> Result<(), TestError> {
+            let p = make_packet(data, link)?;
+            let result = parse_packet(&p);
+            assert!(
+                matches!(result, Err(CaptureError::PacketDecode { .. })),
+                "{case}: a chain naming a header the packet does not hold must be \
+                 refused as a decode error; got {result:?}"
+            );
+            Ok(())
+        }
+
+        /// Ethernet: the chain ends right after the Hop-by-Hop header.
+        #[test]
+        fn ethernet_fragment_header_missing_is_refused() -> Result<(), TestError> {
+            let ip = ipv6_with(0, &HOP_BY_HOP_TO_FRAGMENT);
+            assert_decode_error(
+                ethernet(&ip),
+                DLT_EN10MB,
+                "Ethernet, Fragment header missing",
+            )
+        }
+
+        /// Ethernet: four of the Fragment header's eight bytes are present.
+        #[test]
+        fn ethernet_fragment_header_cut_in_half_is_refused() -> Result<(), TestError> {
+            let mut ext = HOP_BY_HOP_TO_FRAGMENT.to_vec();
+            ext.extend_from_slice(&[17, 0, 0, 1]);
+            let ip = ipv6_with(0, &ext);
+            assert_decode_error(ethernet(&ip), DLT_EN10MB, "Ethernet, Fragment header cut")
+        }
+
+        /// Raw IP: the same packet with no link header.
+        #[test]
+        fn raw_ip_fragment_header_missing_is_refused() -> Result<(), TestError> {
+            let ip = ipv6_with(0, &HOP_BY_HOP_TO_FRAGMENT);
+            assert_decode_error(ip, DLT_RAW, "raw IP, Fragment header missing")
+        }
+    }
+
     // ── Tunnel decapsulation ──────────────────────────────────────────
     //
     // Every case here proves the SAME SIP INVITE comes back out of a
