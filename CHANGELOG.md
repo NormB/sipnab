@@ -8,9 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
-
-**Held:** branches merged together in one train before release 0.5.270, on the owner's decision (2026-11-23); the release follows at once.
+## [0.5.270] - 2026-11-24
 
 ### Changed
 
