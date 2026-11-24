@@ -21,8 +21,9 @@ use pcap_file::Endianness;
 use pcap_file::pcapng::PcapNgWriter as PcapFileNgWriter;
 use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
 use pcap_file::pcapng::blocks::interface_description::{
-    InterfaceDescriptionBlock, InterfaceDescriptionOption,
+    InterfaceDescriptionBlock, InterfaceDescriptionOption, InterfaceTsResolution,
 };
+use pcap_file::pcapng::blocks::opt_common::CommonOption;
 use pcap_file::pcapng::blocks::section_header::{SectionHeaderBlock, SectionHeaderOption};
 
 use super::packet::Packet;
@@ -781,19 +782,19 @@ impl PcapWriter {
                         names.iter().map(|n| Cow::Owned(n.clone())).collect();
                     match ip {
                         std::net::IpAddr::V4(v4) => records.push(Record::Ipv4(Ipv4Record {
-                            ip_addr: Cow::Owned(v4.octets().to_vec()),
+                            ip_addr: *v4,
                             names,
                         })),
                         std::net::IpAddr::V6(v6) => records.push(Record::Ipv6(Ipv6Record {
-                            ip_addr: Cow::Owned(v6.octets().to_vec()),
+                            ip_addr: *v6,
                             names,
                         })),
                     }
                 }
                 let block = NameResolutionBlock {
                     records,
-                    options: vec![NameResolutionOption::Comment(Cow::Borrowed(
-                        "name resolution added by sipnab",
+                    options: vec![NameResolutionOption::Common(CommonOption::Comment(
+                        Cow::Borrowed("name resolution added by sipnab"),
                     ))],
                 };
                 writer
@@ -1133,7 +1134,28 @@ impl PcapWriter {
 /// Producer string embedded in exported pcapng metadata (SHB UserApplication,
 /// IDB description), e.g. `"sipnab 0.4.4"`.
 fn app_version() -> String {
+    #[cfg(test)]
+    if FIXED_PRODUCER.with(std::cell::Cell::get) {
+        return "sipnab 0.0.0-golden".to_string();
+    }
     format!("sipnab {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// The OS named in exported pcapng metadata (SHB and IDB).
+fn host_os() -> &'static str {
+    #[cfg(test)]
+    if FIXED_PRODUCER.with(std::cell::Cell::get) {
+        return "golden-os";
+    }
+    std::env::consts::OS
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Set by the writer goldens for the length of one test on its thread:
+    /// the version and OS strings then stay the same across releases and
+    /// hosts, so a golden file holds byte for byte.
+    static FIXED_PRODUCER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Create a PCAP-NG backend whose Section Header and Interface Description
@@ -1166,10 +1188,12 @@ fn create_pcapng_backend(
     // than only the agent that asked for the file.
     let mut options = vec![
         SectionHeaderOption::UserApplication(Cow::Owned(app_version())),
-        SectionHeaderOption::OS(Cow::Borrowed(std::env::consts::OS)),
+        SectionHeaderOption::OS(Cow::Borrowed(host_os())),
     ];
     if let Some(note) = provenance {
-        options.push(SectionHeaderOption::Comment(Cow::Owned(note.to_string())));
+        options.push(SectionHeaderOption::Common(CommonOption::Comment(
+            Cow::Owned(note.to_string()),
+        )));
     }
     let section = SectionHeaderBlock {
         endianness: Endianness::native(),
@@ -1207,12 +1231,13 @@ fn create_pcapng_backend(
 fn build_idb(link_type: i32, name: Option<&str>) -> InterfaceDescriptionBlock<'static> {
     let mut options = vec![
         InterfaceDescriptionOption::IfDescription(Cow::Owned(format!("{} capture", app_version()))),
-        InterfaceDescriptionOption::IfOs(Cow::Borrowed(std::env::consts::OS)),
-        // pcap-file always encodes EPB timestamps as NANOSECOND ticks
-        // (Duration::as_nanos), so the interface must declare 10^-9 —
-        // without this, readers assume the pcapng default of microseconds
-        // and every timestamp is inflated ×1000 (the "year 58484" files).
-        InterfaceDescriptionOption::IfTsResol(9),
+        InterfaceDescriptionOption::IfOs(Cow::Borrowed(host_os())),
+        // pcap-file encodes EPB timestamps at the resolution the interface
+        // declares, and sipnab's timestamps are nanoseconds, so the
+        // interface declares 10^-9. Without the option, readers assume the
+        // pcapng default of microseconds, and pcap-file would cut every
+        // timestamp to microseconds.
+        InterfaceDescriptionOption::IfTsResol(InterfaceTsResolution::NANO),
     ];
     if let Some(name) = name.filter(|n| !n.is_empty()) {
         options.push(InterfaceDescriptionOption::IfName(Cow::Owned(
@@ -2122,6 +2147,429 @@ mod tests {
         Ok(())
     }
 
+    /// Byte-for-byte goldens of every file shape the writer produces.
+    ///
+    /// The fixtures under `tests/fixtures/pcap-writer-golden/` were written by
+    /// this module with the `pcap-file` 2.0 encoder, before the move to 3.0.
+    /// A change of the encoding library, or of the writer, that changes one
+    /// byte of an output file fails here and names the first byte that
+    /// differs. The producer strings that change with every release and every
+    /// host (the version in the SHB and IDB, the OS) are fixed for the length
+    /// of each test by [`FixedProducer`], so the goldens hold across releases
+    /// and on macOS.
+    ///
+    /// `SIPNAB_GOLDEN_APPLY=1` rewrites the fixtures. Do that only for an
+    /// intended change of the file format, and say so in the commit.
+    ///
+    /// The writer writes pcapng in the host's byte order; every host sipnab
+    /// is built and tested on is little-endian, which the fixtures are.
+    #[cfg(target_endian = "little")]
+    mod golden {
+        use super::*;
+        use crate::capture::packet::Packet;
+        use chrono::{DateTime, TimeZone as _, Utc};
+
+        /// Where the fixtures live.
+        const DIR: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/pcap-writer-golden"
+        );
+
+        /// Fixes the producer strings for this thread until dropped.
+        struct FixedProducer;
+
+        impl FixedProducer {
+            fn new() -> Self {
+                FIXED_PRODUCER.with(|f| f.set(true));
+                Self
+            }
+        }
+
+        impl Drop for FixedProducer {
+            fn drop(&mut self) {
+                FIXED_PRODUCER.with(|f| f.set(false));
+            }
+        }
+
+        /// A UTC instant `secs` seconds and `nanos` nanoseconds past the epoch.
+        fn at(secs: i64, nanos: u32) -> Result<DateTime<Utc>, TestError> {
+            Utc.timestamp_opt(secs, nanos)
+                .single()
+                .ok_or_else(|| format!("{secs}.{nanos} is a valid instant").into())
+        }
+
+        /// A frame of `len` bytes of `byte`, `origlen` long on the wire.
+        fn frame(
+            when: DateTime<Utc>,
+            byte: u8,
+            len: usize,
+            origlen: usize,
+            source: Option<&str>,
+            link_type: i32,
+        ) -> Packet {
+            Packet::new(
+                when,
+                vec![byte; len],
+                len,
+                origlen,
+                source.map(str::to_string),
+                link_type,
+            )
+        }
+
+        /// The frames every single-interface golden carries: an ordinary
+        /// one, one with sub-microsecond time, one truncated on capture, one
+        /// stamped before the epoch, and one whose nanosecond count needs the
+        /// high timestamp word.
+        fn frames(source: Option<&str>, link_type: i32) -> Result<Vec<Packet>, TestError> {
+            Ok(vec![
+                frame(at(1_700_000_000, 0)?, 0x11, 60, 60, source, link_type),
+                frame(
+                    at(1_700_000_001, 123_456_789)?,
+                    0x22,
+                    41,
+                    41,
+                    source,
+                    link_type,
+                ),
+                frame(
+                    at(1_700_000_002, 999_999_999)?,
+                    0x33,
+                    20,
+                    1514,
+                    source,
+                    link_type,
+                ),
+                frame(at(-5, 0)?, 0x44, 3, 3, source, link_type),
+                frame(at(4_102_444_800, 1)?, 0x55, 7, 7, source, link_type),
+            ])
+        }
+
+        /// Compare `bytes` with the fixture `name`, or rewrite the fixture
+        /// under `SIPNAB_GOLDEN_APPLY`.
+        fn check(name: &str, bytes: &[u8]) -> Result<(), TestError> {
+            let path = Path::new(DIR).join(name);
+            if std::env::var_os("SIPNAB_GOLDEN_APPLY").is_some() {
+                std::fs::create_dir_all(DIR)?;
+                std::fs::write(&path, bytes)?;
+                return Ok(());
+            }
+            let want = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            if want != bytes {
+                let at = want
+                    .iter()
+                    .zip(bytes)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(want.len().min(bytes.len()));
+                return Err(format!(
+                    "{name}: the writer's output differs from the golden at byte {at} \
+                     (golden {} bytes, written {} bytes)",
+                    want.len(),
+                    bytes.len()
+                )
+                .into());
+            }
+            Ok(())
+        }
+
+        /// Read the file the writer wrote and compare it with its golden; a
+        /// pcapng writer's byte count must also be the file's length.
+        fn check_file(name: &str, path: &Path, counted: Option<u64>) -> Result<(), TestError> {
+            let bytes = std::fs::read(path)?;
+            if let Some(counted) = counted {
+                assert_eq!(
+                    counted,
+                    bytes.len() as u64,
+                    "{name}: bytes_written must be the length of the file"
+                );
+            }
+            check(name, &bytes)
+        }
+
+        /// Classic pcap, Ethernet, five frames.
+        #[test]
+        fn classic_pcap_ethernet() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcap");
+            let mut w = PcapWriter::new(&path, 1, None, None)?;
+            for p in frames(None, 1)? {
+                w.write(&p)?;
+            }
+            w.finish()?;
+            drop(w);
+            check_file("classic-ethernet.pcap", &path, None)
+        }
+
+        /// Classic pcap, Linux cooked capture, the link type in the header.
+        #[test]
+        fn classic_pcap_linux_sll() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcap");
+            let mut w = PcapWriter::new(&path, 113, None, None)?;
+            for p in frames(None, 113)? {
+                w.write(&p)?;
+            }
+            w.finish()?;
+            drop(w);
+            check_file("classic-linux-sll.pcap", &path, None)
+        }
+
+        /// Classic pcap split in two by `rotate`: both files.
+        #[test]
+        fn classic_pcap_rotated() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcap");
+            let mut w = PcapWriter::new(&path, 1, None, None)?;
+            let all = frames(None, 1)?;
+            w.write(&all[0])?;
+            w.rotate()?;
+            w.write(&all[1])?;
+            w.finish()?;
+            drop(w);
+            check_file("classic-rotated-first.pcap", &path, None)?;
+            check_file(
+                "classic-rotated-second.pcap",
+                &dir.path().join("out_00001.pcap"),
+                None,
+            )
+        }
+
+        /// pcapng from a named device: SHB, one IDB with the name, five EPBs.
+        #[test]
+        fn pcapng_named_interface() -> Result<(), TestError> {
+            let _fixed = FixedProducer::new();
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcapng");
+            let mut w = PcapWriter::with_interface(
+                &path,
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::Raw,
+                Some("eth0"),
+            )?;
+            for p in frames(None, 1)? {
+                w.write(&p)?;
+            }
+            w.finish()?;
+            let counted = w.bytes_written();
+            drop(w);
+            check_file("pcapng-named-interface.pcapng", &path, Some(counted))
+        }
+
+        /// pcapng with no interface name: the IDB carries no `if_name`.
+        #[test]
+        fn pcapng_unnamed_interface() -> Result<(), TestError> {
+            let _fixed = FixedProducer::new();
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcapng");
+            let mut w = PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)?;
+            for p in frames(None, 1)? {
+                w.write(&p)?;
+            }
+            w.finish()?;
+            let counted = w.bytes_written();
+            drop(w);
+            check_file("pcapng-unnamed-interface.pcapng", &path, Some(counted))
+        }
+
+        /// pcapng with no frames at all: SHB and the constructor's IDB.
+        #[test]
+        fn pcapng_without_frames() -> Result<(), TestError> {
+            let _fixed = FixedProducer::new();
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcapng");
+            let mut w = PcapWriter::with_interface(
+                &path,
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::Raw,
+                Some("lo"),
+            )?;
+            w.finish()?;
+            let counted = w.bytes_written();
+            drop(w);
+            check_file("pcapng-without-frames.pcapng", &path, Some(counted))
+        }
+
+        /// pcapng whose SHB carries the provenance `opt_comment`.
+        #[test]
+        fn pcapng_with_provenance() -> Result<(), TestError> {
+            let _fixed = FixedProducer::new();
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcapng");
+            let mut w = PcapWriter::with_provenance(
+                &path,
+                1,
+                PcapWriterOptions {
+                    max_file_bytes: None,
+                    max_file_duration: None,
+                    pcapng: true,
+                    export_mode: PcapExportMode::Decrypted,
+                    interface: Some("sip.pcap"),
+                    // 13 bytes: the option needs padding.
+                    provenance: Some("rebuilt frame".to_string()),
+                    create: crate::new_file::CreateMode::Replace,
+                },
+            )?;
+            for p in frames(None, 1)? {
+                w.write(&p)?;
+            }
+            w.finish()?;
+            let counted = w.bytes_written();
+            drop(w);
+            check_file("pcapng-provenance.pcapng", &path, Some(counted))
+        }
+
+        /// pcapng from two sources and two link types: an IDB per
+        /// (source, link type), written where each first appears.
+        #[test]
+        fn pcapng_interfaces_interleaved() -> Result<(), TestError> {
+            let _fixed = FixedProducer::new();
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcapng");
+            let mut w = PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)?;
+            let t = at(1_700_000_000, 5)?;
+            w.write(&frame(t, 1, 10, 10, Some("a.pcap"), 1))?;
+            w.write(&frame(t, 2, 11, 11, Some("b.pcap"), 1))?;
+            w.write(&frame(t, 3, 12, 12, Some("a.pcap"), 113))?;
+            w.write(&frame(t, 4, 13, 13, Some("a.pcap"), 1))?;
+            w.write(&frame(t, 5, 14, 14, None, 113))?;
+            w.finish()?;
+            let counted = w.bytes_written();
+            drop(w);
+            check_file("pcapng-interfaces-interleaved.pcapng", &path, Some(counted))
+        }
+
+        /// pcapng EPBs with one, two and no `opt_comment`s.
+        #[test]
+        fn pcapng_packet_comments() -> Result<(), TestError> {
+            let _fixed = FixedProducer::new();
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcapng");
+            let mut w = PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)?;
+            let all = frames(None, 1)?;
+            let note = crate::annotate::pcapng::EpbComment::on_original_frame(
+                &crate::annotate::NoteText::new("the 183 with new SDP")
+                    .map_err(|e| format!("a valid note: {e:?}"))?,
+            );
+            w.write_labeled(&all[0], "rebuilt by sipnab")?;
+            w.write_annotated(
+                &all[1],
+                &[
+                    note,
+                    crate::annotate::pcapng::EpbComment::fixed_label("abc"),
+                ],
+            )?;
+            w.write_annotated(&all[2], &[])?;
+            w.finish()?;
+            let counted = w.bytes_written();
+            drop(w);
+            check_file("pcapng-packet-comments.pcapng", &path, Some(counted))
+        }
+
+        /// pcapng with a Name Resolution Block: IPv4 and IPv6 records, one
+        /// with two names, and the block's `opt_comment`.
+        #[test]
+        fn pcapng_name_resolution() -> Result<(), TestError> {
+            let _fixed = FixedProducer::new();
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcapng");
+            let mut w = PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)?;
+            let entries: Vec<(std::net::IpAddr, Vec<String>)> = vec![
+                ("192.0.2.10".parse()?, vec!["sbc-edge".to_string()]),
+                (
+                    "2001:db8::1".parse()?,
+                    vec!["core6".to_string(), "core6.example.com".to_string()],
+                ),
+                ("198.51.100.7".parse()?, vec!["a".to_string()]),
+            ];
+            w.write_name_resolution_block(&entries)?;
+            w.write(&frames(None, 1)?[0])?;
+            w.finish()?;
+            let counted = w.bytes_written();
+            drop(w);
+            // The count leaves the NRB's 132 bytes out (backlog
+            // SPLIT-COUNT-MISSES-NRB-DSB). Pinned at the pcap-file 2 value
+            // so the library change cannot move it unseen.
+            assert_eq!(counted, 244, "bytes_written as pcap-file 2 gave it");
+            check_file("pcapng-name-resolution.pcapng", &path, None)
+        }
+
+        /// pcapng with a Decryption Secrets Block whose secret needs padding,
+        /// written through the export mode's own path.
+        #[test]
+        fn pcapng_decryption_secrets() -> Result<(), TestError> {
+            let _fixed = FixedProducer::new();
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcapng");
+            let keylog = dir.path().join("keys.txt");
+            // 63 bytes: the block needs one byte of padding.
+            std::fs::write(
+                &keylog,
+                b"CLIENT_RANDOM 00112233445566778899aabbccddeeff 0011223344556677\n",
+            )?;
+            let mut w = PcapWriter::with_format(
+                &path,
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::EncryptedWithDsb,
+            )?;
+            w.maybe_write_keylog_dsb(&keylog)?;
+            w.write(&frames(None, 1)?[0])?;
+            w.write_dsb(b"SERVER_HANDSHAKE_TRAFFIC_SECRET aa bb\n")?;
+            w.write(&frames(None, 1)?[1])?;
+            w.finish()?;
+            let counted = w.bytes_written();
+            drop(w);
+            // The count leaves both DSBs' 144 bytes out (backlog
+            // SPLIT-COUNT-MISSES-NRB-DSB). Pinned at the pcap-file 2 value
+            // so the library change cannot move it unseen.
+            assert_eq!(counted, 320, "bytes_written as pcap-file 2 gave it");
+            check_file("pcapng-decryption-secrets.pcapng", &path, None)
+        }
+
+        /// pcapng split in two by `rotate`: the second file repeats the SHB
+        /// (with its provenance) and every IDB the first had.
+        #[test]
+        fn pcapng_rotated() -> Result<(), TestError> {
+            let _fixed = FixedProducer::new();
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcapng");
+            let mut w = PcapWriter::with_provenance(
+                &path,
+                1,
+                PcapWriterOptions {
+                    max_file_bytes: None,
+                    max_file_duration: None,
+                    pcapng: true,
+                    export_mode: PcapExportMode::Raw,
+                    interface: Some("eth0"),
+                    provenance: Some("split".to_string()),
+                    create: crate::new_file::CreateMode::Replace,
+                },
+            )?;
+            let t = at(1_700_000_000, 7)?;
+            w.write(&frame(t, 1, 10, 10, None, 1))?;
+            w.write(&frame(t, 2, 11, 11, Some("eth1"), 113))?;
+            w.rotate()?;
+            w.write(&frame(t, 3, 12, 12, Some("eth1"), 113))?;
+            w.finish()?;
+            let counted = w.bytes_written();
+            drop(w);
+            check_file("pcapng-rotated-first.pcapng", &path, None)?;
+            check_file(
+                "pcapng-rotated-second.pcapng",
+                &dir.path().join("out_00001.pcapng"),
+                Some(counted),
+            )
+        }
+    }
     // ── End-to-end write / read-back / rotate / DSB ─────────────────────
     /// End-to-end tests: write files, read them back, rotate, and embed
     /// metadata/DSB blocks.
@@ -2228,11 +2676,11 @@ mod tests {
             let mut reader = PcapNgReader::new(&bytes[..])?;
             let mut v4_names: Vec<String> = Vec::new();
             let mut v6_count = 0;
-            while let Some(Ok(block)) = reader.next_block() {
+            while let Some(Ok((block, _))) = reader.next_block() {
                 if let Some(nrb) = block.into_name_resolution() {
                     for rec in &nrb.records {
                         match rec {
-                            Record::Ipv4(r) if r.ip_addr.as_ref() == [10, 0, 0, 2] => {
+                            Record::Ipv4(r) if r.ip_addr.octets() == [10, 0, 0, 2] => {
                                 v4_names = r.names.iter().map(|n| n.to_string()).collect();
                             }
                             Record::Ipv6(r) => v6_count = r.names.len(),
@@ -2268,13 +2716,15 @@ mod tests {
             let mut reader = PcapNgReader::new(&bytes[..]).map_err(|e| format!("pcapng: {e:?}"))?;
             let mut out = Vec::new();
             while let Some(block) = reader.next_block() {
-                let block = block.map_err(|e| format!("every block parses: {e:?}"))?;
+                let (block, _) = block.map_err(|e| format!("every block parses: {e:?}"))?;
                 if let Some(epb) = block.into_enhanced_packet() {
                     let comments = epb
                         .options
                         .iter()
                         .filter_map(|o| match o {
-                            EnhancedPacketOption::Comment(c) => Some(c.to_string()),
+                            EnhancedPacketOption::Common(
+                                pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+                            ) => Some(c.to_string()),
                             _ => None,
                         })
                         .collect();
@@ -2487,7 +2937,7 @@ mod tests {
                 }
             }
             let (mut if_name, mut if_desc, mut if_os) = (None, None, None);
-            while let Some(Ok(block)) = reader.next_block() {
+            while let Some(Ok((block, _))) = reader.next_block() {
                 if let Some(idb) = block.into_interface_description() {
                     for opt in &idb.options {
                         match opt {
@@ -2751,7 +3201,7 @@ mod tests {
             let mut reader = PcapNgReader::new(&bytes[..])?;
             let mut blocks = Vec::new();
             while let Some(block) = reader.next_block() {
-                let block = block.map_err(|e| format!("valid pcapng block: {e:?}"))?;
+                let (block, _) = block.map_err(|e| format!("valid pcapng block: {e:?}"))?;
                 if let Some(idb) = block.clone().into_interface_description() {
                     let name = idb.options.iter().find_map(|o| match o {
                         InterfaceDescriptionOption::IfName(s) => Some(s.to_string()),

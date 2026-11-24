@@ -447,7 +447,7 @@ pub fn set_max_gunzip_bytes(bytes: u64) {
 }
 
 /// True if `data` starts with the gzip magic (`1f 8b`).
-fn is_gzip(data: &[u8]) -> bool {
+pub(crate) fn is_gzip(data: &[u8]) -> bool {
     data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b
 }
 

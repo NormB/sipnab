@@ -347,15 +347,35 @@ pub const MAX_SEEN_CSEQ_PER_DIALOG: usize = 4096;
 pub(crate) fn seen_cseq_key(msg: &SipMessage) -> Option<String> {
     let (seq, method) = msg.cseq()?;
     let branch = msg.top_via_branch().unwrap_or("");
+    let mut seq_digits = [0; 10];
+    let seq = decimal(seq, &mut seq_digits);
+    // `concat` sizes the key exactly and copies each part once: this runs for
+    // every SIP message a dialog takes in, and `format!` made more than one
+    // allocation per key.
     Some(if msg.is_request {
-        format!("R {seq} {method}\n{branch}")
+        ["R ", seq, " ", method, "\n", branch].concat()
     } else {
-        format!(
-            "r{} {seq} {method}\n{branch}\n{}",
-            msg.status_code.unwrap_or(0),
-            msg.to_tag().unwrap_or("")
-        )
+        let mut code_digits = [0; 10];
+        let code = decimal(u32::from(msg.status_code.unwrap_or(0)), &mut code_digits);
+        let tag = msg.to_tag().unwrap_or("");
+        ["r", code, " ", seq, " ", method, "\n", branch, "\n", tag].concat()
     })
+}
+
+/// `n` in decimal, written into the end of `digits`, as `n.to_string()`
+/// spells it.
+fn decimal(mut n: u32, digits: &mut [u8; 10]) -> &str {
+    let mut start = digits.len();
+    loop {
+        start -= 1;
+        digits[start] = b"0123456789"[(n % 10) as usize];
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    // Only ASCII digits were written, so this cannot fail.
+    std::str::from_utf8(&digits[start..]).unwrap_or("")
 }
 
 /// The final responses of one transaction, folded into its outcome by
@@ -3076,6 +3096,229 @@ mod tests {
             cmp.differences,
             vec!["state".to_string(), "final_status_code".to_string()]
         );
+        Ok(())
+    }
+}
+
+/// [`seen_cseq_key`] spells the same key it always has, and builds it in one
+/// allocation: it runs for every SIP message a dialog takes in.
+#[cfg(test)]
+mod seen_cseq_key_tests {
+    use super::*;
+    use crate::net::TransportProto;
+    use crate::sip::parser::parse_sip;
+    use crate::test_utils::build_sip_message as build_sip;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The key as `format!` spelled it before it was built by hand: the
+    /// reference every case is compared with.
+    fn reference_key(msg: &SipMessage) -> Option<String> {
+        let (seq, method) = msg.cseq()?;
+        let branch = msg.top_via_branch().unwrap_or("");
+        Some(if msg.is_request {
+            format!("R {seq} {method}\n{branch}")
+        } else {
+            format!(
+                "r{} {seq} {method}\n{branch}\n{}",
+                msg.status_code.unwrap_or(0),
+                msg.to_tag().unwrap_or("")
+            )
+        })
+    }
+
+    /// Parse a message with `first_line` and `headers`.
+    fn parse(first_line: &str, headers: &[&str]) -> Result<SipMessage, TestError> {
+        let raw = build_sip(first_line, headers, b"");
+        let ts = chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("invalid fixture timestamp")?;
+        let host = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        Ok(
+            parse_sip(&raw, ts, host, host, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("fixture should parse: {e:?}"))?,
+        )
+    }
+
+    /// A request with the given CSeq and Via rows.
+    fn request(cseq: &str, vias: &[&str]) -> Result<SipMessage, TestError> {
+        let mut headers: Vec<&str> = vias.to_vec();
+        headers.extend([
+            "From: <sip:a@example.com>;tag=f1",
+            "To: <sip:b@example.com>",
+            "Call-ID: key@example.com",
+        ]);
+        headers.push(cseq);
+        headers.push("Content-Length: 0");
+        parse("INVITE sip:b@example.com SIP/2.0", &headers)
+    }
+
+    /// A response with the given status line, CSeq, To and Via rows.
+    fn response(
+        status: &str,
+        cseq: &str,
+        to: &str,
+        vias: &[&str],
+    ) -> Result<SipMessage, TestError> {
+        let mut headers: Vec<&str> = vias.to_vec();
+        headers.extend([
+            "From: <sip:a@example.com>;tag=f1",
+            "Call-ID: key@example.com",
+        ]);
+        headers.push(to);
+        headers.push(cseq);
+        headers.push("Content-Length: 0");
+        parse(status, &headers)
+    }
+
+    /// Every case's key, next to the reference's.
+    fn cases() -> Result<Vec<SipMessage>, TestError> {
+        let via = "Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKone";
+        Ok(vec![
+            request("CSeq: 1 INVITE", &[via])?,
+            request("CSeq: 0 INVITE", &[via])?,
+            request("CSeq: 4294967295 INVITE", &[via])?,
+            request("CSeq: 42 INVITE", &[])?,
+            request(
+                "CSeq: 7 INVITE",
+                &["Via: SIP/2.0/UDP a.example.com;branch="],
+            )?,
+            request("CSeq: 9 X-VERY-LONG-EXTENSION-METHOD-NAME", &[via])?,
+            request("CSeq:   12    INVITE   trailing", &[via])?,
+            response(
+                "SIP/2.0 100 Trying",
+                "CSeq: 1 INVITE",
+                "To: <sip:b@example.com>",
+                &[via],
+            )?,
+            response(
+                "SIP/2.0 180 Ringing",
+                "CSeq: 1 INVITE",
+                "To: <sip:b@example.com>;tag=leg1",
+                &[via],
+            )?,
+            response(
+                "SIP/2.0 200 OK",
+                "CSeq: 1 INVITE",
+                "To: <sip:b@example.com>;tag=leg2",
+                &[via],
+            )?,
+            response(
+                "SIP/2.0 486 Busy Here",
+                "CSeq: 3000000000 INVITE",
+                "To: <sip:b@example.com>;tag=x",
+                &[],
+            )?,
+            response(
+                "SIP/2.0 699 Whatever",
+                "CSeq: 2 BYE",
+                "To: <sip:b@example.com>;tag=y",
+                &[via],
+            )?,
+        ])
+    }
+
+    #[test]
+    fn every_key_is_spelled_as_before() -> Result<(), TestError> {
+        for msg in cases()? {
+            assert_eq!(
+                seen_cseq_key(&msg),
+                reference_key(&msg),
+                "key of {:?}",
+                msg.cseq()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_request_key_names_its_sequence_method_and_branch() -> Result<(), TestError> {
+        let msg = request(
+            "CSeq: 5 INVITE",
+            &["Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKr"],
+        )?;
+        assert_eq!(
+            seen_cseq_key(&msg).as_deref(),
+            Some("R 5 INVITE\nz9hG4bKr"),
+            "request key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_response_key_names_its_code_and_to_tag() -> Result<(), TestError> {
+        let msg = response(
+            "SIP/2.0 183 Session Progress",
+            "CSeq: 5 INVITE",
+            "To: <sip:b@example.com>;tag=t9",
+            &["Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKr"],
+        )?;
+        assert_eq!(
+            seen_cseq_key(&msg).as_deref(),
+            Some("r183 5 INVITE\nz9hG4bKr\nt9"),
+            "response key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_response_with_no_to_tag_or_branch_keeps_its_empty_fields() -> Result<(), TestError> {
+        let msg = response(
+            "SIP/2.0 100 Trying",
+            "CSeq: 1 INVITE",
+            "To: <sip:b@example.com>",
+            &[],
+        )?;
+        assert_eq!(
+            seen_cseq_key(&msg).as_deref(),
+            Some("r100 1 INVITE\n\n"),
+            "empty branch and tag"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_message_without_a_parseable_cseq_has_no_key() -> Result<(), TestError> {
+        for cseq in [
+            "CSeq: INVITE",
+            "CSeq: 99999999999 INVITE",
+            "CSeq: 1",
+            "X-No-CSeq: 1",
+        ] {
+            let msg = request(cseq, &[])?;
+            assert_eq!(seen_cseq_key(&msg), None, "{cseq} has no key");
+            assert_eq!(reference_key(&msg), None, "{cseq} had no key before either");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_key_is_built_in_one_allocation() -> Result<(), TestError> {
+        for msg in cases()? {
+            let (allocations, key) = crate::test_alloc::allocations_during(|| seen_cseq_key(&msg));
+            assert!(key.is_some(), "every case has a key");
+            assert_eq!(
+                allocations,
+                1,
+                "the key of {:?} is one allocation",
+                msg.cseq()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_key_holds_no_spare_capacity() -> Result<(), TestError> {
+        for msg in cases()? {
+            let key = seen_cseq_key(&msg).ok_or("every case has a key")?;
+            assert_eq!(
+                key.capacity(),
+                key.len(),
+                "the key of {:?} is sized exactly",
+                msg.cseq()
+            );
+        }
         Ok(())
     }
 }

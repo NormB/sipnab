@@ -19,6 +19,42 @@ use super::stream::{RetainedFrame, RtpStream, StreamKey};
 use crate::capture::ParsedPacket;
 use crate::sip::sdp::SdpMedia;
 
+// Per-thread count of `StreamStore::streams_for` calls, test-only: pins that
+// a pass over every dialog groups the streams once rather than scanning the
+// store per dialog (thread-local so parallel tests cannot cross-talk).
+#[cfg(test)]
+thread_local! {
+    /// Test-only per-thread count of [`StreamStore::streams_for`] calls.
+    pub(crate) static STREAMS_FOR_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Every linked stream of a [`StreamStore`], grouped by the Call-ID it is
+/// linked to, from one pass over the store ([`StreamStore::by_call`]).
+///
+/// For each call, [`Self::of`] gives the streams [`StreamStore::streams_for`]
+/// gives, in the same order, without a pass over the store per call.
+#[derive(Debug, Default)]
+pub struct StreamsByCall<'a> {
+    /// Each linked Call-ID's streams, in store order.
+    groups: std::collections::HashMap<&'a str, Vec<&'a RtpStream>>,
+}
+
+impl<'a> StreamsByCall<'a> {
+    /// The streams linked to `call_id`, in store order; empty for a call
+    /// that owns none.
+    #[must_use]
+    pub fn of(&self, call_id: &str) -> &[&'a RtpStream] {
+        self.groups.get(call_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// How many calls own at least one stream.
+    #[must_use]
+    pub fn calls(&self) -> usize {
+        self.groups.len()
+    }
+}
+
 /// How an ICMP error's quoted datagram was tied to tracked media.
 ///
 /// Ordered by how much the tie proves, strongest first. The variant is carried
@@ -1772,10 +1808,30 @@ impl StreamStore {
         }
     }
 
+    /// Every linked stream grouped by its Call-ID, from one pass over the
+    /// store: for each call, the streams [`Self::streams_for`] gives, in the
+    /// same order. For a caller that reads the streams of every dialog.
+    #[must_use]
+    pub fn by_call(&self) -> StreamsByCall<'_> {
+        let mut groups: std::collections::HashMap<&str, Vec<&RtpStream>> =
+            std::collections::HashMap::new();
+        for stream in self.iter() {
+            if let Some(call_id) = stream.associated_dialog.as_deref() {
+                groups.entry(call_id).or_default().push(stream);
+            }
+        }
+        StreamsByCall { groups }
+    }
+
     /// All streams linked (via SDP or heuristics) to the given dialog's
     /// Call-ID. The one sanctioned way to answer "which streams belong to
     /// this call" — callers used to hand-roll this filter at ten sites.
+    ///
+    /// Each call is a pass over every stream. A caller that asks for every
+    /// dialog's streams groups them once with [`Self::by_call`] instead.
     pub fn streams_for<'a>(&'a self, call_id: &'a str) -> impl Iterator<Item = &'a RtpStream> {
+        #[cfg(test)]
+        STREAMS_FOR_CALLS.with(|c| c.set(c.get() + 1));
         self.iter()
             .filter(move |s| s.associated_dialog.as_deref() == Some(call_id))
     }
@@ -3419,6 +3475,123 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(linked[0].key.ssrc, 0x1111);
         assert!(store.streams_for("call-b").next().is_none());
         Ok(())
+    }
+
+    /// A store of six streams, ports 20000.., linked in turn to three calls
+    /// (`call-a`, `call-b`, `call-a`, `call-c`, `call-a`, none), so one call
+    /// holds streams that are not next to each other in store order.
+    fn interleaved_store() -> StreamStore {
+        let mut store = StreamStore::new(16);
+        let at = DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
+        let calls = [
+            Some("call-a"),
+            Some("call-b"),
+            Some("call-a"),
+            Some("call-c"),
+            Some("call-a"),
+            None,
+        ];
+        for (i, call) in calls.iter().enumerate() {
+            let port = 20000 + 2 * i as u16;
+            store.process_rtp(
+                &make_parsed(port, 30000 + 2 * i as u16, 160),
+                &make_rtp_header(0x1000 + i as u32, 1),
+                at,
+            );
+            if let Some(call) = call {
+                store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port, call);
+            }
+        }
+        store
+    }
+
+    /// The SSRCs of `streams`, in order.
+    fn ssrcs_of(streams: &[&RtpStream]) -> Vec<u32> {
+        streams.iter().map(|s| s.key.ssrc).collect()
+    }
+
+    /// `by_call` gives each call the streams `streams_for` gives it, in the
+    /// same order, for a call whose streams are spread through the store.
+    #[test]
+    fn by_call_agrees_with_streams_for_for_every_call() {
+        let store = interleaved_store();
+        let by_call = store.by_call();
+        for call in ["call-a", "call-b", "call-c"] {
+            let one_pass = ssrcs_of(by_call.of(call));
+            let per_call: Vec<u32> = store.streams_for(call).map(|s| s.key.ssrc).collect();
+            assert_eq!(one_pass, per_call, "{call}: by_call must equal streams_for");
+        }
+    }
+
+    /// The streams of a call keep store order, the order `streams_for` has.
+    #[test]
+    fn by_call_keeps_store_order_within_a_call() {
+        let store = interleaved_store();
+        assert_eq!(
+            ssrcs_of(store.by_call().of("call-a")),
+            vec![0x1000, 0x1002, 0x1004],
+            "call-a holds the first, third and fifth stream, in that order"
+        );
+    }
+
+    /// A call that owns no stream gets an empty slice, not a missing entry.
+    #[test]
+    fn by_call_answers_an_unknown_call_with_no_streams() {
+        let store = interleaved_store();
+        assert!(
+            store.by_call().of("no-such-call").is_empty(),
+            "a call with no linked stream has none"
+        );
+    }
+
+    /// A stream linked to no call is in no group.
+    #[test]
+    fn by_call_leaves_out_an_unlinked_stream() {
+        let store = interleaved_store();
+        let by_call = store.by_call();
+        let grouped: usize = ["call-a", "call-b", "call-c"]
+            .iter()
+            .map(|c| by_call.of(c).len())
+            .sum();
+        assert_eq!(grouped, 5, "five of the six streams are linked");
+        assert_eq!(store.len(), 6, "the sixth stream is still in the store");
+        assert_eq!(by_call.calls(), 3, "three calls own streams");
+    }
+
+    /// An empty store groups nothing.
+    #[test]
+    fn by_call_of_an_empty_store_is_empty() {
+        let store = StreamStore::new(16);
+        let by_call = store.by_call();
+        assert_eq!(by_call.calls(), 0, "no call owns a stream");
+        assert!(by_call.of("call-a").is_empty(), "no streams for any call");
+    }
+
+    /// The empty Call-ID is a key like any other: it matches only a stream
+    /// linked to the empty Call-ID, as `streams_for("")` does.
+    #[test]
+    fn by_call_treats_the_empty_call_id_as_streams_for_does() {
+        let store = interleaved_store();
+        assert_eq!(
+            store.by_call().of("").len(),
+            store.streams_for("").count(),
+            "no stream is linked to the empty Call-ID"
+        );
+    }
+
+    /// Building the groups reads the store once; it never asks
+    /// `streams_for`, whose every call is a pass over the whole store.
+    #[test]
+    fn by_call_does_not_call_streams_for() {
+        let store = interleaved_store();
+        STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let by_call = store.by_call();
+        let _ = by_call.of("call-a");
+        assert_eq!(
+            STREAMS_FOR_CALLS.with(std::cell::Cell::get),
+            0,
+            "by_call must not scan the store once per call"
+        );
     }
 
     /// Build a PT 0 (PCMU) RtpHeader with a 160-ticks-per-packet timestamp.

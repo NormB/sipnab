@@ -5385,16 +5385,18 @@ impl SipnabMcp {
             let mut tally: std::collections::HashMap<String, usize> =
                 std::collections::HashMap::new();
             let mut total = 0usize;
+            // One grouping of the streams for the pass: a scan of the stream
+            // store per dialog made this cost dialogs x streams steps.
+            let by_call = ss.by_call();
             for d in ds.iter() {
-                let streams: Vec<&crate::rtp::stream::RtpStream> =
-                    ss.streams_for(&d.call_id).collect();
+                let streams = by_call.of(&d.call_id);
                 if let Some(expr) = filter.as_ref()
-                    && !expr.matches_dialog(d, &streams, capture, delay)
+                    && !expr.matches_dialog(d, streams, capture, delay)
                 {
                     continue;
                 }
                 total += 1;
-                let Some(value) = dialog_group_value(key, d, &streams) else {
+                let Some(value) = dialog_group_value(key, d, streams) else {
                     return Err(rmcp::ErrorData::internal_error(
                         format!("groupable key '{key}' has no extractor"),
                         None,
@@ -7455,18 +7457,18 @@ impl SipnabMcp {
             let ss = self.stream_store.read();
             let capture = CaptureMedia::of_store(&ss);
             let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
+            // Grouped once, and only when a filter reads them: a scan of the
+            // stream store per dialog made a filtered search cost dialogs x
+            // streams steps.
+            let by_call = filter.as_ref().map(|_| ss.by_call());
             let mut matched: Vec<&crate::sip::dialog::SipDialog> = ds
                 .iter()
                 .filter(|d| crate::cursor::in_time_window(d.created_at, Some(start), end))
-                .filter(|d| {
-                    // Streams are collected only for the dialogs that survived
-                    // the window, which is the cheap test and usually the
-                    // selective one.
-                    filter.as_ref().is_none_or(|expr| {
-                        let streams: Vec<&crate::rtp::stream::RtpStream> =
-                            ss.streams_for(&d.call_id).collect();
-                        expr.matches_dialog(d, &streams, capture, delay)
-                    })
+                .filter(|d| match (filter.as_ref(), by_call.as_ref()) {
+                    (Some(expr), Some(by_call)) => {
+                        expr.matches_dialog(d, by_call.of(&d.call_id), capture, delay)
+                    }
+                    _ => true,
                 })
                 .collect();
             let total = matched.len();
@@ -14685,6 +14687,78 @@ mod tests {
                 .ok_or("v[\"total_matched\"].as_u64() is None")?,
             "the buckets plus the remainder must account for every matched \
              dialog, or the agent is counting a subset it cannot see: {v}"
+        );
+        Ok(())
+    }
+
+    /// A server over [`crate::test_utils::calls_with_media`]: `n` dialogs, each
+    /// with one linked stream, and one stream linked to no call.
+    fn server_with_media(n: u8) -> Result<SipnabMcp, TestError> {
+        let (ds, ss) = crate::test_utils::calls_with_media(n)?;
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(ss)),
+        ))
+    }
+
+    /// The number of `streams_for` calls `f` makes on this thread.
+    async fn streams_for_calls_during<F: std::future::Future>(f: F) -> (F::Output, usize) {
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let out = f.await;
+        (
+            out,
+            crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get),
+        )
+    }
+
+    /// The aggregate reads each dialog's streams from one grouping of the
+    /// store: a pass over every stream per dialog made it take about 18 s on
+    /// a capture of 100,000 dialogs.
+    #[tokio::test]
+    async fn aggregate_dialogs_groups_the_streams_once_not_once_per_dialog() -> Result<(), TestError>
+    {
+        let server = server_with_media(6)?;
+        let (result, scans) = streams_for_calls_during(server.aggregate_dialogs(Parameters(
+            AggregateDialogsParams {
+                group_by: "method".to_string(),
+                filter: Some("rtp.packets > 0".to_string()),
+                ..Default::default()
+            },
+        )))
+        .await;
+        let result = result.map_err(|e| format!("aggregate should succeed: {e:?}"))?;
+        assert_eq!(scans, 0, "no per-dialog scan of the stream store");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        assert_eq!(
+            v["total_matched"], 6,
+            "every dialog has a stream with a packet, so the filter keeps all six: {v}"
+        );
+        Ok(())
+    }
+
+    /// `search_by_time` with a filter reads each dialog's streams from one
+    /// grouping of the store, not from a pass over every stream per dialog.
+    #[tokio::test]
+    async fn search_by_time_groups_the_streams_once_not_once_per_dialog() -> Result<(), TestError> {
+        let server = server_with_media(6)?;
+        let (result, scans) =
+            streams_for_calls_during(server.search_by_time(Parameters(SearchByTimeParams {
+                start: "2024-06-15T00:00:00Z".to_string(),
+                end: None,
+                filter: Some("rtp.packets > 0".to_string()),
+                named: None,
+                limit: None,
+                cursor: None,
+                fields: None,
+                max_response_bytes: None,
+            })))
+            .await;
+        let result = result.map_err(|e| format!("search_by_time should succeed: {e:?}"))?;
+        assert_eq!(scans, 0, "no per-dialog scan of the stream store");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        assert_eq!(
+            v["total_matched"], 6,
+            "every dialog has a stream with a packet, so the filter keeps all six: {v}"
         );
         Ok(())
     }

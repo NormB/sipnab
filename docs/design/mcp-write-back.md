@@ -133,7 +133,7 @@ because the incident is over.
 **The operator's screen is the tool's output.** sipnab has no other product. Every
 mutating verb proposed so far — tag a dialog, acknowledge a finding, name a host
 — edits the thing the operator is reading, and does so with no signal that it
-happened. `DialogStore::generation` ([`dialog_store.rs:1393`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1393)<!-- "pub fn generation(&self) -> u64 {" -->)
+happened. `DialogStore::generation` ([`dialog_store.rs:1394`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1394)<!-- "pub fn generation(&self) -> u64 {" -->)
 is bumped by every mutating method and exposed on no wire format: not in
 `DialogSummary` ([`model.rs:55-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L55-L57)<!-- "pub from_user: Option<String>," -->), not in any REST
 response (`build_router`, [`api.rs:204-213`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/output/api.rs#L204-L213) — eight
@@ -145,9 +145,9 @@ concrete rather than theoretical:
 
 - `DialogSummary.from_user` / `to_user` ([`model.rs:55-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L55-L57)<!-- "pub from_user: Option<String>," -->,
   populated at `:91-92`) are copied off the From/To URIs.
-- `get_message` ([`server.rs:5931`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5931)<!-- "pub async fn get_message(" -->) returns headers and
+- `get_message` ([`server.rs:5933`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5933)<!-- "pub async fn get_message(" -->) returns headers and
   body.
-- `search_messages` ([`server.rs:6392`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6392)<!-- "pub async fn search_messages(" -->) returns a
+- `search_messages` ([`server.rs:6394`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6394)<!-- "pub async fn search_messages(" -->) returns a
   `snippet` built at [`:1391`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/mcp/server.rs#L1391) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.
@@ -345,7 +345,7 @@ store, no schema migration and no wire-visible generation counter.
 **What would change this.** Both of the following, not either:
 
 1. A wire-visible store identity — `generation`
-   ([`dialog_store.rs:1393`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1393)<!-- "pub fn generation(&self) -> u64 {" -->) surfaced on REST and
+   ([`dialog_store.rs:1394`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1394)<!-- "pub fn generation(&self) -> u64 {" -->) surfaced on REST and
    MCP responses — so a consumer can detect that what it is reading changed
    underneath it.
 2. A demonstrated need that `save_findings` does not meet, from someone who has

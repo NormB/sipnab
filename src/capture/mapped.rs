@@ -117,7 +117,7 @@ pub struct MappedPcap {
     link_type: i32,
     /// Whether this file's fractional timestamps are microseconds or
     /// nanoseconds. Read from the magic once, applied per frame.
-    ts_resolution: pcap_file::TsResolution,
+    ts_resolution: pcap_file::pcap::PcapTsResolution,
     /// Frames are cut from this rather than allocated one at a time. See
     /// [`MappedPcap::cut_from_block`] for why the frames are copied here at all
     /// instead of borrowed straight from the mapping.
@@ -393,8 +393,8 @@ impl MappedPcap {
     /// summary names it, and the record is kept, as libpcap keeps it.
     fn frame_time(&self, ts_sec: u32, ts_frac: u32) -> DateTime<Utc> {
         let units_per_sec = match self.ts_resolution {
-            pcap_file::TsResolution::MicroSecond => 1_000_000,
-            pcap_file::TsResolution::NanoSecond => 1_000_000_000,
+            pcap_file::pcap::PcapTsResolution::MicroSecond => 1_000_000,
+            pcap_file::pcap::PcapTsResolution::NanoSecond => 1_000_000_000,
         };
         crate::capture::live::capture_time(ts_sec, ts_frac, units_per_sec)
     }

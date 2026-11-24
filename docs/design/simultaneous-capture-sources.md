@@ -102,7 +102,7 @@ uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://githu
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:216`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L216)<!-- "pub struct PacketTx" -->), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
 ([`src/capture/channel.rs:278`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L278)<!-- "fn channel_with_slots(slots:" -->). The consumer is the batch receive loop at
-[`src/app/batch.rs:4603`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4603)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100)) {" -->, which stops when the channel disconnects — that
+[`src/app/batch.rs:4605`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4605)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100)) {" -->, which stops when the channel disconnects — that
 is, when the last sender clone drops.
 
 **A second source joins here and nowhere else.** The channel is already
@@ -149,16 +149,16 @@ sipnab does not correlate a dialog to a stream by capture source. It correlates
 by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 
 `extract_sdp_links` ([`src/pipeline.rs:1783`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1783)<!-- "/// by returning" -->) resolves each `m=` section's address
-through `effective_address` ([`src/sip/sdp.rs:355`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L355)<!-- "pub fn effective_address(media: &SdpMedia" -->) — media-level `c=` when
+through `effective_address` ([`src/sip/sdp.rs:397`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L397)<!-- "pub fn effective_address(media: &SdpMedia" -->) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
-tuples. `process_packet` ([`src/pipeline.rs:3225`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3225)<!-- "/// Route one" -->) feeds each one to `link_to_dialog_with_sdp`
-([`src/rtp/stream_store.rs:1833`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1833)<!-- "pub fn link_to_dialog_with_sdp(" -->), which lands in `link_endpoint_with_ptime`
-([`src/rtp/stream_store.rs:2016`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2016)<!-- "pub fn link_endpoint_with_ptime(" -->). That function does two things:
+tuples. `process_packet` ([`src/pipeline.rs:3292`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L3292)<!-- "/// Route one" -->) feeds each one to `link_to_dialog_with_sdp`
+([`src/rtp/stream_store.rs:1889`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1889)<!-- "pub fn link_to_dialog_with_sdp(" -->), which lands in `link_endpoint_with_ptime`
+([`src/rtp/stream_store.rs:2072`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2072)<!-- "pub fn link_endpoint_with_ptime(" -->). That function does two things:
 
-1. `remember_sdp_endpoint` ([`src/rtp/stream_store.rs:2124`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2124)<!-- "fn remember_sdp_endpoint(" -->) records
+1. `remember_sdp_endpoint` ([`src/rtp/stream_store.rs:2180`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2180)<!-- "fn remember_sdp_endpoint(" -->) records
    `(addr, port) -> SdpEndpoint { call_id, rtpmap, ptime }`, so a stream created
    *later* resolves at creation through `resolve_from_sdp`
-   ([`src/rtp/stream_store.rs:2201`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2201)<!-- "fn resolve_from_sdp(&self," -->), called from [`src/rtp/stream_store.rs:1428`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1428)<!-- "self.resolve_from_sdp(&mut" -->.
+   ([`src/rtp/stream_store.rs:2257`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2257)<!-- "fn resolve_from_sdp(&self," -->), called from [`src/rtp/stream_store.rs:1464`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1464)<!-- "self.resolve_from_sdp(&mut" -->.
 2. It sweeps the endpoint index for streams that already exist and fills an
    unset `associated_dialog`.
 
@@ -188,14 +188,14 @@ Call-ID deserves the explicit zero. It is the obvious answer and it is not an
 answer: an RTP packet has no Call-ID field, so the identifier that makes the
 signaling side tractable does not exist on the media side. This is the same
 observation `attribute_media_quote` opens with
-([`src/rtp/stream_store.rs:2416`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2416)<!-- "pub fn attribute_media_quote(" -->): *"An ICMP error about media carries no
+([`src/rtp/stream_store.rs:2472`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2472)<!-- "pub fn attribute_media_quote(" -->): *"An ICMP error about media carries no
 Call-ID — a media datagram has none to carry."*
 
 Timing deserves a firmer no. "The stream started 40 ms after the 200 OK, so it
 belongs to that call" is a coincidence detector on a busy proxy, where dozens of
 calls answer per second and every one of them starts media. sipnab already
 carries a timing-based leg correlator at score 50 out of 100
-([`src/sip/dialog_store.rs:2563`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2563)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
+([`src/sip/dialog_store.rs:2572`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2572)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
 correlating *signaling to signaling* where a Call-ID is present as a
 cross-check. Using timing to attach media to a dialog has no such cross-check.
 It should stay out.
@@ -236,15 +236,15 @@ feature's documentation has to name the scope, not merely the topology.
 several nodes — the multi-node fan-in `hep_source_label` exists to make
 distinguishable — can be told by two nodes that `192.0.2.1:20000` belongs to two
 different calls. `remember_sdp_endpoint` overwrites `existing.call_id`
-([`src/rtp/stream_store.rs:2135`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2135)<!-- "match self.sdp_endpoints.get_full_mut(&(addr," --> onward), so the last offer wins, and
+([`src/rtp/stream_store.rs:2191`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2191)<!-- "match self.sdp_endpoints.get_full_mut(&(addr," --> onward), so the last offer wins, and
 `resolve_from_sdp` hands that winner to a stream. [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html) space repeats across
 sites, so this is ordinary rather than exotic. **This is the wrong-attribution
 mode**, and it is the reason stage one should accept HEP from exactly one node.
 
 **F3 — Endpoint reuse over time.** `associated_dialog` is set only when unset
-([`src/rtp/stream_store.rs:2070`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2070)<!-- "if stream.associated_dialog.is_none() { stream.associated_dialog = Some(call_id.to_string());" -->), and `sdp_endpoints` is bounded by insertion
+([`src/rtp/stream_store.rs:2126`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2126)<!-- "if stream.associated_dialog.is_none() { stream.associated_dialog = Some(call_id.to_string());" -->), and `sdp_endpoints` is bounded by insertion
 order with oldest-out eviction rather than by age
-([`src/rtp/stream_store.rs:2171`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2171)<!-- "if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams { let batch = (self.max_streams / 10).max(1).min(self.sdp_endpoints.len()); self.sdp_endpoints.drain(0..batch); self.endpoints_learned.drop_front(batch); } self.sdp_endpoints.insert(" -->). A media gateway cycles a finite RTP port range,
+([`src/rtp/stream_store.rs:2227`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2227)<!-- "if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams { let batch = (self.max_streams / 10).max(1).min(self.sdp_endpoints.len()); self.sdp_endpoints.drain(0..batch); self.endpoints_learned.drop_front(batch); } self.sdp_endpoints.insert(" -->). A media gateway cycles a finite RTP port range,
 so on a process running for days — which is precisely the deployment shape this
 feature is for, unlike the minutes-long pcap read the eviction policy was sized
 for — a stale entry can outlive its call and claim the next stream on that
@@ -287,9 +287,9 @@ handles SDP-then-RTP and the endpoint sweep in `link_endpoint_with_ptime` handle
 RTP-then-SDP, which is exactly the SNB-0007 ordering fix — so the association is
 order-independent. What is *not* order-independent is the clock rate: a stream
 created before its `a=rtpmap` accumulates jitter against a placeholder, and
-`link_endpoint_with_ptime` ([`src/rtp/stream_store.rs:2016`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2016)<!-- "pub fn link_endpoint_with_ptime(" -->)
+`link_endpoint_with_ptime` ([`src/rtp/stream_store.rs:2072`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2072)<!-- "pub fn link_endpoint_with_ptime(" -->)
 restarts the estimator and records where, so `measured_jitter_ms`
-([`src/rtp/stream_store.rs:1746`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1746)<!-- "pub fn measured_jitter_ms(&self," -->) withholds the figure until it
+([`src/rtp/stream_store.rs:1782`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1782)<!-- "pub fn measured_jitter_ms(&self," -->) withholds the figure until it
 reconverges. That machinery exists and covers this. Worth a test, not a design change.
 
 **F6 — Duplicate observation.** If the NIC also sees the signaling that HEP is
@@ -303,7 +303,7 @@ detector later. It is not a reason to refuse the combination.
 ### 3.4 Say how strong the tie is
 
 sipnab already has the right pattern for this and should reuse it rather than
-invent one. `MediaMatch` ([`src/rtp/stream_store.rs:30`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L30)<!-- "#[derive(Debug, Clone, Copy, PartialEq, Eq," -->) grades ICMP media
+invent one. `MediaMatch` ([`src/rtp/stream_store.rs:66`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L66)<!-- "#[derive(Debug, Clone, Copy, PartialEq, Eq," -->) grades ICMP media
 attribution across five tiers and its rustdoc states the principle directly: the
 variant travels to every surface *"rather than collapsed to a boolean because
 the tiers are not equally strong. A reader deciding whether to act on a finding
@@ -346,7 +346,7 @@ device, one per HEP *sender* — and `input_origin` reaches `SipMessage`,
 
 **Leg correlation: adjacent, and deliberately separate.**
 [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md) and the seven strategies at
-[`src/sip/dialog_store.rs:118`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L118)<!-- "pub enum CorrelationReason" --> correlate *signaling to signaling* across a B2BUA,
+[`src/sip/dialog_store.rs:119`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L119)<!-- "pub enum CorrelationReason" --> correlate *signaling to signaling* across a B2BUA,
 keyed on `Session-ID`, `P-Charging-Vector`, the SDP `o=` tuple, or `Via` branch.
 Every one of those keys is a SIP header. None exists on an RTP packet. The
 problem here is signaling-to-media across two transports, which shares the word
@@ -387,7 +387,7 @@ nothing.
 Each reader keeps a thread-local counter and stops at `config.count`
 ([`src/capture/hep.rs:4029`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4029)<!-- "let mut count: u64" --> and its check; [`src/capture/live.rs:950`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L950)<!-- "count_limit_reached(self.config.count, self.count)" -->), and the
 consumer independently breaks at `total_count >= max_count`
-([`src/app/batch.rs:4995`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4995)<!-- "if let Some(max_count) = capture_config.count && lp.total_count >= max_count" -->). Because each reader gets a clone of the same
+([`src/app/batch.rs:4997`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4997)<!-- "if let Some(max_count) = capture_config.count && lp.total_count >= max_count" -->). Because each reader gets a clone of the same
 `CaptureConfig`, the per-reader copies are per source, so a member can stop
 itself while the other keeps going. The consumer's total still bounds the run,
 so the flag does not silently double — but the per-reader stop is a source-level
@@ -399,17 +399,17 @@ own start, and the starts are within milliseconds. No shared state needed.
 
 **Shutdown.** Already correct. Every reader polls `signals::shutdown_requested`,
 the coordinator drops its `tx` clone so the channel closes when the last reader
-exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:4617`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4617)<!-- "Err(crossbeam_channel::RecvTimeoutError::Disconnected) => ControlFlow::Break(())," -->).
+exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:4619`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4619)<!-- "Err(crossbeam_channel::RecvTimeoutError::Disconnected) => ControlFlow::Break(())," -->).
 When one member ends and the other continues — a HEP sender restarting while the
 NIC keeps capturing — the loop keeps running, which is correct: `source_exhausted`
-([`src/app/batch.rs:4279`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4279)<!-- "&& let Some(ref flag) = servers.source_exhausted" -->) means every source is done, and with two sources it
+([`src/app/batch.rs:4281`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4281)<!-- "&& let Some(ref flag) = servers.source_exhausted" -->) means every source is done, and with two sources it
 should keep meaning exactly that.
 
 One consequence to accept rather than fix: **the channel carries no
 end-of-source marker.** `Item` is `One` or `Many` ([`src/capture/channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)<!-- "enum Item {" -->)
 and nothing else, so a consumer cannot tell "the HEP sender stopped" from "the
 HEP sender is quiet". A `--hep-listen` run already has the same blind spot, which
-`IdleWatch` ([`src/capture/hep_roster.rs:796`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L796)<!-- "pub struct IdleWatch" -->) papers over with a log line after a
+`IdleWatch` ([`src/capture/hep_roster.rs:798`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L798)<!-- "pub struct IdleWatch" -->) papers over with a log line after a
 silence threshold. A composite run inherits both the blind spot and the paper.
 
 **Backpressure is shared and the accounting is asymmetric.** `PacketTx::send`
@@ -439,7 +439,7 @@ nothing.
 
 **Metrics and the writer read the source as a scalar.** The `-O` writer is the
 concrete casualty. It initializes on the first packet's `link_type`
-([`src/app/batch.rs:4650`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4650)<!-- "// Lazily initialize the writer on first packet (we need link_type)" -->), and the two members disagree: live capture yields
+([`src/app/batch.rs:4652`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4652)<!-- "// Lazily initialize the writer on first packet (we need link_type)" -->), and the two members disagree: live capture yields
 `DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:1120`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L1120)<!-- "pub fn with_pre_parsed(" -->) sets
 `link_type = 0` and a `data` buffer holding the bare transport payload — no
 Ethernet, no IP, no UDP. That absence is deliberate and documented at
@@ -447,7 +447,7 @@ Ethernet, no IP, no UDP. That absence is deliberate and documented at
 read `INVITE`'s leading `0x49` as an IPv4 header with IHL 9 and drop every HEP
 message silently. So the bytes are honest and unwritable, not an oversight to
 patch. Classic pcap refuses the second member outright
-([`src/capture/writer.rs:624`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L624)<!-- "if packet.link_type" -->), and *which* member gets refused depends on which
+([`src/capture/writer.rs:625`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L625)<!-- "if packet.link_type" -->), and *which* member gets refused depends on which
 packet arrives first, so the run fails non-deterministically. pcapng is worse:
 it appends a second interface and writes the bare SIP text as if it were a frame
 of the declared link type, producing an export that decodes into something nobody
@@ -782,7 +782,7 @@ the one the design expected to have to write. Run 3 is F1 reproduced on demand.
    capture-local one. Under scope `"t"` either rule works; under `"m"` the single
    advertised endpoint is the stream's *remote* peer, so a local-only rule binds
    zero streams where a both-ends rule binds one. sipnab already does the right
-   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:2201`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2201)<!-- "fn resolve_from_sdp(&self," -->) tries `key.src`
+   thing — `resolve_from_sdp` ([`src/rtp/stream_store.rs:2257`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2257)<!-- "fn resolve_from_sdp(&self," -->) tries `key.src`
    and `key.dst` — so this is a property to keep rather than one to add.
 3. The ACK is never mirrored: it is end-to-end and outside the INVITE server
    transaction. No SDP rode on it here, but a delayed-offer call puts the ANSWER

@@ -91,7 +91,7 @@ stdin        ─┘    channel     + TCP reassembly,           slice, zero-copy)
 - Payloads are `bytes::Bytes` slices of
   the captured frame end to end (see [Zero-copy payloads](@/docs/internals/zero-copy-payloads.md)).
 
-> All four packet paths classify through the one `pipeline::classify_packet` router:
+> All four packet paths classify through the one `pipeline::classify_packet_read` router:
 >
 > - live,
 > - batch,
@@ -99,6 +99,8 @@ stdin        ─┘    channel     + TCP reassembly,           slice, zero-copy)
 > - the `--cores` sharded path (`parallel.rs`).
 >
 > Only the per-path appliers differ.
+> The router returns the action and the SIP message's parsed SDP, which each applier hands to the dialog store, so the store does not parse the body a second time.
+> The public `pipeline::classify_packet` returns the action alone.
 
 [The subsystem guide](@/docs/internals/subsystem-guide.md) narrates the same journey packet by packet:
 

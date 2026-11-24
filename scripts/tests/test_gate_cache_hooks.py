@@ -639,6 +639,26 @@ def test_a_replay_that_passes_cannot_hide_a_new_failure_in_the_full_suite(pc):
     assert record["failures"] == [["sipnab::bin1", "t2"]], record
 
 
+def test_a_replay_of_a_test_the_fix_renamed_drops_it_and_runs_the_suite(pc):
+    # HOOK-REPLAY-OF-REMOVED-TEST, 2026-11-22: the fix renamed the failing
+    # test, and the replay ended "without naming a test (exit 1)".
+    failing_run(pc)
+    (pc.harness / "canned-junit.xml").write_text(junit(("sipnab::bin1", "t1_renamed", True), ("sipnab::bin1", "t2", True)))
+    rc, out = pc.run()
+    assert rc == 0, out
+    assert "dropped from the replay, nextest no longer lists it: sipnab::bin1 t1" in out, out
+    calls = [c for c in pc.cargo() if c.startswith("nextest run")]
+    assert len(calls) == 1 and " -E " not in calls[0], calls
+    assert not (pc.tree / ".git/sipnab-pre-commit-failed-tests.json").exists()
+
+
+def test_the_sandbox_lists_what_its_canned_report_holds(pc):
+    (pc.harness / "canned-junit.xml").write_text(junit(("sipnab::bin1", "a", True), ("sipnab::bin2", "b", False)))
+    listing = json.loads(stub_cargo(pc, pc.tree, "nextest", "list", "--message-format", "json"))
+    assert set(listing["rust-binaries"]) == {"sipnab::bin1", "sipnab::bin2"}, listing
+    assert listing["rust-suites"]["sipnab::bin2"]["testcases"]["b"]["filter-match"]["status"] == "matches", listing
+
+
 def test_a_corrupt_failure_record_replays_nothing_and_runs_the_suite(pc):
     (pc.tree / ".git/sipnab-pre-commit-failed-tests.json").write_text("{nope")
     rc, out = pc.run()

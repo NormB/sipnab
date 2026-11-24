@@ -2036,7 +2036,9 @@ impl App {
         // Sort references (the timestamp key is Copy) and clone
         // each message once AFTER the sort, so the sort never shuffles
         // full SipMessages.
-        tagged.sort_by_key(|(m, _)| m.timestamp);
+        crate::sort::sort_by_dyn(&mut tagged, &mut |(a, _), (b, _)| {
+            a.timestamp.cmp(&b.timestamp)
+        });
         let (owned, index_map): (Vec<crate::sip::SipMessage>, Vec<(String, usize)>) =
             tagged.into_iter().map(|(m, t)| (m.clone(), t)).unzip();
         self.flow.ladder.index_map = index_map;
@@ -2275,7 +2277,7 @@ impl App {
                 packet_count: s.packet_count,
             })
             .collect();
-        streams.sort_by(|a, b| {
+        crate::sort::sort_by_dyn(&mut streams, &mut |a, b| {
             (a.first_seen, a.key.src, a.key.dst, a.key.ssrc).cmp(&(
                 b.first_seen,
                 b.key.src,
