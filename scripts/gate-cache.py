@@ -7,6 +7,8 @@
     gate-cache.py hit HOOK STEP KEY [--line hook|step] [--quiet]
     gate-cache.py pass HOOK STEP KEY [STEP KEY ...] [--hook-file PATH]
     gate-cache.py classify [PATH ...]                  each path's class, then the change's
+    gate-cache.py script-tests [PATH ...]              exit 0 when the change runs the script tests
+    gate-cache.py script-test-durations REPORT...      rewrite the shard durations from JUnit reports
     gate-cache.py list                                 the stamps of this worktree
     gate-cache.py clear                                remove them
 
@@ -92,13 +94,17 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import math
 import os
 import pathlib
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
+from xml.etree import ElementTree
 
 SCHEMA = 1
 STAMP_DIR = "sipnab-gate-pass"
@@ -171,6 +177,326 @@ def path_class(path: str, compiled: frozenset[str] | None) -> str:
     if "/" not in path and path.lower().endswith(".md"):
         return DOCS
     return BUILD
+
+
+# ── What the script tests read ────────────────────────────────────────────
+#
+# One rule for the hook's Script tests step and the pre-check
+# (SIPNAB_GATE_PRECHECK=1): they run when the staged change reaches a path
+# scripts/tests reads. What those tests read was measured, not assumed: on
+# 2026-11-23 inotify watched every directory of a worktree while the whole
+# suite ran (4638 tests), and recorded each path any process opened. It opened
+# every tracked file but one symlink, whose target it opened. Rust sources are
+# read for what they say: test_rfc_links scans every source file,
+# test_feature_rows_for every src/**/*.rs for its cfg gates,
+# test_check_line_drift the cited lines, test_pin_gates the files the test
+# binaries include. So no path is outside what they read, and the set below is
+# empty: every change runs them. A prefix goes here only after a new measurement
+# shows the whole suite opens nothing under it.
+SCRIPT_TESTS_UNREAD: tuple[str, ...] = ()
+
+
+def script_tests_needed(paths, unread: tuple[str, ...] | None = None) -> bool:
+    """True when a change to `paths` can change what the script tests report.
+
+    `unread` holds directory prefixes, each ending in "/", that the script
+    tests never read (default: SCRIPT_TESTS_UNREAD). An empty change is True:
+    nothing staged (an amend, a run by hand) is not proof that nothing they
+    read changed.
+    """
+    unread = SCRIPT_TESTS_UNREAD if unread is None else tuple(unread)
+    for prefix in unread:
+        if not prefix:
+            raise ValueError("an unread prefix is empty")
+        if not prefix.endswith("/") or prefix.startswith("/"):
+            raise ValueError(f"unread prefix {prefix!r} must be a relative directory ending in /")
+    paths = list(paths)
+    if not paths:
+        return True
+    return any(not p.startswith(unread) for p in paths)
+
+
+# ── The script tests in shards ────────────────────────────────────────────
+#
+# Measured 2026-11-23: the whole scripts/tests run took 370 to 539 s alone,
+# and at a load average near 15 a 598 s limit ended it at 90%. One quick-slot
+# job (600 s) cannot hold it, so `pin-gates.py --script-tests --shard I/N`
+# runs one shard of it a job. The split is by test file, deterministic, and
+# balanced on SCRIPT_TEST_DURATIONS (pytest's own JUnit timing, summed per
+# file; `gate-cache.py script-test-durations REPORT...` rewrites it). Each
+# shard that passes writes a record under SHARDS_DIR keyed on the hook's
+# script-tests key; the hook's script-tests stamp is written when every shard
+# of one plan has a record on that key, and the pre-check and the hook then
+# skip the step through gate_hit. A shard from another tree has another key,
+# so it never counts. The command, its directory and its target are the
+# hook's: STEPS spells the command, the test suite holds SCRIPTS_CWD and it
+# to the hook's text, and the target's files are listed here.
+SCRIPTS_CWD = "scripts"
+SCRIPT_TESTS_TARGET = "tests/"
+SCRIPT_TEST_DURATIONS = ".config/script-test-durations.txt"
+SHARDS_DIR = "shards"
+# Under the quick slot's 600 s cap, with room to end the session and record.
+SHARD_BUDGET = 570
+# pytest's defaults: python_files, and the directories norecursedirs skips.
+_TEST_FILE = re.compile(r"^(test_.*|.*_test)\.py$")
+_NORECURSE = re.compile(r"^(\..*|_darcs|build|CVS|dist|node_modules|venv|\{arch\}|.*\.egg|__pycache__)$")
+_SHARD_SPEC = re.compile(r"^([1-9][0-9]*)/([1-9][0-9]*)$")
+
+
+def script_tests_command() -> list[str]:
+    """The hook's script-test command, split; run in SCRIPTS_CWD."""
+    argv = shlex.split(STEPS["pre-commit"]["script-tests"][1])
+    if argv.count(SCRIPT_TESTS_TARGET) != 1:
+        raise ValueError(f"the script-test command names {SCRIPT_TESTS_TARGET!r} {argv.count(SCRIPT_TESTS_TARGET)} times")
+    return argv
+
+
+def script_test_files(root) -> list[str]:
+    """The files pytest collects from the hook's target, relative to
+    SCRIPTS_CWD and sorted: its default python_files under the target, minus
+    the directories its norecursedirs leaves out."""
+    base = pathlib.Path(root, SCRIPTS_CWD)
+    top = base / SCRIPT_TESTS_TARGET
+    found = []
+    for dirpath, dirnames, filenames in os.walk(top):
+        dirnames[:] = sorted(d for d in dirnames if not _NORECURSE.match(d))
+        found += [pathlib.Path(dirpath, f).relative_to(base).as_posix() for f in filenames if _TEST_FILE.match(f)]
+    return sorted(found)
+
+
+def parse_durations(text: str) -> dict[str, float]:
+    """`<seconds> <file>` a line; `#` lines and blank lines are skipped."""
+    durations: dict[str, float] = {}
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        try:
+            if len(fields) != 2:
+                raise ValueError("two fields expected")
+            seconds = float(fields[0])
+            if not math.isfinite(seconds) or seconds < 0:
+                raise ValueError("not a finite count of seconds")
+            if fields[1] in durations:
+                raise ValueError(f"{fields[1]} named twice")
+        except ValueError as e:
+            raise ValueError(f"{SCRIPT_TEST_DURATIONS} line {number}: {e}: {line!r}") from None
+        durations[fields[1]] = seconds
+    return durations
+
+
+def format_durations(durations: dict[str, float]) -> str:
+    head = (
+        "# Seconds each script test file took, summed over its test cases, from\n"
+        "# pytest's own JUnit report. scripts/gate-cache.py balances the shards of\n"
+        "# `pin-gates.py --script-tests --shard I/N` on them, and its\n"
+        "# `script-test-durations REPORT...` command rewrites this file.\n"
+    )
+    return head + "".join(f"{durations[f]:.3f}\t{f}\n" for f in sorted(durations))
+
+
+def read_durations(root) -> dict[str, float]:
+    """The recorded durations; empty when the file is absent (equal weights)."""
+    try:
+        text = pathlib.Path(root, SCRIPT_TEST_DURATIONS).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    return parse_durations(text)
+
+
+def _match_file(reported: str, files: list[str]) -> str:
+    """The test file a JUnit `file` attribute names; it is relative to
+    pytest's rootdir, which may be the target, SCRIPTS_CWD or above."""
+    hits = [f for f in files if f == reported or f.endswith("/" + reported) or reported.endswith("/" + f)]
+    if len(hits) != 1:
+        raise ValueError(f"the JUnit report names {reported!r}, which matches {len(hits)} test files")
+    return hits[0]
+
+
+def durations_from_junit(texts, files: list[str]) -> dict[str, float]:
+    """Seconds per test file, summed over the test cases of pytest JUnit
+    reports written with junit_family=xunit1 (the family that names the file)."""
+    durations: dict[str, float] = {}
+    for text in texts:
+        for case in ElementTree.fromstring(text).iter("testcase"):
+            reported = case.get("file")
+            if not reported:
+                raise ValueError("a test case names no file: write the report with -o junit_family=xunit1")
+            path = _match_file(reported, files)
+            durations[path] = durations.get(path, 0.0) + float(case.get("time") or 0.0)
+    return durations
+
+
+def shard_weights(files: list[str], durations: dict[str, float]) -> dict[str, float]:
+    """Each file's weight: its duration, or the median of the files that have one."""
+    known = sorted(durations[f] for f in files if f in durations)
+    if not known:
+        default = 1.0
+    elif len(known) % 2:
+        default = known[len(known) // 2]
+    else:
+        default = (known[len(known) // 2 - 1] + known[len(known) // 2]) / 2
+    return {f: durations.get(f, default) for f in files}
+
+
+def plan_shards(files, durations: dict[str, float], count: int) -> list[list[str]]:
+    """Split `files` into `count` shards: the longest first, each to the
+    lightest shard (the lowest index on a tie), so the plan depends on the
+    files and the durations only. Each shard lists its files by name."""
+    files = list(files)
+    if len(set(files)) != len(files):
+        raise ValueError("a test file is named twice")
+    if count < 1:
+        raise ValueError(f"{count} shards: at least one")
+    if count > len(files):
+        raise ValueError(f"{count} shards for {len(files)} test files: at most one shard a file")
+    weights = shard_weights(files, durations)
+    shards: list[list[str]] = [[] for _ in range(count)]
+    loads = [0.0] * count
+    for f in sorted(files, key=lambda f: (-weights[f], f)):
+        i = min(range(count), key=lambda i: (loads[i], i))
+        shards[i].append(f)
+        loads[i] += weights[f]
+    return [sorted(shard) for shard in shards]
+
+
+def parse_shard(text: str) -> tuple[int, int]:
+    """`I/N`, 1 <= I <= N."""
+    m = _SHARD_SPEC.match(text)
+    if not m or int(m.group(1)) > int(m.group(2)):
+        raise ValueError(f"shard {text!r}: write I/N with 1 <= I <= N")
+    return int(m.group(1)), int(m.group(2))
+
+
+def shard_argv(files: list[str]) -> list[str]:
+    """The hook's command with the shard's files in place of its target."""
+    argv = script_tests_command()
+    i = argv.index(SCRIPT_TESTS_TARGET)
+    return argv[:i] + list(files) + argv[i + 1:]
+
+
+def shard_step(index: int, count: int) -> str:
+    return f"script-tests-{index}-of-{count}"
+
+
+def write_shard_record(directory, key: str, index: int, count: int, files: list[str], now: float):
+    """A shard's pass record, beside the stamps, written as a stamp is."""
+    summary = {"shard": index, "of": count, "files": list(files)}
+    return write_stamp(pathlib.Path(directory, SHARDS_DIR), "pre-commit", shard_step(index, count), key, now, summary)
+
+
+def missing_shards(directory, key: str, plan: list[list[str]], now: float) -> list[int]:
+    """The shards of `plan` (numbered from 1) with no whole, current record on
+    `key` that names the files the plan gives them."""
+    count = len(plan)
+    missing = []
+    for index, files in enumerate(plan, 1):
+        record = valid_stamp(pathlib.Path(directory, SHARDS_DIR), "pre-commit", shard_step(index, count), key, now)
+        if record is None or record.get("summary", {}).get("files") != files:
+            missing.append(index)
+    return missing
+
+
+def script_tests_key(snap) -> str:
+    return key_of(step_parts("pre-commit", "script-tests", snap))
+
+
+def _end_session(proc) -> None:
+    """End the session `proc` leads: SIGTERM to the whole group, up to 10 s
+    for the leader, then SIGKILL to what is left. Both are sent while the
+    leader is not yet reaped: an exited leader stays a zombie, which keeps its
+    id, so the group id can belong to no other process. Then reap it."""
+    if proc.returncode is not None:
+        # Reaped already: its id may be another process's now.
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                break
+            time.sleep(0.1)
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, ChildProcessError):
+        pass
+    proc.wait()
+
+
+def run_in_session(argv, cwd, env, budget: float) -> int:
+    """Run `argv` in a session of its own; end the whole session at `budget`
+    seconds (status 124) or when this process receives SIGTERM, SIGINT or SIGHUP."""
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, start_new_session=True)
+
+    def end(signum, _frame):
+        _end_session(proc)
+        raise SystemExit(128 + signum)
+
+    caught = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    old = {sig: signal.signal(sig, end) for sig in caught}
+    try:
+        try:
+            return proc.wait(timeout=budget)
+        except subprocess.TimeoutExpired:
+            _end_session(proc)
+            return 124
+    finally:
+        for sig, handler in old.items():
+            signal.signal(sig, handler)
+
+
+def script_test_shard(root, env, hook_file, index: int, count: int, *, budget: float = SHARD_BUDGET,
+                      run=run_in_session, log=print) -> int:
+    """Run shard `index` of `count` of the script tests on the tree at `root`.
+
+    0 when it passed (or the hook's stamp already covers the tree), the run's
+    status when it failed, 1 when the tree changed while it ran, 2 when the
+    tree has no plan. On a pass it writes the shard's record; when every shard
+    of the plan has one on this key, the hook's script-tests stamp.
+    """
+    root = pathlib.Path(root)
+    name = f"script tests shard {index}/{count}"
+    files = script_test_files(root)
+    if not files:
+        log(f"{name}: no script test under {SCRIPTS_CWD}/{SCRIPT_TESTS_TARGET}")
+        return 2
+    try:
+        plan = plan_shards(files, read_durations(root), count)
+    except ValueError as e:
+        log(f"{name}: {e}")
+        return 2
+    mine = plan[index - 1]
+    snap = snapshot(root, env, str(hook_file))
+    key = script_tests_key(snap)
+    directory = stamp_dir(root, env)
+    if not _no_cache(env) and valid_stamp(directory, "pre-commit", "script-tests", key, time.time()):
+        log(f"{name}: the hook's script-tests stamp {key[:12]} already covers this tree; nothing to run")
+        return 0
+    git_dir = pathlib.Path(_git(root, ["rev-parse", "--absolute-git-dir"], env, text=True).strip())
+    report = git_dir / f"sipnab-script-tests-shard-{index}-of-{count}.xml"
+    argv = shard_argv(mine) + ["--junitxml", str(report), "-o", "junit_family=xunit1"]
+    log(f"{name}: {len(mine)} of {len(files)} test files, key {key[:12]}")
+    rc = run(argv, root / SCRIPTS_CWD, env, budget)
+    if rc != 0:
+        why = f"over its {budget:.0f} s budget" if rc == 124 else f"status {rc}"
+        log(f"{name}: FAILED ({why}); no pass record")
+        return rc
+    if script_tests_key(snapshot(root, env, str(hook_file))) != key:
+        log(f"{name}: passed, but its inputs changed while it ran; no pass record")
+        return 1
+    now = time.time()
+    write_shard_record(directory, key, index, count, mine, now)
+    missing = missing_shards(directory, key, plan, now)
+    if missing:
+        log(f"{name}: passed; {count - len(missing)} of {count} shards passed on this tree, "
+            f"still to pass: {', '.join(map(str, missing))}")
+        prune(directory, now)
+        return 0
+    write_stamp(directory, "pre-commit", "script-tests", key, now,
+                {"head": snap.head, "index_tree": snap.index_tree, "shards": count})
+    prune(directory, now)
+    log(f"{name}: passed; all {count} shards passed on this tree: the hook's script-tests stamp {key[:12]} is written")
+    return 0
 
 
 def change_class(paths, compiled: frozenset[str] | None) -> str:
@@ -814,11 +1140,13 @@ def read_parts(directory, hook: str, step: str, key: str, now: float) -> dict | 
 def prune(directory, now: float, max_age: float = MAX_AGE, max_count: int = MAX_COUNT) -> list[pathlib.Path]:
     """Remove stamps older than `max_age`, all but the newest `max_count`, and
     temporary files older than TMP_MAX_AGE; the same, counted apart, for the
-    parts records in PARTS_DIR. Other files are left alone."""
+    parts records in PARTS_DIR and the shard records in SHARDS_DIR. Other
+    files are left alone."""
     directory = pathlib.Path(directory)
-    return _prune_files(directory, now, max_age, max_count) + _prune_files(
-        directory / PARTS_DIR, now, max_age, max_count
-    )
+    removed = _prune_files(directory, now, max_age, max_count)
+    for sub in (PARTS_DIR, SHARDS_DIR):
+        removed += _prune_files(directory / sub, now, max_age, max_count)
+    return removed
 
 
 def _prune_files(directory: pathlib.Path, now: float, max_age: float, max_count: int) -> list[pathlib.Path]:
@@ -982,6 +1310,36 @@ def cmd_classify(args) -> int:
     return 0
 
 
+def cmd_script_tests(args) -> int:
+    """Exit 0 when the script tests must run for the change, 1 when they need
+    not; the hook reads any other status (2: an error) as "run them"."""
+    if args.paths:
+        paths, what = args.paths, f"{len(args.paths)} named path(s)"
+    else:
+        env = _env()
+        paths = _split0(_git(_root(env), ["diff", "--cached", "--name-only", "--no-renames", "-z"], env))
+        what = f"{len(paths)} staged path(s)" if paths else "nothing staged"
+    if script_tests_needed(paths):
+        print(f"run: {what}; the script tests read every path but {list(SCRIPT_TESTS_UNREAD)}")
+        return 0
+    print(f"not needed: {what}, all under {list(SCRIPT_TESTS_UNREAD)}, which the script tests never read")
+    return 1
+
+
+def cmd_script_test_durations(args) -> int:
+    """Rewrite SCRIPT_TEST_DURATIONS from pytest JUnit reports (xunit1), one
+    per shard of a run: `pin-gates.py --script-tests --shard I/N` writes them
+    to <git dir>/sipnab-script-tests-shard-I-of-N.xml."""
+    root = pathlib.Path(_root(_env()))
+    texts = [pathlib.Path(p).read_text(encoding="utf-8") for p in args.reports]
+    durations = durations_from_junit(texts, script_test_files(root))
+    target = root / SCRIPT_TEST_DURATIONS
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(format_durations(durations), encoding="utf-8")
+    print(f"wrote {target}: {len(durations)} test files, {sum(durations.values()):.0f} s in all")
+    return 0
+
+
 def cmd_list(_args) -> int:
     directory = _stamp_dir(_env())
     now = time.time()
@@ -1021,6 +1379,10 @@ def main(argv=None) -> int:
     s.add_argument("--hook-file")
     c = sub.add_parser("classify")
     c.add_argument("paths", nargs="*")
+    t = sub.add_parser("script-tests")
+    t.add_argument("paths", nargs="*")
+    d = sub.add_parser("script-test-durations")
+    d.add_argument("reports", nargs="+", metavar="REPORT")
     sub.add_parser("list")
     sub.add_parser("clear")
     args = p.parse_args(argv)
@@ -1029,12 +1391,14 @@ def main(argv=None) -> int:
         "hit": cmd_hit,
         "pass": cmd_pass,
         "classify": cmd_classify,
+        "script-tests": cmd_script_tests,
+        "script-test-durations": cmd_script_test_durations,
         "list": cmd_list,
         "clear": cmd_clear,
     }
     try:
         return handlers[args.cmd](args)
-    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
         print(f"gate-cache: {e}", file=sys.stderr)
         return 2
 

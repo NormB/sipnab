@@ -1646,7 +1646,7 @@ pub enum RelayStatsAction {
 /// Pure key→action mapping for the relay-statistics view (keymap-aware).
 ///
 /// `?` maps to [`RelayStatsAction::ToggleNames`] here, but reaches this view
-/// only because [`handle_key_event`] special-cases it: `?` is otherwise the
+/// only because `handle_key_event` special-cases it: `?` is otherwise the
 /// global help key. `S` closes, pairing with the `S` that opened the view.
 ///
 /// # Returns
