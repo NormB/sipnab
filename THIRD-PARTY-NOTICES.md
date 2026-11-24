@@ -291,7 +291,7 @@ Source files adapted from another project's code and compiled into sipnab. Each 
 | pastey | 0.2.2 | MIT OR Apache-2.0 |
 | pbkdf2 | 0.13.0 | MIT OR Apache-2.0 |
 | pcap | 2.5.0 | MIT OR Apache-2.0 |
-| pcap-file | 2.0.0 | MIT |
+| pcap-file | 3.0.0 | MIT |
 | pem-rfc7468 | 1.0.0 | Apache-2.0 OR MIT |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
 | pest | 2.8.6 | MIT OR Apache-2.0 |

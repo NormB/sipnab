@@ -65000,6 +65000,14 @@ happens to use UDP port 4789.
 | 229 | bare IPv6 (`DLT_IPV6`) | decoded — same check, the other way |
 | any other | — | **counted and named** as `unsupported link type N` |
 
+A pcapng file can hold interfaces of different link types, for example the
+output of `mergecap`. libpcap refuses such a file, so sipnab reads it itself
+and decodes each frame with its own interface's link type. Each frame's time
+uses its interface's `if_tsresol` (microseconds when the option is absent)
+and adds its `if_tsoffset`. Each section of the file numbers its interfaces
+from zero. sipnab counts a packet that names an interface its section does
+not describe, and does not read it.
+
 Loopback is `DLT_EN10MB` on Linux but `DLT_NULL` on macOS and BSD.
 That is why 0 and 108 matter for the common "SIP server listening on loopback" case.
 
@@ -84586,6 +84594,16 @@ The rest of the page is hand-written. The same test checks three things:
 - it names only flags sipnab has,
 - it names every environment variable sipnab reads,
 - `groff -man -ww` formats it without a warning.
+
+The files under `tests/fixtures/pcap-writer-golden/` are byte-for-byte goldens
+of what the capture writer writes. The `tests::golden` tests in
+`src/capture/writer.rs` fail when one byte of the writer's output changes.
+Rewrite them only for an intended change of the file format, say so in the
+commit, and update their hashes in `tests/PROVENANCE.md`:
+
+```bash
+SIPNAB_GOLDEN_APPLY=1 cargo test --features full --lib capture::writer::tests::golden::
+```
 
 `docs/internals/` *does* publish to the site.
 
