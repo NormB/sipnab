@@ -3701,6 +3701,29 @@ mod tests {
         Ok(())
     }
 
+    /// Evaluating the `problems` alias against a whole call parses each of
+    /// its messages' CSeq and SDP at most once, though several of its terms
+    /// read them (the diagnosis, `retransmits`, `pdd`, `state`).
+    #[test]
+    fn the_problems_alias_parses_each_message_once() -> Result<(), TestError> {
+        let mut store = crate::sip::dialog_store::DialogStore::new(16, false);
+        for msg in crate::test_utils::sdp_call("problems-once@example.com")? {
+            store.process_message(msg);
+        }
+        let dialog = store.iter().next().ok_or("the call opened a dialog")?;
+        let expr = FilterExpr::parse(
+            &expand_alias("problems", &AliasThresholds::default()).ok_or("alias exists")?,
+        )?;
+        crate::test_utils::clear_parses();
+        let matched = expr.matches_dialog(dialog, &[], CaptureMedia::Absent, MosDelay::unknown());
+        assert!(!matched, "a clean answered call is not a problem");
+        let (cseq, sdp, read) = crate::test_utils::worst_parses();
+        assert_eq!(read, 7, "the filter read all seven messages");
+        assert!(cseq <= 1, "one message's CSeq was parsed {cseq} times");
+        assert!(sdp <= 1, "one message's SDP was parsed {sdp} times");
+        Ok(())
+    }
+
     // ── Boolean operator precedence ─────────────────────────────────
 
     /// Explicit parentheses change the result: `(A OR B) AND C` differs

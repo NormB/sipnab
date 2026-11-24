@@ -188,23 +188,43 @@ pub fn related_legs(
     store: &crate::sip::dialog_store::DialogStore,
     dialog: &SipDialog,
 ) -> Vec<RelatedLeg> {
-    let mut found = store.find_correlated_scored(&dialog.call_id);
-    found.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then_with(|| a.dialog.call_id.cmp(&b.dialog.call_id))
-    });
-    found
+    related_legs_many(store, &[dialog])
+        .pop()
+        .unwrap_or_default()
+}
+
+/// [`related_legs`] for each of `dialogs`, from one correlation pass over the
+/// store ([`DialogStore::find_correlated_scored_many`]), so a page of N
+/// containers reads each dialog's SDP origins once rather than N times.
+///
+/// [`DialogStore::find_correlated_scored_many`]: crate::sip::dialog_store::DialogStore::find_correlated_scored_many
+pub fn related_legs_many(
+    store: &crate::sip::dialog_store::DialogStore,
+    dialogs: &[&SipDialog],
+) -> Vec<Vec<RelatedLeg>> {
+    let ids: Vec<&str> = dialogs.iter().map(|d| d.call_id.as_str()).collect();
+    store
+        .find_correlated_scored_many(&ids)
         .into_iter()
-        .map(|r| {
-            let (strategy, identifier_match) = r.reason.strategy();
-            RelatedLeg {
-                uuid: dialog_uuid(r.dialog, dialog_capture_id(r.dialog)),
-                strategy,
-                method: r.reason.method().as_str(),
-                identifier_match,
-                score: r.score,
-            }
+        .map(|mut found| {
+            found.sort_by(|a, b| {
+                b.score
+                    .cmp(&a.score)
+                    .then_with(|| a.dialog.call_id.cmp(&b.dialog.call_id))
+            });
+            found
+                .into_iter()
+                .map(|r| {
+                    let (strategy, identifier_match) = r.reason.strategy();
+                    RelatedLeg {
+                        uuid: dialog_uuid(r.dialog, dialog_capture_id(r.dialog)),
+                        strategy,
+                        method: r.reason.method().as_str(),
+                        identifier_match,
+                        score: r.score,
+                    }
+                })
+                .collect()
         })
         .collect()
 }

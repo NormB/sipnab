@@ -568,9 +568,32 @@ impl Default for MediaContext {
 impl MediaContext {
     /// Read a dialog's negotiation, paired with what the capture could see.
     pub fn for_dialog(dialog: &SipDialog, capture: CaptureMedia) -> Self {
+        Self::with_final_status(dialog, dialog.final_status_code(), capture)
+    }
+
+    /// [`Self::for_dialog`] for a caller that already parsed the dialog's
+    /// CSeqs (`cseqs`, from [`crate::sip::message::cseqs`]) for its other
+    /// readers, so the final status does not parse them again. Built where
+    /// its one caller, [`crate::analysis`], is.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    pub(crate) fn for_dialog_parsed(
+        dialog: &SipDialog,
+        cseqs: &[Option<(u32, &str)>],
+        capture: CaptureMedia,
+    ) -> Self {
+        let final_status = dialog.final_status_code_of(cseqs.iter().copied());
+        Self::with_final_status(dialog, final_status, capture)
+    }
+
+    /// The context of `dialog`, whose final status is `final_status`.
+    fn with_final_status(
+        dialog: &SipDialog,
+        final_status: Option<u16>,
+        capture: CaptureMedia,
+    ) -> Self {
         let mut ctx = MediaContext {
             capture: CaptureMedia::for_dialog_of(dialog, capture),
-            established: matches!(dialog.final_status_code(), Some(200..=299)),
+            established: matches!(final_status, Some(200..=299)),
             dialog_start: dialog.messages.first().map(|m| m.timestamp),
             ..MediaContext::default()
         };
@@ -1678,6 +1701,44 @@ mod tests {
             &sdp_text("sendrecv", caller, caller_port),
             &sdp_text("sendrecv", callee, callee_port),
         )
+    }
+
+    /// The context built from CSeqs the caller parsed is the one
+    /// `for_dialog` builds, and building it parses no CSeq.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_context_from_parsed_cseqs_agrees_and_parses_none() -> Result<(), TestError> {
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386)?;
+        let plain = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
+        let cseqs = crate::sip::message::cseqs(&dialog.messages);
+        crate::test_utils::clear_parses();
+        let parsed = MediaContext::for_dialog_parsed(&dialog, &cseqs, CaptureMedia::Observed);
+        let (cseq, sdp, _) = crate::test_utils::worst_parses();
+        assert_eq!(format!("{parsed:?}"), format!("{plain:?}"), "one context");
+        assert!(parsed.established, "the call was answered");
+        assert_eq!(cseq, 0, "a CSeq was parsed {cseq} times");
+        assert_eq!(sdp, 1, "each SDP body is read once");
+        Ok(())
+    }
+
+    /// The context's `established` comes from the CSeqs it is handed: a
+    /// slice saying the 200 answered a CANCEL is a call never established.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_context_reads_the_cseqs_it_is_handed() -> Result<(), TestError> {
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386)?;
+        let cseqs: Vec<Option<(u32, &str)>> = dialog
+            .messages
+            .iter()
+            .map(|m| Some((1, if m.is_request { "INVITE" } else { "CANCEL" })))
+            .collect();
+        let ctx = MediaContext::for_dialog_parsed(&dialog, &cseqs, CaptureMedia::Observed);
+        assert!(
+            !ctx.established,
+            "no INVITE was answered by the handed CSeqs"
+        );
+        assert!(ctx.negotiated(), "the SDP is still read off the messages");
+        Ok(())
     }
 
     /// An answered INVITE carrying `offer` in the request and `answer` in the
