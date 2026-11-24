@@ -534,9 +534,10 @@ impl SipnabMcp {
             let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
             let capture_media = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
 
-            // Streams grouped by Call-ID once. `streams_for` scans the whole
-            // stream store per dialog, and this tool visits every dialog, so
-            // the per-dialog scan would be quadratic in the capture's size.
+            // Streams grouped by Call-ID once: one pass over the store for
+            // every dialog this tool visits. (`streams_for` once scanned the
+            // whole store per dialog, which was quadratic here; it now reads a
+            // per-call index.)
             let mut by_call: std::collections::HashMap<&str, Vec<&crate::rtp::stream::RtpStream>> =
                 std::collections::HashMap::new();
             for s in ss.iter() {

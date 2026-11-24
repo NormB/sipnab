@@ -280,7 +280,7 @@ the guards at the same time.
 **The seed method's only remaining job is the initial state**
 ([`dialog.rs:632-634`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L632-L634)<!-- "let initial_state" -->), and for the two methods that
 matter it barely matters: since the creation branch now applies the creating
-message's own transition ([`dialog_store.rs:3051`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3051)<!-- "update_state(&mut dialog, msg);" -->),
+message's own transition ([`dialog_store.rs:3074`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3074)<!-- "update_state(&mut dialog, msg);" -->),
 a BYE-seeded dialog goes `Trying → Completed` on its own first message, and a
 CANCEL-seeded one goes `Trying → Canceled`. Which is exactly the outcome the
 pinned defect test is waiting for.
