@@ -1497,3 +1497,289 @@ fn a_leg_carrying_a_unique_origin_beside_a_reused_one_matches() -> Result<(), Te
     );
     Ok(())
 }
+
+// ── Many sources in one pass ─────────────────────────────────────────────
+
+/// A store holding every shape the origin rule tells apart: a B2BUA pass
+/// through, a chain of two B2BUAs, SIPp's reused origin on one hop, a leg
+/// whose offer has no origin line, and a leg with no body at all.
+fn mixed() -> Result<DialogStore, TestError> {
+    let mut store = DialogStore::new(100, false);
+    leg(
+        &mut store,
+        "a@example.com",
+        hop(uac(), sbc()),
+        ORIGIN,
+        0,
+        900_000,
+    )?;
+    leg(
+        &mut store,
+        "b@example.com",
+        hop(sbc(), uas()),
+        ORIGIN,
+        2_000,
+        890_000,
+    )?;
+    for (n, (from, to)) in [(uac(), sbc()), (sbc(), sbc2()), (sbc2(), uas2())]
+        .into_iter()
+        .enumerate()
+    {
+        let start = 5_000_000 + i64::try_from(n)? * 1_000;
+        leg(
+            &mut store,
+            &format!("chain-{n}@example.com"),
+            hop(from, to),
+            ANSWER_ORIGIN,
+            start,
+            start + 800_000,
+        )?;
+    }
+    for n in 0..2 {
+        let start = 20_000_000 + n * 10_000;
+        leg(
+            &mut store,
+            &format!("load-{n}@example.com"),
+            hop(uas2(), sbc()),
+            SIPP_ORIGIN,
+            start,
+            start + 900_000,
+        )?;
+    }
+    let bare = hop(uac(), uas());
+    store.process_message(invite(
+        "no-origin@example.com",
+        bare,
+        Some(&sdp_without_origin()),
+        30_000_000,
+    )?);
+    store.process_message(invite("no-body@example.com", bare, None, 30_001_000)?);
+    Ok(store)
+}
+
+/// Every Call-ID in `store`, in store order.
+fn ids(store: &DialogStore) -> Vec<String> {
+    store.iter().map(|d| d.call_id.clone()).collect()
+}
+
+/// A correlation answer as (Call-ID, score, reason), in its order.
+fn shape(found: &[super::CorrelationResult<'_>]) -> Vec<(String, u8, CorrelationReason)> {
+    found
+        .iter()
+        .map(|r| (r.dialog.call_id.clone(), r.score, r.reason.clone()))
+        .collect()
+}
+
+/// The per-thread count of dialogs whose SDP origins were read, after `f`.
+fn origin_reads(f: impl FnOnce()) -> usize {
+    super::ORIGIN_KEY_READS.with(|c| c.set(0));
+    f();
+    super::ORIGIN_KEY_READS.with(std::cell::Cell::get)
+}
+
+/// Asked for many Call-IDs at once, the store answers each exactly as a
+/// query of its own: the same legs, scores, reasons and order.
+#[test]
+fn many_sources_answer_each_as_a_query_of_its_own() -> Result<(), TestError> {
+    let store = mixed()?;
+    let all = ids(&store);
+    let asked: Vec<&str> = all.iter().map(String::as_str).collect();
+    let many = store.find_correlated_scored_many(&asked);
+    assert_eq!(many.len(), asked.len(), "one answer per Call-ID asked");
+    let mut reasons = Vec::new();
+    for (id, answer) in asked.iter().zip(&many) {
+        let single = store.find_correlated_scored(id);
+        assert_eq!(shape(answer), shape(&single), "the answer for {id}");
+        reasons.extend(single.iter().map(|r| r.reason.clone()));
+    }
+    assert!(
+        reasons.contains(&CorrelationReason::SdpOrigin),
+        "the fixture joins legs by origin: {reasons:?}"
+    );
+    assert!(
+        reasons.iter().any(|r| *r != CorrelationReason::SdpOrigin),
+        "and by another strategy: {reasons:?}"
+    );
+    Ok(())
+}
+
+/// The order of the Call-IDs asked does not change any answer.
+#[test]
+fn many_sources_in_reverse_order_give_the_same_answers() -> Result<(), TestError> {
+    let store = mixed()?;
+    let all = ids(&store);
+    let asked: Vec<&str> = all.iter().rev().map(String::as_str).collect();
+    for (id, answer) in asked.iter().zip(store.find_correlated_scored_many(&asked)) {
+        assert_eq!(
+            shape(&answer),
+            shape(&store.find_correlated_scored(id)),
+            "the answer for {id}"
+        );
+    }
+    Ok(())
+}
+
+/// A page of N Call-IDs reads each dialog's SDP origins once, not N times.
+#[test]
+fn many_sources_read_each_dialogs_origins_once() -> Result<(), TestError> {
+    let store = mixed()?;
+    let all = ids(&store);
+    let asked: Vec<&str> = all.iter().take(5).map(String::as_str).collect();
+    let reads = origin_reads(|| {
+        let _ = store.find_correlated_scored_many(&asked);
+    });
+    assert_eq!(reads, all.len(), "one read per dialog in the store");
+    Ok(())
+}
+
+/// One source reads each dialog's origins once too, as before.
+#[test]
+fn one_source_reads_each_dialogs_origins_once() -> Result<(), TestError> {
+    let store = mixed()?;
+    let reads = origin_reads(|| {
+        let _ = store.find_correlated_scored("a@example.com");
+    });
+    assert_eq!(reads, ids(&store).len(), "one read per dialog in the store");
+    Ok(())
+}
+
+/// Sources that carry no origin read no other dialog's SDP.
+#[test]
+fn sources_without_an_origin_read_no_other_dialogs_origins() -> Result<(), TestError> {
+    let store = mixed()?;
+    let asked = ["no-origin@example.com", "no-body@example.com"];
+    let reads = origin_reads(|| {
+        let _ = store.find_correlated_scored_many(&asked);
+    });
+    assert_eq!(reads, asked.len(), "only the two sources' own");
+    Ok(())
+}
+
+/// An unknown Call-ID is answered with nothing, and the others still are.
+#[test]
+fn an_unknown_source_answers_nothing_and_the_rest_still_answer() -> Result<(), TestError> {
+    let store = mixed()?;
+    let asked = ["a@example.com", "missing@example.com", "b@example.com"];
+    let many = store.find_correlated_scored_many(&asked);
+    assert_eq!(many.len(), 3, "one answer per Call-ID asked");
+    assert!(many[1].is_empty(), "the unknown one: {:?}", shape(&many[1]));
+    assert_eq!(
+        shape(&many[0]),
+        shape(&store.find_correlated_scored("a@example.com")),
+        "the first"
+    );
+    assert_eq!(
+        shape(&many[2]),
+        shape(&store.find_correlated_scored("b@example.com")),
+        "the third"
+    );
+    assert!(
+        shape(&many[0])
+            .iter()
+            .any(|(id, _, _)| id == "b@example.com"),
+        "a finds b: {:?}",
+        shape(&many[0])
+    );
+    Ok(())
+}
+
+/// Asking for nothing answers nothing and reads nothing.
+#[test]
+fn no_source_answers_nothing_and_reads_nothing() -> Result<(), TestError> {
+    let store = mixed()?;
+    let reads = origin_reads(|| {
+        assert!(
+            store.find_correlated_scored_many(&[]).is_empty(),
+            "no answers"
+        );
+    });
+    assert_eq!(reads, 0, "no SDP read");
+    Ok(())
+}
+
+/// A Call-ID asked twice is answered twice, the same way.
+#[test]
+fn a_repeated_source_is_answered_each_time() -> Result<(), TestError> {
+    let store = mixed()?;
+    let many = store.find_correlated_scored_many(&["chain-1@example.com", "chain-1@example.com"]);
+    assert_eq!(many.len(), 2, "two answers");
+    assert_eq!(shape(&many[0]), shape(&many[1]), "the same answer");
+    assert_eq!(
+        shape(&many[0]),
+        shape(&store.find_correlated_scored("chain-1@example.com")),
+        "as a query of its own"
+    );
+    Ok(())
+}
+
+/// Each answer is ranked by score, not by store order: a timing guess read
+/// before an origin match is listed after it, asked alone or with others.
+#[test]
+fn answers_are_ranked_by_score_not_by_store_order() -> Result<(), TestError> {
+    let mut store = DialogStore::new(100, false);
+    leg(
+        &mut store,
+        "a@example.com",
+        hop(uac(), sbc()),
+        ORIGIN,
+        0,
+        900_000,
+    )?;
+    // Read before the B leg, sharing the caller's address and starting within
+    // the timing window, with an origin of its own: a timing match only.
+    leg(
+        &mut store,
+        "t@example.com",
+        hop(uac(), uas2()),
+        "carol 1 1 IN IP4 192.0.2.9",
+        1_000,
+        800_000,
+    )?;
+    leg(
+        &mut store,
+        "b@example.com",
+        hop(sbc(), uas()),
+        ORIGIN,
+        2_000,
+        890_000,
+    )?;
+    let expected = vec![
+        (
+            "b@example.com".to_string(),
+            90,
+            CorrelationReason::SdpOrigin,
+        ),
+        (
+            "t@example.com".to_string(),
+            50,
+            CorrelationReason::TimingHeuristic,
+        ),
+    ];
+    assert_eq!(
+        shape(&store.find_correlated_scored("a@example.com")),
+        expected,
+        "asked alone"
+    );
+    let many = store.find_correlated_scored_many(&["t@example.com", "a@example.com"]);
+    assert_eq!(shape(&many[1]), expected, "asked with another");
+    Ok(())
+}
+
+/// Reused origins stay unmatched when their legs are asked together: one
+/// source's carriers never decide another's reuse.
+#[test]
+fn reused_origins_asked_together_still_match_nothing_by_origin() -> Result<(), TestError> {
+    let store = sipp_concurrent(4)?;
+    let all = ids(&store);
+    let asked: Vec<&str> = all.iter().map(String::as_str).collect();
+    for (id, answer) in asked.iter().zip(store.find_correlated_scored_many(&asked)) {
+        assert!(
+            answer
+                .iter()
+                .all(|r| r.reason != CorrelationReason::SdpOrigin),
+            "{id} matched by a reused origin: {:?}",
+            shape(&answer)
+        );
+    }
+    Ok(())
+}

@@ -19,6 +19,8 @@ entry that carries them.
   - Docs: [Read the rate media arrives at](docs/relay-statistics.md#read-the-rate-media-arrives-at)
   - Credit: Inspired by irontec/sngrep#581.
 
+## [0.5.271] - 2026-11-24
+
 ### Changed
 
 - **Reading a capture file runs fewer instructions per SIP message.**
@@ -37,6 +39,10 @@ entry that carries them.
   - Was: At 100,000 calls, `--filter 'method == INVITE'` ran 31 times the CPU instructions of the same run with no filter.
   - Effect: A filter on SIP fields reads no streams; a filter on `rtp.*` or a media diagnosis field reads only that call's streams.
   - Docs: [Filter DSL reference](docs/filter-dsl.md)
+- **A vCon export no longer re-reads every call in the capture for each container.**
+  - Was: Each container ran the whole capture analysis again, and each container of an `export_vcon` page or `--export-vcon-when` run read every call's SDP again.
+  - Effect: At 100,000 calls an `export_vcon` page of 50 containers runs about 10 times faster; the containers are unchanged.
+  - Docs: [vCon export](docs/vcon.md)
 
 ### Security
 

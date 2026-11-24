@@ -360,6 +360,36 @@ pub struct CorrelationResult<'a> {
     pub reason: CorrelationReason,
 }
 
+/// What [`DialogStore::find_correlated_scored`] reads off one source dialog
+/// before it compares the source with the candidates: read once per source,
+/// not once per candidate.
+struct CorrelationSource<'a> {
+    /// The Call-ID asked for.
+    call_id: &'a str,
+    /// The source dialog.
+    dialog: &'a SipDialog,
+    /// Correlation-header values the source carried, every configured name.
+    x_call_ids: std::collections::HashSet<&'a str>,
+    /// Every RFC 7989 `Session-ID` the source carried.
+    src_session_ids: Vec<crate::sip::session_id::SessionId>,
+    /// Every RFC 7315 `icid-value` the source carried.
+    src_icids: std::collections::HashSet<std::borrow::Cow<'a, str>>,
+    /// Every RFC 7315 `related-icid` the source carried.
+    src_related_icids: std::collections::HashSet<std::borrow::Cow<'a, str>>,
+    /// Via branches of the source's INVITE messages.
+    src_branches: std::collections::HashSet<&'a str>,
+    /// The source's two endpoint addresses.
+    src_ips: [std::net::IpAddr; 2],
+    /// Whether the source is an INVITE dialog.
+    is_invite: bool,
+    /// The topology-hiding decoder and the source decoded by it.
+    #[cfg(feature = "tls")]
+    src_th: Option<(
+        &'a crate::sip::th_callid::ThCallid,
+        crate::sip::th_callid::Decode,
+    )>,
+}
+
 impl CorrelationResult<'_> {
     /// The strategy's name, whether it compared identifiers, and -- for a
     /// timing guess only -- the observed creation gap against `source_created`
@@ -2309,11 +2339,56 @@ impl DialogStore {
     /// Borrowed correlation results, one per matching dialog; empty when
     /// the Call-ID is unknown or nothing correlates.
     pub fn find_correlated_scored(&self, call_id: &str) -> Vec<CorrelationResult<'_>> {
-        let dialog = match self.get(call_id) {
-            Some(d) => d,
-            None => return Vec::new(),
-        };
+        self.find_correlated_scored_many(&[call_id])
+            .pop()
+            .unwrap_or_default()
+    }
 
+    /// [`Self::find_correlated_scored`] for each of `call_ids`, in one pass
+    /// over the store.
+    ///
+    /// Answer `i` is the one `find_correlated_scored(call_ids[i])` gives: the
+    /// same legs, scores, reasons and order, and empty for an unknown
+    /// Call-ID. What one pass saves is the candidate side: each dialog's SDP
+    /// origins are read once for all of `call_ids`, not once per Call-ID, so
+    /// a page of N containers no longer reads every SDP body N times.
+    pub fn find_correlated_scored_many(
+        &self,
+        call_ids: &[&str],
+    ) -> Vec<Vec<CorrelationResult<'_>>> {
+        let sources: Vec<Option<&SipDialog>> = call_ids.iter().map(|id| self.get(id)).collect();
+        let origin_joined = self.sdp_origin_joins_many(&sources);
+        let probes: Vec<Option<CorrelationSource<'_>>> = call_ids
+            .iter()
+            .zip(&sources)
+            .map(|(id, source)| source.map(|d| self.correlation_source(id, d)))
+            .collect();
+        let mut results: Vec<Vec<CorrelationResult<'_>>> = vec![Vec::new(); call_ids.len()];
+        for candidate in self.dialogs.values() {
+            for ((probe, joined), found) in probes.iter().zip(&origin_joined).zip(&mut results) {
+                if let Some(probe) = probe
+                    && let Some(r) = self.correlate_one(probe, joined, candidate)
+                {
+                    found.push(r);
+                }
+            }
+        }
+        // Sort by score descending
+        for found in &mut results {
+            crate::sort::sort_by_dyn(found, &mut |a, b| {
+                std::cmp::Reverse(a.score).cmp(&std::cmp::Reverse(b.score))
+            });
+        }
+        results
+    }
+
+    /// What `find_correlated_scored` reads off the source dialog once, before
+    /// it compares the source with every candidate.
+    fn correlation_source<'a>(
+        &'a self,
+        call_id: &'a str,
+        dialog: &'a SipDialog,
+    ) -> CorrelationSource<'a> {
         // Strategy 1 data: correlation-header values from the source dialog,
         // across every configured xcid header name. A set gives O(1)
         // membership per candidate instead of a linear scan.
@@ -2355,11 +2430,10 @@ impl DialogStore {
             .flat_map(crate::sip::charging_vector::message_related_icids)
             .collect();
 
-        // Strategy 1.5 data: the candidates a shared RFC 8866 origin tuple ties
-        // to the source, by the rule in `crate::sip::sdp_origin`. Worked out
-        // before the loop because the rule reads every dialog that carries
-        // the tuple, not only the pair being compared.
-        let origin_joined = self.sdp_origin_joins(dialog);
+        // Strategy 1.5 data, the candidates a shared RFC 8866 origin tuple
+        // ties to the source, is `sdp_origin_joins_many`'s: worked out before
+        // the pass because the rule reads every dialog that carries the tuple,
+        // not only the pair being compared.
 
         // Strategy 2 data: Via branches from INVITE messages in the source dialog
         let src_branches: std::collections::HashSet<&str> = dialog
@@ -2374,214 +2448,233 @@ impl DialogStore {
         let src_ips = [dialog.src_addr, dialog.dst_addr];
         let is_invite = dialog.method == SipMethod::Invite;
 
-        let mut results: Vec<CorrelationResult<'_>> = Vec::new();
-
         // Strategy 0.5 data: the source decoded once, when it is a hidden leg.
         #[cfg(feature = "tls")]
         let src_th = self.th_callid.as_deref().map(|th| (th, th.decode(call_id)));
 
-        for candidate in self.dialogs.values() {
-            if candidate.call_id == call_id {
-                continue;
-            }
-
-            // Strategy 0: RFC 7989 Session-ID (score=100). Checked first
-            // because it is the only strategy that survives a B2BUA, so where
-            // it applies it is the answer and the rest are noise.
-            //
-            // `same_session_as` is set intersection, NOT string equality: the
-            // two halves swap perspective across the SBC, so the header VALUES
-            // differ on either side of it while describing one call.
-            if !src_session_ids.is_empty() {
-                let session_match = candidate
-                    .messages
-                    .iter()
-                    .filter_map(|m| m.header("Session-ID"))
-                    .filter_map(crate::sip::session_id::SessionId::parse)
-                    .any(|cand| src_session_ids.iter().any(|src| src.same_session_as(&cand)));
-                if session_match {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 100,
-                        reason: CorrelationReason::SessionId,
-                    });
-                    continue;
-                }
-            }
-
-            // Strategy 0.4: OpenSIPS named the pair in an E_SIPNAB_TH_MAP event
-            // (score=100). Checked before the decode, because it is what
-            // OpenSIPS stated rather than what sipnab worked out.
-            if self.th_mappings.links(call_id, &candidate.call_id) {
-                results.push(CorrelationResult {
-                    dialog: candidate,
-                    score: 100,
-                    reason: CorrelationReason::TopologyHidingMapping,
-                });
-                continue;
-            }
-
-            // Strategy 0.5: OpenSIPS topology-hiding Call-ID (score=100). Either
-            // the source or the candidate is the hidden leg; the other must be
-            // exactly the decoded Call-ID with the same From tag.
+        CorrelationSource {
+            call_id,
+            dialog,
+            x_call_ids,
+            src_session_ids,
+            src_icids,
+            src_related_icids,
+            src_branches,
+            src_ips,
+            is_invite,
             #[cfg(feature = "tls")]
-            if let Some((th, src_decoded)) = &src_th {
-                use crate::sip::th_callid::Decode;
-                let joined = match src_decoded {
-                    Decode::NotHidden => {
-                        let cand = th.decode(&candidate.call_id);
-                        Self::th_joins(&cand, candidate, dialog)
-                    }
-                    decoded => Self::th_joins(decoded, dialog, candidate),
-                };
-                if joined {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 100,
-                        reason: CorrelationReason::TopologyHidingCallid,
-                    });
-                    continue;
-                }
-            }
+            src_th,
+        }
+    }
 
-            // Strategy 1: correlation-header match (score=100)
-            let xcid_match = x_call_ids.contains(candidate.call_id.as_str())
-                || candidate.messages.iter().any(|m| {
-                    self.xcid_headers
-                        .iter()
-                        .any(|h| m.header(h).is_some_and(|v| v == call_id))
-                });
+    /// The strongest strategy that ties `candidate` to the source `src`, first
+    /// match wins in descending score order; `None` when none does or the
+    /// candidate is the source. `origin_joined` is the source's
+    /// [`Self::sdp_origin_joins_many`] answer.
+    fn correlate_one<'a>(
+        &self,
+        src: &CorrelationSource<'_>,
+        origin_joined: &std::collections::HashSet<&str>,
+        candidate: &'a SipDialog,
+    ) -> Option<CorrelationResult<'a>> {
+        let call_id: &str = src.call_id;
+        let dialog: &SipDialog = src.dialog;
+        let x_call_ids = &src.x_call_ids;
+        let src_session_ids = &src.src_session_ids;
+        let src_icids = &src.src_icids;
+        let src_related_icids = &src.src_related_icids;
+        let src_branches = &src.src_branches;
+        let src_ips = src.src_ips;
+        let is_invite = src.is_invite;
+        #[cfg(feature = "tls")]
+        let src_th = &src.src_th;
+        if candidate.call_id == call_id {
+            return None;
+        }
 
-            if xcid_match {
-                results.push(CorrelationResult {
+        // Strategy 0: RFC 7989 Session-ID (score=100). Checked first
+        // because it is the only strategy that survives a B2BUA, so where
+        // it applies it is the answer and the rest are noise.
+        //
+        // `same_session_as` is set intersection, NOT string equality: the
+        // two halves swap perspective across the SBC, so the header VALUES
+        // differ on either side of it while describing one call.
+        if !src_session_ids.is_empty() {
+            let session_match = candidate
+                .messages
+                .iter()
+                .filter_map(|m| m.header("Session-ID"))
+                .filter_map(crate::sip::session_id::SessionId::parse)
+                .any(|cand| src_session_ids.iter().any(|src| src.same_session_as(&cand)));
+            if session_match {
+                return Some(CorrelationResult {
                     dialog: candidate,
                     score: 100,
-                    reason: CorrelationReason::XCallId,
+                    reason: CorrelationReason::SessionId,
                 });
-                continue;
-            }
-
-            // Strategy 1.2: RFC 7315 `related-icid` (score=95). Matched in BOTH
-            // directions — this dialog's `related-icid` against the candidate's
-            // `icid-value`, and the reverse — because the pointer the RFC
-            // describes is one-way (the new leg names the old one) and the
-            // caller may ask from either end. What that costs is the record of
-            // which leg came first, which nothing downstream reads today.
-            //
-            // Placed ABOVE the SDP origin tuple, which is a DIVERGENCE from
-            // docs/design/icid-correlation.md §4: that section says both new
-            // checks sit between `sdp_origin` and `via_branch`, and also that
-            // "order of evaluation follows score". Those disagree at 95 > 90.
-            // The principle wins: this loop is first-match-wins and the results
-            // are then sorted by score, so a 95 check running after a 90 check
-            // would report a leg that matched both as the weaker strategy at
-            // the weaker score.
-            if !src_related_icids.is_empty() || !src_icids.is_empty() {
-                let related_match = candidate.messages.iter().any(|m| {
-                    crate::sip::charging_vector::message_icids(m)
-                        .iter()
-                        .any(|icid| src_related_icids.contains(icid.as_ref()))
-                        || crate::sip::charging_vector::message_related_icids(m)
-                            .iter()
-                            .any(|rel| src_icids.contains(rel.as_ref()))
-                });
-                if related_match {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 95,
-                        reason: CorrelationReason::ChargingVectorRelatedIcid,
-                    });
-                    continue;
-                }
-            }
-
-            // Strategy 1.5: SDP origin tuple (score=90). Between the
-            // correlation headers and the Via branch: it is a real identifier
-            // that the RFC defines as globally unique, but it names the media
-            // session rather than the dialog, and an SBC that re-originates SDP
-            // replaces it.
-            //
-            // A shared tuple counts only when the two legs were open at one
-            // time and the tuple is not shown reused anywhere in the store:
-            // endpoints and SIPp reuse it, so the tuple alone is not the
-            // identifier RFC 8866 section 5.2 says it is. A pair the rule
-            // refuses falls through to the weaker strategies below.
-            if origin_joined.contains(candidate.call_id.as_str()) {
-                results.push(CorrelationResult {
-                    dialog: candidate,
-                    score: 90,
-                    reason: CorrelationReason::SdpOrigin,
-                });
-                continue;
-            }
-
-            // Strategy 1.7: plain RFC 7315 `icid-value` equality (score=85),
-            // between the SDP origin tuple and the Via branch. Reached only
-            // when `related-icid` did not match, so the two reasons stay
-            // distinguishable: this one is "an intermediary carried a
-            // per-dialog identifier onto a second dialog", which no RFC grants.
-            if !src_icids.is_empty() {
-                let icid_match = candidate
-                    .messages
-                    .iter()
-                    .flat_map(crate::sip::charging_vector::message_icids)
-                    .any(|icid| src_icids.contains(icid.as_ref()));
-                if icid_match {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 85,
-                        reason: CorrelationReason::ChargingVectorIcid,
-                    });
-                    continue;
-                }
-            }
-
-            // Strategy 2: Via branch overlap (score=80). Scan the candidate's
-            // INVITE branches directly, short-circuiting on the first hit —
-            // no per-candidate Vec allocation.
-            if !src_branches.is_empty() {
-                let branch_overlap = candidate
-                    .messages
-                    .iter()
-                    .filter(|m| m.is_request && m.method.as_ref() == Some(&SipMethod::Invite))
-                    .flat_map(|m| m.via_headers())
-                    .filter_map(|v| extract_via_branch(v))
-                    .any(|b| src_branches.contains(b));
-
-                if branch_overlap {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 80,
-                        reason: CorrelationReason::ViaBranch,
-                    });
-                    continue;
-                }
-            }
-
-            // Strategy 3: Timing heuristic (score=50)
-            if is_invite && candidate.method == SipMethod::Invite {
-                let candidate_ips = [candidate.src_addr, candidate.dst_addr];
-                let ip_overlap = src_ips.iter().any(|ip| candidate_ips.contains(ip));
-                if ip_overlap {
-                    let time_diff = (dialog.created_at - candidate.created_at)
-                        .num_milliseconds()
-                        .unsigned_abs();
-                    if time_diff <= self.leg_correlation_window_ms {
-                        results.push(CorrelationResult {
-                            dialog: candidate,
-                            score: 50,
-                            reason: CorrelationReason::TimingHeuristic,
-                        });
-                    }
-                }
             }
         }
 
-        // Sort by score descending
-        crate::sort::sort_by_dyn(&mut results, &mut |a, b| {
-            std::cmp::Reverse(a.score).cmp(&std::cmp::Reverse(b.score))
-        });
-        results
+        // Strategy 0.4: OpenSIPS named the pair in an E_SIPNAB_TH_MAP event
+        // (score=100). Checked before the decode, because it is what
+        // OpenSIPS stated rather than what sipnab worked out.
+        if self.th_mappings.links(call_id, &candidate.call_id) {
+            return Some(CorrelationResult {
+                dialog: candidate,
+                score: 100,
+                reason: CorrelationReason::TopologyHidingMapping,
+            });
+        }
+
+        // Strategy 0.5: OpenSIPS topology-hiding Call-ID (score=100). Either
+        // the source or the candidate is the hidden leg; the other must be
+        // exactly the decoded Call-ID with the same From tag.
+        #[cfg(feature = "tls")]
+        if let Some((th, src_decoded)) = &src_th {
+            use crate::sip::th_callid::Decode;
+            let joined = match src_decoded {
+                Decode::NotHidden => {
+                    let cand = th.decode(&candidate.call_id);
+                    Self::th_joins(&cand, candidate, dialog)
+                }
+                decoded => Self::th_joins(decoded, dialog, candidate),
+            };
+            if joined {
+                return Some(CorrelationResult {
+                    dialog: candidate,
+                    score: 100,
+                    reason: CorrelationReason::TopologyHidingCallid,
+                });
+            }
+        }
+
+        // Strategy 1: correlation-header match (score=100)
+        let xcid_match = x_call_ids.contains(candidate.call_id.as_str())
+            || candidate.messages.iter().any(|m| {
+                self.xcid_headers
+                    .iter()
+                    .any(|h| m.header(h).is_some_and(|v| v == call_id))
+            });
+
+        if xcid_match {
+            return Some(CorrelationResult {
+                dialog: candidate,
+                score: 100,
+                reason: CorrelationReason::XCallId,
+            });
+        }
+
+        // Strategy 1.2: RFC 7315 `related-icid` (score=95). Matched in BOTH
+        // directions — this dialog's `related-icid` against the candidate's
+        // `icid-value`, and the reverse — because the pointer the RFC
+        // describes is one-way (the new leg names the old one) and the
+        // caller may ask from either end. What that costs is the record of
+        // which leg came first, which nothing downstream reads today.
+        //
+        // Placed ABOVE the SDP origin tuple, which is a DIVERGENCE from
+        // docs/design/icid-correlation.md §4: that section says both new
+        // checks sit between `sdp_origin` and `via_branch`, and also that
+        // "order of evaluation follows score". Those disagree at 95 > 90.
+        // The principle wins: this loop is first-match-wins and the results
+        // are then sorted by score, so a 95 check running after a 90 check
+        // would report a leg that matched both as the weaker strategy at
+        // the weaker score.
+        if !src_related_icids.is_empty() || !src_icids.is_empty() {
+            let related_match = candidate.messages.iter().any(|m| {
+                crate::sip::charging_vector::message_icids(m)
+                    .iter()
+                    .any(|icid| src_related_icids.contains(icid.as_ref()))
+                    || crate::sip::charging_vector::message_related_icids(m)
+                        .iter()
+                        .any(|rel| src_icids.contains(rel.as_ref()))
+            });
+            if related_match {
+                return Some(CorrelationResult {
+                    dialog: candidate,
+                    score: 95,
+                    reason: CorrelationReason::ChargingVectorRelatedIcid,
+                });
+            }
+        }
+
+        // Strategy 1.5: SDP origin tuple (score=90). Between the
+        // correlation headers and the Via branch: it is a real identifier
+        // that the RFC defines as globally unique, but it names the media
+        // session rather than the dialog, and an SBC that re-originates SDP
+        // replaces it.
+        //
+        // A shared tuple counts only when the two legs were open at one
+        // time and the tuple is not shown reused anywhere in the store:
+        // endpoints and SIPp reuse it, so the tuple alone is not the
+        // identifier RFC 8866 section 5.2 says it is. A pair the rule
+        // refuses falls through to the weaker strategies below.
+        if origin_joined.contains(candidate.call_id.as_str()) {
+            return Some(CorrelationResult {
+                dialog: candidate,
+                score: 90,
+                reason: CorrelationReason::SdpOrigin,
+            });
+        }
+
+        // Strategy 1.7: plain RFC 7315 `icid-value` equality (score=85),
+        // between the SDP origin tuple and the Via branch. Reached only
+        // when `related-icid` did not match, so the two reasons stay
+        // distinguishable: this one is "an intermediary carried a
+        // per-dialog identifier onto a second dialog", which no RFC grants.
+        if !src_icids.is_empty() {
+            let icid_match = candidate
+                .messages
+                .iter()
+                .flat_map(crate::sip::charging_vector::message_icids)
+                .any(|icid| src_icids.contains(icid.as_ref()));
+            if icid_match {
+                return Some(CorrelationResult {
+                    dialog: candidate,
+                    score: 85,
+                    reason: CorrelationReason::ChargingVectorIcid,
+                });
+            }
+        }
+
+        // Strategy 2: Via branch overlap (score=80). Scan the candidate's
+        // INVITE branches directly, short-circuiting on the first hit —
+        // no per-candidate Vec allocation.
+        if !src_branches.is_empty() {
+            let branch_overlap = candidate
+                .messages
+                .iter()
+                .filter(|m| m.is_request && m.method.as_ref() == Some(&SipMethod::Invite))
+                .flat_map(|m| m.via_headers())
+                .filter_map(|v| extract_via_branch(v))
+                .any(|b| src_branches.contains(b));
+
+            if branch_overlap {
+                return Some(CorrelationResult {
+                    dialog: candidate,
+                    score: 80,
+                    reason: CorrelationReason::ViaBranch,
+                });
+            }
+        }
+
+        // Strategy 3: Timing heuristic (score=50)
+        if is_invite && candidate.method == SipMethod::Invite {
+            let candidate_ips = [candidate.src_addr, candidate.dst_addr];
+            let ip_overlap = src_ips.iter().any(|ip| candidate_ips.contains(ip));
+            if ip_overlap {
+                let time_diff = (dialog.created_at - candidate.created_at)
+                    .num_milliseconds()
+                    .unsigned_abs();
+                if time_diff <= self.leg_correlation_window_ms {
+                    return Some(CorrelationResult {
+                        dialog: candidate,
+                        score: 50,
+                        reason: CorrelationReason::TimingHeuristic,
+                    });
+                }
+            }
+        }
+        None
     }
 
     /// The Call-IDs of the dialogs that `source` is one media session with by
@@ -2589,38 +2682,72 @@ impl DialogStore {
     /// [`crate::sip::sdp_origin`]: the two were open at one time, and no two
     /// dialogs in the store carrying that tuple were open at one time on one
     /// hop.
-    fn sdp_origin_joins<'a>(&'a self, source: &SipDialog) -> std::collections::HashSet<&'a str> {
+    ///
+    /// One answer per entry of `sources` (empty for `None`), from one pass
+    /// over the store that reads each dialog's SDP origins once: a source's
+    /// own origins are read before the pass and reused as a candidate's, and
+    /// no other dialog's are read when no source carries one.
+    fn sdp_origin_joins_many<'a>(
+        &'a self,
+        sources: &[Option<&SipDialog>],
+    ) -> Vec<std::collections::HashSet<&'a str>> {
         use crate::sip::sdp_origin::{OriginCarrier, joins, origin_reused};
-        let mut joined = std::collections::HashSet::new();
-        let src_keys = dialog_origin_keys(source);
-        if src_keys.is_empty() {
+        type Carriers<'k, 'a> = std::collections::HashMap<
+            &'k crate::sip::sdp::SdpOriginKey,
+            Vec<(&'a str, OriginCarrier)>,
+        >;
+        let src_keys: Vec<std::collections::HashSet<crate::sip::sdp::SdpOriginKey>> = sources
+            .iter()
+            .map(|s| s.map(dialog_origin_keys).unwrap_or_default())
+            .collect();
+        let mut joined = vec![std::collections::HashSet::new(); sources.len()];
+        if src_keys.iter().all(std::collections::HashSet::is_empty) {
             return joined;
         }
-        let src = OriginCarrier::of(source);
-        // Per source tuple: every other dialog that carries it.
-        let mut carriers: std::collections::HashMap<
-            &crate::sip::sdp::SdpOriginKey,
-            Vec<(&'a str, OriginCarrier)>,
-        > = std::collections::HashMap::new();
-        for candidate in self.dialogs.values() {
-            if candidate.call_id == source.call_id {
-                continue;
-            }
-            let keys = dialog_origin_keys(candidate);
-            for k in src_keys.iter().filter(|k| keys.contains(*k)) {
-                carriers
-                    .entry(k)
-                    .or_default()
-                    .push((candidate.call_id.as_str(), OriginCarrier::of(candidate)));
+        // A source's keys, by its Call-ID, to reuse when the pass reaches it.
+        let mut own: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (i, s) in sources.iter().enumerate() {
+            if let Some(s) = s {
+                own.entry(s.call_id.as_str()).or_insert(i);
             }
         }
-        for list in carriers.values() {
-            let mut all: Vec<OriginCarrier> = list.iter().map(|(_, c)| *c).collect();
-            all.push(src);
-            let reused = origin_reused(&all);
-            for (call_id, c) in list {
-                if joins(&src, c, reused) {
-                    joined.insert(*call_id);
+        // Per source, per source tuple: every other dialog that carries it.
+        let mut carriers: Vec<Carriers<'_, 'a>> = vec![Carriers::new(); sources.len()];
+        for candidate in self.dialogs.values() {
+            let read;
+            let keys = match own.get(candidate.call_id.as_str()) {
+                Some(&i) => &src_keys[i],
+                None => {
+                    read = dialog_origin_keys(candidate);
+                    &read
+                }
+            };
+            for ((source, keys_of_source), by_key) in
+                sources.iter().zip(&src_keys).zip(&mut carriers)
+            {
+                let Some(source) = source else { continue };
+                if candidate.call_id == source.call_id {
+                    continue;
+                }
+                for k in keys_of_source.iter().filter(|k| keys.contains(*k)) {
+                    by_key
+                        .entry(k)
+                        .or_default()
+                        .push((candidate.call_id.as_str(), OriginCarrier::of(candidate)));
+                }
+            }
+        }
+        for ((source, by_key), out) in sources.iter().zip(&carriers).zip(&mut joined) {
+            let Some(source) = source else { continue };
+            let src = OriginCarrier::of(source);
+            for list in by_key.values() {
+                let mut all: Vec<OriginCarrier> = list.iter().map(|(_, c)| *c).collect();
+                all.push(src);
+                let reused = origin_reused(&all);
+                for (call_id, c) in list {
+                    if joins(&src, c, reused) {
+                        out.insert(*call_id);
+                    }
                 }
             }
         }
@@ -3406,12 +3533,24 @@ impl UnkeptTail {
     }
 }
 
+// Per-thread count of `dialog_origin_keys` calls, test-only: pins that a
+// correlation over many sources reads each dialog's SDP origins once rather
+// than once per source (thread-local so parallel tests cannot cross-talk).
+#[cfg(test)]
+thread_local! {
+    /// Test-only per-thread count of `dialog_origin_keys` calls.
+    pub(crate) static ORIGIN_KEY_READS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// Every RFC 8866 origin tuple `dialog` carried, read from each message's SDP
 /// by `SipMessage::sdp`, so a multipart body's SDP part counts and a body of
 /// another type does not. A malformed origin line contributes nothing.
 fn dialog_origin_keys(
     dialog: &SipDialog,
 ) -> std::collections::HashSet<crate::sip::sdp::SdpOriginKey> {
+    #[cfg(test)]
+    ORIGIN_KEY_READS.with(|c| c.set(c.get() + 1));
     dialog
         .messages
         .iter()

@@ -4534,7 +4534,7 @@ async fn get_dialog_report(
 ///
 /// Holds the dialog- then stream-store read locks (in that order, the one
 /// `/v1/report` takes, so the two can never deadlock against each other)
-/// while reading the facts and running the analysis; mutates the rate limiter.
+/// while reading the facts and the blind spots; mutates the rate limiter.
 #[cfg(feature = "vcon")]
 #[utoipa::path(
     get,
@@ -4586,7 +4586,7 @@ async fn get_dialog_vcon(
     // every other number in the run is read against.
     let facts =
         crate::analysis::CaptureFacts::observed(&ds, &ss, crate::capture::captured_packets());
-    let analysis = crate::analysis::analyze_with(&ds, &ss, None, &facts);
+    let analysis = crate::analysis::analyze_blind_spots(&facts);
     // The SAME builder the CLI and MCP doors call, with the SAME per-dialog
     // capture id. This door called the signaling-only entry point with a
     // constant id until 0.5.125, so one run answered two ways: an agent asking
@@ -14553,6 +14553,38 @@ mod tests {
         assert_eq!(
             parsed["dialog"][0]["sip_call_id"], "call-1@test",
             "the container must name the Call-ID it was built from: {parsed}"
+        );
+        Ok(())
+    }
+
+    /// `GET /v1/dialogs/{id}/vcon` reads its blind spots from the capture's
+    /// facts, without analyzing every dialog of the capture, and the container
+    /// still carries the (empty) list that says somebody looked.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn dialog_vcon_reads_its_blind_spots_without_analyzing_every_dialog()
+    -> Result<(), TestError> {
+        let state = make_state();
+        populate_dialogs(&state)?;
+        let app = build_router(state);
+
+        crate::analysis::ANALYZE_WITH_CALLS.with(|c| c.set(0));
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/call-1@test/vcon")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK, "the container is served");
+        assert_eq!(
+            crate::analysis::ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            0,
+            "no full capture analysis per request"
+        );
+        // Process-global facts (stored vCons other tests read) may put rows in
+        // the list; what this pins is that the list is there, not `null`.
+        let body = body_to_string(resp.into_body()).await?;
+        assert!(
+            body.contains("\"blind_spots\":[") && !body.contains("\"blind_spots\":null"),
+            "the container carries the list: {body}"
         );
         Ok(())
     }
