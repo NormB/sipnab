@@ -19,8 +19,8 @@ entry that carries them.
   - Do: Ask the relay from a live capture (`-d <device>`), and drop these flags from scripts that read files.
   - Docs: [Ask a media relay about itself](docs/relay-statistics.md)
 - **MCP queries and `/metrics` over every call no longer take 18 seconds on large captures.**
-  - Effect: On 100,000 calls, MCP `aggregate_dialogs` and filtered `search_by_time` take about 30 ms instead of 18 s.
-  - Effect: A `GET /metrics` scrape takes about 0.3 s instead of 18 s; a filtered MCP `export_vcon` takes 1.3 s instead of 20 s.
+  - Effect: At 100,000 dialogs, MCP `aggregate_dialogs` takes 33 ms (was 18,013 ms); filtered `search_by_time` takes 28 ms (was 20,095 ms).
+  - Effect: At 100,000 dialogs, filtered MCP `export_vcon` takes 1,287 ms (was 19,745 ms); `GET /metrics` takes 266 ms (was 18,632 ms).
   - Effect: In the TUI, `i` and `I` (clear dialogs) and `m` (carrier metrics) no longer read every stream once per call.
 
 ### Fixed
