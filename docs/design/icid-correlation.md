@@ -441,7 +441,7 @@ value of writing the section.
 
 **Message retention is not a hazard here, which is not obvious.** The header is
 usually on the initial INVITE, and sipnab drops messages in two places. The
-per-dialog cap at [`:3070-3072`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3070-L3072)<!-- "// Record the message (move instead of clone, capped per D17)" --> drops the *newest*
+per-dialog cap at [`:3093-3095`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3093-L3095)<!-- "// Record the message (move instead of clone, capped per D17)" --> drops the *newest*
 message when full, never the first. `compact_idle`'s
 [`retained_indices`](../../src/sip/dialog_store.rs) at
 [`:997`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L997)<!-- "fn retained_indices(" --> treats the opening request as an anchor
