@@ -16,6 +16,10 @@ entry that carries them.
   - Was: They left out the name-resolution and key-log blocks, so files and runs grew past the limit.
   - Effect: Both limits count every byte of the file on disk.
   - Docs: [Bound, split, and multi-interface captures](docs/cli-reference.md#bound-split-and-multi-interface-captures)
+- **A batch run with `--filter` no longer reads every RTP stream for each SIP message.**
+  - Was: At 100,000 calls, `--filter 'method == INVITE'` ran 31 times the CPU instructions of the same run with no filter.
+  - Effect: A filter on SIP fields reads no streams; a filter on `rtp.*` or a media diagnosis field reads only that call's streams.
+  - Docs: [Filter DSL reference](docs/filter-dsl.md)
 
 ## [0.5.270] - 2026-11-24
 
