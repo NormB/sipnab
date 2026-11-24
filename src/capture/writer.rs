@@ -21,8 +21,9 @@ use pcap_file::Endianness;
 use pcap_file::pcapng::PcapNgWriter as PcapFileNgWriter;
 use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
 use pcap_file::pcapng::blocks::interface_description::{
-    InterfaceDescriptionBlock, InterfaceDescriptionOption,
+    InterfaceDescriptionBlock, InterfaceDescriptionOption, InterfaceTsResolution,
 };
+use pcap_file::pcapng::blocks::opt_common::CommonOption;
 use pcap_file::pcapng::blocks::section_header::{SectionHeaderBlock, SectionHeaderOption};
 
 use super::packet::Packet;
@@ -781,19 +782,19 @@ impl PcapWriter {
                         names.iter().map(|n| Cow::Owned(n.clone())).collect();
                     match ip {
                         std::net::IpAddr::V4(v4) => records.push(Record::Ipv4(Ipv4Record {
-                            ip_addr: Cow::Owned(v4.octets().to_vec()),
+                            ip_addr: *v4,
                             names,
                         })),
                         std::net::IpAddr::V6(v6) => records.push(Record::Ipv6(Ipv6Record {
-                            ip_addr: Cow::Owned(v6.octets().to_vec()),
+                            ip_addr: *v6,
                             names,
                         })),
                     }
                 }
                 let block = NameResolutionBlock {
                     records,
-                    options: vec![NameResolutionOption::Comment(Cow::Borrowed(
-                        "name resolution added by sipnab",
+                    options: vec![NameResolutionOption::Common(CommonOption::Comment(
+                        Cow::Borrowed("name resolution added by sipnab"),
                     ))],
                 };
                 writer
@@ -1190,7 +1191,9 @@ fn create_pcapng_backend(
         SectionHeaderOption::OS(Cow::Borrowed(host_os())),
     ];
     if let Some(note) = provenance {
-        options.push(SectionHeaderOption::Comment(Cow::Owned(note.to_string())));
+        options.push(SectionHeaderOption::Common(CommonOption::Comment(
+            Cow::Owned(note.to_string()),
+        )));
     }
     let section = SectionHeaderBlock {
         endianness: Endianness::native(),
@@ -1229,11 +1232,12 @@ fn build_idb(link_type: i32, name: Option<&str>) -> InterfaceDescriptionBlock<'s
     let mut options = vec![
         InterfaceDescriptionOption::IfDescription(Cow::Owned(format!("{} capture", app_version()))),
         InterfaceDescriptionOption::IfOs(Cow::Borrowed(host_os())),
-        // pcap-file always encodes EPB timestamps as NANOSECOND ticks
-        // (Duration::as_nanos), so the interface must declare 10^-9 —
-        // without this, readers assume the pcapng default of microseconds
-        // and every timestamp is inflated ×1000 (the "year 58484" files).
-        InterfaceDescriptionOption::IfTsResol(9),
+        // pcap-file encodes EPB timestamps at the resolution the interface
+        // declares, and sipnab's timestamps are nanoseconds, so the
+        // interface declares 10^-9. Without the option, readers assume the
+        // pcapng default of microseconds, and pcap-file would cut every
+        // timestamp to microseconds.
+        InterfaceDescriptionOption::IfTsResol(InterfaceTsResolution::NANO),
     ];
     if let Some(name) = name.filter(|n| !n.is_empty()) {
         options.push(InterfaceDescriptionOption::IfName(Cow::Owned(
@@ -2672,11 +2676,11 @@ mod tests {
             let mut reader = PcapNgReader::new(&bytes[..])?;
             let mut v4_names: Vec<String> = Vec::new();
             let mut v6_count = 0;
-            while let Some(Ok(block)) = reader.next_block() {
+            while let Some(Ok((block, _))) = reader.next_block() {
                 if let Some(nrb) = block.into_name_resolution() {
                     for rec in &nrb.records {
                         match rec {
-                            Record::Ipv4(r) if r.ip_addr.as_ref() == [10, 0, 0, 2] => {
+                            Record::Ipv4(r) if r.ip_addr.octets() == [10, 0, 0, 2] => {
                                 v4_names = r.names.iter().map(|n| n.to_string()).collect();
                             }
                             Record::Ipv6(r) => v6_count = r.names.len(),
@@ -2712,13 +2716,15 @@ mod tests {
             let mut reader = PcapNgReader::new(&bytes[..]).map_err(|e| format!("pcapng: {e:?}"))?;
             let mut out = Vec::new();
             while let Some(block) = reader.next_block() {
-                let block = block.map_err(|e| format!("every block parses: {e:?}"))?;
+                let (block, _) = block.map_err(|e| format!("every block parses: {e:?}"))?;
                 if let Some(epb) = block.into_enhanced_packet() {
                     let comments = epb
                         .options
                         .iter()
                         .filter_map(|o| match o {
-                            EnhancedPacketOption::Comment(c) => Some(c.to_string()),
+                            EnhancedPacketOption::Common(
+                                pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+                            ) => Some(c.to_string()),
                             _ => None,
                         })
                         .collect();
@@ -2931,7 +2937,7 @@ mod tests {
                 }
             }
             let (mut if_name, mut if_desc, mut if_os) = (None, None, None);
-            while let Some(Ok(block)) = reader.next_block() {
+            while let Some(Ok((block, _))) = reader.next_block() {
                 if let Some(idb) = block.into_interface_description() {
                     for opt in &idb.options {
                         match opt {
@@ -3195,7 +3201,7 @@ mod tests {
             let mut reader = PcapNgReader::new(&bytes[..])?;
             let mut blocks = Vec::new();
             while let Some(block) = reader.next_block() {
-                let block = block.map_err(|e| format!("valid pcapng block: {e:?}"))?;
+                let (block, _) = block.map_err(|e| format!("valid pcapng block: {e:?}"))?;
                 if let Some(idb) = block.clone().into_interface_description() {
                     let name = idb.options.iter().find_map(|o| match o {
                         InterfaceDescriptionOption::IfName(s) => Some(s.to_string()),

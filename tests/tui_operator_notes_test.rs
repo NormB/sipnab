@@ -108,18 +108,22 @@ fn pcapng_comments(path: &Path) -> Result<(Vec<Vec<String>>, Vec<String>), TestE
         .options
         .iter()
         .filter_map(|o| match o {
-            SectionHeaderOption::Comment(c) => Some(c.to_string()),
+            SectionHeaderOption::Common(
+                pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+            ) => Some(c.to_string()),
             _ => None,
         })
         .collect();
     let mut frames = Vec::new();
     while let Some(block) = reader.next_block() {
-        if let Some(epb) = block?.into_enhanced_packet() {
+        if let Some(epb) = block?.0.into_enhanced_packet() {
             frames.push(
                 epb.options
                     .iter()
                     .filter_map(|o| match o {
-                        EnhancedPacketOption::Comment(c) => Some(c.to_string()),
+                        EnhancedPacketOption::Common(
+                            pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+                        ) => Some(c.to_string()),
                         _ => None,
                     })
                     .collect(),

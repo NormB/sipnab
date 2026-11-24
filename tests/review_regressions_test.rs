@@ -40,7 +40,7 @@ fn exported_secrets_require_an_explicit_mode() -> Result<(), TestError> {
         let mut reader = pcap_file::pcapng::PcapNgReader::new(&bytes[..])?;
         let mut secrets = 0;
         while let Some(block) = reader.next_block() {
-            if let pcap_file::pcapng::Block::Unknown(block) = block?
+            if let (pcap_file::pcapng::Block::Unknown(block), _) = block?
                 && block.type_ == 0x0000000a
             {
                 secrets += 1;
@@ -106,7 +106,7 @@ fn plaintext_export_runs_and_embeds_no_keys() -> Result<(), TestError> {
     let raw = std::fs::read(&output)?;
     let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..])?;
     while let Some(block) = reader.next_block() {
-        if let pcap_file::pcapng::Block::Unknown(block) = block? {
+        if let (pcap_file::pcapng::Block::Unknown(block), _) = block? {
             assert_ne!(block.type_, 0x0000_000a, "a decrypted export holds a DSB");
         }
     }

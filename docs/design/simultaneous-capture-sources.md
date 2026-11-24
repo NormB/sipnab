@@ -447,7 +447,7 @@ Ethernet, no IP, no UDP. That absence is deliberate and documented at
 read `INVITE`'s leading `0x49` as an IPv4 header with IHL 9 and drop every HEP
 message silently. So the bytes are honest and unwritable, not an oversight to
 patch. Classic pcap refuses the second member outright
-([`src/capture/writer.rs:624`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L624)<!-- "if packet.link_type" -->), and *which* member gets refused depends on which
+([`src/capture/writer.rs:625`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L625)<!-- "if packet.link_type" -->), and *which* member gets refused depends on which
 packet arrives first, so the run fails non-deterministically. pcapng is worse:
 it appends a second interface and writes the bare SIP text as if it were a frame
 of the declared link type, producing an export that decodes into something nobody

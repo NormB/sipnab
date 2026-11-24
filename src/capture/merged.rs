@@ -205,61 +205,75 @@ impl MergedPcapNg {
         let mut reader = PcapNgReader::new(bytes)
             .with_context(|| format!("Not a pcapng file: '{}'", path.display()))?;
 
-        // The interfaces of the section being read, in the order their IDBs
-        // appear: the table the file already carries, which libpcap discards
-        // by insisting every interface agree. pcapng numbers interfaces per
-        // section (4.1), so a Section Header Block starts a new table.
-        let mut section: Vec<Interface> = Vec::new();
-        // Every interface's link type, across all sections.
+        /// Enhanced Packet Block type (pcapng 4.3).
+        const EPB: u32 = 0x0000_0006;
+        /// Simple Packet Block type (pcapng 4.4).
+        const SPB: u32 = 0x0000_0003;
+
+        // Every interface's link type, across all sections: the table the
+        // file already carries, which libpcap discards by insisting every
+        // interface agree. The interfaces of the section being read are
+        // pcap-file's state, which a Section Header Block resets (pcapng
+        // numbers interfaces per section, 4.1). pcap-file also applies each
+        // interface's `if_tsresol` and `if_tsoffset` to its frames' times,
+        // and cuts a simple packet at its interface's snap length.
         let mut link_types: Vec<i32> = Vec::new();
         let mut frames: Vec<MergedFrame> = Vec::new();
         let mut skipped: u64 = 0;
 
-        while let Some(block) = reader.next_block() {
-            let block = block.context("Malformed pcapng block")?;
+        while let Some(next) = reader.next_raw_block() {
+            let (raw, state) = next.context("Malformed pcapng block")?;
+            // pcap-file refuses a packet that names an interface its section
+            // does not describe, and a simple packet in a section with no
+            // interface. Both are counted here, not dropped in silence, and
+            // the read goes on.
+            let described = state.interfaces().len();
+            let dangling = match raw.type_ {
+                EPB => packet_interface(&raw.body, state.endianness())
+                    .is_some_and(|id| id as usize >= described),
+                SPB => described == 0,
+                _ => false,
+            };
+            if dangling {
+                skipped += 1;
+                continue;
+            }
+            let block = raw
+                .try_into_block(state)
+                .context("Malformed pcapng block")?;
             match block {
-                Block::SectionHeader(_) => section.clear(),
                 Block::InterfaceDescription(idb) => {
-                    let iface = Interface::of(&idb);
-                    link_types.push(iface.link_type);
-                    section.push(iface);
+                    link_types.push(u32::from(idb.linktype) as i32);
                 }
                 Block::EnhancedPacket(epb) => {
-                    let idx = epb.interface_id as usize;
-                    let Some(iface) = section.get(idx) else {
-                        // A packet naming an interface its section never
-                        // described. Counted, not dropped in silence.
+                    let Some(iface) = state.interfaces().get(epb.interface_id as usize) else {
                         skipped += 1;
                         continue;
                     };
                     let data = epb.data.into_owned();
                     let caplen = data.len() as u32;
                     frames.push(MergedFrame {
-                        ts: iface.time(epb.timestamp),
+                        ts: epoch_to_utc(epb.timestamp),
                         caplen,
                         origlen: epb.original_len,
-                        link_type: iface.link_type,
+                        link_type: u32::from(iface.linktype) as i32,
                         data,
                     });
                 }
                 Block::SimplePacket(spb) => {
                     // A simple packet block names no interface, so it belongs
                     // to interface 0 by definition, and carries no timestamp.
-                    let Some(iface) = section.first() else {
+                    let Some(iface) = state.interfaces().first() else {
                         skipped += 1;
                         continue;
                     };
-                    let mut data = spb.data.into_owned();
-                    // The block holds no captured length (pcapng 4.4): it is
-                    // the wire length cut at the interface's snap length, and
-                    // what follows it in the block is padding.
-                    data.truncate(iface.captured_len(spb.original_len));
+                    let data = spb.data.into_owned();
                     let caplen = data.len() as u32;
                     frames.push(MergedFrame {
                         ts: Utc.timestamp_opt(0, 0).single().unwrap_or_default(),
                         caplen,
                         origlen: spb.original_len,
-                        link_type: iface.link_type,
+                        link_type: u32::from(iface.linktype) as i32,
                         data,
                     });
                 }
@@ -298,80 +312,24 @@ impl MergedPcapNg {
     }
 }
 
-/// What an Interface Description Block says about the frames recorded on it.
-struct Interface {
-    /// The link type every frame of the interface is decoded with.
-    link_type: i32,
-    /// Timestamp ticks per second, from `if_tsresol` (pcapng 4.2): 10^n, or
-    /// 2^n when bit 7 is set; 10^6 when the option is absent. `None` for a
-    /// resolution too fine to count in 128 bits.
-    ticks_per_second: Option<u128>,
-    /// `if_tsoffset` (pcapng 4.2): seconds added to every timestamp.
-    offset_secs: i64,
-    /// The snap length; 0 means no limit.
-    snaplen: u32,
+/// The interface id an Enhanced Packet Block's `body` names, read in the
+/// section's byte order. `None` for a body too short to hold one, which
+/// pcap-file then refuses as malformed.
+fn packet_interface(body: &[u8], endianness: pcap_file::Endianness) -> Option<u32> {
+    let id: [u8; 4] = body.get(..4)?.try_into().ok()?;
+    Some(match endianness {
+        pcap_file::Endianness::Big => u32::from_be_bytes(id),
+        pcap_file::Endianness::Little => u32::from_le_bytes(id),
+    })
 }
 
-impl Interface {
-    /// The interface `idb` describes.
-    fn of(
-        idb: &pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock<'_>,
-    ) -> Self {
-        use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
-        let mut resol = 6u8;
-        let mut offset_secs = 0i64;
-        for option in &idb.options {
-            match option {
-                InterfaceDescriptionOption::IfTsResol(r) => resol = *r,
-                // The field is a signed 64-bit count; pcap-file 2 reads it
-                // unsigned, so the bits are taken back as they were written.
-                InterfaceDescriptionOption::IfTsOffset(s) => offset_secs = *s as i64,
-                _ => {}
-            }
-        }
-        let exponent = u32::from(resol & 0x7F);
-        let ticks_per_second = if resol & 0x80 == 0 {
-            10u128.checked_pow(exponent)
-        } else {
-            1u128.checked_shl(exponent)
-        };
-        Self {
-            link_type: u32::from(idb.linktype) as i32,
-            ticks_per_second,
-            offset_secs,
-            snaplen: idb.snaplen,
-        }
-    }
-
-    /// The time of a frame whose 64-bit timestamp `pcap-file` handed back as
-    /// `raw`.
-    ///
-    /// `pcap-file` 2 reads the timestamp's ticks as nanoseconds whatever the
-    /// interface's resolution, so the tick count is the nanosecond count of
-    /// `raw`, and the interface's resolution and offset are applied here.
-    fn time(&self, raw: std::time::Duration) -> DateTime<Utc> {
-        let ticks = raw.as_nanos();
-        let Some(per_second) = self.ticks_per_second else {
-            return DateTime::<Utc>::default();
-        };
-        let secs = i64::try_from(ticks / per_second).unwrap_or(i64::MAX);
-        let nanos = (ticks % per_second) * 1_000_000_000 / per_second;
-        Utc.timestamp_opt(
-            secs.saturating_add(self.offset_secs),
-            u32::try_from(nanos).unwrap_or(0),
-        )
-        .single()
+/// A frame's time: pcap-file has applied its interface's resolution and
+/// offset and hands back the time since the Unix epoch.
+fn epoch_to_utc(d: std::time::Duration) -> DateTime<Utc> {
+    i64::try_from(d.as_secs())
+        .ok()
+        .and_then(|secs| Utc.timestamp_opt(secs, d.subsec_nanos()).single())
         .unwrap_or_default()
-    }
-
-    /// The captured length of a simple packet `original_len` long on the wire.
-    fn captured_len(&self, original_len: u32) -> usize {
-        if self.snaplen == 0 {
-            original_len as usize
-        } else {
-            original_len.min(self.snaplen) as usize
-        }
-    }
 }
 
 #[cfg(test)]

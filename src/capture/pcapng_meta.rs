@@ -329,21 +329,13 @@ impl PcapngMetadata {
         }
     }
 
-    /// Take every name of one name-resolution record whose address has the
-    /// length its family requires. Other records are ignored.
+    /// Take every name of one IPv4 or IPv6 name-resolution record. Other
+    /// records are ignored.
     fn take_record(&mut self, rec: &pcap_file::pcapng::blocks::name_resolution::Record<'_>) {
         use pcap_file::pcapng::blocks::name_resolution::Record;
-        use std::net::{Ipv4Addr, Ipv6Addr};
         let (ip, names) = match rec {
-            Record::Ipv4(r) if r.ip_addr.len() == 4 => {
-                let o = r.ip_addr.as_ref();
-                (IpAddr::V4(Ipv4Addr::new(o[0], o[1], o[2], o[3])), &r.names)
-            }
-            Record::Ipv6(r) if r.ip_addr.len() == 16 => {
-                let mut a = [0u8; 16];
-                a.copy_from_slice(r.ip_addr.as_ref());
-                (IpAddr::V6(Ipv6Addr::from(a)), &r.names)
-            }
+            Record::Ipv4(r) => (IpAddr::V4(r.ip_addr), &r.names),
+            Record::Ipv6(r) => (IpAddr::V6(r.ip_addr), &r.names),
             _ => return,
         };
         for n in names {
@@ -642,7 +634,7 @@ fn decode_in_section(section: &[u8], block: &[u8]) -> Option<pcap_file::pcapng::
     reader
         .next_block()?
         .ok()
-        .map(pcap_file::pcapng::Block::into_owned)
+        .map(|(block, _)| block.into_owned())
 }
 
 /// Read a u32 from a 4-byte slice in the given byte order.
