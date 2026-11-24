@@ -1671,7 +1671,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 
 | MCP tool | Wraps |
 |---|---|
-| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1825`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1825)<!-- "pub fn iter(&self) -> impl Iterator<Item = &SipDialog> {" -->) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:1278`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1278)<!-- "/// `true` when the dialog" -->) + `expand_alias` ([`src/sip/dsl.rs:899`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L899)<!-- "pub fn expand_alias(alias:" -->) |
+| `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1825`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1825)<!-- "pub fn iter(&self) -> impl Iterator<Item = &SipDialog> {" -->) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:1350`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1350)<!-- "/// `true` when the dialog" -->) + `expand_alias` ([`src/sip/dsl.rs:958`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L958)<!-- "pub fn expand_alias(alias:" -->) |
 | `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1790`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1790)<!-- "pub fn get(&self," -->) + iterate `dialog.messages` + `output::json::message_to_json` |
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:55`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L55)<!-- "pub fn generate_call_report(" -->) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:771`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L771)<!-- "pub fn message_to_json(msg: &SipMessage) -> String {" -->) |
@@ -1737,7 +1737,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |
 | `one_sided_silence` | New analysis on decoded PCM samples from `audio_export`; energy threshold computation |
 | All six tags | Extend existing `MediaDiagnosis` struct in [`src/rtp/diagnosis.rs:239`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs#L239)<!-- "pub struct MediaDiagnosis {" --> (additive — backwards compatible JSON) |
-| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:899`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L899)<!-- "pub fn expand_alias(alias:" --> |
+| Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:958`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L958)<!-- "pub fn expand_alias(alias:" --> |
 | TUI badges | Extend existing badge column in [`src/tui/call_list.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_list.rs) |
 | MCP `find_problems` integration | No code change — it consumes `expand_alias` already (Phase 8.3) |
 
