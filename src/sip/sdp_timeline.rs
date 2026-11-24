@@ -201,7 +201,9 @@ pub(crate) fn track_sdp_read(
 ) {
     let parsed;
     let sdp: &SdpSession = match read {
+        #[cfg(not(target_arch = "wasm32"))]
         sdp::SdpRead::Read(Some(s)) => s,
+        #[cfg(not(target_arch = "wasm32"))]
         sdp::SdpRead::Read(None) => return,
         sdp::SdpRead::Unread => match msg.sdp() {
             Some(s) => {

@@ -23,6 +23,10 @@ pub(crate) enum SdpRead {
     Unread,
     /// [`crate::sip::SipMessage::sdp`] of the message, already computed:
     /// `None` when it holds no SDP or the SDP does not parse.
+    ///
+    /// Only the packet pipeline's classifier builds it, and wasm32 has no
+    /// pipeline, so the variant does not exist there.
+    #[cfg(not(target_arch = "wasm32"))]
     Read(Option<Box<SdpSession>>),
 }
 
@@ -34,7 +38,11 @@ thread_local! {
 }
 
 /// How many times `f` called [`parse_sdp`] on this thread, and its result.
-#[cfg(test)]
+///
+/// Every test that calls it (pipeline, parallel, batch, the TUI file open)
+/// builds only with `native`, so it is gated the same way: a test build
+/// without `native` (`--no-default-features --features tls`) has no reader.
+#[cfg(all(test, feature = "native"))]
 pub(crate) fn sdp_parses_during<T>(f: impl FnOnce() -> T) -> (u64, T) {
     let before = SDP_PARSES.with(std::cell::Cell::get);
     let out = f();
