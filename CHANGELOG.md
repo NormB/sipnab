@@ -21,6 +21,10 @@ entry that carries them.
 
 ### Fixed
 
+- **`--split` and `--autostop filesize:` count name and TLS key blocks in pcapng output.**
+  - Was: They left out the name-resolution and key-log blocks, so files and runs grew past the limit.
+  - Effect: Both limits count every byte of the file on disk.
+  - Docs: [Bound, split, and multi-interface captures](docs/cli-reference.md#bound-split-and-multi-interface-captures)
 - **The F7 key line and the "Save as" prompt are whole at 40 columns.**
   - Was: Both ended at the dialog's edge, so `F1 fields`, `F2 save` and `Esc back` did not show.
   - Effect: Each wraps between keys onto the next row; a long name shows its end and the cursor behind an ellipsis mark.
