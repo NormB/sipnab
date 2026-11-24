@@ -10,6 +10,14 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **Reading a capture file runs fewer instructions per SIP message.**
+  - Effect: The periodic idle-dialog sweep skips its time check for dialogs too short to compact; the output stays the same.
+  - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 0.58% fewer instructions.
+  - Effect: Measured the same way, the 0.5.270 per-message changes run 12.8% fewer instructions on 150,000 packets with RTP.
+  - Limit: callgrind counted the instructions, a count host load does not change; there is no wall-time figure, because the host stayed busy.
+
 ### Fixed
 
 - **`--split` and `--autostop filesize:` count name and TLS key blocks in pcapng output.**
