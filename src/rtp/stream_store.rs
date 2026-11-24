@@ -27,6 +27,10 @@ thread_local! {
     /// Test-only per-thread count of [`StreamStore::streams_for`] calls.
     pub(crate) static STREAMS_FOR_CALLS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
+    /// Test-only per-thread count of the streams [`StreamStore::streams_for`]
+    /// examined to answer: what one call's question costs.
+    pub(crate) static STREAMS_FOR_VISITED: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// Every linked stream of a [`StreamStore`], grouped by the Call-ID it is
@@ -907,6 +911,13 @@ pub struct StreamStore {
     /// O(calls²) overall (SNB-0015). Kept consistent on insert/evict/clear, just
     /// like `ssrc_index`.
     endpoint_index: std::collections::HashMap<(IpAddr, u16), Vec<StreamKey>, ahash::RandomState>,
+    /// Call-ID → keys of the streams linked to that call. Without it,
+    /// [`Self::streams_for`] scanned the whole store for each call, and a
+    /// batch `--filter` reading a stream field asked once per SIP message:
+    /// O(streams) per message. A stream's `associated_dialog` is set only
+    /// while it is unset, so a key joins one call's list, once; the list is
+    /// kept on insert, link, evict, merge and clear, like `ssrc_index`.
+    call_index: std::collections::HashMap<Box<str>, Vec<StreamKey>, ahash::RandomState>,
     /// Provenance side-table: what the far end asserted about a stream, and
     /// whether its jitter estimator was restarted. Separate from `streams` so
     /// a remote assertion can never be mistaken for a local measurement by a
@@ -1004,6 +1015,7 @@ impl StreamStore {
             new_orphan_sockets: Vec::new(),
             orphan_sockets_dropped: 0,
             endpoint_index: std::collections::HashMap::default(),
+            call_index: std::collections::HashMap::default(),
             provenance: std::collections::HashMap::default(),
             link_scan_iters: 0,
             evict_shift_work: 0,
@@ -1490,6 +1502,10 @@ impl StreamStore {
                 .or_default()
                 .push(key.clone());
             self.index_endpoints(&key);
+            // Linked at creation when SDP for this endpoint came first.
+            if let Some(call_id) = stream.associated_dialog.as_deref() {
+                self.index_call(&key, call_id);
+            }
             let (index, _) = self.streams.insert_full(key, stream);
             self.generation += 1;
             let audio_slice = rtp.payload(&parsed.payload);
@@ -1827,13 +1843,63 @@ impl StreamStore {
     /// Call-ID. The one sanctioned way to answer "which streams belong to
     /// this call" — callers used to hand-roll this filter at ten sites.
     ///
-    /// Each call is a pass over every stream. A caller that asks for every
-    /// dialog's streams groups them once with [`Self::by_call`] instead.
+    /// Each call costs the call's own streams, through the per-call index,
+    /// not a pass over the store; the streams come in store order. A caller
+    /// that asks for every dialog's streams can still group them in one pass
+    /// with [`Self::by_call`].
     pub fn streams_for<'a>(&'a self, call_id: &'a str) -> impl Iterator<Item = &'a RtpStream> {
         #[cfg(test)]
         STREAMS_FOR_CALLS.with(|c| c.set(c.get() + 1));
-        self.iter()
-            .filter(move |s| s.associated_dialog.as_deref() == Some(call_id))
+        let mut positions: Vec<usize> = self
+            .call_index
+            .get(call_id)
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(|key| self.streams.get_index_of(key))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Store order, which a re-sort or a merge may have changed since the
+        // keys were indexed.
+        positions.sort_unstable();
+        #[cfg(test)]
+        STREAMS_FOR_VISITED.with(|c| c.set(c.get() + positions.len()));
+        // Debug builds hold the index to the pass it replaces, on every call.
+        debug_assert!(
+            positions.iter().copied().eq(self
+                .streams
+                .values()
+                .enumerate()
+                .filter(|(_, s)| s.associated_dialog.as_deref() == Some(call_id))
+                .map(|(i, _)| i)),
+            "the per-call index for {call_id:?} disagrees with the store"
+        );
+        positions
+            .into_iter()
+            .filter_map(|i| self.streams.get_index(i).map(|(_, stream)| stream))
+    }
+
+    /// Record that the stream `key` is linked to `call_id`. Each caller is a
+    /// stream's one link (its `associated_dialog` going from unset to set) or
+    /// the insert of a key the map does not hold, so a key is never pushed
+    /// twice.
+    fn index_call(&mut self, key: &StreamKey, call_id: &str) {
+        match self.call_index.get_mut(call_id) {
+            Some(keys) => keys.push(key.clone()),
+            None => {
+                self.call_index.insert(call_id.into(), vec![key.clone()]);
+            }
+        }
+    }
+
+    /// Forget that the stream `key` is linked to `call_id`.
+    fn unindex_call(&mut self, key: &StreamKey, call_id: &str) {
+        if let Some(keys) = self.call_index.get_mut(call_id) {
+            keys.retain(|k| k != key);
+            if keys.is_empty() {
+                self.call_index.remove(call_id);
+            }
+        }
     }
 
     /// The RTP packets sipnab measured for one call: the sum of `packet_count`
@@ -1876,6 +1942,7 @@ impl StreamStore {
             {
                 stream.associated_dialog = Some(call_id.to_string());
                 self.generation += 1;
+                self.index_call(key, call_id);
             }
         }
     }
@@ -2123,7 +2190,8 @@ impl StreamStore {
             let Some(stream) = self.streams.get_mut(key) else {
                 continue;
             };
-            if stream.associated_dialog.is_none() {
+            let linked = stream.associated_dialog.is_none();
+            if linked {
                 stream.associated_dialog = Some(call_id.to_string());
                 // The RTP-before-SDP direction of the same binding
                 // `resolve_from_sdp` makes, so it records the same fact. Both
@@ -2169,6 +2237,9 @@ impl StreamStore {
                         .or_default()
                         .jitter_restart_at = Some(at);
                 }
+            }
+            if linked {
+                self.index_call(key, call_id);
             }
         }
     }
@@ -2569,6 +2640,9 @@ impl StreamStore {
             .entry(s.key.ssrc)
             .or_default()
             .push(s.key.clone());
+        if let Some(call_id) = s.associated_dialog.as_deref() {
+            self.index_call(&s.key, call_id);
+        }
         self.streams.insert(s.key.clone(), s);
         self.generation += 1;
     }
@@ -2606,6 +2680,7 @@ impl StreamStore {
         self.audio_release_cursor = 0;
         self.ssrc_index.clear();
         self.endpoint_index.clear();
+        self.call_index.clear();
         self.sdp_endpoints.clear();
         self.rtcp_ports.clear();
         self.endpoints_learned = LearnedColumn::default();
@@ -2772,6 +2847,7 @@ impl StreamStore {
         take(self, &mut streams);
         self.ssrc_index.clear();
         self.endpoint_index.clear();
+        self.call_index.clear();
         self.audio_bytes_retained = 0;
         self.audio_release_cursor = 0;
         for mut other in others {
@@ -2800,6 +2876,9 @@ impl StreamStore {
                 .or_default()
                 .push(key.clone());
             self.index_endpoints(&key);
+            if let Some(call_id) = stream.associated_dialog.as_deref() {
+                self.index_call(&key, call_id);
+            }
             // Carry the stream's provenance across with it: dropping it
             // would silently turn "the far end claimed X" into "nobody
             // reported anything" on every multi-core run.
@@ -2905,14 +2984,21 @@ impl StreamStore {
             let batch = (self.max_streams / 10).max(1).min(self.streams.len());
             self.evict_shift_work += self.streams.len().saturating_sub(batch) as u64;
             let mut freed = 0usize;
+            let mut evicted_links: Vec<(StreamKey, String)> = Vec::new();
             let evicted: Vec<StreamKey> = self
                 .streams
                 .drain(0..batch)
                 .map(|(k, stream)| {
                     freed = freed.saturating_add(buffer_charge(&stream.payload_buffer));
+                    if let Some(call_id) = stream.associated_dialog {
+                        evicted_links.push((k.clone(), call_id));
+                    }
                     k
                 })
                 .collect();
+            for (key, call_id) in &evicted_links {
+                self.unindex_call(key, call_id);
+            }
             self.audio_bytes_retained = self.audio_bytes_retained.saturating_sub(freed);
             self.audio_release_cursor = self.audio_release_cursor.saturating_sub(batch);
             // Counted and said HERE, on the one path that discards, so every
@@ -3592,6 +3678,221 @@ a=rtpmap:96 H264/90000\r\n";
             0,
             "by_call must not scan the store once per call"
         );
+    }
+
+    // ── streams_for by the per-call index ──────────────────────────
+
+    /// A store of `calls` calls with two streams each, plus `orphans`
+    /// streams linked to no call, interleaved in store order.
+    fn many_call_store(calls: u16, orphans: u16) -> StreamStore {
+        let mut store = StreamStore::new(4 * usize::from(calls + orphans) + 16);
+        let at = DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
+        let caller = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        for i in 0..calls + orphans {
+            for leg in 0..2u16 {
+                let port = 20000 + 4 * i + 2 * leg;
+                store.process_rtp(
+                    &make_parsed(port, 40000 + 4 * i + 2 * leg, 160),
+                    &make_rtp_header(0x10_0000 + u32::from(4 * i + leg), 1),
+                    at,
+                );
+                if i < calls {
+                    store.link_to_dialog(caller, port, &format!("call-{i}"));
+                }
+            }
+        }
+        store
+    }
+
+    /// Asking for one call's streams examines that call's streams, not the
+    /// store's: on a store of 1,000 streams the question for a two-stream
+    /// call examines two. Each per-message `--filter 'rtp.packets > 0'`
+    /// examined every stream, which made a 100,000-call batch run 15 times
+    /// slower than the same run with no filter.
+    #[test]
+    fn streams_for_examines_only_the_calls_own_streams() {
+        let store = many_call_store(450, 50);
+        assert_eq!(store.len(), 1000, "fixture size");
+        for (call, want) in [
+            ("call-0", 2),
+            ("call-449", 2),
+            ("call-200", 2),
+            ("no-such-call", 0),
+        ] {
+            STREAMS_FOR_VISITED.with(|c| c.set(0));
+            let found = store.streams_for(call).count();
+            let visited = STREAMS_FOR_VISITED.with(std::cell::Cell::get);
+            assert_eq!(found, want, "{call}: streams found");
+            assert!(
+                visited <= want,
+                "{call}: examined {visited} streams for {want}"
+            );
+        }
+    }
+
+    /// The streams of `call_id` by a pass over the whole store: the answer
+    /// `streams_for` must give, in the same order.
+    fn scanned(store: &StreamStore, call_id: &str) -> Vec<u32> {
+        store
+            .iter()
+            .filter(|s| s.associated_dialog.as_deref() == Some(call_id))
+            .map(|s| s.key.ssrc)
+            .collect()
+    }
+
+    /// Every Call-ID linked in `store`, plus one no stream is linked to.
+    fn every_call(store: &StreamStore) -> Vec<String> {
+        let mut calls: Vec<String> = store
+            .iter()
+            .filter_map(|s| s.associated_dialog.clone())
+            .collect();
+        calls.sort();
+        calls.dedup();
+        calls.push("no-such-call".to_string());
+        calls
+    }
+
+    /// `streams_for` gives each call exactly the streams a pass over the
+    /// store gives, in store order, and the per-call index holds one entry
+    /// per linked stream: none left behind by a stream that left, none twice.
+    fn assert_streams_for_matches_a_scan(store: &StreamStore, step: &str) {
+        for call in every_call(store) {
+            let got: Vec<u32> = store.streams_for(&call).map(|s| s.key.ssrc).collect();
+            assert_eq!(got, scanned(store, &call), "{step}: {call}");
+        }
+        let indexed: usize = store.call_index.values().map(Vec::len).sum();
+        let linked = store
+            .iter()
+            .filter(|s| s.associated_dialog.is_some())
+            .count();
+        assert_eq!(
+            indexed, linked,
+            "{step}: index entries for {linked} linked streams"
+        );
+    }
+
+    /// After each change a store goes through (links, a stream linked at
+    /// creation from SDP seen first, eviction at the cap, a re-sort, a merge
+    /// of worker stores, a re-association, a clear) `streams_for` answers as
+    /// a pass over the store does.
+    #[test]
+    fn streams_for_matches_a_scan_after_every_change() {
+        let at = DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
+        let caller = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let mut store = interleaved_store();
+        assert_streams_for_matches_a_scan(&store, "links after RTP");
+
+        // SDP first: the stream is linked when it is created.
+        store.link_endpoint(caller, 21000, "call-sdp-first", &[]);
+        store.process_rtp(
+            &make_parsed(21000, 31000, 160),
+            &make_rtp_header(0x2000, 1),
+            at,
+        );
+        assert_eq!(
+            scanned(&store, "call-sdp-first").len(),
+            1,
+            "linked at creation"
+        );
+        assert_streams_for_matches_a_scan(&store, "linked at creation");
+
+        // RTP first, then the SDP naming its endpoint links it.
+        store.process_rtp(
+            &make_parsed(21002, 31002, 160),
+            &make_rtp_header(0x2001, 1),
+            at,
+        );
+        store.link_endpoint(caller, 21002, "call-rtp-first", &[]);
+        assert_eq!(
+            scanned(&store, "call-rtp-first").len(),
+            1,
+            "linked by the SDP"
+        );
+        assert_streams_for_matches_a_scan(&store, "linked by SDP after RTP");
+
+        // A second link of a linked endpoint keeps the first call.
+        store.link_to_dialog(caller, 20000, "call-z");
+        assert_streams_for_matches_a_scan(&store, "relink refused");
+
+        // Eviction at the cap (16): the oldest streams leave with their links.
+        for i in 0..20u16 {
+            let port = 22000 + 2 * i;
+            store.process_rtp(
+                &make_parsed(port, 32000 + 2 * i, 160),
+                &make_rtp_header(0x3000 + u32::from(i), 1),
+                at,
+            );
+            store.link_to_dialog(caller, port, &format!("call-e{}", i % 3));
+        }
+        assert!(
+            store.capacity_streams_evicted > 0,
+            "the cap evicted streams"
+        );
+        assert_streams_for_matches_a_scan(&store, "after eviction");
+
+        // A re-sort changes store order; the answer follows it.
+        store.sort_streams_by_key(|s| std::cmp::Reverse(s.key.ssrc));
+        assert_streams_for_matches_a_scan(&store, "after a re-sort");
+
+        // A merge of a worker store, linked and unlinked streams both.
+        let mut other = StreamStore::new(16);
+        other.process_rtp(
+            &make_parsed(23000, 33000, 160),
+            &make_rtp_header(0x4000, 1),
+            at,
+        );
+        other.link_to_dialog(caller, 23000, "call-e1");
+        other.process_rtp(
+            &make_parsed(23002, 33002, 160),
+            &make_rtp_header(0x4001, 1),
+            at,
+        );
+        other.link_endpoint(caller, 23002, "call-merged", &[]);
+        store.merge(other);
+        assert_streams_for_matches_a_scan(&store, "after a merge");
+        store.reassociate_all();
+        assert_streams_for_matches_a_scan(&store, "after re-association");
+
+        store.clear();
+        assert_streams_for_matches_a_scan(&store, "after a clear");
+        store.process_rtp(
+            &make_parsed(24000, 34000, 160),
+            &make_rtp_header(0x5000, 1),
+            at,
+        );
+        store.link_to_dialog(caller, 24000, "call-a");
+        assert_eq!(
+            scanned(&store, "call-a").len(),
+            1,
+            "a new link after the clear"
+        );
+        assert_streams_for_matches_a_scan(&store, "a link after a clear");
+    }
+
+    /// Streams evicted at the cap leave no trace in a call's answer, and a
+    /// call whose streams were all evicted has none.
+    #[test]
+    fn streams_for_forgets_evicted_streams() {
+        let mut store = many_call_store(8, 0);
+        let at = DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
+        // Cap is 4 * 8 + 16 = 48; 40 more streams evict the oldest batches.
+        for i in 0..40u16 {
+            store.process_rtp(
+                &make_parsed(26000 + 2 * i, 36000 + 2 * i, 160),
+                &make_rtp_header(0x6000 + u32::from(i), 1),
+                at,
+            );
+        }
+        assert!(
+            store.capacity_streams_evicted > 0,
+            "the cap evicted streams"
+        );
+        assert_eq!(
+            store.streams_for("call-0").count(),
+            0,
+            "call-0's streams were the oldest"
+        );
+        assert_streams_for_matches_a_scan(&store, "after eviction");
     }
 
     /// Build a PT 0 (PCMU) RtpHeader with a 160-ticks-per-packet timestamp.

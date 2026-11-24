@@ -26,9 +26,9 @@ entry that carries them.
 
 ### Fixed
 
-- **A batch run with a `--filter` on SIP fields reads no RTP streams per message.**
-  - Was: Each SIP message read every RTP stream in the capture, whatever fields the filter named.
-  - Effect: A filter that names no `rtp.*` field and no media diagnosis field, such as `method == INVITE`, reads no streams.
+- **A batch run with `--filter` no longer reads every RTP stream for each SIP message.**
+  - Was: At 100,000 calls, `--filter 'method == INVITE'` ran 31 times the CPU instructions of the same run with no filter.
+  - Effect: A filter on SIP fields reads no streams; a filter on `rtp.*` or a media diagnosis field reads only that call's streams.
   - Docs: [Filter DSL reference](docs/filter-dsl.md)
 - **The F7 key line and the "Save as" prompt are whole at 40 columns.**
   - Was: Both ended at the dialog's edge, so `F1 fields`, `F2 save` and `Esc back` did not show.
