@@ -99,9 +99,9 @@ jobs:
       uses: ./.github/actions/pinned-download
       with:
         name: codeql-bundle
-        version: 2.27.5
-        sha256: 141e6eb4e99c8498a1258e282e6f7b59c747b4b1a7eabc7cbf7d1aa92792edf0
-        url: https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.5/codeql-bundle-linux64.tar.zst
+        version: 2.27.6
+        sha256: ebdb5704296af9751b378a03b24fe1f7ede5727455905bb64a9a82939beb1b4b
+        url: https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.6/codeql-bundle-linux64.tar.zst
         file: codeql-bundle-linux64.tar.zst
 
     # Initializes the CodeQL tools for scanning.
