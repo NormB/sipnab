@@ -2372,8 +2372,38 @@ fn tls_decrypt_guidance(
     mapped_libs: &[String],
 ) -> Vec<String> {
     let mut lines = late_hold_guidance(tls);
+    lines.extend(tls_bound_guidance(tls));
     lines.extend(unread_guidance(tls, mapped_libs));
     lines
+}
+
+/// What the TLS decryptor dropped to stay within its memory bounds.
+///
+/// Said on every run in which a bound dropped something, decrypting or not,
+/// for the reason [`late_hold_guidance`] is: a bound is reached only by a run
+/// long or busy enough to have worked for a while. One line, because the
+/// three counts have one remedy: a shorter run, or a tap that sees fewer TLS
+/// connections.
+fn tls_bound_guidance(tls: &crate::capture::TlsDecryptReport) -> Option<String> {
+    if tls.keylog_entries_dropped == 0 && tls.handshakes_dropped == 0 && tls.sessions_evicted == 0 {
+        return None;
+    }
+    Some(format!(
+        "sipnab dropped TLS key material to stay within its memory bounds: {} key log \
+         entries no session had used ({} kept at most), {} ServerHello message(s) no key \
+         had arrived for ({} kept at most), {} session(s) unused the longest ({} kept at \
+         most). Records of those connections were not decrypted. Split a long run into \
+         shorter ones, or capture fewer TLS connections at once.",
+        tls.keylog_entries_dropped,
+        // The bound is never below the default; a report no decryptor made
+        // carries zero.
+        tls.keylog_entry_bound
+            .max(crate::capture::MAX_KEYLOG_ENTRIES),
+        tls.handshakes_dropped,
+        crate::capture::MAX_OBSERVED_HANDSHAKES,
+        tls.sessions_evicted,
+        crate::capture::MAX_TLS_SESSIONS,
+    ))
 }
 
 /// What the late-keylog hold discarded, and what it was still holding when the
@@ -17454,6 +17484,113 @@ mod tests {
     /// lines in full, as this function renders them, so a reader can match
     /// the text a run prints.
     ///
+    /// SUCCESS. A run that dropped TLS key material to a bound says how much
+    /// of each kind and the bound, even when everything it kept decrypted.
+    #[test]
+    fn a_run_that_reached_a_tls_bound_says_what_it_dropped() {
+        let mut report = tls_report(1, 12, 12);
+        report.keylog_entries_dropped = 4;
+        report.handshakes_dropped = 2;
+        report.sessions_evicted = 3;
+        let joined = tls_decrypt_guidance(&report, &[]).join("\n");
+        assert!(
+            joined.contains("4 key log entries no session had used (65536 kept at most)"),
+            "keys: {joined}"
+        );
+        assert!(
+            joined.contains("2 ServerHello message(s)"),
+            "handshakes: {joined}"
+        );
+        assert!(
+            joined.contains("3 session(s) unused the longest (16384 kept at most)"),
+            "sessions: {joined}"
+        );
+    }
+
+    /// FAILURE. One count alone is enough for the line.
+    #[test]
+    fn one_tls_bound_count_alone_gives_the_line() {
+        let mut report = tls_report(1, 12, 12);
+        report.sessions_evicted = 1;
+        assert!(
+            tls_bound_guidance(&report).is_some(),
+            "a session eviction alone is said"
+        );
+    }
+
+    /// FAILURE. A dropped ServerHello alone is enough for the line.
+    #[test]
+    fn a_dropped_server_hello_alone_gives_the_tls_bound_line() {
+        let mut report = tls_report(1, 12, 12);
+        report.handshakes_dropped = 1;
+        assert!(
+            tls_bound_guidance(&report).is_some_and(|l| l.contains("1 ServerHello")),
+            "a dropped ServerHello alone is said"
+        );
+    }
+
+    /// FAILURE. A dropped key log entry alone is enough for the line.
+    #[test]
+    fn a_dropped_key_log_entry_alone_gives_the_tls_bound_line() {
+        let mut report = tls_report(1, 12, 12);
+        report.keylog_entries_dropped = 1;
+        assert!(
+            tls_bound_guidance(&report).is_some_and(|l| l.contains("1 key log entries")),
+            "a dropped key log entry alone is said"
+        );
+    }
+
+    /// SUCCESS. The line puts each count beside its own bound.
+    #[test]
+    fn the_tls_bound_line_puts_each_count_beside_its_bound() {
+        let mut report = tls_report(1, 12, 12);
+        report.keylog_entries_dropped = 7;
+        report.handshakes_dropped = 8;
+        report.sessions_evicted = 9;
+        let line = tls_bound_guidance(&report).unwrap_or_default();
+        for part in [
+            format!(
+                "7 key log entries no session had used ({} kept at most)",
+                crate::capture::MAX_KEYLOG_ENTRIES
+            ),
+            format!(
+                "8 ServerHello message(s) no key had arrived for ({} kept at most)",
+                crate::capture::MAX_OBSERVED_HANDSHAKES
+            ),
+            format!(
+                "9 session(s) unused the longest ({} kept at most)",
+                crate::capture::MAX_TLS_SESSIONS
+            ),
+        ] {
+            assert!(line.contains(&part), "{part:?} missing from {line:?}");
+        }
+    }
+
+    /// EDGE. A key log read at startup larger than the default bound is the
+    /// bound; the line says the bound the run kept, not the default.
+    #[test]
+    fn the_tls_bound_line_says_the_key_bound_a_large_startup_file_set() {
+        let mut report = tls_report(1, 12, 12);
+        report.keylog_entries_dropped = 2;
+        report.keylog_entry_bound = 100_000;
+        let line = tls_bound_guidance(&report).unwrap_or_default();
+        assert!(
+            line.contains("2 key log entries no session had used (100000 kept at most)"),
+            "the bound the run kept: {line:?}"
+        );
+    }
+
+    /// EDGE. A run that dropped nothing to a bound says nothing about bounds.
+    #[test]
+    fn a_run_within_every_tls_bound_says_nothing_about_them() {
+        let report = tls_report(1, 12, 12);
+        assert_eq!(
+            tls_bound_guidance(&report),
+            None,
+            "nothing dropped, no line"
+        );
+    }
+
     /// The pages once quoted the eviction line cut off after its bounds,
     /// which dropped the advice the line ends with. Whitespace is collapsed
     /// on both sides because the pages wrap the quote across lines.

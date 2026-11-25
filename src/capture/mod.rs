@@ -56,6 +56,8 @@ pub mod input_set;
 
 #[cfg(feature = "tls")]
 pub mod keylog_source;
+#[cfg(feature = "tls")]
+pub(crate) mod keylog_store;
 
 // Which libpcap this process runs and which alternate backends it names —
 // the one answer `--version`, the TUI help, MCP and REST all report. Native
@@ -685,6 +687,22 @@ pub struct TlsDecryptReport {
     /// once it has dropped one it can no longer say that an entry matches
     /// none. A reader must not treat `None` as zero.
     pub keylog_unmatched_entries: Option<usize>,
+    /// Key log entries dropped to stay within [`MAX_KEYLOG_ENTRIES`] before
+    /// any session was derived from them.
+    ///
+    /// Entries whose session already existed are dropped first and are not
+    /// counted: the session holds their keys.
+    pub keylog_entries_dropped: u64,
+    /// Most key log entries the decryptor held: [`MAX_KEYLOG_ENTRIES`], or
+    /// the entry count of a larger key log read at startup, which is held
+    /// whole. Zero when no decryptor made the report.
+    pub keylog_entry_bound: usize,
+    /// ServerHello messages dropped to stay within
+    /// [`MAX_OBSERVED_HANDSHAKES`] before a key arrived for them.
+    pub handshakes_dropped: u64,
+    /// Sessions dropped to stay within [`MAX_TLS_SESSIONS`]. Records of those
+    /// connections can no longer be opened.
+    pub sessions_evicted: u64,
     /// ApplicationData record headers a run with no TLS key saw.
     ///
     /// A run with no `--keylog`, `--keylog-fd` or `--tls-key` installs no
@@ -706,6 +724,29 @@ pub struct TlsDecryptReport {
 /// material plus the set's own overhead. Defined here, beside the report that
 /// documents it, so the reporting path compiles without the `tls` feature.
 pub const MAX_REMEMBERED_CLIENT_HELLOS: usize = 65_536;
+
+/// Key log entries the TLS decryptor holds that arrived during the run.
+///
+/// A `--keylog-watch` producer and Decryption Secrets Blocks add keys for as
+/// long as a run lasts. An entry is about 200 bytes, so this is about 13 MiB.
+/// A key log file read at startup is held whole even when it is larger; the
+/// bound then is that file's entry count. Entries whose session already exists
+/// are dropped first and lose nothing, because the session holds the keys.
+pub const MAX_KEYLOG_ENTRIES: usize = 65_536;
+
+/// ServerHello messages the TLS decryptor keeps for TLS 1.2 key derivation.
+///
+/// One arrives per TLS connection. A ServerHello whose session exists is not
+/// needed any more and is dropped at once; this bounds the rest, which are
+/// handshakes no key has arrived for yet.
+pub const MAX_OBSERVED_HANDSHAKES: usize = 4096;
+
+/// TLS sessions the decryptor keeps at once.
+///
+/// Each record is tried against the sessions in turn, so the cost of every
+/// record grows with this as well as the memory. When it is reached, the
+/// sessions that opened a record longest ago are dropped.
+pub const MAX_TLS_SESSIONS: usize = 16_384;
 
 /// Total ciphertext the late-keylog hold may keep across every session at once.
 ///
@@ -860,6 +901,13 @@ pub fn published_tls_decrypt() -> Option<TlsDecryptReport> {
         client_hellos_seen: 0,
         server_hellos_seen: 0,
         keylog_unmatched_entries: None,
+        // The bound counts feed the end-of-run guidance only, like the
+        // handshake counts above; a live run says each one in a warning the
+        // first time it happens.
+        keylog_entries_dropped: 0,
+        keylog_entry_bound: 0,
+        handshakes_dropped: 0,
+        sessions_evicted: 0,
         // A decryptor is installed, so the run has a key source.
         unkeyed_app_data_records: 0,
     })

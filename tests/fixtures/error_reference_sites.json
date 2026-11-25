@@ -53,6 +53,7 @@
       "carries": [
         "sipnab discarded {} TLS record(s) held from before a key arrived: the late-decrypt hold is bounded ({} MiB total, {} record(s) per direction, {}s), and it filled before any key matched them. Start the key source before the capture, or expect the first message of a call to be missing.",
         "{} TLS record(s) were still waiting when the run ended: no key ever arrived for them. Nothing was discarded and starting the capture earlier would not have helped -- the key source never produced those secrets.",
+        "sipnab dropped TLS key material to stay within its memory bounds: {} key log entries no session had used ({} kept at most), {} ServerHello message(s) no key had arrived for ({} kept at most), {} session(s) unused the longest ({} kept at most). Records of those connections were not decrypted. Split a long run into shorter ones, or capture fewer TLS connections at once.",
         "sipnab loaded {} keylog line(s) and built no session from any of them, so the {} TLS application-data record(s) in this capture went unread.",
         "The handshake is missing: this capture holds no ClientHello and no ServerHello. A TLS 1.2 key log gives the master secret; the server random and cipher suite that expand it into record keys are in the ServerHello, and a capture that started after the connection did never saw one. Nothing later in the capture can supply them. A TLS 1.3 key log gives traffic secrets and needs no handshake, and sipnab builds a session from it only when it holds both the CLIENT_TRAFFIC_SECRET_0 and the SERVER_TRAFFIC_SECRET_0 line of one connection.",
         "For TLS 1.2, capture the handshake: restart the connection while the capture is running, or capture continuously from before the connections you want to read. For TLS 1.3, use a key log that holds both traffic secret lines.",
@@ -83,7 +84,7 @@
         "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061).",
         "Tip: Use 'sipnab -N -I file.pcap --hexdump' to inspect raw packet content."
       ],
-      "why": "tls_decrypt_guidance (late_hold_guidance, unread_guidance) and no_sip_guidance in batch.rs build every line from literals."
+      "why": "tls_decrypt_guidance (late_hold_guidance, tls_bound_guidance, unread_guidance) and no_sip_guidance in batch.rs build every line from literals."
     },
     {
       "file": "src/app/batch.rs",
