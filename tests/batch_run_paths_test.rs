@@ -2114,6 +2114,11 @@ fn run_end_unopenable_output_exits_1() -> Result<(), TestError> {
     Ok(())
 }
 
+/// Linux-gated, not `cfg(unix)`: `/dev/full` is a Linux device and macOS is
+/// also unix. On a host without it, `-O /dev/full` never reaches a failed
+/// write, so the test would not test the path its name gives.
+/// macOS has no `/dev/full`; this exit path is still covered on Linux.
+#[cfg(target_os = "linux")]
 #[test]
 fn run_end_output_write_failure_exits_1() -> Result<(), TestError> {
     let run = sipnab(&["-N", "-I", SIP_CALL, "-O", "/dev/full"])?;
@@ -2126,6 +2131,10 @@ fn run_end_output_write_failure_exits_1() -> Result<(), TestError> {
     Ok(())
 }
 
+/// Linux-gated for `/dev/full`, as above: on macOS opening it fails with
+/// `NotFound` before sipnab starts (CI run 45520999488, macOS shard 2).
+/// macOS has no `/dev/full`; this exit path is still covered on Linux.
+#[cfg(target_os = "linux")]
 #[test]
 fn run_end_stdout_write_failure_exits_1() -> Result<(), TestError> {
     let full = std::fs::OpenOptions::new().write(true).open("/dev/full")?;
