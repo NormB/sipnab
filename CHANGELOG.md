@@ -18,6 +18,10 @@ entry that carries them.
   - Limit: A socket the capture holds no stream for reads `not_captured`, never 0.
   - Docs: [Read the rate media arrives at](docs/relay-statistics.md#read-the-rate-media-arrives-at)
   - Credit: Inspired by irontec/sngrep#581.
+- **sipnab.com publishes its security contact at `/.well-known/security.txt`.**
+  - Effect: Scanners and researchers find the reporting address and the policy by [RFC 9116](https://www.rfc-editor.org/rfc/rfc9116.html), where the site answered 404 before.
+  - Limit: The file carries an `Expires` date, and the project renews it before that date.
+  - Docs: [Report a security problem](docs/install.md#report-a-security-problem)
 
 ### Changed
 

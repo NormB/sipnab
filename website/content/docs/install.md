@@ -35,6 +35,7 @@ minute.
 | Move to a newer release | [Upgrade sipnab](#upgrade-sipnab) |
 | Take it off this machine | [Uninstall it](#uninstall-it) |
 | Fix an install that failed | [When something does not work](#when-something-does-not-work) |
+| Tell the project about a vulnerability | [Report a security problem](#report-a-security-problem) |
 
 ## Before you start
 
@@ -1769,6 +1770,25 @@ Remove it yourself:
 ```bash
 sudo rm -rf /etc/sipnab
 ```
+
+## Report a security problem
+
+Send a vulnerability report by email to `security@sipnab.com`, never as a
+public issue. [The security policy](https://github.com/NormB/sipnab/blob/main/SECURITY.md)
+says what to include and how long each stage takes.
+
+Scanners and researchers can read the same address from the site's
+[RFC 9116](https://www.rfc-editor.org/rfc/rfc9116.html) file. You need an
+HTTPS client such as `curl`, and nothing changes on your systems.
+
+```bash
+curl -sS https://sipnab.com/.well-known/security.txt
+```
+
+- The answer names `Contact: mailto:security@sipnab.com` and a `Policy` link
+  to the security policy.
+- Its `Expires` date is in the future. A date in the past means the file is
+  stale: email the address above anyway, and say so in the report.
 
 ## Next steps
 
