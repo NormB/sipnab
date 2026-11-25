@@ -12,7 +12,7 @@ entry that carries them.
 
 ### Changed
 
-- **Changelog sections 0.5.189 down to 0.5.170 are outlines too.**
+- **Changelog sections 0.5.189 down to 0.5.165 are outlines too.**
   - Effect: each entry says what changed, what to do and where the detail is; entries about hooks, CI and tests are removed.
   - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
 
@@ -4553,925 +4553,119 @@ entry that carries them.
 
 ### Added
 
-- **`--relay-compare <CALL-ID>` compares a relay's per-call count against
-  sipnab's own (ST7/C4).**
-  - This is the one place two tiers meet in one answer.
-  - It is a comparison, never a sum. It shows two counts, both labeled:
-    - The relay's `totals.RTP.packets` for the call (`relay_reported`).
-    - sipnab's count of the RTP it captured for the call (`sipnab_measured`).
-  - It adds a word verdict and a direction-aware note.
-  - `ready_comparison` keeps zero and absent distinct (ST9).
-    - A relay that does not hold the call is reported as absent.
-    - A call sipnab captured no RTP for is reported as absent.
-    - Neither is compared against a made-up zero.
-  - The note explains a gap in the direction it occurred:
-    - An undercount points at `capture_health`.
-    - An overcount names the relay hairpin. A capture that sees both sides counts each packet twice.
-  - It runs after capture, when sipnab's tally is final.
-  - Verified live against the harness: relay 1998 vs sipnab 3980 across 4 streams.
-    - That is the hairpin doubling that the note now names.
-  - It has the same live-source gate as `--relay-stats`.
-
-- **`--relay-stats-list` lists which statistics a relay knows (ST7/C3).**
-  - The key set is version-specific, so "what can I ask for?" is a real question.
-    - Without this flag, a caller learns a name is absent only by asking for it and failing.
-  - sipnab obtains the answer by asking the relay, never from a table built into sipnab.
-    - For rtpengine, it is the keys of a `statistics` reply.
-  - The header says how the set was determined.
-    - So nobody mistakes a list the relay enumerated for a set probed by what did not refuse.
-  - It shows names only, no values. A value would make it a different capability.
-  - Verified live against the harness: 251 names, no values leaked.
-  - It has the same live-source gate as `--relay-stats`.
-
-- **`--relay-stats-call <CALL-ID>` adds per-call relay statistics (ST7/C2).**
-  - It shows the relay's own counters for one call:
-    - Per-stream and per-SSRC packet and byte counts.
-    - RTP and RTCP totals.
-  - It fetches them with `query`.
-  - It flattens and tiers them through the same `relay_reported` path that the relay-wide form uses.
-  - It prints them under a header that names the call.
-  - A relay that does not hold the call answers in its own words, not with an invented not-found.
-  - Verified live against the harness (138 per-call keys).
-  - A regression test over a captured per-call reply pins it.
-  - It has the same live-source gate as `--relay-stats`.
-
-- **The CLI can ask a relay for its own statistics: `--relay-stats` (ST7/C1).**
-  - It needs `--rtpengine-control <addr>` and a live source.
-  - It fetches the relay's `statistics` and tiers every counter `relay_reported`.
-  - It prints them under a header that names the relay, the moment asked, and the tier once.
-  - It reports two cases with the ST-S4 classifications:
-    - A file-backed run prints why it will not ask (`not_permitted`).
-    - A run with no relay says to name one (`not_configured`).
-  - The decision is a pure, tested function.
-  - The fetch was verified end to end against the harness rtpengine. It printed its 251 real counters.
+- **`--relay-compare <CALL-ID>` compares a relay's per-call count with sipnab's.**
+  - Effect: it shows the relay's `totals.RTP.packets` (`relay_reported`) beside sipnab's captured RTP count (`sipnab_measured`), with a word verdict, never a sum.
+  - Effect: a note explains the gap: a lower count points at `capture_health`, a higher one names the relay hairpin a two-sided capture counts twice.
+  - Limit: a call the relay does not hold, or one with no captured RTP, is absent, never a zero; it runs after capture ends.
+  - Limit: it has the same live-source gate as `--relay-stats`.
+- **`--relay-stats-list` lists which statistics a relay knows.**
+  - Effect: names only, no values, as the relay enumerates them (for rtpengine, the keys of a `statistics` reply), never from a table in sipnab.
+  - Effect: the header says how sipnab determined the set.
+  - Limit: it has the same live-source gate as `--relay-stats`.
+- **`--relay-stats-call <CALL-ID>` shows one call's relay statistics.**
+  - Effect: the relay's per-stream and per-SSRC packet and byte counts and RTP and RTCP totals, tiered `relay_reported`, under a header naming the call.
+  - Limit: a relay that does not hold the call answers in its own words; same live-source gate as `--relay-stats`.
+- **`--relay-stats` asks a relay for its own statistics.**
+  - Do: it needs `--rtpengine-control <addr>` and a live source.
+  - Effect: sipnab tiers every counter of the relay's `statistics` as `relay_reported`, under a header naming the relay, the moment asked and the tier.
+  - Limit: a file-backed run says why it does not ask (`not_permitted`); a run with no relay says to name one (`not_configured`).
 
 ### Fixed
 
-- **`parse_statistics_reply` double-stripped the cookie on the live path.**
-  - The transport (`framed_reply_body`) already strips and validates the ng cookie.
-  - The parser then stripped a cookie again and failed with "no cookie separator".
-    - So `statistics` never parsed against a real relay.
-  - The ST2 fixture test masked this. It passed the raw datagram, which the spurious strip happened to handle.
-  - The parser now decodes the bencode alone.
-  - The tests feed it what the transport yields.
-  - Two regressions pin that the parser refuses a framed datagram.
-    - So the strip cannot creep back.
-
-- **A gate that fails the build when a commit attributes an AI.**
-  - The user's standing rule is that commits carry none of these:
-    - An assistant co-author.
-    - A session link.
-    - A "generated with" line.
-  - A mid-session instruction has twice injected exactly those, and they were wrongly followed.
-  - `no_commit_attribution_test` scans recent commit messages and fails on any such form.
-  - It runs in the pre-push hook, so it catches an attributed commit before a push.
-  - Twelve tests watch it.
-    - They hold the detector to catching each form.
-    - They hold it to leaving an honest message alone: one that merely names a tool in prose, or credits a human co-author.
-  - It does not claim to prevent recurrence absolutely. A deliberate bypass can defeat any gate.
-  - It makes recurrence loud.
-
-- **ST-S1's three-state wire rule is single-sourced in `resolve_for_wire`.**
-  - Every surface must render tiered statistics the same way:
-    - A counted value occupies a key, a counted zero included.
-    - A refusal is listed separately with the relay's own code.
-    - A not-asked statistic is omitted entirely, never a zero.
-  - Four surfaces could each reimplement that partition, and one could eventually render a not-asked key as zero.
-  - Instead, `resolve_for_wire` partitions `TieredStatistic`s into `present` values and `refusals` once.
-  - Four tests, mutation-proven, cover it.
-    - One checks that `E68` and `E50` both survive distinct.
-
-- **The five failure classifications (ST-S4) are implemented as a vocabulary.**
-  - `StatisticsOutcome` names the ways an ask for relay statistics does not yield a trustworthy value:
-    - `not_configured`.
-    - `not_permitted`.
-    - `unreachable`.
-    - `refused`.
-    - `suspect`.
-  - They stay distinct because each sends an operator somewhere different.
-  - `responsibility()` says where:
-    - The operator's invocation.
-    - The network or relay.
-    - The request.
-    - The answer.
-  - `suspect` is the state ST-S4 added, for an answer that is present and wrong.
-  - Four tests, mutation-proven, cover it.
-    - One holds the names to the ST-S4 catalog, so neither drifts.
-
-- **ST3 is implemented: the statistics rtpproxy reports, in the same tier
-  vocabulary.**
-  - `info_statistics` reads the five `label: value` lines of an `I` reply into the relay's own labels.
-    - It keeps them verbatim. `active streams` has no `G` identifier to normalize to.
-    - It skips any line that is not `label: value`, empty sides included.
-  - `query_statistics` names the five positional fields of a `Q` reply `ttl npkts_ina npkts_ino nrelayed ndropped`.
-    - It uses the binary's own order.
-    - It REFUSES any reply that is not exactly five integers.
-    - It does not label a counter from whatever sat in the position.
-  - Both feed the same `relay_reported` tierer that rtpengine's statistics do.
-    - One adapter serves both relays.
-    - RP2 forbids a second relay becoming a second code path.
-  - The reply shapes are inline literals captured from the harness rtpproxy.
-  - The `Q` test checks the identity `nrelayed == npkts_ina + npkts_ino`.
-    - ST-S2 used it to confirm the field order.
-
-- **ST2 is implemented: a relay's own statistics, tiered and kept by name.**
-  - `relay_reported` turns the `(name, value)` pairs that rtpengine's `statistics` already yields into `TieredStatistic`s.
-    - Every one is `relay_reported` and `Counted`.
-    - The name stays unaltered.
-  - `lookup` answers by the relay's own name.
-    - An absent name reads as `NotAsked`.
-    - It does not read as a zero or as the first value that happened to be there.
-
-  - The tests drive it against a real 251-counter reply.
-    - The reply was captured from the harness rtpengine (12.5.1.31-1) and committed as a fixture.
-    - So the chain from bencode to tiered reading is proven without a running relay.
-    - This includes that `uptime` survives as its digits, uncoerced. That value is a bencode string that is really an integer.
-
-- **ST1 is implemented: the statistics vocabulary, `src/stats_vocab.rs`.**
-  - This is the foundation the rest of the relay-statistics work depends on.
-  - It was built before any statistic is fetched. Getting it wrong makes every later number untrustworthy.
-  - It names three tiers once: `relay_reported`, `sipnab_measured`,
-    `endpoint_reported`.
-  - `blends_tiers` encodes the cross-tier prohibition as code.
-  - A three-state `StatisticValue` (counted, not-asked, refused) keeps three facts distinct:
-    - A counted zero.
-    - An unasked key.
-    - A refusal with the relay's own code.
-  - It is portable like `relay_vocab`.
-    - Two of the three tiers are not relay concepts.
-    - The wasm analyzer reports measured figures with no control plane in sight.
-  - Six tests cover it, each mutation-proven.
-    - One holds the code's wire names to the ST-S1 spec, so neither can drift.
-
-- **The last two gating specs are written: ST-S5 and PAR-S1.**
-  - ST-S5 (`relay-statistics-documentation.md`) says what the docs and site must teach about relay statistics. Per capability, it covers:
-    - The operator's real question.
-    - The command that answers it.
-    - What the answer does NOT tell them.
-  - The tier caveat is half the recipe, not a footnote.
-  - PAR-S1 (`surface-parity-definition.md`) defines parity so a gate can check it:
-    - Every capability is on every surface it BELONGS on.
-    - Each surface has a question that a capability must pass.
-    - Every absence is either a gap or a recorded decision.
-  - All six statistics specs (ST-S1 through ST-S5) and the parity spec now exist before any of the implementation they gate.
-
-### Fixed
-
-- **A shared-global statistics tally was tested racily, and it turned CI red.**
-  - `recording_commands_do_not_inflate_the_media_tally` read the process-global media-creating counter before and after decoding.
-  - Every test in the binary shares that counter.
-
-    - So a concurrent test that decoded an ordinary-media command moved it between the two reads.
-    - It was green locally and red in CI under different parallelism.
-  - It now asserts the classification `creates(verb)` that gates the counter, not the counter itself.
-  - Three lib tests had the same latent race:
-    - `ng.rs` reset the global and expected exactly 1. This poisoned every other reader.
-    - `api.rs` asserted an absolute value.
-  - Both are monotonic deltas now.
-  - The test-only `reset_media_creating_count`, the poison source, is removed.
-
-- **The homepage's section ledes failed a WCAG contrast check, and the
-  documentation gate acted on the host.**
-  - The two new ledes styled their inline links with `$link` on `$text-dim`, 1.79:1.
-    - WCAG 1.4.1 wants 3:1 for a link told apart by color alone.
-    - axe reported both, serious, and the Accessibility job went red.
-  - All three section ledes now share one rule that underlines their links.
-  - `site_journey_test` gates the class: a dimmed paragraph that carries a color-only link fails.
-  - Separately, `doc_commands_run_test` had three defects of its own:
-    - It passed a trailing `# comment` to sipnab as arguments.
-    - It mistook `--capture-profile <PROFILE>` for a path flag, because "PROFILE" contains "FILE".
-    - It classified `--setup-caps` as runnable. So on a host with passwordless sudo, it ran `sudo setcap` on the binary four times.
-  - The gate now does these things:
-    - It strips shell comments.
-    - It matches value-name tokens exactly.
-    - It runs every command inside a per-command sandbox directory.
-    - It keeps binds on loopback and sends off the network.
-    - It never runs a command that escalates privilege or opens a GUI.
-
-
-- **Six homepage claims were wrong, and are now derived rather than typed.**
-  - An audit of the live page found these errors:
-    - The MCP row said 32 tools, 27 read-only and five that write.
-
-      - The server registers 66, 54 and twelve.
-      - A stat tile four sections up already said 66, because a gate derived that one. Nobody derived the sentence.
-
-    - The eBPF row said released binaries do not carry the `bpf` feature.
-
-      - The released Linux gnu tarballs and the `.deb` and `.rpm` packages have carried it since it was added to that matrix.
-    - The hero promised "One static musl binary, zero dependencies".
-      - The installer hands most Linux hosts the glibc build and tells them it needs libpcap.
-      - It hands macOS a Mach-O binary that is not musl at all.
-    - The filter row said 33 fields and seven operators. The real figures are 32 fields and eight.
-    - The TUI demo told a reader to press `o` to open a capture.
-
-      - The binding is `O`, so the key the page named did nothing.
-    - The rows for WASM plugins and vCon export advertised capabilities that the static musl binary does not carry.
-      - The hero pointed at that binary.
-
-- **`in_subnet` was documented for the first time.**
-  - It parses.
-  - It matches addresses against a CIDR block, using the same rule as `--hep-allow`.
-  - `docs/filter-dsl.md` had never mentioned it.
-    - For an operator, that is the same as not having shipped it.
-
-### Added
-
-- **`tests/homepage_claim_truth_test.rs`: eighteen gates over what the homepage
-  says in PROSE.**
-  - Each gate derives its expected value from the thing it describes, not from a second copy of it. The sources are:
-    - The tool registry.
-    - The release workflow's feature computation.
-    - The installer's own selection logic.
-    - The filter parser's enums.
-    - The TUI key bindings.
-    - The CLI definition.
-  - Every one was watched failing against the live page before the page was corrected.
-  - Every one was mutation-proven afterwards.
-
-### Changed
-
-- **rtpengine and rtpproxy can now run side by side in the harness.**
-  - Both published host ports 8081 and 8732.
-    - So `docker compose up rtpengine` beside a running rtpproxy failed with `port is already allocated`.
-    - Only one relay could ever run.
-  - While that held, separating their media ranges bought nothing.
-  - rtpproxy's sidecar doors move to 8082 and 8733.
-    - Only the HOST side moves.
-    - So both sidecars stay the same image, binding the same ports inside.
-
-  - The end-to-end script now asks the running stack which relay is anchoring. It no longer assumes 8081.
-
-### Added
-
-- **Every documented sipnab command is now RUN, or says why it cannot be.**
-
-  - Three gates watched the documented commands, and none of them executed one.
-    - A command could name only real flags, in a combination sipnab refuses, and stay green.
-  - `doc_commands_run_test` extracts all 352 invocations from `docs/`.
-    - It executes 232 of them against a capture that ships with the repository.
-    - It skips the rest under four named reasons: a capture device, root, a server that does not exit, a shell program.
-    - A command that matches no reason fails the test. It does not slip through.
-    - The gate prints its own coverage.
-
-  - Coverage is **323 of 352**.
-  - The device and root examples run with a device name that cannot exist, in place of the one the page names.
-    - So sipnab still parses their flags in full.
-    - Capture fails harmlessly at open.
-  - The server examples run under one shared wall-clock bound.
-    - clap refuses in milliseconds.
-    - A process still alive after that has necessarily parsed its arguments.
-  - The 29 that never run are 17 shell programs and 12 commands that would exec something of their own or attach to the kernel.
-    - A documentation gate must not POST to the endpoint an example names.
-    - It must not load probes into the machine that builds sipnab.
-  - Every one of the 323 passes today.
-
-### Fixed
-
-- **The new capture probe then broke macOS CI, and the cause was the same
-  mistake one layer down.**
-  - It opened with a `/sys/class/net/<device>` existence check. That is a Linux-only path.
-  - On macOS the path is absent.
-    - So the probe returned "cannot tell" without ever running anything.
-    - On that machine the answer was perfectly knowable.
-
-  - The whole argument of the probe is "ask the binary rather than model the rules".
-    - So it must not open with a platform assumption of its own.
-  - The check is gone.
-  - The loopback name comes from a mapping that takes the OS as an argument.
-    - So every branch is testable from any machine.
-
-  - The stderr interpretation is a pure function.
-    - Recorded output from both platforms drives it.
-    - This includes the exact macOS lines from the run that went red.
-
-- **The live-capture probe measured the wrong process.**
-  - `hep_test` and `integration_test` each carried a copy of `can_live_capture()`.
-  - Each copy read `/proc/self/status` for `CAP_NET_RAW`. Those are the TEST RUNNER's capabilities.
-  - A sipnab that carries `setcap cap_net_raw+ep` gains the capability at `exec`, whatever the runner holds.
-    - So both copies answered "unprivileged" while the child opened `lo` and captured.
-  - Two copies of one rule agreed with each other. That is why neither was suspected.
-  - There is one implementation now, and it asks the binary.
-
-- **The homepage claimed memory safety the build does not enforce.**
-  - "Memory-safe
-    by construction" sat beside 88 `unsafe` blocks and no `forbid(unsafe_code)`.
-  - The row now says three things:
-    - It states the count.
-    - It says every block is FFI at the OS boundary.
-    - It says the build rejects a block that does not carry its own soundness argument.
-  - That last claim is true.
-    - `undocumented_unsafe_blocks` plus clippy at `-D warnings` enforce it.
-    - It is a stronger claim than the one it replaces.
-  - Three gates hold it:
-    - The count against the tree.
-    - The absence of any unqualified safety claim while `unsafe` exists.
-    - The lint actually being set to a level.
-
-- **A cold read of the whole homepage fixed five more places that assume
-  context.**
-  - The hero ended on a packaging detail.
-  - "No install required" named no antecedent.
-    - So it read as if it applied to the page, not to one button.
-  - Six demo panels are reachable by a direct click, and none said which interface it showed.
-    - A reader who clicked "Detail Pane" after five agent demos had no signal that the context had changed to a terminal.
-  - The eBPF row had grown into the longest cell on the page.
-  - The page never said what sipnab deliberately is NOT.
-    - That is the first thing somebody who evaluates a tool needs.
-    - sipnab is run, not operated.
-    - If you want dashboards and months of history, you want Homer.
-
-- **The demo wall on the homepage opens mid-thought, and now does not.**
-  - The section had no lede at all.
-  - So the first panel a visitor read began "One
-    capture, read end to end:".
-    - Nothing established what they were looking at, what produced it, or that the output is real.
-  - The section now says what every block is before it shows one.
-  - The first panel names the two commands it shows before it reports what they found.
-
-- **ST-S4 is written: `docs/design/relay-statistics-failures.md`.**
-  - It lists thirteen failure conditions.
-    - Each was produced against a running relay.
-    - Each names the behavior on all four surfaces.
-  - Three of them constrain the design:
-    - rtpproxy has no partial answer. So one bad name in a bulk request loses the whole request.
-    - A restart zeroes every rtpproxy counter, and nothing in any reply says so.
-    - A reused cookie replays a stale reply on BOTH relays. That returns a wrong answer that looks perfectly valid.
-
-- **ST-S3 is written: `docs/design/relay-statistics-surfaces.md`.**
-  - It puts five capabilities across all four surfaces in one document.
-    - Writing them separately is what produced the drift.
-  - The word "statistics" was already taken three times.
-    - Every existing use is about sipnab, not about a relay.
-    - So the capability is spelled `relay-stats` everywhere.
-    - Nothing shipped is renamed.
-  - Polling is CLI-only, and that omission carries its reason.
-    - Over REST or MCP, the caller who starts a poll is not the one who owns the host.
-  - Writing the contract first caught two keybinding collisions before they shipped.
-
-- **ST-S1 is written: `docs/design/relay-statistics-vocabulary.md`.**
-  - It defines three tiers: `relay_reported`, `sipnab_measured`, `endpoint_reported`.
-    - Every statistic carries its tier.
-    - Every surface renders it.
-  - Cross-tier arithmetic is forbidden without exception.
-    - A relay's packet count minus sipnab's is not "packets sipnab missed".
-    - The two count different sockets over different windows with different start times.
-  - Missing, zero and refused are three states, not two.
-  - A refusal carries the relay's own code.
-    - "no such statistic in this build" and "no session with those tags" are different answers.
-    - Only one is about the operator's call.
-
-- **ST-S2 is written: `docs/design/relay-statistics-inventory.md`.**
-  - It is an inventory of what rtpengine and rtpproxy actually report.
-    - It was taken from three running relays, not from their manuals.
-  - It answers ST3's open question: rtpproxy's five `Q` fields are `ttl npkts_ina npkts_ino nrelayed
-  ndropped`.
-    - The answer comes from the relay's own format strings.
-    - Arithmetic on a live call corroborates it.
-  - It records four traps the implementation must carry.
-    - One is a counter that exists on rtpproxy 3.2.0 and not on 2.1.1.
-
-- **RP1 and RP3 are closed in the backlog with what the relay taught, not a
-  tick.**
-  - Both shipped in 0.5.168.
-  - The entries record the three defects that a live rtpproxy found and that reading its source had not.
-  - They also record the seam violation the gate caught.
-  - This is documentation only. No code changed.
+- **Homepage section introductions pass the WCAG contrast check.**
+  - Was: inline links in two introductions were 1.79:1 against dimmed text, where WCAG 1.4.1 wants 3:1 for a link told apart by color.
+  - Effect: all three section introductions underline their links.
+- **Six homepage claims were wrong.**
+  - Was: the MCP row said 32 tools, 27 read-only; the server registers 66, 54 read-only and twelve that write.
+  - Was: the eBPF row said released binaries lack `bpf`, which the Linux gnu tarballs and `.deb` and `.rpm` packages carry.
+  - Was: "One static musl binary, zero dependencies", though most Linux hosts get the glibc build needing libpcap, and macOS a Mach-O binary.
+  - Was: 33 filter fields and seven operators, where there are 32 and eight; the TUI demo named `o` to open a capture, not `O`.
+  - Was: WASM plugins and vCon export rows advertised what the static musl binary, the one the hero named, does not carry.
+- **The filter documentation describes `in_subnet`.**
+  - Effect: `docs/filter-dsl.md` says it matches addresses against a CIDR block, by the same rule as `--hep-allow`.
+- **The homepage no longer claims memory safety the build does not enforce.**
+  - Was: "Memory-safe by construction" sat beside 88 `unsafe` blocks and no `forbid(unsafe_code)`.
+  - Effect: the row states the count, says every block is FFI at the OS boundary, and that the build rejects a block without its soundness argument.
+- **The homepage reads without assumed context.**
+  - Effect: "No install required" names its button, and demo panels say which interface they show.
+  - Effect: the page says what sipnab is not: you run it, you do not operate it.
+  - Effect: the demo wall opens by saying what every block is, and the first panel names its two commands before its findings.
+  - Effect: for dashboards and months of history, the page points to Homer.
 
 ## [0.5.168] - 2026-09-12
 
 ### Added
 
-- **An endpoint attribution now names WHICH relay asserted it, and how the
-  claim arrived (RP3).**
-  - "A relay said so" stops being a complete answer when an estate runs two
-    relays.
-  - rtpengine's control plane is encapsulated and can carry authentication.
-  - rtpproxy's control plane is a bare datagram that carries no credential at
-    all.
-  - Both facts travel with the assertion.
-  - Together they decide what the assertion is worth.
-
-- **A reply is read in the light of the command it answers.**
-  - rtpproxy answers three commands with `0`:
-    - A delete, where `0` means success.
-    - A feature query, where `0` means absent.
-    - A delete-all, where `0` again means success.
-  - These are three readings of one byte, observed from a live relay in a
-    single session.
-  - Handing a caller `Number(0)` leaves them to remember which question was
-    asked.
-  - sipnab never interprets a reply whose cookie does not match the command.
-  - A verb with no documented numeric reading returns the number unchanged.
-    It does not return an invented schema.
-
-### Fixed
-
-- **`VF` was refused as a malformed `V`.**
-  - rtpproxy's parser consumes the `F` as part of the verb.
-  - It then treats what remains as modifier-free.
-  - So the feature query takes exactly two arguments, while bare `V` takes
-    one.
-  - The decoder's table had one rule for both.
-  - It rejected `VF 20040107` outright, which a real relay answers.
-  - Found by asking one.
-
-- **The harness ran both media anchors on the same RTP port range.**
-  - rtpengine and rtpproxy both held 30000-30050.
-  - They were disjoint only because a Makefile target stops them running
-    together.
-  - That rule was enforced somewhere other than the numbers.
-  - rtpproxy now has 31000-31050.
-  - A test fails if the gap between the ranges falls below a hundred ports.
-
-
-- **sipnab decodes the rtpproxy control protocol (RP1).**
-  - The protocol is text, not bencode.
-    - A search of the whole rtpproxy tree for `bencode` returns nothing.
-    - So the existing NG decoder covered none of this.
-  - The decoder covers:
-    - All thirteen command letters.
-    - The per-command argument bounds and modifier rules.
-    - The four reply shapes.
-  - Commands and replies are separated by DIRECTION.
-  - The parser also refuses a reply on content.
-  - It does both, because either alone has been wrong:
-    - A live relay's `I` reply is five lines beginning
-      `<cookie> sessions created: 0`.
-    - `sessions` starts with the stop-play letter.
-    - So a content-blind reading made it a confident `S` command carrying
-      fourteen arguments.
-
-  - `R` and `C` create RECORDING streams.
-    - They are kept apart from ordinary media at the type level.
-    - Attributing one as a leg invents a participant the call never had.
-    - They are deliberately excluded from the unattributed-media tally.
-    - RE5's recording spool owns that tally.
-  - There is no default UDP port to key a heuristic on.
-    - rtpproxy documents a UNIX control socket.
-    - A passive capture cannot see that socket at all.
-    - An operator names the port, or there is nothing to decode.
-
-
 - **A provenance pointer can name bytes within a frame.**
-
-  - `FrameRef` carries an optional range.
-  - It renders the range as `+start-end` after the digest.
-  - `parse_pointer` reads it back.
-  - The two landed together on purpose.
-    - A suffix the parser cannot read would be a fabricated pointer.
-    - Such a pointer resolves in a reader's head and nowhere else.
-  - A malformed range REFUSES the whole pointer.
-    - It does not drop to the whole frame.
-    - Dropping it would turn a citation of one header into a citation of the
-      message.
-    - That citation still resolves, but it answers a different question than
-      the one asked.
-  - Lint findings use it.
-    - A finding narrows its own citation to the bytes it observed.
-    - It does this only when that text sits in exactly one place in the
-      message.
-    - Exactly one place, or none.
-    - A second match makes the anchor a coin toss.
-    - A finding pointed at the wrong `Via` still resolves, which is what would
-      make it read as evidence.
-
-  - Findings that cannot be narrowed keep the whole-message pointer they always
-    had.
-  - Every pointer form minted before this renders and parses unchanged.
-
-
-- **`--mcp-evidence-ring <MIB>` lets a pointer into a LIVE capture be
-  followed.**
-  - A capture file can seek back and hand over the real bytes.
-  - A live device or a HEP listener cannot.
-    - sipnab holds parsed messages, not frames.
-    - That is why the export path re-synthesizes them.
-    - It is also why sipnab refused such a pointer rather than answering with
-      something plausible.
-
-  - The ring retains recent raw frames.
-    - The refusal becomes an answer for the window an operator paid for.
-    - Outside that window, it stays a refusal.
-  - It never turns a miss into a maybe.
-  - A pointer it cannot answer says WHICH kind of miss it was:
-    - The frame was real and has been evicted.
-    - The ring has not reached that ordinal.
-    - Nothing is kept for that source.
-
-  - Those prompt three different actions.
-    Only one of them is "use a bigger ring".
-  - A frame it does answer is labeled `retained`, not resolved.
-    - Those bytes came from a buffer this process kept.
-    - No second reader can confirm them.
-    - That is a weaker claim than a file seek.
-  - It is off unless asked, because it spends memory on a running capture.
-  - Only sources that cannot be re-read are retained.
-    - Holding a capture file's bytes buys nothing a second read would not give
-      free.
-  - A source the ring has never seen is left to the file path untouched.
-    - "I hold nothing for this" is not the same claim as "this cannot be
-      followed".
+  - Effect: a pointer may end in a range, `+start-end` after the digest, and sipnab reads that form back.
+  - Effect: a lint finding narrows its pointer to the bytes it observed when that text sits in exactly one place in the message.
+  - Limit: a malformed range refuses the whole pointer rather than widening to the frame; every older pointer form reads unchanged.
+- **`--mcp-evidence-ring <MIB>` lets an agent follow a pointer into a live capture.**
+  - Effect: the ring keeps recent raw frames from sources nothing can read twice, a device or a HEP listener, which sipnab refused before.
+  - Effect: a miss says which kind: the ring dropped the frame, has not reached that ordinal, or keeps nothing for that source.
+  - Limit: an answered frame carries the label `retained`, not resolved, since no second reader can confirm it; the ring is off unless asked.
+  - Docs: [CLI reference](docs/cli-reference.md).
 
 ## [0.5.167] - 2026-09-11
 
-### Added
-
-- **A test count in a commit message is now derived rather than typed.**
-  - Messages here end with a sentence that opens with the number of tests
-    the commit adds, followed by the faults each test catches.
-  - One of them said "Sixteen" about a commit that added seventeen.
-  - Nothing caught it.
-    - A number spelled as a word does not look like data.
-    - It reads as prose, and prose is not checked.
-  - `pre-push` now counts the tests each outgoing commit adds.
-  - It compares that against the count the message claims.
-  - It does this at the last moment the message can still be amended.
-  - The claim is the summary sentence, `<N> tests, mutation-proven`, and
-    nothing else.
-    - A message may legitimately count subsets along the way.
-    - Both looser rules tried first read one of those instead:
-      - "The first number next to the word tests" picks up "the ten tests the
-        outage bought".
-      - "Any count that begins a line" picks up "Two tests were removed and
-        nothing replaced them yet".
-  - A count phrased any other way goes unchecked.
-  - That trade keeps the gate from crying wolf.
-
 ### Changed
 
-- **An RTCP reception report and an XR VoIP Metrics block now name the frame
-  they arrived in.**
-  - RTCP is where a remote endpoint's CLAIM enters sipnab's numbers.
-  - So it is the place a reader most needs to get back to the bytes.
-  - The frame used to stop at the pipeline boundary.
-    - `process_rtcp` took the parsed packets and a timestamp.
-    - It took nothing that could be followed.
-  - Both halves of a pointer are kept.
-    - An ordinal with no source does not say which file it counts within.
-  - The pointer also carries the source's own answer about whether those bytes
-    can be read again:
-    - A capture file gets a digest and `verifiable: true`.
-    - A device or a HEP listener gets neither.
-      - Those bytes are gone the instant they are read.
-      - A checkable-looking pointer into them would manufacture confidence.
-  - **Breaking:**
-    - `StreamStore::process_rtcp` takes a third argument.
-    - `RemoteReceptionReport` and `RemoteVoipMetrics` each gain a public field.
-
-
-- **A parsed SIP header now names the bytes it came from.**
-  - `SipHeader` carries `line_span`, the byte range of its own logical line.
-  - The parser records it as it walks.
-  - `decode_evidence` reads that instead of walking the header grammar a
-    second time.
-
-    - The old code paired the two walks positionally.
-  - The second walk was the drift this feature was guarded against.
-  - The guard was expensive:
-    - A line with no colon made the two walks disagree.
-    - Citing a neighboring header is worse than citing none.
-    - So the only safe answer was to drop EVERY header's range.
-    - One junk line cost a whole message its provenance.
-
-  - One walk cannot disagree with itself.
-    So a dropped line now costs nothing.
-  - `ranges_unavailable` survives with honest new meaning.
-    - It counts headers that came from no bytes.
-    - Such headers were synthesized in a test or rewritten by a transform.
-    - They get no range rather than a plausible one.
-  - A folded header spans every continuation line the parser unfolded into it.
-    - So the range deliberately covers bytes the unfolded value does not
-      reproduce verbatim.
-  - **Breaking:** `SipHeader` gains a public field.
-    - Code constructing one by hand passes `line_span: None`.
-    - That is the honest value for a header that came from no packet.
+- **RTCP reception reports and XR VoIP Metrics blocks name the frame they arrived in.**
+  - Effect: each carries a pointer with its source and ordinal; a capture file adds a digest and `verifiable: true`, a device or HEP listener neither.
+  - Limit: breaking for library callers: `StreamStore::process_rtcp` takes a third argument, and `RemoteReceptionReport` and `RemoteVoipMetrics` each gain a public field.
+- **A parsed SIP header names the bytes it came from.**
+  - Effect: one line with no colon no longer costs a whole message its header byte ranges in decoded evidence.
+  - Effect: a folded header spans every continuation line; `ranges_unavailable` counts headers that came from no bytes.
+  - Limit: breaking for library callers: `SipHeader` gains `line_span`; code building one by hand passes `line_span: None`.
 
 ### Fixed
 
-- **The release check read a CDN that refused it as a broken site.**
-
-  - The same `403` that fooled the certificate step reaches the advertisement
-    step.
-  - There it landed in the same bucket as a `500`.
-  - Those prompt opposite actions:
-    - A `500` means the site is broken.
-    - A `403` from the edge means the site is fine and the CDN would not talk
-      to this client.
-  - A refusal now has its own verdict and its own exit code.
-  - Both checks identify themselves rather than arriving anonymous.
-  - The scheduled job warns rather than failing when it is refused.
-  - It never reports success for a page it could not read.
-
-
-- **The certificate watcher read a CDN that refused it as the site being
-  down.**
-  - On its first real run from a GitHub runner, the edge answered `403`.
-    - That was bot protection, not a broken origin.
-  - The verdict came back as the outage.
-  - That is one answer standing for several situations.
-    - This check was built to stop making that exact mistake.
-  - A refusal now has its own verdict and its own exit code.
-  - The edge is healthy and declined to talk to this client.
-    - So nothing about the origin follows from it in either direction.
-    - It is not a pass, which would make the watcher go quiet the moment it
-      stopped being able to see anything.
-    - It is not a failure.
-
-  - The check also identifies itself now rather than arriving as an anonymous
-    client.
-
-
-- **The certificate watcher was red every morning for a fault nobody could
-  observe.**
-  - After the 2026-09-11 outage, the CDN was moved to a new mode.
-    - It terminates TLS at the edge with its own certificate.
-    - It reaches the origin over plain HTTP.
-  - The origin certificate is still expired.
-    - It now decides nothing a visitor can see.
-  - A daily job failing on it is a check nobody reads.
-    - That is how the next real failure gets missed.
-  - The verdict is now paired with the only question that matters: can anybody
-    load the page?
-    - Serving means the CDN is not validating the origin.
-      - The check reports that as a warning.
-      - The warning names the real consequence: an unencrypted leg between the
-        CDN and the origin.
-    - Not serving, with an unusable origin certificate, is the outage itself.
-      It still fails.
-  - The check never reads the CDN's mode, so there is no setting to keep in
-    step.
-    - Put the CDN back to validating with a dead origin, and the site answers
-      526.
-    - That arrives as a failure on the next run.
-
-- **The certificate watcher scored an unreadable day count as a healthy
-  certificate.**
-  - Its guard was the shell character class `*[!0-9-]*`.
-    - That class admits a `-` anywhere, not only at the front.
-    - So `1-2`, `12-` and a bare `-` walked past it.
-  - `[` then refused them with "Illegal number".
-  - A failing command in an `if` condition is exempt from `set -e`.
-    - So both comparisons fell through to the last line of the function: OK,
-      exit 0.
-  - The one input the check exists to refuse came out as its healthiest
-    verdict.
-  - The diagnosis went to stderr, where no exit code carries it.
-  - A mistyped margin reached the same comparison and had the same effect.
-    - It turned the threshold off without saying so.
-
-- **The published site's certificate expired, and nothing was watching the
-  date.**
-
-  - On 2026-09-11 the origin certificate expired at 14:10 UTC.
-  - The CDN, under a strict SSL mode, refused an origin it could not validate.
-  - Every visitor got a 526.
-  - The renewal had been failing silently.
-    - `website/static/CNAME` named `www.sipnab.com`.
-    - GitHub Pages was configured for the apex the site is built for.
-    - So every deploy re-set the custom domain.
-    - Each change dropped the certificate.
-
-  - The two now have to agree.
-    A check runs where they cannot drift.
-  - A scheduled job watches both certificates daily.
-    - It watches both because the public name resolves to the CDN.
-    - A watcher pointed at the public name reads the EDGE certificate.
-    - That certificate was healthy, with 85 days left, all through the outage.
-    - The one that expired belongs to the origin.
-
-- **The release flow's "verify from the live page" step could not tell a down
-  site from a stale one.**
-  - It was `curl | grep -c`.
-  - It prints `0` for a page advertising the wrong version.
-  - It prints the same for each of these:
-    - DNS failure.
-    - A refused connection.
-    - An expired certificate.
-    - An empty body.
-    - A 503.
-  - I ran it during the outage and got nothing.
-    I read that as a deploy that had not landed.
-  - It is now a checker that names which of the six situations is happening.
-  - Each situation has its own exit code.
-
-- **A media stream the peers rejected became a media endpoint.**
-  - [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264.html) sets a port of
-    zero for three purposes:
-    - To reject an offered stream.
-    - To terminate an existing one.
-    - To say a stream is not wanted.
-  - All three mean no media will arrive there.
-  - sipnab registered an endpoint for it anyway.
-    - A call that declined video carried a video endpoint.
-    - A re-INVITE tearing a stream down registered the teardown as a setup.
-  - Two other places in the tree already read a zero port as a rejection.
-    - The one function that creates endpoints did not.
-  - Measured against the real corpus:
-    - 3,233 media descriptions across four captures.
-    - 7 of them rejected.
-  - sipnab still parses the rejected description.
-    - It is the evidence that a rejection happened.
-    - Only the stream link is refused.
+- **sipnab.com serves again after its origin certificate expired.**
+  - Was: on 2026-09-11 at 14:10 UTC the origin certificate expired, and every visitor got a 526.
+  - Was: `website/static/CNAME` named `www.sipnab.com` while GitHub Pages served the apex, so each deploy dropped the certificate.
+  - Effect: the two names agree, and a daily job watches both the edge and the origin certificates.
+- **A media stream the peers rejected no longer becomes a media endpoint.**
+  - Was: a port of zero ([RFC 3264](https://www.rfc-editor.org/rfc/rfc3264.html)), a rejected, ended or unwanted stream, registered an endpoint, so a call that declined video carried one.
+  - Effect: sipnab still parses the rejected description as evidence of the rejection, but links no stream to it.
 
 ## [0.5.166] - 2026-09-11
 
 ### Added
 
-- **`--seccomp enforce` refuses every system call outside a derived allowlist,
-  which finishes the syscall sandbox.**
-  - All four steps of its design now ship.
-  - A call the list does not carry ends the process.
-    - The kernel log records the number.
-    - It ends the process because an `EPERM` from the output path would
-      produce a run that captures happily and writes nothing.
-  - **It reads its allowlist from `SIPNAB_SECCOMP_ALLOWLIST` and refuses without
-    one.**
-    - No list ships in the binary for it to fall back on.
-    - That is a measurement, not caution.
-    - The reference list settled across 16 run shapes and 29,048 records on one
-      machine.
-    - It killed the process on the first run on another machine of the same
-      architecture.
-    - An allowlist is per-host.
-  - Produce yours with `scripts/derive-seccomp-allowlist.sh`, on the host that
-    runs the capture.
-  - Default off, as every mode here is.
-
-- **`scripts/derive-seccomp-allowlist.sh` turns the syscall derivation from a
-  judgement call into a measurement.**
-  - The syscall sandbox's last step is an enforcing filter.
-  - It has stayed last because a mis-derived allowlist kills the process on a
-    capture box.
-  - This script runs the shapes and streams the kernel records.
-  - It returns a verdict, not a list.
-  - It refuses more often than it answers. It refuses all of these:
-    - A log the kernel dropped records in.
-    - A log with no records at all.
-    - A union still growing at the last shape.
-  - Its success verdict is `SETTLED`, never `COMPLETE`.
-    - Two quiet shapes mean those shapes stopped finding calls.
-    - They do not mean that no shape would.
-  - The first real run:
-    - Six shapes.
-    - 10,124 records.
-    - No loss.
-    - A union of 22 syscalls.
-  - One live shape added six calls no offline shape made.
-
-    - That is what an unexercised surface looks like.
-    - It is why the enforcing filter is still not here.
+- **`--seccomp enforce` refuses every system call outside a derived allowlist.**
+  - Effect: a call the list does not carry ends the process, and the kernel log records its number.
+  - Do: produce the list with `scripts/derive-seccomp-allowlist.sh` on the host that runs the capture, and pass it in `SIPNAB_SECCOMP_ALLOWLIST`.
+  - Limit: no list ships in the binary and the mode refuses without one, since a list derived on one host killed the process on another.
+  - Limit: default off.
+- **`scripts/derive-seccomp-allowlist.sh` measures the syscalls sipnab makes.**
+  - Effect: it runs the run shapes, streams the kernel records and returns a verdict: `SETTLED`, never `COMPLETE`.
+  - Limit: it refuses a log the kernel dropped records in, a log with no records, and a union still growing at the last shape.
 
 ### Fixed
 
-- **`--seccomp log` sent operators to a log that silently drops records.**
-  - On a host with no audit daemon, the records fall back to the kernel ring
-    buffer.
-  - That buffer is rate limited.
-  - The kernel reports the loss as
-    `kauditd_printk_skb: N callbacks suppressed`, and nothing else does.
-  - Measured while deriving sipnab's own syscall set from a twenty-second
-    capture:
-    - 50 records arrived.
-    - Roughly 1,700 were dropped.
-  - It loses them a second way as well, and that way announces nothing.
-    - The ring buffer wraps.
-    - So reading the log after a run keeps only the last few hundred records.
-    - After a twenty-second capture, reading the buffer returned 12 distinct
-      syscalls.
-    - Streaming the same shape returned 21.
-  - Short is the dangerous direction.
-    - The artifact being derived is an allowlist for an enforcing filter.
-    - A filter missing a call ends the process making it.
-    - So nine missing entries is nine ways to kill a capture.
-
-  - The flag's help and the startup line now do four things:
-    - Name both losses.
-    - Say which one is silent.
-    - Carry what the loss measured.
-    - Say to stream the records rather than read them afterwards.
+- **`--seccomp log` names the two ways its kernel log loses records.**
+  - Was: with no audit daemon, the rate-limited ring buffer dropped records, reported only as `kauditd_printk_skb: N callbacks suppressed`.
+  - Was: the buffer also wraps silently, so a log read after a twenty-second capture held 12 distinct syscalls where streaming held 21.
+  - Effect: the help and the startup line name both losses, say which is silent, and say to stream the records rather than read them afterwards.
 
 ## [0.5.165] - 2026-09-11
 
 ### Added
 
-- **`--seccomp log` records every system call this process makes, and allows
-  every one.**
-
-  - The syscall sandbox's design puts the enforcing filter last.
-    - A mis-derived allowlist kills the process on a capture box.
-    - It would do so during the incident the capture was started for.
-  - The step before it is an instrument.
-    - It is a seccomp filter whose only action is `SECCOMP_RET_LOG`.
-    - So the allowlist can be derived from evidence instead of guessed.
-  - It denies nothing and protects nothing.
-    - The flag's help, the startup line and the status type all say so.
-    - They do not let "seccomp active" imply a control.
-  - Where the records land forks by host.
-    - The guidance names both routes, because naming one is worse than naming
-      none.
-    - `auditctl -s` prints a connected audit daemon's pid.
-      The records are then in `ausearch -m SECCOMP`.
-    - A pid of 0 means no daemon.
-      The records are then in `dmesg`.
-  - Point it at a bounded offline run.
-    - A live capture emits one record per received packet.
-  - The filter is synchronized across every thread.
-    - By default, seccomp covers the installing thread and its future
-      children.
-    - sipnab installs after the capture thread is spawned.
-    - Without synchronization, the instrument would have recorded everything
-      except the thread running libpcap.
-  - Its own tests carried the hazard the feature is sequenced around.
-    - Two child roles installed a denying filter.
-    - They allow-listed, by hand, the syscalls the Rust runtime needed to
-      report the verdict.
-    - That list was derived on one architecture.
-    - It was incomplete on the other, and it broke the build.
-  - Neither role has an allowlist now.
-    - One reports through a raw exit-group call, with nothing between it and
-      the install.
-    - The other asks the kernel per-thread whether a filter is in force.
-      It does not try to be denied.
+- **`--seccomp log` records every system call sipnab makes, and allows every one.**
+  - Effect: a seccomp filter whose only action is `SECCOMP_RET_LOG`, synchronized across every thread, the libpcap thread included, to derive an allowlist from evidence.
+  - Limit: it denies and protects nothing, and the help, the startup line and the status say so.
+  - Do: `auditctl -s` prints the audit daemon's pid; with one the records are in `ausearch -m SECCOMP`, with pid 0 in `dmesg`.
+  - Do: point it at a bounded offline run; a live capture emits one record per received packet.
 
 ### Fixed
 
-- **A unit test comparing this crate's filter instruction against the kernel's
-  broke the macOS build.**
-  - `libc::sock_filter` does not exist off Linux.
-  - The comparison carried no target gate.
-  - The local check that exists for this class could not see it.
-    - It compiles the tree with the target values swapped.
-    - That changes what `cfg` selects, but not which `libc` is linked.
-    - So a type that is simply absent elsewhere still resolves.
-  - The scanner that CAN see it now knows both classic-BPF types.
-  - Un-gating the test fails it.
-
-- **The DTLS detector spent neither length rule the RFCs give it, on a decision
-  that deletes the packet.**
-  - `is_dtls` checked a content type and a version and nothing else.
-  - So it accepted a datagram whose first three bytes happened to read that
-    way, whatever its length field claimed.
-  - Both remaining rules are stated:
-    - [RFC 6347](https://www.rfc-editor.org/rfc/rfc6347.html) says each record
-      must fit within a single datagram.
-    - Its length field is the TLS 1.2 one.
-      [RFC 5246](https://www.rfc-editor.org/rfc/rfc5246.html) bounds it at
-      2^14 + 2048.
-  - The two errors here are not symmetric.
-    That is the argument for tightening.
-    - A wrong yes makes the pipeline consume the datagram.
-      The packet leaves the analysis entirely.
-    - A wrong no is inert.
-      Every content type DTLS uses carries the wrong version bits for RTP.
-      So a refused datagram has nowhere else to go.
-  - Measured against 3,962,333 real UDP datagrams first:
-    - 93 were accepted as DTLS.
-    - Neither rule refuses one of them.
-
-- **The RTCP padding rule shipped in 0.5.164 never reached the capture path,
-  and its release note said otherwise.**
-
-  - That note read: "one more bit of separation on the classifier that decides
-    RTP against RTCP for every datagram on a media port".
-  - The rule landed on `rtp::rtcp::looks_like_rtcp`.
-    Nothing in the capture path calls it.
-  - The classifier a captured datagram actually reaches kept a private copy of
-    the length logic.
-    - Nobody told that copy about the rule.
-    - So on a muxed port, sipnab went on accepting compounds
-      [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) forbids.
-  - The copy is gone.
-  - The muxed verdict comes from the one function that holds the content rules.
-  - A test fails if the two ever answer differently again.
-  - Operators running 0.5.164 have the classifier described in its release
-    note only from this release on.
-
-- **The RTCP decoder now says why it does not require the sub-packet lengths to
-  total the datagram.**
-  - RFC 3550 Appendix A.2 recommends that check.
-    sipnab does not apply it.
-  - Measured against 4,904,975 real UDP datagrams:
-    - Applying it would refuse 67 of the 11,696 accepted as RTCP.
-    - 61 are SRTCP.
-      Their cleartext header is followed by ciphertext and an authentication
-      tag that cannot chain.
-    - 6 leave a ragged tail of one to three bytes.
-  - Nothing else is refused.
-  - So the check's whole effect would be to send encrypted call control down
-    the RTP path and invent a media stream from it.
-
-- **Two release gates disagreed about which files phase two of a release
-  touches.**
-  - The eBPF load record became a required part of phase two when LIVE3 landed.
-    - `published_version` cannot name a release with no recorded verification.
-  - Nobody told the classifier that recognizes a phase-two commit.
-    - It read the record as ordinary work.
-    - The delivery gates refused the one commit the flow is supposed to
-      produce.
-    - That left a bypass as the only route.
-  - Both now read one constant.
-  - The tests drive the states this checkout cannot reach.
+- **The DTLS detector applies both length rules before it consumes a datagram.**
+  - Was: it checked a content type and a version only, so a datagram whose first three bytes read that way left the analysis.
+  - Effect: a record must fit the datagram ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347.html)) within the TLS 1.2 bound of 2^14 + 2048 ([RFC 5246](https://www.rfc-editor.org/rfc/rfc5246.html)).
+- **The RTCP padding rule of 0.5.164 reaches the capture path.**
+  - Was: it landed on a function the capture path never calls, so on a muxed port sipnab still accepted compounds [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550.html) forbids.
+  - Effect: operators of 0.5.164 have the classifier its release note described from this release on.
 
 ## [0.5.164] - 2026-09-10
 
