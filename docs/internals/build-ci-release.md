@@ -3120,6 +3120,11 @@ The script holds four rules:
     The branch's released part ends at 0.5.271, so a comparison with the branch alone passed four such merges.
   - `HEAD` is the first parent of a merge, or the commit that a rebase or a cherry-pick builds on.
   - With `--base <ref>`, the script compares the released part with that commit only.
+  - A commit whose pin is older than the pin of the index is not compared: the commit with the newest pin is.
+    That applies when another of the commits holds the pin of the index, the released part ends with the released part of that other commit, and the history of that other commit holds the older pin.
+  - Why: on 2026-11-25 main d023f4815 rewrote the released sections 0.5.214 to 0.5.190 and moved the pin.
+    Each branch from before d023f4815 holds the old text, so its `HEAD` and its merge base refused every merge of main until someone edited the pin by hand.
+    A rewrite on purpose writes a new pin, and no later commit moves the pin back, so the newest pin decides.
 
 Verify: the script prints `the CHANGELOG is as the base <commit> has it` and exits 0.
 Exit 1 lists each problem with the first line of the entry and the two headings.
@@ -3135,6 +3140,9 @@ Troubleshooting:
     The rule passes when that file holds the sha256 of the released part and the base holds another value.
 - A message that starts with `against <commit> (HEAD, the commit this one is built on)`: the merge moved entries into a release that `HEAD` holds.
   Move them back under `[Unreleased]`, under their headings.
+- A message that says `the pin of the index is older than the pin <sha256>`: the merge kept the branch's pin.
+  Write the sha256 that the message names to
+  [`.config/changelog-released.sha256`](../../.config/changelog-released.sha256), as the other commit has it.
 - The script does not judge the form of an entry. That is the subject of the format gate of the changelog.
 
 ### Re-measuring the benchmarks

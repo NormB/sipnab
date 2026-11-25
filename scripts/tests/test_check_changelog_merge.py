@@ -990,3 +990,376 @@ def test_edge_the_hook_still_calls_the_gate_without_a_base():
 def test_edge_the_docstring_states_the_released_rule_for_every_parent():
     doc = cm.__doc__
     assert "HEAD" in doc and "MERGE_HEAD" in doc and "every" in doc
+
+
+# ── A rewrite of released sections on purpose, merged across ──────────────
+#
+# On 2026-11-25 main d023f4815 rewrote the released sections 0.5.214 to
+# 0.5.190 as outlines and moved the pin; the 0.5.273 release then added a
+# section on top. Every commit forked before d023f4815 holds the old text, so
+# with the rule "the released part of every parent is the end of ours" a
+# merge of main into such a branch was refused (HEAD's and the merge base's
+# released part is not the end of main's), and so was a merge of such a car
+# into a train that holds the rewrite (the car's is not the end of the
+# train's). Only a hand edit of the pin got past it.
+#
+# The pin is the authority. The pin file's history on main is a chain: each
+# commit that rewrote released sections on purpose wrote a new sha256, and
+# every later commit holds that value until the next rewrite. So a parent's
+# released part does not judge the result when the pin of the index is not
+# that parent's pin, another parent holds the pin of the index, that parent's
+# released part is the end of ours, and that parent's history holds the
+# first parent's pin (it moved past it). An [Unreleased] entry moved into a
+# released section is still refused: the parent holding the newest pin
+# judges it.
+
+OLD_R = "## [0.5.253] - 2026-11-13\n\n### Fixed\n\n- **A drain no longer ends on a signal.**\n  - Was: it ended early.\n"
+OLD_R2 = OLD_R.replace("it ended early.", "the drain ended at once.")
+REL_NEW = NEW_SECTION + OLD_R
+GOOD_ACROSS = log(sections(Added=D), released=REL_NEW)
+BAD_INTO_RELEASE = log("", released=NEW_SECTION.replace("### Added\n\n", "### Added\n\n" + D) + OLD_R)
+BAD_INTO_REWRITTEN = log("", released=NEW_SECTION + OLD_R.replace("### Fixed\n\n", "### Fixed\n\n" + D))
+PIN_FILE = ".config/changelog-released.sha256"
+P0, P1, P2 = sha(OLD), sha(OLD_R), sha(OLD_R2)
+
+
+def set_pin(repo, value):
+    write(repo, f"# The sha256 of the released part.\n{value}\n", name=PIN_FILE)
+
+
+@pytest.fixture
+def rewrite(tmp_path):
+    """main: a commit without a pin file; a commit that adds the pin P0 of OLD;
+    `old` forks there and adds D; `side` forks there and changes only x;
+    main rewrites OLD as OLD_R (pin P1) and releases 0.5.254 on top (H moves
+    into it; the pin stays P1); origin/main follows; `train` forks from it."""
+    root = tmp_path / "w"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "x").write_text("0\n")
+    (root / "y").write_text("0\n")
+    git(root, "add", "x", "y")
+    commit(root, log(sections(Added=H), released=OLD), "before the pin file")
+    set_pin(root, P0)
+    git(root, "commit", "-q", "-m", "the pin file")
+    git(root, "switch", "-q", "-c", "old")
+    # y differs on `old` and on main, so a rebase of `old` stops.
+    (root / "y").write_text("old\n")
+    git(root, "add", "y")
+    commit(root, log(sections(Added=H + D), released=OLD), "old: D")
+    git(root, "switch", "-q", "-c", "side", "main")
+    (root / "x").write_text("side\n")
+    git(root, "add", "x")
+    git(root, "commit", "-q", "-m", "side: x")
+    git(root, "switch", "-q", "main")
+    (root / "y").write_text("main\n")
+    git(root, "add", "y")
+    set_pin(root, P1)
+    commit(root, log(sections(Added=H), released=OLD_R), "rewrite OLD on purpose")
+    commit(root, log("", released=REL_NEW), "release 0.5.254")
+    git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(root, "switch", "-q", "-c", "train")
+    return root
+
+
+def merge(repo, branch, into, detach=False):
+    """Open a merge of `branch` into `into` that leaves the index as HEAD has
+    it (`-s ours`), so a test writes the result it wants."""
+    git(repo, "switch", "-q", *(["--detach"] if detach else []), into)
+    git(repo, "merge", "-q", "-s", "ours", "--no-commit", branch)
+
+
+def index_pin(repo):
+    return cm.pin_of(git(repo, "show", f":{PIN_FILE}"))
+
+
+def rel(label, released, pin, history=()):
+    return cm.Released(label, released, pin, frozenset(history))
+
+
+# Success.
+
+
+def test_success_a_real_merge_of_main_after_the_rewrite_into_an_older_branch_passes_with_no_pin_edit(rewrite):
+    git(rewrite, "switch", "-q", "side")
+    assert git_rc(rewrite, "merge", "-q", "--no-commit", "--no-ff", "main") == 0
+    assert index_pin(rewrite) == P1, "git takes main's pin: only main moved it"
+    assert run(rewrite) == 0
+
+
+def test_success_main_after_the_rewrite_merged_into_a_branch_with_an_entry_passes(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite) == 0
+
+
+def test_success_a_car_from_before_the_rewrite_merged_into_the_train_passes(rewrite):
+    merge(rewrite, "old", "train")
+    write(rewrite, GOOD_ACROSS)
+    assert index_pin(rewrite) == P1 and run(rewrite) == 0
+
+
+def test_success_the_car_merge_passes_with_origin_main_from_before_the_rewrite(rewrite):
+    git(rewrite, "update-ref", "refs/remotes/origin/main", "old~1")
+    merge(rewrite, "old", "train")
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite) == 0
+
+
+def test_success_the_car_merge_passes_on_a_detached_head(rewrite):
+    merge(rewrite, "old", "train", detach=True)
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite) == 0
+
+
+def test_success_ci_passes_the_merge_of_main_once_it_is_committed(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, GOOD_ACROSS)
+    git(rewrite, "commit", "-q", "-m", "merge main")
+    assert run(rewrite) == 0
+
+
+def test_success_a_second_release_on_top_of_the_rewrite_still_passes(rewrite):
+    git(rewrite, "switch", "-q", "main")
+    commit(rewrite, log("", released="## [0.5.255] - 2026-11-15\n\n### Added\n\n" + C + "\n" + REL_NEW), "0.5.255")
+    git(rewrite, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(rewrite, "switch", "-q", "side")
+    assert git_rc(rewrite, "merge", "-q", "--no-commit", "--no-ff", "main") == 0
+    assert run(rewrite) == 0
+
+
+def test_success_a_branch_from_before_two_rewrites_takes_main_after_both(rewrite):
+    git(rewrite, "switch", "-q", "main")
+    set_pin(rewrite, P2)
+    commit(rewrite, log("", released=NEW_SECTION + OLD_R2), "a second rewrite")
+    git(rewrite, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(rewrite, "switch", "-q", "side")
+    assert git_rc(rewrite, "merge", "-q", "--no-commit", "--no-ff", "main") == 0
+    assert index_pin(rewrite) == P2 and run(rewrite) == 0
+
+
+def test_success_the_train_takes_a_second_rewrite_of_main(rewrite):
+    git(rewrite, "switch", "-q", "main")
+    set_pin(rewrite, P2)
+    commit(rewrite, log("", released=NEW_SECTION + OLD_R2), "a second rewrite")
+    git(rewrite, "switch", "-q", "train")
+    commit(rewrite, GOOD_ACROSS, "train: D")
+    git(rewrite, "merge", "-q", "-s", "ours", "--no-commit", "main")
+    set_pin(rewrite, P2)
+    write(rewrite, log(sections(Added=D), released=NEW_SECTION + OLD_R2))
+    assert run(rewrite) == 0
+
+
+def test_success_an_ordinary_commit_after_the_merge_of_main_passes(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, GOOD_ACROSS)
+    git(rewrite, "commit", "-q", "-m", "merge main")
+    write(rewrite, log(sections(Added=D + C), released=REL_NEW))
+    assert run(rewrite) == 0
+
+
+def test_success_a_rebase_of_an_old_branch_across_the_rewrite_passes(rewrite):
+    git(rewrite, "switch", "-q", "old")
+    assert git_rc(rewrite, "rebase", "-q", "main") != 0, "the rebase was meant to stop on y"
+    write(rewrite, "old\n", name="y")
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite) == 0
+
+
+def test_success_the_pure_rule_excuses_an_older_pin_that_the_newer_parents_history_holds():
+    found = cm.released_problems(REL_NEW, P1, [rel("HEAD", OLD, P0), rel("main", REL_NEW, P1, {P0, P1, ""})])
+    assert found == []
+
+
+def test_success_a_merge_of_two_rewrites_that_writes_a_new_pin_passes():
+    merged = NEW_SECTION + OLD_R2 + "\n"
+    found = cm.released_problems(merged, sha(merged), [rel("HEAD", NEW_SECTION + OLD_R, P1, {P0, P1}),
+                                                       rel("car", OLD_R2, P2, {P0, P2})])
+    assert found == []
+
+
+# Failure.
+
+
+def test_failure_main_merged_into_an_old_branch_with_the_entry_inside_the_release_is_refused(rewrite, capsys):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, BAD_INTO_RELEASE)
+    assert run(rewrite) == 1 and LEAD_D[:30] in capsys.readouterr().err
+
+
+def test_failure_main_merged_into_an_old_branch_with_the_entry_inside_the_rewritten_section_is_refused(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, BAD_INTO_REWRITTEN)
+    assert run(rewrite) == 1
+
+
+def test_failure_the_car_merge_with_the_entry_inside_the_release_is_refused(rewrite, capsys):
+    merge(rewrite, "old", "train")
+    write(rewrite, BAD_INTO_RELEASE)
+    assert run(rewrite) == 1 and LEAD_D[:30] in capsys.readouterr().err
+
+
+def test_failure_the_car_merge_with_the_entry_inside_the_rewritten_section_is_refused(rewrite):
+    merge(rewrite, "old", "train")
+    write(rewrite, BAD_INTO_REWRITTEN)
+    assert run(rewrite) == 1
+
+
+def test_failure_the_car_merge_with_the_entry_inside_the_release_and_a_stale_origin_main_is_refused(rewrite):
+    git(rewrite, "update-ref", "refs/remotes/origin/main", "old~1")
+    merge(rewrite, "old", "train")
+    write(rewrite, BAD_INTO_RELEASE)
+    assert run(rewrite) == 1
+
+
+def test_failure_ci_refuses_the_bad_merge_of_main_once_it_is_committed(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, BAD_INTO_RELEASE)
+    git(rewrite, "commit", "-q", "-m", "merge main")
+    assert run(rewrite) == 1
+
+
+def test_failure_a_rebase_across_the_rewrite_with_the_entry_inside_the_release_is_refused(rewrite):
+    git(rewrite, "switch", "-q", "old")
+    assert git_rc(rewrite, "rebase", "-q", "main") != 0, "the rebase was meant to stop on y"
+    write(rewrite, "old\n", name="y")
+    write(rewrite, BAD_INTO_RELEASE)
+    assert run(rewrite) == 1
+
+
+def test_failure_a_merge_of_main_that_keeps_the_branchs_older_pin_is_refused_and_names_the_newer(rewrite, capsys):
+    merge(rewrite, "main", "old")
+    write(rewrite, GOOD_ACROSS)
+    assert index_pin(rewrite) == P0
+    assert run(rewrite) == 1 and P1 in capsys.readouterr().err
+
+
+def test_failure_a_merge_of_main_that_keeps_the_old_released_text_is_refused(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, log(sections(Added=D), released=NEW_SECTION + OLD))
+    assert run(rewrite) == 1
+
+
+def test_failure_a_changed_byte_that_no_parent_shows_is_refused_under_the_newer_pin(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, P1)
+    write(rewrite, log(sections(Added=D), released=REL_NEW.replace("smaller files", "small files")))
+    assert run(rewrite) == 1
+
+
+def test_failure_a_pin_no_parent_holds_does_not_excuse_a_change(rewrite):
+    merge(rewrite, "main", "old")
+    set_pin(rewrite, "f" * 64)
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite) == 1
+
+
+def test_failure_two_rewrites_from_one_pin_merged_without_a_new_pin_are_refused():
+    found = cm.released_problems(NEW_SECTION + OLD_R, P1, [rel("HEAD", NEW_SECTION + OLD_R, P1, {P0, P1}),
+                                                           rel("car", OLD_R2, P2, {P0, P2})])
+    assert len(found) == 1 and found[0].startswith("against car:")
+
+
+def test_failure_a_newer_pin_does_not_excuse_when_its_parent_does_not_judge_the_result():
+    # main holds the newer pin, but the result is not main's released part:
+    # no parent excuses the other, so both are problems.
+    ours = NEW_SECTION.replace("### Added\n\n", "### Added\n\n" + D) + OLD_R
+    found = cm.released_problems(ours, P1, [rel("HEAD", OLD, P0), rel("main", REL_NEW, P1, {P0, P1})])
+    assert [p.split(":")[0] for p in found] == ["against HEAD", "against main"]
+
+
+def test_failure_two_commits_with_the_pin_of_the_index_do_not_excuse_each_other():
+    # Same pin, different released text: one of them changed released text
+    # without moving the pin, which nothing replaces.
+    changed = REL_NEW.replace("smaller files", "small files")
+    found = cm.released_problems(REL_NEW, P1, [rel("HEAD", REL_NEW, P1, {P0, P1}),
+                                               rel("main", changed, P1, {P0, P1})])
+    assert len(found) == 1 and found[0].startswith("against main:")
+
+
+def test_failure_a_newer_pin_whose_parent_never_held_the_older_one_does_not_excuse_it():
+    found = cm.released_problems(REL_NEW, P1, [rel("HEAD", OLD, P0), rel("main", REL_NEW, P1, {P1})])
+    assert len(found) == 1 and found[0].startswith("against HEAD:")
+
+
+# Edge.
+
+
+def test_edge_the_pin_history_of_a_commit_holds_every_pin_it_moved_past_and_no_pin(rewrite):
+    assert cm.pin_history(rewrite, git(rewrite, "rev-parse", "main")) == {"", P0, P1}
+
+
+def test_edge_the_pin_history_of_an_old_branch_does_not_hold_the_newer_pin(rewrite):
+    assert cm.pin_history(rewrite, git(rewrite, "rev-parse", "old")) == {"", P0}
+
+
+def test_edge_the_pin_history_of_a_commit_before_the_pin_file_is_no_pin(rewrite):
+    assert cm.pin_history(rewrite, git(rewrite, "rev-parse", "old~2")) == {""}
+
+
+def test_edge_the_pin_history_follows_a_side_branch_that_moved_the_pin(rewrite):
+    git(rewrite, "switch", "-q", "-c", "outline", "old~1")
+    set_pin(rewrite, P2)
+    commit(rewrite, log(sections(Added=H), released=OLD_R2), "side rewrite")
+    git(rewrite, "switch", "-q", "main")
+    git(rewrite, "merge", "-q", "-s", "ours", "--no-edit", "outline")
+    assert P2 in cm.pin_history(rewrite, git(rewrite, "rev-parse", "main"))
+
+
+def test_edge_the_pin_history_of_a_commit_that_does_not_exist_is_empty(rewrite):
+    assert cm.pin_history(rewrite, "0" * 40) == frozenset()
+
+
+def test_edge_a_parent_with_the_index_pin_is_judged_strictly():
+    found = cm.released_problems(REL_NEW, P1, [rel("HEAD", OLD_R, P1, {P0, P1}),
+                                               rel("main", REL_NEW, P1, {P0, P1})])
+    assert found == []
+    found = cm.released_problems(NEW_SECTION + OLD, P1, [rel("main", REL_NEW, P1, {P0, P1})])
+    assert len(found) == 1
+
+
+def test_edge_an_index_without_a_pin_excuses_no_parent():
+    found = cm.released_problems(REL_NEW, "", [rel("HEAD", OLD, P0), rel("main", REL_NEW, "", {""})])
+    assert len(found) == 1 and found[0].startswith("against HEAD:")
+
+
+def test_edge_a_parent_without_a_changelog_needs_no_excuse():
+    assert cm.released_problems(REL_NEW, P1, [rel("HEAD", None, ""), rel("main", REL_NEW, P1, {P1})]) == []
+
+
+def test_edge_a_pin_file_with_only_comments_is_no_pin_and_its_history_is_no_pin(rewrite):
+    git(rewrite, "switch", "-q", "-c", "blank", "old~2")
+    write(rewrite, "# no pin yet\n", name=PIN_FILE)
+    git(rewrite, "commit", "-q", "-m", "comment only")
+    assert index_pin(rewrite) == "" and cm.pin_history(rewrite, git(rewrite, "rev-parse", "HEAD")) == {""}
+
+
+def test_edge_an_explicit_base_from_before_the_rewrite_is_still_the_one_base(rewrite):
+    # --base names the one commit to compare with; no other parent excuses it.
+    write(rewrite, GOOD_ACROSS)
+    assert run(rewrite, "--base", "old") == 1 and run(rewrite, "--base", "main") == 0
+
+
+def test_edge_the_check_keeps_its_three_field_others(rewrite):
+    # A caller that passes (label, text, pin) without a history is judged
+    # strictly, as before.
+    found = cm.check(GOOD_ACROSS, GOOD_ACROSS, P1, P1, others=[("HEAD", log("", released=OLD), P0)])
+    assert len(found) == 1 and found[0].startswith("against HEAD:")
+
+
+def test_edge_the_base_is_excused_by_a_newer_parent_like_any_other(rewrite):
+    found = cm.check(GOOD_ACROSS, log(sections(Added=H + D), released=OLD), P1, P0,
+                     others=[("HEAD", log("", released=REL_NEW), P1, {"", P0, P1})])
+    assert found == []
+
+
+def test_edge_the_docstring_states_that_the_pin_is_the_authority():
+    doc = cm.__doc__
+    assert "newest pin" in doc and "history" in doc and "d023f4815" in doc
