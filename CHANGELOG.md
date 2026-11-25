@@ -25,7 +25,7 @@ entry that carries them.
   - Effect: The operating system takes the memory back at exit; the output, the output files and the exit status stay the same.
   - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 1.90% fewer instructions, and one with RTP 1.75% fewer.
   - Limit: callgrind counted the instructions; there is no wall-time figure, because the host stayed busy.
-- **Changelog sections 0.5.214 down to 0.5.187 are outlines too.**
+- **Changelog sections 0.5.214 down to 0.5.186 are outlines too.**
   - Effect: each entry says what changed, what to do and where the detail is; entries about hooks, CI and tests are removed.
   - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
 
@@ -3814,525 +3814,127 @@ entry that carries them.
 
 ### Added
 
-- **Every committed capture has to say where it came from.**
-  - `every_committed_capture_is_public_or_synthetic` reads the index.
-  - It finds each capture by its leading bytes, whatever the file is called.
-    It recognizes these:
-    - Classic pcap in either byte order and either timestamp precision.
-    - pcapng.
-    - NetMon 2.x.
-    - gzip around any of them.
-  - It fails on a capture with no entry in `tests/PROVENANCE.md`.
-  - An entry is one of these:
-    - `public`, with the URL and the license.
-    - `synthetic`, with the tracked generator that writes it.
-  - An entry carries the SHA-256 of the bytes it vouches for.
-
-    - So replacing a fixture's bytes means saying again where they came from.
-  - An entry for a file that is gone fails too.
-  - `tests/pcap-samples/` keeps its own manifest and gate.
-  - A capture that is neither goes on a list that only shrinks, with its
-    reason.
-    - Eight started there.
-    - All eight now have generators.
-    - So the list is empty and its ceiling is zero.
-
 - **`-I` reads archives of captures.**
-  - A `.tar`, `.tgz` or `.tar.gz` reads like a directory.
-    - Every capture inside joins the set in capture order.
-    - The answer matches reading the unpacked directory.
-  - gzip-compressed members and archives nested in archives unwrap too.
-    - The limit is four layers.
-    - sipnab recognizes each by its bytes rather than its name.
-
-  - Every member sipnab does not read gets a `Skipping` line with the
-    reason. The reasons are these:
-    - Empty.
-    - Not a capture.
-    - A link.
-    - A device node.
-    - A sparse file.
-    - A format it does not unwrap, such as ZIP or `zstd`.
-  - The closing `-I resolved to` line counts them.
-  - `--input-name` filters an archive's members.
-  - It used to fail with libpcap's `unknown file format`.
+  - Effect: a `.tar`, `.tgz` or `.tar.gz` reads like the unpacked directory, every capture inside joining the set in capture order.
+  - Effect: gzip members and nested archives unwrap too, up to four layers, each recognized by its bytes rather than its name.
+  - Effect: every member sipnab does not read gets a `Skipping` line with the reason, and the closing `-I resolved to` line counts them.
+  - Limit: sipnab skips empty members, links, device nodes, sparse files and formats it does not unwrap, such as ZIP or `zstd`.
+  - Was: `-I` failed with libpcap's `unknown file format`; `--input-name` now filters an archive's members.
 - **The same archives open everywhere a capture does.**
-  - The TUI file browser and MCP `list_captures` list `.tar`, `.tgz` and
-    `.tar.gz`.
-    - They load one as the set of captures it holds.
-  - So do these:
-    - MCP `open_capture`, `find_in_captures` and `compare_captures`.
-    - The REST compare route.
-  - `--cores` reads an archive's members exactly as the single-threaded
-    reader does.
-- **A test proves decryption answers the same through every wrapper.**
-  - It runs these over one synthetic capture:
-    - TLS with `--keylog`.
-    - TLS with a pcapng's embedded secrets.
-    - SRTP keyed by SDES.
-    - DTLS-SRTP.
-  - It presents the capture in five ways:
-    - Plain.
-    - gzip-compressed.
-    - As a tar member.
-    - As a `.tgz` member.
-    - gzip-compressed inside a `.tgz`.
-  - It requires identical plaintext from all five.
-  - Before archive input, sipnab could not open the three archive columns at
-    all.
+  - Effect: the TUI file browser and MCP `list_captures` list `.tar`, `.tgz` and `.tar.gz` and load one as the captures it holds.
+  - Effect: so do MCP `open_capture`, `find_in_captures` and `compare_captures` and the REST compare route.
+  - Effect: `--cores` reads an archive's members as the single-threaded reader does.
 - **Frame pointers name archive members, and resolve.**
-  - A packet read out of an archive carries `<archive>/<member>#<ordinal>`
-    as its frame pointer.
-  - `--show-frame`, MCP `show_evidence`, `decode_frame` and
-    `decode_ng_frame` read that member back out of the archive to follow it.
-  - MCP confines the archive to `--mcp-file-root` by name, as it does a
-    capture.
+  - Effect: a packet from an archive carries `<archive>/<member>#<ordinal>` as its frame pointer.
+  - Effect: `--show-frame`, MCP `show_evidence`, `decode_frame` and `decode_ng_frame` read that member back out of the archive.
+  - Limit: MCP confines the archive to `--mcp-file-root` by name, as it does a capture.
 - **`sipnab_run` reports an archive cut short.**
-  - Two places say when sipnab could not unpack an archive to its end:
-    - `archives.cut_short` in the `--json-dialogs` trailer.
-    - A line in the `INCOMPLETE RUN` block.
-  - The run exits `1`.
-    - Members past that point are in no report.
+  - Effect: `archives.cut_short` in the `--json-dialogs` trailer and a line in the `INCOMPLETE RUN` block say sipnab could not unpack an archive to its end.
+  - Effect: the run exits `1`; members past that point are in no report.
 - **sipnab reads SIP inside ESP with NULL encryption.**
-  - An IMS lab protects the phone-to-P-CSCF interface with IPsec ESP.
-  - It often runs it with NULL encryption.
-    - So the SIP travels in the clear between an ESP header and trailer.
-  - sipnab now peels them when these prove NULL encryption:
-    - The trailer.
-    - The padding.
-    - The inner TCP or UDP checksum.
-  - This works over IPv4, IPv6 and fragmented datagrams.
-  - ESP that fails those checks stays unread.
-    - The `NOT DECODED` line now names it `ESP not NULL-encrypted (IP protocol 50)`.
-  - The decryption matrix test carries an ESP row through all five wrappers.
+  - Effect: when the trailer, the padding and the inner TCP or UDP checksum prove NULL encryption, sipnab reads the SIP an IMS lab sends.
+  - Effect: this works over IPv4, IPv6 and fragmented datagrams.
+  - Limit: ESP that fails those checks stays unread, and `NOT DECODED` names it `ESP not NULL-encrypted (IP protocol 50)`.
 - **The capture-quality line counts holes in TCP streams.**
-  - A capture can miss a segment.
-  - sipnab now resumes at the next SIP message behind the hole.
-  - It says how many holes it skipped.
-  - It says how many bytes of sequence space they spanned.
-
+  - Effect: sipnab resumes at the next SIP message behind a missing segment and says how many holes it skipped and how many bytes they spanned.
 - **Filter on any header: `header.<name>`.**
-  - The DSL could match `from.user`, `ua`, `call_id` and the rest of a
-    closed list.
-  - It matched everything else only through `payload`.
-    - That is a substring search over the whole message.
-  - A filter now selects a dialog by any header it carries.
-    - It checks every message of the dialog.
-    - It considers each repeated header.
-    - Examples: `header.x-cid == 'abc'` and
-      `header.p-asserted-identity =~ 'sip:alice@'`.
-  - Header names are compared case-insensitively.
-  - A compact form names the same header as its long form
-    ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.3)).
-    - So `header.k` and `header.Supported` are one field.
-  - A name is bounded at 256 bytes (`MAX_HEADER_NAME_LEN`).
-  - It reaches every surface that takes a filter:
-    - `--filter`
-    - The TUI filter dialog.
-    - REST and MCP.
+  - Was: the DSL matched a closed list such as `from.user`, `ua` and `call_id`, and everything else only through a `payload` substring search.
+  - Effect: `header.x-cid == 'abc'` or `header.p-asserted-identity =~ 'sip:alice@'` selects a dialog by any header of any message, repeated ones included.
+  - Effect: names compare without case, and a compact form names its long form ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.3.3)), so `header.k` is `header.Supported`.
+  - Limit: a name holds at most 256 bytes; it works in `--filter`, the TUI filter dialog, REST and MCP.
 
 ### Changed
 
-- **The cookbook, troubleshooting and reference pages read task-first.**
-  - The cookbook's goal table is grouped into eight tasks.
-    - It now lists recipes "Export one call to a conversation archive as a vCon", "See who is on a recorded call" and "Send a carrier the capture with your notes on the frames".
-  - Recipes "Decrypt SIP over TLS when you can restart the phone or server — key log file (SSLKEYLOGFILE)" and "Let an AI agent ask sipnab about your calls" are named for what the reader wants to do.
-  - The second recipe "Block a scanner with a rule sipnab wrote, after reading the evidence" is 10d.
-  - Troubleshooting gives vCon export failures their own section and symptom
-    row.
-    - It sends report, audio and browser tasks to the cookbook.
-  - The filter page opens with examples.
-    - Its quick start keeps `-N` so the TUI does not open.
-  - The output page starts with a "Which output do I want?" table.
-  - The authentication page puts its steps before the token format.
-  - The minimal config example sets these:
-    - The device.
-    - The signaling ports.
-    - A diagnosis threshold.
+- **The cookbook's goal table groups its recipes into eight tasks.**
+  - Effect: it lists "Export one call to a conversation archive as a vCon".
+  - Effect: it lists "See who is on a recorded call".
+  - Effect: it lists "Send a carrier the capture with your notes on the frames".
+  - Effect: the second recipe "Block a scanner with a rule sipnab wrote, after reading the evidence" is 10d.
+- **Two cookbook recipes carry names for what the reader wants to do.**
+  - Effect: "Decrypt SIP over TLS when you can restart the phone or server — key log file (SSLKEYLOGFILE)".
+  - Effect: "Let an AI agent ask sipnab about your calls".
+- **The troubleshooting and reference pages read task-first.**
+  - Effect: troubleshooting gives vCon export failures a section; the filter page opens with examples; the output page starts with "Which output do I want?".
+  - Effect: the authentication page puts its steps first, and the minimal config example sets the device, the signaling ports and a diagnosis threshold.
 - **The documentation index lists each page once, by task.**
-  - Tutorials are install, the command-line triage and the TUI walkthrough.
-  - MCP deployment and TLS-without-keys moved to the how-to guides.
-    - The how-to guides are grouped by what the reader is doing.
-  - The filter page and MCP pages no longer appear twice.
+  - Effect: tutorials are install, the command-line triage and the TUI walkthrough; MCP deployment and TLS-without-keys moved to the grouped how-to guides.
 - **Maintainer detail moved out of the user pages.**
-  - The encapsulations page opens with a "Can sipnab read my capture?"
-    table.
-    - It includes what a live capture needs for each wrapper.
-    - It keeps its sources and history at the end.
-  - The CLI reference's 600-word note on the generated BPF filter is now two
-    sentences.
-    - The detail is on the encapsulations page.
-
-  - The install page's release-gate rationale sits in a collapsed "Why / how
-    we know" block.
-  - The MCP deployment page is retitled "Connect an AI agent to sipnab".
-    - It says plainly which scenarios were last run on which release.
-
-  - The MCP page shows how to query the server with only the installed
-    binary and `jq`.
-- **A command-line tutorial.**
-  - `docs/first-cli-triage.md` takes a new reader from a downloaded sample
-    call to these:
-    - A per-call table.
-    - The failed calls.
-    - One call's report.
-    - A `jq` pipeline.
-  - It shows the real output of each step.
-- **A glossary, and a sample capture to start with.**
-  - `docs/glossary.md` defines PDD, MOS, B2BUA, HEP and the other terms the
-    pages use.
-    - It gives one short definition each.
-    - The definitions are checked against how sipnab computes them.
-  - The README's first run and the TUI walkthrough define each term at first
-    use.
-
-    - They link the glossary.
-    - For a reader with no capture of their own, they start with
-      `curl -LO https://sipnab.com/demos/sample-call.pcap`.
-
+  - Effect: the encapsulations page opens with a "Can sipnab read my capture?" table, with what a live capture needs per wrapper.
+  - Effect: the CLI reference's note on the generated BPF filter is two sentences; the install page's release-gate rationale sits in a collapsed block.
+  - Effect: the MCP deployment page is now "Connect an AI agent to sipnab", says which scenarios last ran on which release, and shows a `jq` query.
+- **A command-line tutorial and a glossary.**
+  - Effect: `docs/first-cli-triage.md` takes a sample call to a per-call table, the failed calls, one call's report and a `jq` pipeline, with real output.
+  - Effect: `docs/glossary.md` defines PDD, MOS, B2BUA, HEP and the other terms, each as sipnab computes it; the README and TUI walkthrough link it.
+  - Do: with no capture of your own, start with `curl -LO https://sipnab.com/demos/sample-call.pcap`.
 - **The TUI reads as plain words.**
-  - The header names the source.
-
-    - Examples: `Live capture: eth0` and `File: call.pcap`.
-    - This is now true for a `-I` session, which said `Online (any)`.
-  - It counts `Dialogs: 3 shown of 5`.
-  - It spells out autoscroll.
-  - Line 2 is the capture (BPF) filter and line 3 the view filter.
-    - Both used to repeat the view filter.
-  - Analysis panels wrap instead of cutting sentences at the border.
-  - Carrier metrics defines ASR, NER and ACD one per line.
-  - Every view's key bar offers `F1 Help`.
-  - `F1` and `?` now open help from the analysis views too.
-  - The split pane is the "detail pane" everywhere.
-  - Settings and status values use the words the help uses.
-  - The help gains a TERMS section.
-  - Errors carry their severity in the code.
-
-    - So `File not found` draws red.
-  - The clipboard error says to install xclip or press F12 and drag.
-  - The quality dashboard names each MOS band in a word.
-  - The save dialog keeps its path, count and keys on a 24-row screen.
-  - The default text color follows the terminal.
-    - So light terminals read.
-
-- **Five committed captures are now built by a generator anyone can run.**
-  - Two rtpengine relay fixtures were live captures from the lab network.
-  - A fuzz seed was a copy of a third-party capture.
-  - The two oldest fixtures used private addresses.
-  - `tests/support/synthetic_captures.rs` now builds all five, plus the
-    empty fuzz seed.
-    - They use [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737.html)
-      addresses and [RFC 7042](https://www.rfc-editor.org/rfc/rfc7042.html)
-      MAC addresses.
-    - `cargo run --features native --bin gen_fixture` writes them.
-  - `tests/synthetic_captures_test.rs` rebuilds each one.
-    - It fails on the first byte that differs.
-  - The relay pair keeps what the live exchange showed:
-    - rtpengine's unsorted `ng` keys.
-    - Replies with no `call-id`.
-    - The relay's ports and timing.
-    - Kernel forwarding after the third packet.
-    - A `delete` reply whose second fragment the capture never saw.
-  - Its addresses now match the output `docs/rtpengine.md` already printed.
-  - Tests that quoted an old address or Call-ID quote the new one.
-
-    - Each says why.
-  - Git history still holds the old bytes.
-
-- **The last eight committed captures without a generator now have one.**
-
-  - SIPp plays two media files in the harness: `g711a.pcap` and
-    `g722.pcap`.
-    - They were copies of a third-party repository that states no license.
-    - They are now tones encoded as G.711 A-law and G.722.
-    - They keep the old files' packet counts, payload types and 20 ms
-      framing.
-  - sipnab decodes no G.722.
-    - So `tests/support/codecs.rs` carries an ITU-T G.722 encoder.
-    - The suite checks it byte for byte against spandsp and FFmpeg on three
-      inputs.
-  - The two OpenSIPS relay fixtures had carried the start of that
-    third-party G.722.
-    - They keep their control plane, the relay's G.722-to-PCMU transcode and
-      their timing.
-    - They move to 198.51.100.0/24.
-    - So the Call-ID the tests quote is now `1-4062@198.51.100.21`.
-  - The four STUN, TURN and ICE fixtures had been built by hand with no
-    generator.
-    - `ice_checks.pcap` and `turn_relay.pcap` come out byte-identical.
-    - The two NAT fixtures change only these:
-      - Their MAC addresses, which were outside the RFC 7042 documentation
-        block.
-      - In `stun_sdp_mismatch.pcap`, the two SDP bodies' `Content-Length`,
-        which said 126 for 134 bytes.
-    - Its [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918.html) address
-      stays, because it is the mismatch the fixture shows.
-    - The test that checks for documentation addresses lists it as the one
-      deliberate exception.
-
-- **The OpenSIPS relay test counts the relay-named streams for real.**
-  - It checked the call's row with `contains('2')`.
-    - The Call-ID alone satisfies that.
-    - So a report that named only one leg passed.
-  - It now reads the Streams column.
-  - A report that counts one stream fails it.
-
-
+  - Effect: the header names the source, such as `Live capture: eth0` or `File: call.pcap`, where `-I` said `Online (any)`, and counts `Dialogs: 3 shown of 5`.
+  - Effect: line 2 is the capture (BPF) filter and line 3 the view filter; panels wrap, and carrier metrics define ASR, NER and ACD.
+  - Effect: every key bar offers `F1 Help`, `F1` and `?` open help from analysis views, and help gains a TERMS section.
+  - Effect: errors carry their severity, so `File not found` draws red; the clipboard error says to install `xclip` or press F12 and drag.
+  - Effect: the dashboard names each MOS band, the save dialog fits 24 rows, and the default text color follows the terminal.
 - **`--max-gunzip-bytes` bounds a `-I capture.pcap.gz` too.**
-  - sipnab inflated a compressed capture to a temporary file with no bound
-    at all.
-  - The documentation said libpcap did it.
-  - The ceiling now covers that file and every gzip layer of an archive.
-    - It is summed across the layers of one input.
-    - So a nested gzip bomb stops at the same ceiling.
-  - A `.pcap.gz` that inflates past 1 GiB now needs `--max-gunzip-bytes`
-    raised.
+  - Was: sipnab inflated a compressed capture to a temporary file with no bound, though the documentation said libpcap did it.
+  - Effect: the ceiling covers that file and every gzip layer of an archive, summed across one input, so a nested gzip bomb stops too.
+  - Do: raise `--max-gunzip-bytes` for a `.pcap.gz` that inflates past 1 GiB.
 - **A new YANG revision, `sipnab-diagnosis@2026-09-22`.**
-  - The ICMP media finding's unit changed.
-  - A unit is part of an identity's description in the module.
-
-    - So the module gains a revision rather than editing the published one.
-  - Descriptions only changed.
-    - No node, identity or type changed.
-  - `pyang --check-update-from` holds the pair to
-    [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950.html#section-11).
-  - The 2026-09-21 file stays beside it.
-- **A member whose link type sipnab does not decode no longer ends a filtered
-  run.**
-  - A BPF filter may fail to compile against such a file.
-    - An example is an LTE MAC log in a set of SIP captures.
-  - Both readers now skip it with a line saying why.
-  - A filter that fails against a link type sipnab does decode still ends
-    the run.
-  - Every file of that kind now also gets a line naming its link type.
-
-- **Nothing sipnab sends is named with an `X-` prefix
-  ([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648.html)).**
-  - Three names carried one.
-  - Each moves to its modern equivalent:
-    - The REST audio response header `x-sipnab-audio-partial` is now
-      `Sipnab-Audio-Partial`.
-    - The site's `X-Frame-Options: DENY` is dropped.
-      - The same responses already carry the Content-Security-Policy
-        `frame-ancestors 'none'`.
-    - Leg correlation no longer defaults to the `X-Call-ID` header.
-      - An estate that stamps one names it in `[sip] xcid_headers`.
-      - [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID`
-        crosses a B2BUA by design.
-      - It is correlation strategy 0 and needs no configuration.
-  - `X-Content-Type-Options: nosniff` stays, as the one exception.
-    - The WHATWG Fetch Standard defines it under that name.
-    - There is no alternative spelling.
-  - A gate reads the REST and MCP surfaces and the published site headers.
-    - It fails on any other `X-` name.
-  - None of this touches headers a CAPTURE carries.
-
-    - [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648.html#section-2)
-      forbids treating a header differently for its prefix.
-    - So sipnab reads `X-Asterisk-HangupCause` and an SBC's `X-CID` exactly
-      as before.
+  - Effect: the ICMP media finding's unit changed in a description; no node, identity or type changed, and the 2026-09-21 file stays beside it.
+  - Docs: `pyang --check-update-from` holds the pair to [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950.html#section-11).
+- **A member whose link type sipnab does not decode no longer ends a filtered run.**
+  - Was: a BPF filter that failed to compile against such a file, such as an LTE MAC log, ended the run.
+  - Effect: both readers skip it with a line saying why, and every such file gets a line naming its link type.
+  - Limit: a filter that fails against a link type sipnab decodes still ends the run.
+- **Nothing sipnab sends carries an `X-` prefix ([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648.html)).**
+  - Effect: the REST audio header `x-sipnab-audio-partial` is now `Sipnab-Audio-Partial`, and the site drops `X-Frame-Options: DENY` for `frame-ancestors 'none'`.
+  - Do: leg correlation no longer defaults to `X-Call-ID`; name it in `[sip] xcid_headers`, or rely on [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID`, strategy 0.
+  - Limit: `X-Content-Type-Options: nosniff` stays, as the WHATWG Fetch Standard names it, with no other spelling.
+  - Limit: headers in a capture read as before, such as `X-Asterisk-HangupCause` and `X-CID` ([RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648.html#section-2)).
 
 ### Fixed
 
 - **A-law audio decoded with inverted polarity.**
-  - ITU-T G.711 reads an A-law byte's sign after XOR with 0x55.
-    - A set bit 7 is positive.
-  - sipnab's decode table had it the other way round.
-    - So every PCMA sample came out negated.
-    - `0xD5` decoded to -8 and `0x55` to +8.
-    - That is the reverse of sox and FFmpeg.
-  - The magnitudes were right.
-    - So levels, clipping and MOS were unaffected.
-    - But an exported WAV was phase-inverted against every other tool's
-      decode.
-  - sipnab now computes the table from the G.711 formula at compile time.
+  - Was: every PCMA sample came out negated, `0xD5` as -8 and `0x55` as +8, the reverse of `sox` and FFmpeg.
+  - Effect: sipnab computes the table from the ITU-T G.711 formula; levels, clipping and MOS were right, but exported WAV files had inverted phase.
 - **An oversized REST request body is a 413, not a 400.**
-  - Every `POST` route takes its JSON body fallibly.
-    - This lets it check the API key first.
-  - That turned the 1 MiB body limit's own 413 into a 400.
-    - That answer told the client its JSON was malformed.
-  - These now answer 413:
-    - `POST /v1/persistence`
-    - `/v1/tfps/ban`
-    - `/v1/tfps/unban`
-    - `/v1/vcon/validate`
-  - The OpenAPI document lists it.
+  - Was: the 1 MiB body limit answered 400, telling the client it sent malformed JSON.
+  - Effect: `POST /v1/persistence`, `/v1/tfps/ban`, `/v1/tfps/unban` and `/v1/vcon/validate` answer 413, and the OpenAPI document lists it.
 - **`--srtp-keys` warns when it loads keys.**
-  - Loading a manual SRTP key file logged only at the info level.
-    - So a run at `-q` or `SIPNAB_LOG=warn` never said hand-supplied key
-      material was in use.
-  - It now also logs `manual SRTP keys loaded from <file> — use only in test environments` as a warning.
-- **`--reg-flood` matches a challenge without a `Via` branch.**
-  - A 401 or 407 settled a credentialed REGISTER only through the top `Via`
-    branch.
-  - An [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html) client does
-    not send one.
-
-    - So a branchless credential-stuffing run counted no failures at all.
-  - When there is no branch, the detector now falls back to the `Call-ID`
-    and `CSeq` that identify the transaction.
-- **`--reg-flood` no longer counts a challenge to an expired REGISTER.**
-  - A pending REGISTER stayed open until its source aged out.
-    - So a 401 minutes later still counted as a failure.
-  - A REGISTER's transaction now closes at Timer F, 32 seconds
-    ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2)).
-
-- **Troubleshooting's decode example matches this release.**
-  - It quoted `unsupported link type 0`.
-  - It said DLT 0, 9 and 276 had no decoder.
-    - sipnab decodes all three.
-
-  - The example is now a real run over link type 147.
-  - The table points at the list of link types sipnab reads.
-  - Its audio section said only G.711 exports.
-    - It now defers to the cookbook recipe, which also lists Opus.
-- **Documented commands paste and run as written.**
-  - 31 lines put a placeholder inside a shell block.
-    - The pages were install, cookbook, troubleshooting and vCon harness.
-    - Examples are `<call-id>`, `<version>` or `<uuid>`.
-  - The shell reads `<word>` as "redirect input from a file named word".
-    - So a pasted command failed with a file-not-found error.
-    - A `v<version>` download URL fetched nothing.
-  - Each now sets a shell variable on its own line and uses it.
-  - `tests/no_placeholder_in_shell_blocks_test.rs` fails on any placeholder
-    in a shell block of the README or a `docs/` page.
-
-- **The documentation says what sipnab actually does.**
-  - Cookbook recipe "Triage a pcap fast" said `sipnab -N -I capture.pcap` printed "dialog
-    count, methods, average PDD".
-    - It prints one line per SIP message.
-    - The recipe now shows `--report` for the per-call view.
-    - It says what `--problems` selects.
-  - The TUI walkthrough said selected dialogs show `▸`.
-    - They show `[*]`.
-  - The REST API guide told a release user to compile with
-    `--features api`.
-    - Every release binary already has it.
-  - The guide put the API key on the command line, where `ps` shows it.
-    - It now checks `--version`.
-    - It reads `SIPNAB_API_KEY` from the environment, passed through
-      `sudo --preserve-env`.
-  - The install page had these errors:
-    - It called sipnab one static binary depending on libpcap.
-      - Only the musl build is static and needs nothing else.
-    - It left `plugins`, `bpf` and `vcon` out of what needs `native`.
-    - It sent MCP deployment readers to the wrong page.
-    - It said the packages remove `/etc/sipnab/sipnab.toml`.
-      - None ships or removes it.
-  - Troubleshooting counted 33 filter fields.
-    - The DSL has 32 plus any header by name.
-  - A find-and-replace had damaged three sentences in the README and the CLI
-    reference into non-sentences.
-    - They read plainly again.
-
-- **An empty `xcid_headers` list is obeyed.**
-  - sipnab ignored `with_xcid_headers(vec![])`.
-  - So a configuration that deliberately turned correlation headers off got
-    the built-in default back instead.
-
+  - Was: a run at `-q` or `SIPNAB_LOG=warn` never said it used hand-supplied key material.
+  - Effect: it logs `manual SRTP keys loaded from <file> — use only in test environments` as a warning.
+- **`--reg-flood` matches a challenge without a `Via` branch, and not after Timer F.**
+  - Was: an [RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html) client sends no branch, so a branchless credential-stuffing run counted no failures.
+  - Effect: with no branch the detector matches the `Call-ID` and `CSeq` of the transaction.
+  - Effect: a REGISTER's transaction closes at Timer F, 32 seconds ([RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2)), so a 401 minutes later no longer counts.
+- **The documentation says what sipnab does, and its commands paste and run.**
+  - Was: 31 lines put a placeholder such as `<call-id>` inside a shell block, which the shell reads as a redirect; each now sets a variable.
+  - Was: recipe "Triage a pcap fast" said `sipnab -N -I capture.pcap` printed "dialog count, methods, average PDD"; it now shows `--report` and `--problems`.
+  - Was: troubleshooting quoted `unsupported link type 0` and said DLT 0, 9 and 276 had no decoder; its example now runs over link type 147.
+  - Was: troubleshooting counted 33 filter fields for 32 plus any header, and said only G.711 exports audio; it now points to the recipe listing Opus.
+- **The install, REST and TUI guides match the release binaries.**
+  - Was: the TUI walkthrough showed `▸` for selected dialogs, which show `[*]`; the REST guide asked a release user for `--features api`.
+  - Effect: the REST guide checks `--version` and reads `SIPNAB_API_KEY` through `sudo --preserve-env`, not from the command line `ps` shows.
+  - Was: the install page called sipnab one static binary, when only the musl build is, and left `plugins`, `bpf` and `vcon` out of `native`.
+  - Was: it sent MCP deployment readers to the wrong page and said packages remove `/etc/sipnab/sipnab.toml`, which none ships or removes.
+  - Effect: three sentences of the README and CLI reference a find-and-replace had damaged read plainly again.
+- **sipnab obeys an empty `xcid_headers` list.**
+  - Was: sipnab ignored `with_xcid_headers(vec![])`, so a configuration that turned correlation headers off got the default back.
 - **A missing TCP segment no longer hides the rest of the connection.**
-  - A segment the capture never held left a hole that no later packet
-    filled.
-  - sipnab held every later byte on that direction behind it.
-    - It held them until a buffer ceiling, a FIN or eviction.
-    - So the SIP after it never appeared.
-  - sipnab now resumes at the next message start behind the hole.
-    - It does this once one more packet shows the hole is not a reordering.
-  - It releases what is still held at the end of the input.
-  - Both readers do this.
+  - Was: sipnab held every later byte behind the hole until a buffer ceiling, a FIN or eviction, so the SIP after it never appeared.
+  - Effect: once another packet shows the hole is no reordering, both readers resume at the next message start and release the rest at the end.
 - **A retransmission no longer counts as a second message.**
-
-  - The capture can join a connection after its SYN.
-  - On such a connection, sipnab rewound to every earlier segment it saw.
-    - So each TCP retransmission reported its SIP message again.
-    - So did each copy another interface recorded.
-  - A direction silent for longer than the reassembly TTL now starts afresh.
-    - The TTL is measured in capture time.
-    - So a later connection on the same address and port pair still reads.
+  - Was: on a connection joined after its SYN, each TCP retransmission, and each copy another interface recorded, reported its SIP message again.
+  - Effect: a direction silent for longer than the reassembly TTL, in capture time, starts afresh.
 - **Duplicate IP fragments no longer drop the datagram.**
-  - A capture on `any` records a forwarded fragmented datagram once per
-    interface.
-  - sipnab read the second copy of a fragment as an overlap.
-    - It discarded the datagram, and the SIP in it.
-  - sipnab now ignores an exact copy of a fragment already held.
-    - [RFC 8200 section 4.5](https://www.rfc-editor.org/rfc/rfc8200.html#section-4.5)
-      allows this.
-  - Overlaps that differ still drop the datagram.
-- **A failed DNS lookup is no longer reported as undeliverable media.**
-  - An ICMP error can quote a DNS message whose random ID starts with RTP's
-    version bits.
-    - sipnab read it as RTP.
-    - It joined the critical `ICMP: media undeliverable` finding.
-  - The quoted DNS question now marks it as not media.
-  - That finding also counted ICMP errors while labeling them flows.
-    - It now says errors.
-- **A killed kill-worker no longer reads as alive for a moment after the
-  defense has been disabled.**
-  - A SIGKILLed process closes its pipes on the way out.
-    - This happens before the kernel lets it be reaped.
-  - In that window, the reader had seen end of stream and disabled the
-    defense.
-  - `is_alive` still asked only `try_wait` and answered "running".
-  - The two answers contradicted each other.
-    - A scanner-kill test caught it under CI load.
-  - `is_alive` now treats the worker's closed pipe as the end of the worker.
-    - The in-process path already did this.
-
-- **One timeout no longer reads as the site being down.**
-  - The daily certificate watcher asked sipnab.com once.
-  - On the v0.5.185 tag's run, the runner got no answer inside 20 seconds.
-    - The origin certificate was already dead, tolerated since 2026-09-11.
-    - So the timeout read as the outage.
-    - The site served everyone else, and the re-run passed.
-  - The watcher now asks up to three times.
-    - It stops at the first answer, a refusal from the edge included.
-  - It reports `000` only when no attempt got a response.
-    - It used to print `000000`.
-
+  - Was: on `any`, the second copy of a forwarded fragment read as an overlap, and sipnab discarded the datagram and its SIP.
+  - Effect: sipnab ignores an exact copy of a held fragment ([RFC 8200 section 4.5](https://www.rfc-editor.org/rfc/rfc8200.html#section-4.5)); differing overlaps still drop it.
+- **A failed DNS lookup no longer reads as undeliverable media.**
+  - Was: an ICMP error quoting a DNS message whose ID began with RTP's version bits joined `ICMP: media undeliverable`.
+  - Effect: the quoted DNS question marks it as not media, and the finding says errors where it said flows.
+- **A killed kill-worker no longer reads as alive after the defense turned off.**
+  - Was: `is_alive` answered "running" after the reader saw the pipe of a worker killed by SIGKILL close and disabled the defense.
+  - Effect: `is_alive` treats the closed pipe as the end of the worker.
 - **Skipping the first file of a set no longer kills the run.**
-  - The reader could skip the file that sorts first before opening it.
-    - Then nothing signaled readiness.
-    - The run died with `Capture thread exited before signaling ready`.
-  - The first file actually read now signals it.
-
-### Internal
-
-- **The RFC link check can fail, and its tests leave the checkout alone.**
-  - `scripts/rfc-links.py` without `--apply` reported what it would link.
-    - It exited 0 regardless.
-    - So the test calling it the tree's gate passed on every tree.
-
-  - Two other tests ran `--apply` on the real checkout.
-    - In CI, that linked three first mentions before `cargo test` ran.
-    - `site_pages_mirror_is_current` failed over a page the commit did not
-      hold.
-    - No local run reproduced this.
-  - Check mode now exits 1 when anything would change.
-  - Those tests run a copy of the script in a throwaway repository.
-
-- **Tests that exist only in a reduced build now run.**
-  - These compiled only where a feature is absent:
-    - The feature-gate refusals.
-    - The `mcp`-without-`mcp-http` startup error.
-    - The no-`audio` TUI snapshot.
-  - CI only type-checked those builds.
-  - Three `features` legs now run them with `cargo test`.
-  - The matrix gains `audio` and `plugins` on their own.
-    - Nothing built them alone before.
-
-- **Every `#[ignore]` names its reason and its runner.**
-  - A gate test fails on a bare `#[ignore]`.
-  - It also fails on an ignored test that meets all of these:
-    - No workflow runs it with `--ignored`.
-    - Its own file does not spawn it.
-    - It is not on an explicit manual-only list with the reason.
-  - The PTY TUI tests gained their reasons.
-  - The one `CAP_NET_RAW` fanout test is listed as manual-only.
-- **`--alert reg-flood:50/10s:5m` is tested end to end.**
-  - A capture drives the real rule string through the detector and the alert
-    engine.
-  - It proves that a second flood from the same source inside five minutes
-    raises no alert.
+  - Was: the run died with `Capture thread exited before signaling ready`.
+  - Effect: the first file sipnab reads signals readiness.
 
 ## [0.5.185] - 2026-09-22
 
@@ -10622,7 +10224,7 @@ entry that carries them.
   - It held a single INVITE dialog.
   - Its SIP sat on port 5080, outside the default `--portrange 5060-5061`.
   - So `sipnab -I sample-call.pcap` reported zero SIP messages.
-  - It now carries, on port 5060 with RFC 5737 addresses:
+  - It now carries, on port 5060 with [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737.html) addresses:
     - a challenged-then-authenticated REGISTER,
     - an OPTIONS probe,
     - an INVITE answered with two-way PCMU,
