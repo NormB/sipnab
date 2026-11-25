@@ -1948,7 +1948,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // row and exit-code `4` row link "Stop a capture before the disk fills",
     // and that how-to links "Write a unit of your own" and "Change the
     // packaged unit with a drop-in".
-    const EXPECTED_WIKI_LINKS: usize = 2767;
+    // 2767 -> 2768 (FILE-2 c, +1): docs/troubleshooting.md "Send us a crash
+    // report" links "How many crash reports sipnab keeps".
+    const EXPECTED_WIKI_LINKS: usize = 2768;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

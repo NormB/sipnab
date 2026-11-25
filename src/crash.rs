@@ -303,6 +303,8 @@ fn ensure_safe_report_dir(_dir: &Path) -> std::io::Result<()> {
 /// # Side effects
 /// Creates `dir` (0700 when fresh, on Unix), creates the report file
 /// (0600 on Unix), and advances the process-wide report sequence counter.
+/// After the report is written, removes sipnab's older reports from `dir`
+/// so that the newest `MAX_CRASH_REPORTS` (20) remain, best-effort.
 pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf> {
     ensure_safe_report_dir(dir)?;
     create_report_dir(dir)?;
@@ -319,6 +321,9 @@ pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf
         match open_new_report_file(&path) {
             Ok(mut file) => {
                 finish_report(&path, &mut file, contents)?;
+                // Best-effort: a report that was written is the result even
+                // when the old ones cannot be listed or removed.
+                let _ = prune_reports(dir, MAX_CRASH_REPORTS, &path);
                 return Ok(path);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -334,6 +339,119 @@ pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf
             "exhausted crash-report name attempts",
         )
     }))
+}
+
+/// How many crash reports the report directory keeps, the one just written
+/// among them. Each crash writes one file, so without a bound a service in
+/// a crash loop fills its state directory (FILE-2 c).
+pub(crate) const MAX_CRASH_REPORTS: usize = 20;
+
+/// The order key of a report name sipnab writes,
+/// `sipnab-crash-YYYYMMDD-HHMMSS-<pid>-<seq>.log`: `(date-time, seq, pid)`,
+/// each as a number.
+///
+/// # Returns
+/// `None` for any other name: the date not 8 ASCII digits, the time not 6,
+/// the pid or the sequence empty, not ASCII digits or past `u64`, another
+/// prefix or extension, or another number of fields. Pure.
+fn report_name_key(name: &str) -> Option<(u64, u64, u64)> {
+    /// A field of ASCII digits only, read as a number.
+    fn digits(s: &str) -> Option<u64> {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        s.parse().ok()
+    }
+    let body = name.strip_prefix("sipnab-crash-")?.strip_suffix(".log")?;
+    let mut fields = body.split('-');
+    let (date, time, pid, seq) = (
+        fields.next()?,
+        fields.next()?,
+        fields.next()?,
+        fields.next()?,
+    );
+    if fields.next().is_some() || date.len() != 8 || time.len() != 6 {
+        return None;
+    }
+    let stamp = digits(date)?
+        .checked_mul(1_000_000)?
+        .checked_add(digits(time)?)?;
+    Some((stamp, digits(seq)?, digits(pid)?))
+}
+
+/// The report names to remove so that `keep` reports remain, given every
+/// regular file of the directory as `(name, modification time)`.
+///
+/// Names that are not sipnab's report names are never chosen and do not
+/// count. `just_written` is never chosen and takes one of the `keep` places.
+/// The newest are kept: by modification time, then by the name's
+/// date-time, sequence and pid as numbers.
+///
+/// # Returns
+/// The names to remove, oldest first. Pure.
+fn reports_to_prune(
+    entries: Vec<(String, std::time::SystemTime)>,
+    keep: usize,
+    just_written: &str,
+) -> Vec<String> {
+    let mut reports: Vec<_> = entries
+        .into_iter()
+        .filter(|(name, _)| name != just_written)
+        .filter_map(|(name, mtime)| report_name_key(&name).map(|key| (mtime, key, name)))
+        .collect();
+    let room = keep.saturating_sub(1);
+    if reports.len() <= room {
+        return Vec::new();
+    }
+    reports.sort();
+    let excess = reports.len() - room;
+    reports
+        .into_iter()
+        .take(excess)
+        .map(|(_, _, name)| name)
+        .collect()
+}
+
+/// Remove sipnab's older crash reports from `dir` so that `keep` remain,
+/// `just_written` among them.
+///
+/// Only regular files are considered (a symbolic link, directory or socket
+/// with a report's name is left), the directory is read one level deep, and
+/// a file that cannot be removed is skipped.
+///
+/// # Returns
+/// How many reports were removed.
+///
+/// # Errors
+/// The directory cannot be listed.
+fn prune_reports(dir: &Path, keep: usize, just_written: &Path) -> std::io::Result<usize> {
+    let written = just_written
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        // DirEntry::metadata does not follow a symbolic link.
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.file_type().is_file() {
+            continue;
+        }
+        if let Ok(mtime) = meta.modified() {
+            entries.push((name, mtime));
+        }
+    }
+    let mut removed = 0;
+    for name in reports_to_prune(entries, keep, written) {
+        if std::fs::remove_file(dir.join(&name)).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 /// Write `contents` into the freshly-created report `file` at `path`.

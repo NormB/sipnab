@@ -467,6 +467,75 @@ soon as sipnab starts. [Send us a crash
 report](troubleshooting.md#send-us-a-crash-report) says what the report holds
 and where to send it.
 
+### How many crash reports sipnab keeps
+
+A service that crashes and restarts writes one report per crash. Each time
+sipnab writes a report, it removes its own older reports from the report
+directory so that the newest 20 remain, the new one among them. The number is
+`MAX_CRASH_REPORTS` (20) in the source, and no setting changes it. The
+project chose 20, and a later release can change the number.
+
+What sipnab removes, and what it leaves:
+
+- It removes only regular files whose names have the exact form
+  `sipnab-crash-YYYYMMDD-HHMMSS-<pid>-<n>.log`, the names it writes.
+- It leaves every other file, every subdirectory and its contents, and any
+  symbolic link, even one with a report's name.
+- It keeps the newest by modification time. For reports with the same time,
+  it compares the date, time, number and pid in their names.
+- It never removes the report it just wrote, even when older reports carry a
+  later time.
+
+Prerequisites: a sipnab binary newer than 0.5.272. Nothing changes on other
+systems.
+
+Steps:
+
+1. Copy a report you want to keep longer out of the report directory, for
+   example into the issue you open for it.
+2. Nothing else: the bound applies with no configuration, under the packaged
+   unit and outside it.
+
+Verify: put 25 old reports into an empty directory, crash sipnab into it with
+`--panic-selftest`, and count what remains. This run used a temporary
+directory, shown here as `DIR`:
+
+```bash
+# Run all of these, in order.
+mkdir DIR/reports
+for i in $(seq -w 1 25); do
+  touch -d "2020-01-01 00:00:$i" DIR/reports/sipnab-crash-20200101-0000$i-100-0.log
+done
+printf '[crash]\nreport_dir = "DIR/reports"\n' > DIR/crash.toml
+sipnab -f DIR/crash.toml --panic-selftest
+ls DIR/reports | wc -l
+ls -t DIR/reports | tail -1
+```
+
+```text
+sipnab panicked at src/main.rs:387:9:
+panic-selftest: intentional panic to verify crash handling
+crash report written to DIR/reports/sipnab-crash-20261125-203707-2042329-0.log
+20
+sipnab-crash-20200101-000007-100-0.log
+```
+
+The `--panic-selftest` run exits 101. The 25 old reports and the new one made
+26. sipnab removed the six oldest, seconds 01 to 06, and kept the new report
+among the 20.
+
+Troubleshoot:
+
+- **More than 20 files remain.** The others do not have sipnab's report name
+  form, for example a compressed `.log.gz` copy, or they are not regular
+  files. sipnab does not remove them. Remove them yourself.
+- **sipnab removed a report before you read it.** The directory held 20 newer
+  ones. Copy a report elsewhere as soon as sipnab writes it.
+- **sipnab removed no report.** sipnab did not write the new report: look for
+  `failed to write crash report:` in the journal. sipnab prunes only after it
+  writes a report, and it refuses a report directory that is a symbolic link
+  or is world-writable without the sticky bit.
+
 ## Rotate the audit and provenance files
 
 Four flags append one JSON line per event to a file and never truncate it:

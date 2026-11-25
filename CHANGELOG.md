@@ -25,6 +25,11 @@ entry that carries them.
   - Effect: The next record goes to a new file at the configured path, and `seq` continues from the old file.
   - Do: Rotate with logrotate's default `create` mode; `copytruncate` is no longer needed.
   - Docs: [Rotate the audit and provenance files](docs/run-as-a-service.md#rotate-the-audit-and-provenance-files)
+- **The crash-report directory keeps the newest 20 reports.**
+  - Was: Every crash added a `sipnab-crash-*.log` file and none was removed, so a service in a crash loop filled its state directory.
+  - Effect: After writing a report, sipnab removes its own older reports so the newest 20 remain; other files stay.
+  - Limit: The number is fixed; copy a report elsewhere to keep it longer.
+  - Docs: [Keep crash reports](docs/run-as-a-service.md#keep-crash-reports)
 
 ## [0.5.272] - 2026-11-25
 
