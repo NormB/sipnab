@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **The security policy lists published advisories and a second private reporting channel.**
+  - Effect: `SECURITY.md` links each published advisory, starting with GHSA-vjqw-738j-4chx (fixed in 0.5.248).
+  - Effect: Reports can also go through GitHub's private vulnerability reporting, beside `security@sipnab.com`.
+  - Docs: [Report a security problem](docs/install.md#report-a-security-problem)
+
 ## [0.5.274] - 2026-11-25
 
 ### Added

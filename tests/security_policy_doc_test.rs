@@ -1651,3 +1651,781 @@ mod gov {
         prose.contains(&format!("]({target}")) || prose.contains(&format!("](./{target}"))
     }
 }
+
+// Published advisories and the reporting channels.
+//
+// `SECURITY.md` promises public disclosure after a fix. The list of what was
+// disclosed is `.config/published-advisories.txt`, committed, so the test
+// reads no network: the maintainer adds a line there when GitHub publishes an
+// advisory, and `SECURITY.md` must link each one with its versions and CVEs.
+
+/// The committed list of the repository's published security advisories.
+const ADVISORY_LIST: &str = ".config/published-advisories.txt";
+
+/// A list with one advisory, and a page that states it and both channels.
+const LIST_ONE: &str = "GHSA-vjqw-738j-4chx 2026-11-25 0.5.218 0.5.247 0.5.248 CVE-2023-49092\n";
+const DOC_ONE: &str = "# Security Policy\n\n## Reporting a Vulnerability\n\n\
+Email **security@sipnab.com**, or open a private report at\n\
+<https://github.com/NormB/sipnab/security/advisories/new>.\n\n\
+## Published advisories\n\n\
+- [GHSA-vjqw-738j-4chx](https://github.com/NormB/sipnab/security/advisories/GHSA-vjqw-738j-4chx),\n  \
+published 2026-11-25. Affects 0.5.218 to 0.5.247; fixed in 0.5.248\n  \
+(CVE-2023-49092).\n\n## Next\n\nText.\n";
+
+/// A second advisory, for the lists of two.
+const LINE_TWO: &str = "GHSA-2c3f-4g5h-6j7m 2026-12-01 0.5.250 0.5.260 0.5.261 -\n";
+const ITEM_TWO: &str = "- [GHSA-2c3f-4g5h-6j7m](https://github.com/NormB/sipnab/security/advisories/GHSA-2c3f-4g5h-6j7m): \
+0.5.250 to 0.5.260, fixed in 0.5.261.\n";
+
+/// `DOC_ONE` with `ITEM_TWO` added to its advisory list.
+fn doc_two() -> String {
+    DOC_ONE.replace(
+        "(CVE-2023-49092).\n",
+        &format!("(CVE-2023-49092).\n{ITEM_TWO}"),
+    )
+}
+
+/// The parsed list, failing the test on any problem in it.
+fn parsed(text: &str) -> Vec<adv::Advisory> {
+    let (list, problems) = adv::parse_list(text);
+    assert!(problems.is_empty(), "list problems: {problems:?}");
+    list
+}
+
+// Success: the real files, then the fixtures.
+
+#[test]
+fn adv_s01_security_md_links_every_published_advisory() -> Result<(), TestError> {
+    let list = parsed(&read(ADVISORY_LIST)?);
+    let found = adv::section_problems(&read("SECURITY.md")?, &list);
+    assert!(
+        found.is_empty(),
+        "SECURITY.md against {ADVISORY_LIST}: {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn adv_s02_security_md_names_both_reporting_channels() -> Result<(), TestError> {
+    let found = adv::channel_problems(&read("SECURITY.md")?);
+    assert!(
+        found.is_empty(),
+        "SECURITY.md reporting channels: {found:?}"
+    );
+    Ok(())
+}
+
+/// The first advisory stays listed: it is published, and a published advisory
+/// is never withdrawn from the list.
+#[test]
+fn adv_s03_the_list_holds_the_rsa_advisory() -> Result<(), TestError> {
+    let list = parsed(&read(ADVISORY_LIST)?);
+    let rsa = list
+        .iter()
+        .find(|a| a.id == "GHSA-vjqw-738j-4chx")
+        .ok_or("the list no longer holds GHSA-vjqw-738j-4chx")?;
+    assert_eq!(
+        rsa.patched, "0.5.248",
+        "GHSA-vjqw-738j-4chx patched version"
+    );
+    assert_eq!(rsa.cves, ["CVE-2023-49092"], "GHSA-vjqw-738j-4chx CVEs");
+    Ok(())
+}
+
+#[test]
+fn adv_s04_the_fixture_page_meets_the_fixture_list() {
+    let found = adv::section_problems(DOC_ONE, &parsed(LIST_ONE));
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn adv_s05_the_fixture_page_names_both_channels() {
+    let found = adv::channel_problems(DOC_ONE);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn adv_s06_a_line_is_read_into_its_fields() {
+    let list = parsed(LIST_ONE);
+    assert_eq!(list.len(), 1, "{list:?}");
+    let a = &list[0];
+    assert_eq!(a.id, "GHSA-vjqw-738j-4chx", "id");
+    assert_eq!(a.published, "2026-11-25", "published");
+    assert_eq!(a.first, "0.5.218", "first affected");
+    assert_eq!(a.last, "0.5.247", "last affected");
+    assert_eq!(a.patched, "0.5.248", "patched");
+    assert_eq!(a.cves, ["CVE-2023-49092"], "CVEs");
+}
+
+#[test]
+fn adv_s07_comments_and_blank_lines_are_not_advisories() {
+    let text = format!(
+        "# The published advisories.\n\n# Format: id date first last patched cves\n{LIST_ONE}\n"
+    );
+    assert_eq!(parsed(&text).len(), 1, "one advisory in {text:?}");
+}
+
+#[test]
+fn adv_s08_two_advisories_both_stated_pass() {
+    let list = parsed(&format!("{LIST_ONE}{LINE_TWO}"));
+    assert_eq!(list.len(), 2, "{list:?}");
+    let found = adv::section_problems(&doc_two(), &list);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn adv_s09_an_advisory_without_a_cve_needs_none_on_the_page() {
+    let list = parsed(LINE_TWO);
+    assert!(list[0].cves.is_empty(), "`-` is no CVE: {list:?}");
+    let doc = format!("## Published advisories\n\n{ITEM_TWO}");
+    let found = adv::section_problems(&doc, &list);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn adv_s10_several_cves_are_read_and_each_is_stated() {
+    let line = LIST_ONE.replace("CVE-2023-49092", "CVE-2023-49092,CVE-2024-12345");
+    let list = parsed(&line);
+    assert_eq!(
+        list[0].cves,
+        ["CVE-2023-49092", "CVE-2024-12345"],
+        "{list:?}"
+    );
+    let doc = DOC_ONE.replace("(CVE-2023-49092)", "(CVE-2023-49092, CVE-2024-12345)");
+    let found = adv::section_problems(&doc, &list);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn adv_s11_the_private_report_form_may_be_a_named_link() {
+    let doc = DOC_ONE.replace(
+        "<https://github.com/NormB/sipnab/security/advisories/new>",
+        "[the private report form](https://github.com/NormB/sipnab/security/advisories/new)",
+    );
+    let found = adv::channel_problems(&doc);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn adv_s12_one_affected_release_is_a_range_of_one() {
+    let list = parsed(&LIST_ONE.replace("0.5.218 0.5.247", "0.5.247 0.5.247"));
+    let doc = DOC_ONE.replace("Affects 0.5.218 to 0.5.247", "Affects 0.5.247");
+    let found = adv::section_problems(&doc, &list);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn adv_s13_the_page_may_state_advisories_in_another_order() {
+    let list = parsed(&format!("{LINE_TWO}{LIST_ONE}"));
+    let found = adv::section_problems(&doc_two(), &list);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn adv_s14_an_empty_list_needs_only_the_section() {
+    let (list, problems) = adv::parse_list("# none yet\n");
+    assert!(
+        list.is_empty() && problems.is_empty(),
+        "{list:?} {problems:?}"
+    );
+    let found = adv::section_problems("## Published advisories\n\nNone yet.\n", &list);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+// Failure: each rule refuses one planted fault, and says which.
+
+#[test]
+fn adv_f01_a_page_without_the_section_is_refused() {
+    let doc = DOC_ONE.replace("## Published advisories", "## Advisories");
+    let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+    assert!(
+        has(&found, "no `## Published advisories` section"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_f02_a_listed_advisory_the_page_does_not_link_is_named() {
+    let list = parsed(&format!("{LIST_ONE}{LINE_TWO}"));
+    let found = adv::section_problems(DOC_ONE, &list);
+    assert!(
+        has(&found, "does not link GHSA-2c3f-4g5h-6j7m"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_f03_an_item_without_the_patched_version_is_refused() {
+    let doc = DOC_ONE.replace("; fixed in 0.5.248", "");
+    let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+    assert!(
+        has(&found, "GHSA-vjqw-738j-4chx: no patched version 0.5.248"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_f04_an_item_without_its_cve_is_refused() {
+    let doc = DOC_ONE.replace("\n  (CVE-2023-49092)", "");
+    let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+    assert!(
+        has(&found, "GHSA-vjqw-738j-4chx: no CVE-2023-49092"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_f05_an_advisory_the_list_does_not_hold_is_refused() {
+    let found = adv::section_problems(&doc_two(), &parsed(LIST_ONE));
+    assert!(
+        has(
+            &found,
+            "names GHSA-2c3f-4g5h-6j7m, which .config/published-advisories.txt does not list"
+        ),
+        "{found:?}"
+    );
+}
+
+/// The global advisory database also has a page per GHSA id, but the
+/// repository's own advisory is the one the project publishes and updates.
+#[test]
+fn adv_f06_a_link_to_the_global_database_is_not_the_repository_advisory() {
+    let doc = DOC_ONE.replace(
+        "https://github.com/NormB/sipnab/security/advisories/GHSA-vjqw-738j-4chx",
+        "https://github.com/advisories/GHSA-vjqw-738j-4chx",
+    );
+    let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+    assert!(
+        has(&found, "does not link GHSA-vjqw-738j-4chx"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_f07_a_line_with_a_missing_field_is_refused() {
+    let (_, problems) =
+        adv::parse_list("GHSA-vjqw-738j-4chx 2026-11-25 0.5.218 0.5.248 CVE-2023-49092\n");
+    assert!(has(&problems, "line 1: 5 fields, want 6"), "{problems:?}");
+}
+
+#[test]
+fn adv_f08_an_id_outside_the_ghsa_alphabet_is_refused() {
+    for bad in [
+        "GHSA-vjqw-738j-4cha",
+        "GHSA-VJQW-738J-4CHX",
+        "GHSA-vjqw-738j-4ch",
+        "GSHA-vjqw-738j-4chx",
+    ] {
+        let (_, problems) = adv::parse_list(&LIST_ONE.replace("GHSA-vjqw-738j-4chx", bad));
+        assert!(
+            has(&problems, &format!("line 1: {bad} is not a GHSA id")),
+            "{bad}: {problems:?}"
+        );
+    }
+}
+
+#[test]
+fn adv_f09_an_impossible_date_is_refused() {
+    for bad in [
+        "2026-13-01",
+        "2026-00-10",
+        "2026-11-32",
+        "26-11-25",
+        "2026/11/25",
+    ] {
+        let (_, problems) = adv::parse_list(&LIST_ONE.replace("2026-11-25", bad));
+        assert!(
+            has(&problems, &format!("line 1: {bad} is not a date")),
+            "{bad}: {problems:?}"
+        );
+    }
+}
+
+#[test]
+fn adv_f10_a_patched_version_inside_the_affected_range_is_refused() {
+    let (_, problems) = adv::parse_list(&LIST_ONE.replace("0.5.248 CVE", "0.5.247 CVE"));
+    assert!(
+        has(
+            &problems,
+            "line 1: patched 0.5.247 is not after the last affected 0.5.247"
+        ),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn adv_f11_a_range_that_ends_before_it_starts_is_refused() {
+    let (_, problems) = adv::parse_list(&LIST_ONE.replace("0.5.218 0.5.247", "0.5.247 0.5.218"));
+    assert!(
+        has(
+            &problems,
+            "line 1: first affected 0.5.247 is after the last 0.5.218"
+        ),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn adv_f12_a_malformed_cve_is_refused() {
+    for bad in [
+        "CVE-23-49092",
+        "CVE-2023-492",
+        "cve-2023-49092",
+        "RUSTSEC-2023-0071",
+    ] {
+        let (_, problems) = adv::parse_list(&LIST_ONE.replace("CVE-2023-49092", bad));
+        assert!(
+            has(&problems, &format!("line 1: {bad} is not a CVE id")),
+            "{bad}: {problems:?}"
+        );
+    }
+}
+
+#[test]
+fn adv_f13_an_advisory_listed_twice_is_refused() {
+    let (_, problems) = adv::parse_list(&format!("{LIST_ONE}{LIST_ONE}"));
+    assert!(
+        has(&problems, "line 2: GHSA-vjqw-738j-4chx is listed twice"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn adv_f14_a_reporting_section_without_the_address_is_refused() {
+    let doc = DOC_ONE.replace("Email **security@sipnab.com**, or open", "Open");
+    let found = adv::channel_problems(&doc);
+    assert!(
+        has(&found, "does not name **security@sipnab.com**"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_f15_a_reporting_section_without_the_private_form_is_refused() {
+    let doc = DOC_ONE.replace(
+        ", or open a private report at\n<https://github.com/NormB/sipnab/security/advisories/new>",
+        "",
+    );
+    let found = adv::channel_problems(&doc);
+    assert!(
+        has(
+            &found,
+            "does not link https://github.com/NormB/sipnab/security/advisories/new"
+        ),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_f16_an_item_without_the_first_affected_version_is_refused() {
+    let doc = DOC_ONE.replace(
+        "Affects 0.5.218 to 0.5.247",
+        "Affects releases through 0.5.247",
+    );
+    let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+    assert!(
+        has(
+            &found,
+            "GHSA-vjqw-738j-4chx: no first affected version 0.5.218"
+        ),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_f17_a_version_with_a_v_prefix_is_refused() {
+    let (_, problems) = adv::parse_list(&LIST_ONE.replace("0.5.248 CVE", "v0.5.248 CVE"));
+    assert!(
+        has(&problems, "line 1: v0.5.248 is not a version"),
+        "{problems:?}"
+    );
+}
+
+// Edge: shapes each rule must read correctly.
+
+#[test]
+fn adv_e01_an_item_in_a_code_block_is_not_stated() {
+    let doc = DOC_ONE
+        .replace("- [GHSA-vjqw", "```\n- [GHSA-vjqw")
+        .replace("(CVE-2023-49092).\n", "(CVE-2023-49092).\n```\n");
+    let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+    assert!(
+        has(&found, "does not link GHSA-vjqw-738j-4chx"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_e02_a_deeper_or_longer_heading_is_not_the_section() {
+    for wrong in [
+        "### Published advisories",
+        "## Published advisories and drafts",
+    ] {
+        let doc = DOC_ONE.replace("## Published advisories", wrong);
+        let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+        assert!(
+            has(&found, "no `## Published advisories` section"),
+            "{wrong}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn adv_e03_crlf_line_ends_and_trailing_spaces_are_read() {
+    let list = parsed(&LIST_ONE.replace('\n', "  \r\n"));
+    let doc = DOC_ONE.replace('\n', "\r\n");
+    let found = adv::section_problems(&doc, &list);
+    assert!(found.is_empty(), "{found:?}");
+    let found = adv::channel_problems(&doc);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn adv_e04_runs_of_spaces_and_tabs_separate_fields() {
+    let list = parsed(&LIST_ONE.replace(' ', " \t  "));
+    assert_eq!(list[0].patched, "0.5.248", "{list:?}");
+}
+
+#[test]
+fn adv_e05_versions_compare_by_number_not_by_text() {
+    let line = "GHSA-vjqw-738j-4chx 2026-11-25 0.5.9 0.5.99 0.5.100 -\n";
+    let (_, problems) = adv::parse_list(line);
+    assert!(
+        problems.is_empty(),
+        "0.5.9 < 0.5.99 < 0.5.100: {problems:?}"
+    );
+}
+
+#[test]
+fn adv_e06_a_longer_version_does_not_stand_for_the_patched_one() {
+    let doc = DOC_ONE.replace("fixed in 0.5.248", "fixed in 0.5.2480");
+    let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+    assert!(has(&found, "no patched version 0.5.248"), "{found:?}");
+}
+
+#[test]
+fn adv_e07_a_longer_cve_does_not_stand_for_the_listed_one() {
+    let doc = DOC_ONE.replace("CVE-2023-49092", "CVE-2023-490921");
+    let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+    assert!(has(&found, "no CVE-2023-49092"), "{found:?}");
+}
+
+#[test]
+fn adv_e08_the_address_in_another_section_is_not_a_channel() {
+    let doc = DOC_ONE
+        .replace("Email **security@sipnab.com**, or open", "Open")
+        .replace(
+            "## Next\n\nText.",
+            "## Next\n\nEmail **security@sipnab.com**.",
+        );
+    let found = adv::channel_problems(&doc);
+    assert!(
+        has(&found, "does not name **security@sipnab.com**"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_e09_a_longer_form_url_is_not_the_private_form() {
+    let doc = DOC_ONE.replace("advisories/new>", "advisories/newest>");
+    let found = adv::channel_problems(&doc);
+    assert!(has(&found, "does not link"), "{found:?}");
+}
+
+#[test]
+fn adv_e10_the_form_url_in_a_code_span_is_not_a_link() {
+    let doc = DOC_ONE.replace(
+        "<https://github.com/NormB/sipnab/security/advisories/new>",
+        "`https://github.com/NormB/sipnab/security/advisories/new`",
+    );
+    let found = adv::channel_problems(&doc);
+    assert!(has(&found, "does not link"), "{found:?}");
+}
+
+#[test]
+fn adv_e11_one_advisory_stated_in_two_items_is_refused() {
+    let doc = DOC_ONE.replace("(CVE-2023-49092).\n", "(CVE-2023-49092).\n- [GHSA-vjqw-738j-4chx](https://github.com/NormB/sipnab/security/advisories/GHSA-vjqw-738j-4chx) again.\n");
+    let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+    assert!(
+        has(&found, "GHSA-vjqw-738j-4chx is stated in 2 items"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_e12_the_section_twice_is_refused() {
+    let doc = format!("{DOC_ONE}\n## Published advisories\n\nMore.\n");
+    let found = adv::section_problems(&doc, &parsed(LIST_ONE));
+    assert!(
+        has(&found, "`## Published advisories` is there 2 times"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn adv_e13_a_version_field_with_four_parts_is_refused() {
+    let (_, problems) = adv::parse_list(&LIST_ONE.replace("0.5.248 CVE", "0.5.248.1 CVE"));
+    assert!(
+        has(&problems, "line 1: 0.5.248.1 is not a version"),
+        "{problems:?}"
+    );
+}
+
+/// The rules for the published advisories and the reporting channels, each a
+/// pure function of the text it reads.
+mod adv {
+    /// One line of `.config/published-advisories.txt`.
+    #[derive(Debug)]
+    pub struct Advisory {
+        pub id: String,
+        pub published: String,
+        pub first: String,
+        pub last: String,
+        pub patched: String,
+        pub cves: Vec<String>,
+    }
+
+    use super::{ADVISORY_LIST, gov};
+    use std::collections::BTreeSet;
+
+    /// Where the repository's own advisories are published.
+    const ADVISORY_URL: &str = "https://github.com/NormB/sipnab/security/advisories/";
+    /// GitHub's private vulnerability reporting form for the repository.
+    const FORM_URL: &str = "https://github.com/NormB/sipnab/security/advisories/new";
+    /// The reporting address, in bold as `scripts/check-security-txt.py` reads it.
+    const ADDRESS: &str = "**security@sipnab.com**";
+    /// The characters of the three groups of a GHSA id.
+    const GHSA_ALPHABET: &str = "23456789cfghjmpqrvwx";
+    /// The section that lists the published advisories.
+    const SECTION: &str = "Published advisories";
+
+    /// Whether `id` is a GHSA id: `GHSA-` and three groups of four.
+    fn is_ghsa(id: &str) -> bool {
+        id.strip_prefix("GHSA-").is_some_and(|rest| {
+            let groups: Vec<&str> = rest.split('-').collect();
+            groups.len() == 3
+                && groups
+                    .iter()
+                    .all(|g| g.len() == 4 && g.chars().all(|c| GHSA_ALPHABET.contains(c)))
+        })
+    }
+
+    /// Whether `s` is a `YYYY-MM-DD` date with a possible month and day.
+    fn is_date(s: &str) -> bool {
+        let parts: Vec<&str> = s.split('-').collect();
+        let digits = |p: &str, n: usize| p.len() == n && p.bytes().all(|b| b.is_ascii_digit());
+        if parts.len() != 3 || !digits(parts[0], 4) || !digits(parts[1], 2) || !digits(parts[2], 2)
+        {
+            return false;
+        }
+        let month: u32 = parts[1].parse().unwrap_or(0);
+        let day: u32 = parts[2].parse().unwrap_or(0);
+        (1..=12).contains(&month) && (1..=31).contains(&day)
+    }
+
+    /// `s` as a `MAJOR.MINOR.PATCH` version, compared by number.
+    fn version(s: &str) -> Option<[u64; 3]> {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
+            return None;
+        }
+        let mut out = [0; 3];
+        for (slot, p) in out.iter_mut().zip(&parts) {
+            if !p.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            *slot = p.parse().ok()?;
+        }
+        Some(out)
+    }
+
+    /// Whether `s` is a CVE id: `CVE-`, a four-digit year, four or more digits.
+    fn is_cve(s: &str) -> bool {
+        s.strip_prefix("CVE-")
+            .and_then(|rest| rest.split_once('-'))
+            .is_some_and(|(year, num)| {
+                year.len() == 4
+                    && num.len() >= 4
+                    && year.bytes().chain(num.bytes()).all(|b| b.is_ascii_digit())
+            })
+    }
+
+    /// The advisories of `text`, and every problem with a line of it. A line
+    /// with a problem is not an advisory.
+    pub fn parse_list(text: &str) -> (Vec<Advisory>, Vec<String>) {
+        let mut list = Vec::new();
+        let mut problems = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (i, line) in text.lines().enumerate() {
+            let n = i + 1;
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let [id, published, first, last, patched, cves] = fields[..] else {
+                problems.push(format!("line {n}: {} fields, want 6", fields.len()));
+                continue;
+            };
+            let before = problems.len();
+            if !is_ghsa(id) {
+                problems.push(format!("line {n}: {id} is not a GHSA id"));
+            } else if !seen.insert(id) {
+                problems.push(format!("line {n}: {id} is listed twice"));
+            }
+            if !is_date(published) {
+                problems.push(format!("line {n}: {published} is not a date"));
+            }
+            let versions: Vec<Option<[u64; 3]>> = [first, last, patched]
+                .iter()
+                .map(|v| {
+                    let parsed = version(v);
+                    if parsed.is_none() {
+                        problems.push(format!("line {n}: {v} is not a version"));
+                    }
+                    parsed
+                })
+                .collect();
+            if let [Some(f), Some(l), Some(p)] = versions[..] {
+                if f > l {
+                    problems.push(format!(
+                        "line {n}: first affected {first} is after the last {last}"
+                    ));
+                }
+                if p <= l {
+                    problems.push(format!(
+                        "line {n}: patched {patched} is not after the last affected {last}"
+                    ));
+                }
+            }
+            let cves: Vec<String> = if cves == "-" {
+                Vec::new()
+            } else {
+                cves.split(',').map(str::to_string).collect()
+            };
+            for c in cves.iter().filter(|c| !is_cve(c)) {
+                problems.push(format!("line {n}: {c} is not a CVE id"));
+            }
+            if problems.len() == before {
+                list.push(Advisory {
+                    id: id.to_string(),
+                    published: published.to_string(),
+                    first: first.to_string(),
+                    last: last.to_string(),
+                    patched: patched.to_string(),
+                    cves,
+                });
+            }
+        }
+        (list, problems)
+    }
+
+    /// The list items of a section body: a `- ` line starts one, an indented
+    /// line continues it, any other line ends it.
+    fn items(body: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut open = false;
+        for line in body.lines() {
+            if let Some(rest) = line.strip_prefix("- ") {
+                out.push(rest.to_string());
+                open = true;
+            } else if open && line.starts_with(' ') && !line.trim().is_empty() {
+                if let Some(last) = out.last_mut() {
+                    last.push(' ');
+                    last.push_str(line.trim());
+                }
+            } else {
+                open = false;
+            }
+        }
+        out
+    }
+
+    /// The words of `text` that can be a version, a CVE or a GHSA id: runs
+    /// of letters, digits, `.` and `-`, without a sentence's final `.`.
+    fn words(text: &str) -> BTreeSet<&str> {
+        text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+            .map(|w| w.trim_end_matches('.'))
+            .filter(|w| !w.is_empty())
+            .collect()
+    }
+
+    /// How the `## Published advisories` section of `doc` disagrees with
+    /// `list`: each advisory is linked at the repository's advisory page in
+    /// one list item that names its affected versions, its patched version
+    /// and its CVEs, and the section names no advisory the list lacks.
+    pub fn section_problems(doc: &str, list: &[Advisory]) -> Vec<String> {
+        let marker = format!("## {SECTION}");
+        let count = gov::prose_lines(doc)
+            .iter()
+            .filter(|l| **l == marker)
+            .count();
+        if count == 0 {
+            return vec![format!("no `{marker}` section")];
+        }
+        let mut out = Vec::new();
+        if count > 1 {
+            out.push(format!("`{marker}` is there {count} times"));
+        }
+        let body = gov::section_body(doc, SECTION);
+        let items = items(&body);
+        for a in list {
+            let link = format!("]({ADVISORY_URL}{})", a.id);
+            let holding: Vec<&String> = items.iter().filter(|i| i.contains(&link)).collect();
+            let item = match holding[..] {
+                [item] => item,
+                [] => {
+                    out.push(format!(
+                        "SECURITY.md does not link {} at {ADVISORY_URL}{}",
+                        a.id, a.id
+                    ));
+                    continue;
+                }
+                _ => {
+                    out.push(format!("{} is stated in {} items", a.id, holding.len()));
+                    continue;
+                }
+            };
+            let found = words(item);
+            for (what, want) in [
+                ("first affected version", &a.first),
+                ("last affected version", &a.last),
+                ("patched version", &a.patched),
+            ] {
+                if !found.contains(want.as_str()) {
+                    out.push(format!("{}: no {what} {want}", a.id));
+                }
+            }
+            for cve in a.cves.iter().filter(|c| !found.contains(c.as_str())) {
+                out.push(format!("{}: no {cve}", a.id));
+            }
+        }
+        let listed: BTreeSet<&str> = list.iter().map(|a| a.id.as_str()).collect();
+        for id in words(&body).into_iter().filter(|w| w.starts_with("GHSA-")) {
+            if !listed.contains(id) {
+                out.push(format!(
+                    "SECURITY.md names {id}, which {ADVISORY_LIST} does not list"
+                ));
+            }
+        }
+        out
+    }
+
+    /// How the `## Reporting a Vulnerability` section of `doc` fails to name
+    /// the email address and to link the private report form.
+    pub fn channel_problems(doc: &str) -> Vec<String> {
+        let heading = "Reporting a Vulnerability";
+        let body = gov::flat(&gov::section_body(doc, heading));
+        if body.is_empty() {
+            return vec![format!("no `## {heading}` section")];
+        }
+        let mut out = Vec::new();
+        if !body.contains(ADDRESS) {
+            out.push(format!("the reporting section does not name {ADDRESS}"));
+        }
+        if !(body.contains(&format!("<{FORM_URL}>")) || body.contains(&format!("]({FORM_URL})"))) {
+            out.push(format!("the reporting section does not link {FORM_URL}"));
+        }
+        out
+    }
+}
