@@ -1,0 +1,18 @@
+SIP/2.0 200 ¿Sí? 3 + 4 = 7 — ταχύ και καλό (ok)
+Via: SIP/2.0/UDP 192.0.2.112;branch=z9hG4bKur12
+Call-ID: unreason.p0o9i8
+CSeq: 12 INVITE
+From: sip:front@example.net;tag=ur12a
+To: sip:desk@example.org;tag=ur12b
+Contact: <sip:desk@192.0.2.112>
+Content-Type: application/sdp
+Content-Length: 153
+
+v=0
+o=- 7100 7100 IN IP4 192.0.2.112
+s=check
+c=IN IP4 192.0.2.112
+t=0 0
+m=audio 41000 RTP/AVP 8 0
+m=video 41002 RTP/AVP 98
+a=rtpmap:98 VP8/90000

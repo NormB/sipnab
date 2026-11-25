@@ -1,0 +1,10 @@
+OPTIONS sip:[2001:db8::42] SIP/2.0
+Via: SIP/2.0/UDP [2001:db8::a1];received=2001:db8::a9;branch=z9hG4bKv6-nd45
+Max-Forwards: 70
+To: sip:desk@example.org
+From: sip:front@example.org;tag=v6t
+Call-ID: nodelim45.h7j8k9
+Contact: "Front" <sip:front@[2001:db8::a2]>
+CSeq: 46 OPTIONS
+Content-Length: 0
+

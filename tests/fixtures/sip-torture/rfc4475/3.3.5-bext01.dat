@@ -1,0 +1,11 @@
+OPTIONS sip:desk@example.org SIP/2.0
+Via: SIP/2.0/TLS 192.0.2.145;branch=z9hG4bKbe45
+Max-Forwards: 45
+To: sip:desk@example.org
+From: sip:front@example.net;tag=be45
+Call-ID: bext01.a7s8d9
+Require: madeUpOption, anotherMadeUpOption
+Proxy-Require: proxiesNeverHeardOfThis
+CSeq: 45 OPTIONS
+Content-Length: 0
+

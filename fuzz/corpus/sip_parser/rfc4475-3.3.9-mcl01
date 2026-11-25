@@ -1,0 +1,12 @@
+OPTIONS sip:desk@example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.149;branch=z9hG4bKmc49
+Max-Forwards: 49
+To: sip:desk@example.org
+From: sip:front@example.net;tag=mc49
+Call-ID: mcl01.z4x5c6
+CSeq: 49 OPTIONS
+Content-Length: 11
+Content-Type: text/plain
+Content-Length: 3
+
+Which of the two lengths is the right one, if either?

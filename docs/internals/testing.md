@@ -592,9 +592,28 @@ cargo test --features full --test sip_torture_conformance_test
 [`tests/sip_torture_conformance_test.rs`](../../tests/sip_torture_conformance_test.rs)
 builds, for each RFC case, a minimal message that keeps the property under
 test. Every name, domain and address in it is a reserved example value, and
-each test names the RFC section it comes from. The RFC messages themselves are
-not in the repository, because they carry names, domains and addresses that
-are not reserved.
+each test names the RFC section it comes from.
+
+```sh
+cargo test --features full --test sip_torture_rfc_messages_test
+```
+
+[`tests/sip_torture_rfc_messages_test.rs`](../../tests/sip_torture_rfc_messages_test.rs)
+runs one complete message per RFC case, 61 in all, from
+[`tests/fixtures/sip-torture/`](../../tests/fixtures/sip-torture). The
+sipnab project wrote these messages: none copies RFC message text. Each one has
+the property its RFC section tests, and uses only values reserved for
+documentation, except the broadcast address 255.255.255.255 that RFC 4475
+section 3.3.10 tests. Their provenance file,
+[`PROVENANCE.txt`](../../tests/fixtures/sip-torture/PROVENANCE.txt), names
+for each file the RFC section it covers, the property it has and its SHA-256.
+The test checks those digests, checks that the files and the fuzz seeds made
+from them hold no other address, host or telephone number, and checks each
+message's lint findings, parse result and dialog. The same messages seed the
+`sip_parser` fuzz corpus, and their SDP bodies the `sdp_parser` corpus.
+
+The RFC messages themselves are not in the repository, because they carry
+names, domains and addresses that are not reserved.
 
 ### What each verdict means
 
@@ -609,7 +628,10 @@ are not reserved.
 A local run put every message of both RFCs, byte for byte from the Appendix A
 archive of each, through the parser, the linter and the dialog store. All 61 get the
 verdict the RFC expects. The RFC 5118 archive ends its lines with LF, which
-[RFC 3261 section 7](https://www.rfc-editor.org/rfc/rfc3261.html#section-7) does not allow, so those 12 ran with CRLF line ends. For an
+[RFC 3261 section 7](https://www.rfc-editor.org/rfc/rfc3261.html#section-7) does not allow, so those 12 ran with CRLF line ends. A second local run, on 2026-11-25,
+gave each fixture in `tests/fixtures/sip-torture/` the verdict of its RFC
+message, and `sip_torture_rfc_messages_test` keeps those 61 verdicts as its
+expected values. For an
 invalid or tolerated message the table names the finding that answers the
 case, and such a message can raise others too. For a valid message it names every
 finding.

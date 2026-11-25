@@ -1,0 +1,14 @@
+INVITE sip:desk@example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.146;branch=z9hG4bKiu46
+Max-Forwards: 70
+To: sip:desk@example.org
+From: sip:front@example.net;tag=iu46
+Call-ID: invut.f1g2h3
+CSeq: 46 INVITE
+Contact: <sip:front@192.0.2.146>
+Content-Type: application/x-unheard-of
+Content-Length: 29
+
+[tones]
+  pitch=low
+[end]

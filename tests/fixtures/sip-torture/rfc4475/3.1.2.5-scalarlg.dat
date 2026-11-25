@@ -1,0 +1,10 @@
+SIP/2.0 503 Service Unavailable
+Via: SIP/2.0/TCP 192.0.2.125;branch=z9hG4bKsl25;received=192.0.2.125
+To: <sip:desk@example.org>
+From: <sip:front@example.net>;tag=sl25
+CSeq: 88888888888888888888888 OPTIONS
+Call-ID: scalarlg.a9s8d7
+Retry-After: 777777777777777777777
+Warning: 9999 relay.example.org "Busy"
+Content-Length: 0
+

@@ -1,0 +1,10 @@
+REGISTER sip:registrar.example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.152:5060;branch=z9hG4bKcp52
+Max-Forwards: 70
+From: sip:desk@example.org;tag=cp52
+To: sip:desk@example.org
+Call-ID: cparam01.e4r5t6@192.0.2.152
+CSeq: 52 REGISTER
+Contact: sip:+12125550142@gw.example.net;oddparam
+l: 0
+

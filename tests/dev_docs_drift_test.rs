@@ -1096,7 +1096,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/tests/test_precheck_hook.py.
     // 915 -> 916 (SIP torture tests, +1): testing.md's "IETF SIP torture
     // tests" links tests/sip_torture_conformance_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 916;
+    // 916 -> 919 (SIP torture fixtures, +3): the same section links
+    // tests/sip_torture_rfc_messages_test.rs, tests/fixtures/sip-torture and
+    // tests/fixtures/sip-torture/PROVENANCE.txt.
+    const EXPECTED_CODE_LINKS: usize = 919;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

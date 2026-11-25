@@ -1,0 +1,11 @@
+REGISTER sip:registrar.example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.60;branch=z9hG4bKnul4
+Max-Forwards: 70
+From: sip:zero-%00-byte@example.org;tag=n0ll
+To: sip:zero-%00-byte@example.org
+Call-ID: escnull.z9q8w7e6
+CSeq: 4004 REGISTER
+Contact: <sip:%00@192.0.2.60>
+Contact: <sip:%00%00@192.0.2.60>
+L:0
+

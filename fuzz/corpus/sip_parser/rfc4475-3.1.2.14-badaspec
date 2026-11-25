@@ -1,0 +1,9 @@
+OPTIONS sip:desk@example.org SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.134:5060;branch=z9hG4bKba34
+Max-Forwards: 70
+From: "Tester, Pat" <sip:pat@example.net>;tag=ba34
+To: "Desk, Front" < sip:desk@example.org >
+Call-ID: badaspec.u4i5o6
+CSeq: 34 OPTIONS
+l: 0
+
