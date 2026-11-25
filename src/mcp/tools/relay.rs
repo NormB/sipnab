@@ -1787,7 +1787,7 @@ impl SipnabMcp {
             routing,
             sdp_of: &sdp_of,
         });
-        let snapshot = relay_sessions_routed(
+        let mut snapshot = relay_sessions_routed(
             access.relay.as_ref(),
             routed.as_ref(),
             &access.permit,
@@ -1795,6 +1795,17 @@ impl SipnabMcp {
             &ended,
             &chrono::Utc::now,
         );
+        // The same rate rule and memory shape as REST and the TUI: the rate
+        // since the previous ask by any agent, `over_ms` naming the gap.
+        {
+            let ss = self.stream_store.read();
+            let counts = crate::output::query::relay_capture::counts_in(&ss);
+            snapshot.attach_rates(
+                &mut access.rates.lock(),
+                Some(&counts),
+                crate::relay::rate::monotonic_now(),
+            );
+        }
         RelayAnswer::from_sessions(access.addr, snapshot)
     }
 }
@@ -2432,6 +2443,7 @@ mod query_relay_view_tests {
     /// exercises the real conversion rather than a restatement of it.
     fn view_of(tags: Vec<RelayTag>) -> Result<Vec<RelayTagView>, TestError> {
         let reply = ControlReply::Call(CallView {
+            incarnation: None,
             call_id: "call-1@192.0.2.10".to_string(),
             tags,
         });
@@ -2702,6 +2714,7 @@ mod query_relay_view_tests {
         assert_eq!(answer.outcome, "suspect", "statistics for a query");
         assert!(answer.statistics.is_none(), "no counters for a query");
         let view = ControlReply::Call(CallView {
+            incarnation: None,
             call_id: "call-1@192.0.2.10".to_string(),
             tags: Vec::new(),
         });
@@ -2726,6 +2739,7 @@ mod query_relay_view_tests {
                 truncated: false,
             }),
             ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: "call-1@192.0.2.10".to_string(),
                 tags: Vec::new(),
             }),
@@ -2787,6 +2801,7 @@ mod query_relay_view_tests {
             streams: Vec::new(),
         };
         let reply = ControlReply::Call(CallView {
+            incarnation: None,
             call_id: "call-1@192.0.2.10".to_string(),
             tags: vec![leg, recorder],
         });
@@ -3156,6 +3171,7 @@ mod relay_stats_view_tests {
                 truncated: false,
             }),
             ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: "call-1@192.0.2.10".to_string(),
                 tags: Vec::new(),
             }),
@@ -4400,6 +4416,7 @@ mod relay_handler_tests {
         let a = Arc::new(RelayDouble::default());
         let b = Arc::new(RelayDouble {
             query: Some(ControlReply::Call(crate::relay::types::CallView {
+                incarnation: None,
                 call_id: "m-1@example.invalid".to_string(),
                 tags: Vec::new(),
             })),
@@ -4595,6 +4612,7 @@ mod relay_handler_tests {
         let b = Arc::new(RelayDouble {
             list: Some(held(&["m-1@example.invalid", "b-1@example.invalid"])),
             query: Some(ControlReply::Call(crate::relay::types::CallView {
+                incarnation: None,
                 call_id: "m-1@example.invalid".to_string(),
                 tags: Vec::new(),
             })),
@@ -4816,6 +4834,109 @@ mod relay_handler_tests {
         Ok(())
     }
 
+    /// A relay holding one call whose one RTP socket always reports the same
+    /// counters.
+    fn one_call_relay() -> Arc<RelayDouble> {
+        Arc::new(RelayDouble {
+            list: Some(ControlReply::Calls(Enumeration {
+                call_ids: vec!["c-1@example.invalid".to_string()],
+                truncated: false,
+            })),
+            query: Some(ControlReply::Call(
+                crate::output::query::relay_sessions::one_rtp_socket_call(
+                    "c-1@example.invalid",
+                    1000,
+                    172_000,
+                ),
+            )),
+            ..Default::default()
+        })
+    }
+
+    fn sessions_of_c1() -> QueryRelayParams {
+        QueryRelayParams {
+            sessions: Some(true),
+            call_id: Some("c-1@example.invalid".to_string()),
+            ..QueryRelayParams::default()
+        }
+    }
+
+    /// The second sessions ask of one server reports the rate since the
+    /// first, on the relay tier, and says the capture holds nothing.
+    #[tokio::test]
+    async fn success_a_second_sessions_ask_reports_the_rate_since_the_first()
+    -> Result<(), TestError> {
+        let relay = one_call_relay();
+        let server = asking(empty(), &relay)?;
+        let first = server
+            .query_relay(Parameters(sessions_of_c1()))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let socket = &payload(&first)?["sessions"]["calls"][0]["tags"][0]["sockets"][0];
+        assert_eq!(socket["ingress_rate"]["state"], "no_rate_yet", "{socket}");
+        assert_eq!(
+            socket["captured_rate"]["state"], "not_captured",
+            "the server's capture holds no stream: {socket}"
+        );
+        let second = server
+            .query_relay(Parameters(sessions_of_c1()))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let socket = &payload(&second)?["sessions"]["calls"][0]["tags"][0]["sockets"][0];
+        assert_eq!(socket["ingress_rate"]["state"], "rate", "{socket}");
+        assert_eq!(socket["ingress_rate"]["packets_per_s"], 0.0, "{socket}");
+        assert_eq!(
+            socket["ingress_rate"]["byte_basis"], "udp_payload",
+            "{socket}"
+        );
+        Ok(())
+    }
+
+    /// A server whose capture holds the call's stream to the socket samples
+    /// the capture tier: the first answer reads `no_rate_yet` there, not
+    /// `not_captured`.
+    #[tokio::test]
+    async fn success_the_capture_tier_reads_the_servers_stream_store() -> Result<(), TestError> {
+        let relay = one_call_relay();
+        let mut ss = StreamStore::new(16);
+        crate::output::query::relay_capture::add_stream_to_relay_socket(
+            &mut ss,
+            7,
+            "198.51.100.5:4000",
+            "c-1@example.invalid",
+        )?;
+        let server = asking(server(DialogStore::new(16, false), ss), &relay)?;
+        let answer = server
+            .query_relay(Parameters(sessions_of_c1()))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let socket = &payload(&answer)?["sessions"]["calls"][0]["tags"][0]["sockets"][0];
+        assert_eq!(
+            socket["captured_rate"]["state"], "no_rate_yet",
+            "the capture holds the stream: {socket}"
+        );
+        Ok(())
+    }
+
+    /// Two servers keep two memories: one agent's ask never gives another
+    /// server a previous sample.
+    #[tokio::test]
+    async fn failure_a_fresh_server_has_no_rate_yet() -> Result<(), TestError> {
+        let relay = one_call_relay();
+        let one = asking(empty(), &relay)?;
+        one.query_relay(Parameters(sessions_of_c1()))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let other = asking(empty(), &relay)?;
+        let answer = other
+            .query_relay(Parameters(sessions_of_c1()))
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let socket = &payload(&answer)?["sessions"]["calls"][0]["tags"][0]["sockets"][0];
+        assert_eq!(socket["ingress_rate"]["state"], "no_rate_yet", "{socket}");
+        Ok(())
+    }
+
     /// A sessions `max_calls` of 0 is refused before anything is sent.
     #[tokio::test]
     async fn a_sessions_max_calls_of_zero_is_refused_unsent() -> Result<(), TestError> {
@@ -4947,6 +5068,7 @@ mod relay_handler_tests {
     async fn querying_with_a_call_id_asks_about_that_call() -> Result<(), TestError> {
         let relay = Arc::new(RelayDouble {
             query: Some(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: "c1@example.invalid".to_string(),
                 tags: vec![RelayTag {
                     tag: "from-tag-a".to_string(),

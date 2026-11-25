@@ -3071,6 +3071,9 @@ pub struct CaptureFeed {
 /// takes over the kill worker process and spawns the companion-server
 /// thread) and drives its receive loop to completion. Either way this
 /// function blocks until the batch run is over.
+///
+/// Returns the run's stores, everything else already dropped: see
+/// [`RunStores`].
 pub fn run(
     cli: Cli,
     config: &Config,
@@ -3078,7 +3081,7 @@ pub fn run(
     feed: CaptureFeed,
     batch: BatchProcessing,
     policy: CapturePolicy,
-) {
+) -> RunStores {
     let CaptureFeed {
         handle,
         rx,
@@ -3120,8 +3123,89 @@ pub fn run(
             fatal.exit_after(|| capture::stop_and_join(handle, rx));
         }
     };
-    runner.run_loop(capture_config, handle, rx);
+    runner.run_loop(capture_config, handle, rx)
 }
+
+/// The dialog and stream stores of a finished batch run, handed back by
+/// [`run`] instead of freed with the rest of the run's state.
+///
+/// Freeing the dialog store is one reference-count decrement and one free per
+/// retained message part: 1.89% of the instructions of a SIP-only batch run
+/// in a callgrind profile, spent on memory the operating system takes back
+/// when the process exits a moment later. A caller about to exit passes the
+/// stores to [`RunStores::release_run_and_exit`], which keeps them alive
+/// until the exit. A caller that keeps running drops this value, which frees
+/// both stores as before.
+///
+/// Neither store owns a file, socket, thread, channel or child process, or
+/// any value whose `Drop` writes, flushes, renames or deletes something: the
+/// writer, the event engine, the companion servers and the SRTP keys belong
+/// to the run itself and are dropped with it, in the same order as before.
+#[must_use = "dropping RunStores frees both stores; pass them to \
+              RunStores::release_run_and_exit when the process is about to exit"]
+pub struct RunStores {
+    /// The run's dialog store (the same `Arc` the companion servers read).
+    dialogs: Arc<RwLock<DialogStore>>,
+    /// The run's RTP stream store (the same `Arc` the companion servers read).
+    streams: Arc<RwLock<StreamStore>>,
+}
+
+impl RunStores {
+    /// The stores of one run.
+    pub(crate) fn new(
+        dialogs: Arc<RwLock<DialogStore>>,
+        streams: Arc<RwLock<StreamStore>>,
+    ) -> Self {
+        Self { dialogs, streams }
+    }
+
+    /// [`crate::capture::archive::release_run_and_exit`] with `code`. A batch
+    /// run's `stores` (`None` after a run with none, such as the TUI) are kept
+    /// alive until the process is gone instead of being freed first.
+    ///
+    /// The stores stay reachable from a process-wide static, so a leak
+    /// checker reports them as still reachable at exit, not as lost.
+    pub fn release_run_and_exit(stores: Option<Self>, code: i32) -> ! {
+        Self::keep(stores, &EXIT_HOLD);
+        crate::capture::archive::release_run_and_exit(code)
+    }
+
+    /// Hand `stores`, when there are any, to `hold`.
+    fn keep(stores: Option<Self>, hold: &ExitHold) {
+        if let Some(stores) = stores {
+            hold.hold((stores.dialogs, stores.streams));
+        }
+    }
+}
+
+/// Values kept alive until the process exits, reachable from a static.
+pub(crate) struct ExitHold {
+    /// Everything handed over, in order.
+    held: parking_lot::Mutex<Vec<Box<dyn std::any::Any + Send>>>,
+}
+
+impl ExitHold {
+    /// An empty hold; `const` so it can be a `static`.
+    pub(crate) const fn new() -> Self {
+        Self {
+            held: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Keep `value` alive for as long as this hold lives.
+    pub(crate) fn hold<T: Send + 'static>(&self, value: T) {
+        self.held.lock().push(Box::new(value));
+    }
+
+    /// How many values this hold keeps.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.held.lock().len()
+    }
+}
+
+/// The process-wide hold [`RunStores::release_run_and_exit`] fills.
+static EXIT_HOLD: ExitHold = ExitHold::new();
 
 /// All owned batch-mode state: writer, detector engines, decryption state,
 /// stores, and companion-server handles. Built once by `BatchRunner::new`
@@ -4225,12 +4309,15 @@ impl BatchRunner {
     /// `--call-report` lookup (code 1), or a failed output-file *write* or
     /// final flush (code 1) — the last of which previously logged and exited
     /// 0, so a capture truncated by ENOSPC reported success.
+    ///
+    /// Returns the two stores; the rest of the runner is dropped here, as
+    /// before (see [`RunStores`]).
     fn run_loop(
         mut self,
         capture_config: CaptureConfig,
         handle: capture::CaptureHandle,
         rx: capture::channel::PacketRx,
-    ) {
+    ) -> RunStores {
         let mut lp = ReceiveLoop::new(&mut self);
 
         // Taken before `rx` is dropped at the end of the loop: the meter is
@@ -4368,6 +4455,16 @@ impl BatchRunner {
             crate::output::run_integrity::print_exit_notice();
             crate::capture::archive::release_run_and_exit(code);
         }
+
+        // Only the two stores move out. Every other field of the runner, and
+        // the locals above, still drop at the end of this function in the
+        // order they always did.
+        let BatchRunner {
+            dialog_store,
+            stream_store,
+            ..
+        } = self;
+        RunStores::new(dialog_store, stream_store)
     }
 
     /// One pass of the receive loop: the stop checks, the periodic work, one
@@ -9029,15 +9126,14 @@ fn write_vcon_containers(
         batch.frames_read,
     );
     // What this run deliberately did not write. Recorded on the facts BEFORE
-    // the analysis runs, so every container built from them carries the same
+    // the blind spots are read, so every container built from them carries the same
     // account -- a container that named a different number from its siblings
     // would read as two runs.
     facts.dialogs_suppressed_by_deny = batch.suppressed_by_deny;
     facts.gate_closed_during_run = batch
         .gate
         .is_some_and(crate::output::persistence::PersistenceGate::closed_during_run);
-    let analysis =
-        crate::analysis::analyze_with(batch.dialog_store, batch.stream_store, None, &facts);
+    let analysis = crate::analysis::analyze_blind_spots(&facts);
     let header = cli
         .output_args
         .content_deny_header
@@ -9052,11 +9148,28 @@ fn write_vcon_containers(
         header,
         redactor,
     };
+    // The related legs of every single-leg container from one correlation
+    // pass, in unit order: one pass per container read every dialog's SDP
+    // once per container.
+    let linked: Vec<&crate::sip::dialog::SipDialog> = units
+        .iter()
+        .filter_map(|unit| match unit {
+            ContainerUnit::Leg(dialog, _) => Some(*dialog),
+            ContainerUnit::Call(_) => None,
+        })
+        .collect();
+    let related_of_legs = crate::output::vcon::related_legs_many(batch.dialog_store, &linked);
+    let mut related_legs = related_of_legs.iter();
     let mut written = 0_usize;
     for unit in units {
         let (container, root, what) = match unit {
             ContainerUnit::Leg(dialog, withheld) => (
-                writer.leg(dialog, *withheld, true, written)?,
+                writer.leg(
+                    dialog,
+                    *withheld,
+                    related_legs.next().map_or(&[], Vec::as_slice),
+                    written,
+                )?,
                 *dialog,
                 if *withheld {
                     "withheld-dialog vCon"
@@ -9067,7 +9180,7 @@ fn write_vcon_containers(
             ContainerUnit::Call(group) => {
                 let mut legs = Vec::with_capacity(group.legs.len());
                 for dialog in &group.legs {
-                    legs.push(writer.leg(dialog, false, false, written)?);
+                    legs.push(writer.leg(dialog, false, &[], written)?);
                 }
                 let uuid = crate::output::vcon::call_uuid(
                     &group.legs,
@@ -9548,7 +9661,8 @@ struct LegWriter<'a> {
 #[cfg(feature = "vcon")]
 impl LegWriter<'_> {
     /// One dialog's container, withheld or with the rule's audio, naming the
-    /// call's other legs when `link` is set.
+    /// call's other legs as `related` lists them (empty for a leg merged into
+    /// a call container, which names its legs itself).
     ///
     /// A `url` rule's WAV is written here, beside where the container will
     /// go, so the file the container names exists before the container does.
@@ -9560,10 +9674,10 @@ impl LegWriter<'_> {
         &self,
         dialog: &crate::sip::dialog::SipDialog,
         withheld: bool,
-        link: bool,
+        related: &[crate::output::vcon::RelatedLeg],
         written: usize,
     ) -> Result<crate::output::vcon::Vcon, (usize, String)> {
-        let mut container = self.leg_container(dialog, withheld, link, written)?;
+        let mut container = self.leg_container(dialog, withheld, related, written)?;
         // A withheld container carries the caveat alone, so nothing is added
         // to it.
         if !withheld {
@@ -9631,7 +9745,7 @@ impl LegWriter<'_> {
         &self,
         dialog: &crate::sip::dialog::SipDialog,
         withheld: bool,
-        link: bool,
+        related: &[crate::output::vcon::RelatedLeg],
         written: usize,
     ) -> Result<crate::output::vcon::Vcon, (usize, String)> {
         let Self {
@@ -9644,18 +9758,13 @@ impl LegWriter<'_> {
             redactor,
         } = *self;
         let media = crate::output::vcon::media_quality_for(batch.stream_store, &dialog.call_id);
-        let related = if link {
-            crate::output::vcon::related_legs(batch.dialog_store, dialog)
-        } else {
-            Vec::new()
-        };
         let context = crate::output::vcon::ExportContext {
             capture_id: crate::output::vcon::dialog_capture_id(dialog),
             facts,
             analysis: Some(analysis),
             max_inline_media_bytes: target.max_inline.or_else(|| media_budget(cli)),
             media: &media,
-            related_legs: &related,
+            related_legs: related,
         };
         if withheld {
             return Ok(crate::output::vcon::export_withheld_dialog(
@@ -10467,11 +10576,12 @@ fn dialog_carries_header(dialog: &crate::sip::dialog::SipDialog, header: &str) -
 /// "the requested output was produced" — rather than having to know whether
 /// this run asked for a container at all.
 ///
-/// The capture analysis is run here rather than reused from `--analyze`,
-/// because `--export-vcon` does not require `--analyze` and a container that
-/// skipped the analysis reports its blind spots as `null`: "nobody looked",
-/// which is a weaker claim than the one this run can make. It is deliberately
-/// unfiltered for the reason [`crate::analysis::analyze`] gives — an
+/// The capture's blind spots ([`crate::analysis::analyze_blind_spots`], the
+/// part of the analysis a container quotes) are read here rather than reused
+/// from `--analyze`, because `--export-vcon` does not require `--analyze` and
+/// a container that skipped them reports its blind spots as `null`: "nobody
+/// looked", which is a weaker claim than the one this run can make. They are
+/// deliberately unfiltered for the reason [`crate::analysis::analyze`] gives — an
 /// undecodable frame belongs to no dialog, so narrowing it would drop the
 /// evidence that bounds every count in the container.
 ///
@@ -10578,8 +10688,10 @@ fn export_vcon(
 /// THE single-call writer: the end-of-run export and every live sweep call
 /// it, so the container is the same whichever of them wrote it.
 ///
-/// The capture analysis is run here rather than reused from `--analyze`,
-/// because `--export-vcon` does not require `--analyze` (see [`export_vcon`]).
+/// The capture's blind spots are read here rather than reused from
+/// `--analyze`, because `--export-vcon` does not require `--analyze` (see
+/// [`export_vcon`]). Only the capture-level part is read: this writer runs once
+/// per swept call in a live run, and a full analysis reads every dialog.
 #[cfg(feature = "vcon")]
 fn write_single_vcon(
     cli: &Cli,
@@ -10590,7 +10702,7 @@ fn write_single_vcon(
 ) -> bool {
     let call_id = dialog.call_id.as_str();
     let facts = crate::analysis::CaptureFacts::observed(dialog_store, stream_store, frames_read);
-    let analysis = crate::analysis::analyze_with(dialog_store, stream_store, None, &facts);
+    let analysis = crate::analysis::analyze_blind_spots(&facts);
 
     // Media is attempted ALWAYS, never gated on a second flag. `--retain-audio`
     // is already the operator's opt-in: without it there is no payload to
@@ -10767,6 +10879,9 @@ fn apply_plugins(
     out.push('\n');
     out
 }
+
+#[cfg(test)]
+mod run_stores_tests;
 
 #[cfg(test)]
 mod tests {
@@ -14425,6 +14540,118 @@ mod tests {
             "the gate was closed and {} container(s) were written anyway",
             written.len()
         );
+        Ok(())
+    }
+
+    /// `--export-vcon <call-id>` (also the writer every live sweep calls) reads
+    /// its blind spots from the run's facts, without analyzing every dialog,
+    /// and the container still carries the list that says somebody looked.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_single_call_form_reads_its_blind_spots_without_analyzing_every_dialog()
+    -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let out = tmp.path().join("one.vcon.json");
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon = Some("failed-call@example.com".to_owned());
+        cli.output_args.vcon_out = Some(out.clone());
+
+        crate::analysis::ANALYZE_WITH_CALLS.with(|c| c.set(0));
+        assert!(
+            export_vcon(
+                &cli,
+                &[],
+                &two_dialogs_one_failed()?,
+                &StreamStore::new(16),
+                7,
+                None,
+                VconRunEnd::Whole,
+            ),
+            "the container is written"
+        );
+        assert_eq!(
+            crate::analysis::ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            0,
+            "no full capture analysis per container"
+        );
+        // Process-global facts (stored vCons other tests read) may put rows in
+        // the list; what this pins is that the list is there, not `null`.
+        // The file is pretty-printed JSON.
+        let text = std::fs::read_to_string(&out).map_err(|e| format!("written: {e:?}"))?;
+        assert!(
+            text.contains("\"blind_spots\": [") && !text.contains("\"blind_spots\": null"),
+            "the container carries the list: {text}"
+        );
+        Ok(())
+    }
+
+    /// `--export-vcon-when` reads the blind spots of its containers from the
+    /// run's facts, without analyzing every dialog, and each container still
+    /// carries the list that says somebody looked.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_predicate_form_reads_its_blind_spots_without_analyzing_every_dialog()
+    -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+
+        crate::analysis::ANALYZE_WITH_CALLS.with(|c| c.set(0));
+        assert!(
+            export_vcon_selection(
+                &cli,
+                None,
+                &two_dialogs_one_failed()?,
+                &StreamStore::new(16),
+                7,
+                None,
+            ),
+            "the containers are written"
+        );
+        assert_eq!(
+            crate::analysis::ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            0,
+            "no full capture analysis per run"
+        );
+        // Process-global facts (stored vCons other tests read) may put rows in
+        // the list; what this pins is that the list is there, not `null`.
+        let completeness = first_completeness(tmp.path())?;
+        assert!(
+            completeness["blind_spots"].is_array(),
+            "the container carries the list: {completeness}"
+        );
+        Ok(())
+    }
+
+    /// `--export-vcon-when` finds the related legs of all its containers in one
+    /// correlation pass: each dialog's SDP origins are read once, not once per
+    /// container.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_predicate_form_reads_each_dialogs_sdp_origins_once() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let mut store = DialogStore::new(16, true);
+        for i in 0..4 {
+            let (offer, answer) =
+                crate::test_utils::sdp_offer_and_answer(&format!("sdp-{i}@example.com"))?;
+            store.process_message(offer);
+            store.process_message(answer);
+        }
+
+        crate::sip::dialog_store::ORIGIN_KEY_READS.with(|c| c.set(0));
+        assert!(
+            export_vcon_selection(&cli, None, &store, &StreamStore::new(16), 8, None),
+            "the containers are written"
+        );
+        assert_eq!(
+            crate::sip::dialog_store::ORIGIN_KEY_READS.with(std::cell::Cell::get),
+            4,
+            "one read per dialog in the store, not one per dialog per container"
+        );
+        let written = std::fs::read_dir(tmp.path())
+            .map_err(|e| format!("readable: {e:?}"))?
+            .count();
+        assert_eq!(written, 4, "four containers");
         Ok(())
     }
 

@@ -540,6 +540,16 @@ impl SipDialog {
     /// are ignored unless the request was *only* ever challenged (never
     /// authenticated), in which case the challenge is the outcome.
     pub fn final_status_code(&self) -> Option<u16> {
+        self.final_status_code_of(self.messages.iter().map(SipMessage::cseq))
+    }
+
+    /// [`Self::final_status_code`] read from CSeqs the caller already parsed:
+    /// `cseqs` yields [`SipMessage::cseq`] of each of [`Self::messages`], in
+    /// order (as [`crate::sip::message::cseqs`] returns them).
+    pub(crate) fn final_status_code_of<'a>(
+        &self,
+        cseqs: impl IntoIterator<Item = Option<(u32, &'a str)>>,
+    ) -> Option<u16> {
         // Single scan, no intermediate Vec: fold the INVITE responses and the
         // own-method responses side by side, and pick the INVITE fold when
         // the dialog holds any INVITE at all (a call still ringing behind a
@@ -548,8 +558,8 @@ impl SipDialog {
         let mut invite = FinalCodeFold::default();
         let mut own = FinalCodeFold::default();
         let mut holds_invite = false;
-        for m in &self.messages {
-            let Some((_, method)) = m.cseq() else {
+        for (m, cseq) in self.messages.iter().zip(cseqs) {
+            let Some((_, method)) = cseq else {
                 continue;
             };
             let is_invite = method == "INVITE";
@@ -1718,6 +1728,73 @@ mod tests {
                 .push(make_response(*code, reason, cseq_method)?);
         }
         Ok(dialog)
+    }
+
+    /// The final status read from CSeqs the caller parsed is the one
+    /// `final_status_code` parses for itself, on every deciding shape: an
+    /// answered call, a failure, a challenge only, a canceled call, a
+    /// non-INVITE request, and a call with no final answer yet.
+    #[test]
+    fn final_status_code_of_parsed_cseqs_agrees() -> Result<(), TestError> {
+        /// The opening method and the `(code, reason, CSeq method)` answers.
+        type Shape<'a> = (&'a str, &'a [(u16, &'a str, &'a str)]);
+        let shapes: [Shape<'_>; 6] = [
+            (
+                "INVITE",
+                &[(180, "Ringing", "INVITE"), (200, "OK", "INVITE")],
+            ),
+            ("INVITE", &[(486, "Busy Here", "INVITE")]),
+            (
+                "INVITE",
+                &[(407, "Proxy Authentication Required", "INVITE")],
+            ),
+            (
+                "INVITE",
+                &[(200, "OK", "CANCEL"), (487, "Request Terminated", "INVITE")],
+            ),
+            ("PUBLISH", &[(489, "Bad Event", "PUBLISH")]),
+            ("INVITE", &[(180, "Ringing", "INVITE")]),
+        ];
+        for (method, responses) in shapes {
+            let dialog = dialog_with_responses(method, responses)?;
+            let cseqs = crate::sip::message::cseqs(&dialog.messages);
+            assert_eq!(
+                dialog.final_status_code_of(cseqs.iter().copied()),
+                dialog.final_status_code(),
+                "{method} {responses:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Handed parsed CSeqs, the final status parses none itself.
+    #[test]
+    fn final_status_code_of_parses_no_cseq() -> Result<(), TestError> {
+        let dialog = dialog_with_responses("INVITE", &[(200, "OK", "INVITE")])?;
+        let cseqs = crate::sip::message::cseqs(&dialog.messages);
+        crate::test_utils::clear_parses();
+        assert_eq!(
+            dialog.final_status_code_of(cseqs.iter().copied()),
+            Some(200),
+            "the answer"
+        );
+        let (cseq, _, _) = crate::test_utils::worst_parses();
+        assert_eq!(cseq, 0, "a CSeq was parsed {cseq} times");
+        Ok(())
+    }
+
+    /// The final status is read from the CSeqs it is handed: a slice that
+    /// says the 200 answered a CANCEL leaves the call without a final answer.
+    #[test]
+    fn final_status_code_of_reads_the_cseqs_it_is_handed() -> Result<(), TestError> {
+        let dialog = dialog_with_responses("INVITE", &[(200, "OK", "INVITE")])?;
+        let cseqs = [Some((1, "INVITE")), Some((1, "CANCEL"))];
+        assert_eq!(
+            dialog.final_status_code_of(cseqs),
+            None,
+            "the handed CSeq method decides, not the message's own header"
+        );
+        Ok(())
     }
 
     /// A non-INVITE dialog's final status is the final response to its own

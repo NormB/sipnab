@@ -10,6 +10,34 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The audit and evidence files follow log rotation.**
+  - Was: After a rename or removal, sipnab wrote `--mcp-audit-file`, `--tui-audit-file` and `--evidence-out` records into the moved or deleted file until it restarted.
+  - Effect: The next record goes to a new file at the configured path, and `seq` continues from the old file.
+  - Do: Rotate with logrotate's default `create` mode; `copytruncate` is no longer needed.
+  - Docs: [Rotate the audit and provenance files](docs/run-as-a-service.md#rotate-the-audit-and-provenance-files)
+
+## [0.5.272] - 2026-11-25
+
+### Added
+
+- **The relay sessions answer gives each RTP socket's rate, from the relay and the capture.**
+  - Effect: Each socket shows packets per second and kbps, and names the byte basis: UDP payload for the relay, RTP payload for the capture.
+  - Do: Ask twice over REST, MCP or the TUI, or add `--relay-stats-interval N` to `--relay-sessions`.
+  - Limit: A socket the capture holds no stream for reads `not_captured`, never 0.
+  - Docs: [Read the rate media arrives at](docs/relay-statistics.md#read-the-rate-media-arrives-at)
+  - Credit: Inspired by irontec/sngrep#581.
+
+### Changed
+
+- **A batch run exits without first freeing its stored calls and streams.**
+  - Effect: The operating system takes the memory back at exit; the output, the output files and the exit status stay the same.
+  - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 1.90% fewer instructions, and one with RTP 1.75% fewer.
+  - Limit: callgrind counted the instructions; there is no wall-time figure, because the host stayed busy.
+
+## [0.5.271] - 2026-11-24
+
 ### Changed
 
 - **Reading a capture file runs fewer instructions per SIP message.**
@@ -20,11 +48,6 @@ entry that carries them.
 
 ### Fixed
 
-- **The audit and evidence files follow log rotation.**
-  - Was: After a rename or removal, sipnab wrote `--mcp-audit-file`, `--tui-audit-file` and `--evidence-out` records into the moved or deleted file until it restarted.
-  - Effect: The next record goes to a new file at the configured path, and `seq` continues from the old file.
-  - Do: Rotate with logrotate's default `create` mode; `copytruncate` is no longer needed.
-  - Docs: [Rotate the audit and provenance files](docs/run-as-a-service.md#rotate-the-audit-and-provenance-files)
 - **`--split` and `--autostop filesize:` count name and TLS key blocks in pcapng output.**
   - Was: They left out the name-resolution and key-log blocks, so files and runs grew past the limit.
   - Effect: Both limits count every byte of the file on disk.
@@ -33,6 +56,10 @@ entry that carries them.
   - Was: At 100,000 calls, `--filter 'method == INVITE'` ran 31 times the CPU instructions of the same run with no filter.
   - Effect: A filter on SIP fields reads no streams; a filter on `rtp.*` or a media diagnosis field reads only that call's streams.
   - Docs: [Filter DSL reference](docs/filter-dsl.md)
+- **A vCon export no longer re-reads every call in the capture for each container.**
+  - Was: Each container ran the whole capture analysis again, and each container of an `export_vcon` page or `--export-vcon-when` run read every call's SDP again.
+  - Effect: At 100,000 calls an `export_vcon` page of 50 containers runs about 10 times faster; the containers are unchanged.
+  - Docs: [vCon export](docs/vcon.md)
 
 ### Security
 

@@ -648,6 +648,125 @@ of 5000 reads `"cap": 1024` with `"cap_clamped": {"requested": 5000,
 "ceiling": 1024}`, and the text answer says `the ceiling is 1024`. The
 troubleshooting list above covers the refusals.
 
+## Read the rate media arrives at
+
+Each RTP socket in a sessions answer carries two rates: what the relay
+received there (`ingress_rate`), and what this capture saw sent to it
+(`captured_rate`). Use them to tell a party that sends at the codec's rate
+from one that sends in bursts, sends too little, or stopped, and to see
+whether the capture point is on the media path at all.
+
+sipnab gives every rate in two units:
+
+| Unit | Relay (`ingress_rate`) | Capture (`captured_rate`) |
+|---|---|---|
+| `packets_per_s` | packets the relay counted | packets the capture saw |
+| `kbps` (1000 bits per second) | `byte_basis: udp_payload`: the RTP header and its payload, 172 bytes per 20 ms G.711 packet | `byte_basis: rtp_payload`: the RTP payload only, 160 bytes per 20 ms G.711 packet |
+
+So one G.711 party at 50 packets per second reads `50.0` packets per second
+on both tiers, `kbps` `68.8` from the relay and `kbps` `64.0` from the
+capture. The 4.8 kbit/s between them is the RTP header, not lost media.
+Compare packets per second across the two tiers, and `kbps` only within one
+tier.
+
+### What the rates need
+
+- **Everything the sessions answer needs** (above): `--rtpengine-control`,
+  a live source, and `--api-allow-relay-query` or `--mcp-allow-relay-query`
+  for REST and MCP.
+- **On the other system, rtpengine: nothing to change.** The rate comes from
+  the `stats` counters rtpengine already returns to `query`. Its
+  `listen-ng` address must answer sipnab, as for every ask on this page. A
+  scan above 32 calls needs `listen-tcp-ng` on the same address.
+- **For `captured_rate`**, the RTP must pass the host where sipnab captures.
+  When it does not, for example when sipnab runs on the SIP proxy and the
+  relay is in another data center, every `captured_rate` reads
+  `not_captured`, never 0, and the relay's rate is the one to read.
+- **Two samples.** A rate needs two answers about the same socket. The first
+  answer reads `no_rate_yet`.
+
+### Ask for the rates
+
+From the command line, `--relay-stats-interval N` with `--relay-sessions`
+asks twice, `N` seconds apart, prints the second answer and exits. sipnab
+sends one `list` and the queries for each of the two answers, and nothing
+after:
+
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 --relay-sessions --relay-stats-interval 2 2>/dev/null
+```
+
+Each call's text ends with a "Rates" section, one line per RTP socket. With
+`--json`, each socket carries `ingress_rate` and `captured_rate`. The run
+reads no media, so its `captured_rate` is always `not_captured`. Without
+`--relay-stats-interval`, the one answer reads `no_rate_yet`.
+
+Over REST and MCP, sipnab keeps the previous answer about each socket, and
+each ask reports the rate since the previous ask by any caller. Ask once:
+
+```bash
+curl -s "http://127.0.0.1:18731/v1/relay/sessions?call_id=a@example.invalid"
+```
+
+Then, a few seconds later, ask again and read the rates:
+
+```bash
+curl -s "http://127.0.0.1:18731/v1/relay/sessions?call_id=a@example.invalid" \
+  | jq '.calls[].tags[].sockets[] | {local_port, ingress_rate, captured_rate}'
+```
+
+An MCP agent calls `query_relay` with `sessions: true` twice in the same way.
+
+In the terminal UI, the sessions view (`S`, then `H`) asks the call under
+the cursor every 2 seconds, or every `--relay-stats-interval` seconds. Open a
+call with Enter: its "Rates" lines show both tiers from the second refresh.
+
+### Check that the rates are there
+
+A rated socket reads, in JSON:
+
+```json
+"ingress_rate": {"state": "rate", "packets_per_s": 50.0, "kbps": 68.8,
+                 "byte_basis": "udp_payload", "over_ms": 2000}
+```
+
+and in text:
+
+```text
+Rates (what arrived at each relay RTP socket):
+  192.0.2.11:30000 from 1SIPpTag0113926: relay 50.0 pps, 68.8 kbps (UDP payload, RTP header included) over 2.000 s; capture not captured
+```
+
+`over_ms` is the measured time between the two answers, the divisor of the
+rate. The example values are the ones sipnab's tests check for one G.711
+party, not a recording of a live relay.
+
+### When the rate is not what you expect
+
+- **`no_rate_yet`.** This is the first answer about the socket since the
+  server started, or sipnab forgot the previous one. Ask again. sipnab keeps
+  at most 4096 sockets per tier and forgets the least recently asked first.
+- **`reset` with `incarnation_changed`.** The relay set the Call-ID up again
+  between the two answers. The next answer gives a rate.
+- **`reset` with `counter_backwards`.** A counter went down: the relay
+  restarted or replaced the stream. The next answer gives a rate.
+- **`reset` with `out_of_range`.** The counters grew by more than a
+  10 Gbit/s link carries in the time between the answers (the ceiling
+  `MAX_BITS_PER_SECOND`, 10,000,000,000 bits per second). sipnab reports no
+  rate for such a jump.
+- **`not_reported`.** The relay's answer carried no packet or byte counter
+  for that socket, or no flags saying it is RTP.
+- **`rtcp_not_counted`.** An RTCP socket. sipnab rates only RTP.
+- **`no_interval`.** The two answers carried the same time. Ask again.
+- **`not_captured` beside a relay rate.** The capture holds no stream sent
+  to that socket for this call: the media does not pass the capture point,
+  or the capture filter leaves it out.
+- **A rate with a large `over_ms`.** Another caller's ask, or a slow relay,
+  set the time between samples. The rate is the average over that time.
+- **With rtcp-mux**, RTCP arrives on the RTP socket. Whether rtpengine
+  counts it in that socket's `stats` was not measured, so a socket with
+  rtcp-mux may read a little above the codec's rate.
+
 ## Compare the relay's count with your capture
 
 For one call, put the relay's RTP packet count beside the count sipnab

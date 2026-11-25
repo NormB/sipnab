@@ -24,6 +24,7 @@
 //! `unlinked` is its own number with its own label.
 
 use crate::rtp::stream::RtpStream;
+use crate::rtp::stream_store::StreamStore;
 
 /// Which way across a relay socket a capture count is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +43,9 @@ pub enum Way {
 pub struct SocketCapture {
     /// Packets in the streams on the socket linked to the asked Call-ID.
     pub linked: Option<u64>,
+    /// RTP payload bytes in those same streams, `None` exactly when `linked`
+    /// is.
+    pub linked_bytes: Option<u64>,
     /// Packets in the streams on the socket linked to no dialog.
     pub unlinked: Option<u64>,
 }
@@ -81,12 +85,63 @@ where
             continue;
         }
         match s.associated_dialog.as_deref() {
-            Some(linked) if linked == call_id => add(&mut out.linked, s.packet_count),
+            Some(linked) if linked == call_id => {
+                add(&mut out.linked, s.packet_count);
+                add(&mut out.linked_bytes, s.octet_count);
+            }
             Some(_) => {}
             None => add(&mut out.unlinked, s.packet_count),
         }
     }
     out
+}
+
+/// [`captured_on`] over `store`, as the sessions answer asks it: for a
+/// Call-ID and a relay socket, what the capture saw sent TO that socket in the
+/// streams linked to the call.
+///
+/// Reads only the call's own streams ([`StreamStore::streams_for`]), so one
+/// ask costs that call's streams, not the store's; `unlinked` is therefore
+/// always `None` here, and a rate never counts a stream no dialog claims.
+pub fn counts_in(store: &StreamStore) -> impl Fn(&str, &str, u16) -> SocketCapture + '_ {
+    move |call_id: &str, addr: &str, port: u16| {
+        captured_on(
+            store.streams_for(call_id),
+            call_id,
+            addr,
+            port,
+            Way::ToRelay,
+        )
+    }
+}
+
+/// Add to `ss` one stream from `src` to the relay socket 192.0.2.11:30000:
+/// one packet of 172 bytes with SSRC `ssrc`, linked to `call`. For the rate
+/// tests of every surface that reads a capture.
+#[cfg(test)]
+pub(crate) fn add_stream_to_relay_socket(
+    ss: &mut StreamStore,
+    ssrc: u32,
+    src: &str,
+    call: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let src: std::net::SocketAddr = src.parse()?;
+    let packet = crate::test_utils::udp_parsed(src, "192.0.2.11:30000".parse()?, &[0u8; 172]);
+    let header = crate::rtp::parser::RtpHeader {
+        version: 2,
+        padding: false,
+        extension: false,
+        csrc_count: 0,
+        marker: false,
+        payload_type: 0,
+        sequence: 1,
+        timestamp: 160,
+        ssrc,
+        payload_offset: 12,
+    };
+    ss.process_rtp(&packet, &header, chrono::Utc::now());
+    ss.link_to_dialog(src.ip(), src.port(), call);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -304,6 +359,7 @@ mod tests {
             captured_on(&s, CALL, RELAY, 30000, Way::ToRelay),
             SocketCapture {
                 linked: Some(200),
+                linked_bytes: Some(0),
                 unlinked: Some(30)
             },
             "Linked and unlinked on one socket keep their own counts"
@@ -407,10 +463,146 @@ mod tests {
             captured_on(&none, CALL, RELAY, 30000, Way::ToRelay),
             SocketCapture {
                 linked: None,
+                linked_bytes: None,
                 unlinked: None
             },
             "No stream at all is \"not captured\", not a measured 0"
         );
+    }
+
+    /// A store holding one stream per `(ssrc, src, call)`, each one packet of
+    /// 172 bytes sent to 192.0.2.11:30000 and linked to `call`.
+    fn store_of(streams: &[(u32, &str, &str)]) -> Result<StreamStore, TestError> {
+        let mut ss = StreamStore::new(16);
+        for (ssrc, src, call) in streams {
+            super::add_stream_to_relay_socket(&mut ss, *ssrc, src, call)?;
+        }
+        Ok(ss)
+    }
+
+    #[test]
+    fn success_counts_in_reads_the_calls_own_streams_to_the_socket() -> Result<(), TestError> {
+        let ss = store_of(&[
+            (1, "198.51.100.5:4000", CALL),
+            (2, "198.51.100.7:4000", OTHER),
+        ])?;
+        let octets = ss
+            .iter()
+            .find(|s| s.key.ssrc == 1)
+            .map(|s| s.octet_count)
+            .ok_or("stream 1 is held")?;
+        let got = counts_in(&ss)(CALL, RELAY, 30000);
+        assert_eq!(
+            got,
+            SocketCapture {
+                linked: Some(1),
+                linked_bytes: Some(octets),
+                unlinked: None,
+            },
+            "only CALL's stream, with its payload bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_counts_in_for_a_call_with_no_streams_is_not_captured() -> Result<(), TestError> {
+        let ss = store_of(&[(1, "198.51.100.5:4000", CALL)])?;
+        assert_eq!(
+            counts_in(&ss)("nobody@example.invalid", RELAY, 30000),
+            SocketCapture::default(),
+            "not captured, never 0"
+        );
+        assert_eq!(
+            counts_in(&ss)(CALL, RELAY, 30002),
+            SocketCapture::default(),
+            "another socket of the same call: not captured"
+        );
+        Ok(())
+    }
+
+    /// `stream`, with `octets` payload bytes counted.
+    fn with_octets(mut s: RtpStream, octets: u64) -> RtpStream {
+        s.octet_count = octets;
+        s
+    }
+
+    #[test]
+    fn success_linked_bytes_sum_the_payload_of_every_linked_stream() -> Result<(), TestError> {
+        let s = [
+            with_octets(
+                stream(
+                    1,
+                    "198.51.100.5:4000",
+                    "192.0.2.11:30000",
+                    50,
+                    Some(CALL),
+                    0,
+                )?,
+                8000,
+            ),
+            with_octets(
+                stream(
+                    2,
+                    "198.51.100.5:4002",
+                    "192.0.2.11:30000",
+                    10,
+                    Some(CALL),
+                    9,
+                )?,
+                1600,
+            ),
+        ];
+        let got = captured_on(&s, CALL, RELAY, 30000, Way::ToRelay);
+        assert_eq!(got.linked, Some(60), "packets of both streams");
+        assert_eq!(
+            got.linked_bytes,
+            Some(9600),
+            "payload bytes of both streams"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_another_calls_bytes_on_the_socket_are_not_counted() -> Result<(), TestError> {
+        let s = [
+            with_octets(
+                stream(
+                    1,
+                    "198.51.100.5:4000",
+                    "192.0.2.11:30000",
+                    50,
+                    Some(CALL),
+                    0,
+                )?,
+                8000,
+            ),
+            with_octets(
+                stream(
+                    2,
+                    "198.51.100.7:4000",
+                    "192.0.2.11:30000",
+                    900,
+                    Some(OTHER),
+                    0,
+                )?,
+                144_000,
+            ),
+        ];
+        let got = captured_on(&s, CALL, RELAY, 30000, Way::ToRelay);
+        assert_eq!(got.linked_bytes, Some(8000), "only the asked call's bytes");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_unlinked_bytes_are_never_folded_into_linked_bytes() -> Result<(), TestError> {
+        let s = [with_octets(
+            stream(1, "198.51.100.5:4000", "192.0.2.11:30000", 50, None, 0)?,
+            8000,
+        )];
+        let got = captured_on(&s, CALL, RELAY, 30000, Way::ToRelay);
+        assert_eq!(got.linked_bytes, None, "no linked stream: not captured");
+        assert_eq!(got.unlinked, Some(50), "the unlinked stream stays apart");
+        Ok(())
     }
 
     /// A linked stream that counted 0 packets is a measured 0.

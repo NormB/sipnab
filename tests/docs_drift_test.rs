@@ -6791,7 +6791,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // site mirror (+2).
     // 1524 -> 1532 (sngrep mode, #884): the four sngrep-mode key tables of
     // docs/keybindings.md and their site mirrors (+8).
-    const EXPECTED_TABLES: usize = 1532;
+    // 1532 -> 1534 (relay rates): the units table of "Read the rate media
+    // arrives at" in docs/relay-statistics.md and its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1534;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;
