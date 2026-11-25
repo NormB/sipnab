@@ -29,7 +29,7 @@ use std::path::Path;
 
 /// The oldest release section that is held to the outline format. Lower it
 /// when the sections below it are converted.
-const CONVERTED_DOWN_TO: (u32, u32, u32) = (0, 5, 186);
+const CONVERTED_DOWN_TO: (u32, u32, u32) = (0, 5, 170);
 
 /// The `### ` headings a judged section may carry.
 const KINDS: [&str; 6] = [
