@@ -66,7 +66,7 @@ const ALLOWED: &[(&str, &str, &str)] = &[
     ),
     (
         "CHANGELOG.md",
-        r#"  - `--vcon-fetch <UUID>...` reads each container from the store at `--vcon-fetch-url`."#,
+        r#"  - Do: `--vcon-fetch <UUID>...` reads each container from the store at `--vcon-fetch-url`; use `-` for uuids on standard input."#,
         r#"clap's notation for a value that repeats, as `--help` prints `--vcon-fetch <UUID>...`"#,
     ),
     (

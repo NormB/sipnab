@@ -140,6 +140,168 @@ pub struct SipMessage {
     /// `Wire`: "sipnab saw this on a wire" is a claim, and a synthetic message
     /// must not make it.
     pub input_origin: Option<crate::capture::parse::InputOrigin>,
+    /// The CSeq and the media summary, each read once and kept. See
+    /// [`ParseCache`].
+    pub(crate) cache: ParseCache,
+}
+
+/// What a message's CSeq and SDP say, read once and kept: every pass over the
+/// stores (a capture report, a filter, a metrics scrape) reads these instead of
+/// parsing the header and the body again.
+///
+/// Both are derived from `headers` and `body` alone. Nothing outside tests
+/// writes either after the parser builds the message, so neither can go
+/// stale; a scan of the production source in this module's `cache_tests`
+/// refuses any such write, and any `SipMessage` built outside the parser.
+///
+/// Both are filled on the first read, never at ingest: the CSeq position by
+/// the first [`SipMessage::cseq`] (ingest reads the CSeq several times per
+/// message, so it fills it then), the media summary by the first
+/// [`SipMessage::media_lines`] (only a query reads it).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ParseCache {
+    /// The CSeq number and where its method sits, packed (see
+    /// [`CSeqSlot`]).
+    cseq: CSeqSlot,
+    /// The media summary of [`SipMessage::sdp`]: `None` when the message
+    /// holds no SDP that parses. Boxed, so an unread summary costs the
+    /// message one pointer and the lock state.
+    media: std::sync::OnceLock<Box<MediaSummary>>,
+}
+
+/// One message's media summary: one [`MediaLine`] per `m=` line, `None`
+/// when it holds no SDP that parses.
+type MediaSummary = Option<Box<[MediaLine]>>;
+
+/// A message's CSeq answer, by position, in one word: no lock and no
+/// allocation, because ingest reads it on every message.
+///
+/// [`CSEQ_UNREAD`] until the first read; then [`CSEQ_UNKEPT`] (no answer,
+/// or a position too large for the fields: each read parses again, and
+/// answers as it always did) or [`CSEQ_KEPT`] with the number in the low 32
+/// bits, then the header's index in [`SipMessage::headers`]
+/// ([`CSEQ_HEADER_BITS`]), the method's start in that header's value
+/// ([`CSEQ_START_BITS`]) and its length ([`CSEQ_LEN_BITS`]). Two readers
+/// racing on the first read store the same word, so `Relaxed` is enough.
+#[derive(Debug, Default)]
+struct CSeqSlot(std::sync::atomic::AtomicU64);
+
+impl Clone for CSeqSlot {
+    fn clone(&self) -> Self {
+        Self(std::sync::atomic::AtomicU64::new(self.load()))
+    }
+}
+
+impl CSeqSlot {
+    /// The word.
+    fn load(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Keep `word`.
+    fn store(&self, word: u64) {
+        self.0.store(word, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// [`CSeqSlot`]: nothing read yet.
+const CSEQ_UNREAD: u64 = 0;
+/// [`CSeqSlot`]: read, nothing kept; each read parses.
+const CSEQ_UNKEPT: u64 = 1;
+/// [`CSeqSlot`]: the flag of a kept position.
+const CSEQ_KEPT: u64 = 1 << 63;
+/// [`CSeqSlot`]: bits for the header index.
+const CSEQ_HEADER_BITS: u32 = 10;
+/// [`CSeqSlot`]: bits for the method's start.
+const CSEQ_START_BITS: u32 = 11;
+/// [`CSeqSlot`]: bits for the method's length.
+const CSEQ_LEN_BITS: u32 = 10;
+
+/// `parse` (header index, number, method range) as a kept [`CSeqSlot`]
+/// word: `None` when a field does not fit.
+fn pack_cseq((header, num, method): &(usize, u32, Range<usize>)) -> Option<u64> {
+    let field = |v: usize, bits: u32| u64::try_from(v).ok().filter(|v| *v < (1 << bits));
+    let header = field(*header, CSEQ_HEADER_BITS)?;
+    let start = field(method.start, CSEQ_START_BITS)?;
+    let len = field(method.len(), CSEQ_LEN_BITS)?;
+    Some(
+        CSEQ_KEPT
+            | u64::from(*num)
+            | header << 32
+            | start << (32 + CSEQ_HEADER_BITS)
+            | len << (32 + CSEQ_HEADER_BITS + CSEQ_START_BITS),
+    )
+}
+
+/// A kept [`CSeqSlot`] word as (header index, number, method range).
+fn unpack_cseq(word: u64) -> (usize, u32, Range<usize>) {
+    let field = |shift: u32, bits: u32| {
+        usize::try_from((word >> shift) & ((1 << bits) - 1)).unwrap_or(usize::MAX)
+    };
+    let header = field(32, CSEQ_HEADER_BITS);
+    let start = field(32 + CSEQ_HEADER_BITS, CSEQ_START_BITS);
+    let len = field(32 + CSEQ_HEADER_BITS + CSEQ_START_BITS, CSEQ_LEN_BITS);
+    let num = u32::try_from(word & u64::from(u32::MAX)).unwrap_or(0);
+    (header, num, start..start.saturating_add(len))
+}
+
+/// One `m=` line of a message's SDP, as the media diagnosis reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MediaLine {
+    /// The effective connection address
+    /// ([`crate::sip::sdp::effective_address`]), as written.
+    address: Option<Box<str>>,
+    /// The `m=` port.
+    port: u16,
+    /// Whether the transport is RTP (`RTP/AVP`, `UDP/TLS/RTP/SAVPF`, ...),
+    /// not, say, T.38's `udptl`.
+    carries_rtp: bool,
+    /// The media direction.
+    direction: crate::sip::sdp::SdpDirection,
+}
+
+impl MediaLine {
+    /// The effective connection address
+    /// ([`crate::sip::sdp::effective_address`]), exactly as written.
+    pub(crate) fn address(&self) -> Option<Cow<'_, str>> {
+        self.address.as_deref().map(Cow::Borrowed)
+    }
+
+    /// [`Self::address`] as an IP address: `None` when there is no address
+    /// or it is not an IP literal (a host name).
+    pub(crate) fn ip(&self) -> Option<IpAddr> {
+        self.address.as_deref()?.parse().ok()
+    }
+
+    /// The `m=` port.
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Whether the transport is RTP (`RTP/AVP`, `UDP/TLS/RTP/SAVPF`, ...),
+    /// not, say, T.38's `udptl`.
+    pub(crate) fn carries_rtp(&self) -> bool {
+        self.carries_rtp
+    }
+
+    /// The media direction.
+    pub(crate) fn direction(&self) -> crate::sip::sdp::SdpDirection {
+        self.direction
+    }
+}
+
+/// The media summary of one parsed SDP session: one [`MediaLine`] per `m=`
+/// line, in order.
+pub(crate) fn media_lines_of(sdp: &SdpSession) -> Box<[MediaLine]> {
+    sdp.media
+        .iter()
+        .map(|media| MediaLine {
+            address: crate::sip::sdp::effective_address(media, sdp).map(String::into_boxed_str),
+            port: media.port,
+            carries_rtp: media.proto.to_ascii_uppercase().contains("RTP"),
+            direction: media.direction,
+        })
+        .collect()
 }
 
 /// The bit that stands for `origin` in a set of sources
@@ -168,13 +330,31 @@ fn note_parse(msg: &SipMessage, cseq: bool) {
     PARSES.with(|p| {
         let mut p = p.borrow_mut();
         let Some(p) = p.as_mut() else { return };
-        let entry = p.entry(std::ptr::from_ref(msg) as usize).or_default();
+        let entry = p.entry(msg_key(msg)).or_default();
         if cseq {
             entry.0 += 1;
         } else {
             entry.1 += 1;
         }
     });
+}
+
+/// Test-only: note that a reader asked for `msg`'s CSeq or media summary,
+/// parsed or kept, when this thread is recording. A kept answer parses
+/// nothing, so this is how a test still sees which messages were read.
+#[cfg(test)]
+fn note_read(msg: &SipMessage) {
+    PARSES.with(|p| {
+        if let Some(p) = p.borrow_mut().as_mut() {
+            p.entry(msg_key(msg)).or_default();
+        }
+    });
+}
+
+/// Test-only: the key [`PARSES`] records `msg` under, its address.
+#[cfg(test)]
+fn msg_key(msg: &SipMessage) -> usize {
+    std::ptr::from_ref(msg) as usize
 }
 
 /// Every message's [`SipMessage::cseq`], in message order: parsed once, for a
@@ -246,16 +426,50 @@ impl SipMessage {
     /// The method string borrows from the header value (zero allocation).
     pub fn cseq(&self) -> Option<(u32, &str)> {
         #[cfg(test)]
+        note_read(self);
+        let word = self.cache.cseq.load();
+        let (header, num, method) = if word & CSEQ_KEPT != 0 {
+            unpack_cseq(word)
+        } else {
+            let parsed = self.parse_cseq_at();
+            if word == CSEQ_UNREAD {
+                // Missing or malformed, or a position past what the word
+                // holds: kept as "parse each read", which answers the same
+                // as before the cache.
+                self.cache
+                    .cseq
+                    .store(parsed.as_ref().and_then(pack_cseq).unwrap_or(CSEQ_UNKEPT));
+            }
+            parsed?
+        };
+        Some((num, self.headers.get(header)?.value.get(method)?))
+    }
+
+    /// The `CSeq` header parsed, by position: the index in [`Self::headers`] of
+    /// the header it read (the first `CSeq`, in any case, as
+    /// [`Self::header`] finds it), the number, and where the method sits in
+    /// that header's value. One walk, so the position kept and the answer
+    /// parsed always come from the same header.
+    fn parse_cseq_at(&self) -> Option<(usize, u32, Range<usize>)> {
+        #[cfg(test)]
         note_parse(self, true);
-        let val = self.header("CSeq")?;
+        let (index, header) = self
+            .headers
+            .iter()
+            .enumerate()
+            .find(|(_, h)| h.name.eq_ignore_ascii_case("CSeq"))?;
         // RFC 3261: CSeq = 1*DIGIT LWS Method, where Method is a single
         // token. Take the first two whitespace-separated tokens and ignore
         // any trailing garbage (e.g. "1 INVITE extra") so method comparisons
         // in timing.rs are not defeated.
-        let mut parts = val.split_whitespace();
+        let value = header.value.as_str();
+        let mut parts = value.split_whitespace();
         let num: u32 = parts.next()?.parse().ok()?;
         let method = parts.next()?;
-        Some((num, method))
+        // `method` borrows from `value`, so its offset is the distance
+        // between the two.
+        let start = method.as_ptr() as usize - value.as_ptr() as usize;
+        Some((index, num, start..start + method.len()))
     }
 
     /// Return the `User-Agent` header value, falling back to `Server`.
@@ -342,6 +556,19 @@ impl SipMessage {
             None if self.body.starts_with(b"v=") => sdp::parse_sdp(&self.body).ok(),
             None => None,
         }
+    }
+
+    /// The media summary of [`Self::sdp`]: one [`MediaLine`] per `m=` line,
+    /// `None` when the message holds no SDP that parses. Parsed on the
+    /// first read and kept: ingest never reads it, so a capture nobody
+    /// queries never builds one.
+    pub(crate) fn media_lines(&self) -> Option<&[MediaLine]> {
+        #[cfg(test)]
+        note_read(self);
+        self.cache
+            .media
+            .get_or_init(|| Box::new(self.sdp().map(|sdp| media_lines_of(&sdp))))
+            .as_deref()
     }
 
     /// Whether this message's SDP can set up a media session, by
@@ -779,6 +1006,9 @@ pub(crate) fn multipart_sdp(content_type: &str, body: &[u8]) -> Option<SdpSessio
         .iter()
         .find_map(|part| sdp::parse_sdp(&part.body).ok())
 }
+
+#[cfg(test)]
+mod cache_tests;
 
 #[cfg(test)]
 mod tests {

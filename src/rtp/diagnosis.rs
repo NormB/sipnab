@@ -13,7 +13,8 @@ use std::net::IpAddr;
 
 use super::stream::RtpStream;
 use crate::sip::dialog::SipDialog;
-use crate::sip::sdp::{SdpDirection, SdpSession, effective_address};
+use crate::sip::message::{MediaLine, media_lines_of};
+use crate::sip::sdp::{SdpDirection, SdpSession};
 
 /// Codec asymmetry — A leg uses one codec, B leg uses another.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -600,13 +601,15 @@ impl MediaContext {
 
         let (mut sdp_in_request, mut sdp_in_response) = (false, false);
         for msg in &dialog.messages {
-            let Some(sdp) = msg.sdp() else { continue };
+            let Some(lines) = msg.media_lines() else {
+                continue;
+            };
             if msg.is_request {
                 sdp_in_request = true;
             } else {
                 sdp_in_response = true;
             }
-            ctx.absorb(&sdp);
+            ctx.absorb(lines);
         }
         ctx.negotiated = sdp_in_request && sdp_in_response;
         ctx
@@ -637,20 +640,20 @@ impl MediaContext {
             capture,
             ..MediaContext::default()
         };
-        ctx.absorb(sdp);
+        ctx.absorb(&media_lines_of(sdp));
         ctx
     }
 
-    /// Fold one SDP body into the accumulated view.
-    fn absorb(&mut self, sdp: &SdpSession) {
-        for media in &sdp.media {
-            let Some(addr) = effective_address(media, sdp) else {
+    /// Fold the media summary of one SDP body into the accumulated view.
+    fn absorb(&mut self, lines: &[MediaLine]) {
+        for media in lines {
+            let Some(addr) = media.address() else {
                 continue;
             };
             if self.primary.is_none() {
-                self.primary = Some(addr.clone());
+                self.primary = Some(addr.into_owned());
             }
-            let parsed = addr.parse::<IpAddr>().ok();
+            let parsed = media.ip();
             if let Some(ip) = parsed
                 && !self.advertised.contains(&ip)
             {
@@ -661,17 +664,16 @@ impl MediaContext {
             let black_holed = parsed.is_some_and(|ip| ip.is_unspecified());
             // T.38 (`m=image ... udptl`) and other non-RTP transports carry no
             // RTP by definition, so their absence is not a media failure.
-            let carries_rtp = media.proto.to_ascii_uppercase().contains("RTP");
-            let asks_for_rtp = carries_rtp && media.port != 0 && !black_holed;
+            let asks_for_rtp = media.carries_rtp() && media.port() != 0 && !black_holed;
             if let Some(ip) = parsed
                 && asks_for_rtp
             {
-                let endpoint = (ip, media.port);
+                let endpoint = (ip, media.port());
                 if !self.advertised_ports.contains(&endpoint) {
                     self.advertised_ports.push(endpoint);
                 }
             }
-            if asks_for_rtp && media.direction != SdpDirection::Inactive {
+            if asks_for_rtp && media.direction() != SdpDirection::Inactive {
                 self.expects_media = true;
             }
         }
@@ -1536,6 +1538,9 @@ fn stream_duration_sec(s: &RtpStream) -> f64 {
     ms as f64 / 1000.0
 }
 
+#[cfg(test)]
+mod media_summary_tests;
+
 /// Unit tests for media-path and per-call asymmetry diagnosis.
 #[cfg(test)]
 mod tests {
@@ -1708,8 +1713,13 @@ mod tests {
     #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
     #[test]
     fn a_context_from_parsed_cseqs_agrees_and_parses_none() -> Result<(), TestError> {
+        // `plain` reads its own copy: the summaries it fills are kept on its
+        // messages, and this test counts the SDP reads of the other.
+        let plain = MediaContext::for_dialog(
+            &two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386)?,
+            CaptureMedia::Observed,
+        );
         let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386)?;
-        let plain = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
         let cseqs = crate::sip::message::cseqs(&dialog.messages);
         crate::test_utils::clear_parses();
         let parsed = MediaContext::for_dialog_parsed(&dialog, &cseqs, CaptureMedia::Observed);
@@ -1718,6 +1728,26 @@ mod tests {
         assert!(parsed.established, "the call was answered");
         assert_eq!(cseq, 0, "a CSeq was parsed {cseq} times");
         assert_eq!(sdp, 1, "each SDP body is read once");
+        Ok(())
+    }
+
+    /// A second context over the SAME messages reads the summaries and
+    /// CSeqs the first one kept: no SDP and no CSeq is parsed again, and the
+    /// two contexts agree. This is the case the test above sidesteps with a
+    /// separate copy of the dialog.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_context_over_messages_already_read_parses_nothing() -> Result<(), TestError> {
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386)?;
+        let plain = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
+        let cseqs = crate::sip::message::cseqs(&dialog.messages);
+        crate::test_utils::clear_parses();
+        let parsed = MediaContext::for_dialog_parsed(&dialog, &cseqs, CaptureMedia::Observed);
+        let (cseq, sdp, read) = crate::test_utils::worst_parses();
+        assert_eq!(format!("{parsed:?}"), format!("{plain:?}"), "one context");
+        assert!(read > 0, "the second context read the messages");
+        assert_eq!(cseq, 0, "a CSeq was parsed {cseq} times");
+        assert_eq!(sdp, 0, "a kept SDP summary was parsed again {sdp} times");
         Ok(())
     }
 
@@ -2715,6 +2745,7 @@ mod tests {
             input_origin: None,
             is_retransmission: false,
             also_seen_by: 0,
+            cache: Default::default(),
         };
         let mut d = SipDialog::new(&invite).ok_or("dialog from INVITE")?;
         d.timing.invite_sent = Some(ts()?);

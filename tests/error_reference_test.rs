@@ -1065,7 +1065,10 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // 691 -> 693 (`--drop-method` / `--only-method` names): +1 in src/config.rs,
 // an unknown method in `[capture] drop_methods` / `only_methods`; +1 in
 // src/cli.rs, the same refusal from the flags' parser.
-const EXPECTED_TEMPLATES: usize = 693;
+// 693 -> 694 (MEM-2, bounded TLS key material): +1 in src/app/batch.rs, the
+// line `tls_bound_guidance` prints when a bound dropped key log entries,
+// ServerHello messages or sessions.
+const EXPECTED_TEMPLATES: usize = 694;
 
 // ---------------------------------------------------------------------------
 // The page gates

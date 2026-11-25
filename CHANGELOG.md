@@ -18,6 +18,32 @@ entry that carries them.
   - Do: Rotate with logrotate's default `create` mode; `copytruncate` is no longer needed.
   - Docs: [Rotate the audit and provenance files](docs/run-as-a-service.md#rotate-the-audit-and-provenance-files)
 
+## [0.5.273] - 2026-11-25
+
+### Changed
+
+- **Repeated MCP reports, `find_problems` and `/metrics` scrapes use less CPU on large captures.**
+  - Effect: sipnab keeps each SIP message's CSeq position, and a summary of its SDP media lines once a query reads them.
+  - Effect: On a 100,000-call capture, 3 `get_capture_report` calls ran 33% fewer instructions, 3 `find_problems` calls 42%, 3 `GET /metrics` scrapes 39%.
+  - Effect: Reading 150,000 packets of a SIP capture with `-N` ran 0.85% fewer instructions; replies and output are unchanged.
+  - Limit: On the 100,000-call capture, resident memory was 3.2% higher after loading it and 4.6% higher after 3 reports.
+  - Docs: [Estimate memory for a larger capture](docs/benchmarks.md#estimate-memory-for-a-larger-capture)
+- **Changelog sections 0.5.214 down to 0.5.190 are outlines too.**
+  - Effect: each entry says what changed, what to do and where the detail is; entries about hooks, CI and tests are removed.
+  - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
+
+### Fixed
+
+- **TLS 1.2 captures decrypt every connection, not only the first ones.**
+  - Was: With `--keylog` read at startup, a connection whose handshake came after the first decrypted record stayed encrypted and took an earlier connection's keys away.
+  - Effect: Each connection gets its session when its own ServerHello arrives.
+  - Docs: [TLS capture](docs/tls-capture.md)
+- **A long `--keylog-watch` run keeps TLS key memory bounded.**
+  - Was: Key log entries, ServerHello messages and sessions grew for the whole run, and each new key cost more than the one before.
+  - Effect: Each has a bound; the end of the run and a first-time warning say what a bound dropped.
+  - Limit: A key log file read at startup is always held whole.
+  - Docs: [Error messages](docs/errors.md)
+
 ## [0.5.272] - 2026-11-25
 
 ### Added
@@ -2433,3268 +2459,1227 @@ entry that carries them.
 ### Added
 
 - **`-I` reads stored vCon containers, and every surface analyzes them.**
-  - sipnab reads a container like a capture.
-    - It can be a container `--export-vcon` wrote, or one another producer wrote.
-    - It can be a file, a directory of them or a glob.
-    - It can be beside pcap files or alone.
-  - sipnab rebuilds its SIP messages from one of these:
-    - the `sip-message-trace` attachment (sipnab's, and the trace form of draft-howe-vcon-sip-signaling-00)
-    - `message/sip` attachments
-  - It keeps each message's time, addresses and transport.
-  - These analyze them unchanged:
-    - the dialog list and the ladder
-    - `--report`, `--analyze`, `--json` and `--json-dialogs`
-    - the TUI, file browser included
-    - MCP `open_capture`
-  - Each rebuilt message carries the new `input_origin` value `vcon`.
-    - It shows as `origin=vcon` on the `-N` line and in the TUI.
-  - The capture analysis opens with a new blind finding, `rebuilt_from_vcon`.
-    - It has one occurrence per container.
-    - It names what a container cannot reproduce.
-    - It quotes the producer's own caveat.
-  - What a container cannot reproduce:
-    - No RTP is stored, so sipnab computes no media statistic.
-    - The request-URI is not stored, so a rebuilt request carries `sip:request-uri-not-stored.invalid`.
-    - Header order across names does not come back.
-    - Bodies other than SDP do not come back.
-    - Headers the producer did not store do not come back.
-  - sipnab still reads a container that fails the draft-ietf-vcon-vcon-core-04 schema, when its SIP is readable.
-    - sipnab logs the finding and carries it in the analysis.
-    - vcon.store hands containers back with `extensions` as an object.
-    - sipnab reads `extensions` in either form.
-  - These are skipped with the reason, or stop the run when named directly:
-    - a container with no SIP sipnab can read
-    - a file that is not a vCon
-  - sipnab refuses `--cores` and a BPF filter for a set holding one.
-  - The TUI file browser lists `*.vcon.json`.
-  - Its status line says when dialogs came from stored containers.
-  - Cookbook recipe "Analyze a call from a stored vCon" shows it.
-  - The YANG module `sipnab-diagnosis` has a new revision, 2026-10-09, carrying the finding kind.
-- **MCP `analyze_vcon` and `POST /v1/vcon/analyze`.**
-  - Both take a container inline.
-  - Both answer with one shared analysis:
-    - per dialog, the `--json-dialogs` object, the signaling diagnosis and the message ladder
-    - the capture analysis
-    - `not_recomputed`
-    - the producer's `media_quality` rows verbatim, as `stored_media_quality`
-  - sipnab analyzes the container in stores of its own.
-    - The loaded capture is untouched.
-    - Nothing connects anywhere.
-  - `schema_findings` lists every schema finding beside the analysis.
-  - A container with no readable SIP gets `verdict: unreadable` and the reason.
-  - The tool is read-only and in the `vcon` bundle.
-  - `limit` bounds it.
+  - Effect: a container `--export-vcon` or another producer wrote is read like a capture, as a file, a directory or a glob.
+  - Effect: the dialog list, the ladder, `--report`, `--analyze`, `--json`, `--json-dialogs`, the TUI and MCP `open_capture` analyze the rebuilt SIP messages unchanged.
+  - Effect: each rebuilt message carries `input_origin` `vcon`, shown as `origin=vcon`, and the TUI file browser lists `*.vcon.json`.
+  - Limit: sipnab refuses `--cores` and a BPF filter for a set holding a container.
+  - Docs: [Analyze a stored vCon](docs/vcon.md#analyze-a-stored-vcon), [Analyze a call from a stored vCon](docs/examples.md#analyze-a-call-from-a-stored-vcon).
+- **A new blind finding, `rebuilt_from_vcon`, names what a container cannot reproduce.**
+  - Effect: the capture analysis opens with it, one occurrence per container, quoting the producer's own caveat.
+  - Limit: no RTP is stored, so sipnab computes no media statistic; a rebuilt request carries `sip:request-uri-not-stored.invalid`.
+  - Limit: header order across names, bodies other than SDP and headers the producer did not store do not come back.
+  - Effect: a container that fails the draft-ietf-vcon-vcon-core-04 schema is still read when its SIP is readable; sipnab logs the finding.
+  - Effect: the YANG module `sipnab-diagnosis` has a new revision, 2026-10-09, carrying the finding kind.
+- **MCP `analyze_vcon` and `POST /v1/vcon/analyze` analyze a container given inline.**
+  - Effect: both answer with one shared analysis: per dialog the `--json-dialogs` object, the signaling diagnosis and the ladder, and the capture analysis.
+  - Effect: `not_recomputed`, `schema_findings` and the producer's `media_quality` rows, as `stored_media_quality`, come beside it.
+  - Effect: the tool is read-only and in the `vcon` bundle; the loaded capture is untouched and nothing connects anywhere.
+  - Limit: a container with no readable SIP gets `verdict: unreadable` and the reason; `limit` bounds the answer.
+  - Docs: [`analyze_vcon`](docs/mcp-tools-vcon.md#analyze_vcon), [POST /v1/vcon/analyze](docs/rest-api.md#post-v1vconanalyze).
 - **`--since` and `--until` scope a headless run to a time window.**
-  - Example: `sipnab -N -I capture.pcap --report --since 2026-10-09T10:00:00Z --until 2026-10-09T11:00:00Z`.
-  - It keeps the dialogs whose first message falls in the half-open window `[since, until)`.
-  - Other surfaces spell the same window differently:
-    - REST `/v1/dialogs` spells it `after`/`before`.
-    - The MCP `search_by_time` tool spells it `start`/`end`.
-  - All three now read the bound with one [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) parser and apply one rule.
-  - The window joins `--filter` in one compiled filter.
-
-    - So `--report`, `--json-dialogs`, `--analyze`, the per-message stream and `--export-vcon-when` all honor it.
-  - A window holding none of the capture's dialogs says so on stderr.
-    - It names the span the dialogs cover.
-  - These exit 2:
-    - an `--until` not after `--since`
-    - a value that is not RFC 3339
-    - either flag without `-N`
-- **The filter DSL has a `time` field**.
-  - It is the dialog's first-message instant.
-  - It compares with a quoted RFC 3339 literal by `<`, `<=`, `>`, `>=` or `==`.
-  - `time >= 'A' AND time < 'B'` selects what `--since A --until B` selects.
+  - Do: `sipnab -N -I capture.pcap --report --since 2026-10-09T10:00:00Z --until 2026-10-09T11:00:00Z`.
+  - Effect: the run keeps the dialogs whose first message falls in the half-open window `[since, until)`.
+  - Effect: `--report`, `--json-dialogs`, `--analyze`, the per-message stream and `--export-vcon-when` all honor it; an empty window says so on stderr.
+  - Limit: exit 2 for an `--until` not after `--since`, a value that is not [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html), or either flag without `-N`.
+  - Docs: [Scope a run to a time window](docs/cli-reference.md#scope-a-run-to-a-time-window).
+- **The filter DSL has a `time` field.**
+  - Effect: it is the dialog's first-message instant, compared with a quoted RFC 3339 literal by `<`, `<=`, `>`, `>=` or `==`.
+  - Effect: `time >= 'A' AND time < 'B'` selects what `--since A --until B` selects.
+  - Effect: REST `/v1/dialogs` (`after`/`before`) and MCP `search_by_time` (`start`/`end`) read the bound with the same parser and rule as the flags.
+  - Docs: [Time field](docs/filter-dsl.md#time-field).
 - **An error-message reference.**
-
-  - [Error messages](docs/errors.md) lists each message sipnab prints when it refuses a run or stops at startup.
-    - It keys each message by the template in the source.
-    - It gives what the message means, what to do, and the exit code.
-  - `tests/error_reference_test.rs` reads the startup and exit path of the source.
-    - It fails when a message has no entry.
-    - It fails when an entry names a message no code prints.
+  - Effect: [Error messages](docs/errors.md) lists each message sipnab prints when it refuses a run or stops at startup.
+  - Effect: each entry is keyed by the message template and gives what it means, what to do, and the exit code.
 - **A Since column in the CLI reference.**
-
-  - Every flag row of [docs/cli-reference.md](docs/cli-reference.md) names the first release whose command line accepted the flag.
-  - `scripts/flag-since.py` derives it from `src/cli.rs` at each release tag.
-  - On the release commit, a flag in no tag reads the version being cut.
-  - `tests/cli_flag_since_test.rs` fails when the column differs from what the tags say.
+  - Effect: every flag row of [docs/cli-reference.md](docs/cli-reference.md) names the first release whose command line accepted the flag.
 - **A source footer on every docs page of sipnab.com.**
-  - Each page links to its source file on GitHub.
-  - It states the release that holds the last change to that file.
-  - `scripts/doc-history.py` reads this from git at deploy time.
+  - Effect: each page links to its source file on GitHub and states the release that holds the last change to that file.
 
 ### Changed
 
 - **Retained audio covers the whole call.**
-  - `--retain-audio`, and the terminal UI, kept the last 1500 frames of each stream.
-    - That is 30 seconds of 20 ms G.711.
-    - So a 60-second call exported to WAV or vCon held its last 30 seconds and said PARTIAL.
-  - Each stream now keeps every frame from the first.
-  - `[limits] max_audio_frames` is unset by default.
-    - When set, it still caps each stream.
-    - `0` is still refused.
-  - Affected: every run that retains audio, live or from a file, `--cores`
-    included.
-- **A new `[limits] max_audio_bytes` budget bounds retained audio across every
-  stream.**
-  - Default 1 GiB, minimum 1 MiB.
-  - sipnab charges a 20 ms G.711 frame 264 bytes.
-    - This is an upper bound on what it occupies.
-    - It measured at 192.6 bytes with the binary's allocator.
-
-  - So the default holds 40,672 call-seconds with media both ways.
-    - That is 67 concurrent ten-minute calls, or 225 concurrent three-minute ones.
-  - At the budget, sipnab releases the oldest stream's earliest frames first.
-  - That call's WAV note, export summary and vCon `media_note` then say `PARTIAL: the [limits] max_audio_bytes retention budget was reached and released N earlier frame(s)`.
-  - The vCon wraps the recording in a `recording-set`.
-  - With `--cores N` each worker gets 1/N of the budget.
-  - See [Audio retention budget](docs/config-reference.md#audio-retention-budget).
-- **A live capture that writes vCon containers releases each call's audio
-  once its container is written.**
-  - The container carries the audio.
-  - Holding it until the stream was evicted grew retention with the length of the run.
-  - A later export of that call says how many frames were released and why.
+  - Was: `--retain-audio`, and the terminal UI, kept the last 1500 frames of each stream, 30 seconds of 20 ms G.711.
+  - Was: a 60-second call exported to WAV or vCon held its last 30 seconds and said PARTIAL.
+  - Effect: each stream keeps every frame from the first, in every run that retains audio, live or from a file, `--cores` included.
+  - Limit: `[limits] max_audio_frames` is unset by default; when set, it still caps each stream, and `0` is still refused.
+- **A new `[limits] max_audio_bytes` budget bounds retained audio across every stream.**
+  - Effect: the default is 1 GiB and the minimum 1 MiB; at the budget, sipnab releases the oldest stream's earliest frames first.
+  - Effect: sipnab charges a 20 ms G.711 frame 264 bytes, so the default holds 40,672 call-seconds with media both ways.
+  - Effect: that call's WAV note, export summary and vCon `media_note` then say `PARTIAL: the [limits] max_audio_bytes retention budget was reached and released N earlier frame(s)`.
+  - Limit: with `--cores N` each worker gets 1/N of the budget.
+  - Docs: [Audio retention budget](docs/config-reference.md#audio-retention-budget).
+- **A live capture writing vCon containers releases each call's audio once its container is written.**
+  - Was: holding the audio until the stream was evicted grew retention with the length of the run.
+  - Effect: the container carries the audio, and a later export of that call says how many frames were released and why.
 - **A whole call can exceed the vCon inline media budget.**
-  - A two-way G.711 call fits the 5 MiB `--vcon-max-inline-media` default for up to 122 seconds.
-  - A longer one carries the existing out-loud refusal instead of the audio.
-  - Raise `--vcon-max-inline-media` to what your store accepts.
+  - Effect: a two-way G.711 call fits the 5 MiB `--vcon-max-inline-media` default for up to 122 seconds.
+  - Limit: a longer one carries the existing out-loud refusal instead of the audio.
+  - Do: raise `--vcon-max-inline-media` to what your store accepts.
 - **The MCP tool reference is one page per tool bundle.**
-  - [docs/mcp-tools.md](docs/mcp-tools.md) is now the index. It holds:
-    - what a bundle is
-    - the ten bundles, with a link to each page
-    - the bundle byte costs
-    - which tool finds calls
-    - the prompts
-    - an alphabetical tool lookup naming each tool's page
-    - the rules every tool follows
-  - `docs/mcp-tools-<bundle>.md` holds each bundle's tools.
-    - For example, [`rtp_stats`](docs/mcp-tools-core.md#rtp_stats) is in the `core` bundle.
-  - `tests/mcp_tool_bundle_pages_test.rs` reads `src/mcp_profile.rs`.
-    - It fails when a tool's section is not on its bundle's page.
+  - Effect: [docs/mcp-tools.md](docs/mcp-tools.md) is the index: the ten bundles with a link to each page, byte costs, prompts and an alphabetical tool lookup.
+  - Effect: `docs/mcp-tools-<bundle>.md` holds each bundle's tools; for example, [`rtp_stats`](docs/mcp-tools-core.md#rtp_stats) is in the `core` bundle.
 
 ## [0.5.213] - 2026-10-12
 
 ### Added
 
 - **Guides for Asterisk and FreeSWITCH.**
-  - Asterisk and FreeSWITCH are back-to-back user agents (B2BUAs).
-    - Each answers the caller's call itself.
-    - Each places a second call to the callee.
-    - So one call through them is two SIP dialogs, called legs.
-  - [Use Asterisk as your voice stack's
-    PBX](https://sipnab.com/docs/asterisk/):
-    - It builds Asterisk 22.11.0 from the Asterisk project's source release.
-    - It runs Asterisk as its own user under systemd.
-    - It connects a caller to a callee through it.
-    - It proves this with a test call that carries audio both ways through Asterisk.
-  - [Run sipnab beside
-    Asterisk](https://sipnab.com/docs/asterisk-sipnab/) watches that call as its two legs:
-    - the report and the streams on each leg
-    - both legs in one flow in the terminal interface
-    - a call report from a saved capture
-    - the legs matched over MCP and the REST API
-    - Asterisk's own HEP, received by sipnab's listener
-  - [Use FreeSWITCH in your voice
-    stack](https://sipnab.com/docs/freeswitch/):
-    - It builds FreeSWITCH 1.11.3, with sofia-sip and spandsp, from source.
-    - Building from source needs no account.
-    - FreeSWITCH's own packages need a SignalWire access token, and neither distribution carries one.
-    - It bridges a test call to a callee on the same machine.
-    - It proves this with audio on both legs.
-
-  - [Run sipnab beside
-    FreeSWITCH](https://sipnab.com/docs/freeswitch-sipnab/):
-    - It watches that call as two dialogs and four audio streams with `--portrange 5060-5080`.
-    - It reads the call's quality from the capture.
-    - It ties the two legs together in the TUI's extended flow, the REST `/correlated` route and MCP.
-    - It receives FreeSWITCH's own HEP from its `capture-server` setting.
-  - Every command in the four guides ran as written on clean Debian 13 and Ubuntu 24.04 machines.
-    - They used sipnab 0.5.211 from its release package.
+  - Effect: [Use Asterisk as your voice stack's PBX](https://sipnab.com/docs/asterisk/) builds Asterisk 22.11.0 from source, runs it under systemd and proves a test call with audio both ways.
+  - Effect: [Run sipnab beside Asterisk](https://sipnab.com/docs/asterisk-sipnab/) watches that call as its two legs in the report, the TUI, MCP, the REST API and Asterisk's own HEP.
+  - Effect: [Use FreeSWITCH in your voice stack](https://sipnab.com/docs/freeswitch/) builds FreeSWITCH 1.11.3, with sofia-sip and spandsp, from source and bridges a test call with audio on both legs.
+  - Effect: [Run sipnab beside FreeSWITCH](https://sipnab.com/docs/freeswitch-sipnab/) watches that call as two dialogs and four audio streams with `--portrange 5060-5080`, and receives FreeSWITCH's HEP.
+  - Effect: every command in the four guides ran as written on clean Debian 13 and Ubuntu 24.04 machines with sipnab 0.5.211 from its release package.
 
 ### Changed
 
-- **Breaking for library users: `McpArgs::mcp_transport` is a
-  `sipnab::cli::McpTransport` enum, not a `String`.**
-  - The command line accepts the same two values, `stdio` and `http`.
-  - The parser already refused any other value.
-
-    - So the second check in `Cli::validate` could not print.
-    - The third check in `start_servers` could not print either.
-  - With the enum, no other transport can be built, and both checks are gone.
-  - `--help` now describes each value.
-
-- **CI runs the test binaries side by side.**
-
-  - The Check job's Test step ran `cargo test --all-features`.
-    - That runs its 406 test binaries one at a time.
-    - On 2026-10-12 this took 460 s of the Linux job's 12.8-minute step.
-  - It now runs them through `scripts/parallel-tests.py`.
-    - The pre-commit hook already uses this runner.
-    - It uses a pool of one job per core.
-
-  - The output keeps `cargo test`'s format.
-    - So the published test count is derived from it unchanged.
+- **Breaking for library users: `McpArgs::mcp_transport` is a `sipnab::cli::McpTransport` enum, not a `String`.**
+  - Effect: the command line accepts the same two values, `stdio` and `http`, and `--help` now describes each value.
+  - Effect: no other transport can be built, so two later checks that could not print are gone.
 
 ### Fixed
 
 - **`-c` / `--calls-only` keeps only calls on every dialog output.**
-  - It applied only to the per-message printout.
-    - So `--json-dialogs` and `--report` still listed OPTIONS, REGISTER and SUBSCRIBE dialogs.
-    - The TUI ignored it.
-  - Those outputs now keep only dialogs an INVITE started.
-  - `-c` combines with `--filter` as an AND.
-  - The TUI opens with only INVITE checked in its filter dialog, as sngrep's `-c` does.
-  - Like `--filter`, it does not narrow what `-O` writes.
-  - Reported by Ihor
-    Olkhovskyi ([@igorolhovskiy](https://github.com/igorolhovskiy)) in
-    [#474](https://github.com/NormB/sipnab/issues/474).
-- **`man sipnab` describes every option, environment variable and exit
-  status of this build.**
-  - The page had these problems:
-    - It listed 27 of 329 options.
-    - It named none of the environment variables that carry secrets.
-    - It printed "theterminalviewer(1)" in DESCRIPTION and SEE ALSO.
-    - Its exit-status list was older than `docs/cli-reference.md`.
-  - Now:
-    - OPTIONS is generated from the same definitions `--help` prints.
-      - It uses the same headings, MCP included.
-    - ENVIRONMENT comes from the table `--help` now prints after its examples.
-    - EXIT STATUS comes from the exit-code table in `docs/cli-reference.md`.
-  - Affected: `man/sipnab.1` in the release archives and the deb, rpm and
-    Homebrew packages.
+  - Was: it applied only to the per-message printout, so `--json-dialogs` and `--report` still listed OPTIONS, REGISTER and SUBSCRIBE dialogs, and the TUI ignored it.
+  - Effect: those outputs keep only dialogs an INVITE started, and the TUI opens with only INVITE checked in its filter dialog, as sngrep's `-c` does.
+  - Limit: `-c` combines with `--filter` as an AND and, like `--filter`, does not narrow what `-O` writes.
+  - Credit: Reported by Ihor Olkhovskyi ([@igorolhovskiy](https://github.com/igorolhovskiy)) in [#474](https://github.com/NormB/sipnab/issues/474).
+- **`man sipnab` describes every option, environment variable and exit status of this build.**
+  - Was: the page listed 27 of 329 options, named none of the environment variables that carry secrets, and printed "theterminalviewer(1)" in DESCRIPTION and SEE ALSO.
+  - Was: its exit-status list was older than `docs/cli-reference.md`.
+  - Effect: OPTIONS is generated from the definitions `--help` prints, ENVIRONMENT from the table `--help` prints, and EXIT STATUS from the exit-code table in `docs/cli-reference.md`.
+  - Effect: the fix reaches `man/sipnab.1` in the release archives and the deb, rpm and Homebrew packages.
 - **`--help` names every environment variable sipnab reads.**
-  - It now ends with an ENVIRONMENT list.
-  - `--archive-password-file` names `SIPNAB_ARCHIVE_PASSWORD` and the `archive-password` systemd credential.
-  - Values are never printed.
-- **CI and the site deploy survive one failed request to github.com.**
-  - The checks of #471 failed when curl got HTTP 504 fetching the Pagefind release.
-  - The 0.5.212 site deploy failed twice when one read of GitHub's API returned an error.
-  - Every download in `pages.yml` and `quality.yml` now retries five times.
-    - Each attempt has a bound.
-    - The bpf-linker download in `release.yml` already did this.
-    - A test requires it of every `curl` in CI.
-  - The deploy waits for CI's test output.
-    - It now treats a failed API read as a reason to poll again within its deadline.
-    - It logs the error text `gh` printed.
+  - Effect: it ends with an ENVIRONMENT list, and values are never printed.
+  - Effect: `--archive-password-file` names `SIPNAB_ARCHIVE_PASSWORD` and the `archive-password` systemd credential.
 - **`--capture-tunnels=` with no port in the list says the list is empty.**
-  - It printed "Invalid --capture-tunnels port ''" instead.
-  - The cause: the check for a blank port ran before the check for an empty list.
-- **`-x`/`--quiet-bad-parse` help names `SIPNAB_LOG=debug` as the way to see
-  the notice it silences.**
-  - It said the notice was visible under `-v`.
-  - That flag is `--invert` and changes no log level.
+  - Was: it printed "Invalid --capture-tunnels port ''" instead.
+- **`-x`/`--quiet-bad-parse` help names `SIPNAB_LOG=debug` as the way to see the notice it silences.**
+  - Was: it said the notice was visible under `-v`, but that flag is `--invert` and changes no log level.
 - **A panic in the TUI's processing thread is logged with its message.**
-
-  - The log line read "Processing thread panicked: Any { .. }".
+  - Was: the log line read "Processing thread panicked: Any { .. }".
 - **A bad `--ws-portrange` is reported as a flag value, not a config value.**
-  - `--ws-portrange 80` printed "invalid config value: --ws-portrange: Expected format 'start-end' (e.g., '5060-5061'), got '80'".
-    - No config file was involved.
-  - It now prints "Invalid --ws-portrange: Expected format 'start-end' (e.g., '5060-5061'), got '80'", as `--portrange` does.
-  - The exit code is unchanged:
-    - 2 for the flag
-    - 1 for `[capture] ws_ports`
-- **An unreadable `--tls-key`, `--srtp-keys` or `--dtls-keylog` names the OS
-  reason.**
-  - The refusal named the file and stopped.
-    - For example: "Failed to load --tls-key key.pem: reading TLS private key from key.pem".
-    - It did not say "No such file or directory" or "Permission denied".
-  - `--keylog` already gave the reason.
+  - Was: `--ws-portrange 80` printed "invalid config value: --ws-portrange: Expected format 'start-end' (e.g., '5060-5061'), got '80'" with no config file involved.
+  - Effect: it prints "Invalid --ws-portrange: Expected format 'start-end' (e.g., '5060-5061'), got '80'", as `--portrange` does.
+  - Limit: the exit code is unchanged: 2 for the flag, 1 for `[capture] ws_ports`.
+- **An unreadable `--tls-key`, `--srtp-keys` or `--dtls-keylog` names the OS reason.**
+  - Was: the refusal named the file and stopped, as in "Failed to load --tls-key key.pem: reading TLS private key from key.pem".
+  - Effect: it now says "No such file or directory" or "Permission denied", as `--keylog` already did.
 - **The keybindings page documents every key the F1 help lists.**
-  - These keys had no row:
-    - the Call List keys `g`, `m`, `c`, `e`, `b`, `o`, `f`, `x`, `a`, `B` and `N`
-    - the `Ctrl+L` alias of `F5`
-    - the relay statistics `H` key
-  - The nine views those keys open had no section.
-  - They do now.
-  - There is also a section for the capture filter editor `B` opens.
-- **The REST reference documents `filter`, `after` and `before` on
-  `GET /v1/dialogs`.**
-  - The OpenAPI document declared all three.
-  - The page's parameter table listed four parameters and omitted them.
-- **The website's plugin page no longer requires `sipnab_dealloc`**.
-  - The host never looks it up.
-  - Both plugin pages count three exports, not four.
-  - The website's plugin and TLS capture pages are now generated from `docs/`.
-    - So the TLS page carries the current `bpf` build requirements.
-- **The build page's feature table lists `vcon` and `archive`**.
-  - Its `full` row lists all twelve members.
-  - The install page's dependency column names the `rustls` that `api`, `metrics` and `vcon` pull in.
-  - Its `hep` row names HEP v1 receive.
-
+  - Was: the Call List keys `g`, `m`, `c`, `e`, `b`, `o`, `f`, `x`, `a`, `B` and `N` had no row.
+  - Was: the `Ctrl+L` alias of `F5` and the relay statistics `H` key had no row, and the nine views those keys open had no section.
+  - Effect: they do now, and there is a section for the capture filter editor `B` opens.
+- **The REST reference documents `filter`, `after` and `before` on `GET /v1/dialogs`.**
+  - Was: the OpenAPI document declared all three, and the page's parameter table listed four parameters and omitted them.
+- **The website's plugin page no longer requires `sipnab_dealloc`.**
+  - Effect: the host never looks it up, and both plugin pages count three exports, not four.
+  - Effect: the website's plugin and TLS capture pages are generated from `docs/`, so the TLS page carries the current `bpf` build requirements.
+- **The build page's feature table lists `vcon` and `archive`.**
+  - Effect: its `full` row lists all twelve members.
+  - Effect: the install page's dependency column names the `rustls` that `api`, `metrics` and `vcon` pull in; its `hep` row names HEP v1 receive.
 - **The release notes name every flag and REST route a release added.**
-  - These shipped without a release note that named them.
-  - Each is listed with the release that added it, read from that release's tag:
-    - 0.4.3: `--api-revoked-file`, `--api-signing-key-file`, `--api-token-ttl`,
-      `--mcp-signing-key-file` and `--mcp-token-ttl`.
-    - 0.4.4: `--buffer-budget`.
-    - 0.5.0: `--panic-selftest`.
-      - It is a hidden flag that panics on purpose to test crash handling.
-    - 0.5.96: `--findings-history`.
-    - 0.5.97: `--jitter-bad-ms`, `--jitter-warn-ms`, `--loss-bad-pct`,
-      `--loss-warn-pct`, `--max-grouped-messages`, `--max-groups`,
-      `--max-lost-sequences`, `--max-metadata-file-bytes`, `--mos-bad`,
-      `--mos-warn`, `--rtt-bad-ms` and `--rtt-warn-ms`.
-    - 0.5.98: `--scanner-answer-grace`, `--scanner-behavioral-probes`,
-      `--scanner-enumeration-targets`, `--scanner-established-factor`,
-      `--scanner-rejected-probes`, `--scanner-unanswered-probes` and
-      `--scanner-window`.
-    - 0.5.99: `--cn-suppression-ratio` and `--max-tcp-buffer`.
-    - 0.5.100: `--exec-queue-depth`, `--fraud-volume-window`,
-      `--fraud-wangiri-window` and `--leg-correlation-window`.
-    - 0.5.125: `GET /v1/dialogs/{call_id}/vcon`.
-    - 0.5.130: `--mcp-audit-file`, `--redact-keep-prefix` and
-      `--redact-key-file`.
-    - 0.5.148: `GET /v1/tfps/banned`.
-    - 0.5.170: `GET /v1/relay/stats`, `GET /v1/relay/stats/names`,
-      `GET /v1/relay/stats/call/{call_id}` and
-      `GET /v1/relay/compare/{call_id}`.
-    - 0.5.205: `--vcon-forward-interval` and `--vcon-forward-timeout`.
-  - `tests/release_surface_test.rs` now fails in two cases:
-    - A release adds a flag, an MCP tool or a REST route that no release note from that release onward names.
-    - The working tree adds one that `[Unreleased]` does not name.
+  - Was: these shipped without a release note that named them; each is listed with the release that added it, read from that release's tag.
+  - Effect: 0.4.3: `--api-revoked-file`, `--api-signing-key-file`, `--api-token-ttl`, `--mcp-signing-key-file` and `--mcp-token-ttl`; 0.4.4: `--buffer-budget`; 0.5.0: `--panic-selftest`, a hidden flag that panics on purpose to test crash handling.
+  - Effect: 0.5.96: `--findings-history`; 0.5.97: `--jitter-bad-ms`, `--jitter-warn-ms`, `--loss-bad-pct`, `--loss-warn-pct`, `--max-grouped-messages`, `--max-groups`, `--max-lost-sequences`, `--max-metadata-file-bytes`, `--mos-bad`, `--mos-warn`, `--rtt-bad-ms` and `--rtt-warn-ms`.
+  - Effect: 0.5.98: `--scanner-answer-grace`, `--scanner-behavioral-probes`, `--scanner-enumeration-targets`, `--scanner-established-factor`, `--scanner-rejected-probes`, `--scanner-unanswered-probes` and `--scanner-window`; 0.5.99: `--cn-suppression-ratio` and `--max-tcp-buffer`; 0.5.100: `--exec-queue-depth`, `--fraud-volume-window`, `--fraud-wangiri-window` and `--leg-correlation-window`.
+  - Effect: 0.5.125: `GET /v1/dialogs/{call_id}/vcon`; 0.5.130: `--mcp-audit-file`, `--redact-keep-prefix` and `--redact-key-file`; 0.5.148: `GET /v1/tfps/banned`; 0.5.170: `GET /v1/relay/stats`, `GET /v1/relay/stats/names`, `GET /v1/relay/stats/call/{call_id}` and `GET /v1/relay/compare/{call_id}`; 0.5.205: `--vcon-forward-interval` and `--vcon-forward-timeout`.
 
 ## [0.5.212] - 2026-10-12
 
 ### Added
 
 - **MCP prompt `vcon-handoff`.**
-  - It orders these steps:
-    - `capture_status`
-    - `validate_filter`
-    - `export_vcon` with the filter
-    - `validate_vcon` on each exported container
-  - It then has the model record each container's `digest`.
-  - The server serves it only when the `core`, `signaling` and `vcon` tools are loaded.
-  - The [MCP tool reference](docs/mcp-tools.md#prompts) lists every prompt, its steps and the bundles it needs.
-  - A new table, [Which tool finds calls](docs/mcp-tools.md#which-tool-finds-calls), says which of seven tools answers which question.
+  - Effect: it orders `capture_status`, `validate_filter`, `export_vcon` with the filter and `validate_vcon` on each container, then has the model record each container's `digest`.
+  - Limit: the server serves it only when the `core`, `signaling` and `vcon` tools are loaded.
+  - Effect: the MCP tool reference lists every prompt, its steps and the bundles it needs.
+  - Effect: a new table says which of seven tools answers which question.
+  - Docs: [MCP tool reference](docs/mcp-tools.md#prompts), [Which tool finds calls](docs/mcp-tools.md#which-tool-finds-calls).
 - **A byte budget for one whole MCP page.**
-  - `--mcp-max-rows` bounded how many rows a page carried.
-  - `--mcp-max-body-bytes` bounded how wide one body in a row could be.
-  - Nothing bounded the response as a whole.
-  - The paged tools now take `max_response_bytes`:
-    - `list_dialogs`
-    - `find_problems`
-    - `search_by_time`
-    - `search_messages`
-    - `tail_dialogs`
-    - `get_dialog`
-    - `reconcile_orphans`
-    - the `rtp_stats` sweep
-  - sipnab clamps it to the new `--mcp-max-response-bytes` (`[limits] mcp_max_response_bytes`, default 1048576).
-  - Past it, a page does these things:
-    - It drops whole rows from its end, never part of one.
-    - It keeps at least one row.
-    - It answers `truncated: true`, `truncated_by: "bytes"` and a `next_cursor` to the rest.
-  - The count matches `sipnab_mcp_tool_response_bytes_total`.
-    - It counts the JSON page, the provenance note and the completeness fields.
-  - The default is under twice the largest response measured over `tests/pcap-samples`.
-    - That response was 561,420 bytes, `list_dialogs` with `limit: 1000`.
-    - So the default changes no answer there.
+  - Was: `--mcp-max-rows` bounded the rows of a page and `--mcp-max-body-bytes` one body in a row, but nothing bounded the response as a whole.
+  - Effect: `list_dialogs`, `find_problems`, `search_by_time`, `search_messages`, `tail_dialogs`, `get_dialog`, `reconcile_orphans` and the `rtp_stats` sweep take `max_response_bytes`.
+  - Limit: sipnab clamps it to the new `--mcp-max-response-bytes` (`[limits] mcp_max_response_bytes`, default 1048576).
+  - Effect: past it, a page drops whole rows from its end, keeps at least one, and answers `truncated: true`, `truncated_by: "bytes"` and a `next_cursor`.
+  - Effect: the count matches `sipnab_mcp_tool_response_bytes_total`: the JSON page, the provenance note and the completeness fields.
 - **`truncated_by` on every paged response.**
-  - `rows` when the row limit cut the page.
-  - `bytes` when the byte budget cut it.
-  - Absent when nothing was cut.
+  - Effect: it is `rows` when the row limit cut the page, `bytes` when the byte budget cut it, and absent when nothing was cut.
 - **`reconcile_orphans` pages with a cursor.**
-  - Rows run oldest first by first packet.
-    - This is the order the `rtp_stats` sweep uses.
-  - The response carries `returned`, `truncated_by` and `next_cursor`.
-  - Its `limit` is now clamped to `--mcp-max-rows`, as every other list tool's is.
-    - It was not bounded by it.
-  - The tool documentation said rows ran most recent first.
-    - They ran in store order.
-- **[Response bounding](docs/mcp-tools.md#response-bounding) names every tool
-  that takes `limit` without a cursor, and why:**
-  - `find_correlated` and `top_talkers` are rankings.
-  - `get_call_tree` is a walk from one call.
-  - `describe_endpoint` orders on a key that moves.
-  - `hep_senders` answers two lists with the bytes `GET /v1/hep/senders` returns.
-  - TFPS's `log` command has no offset for `tfps_labels` to resume from.
+  - Effect: rows run oldest first by first packet, the order the `rtp_stats` sweep uses.
+  - Effect: the response carries `returned`, `truncated_by` and `next_cursor`.
+  - Effect: its `limit` is now clamped to `--mcp-max-rows`, as every other list tool's is.
+  - Was: the tool documentation said rows ran most recent first; they ran in store order.
+- **Response bounding names every tool that takes `limit` without a cursor, and why.**
+  - Effect: `find_correlated` and `top_talkers` are rankings, `get_call_tree` is a walk from one call, and `describe_endpoint` orders on a key that moves.
+  - Effect: `hep_senders` answers two lists with the bytes `GET /v1/hep/senders` returns.
+  - Effect: TFPS's `log` command has no offset for `tfps_labels` to resume from.
+  - Docs: [Response bounding](docs/mcp-tools.md#response-bounding).
 - **`export_vcon` pages with a cursor and can leave the audio out.**
-  - The response carries `next_cursor`.
-    - It is the `<created_at>|<Call-ID>` cursor `list_dialogs` uses.
-    - The tool takes it back as `cursor`.
-  - Containers now come back ordered by the dialog's `created_at`, then Call-ID.
-  - `media: "omit"` builds signaling-only containers.
-    - Each records `media: "not-considered"` in its own completeness carrier.
-  - `media: "inline"`, the default, is the behavior before this change.
-
-- **The MCP resource `sipnab://vcon/{call_id}`**.
-  - It reads one dialog as a vCon container.
-  - The same function as `export_vcon` builds it.
-  - It completes `call_id` from the Call-IDs the capture holds.
-  - It is refused past the 8 MiB resource limit.
-  - Only a build with the `vcon` feature offers it.
-- **The MCP tool `vcon_spool_status`**.
-  - It counts the `--export-vcon-dir` spool:
-    - containers pending, delivered and failed
-    - the record `sipnab --vcon-forward` wrote beside each failed container
-  - It reads files and nothing else.
-    - It sends, fetches, moves and deletes nothing.
-  - Its answer is a snapshot dated by `as_of`.
-  - It is in the `vcon` bundle.
-- **`GET /v1/vcon/spool` and `sipnab --vcon-spool-status <SPOOL_DIR>`**.
-  - They give the answer `vcon_spool_status` gives, from the same function.
-  - The REST route is for a run started with `--api` and `--export-vcon-dir`.
-    - `limit` and `cursor` page it.
-  - The command-line one-shot prints every failed record and exits.
-  - Neither moves a file.
-  - The MCP tool also fences each store answer and cuts it to `--mcp-max-body-bytes`.
+  - Effect: the response carries `next_cursor`, the `<created_at>|<Call-ID>` cursor `list_dialogs` uses, and the tool takes it back as `cursor`.
+  - Effect: containers come back ordered by the dialog's `created_at`, then Call-ID.
+  - Effect: `media: "omit"` builds signaling-only containers, each recording `media: "not-considered"` in its own completeness carrier.
+  - Effect: `media: "inline"`, the default, is the behavior before this change.
+- **The MCP resource `sipnab://vcon/{call_id}`.**
+  - Effect: it reads one dialog as a vCon container, built by the same function as `export_vcon`.
+  - Effect: it completes `call_id` from the Call-IDs the capture holds.
+  - Limit: it is refused past the 8 MiB resource limit, and only a build with the `vcon` feature offers it.
+- **The MCP tool `vcon_spool_status`.**
+  - Effect: it counts the `--export-vcon-dir` spool: containers pending, delivered and failed, and the record `sipnab --vcon-forward` wrote beside each failed container.
+  - Effect: it reads files and nothing else; it sends, fetches, moves and deletes nothing.
+  - Effect: its answer is a snapshot dated by `as_of`, and the tool is in the `vcon` bundle.
+- **`GET /v1/vcon/spool` and `sipnab --vcon-spool-status <SPOOL_DIR>`.**
+  - Effect: they give the answer `vcon_spool_status` gives, from the same function, and neither moves a file.
+  - Effect: the REST route is for a run started with `--api` and `--export-vcon-dir`; `limit` and `cursor` page it.
+  - Effect: the command-line one-shot prints every failed record and exits.
+  - Effect: the MCP tool also fences each store answer and cuts it to `--mcp-max-body-bytes`.
 
 ### Changed
 
 - **Reading a capture file on one core is about 20% faster.**
-  - A run with no `--cores` now maps an unfiltered classic pcap and reads it in place.
-    - `--cores 2` and above already did this.
-  - Before, it read the file through libpcap.
-    - libpcap's `fread` took a lock.
-    - libpcap copied each frame into a fresh allocation per packet.
-  - These still read through libpcap:
-    - pcapng
-    - compressed files
-    - pipes
-    - a run with a BPF filter
-  - The receive loop no longer reads the clock per packet for the keylog poll.
-    - The exception is when `--keylog-watch` or `--keylog-fd` is set.
-  - The measurement used a 535k-packet corpus built with `bench/carrier.py --calls 5000`.
-    - A single-core run of a release build went from 0.96M (0.5.211) to 1.18M packets per second.
-    - Each figure is the lowest of three interleaved replicates.
-    - Peak memory rose from 160.9 to 168.4 MiB.
-    - Two, four and eight cores stayed within the spread of the replicates.
-  - [Check how fast sipnab
-    is](docs/benchmarks.md) has the tables.
-  - A nanosecond-resolution pcap now keeps all nine digits of each timestamp on one core.
-    - It did this with `--cores`.
-    - libpcap dropped the last three.
-- **`--cores` names a record with a corrupt capture timestamp in the
-  capture-quality summary.**
-  - The mapped reader clamped a fraction of a second past its range into the same second.
-    - It counted nothing.
-  - So a `--cores` run reported no corrupt timestamp where the default reader reported one.
-  - Both readers now stamp such a record with the wall clock, count it, and keep it.
+  - Effect: a run with no `--cores` maps an unfiltered classic pcap and reads it in place, as `--cores 2` and above already did.
+  - Limit: pcapng, compressed files, pipes and a run with a BPF filter still read through libpcap.
+  - Effect: a single-core release build went from 0.96M (0.5.211) to 1.18M packets per second on a 535k-packet corpus; peak memory rose from 160.9 to 168.4 MiB.
+  - Effect: a nanosecond-resolution pcap keeps all nine digits of each timestamp on one core; libpcap dropped the last three.
+  - Docs: [Check how fast sipnab is](docs/benchmarks.md).
+- **`--cores` names a record with a corrupt capture timestamp in the capture-quality summary.**
+  - Was: a `--cores` run reported no corrupt timestamp where the default reader reported one.
+  - Effect: both readers stamp such a record with the wall clock, count it, and keep it.
 - **The vCon guides describe only what the forwarder does now.**
-  - `docs/vcon-store.md` and `docs/vcon.md` no longer describe how earlier releases changed the copy sent to vcon.store.
-  - The 0.5.208 and 0.5.209 entries below no longer list that behavior.
-  - vcon.store accepts every container as sipnab writes it.
-- **Breaking: `get_dialog` pages with the opaque string cursor the other paged
-  tools use.**
-  - `cursor` and `next_cursor` were the integer index of a message.
-  - They are now `<RFC 3339>|<Call-ID>#<message index>`.
-    - This is the shape `search_messages` hands out.
-    - Pass it back unchanged.
-  - These fail with `invalid_params`:
-    - an integer `cursor`
-    - a malformed one
-    - one issued for a different dialog
-  - The response gains `returned`, `truncated`, `truncated_by` and `first_index`.
-    - The last of these is the index of the page's first message, for `get_message`.
-  - It keeps `complete` and `total_messages`.
-  - The response now carries `schema_version: 2`.
-    - Earlier responses carried no `schema_version` field.
+  - Effect: `docs/vcon-store.md` and `docs/vcon.md` no longer describe how earlier releases changed the copy sent to vcon.store.
+  - Effect: the 0.5.208 and 0.5.209 entries below no longer list that behavior; vcon.store accepts every container as sipnab writes it.
+- **Breaking: `get_dialog` pages with the opaque string cursor the other paged tools use.**
+  - Was: `cursor` and `next_cursor` were the integer index of a message.
+  - Effect: they are `<RFC 3339>|<Call-ID>#<message index>`, the shape `search_messages` hands out.
+  - Do: pass the cursor back unchanged; an integer `cursor`, a malformed one or one issued for a different dialog fails with `invalid_params`.
+  - Effect: the response gains `returned`, `truncated`, `truncated_by` and `first_index`, the index of the page's first message, for `get_message`.
+  - Effect: it keeps `complete` and `total_messages` and now carries `schema_version: 2`; earlier responses carried no `schema_version` field.
 
 ### Fixed
 
 - **The RTP Streams table header is readable on the default theme.**
-  - Its column labels had no text color of their own.
-    - So they took the terminal's default, gray on most terminals, on the bright cyan band.
-  - Both table headers now take their text color from one rule, `header_band_style`.
-    - It picks whichever of black and white has the higher WCAG 2 contrast ratio against the band.
-    - On cyan that is black, about 7.2:1.
-  - The call list header had white on cyan at about 2.9:1.
-    - It now uses the same rule.
-
-  - Reported by liwangob
-    ([@WangKLi](https://github.com/WangKLi)) in
-    [#470](https://github.com/NormB/sipnab/issues/470).
-- **`--run-provenance-file` no longer replaces the node name with the host
-  name.**
-
-  - The record was the first thing to read the node name.
-    - It read it before sipnab applied `--node-name` or `[capture] node_name`.
-  - So the record and every vCon of the run named the system host name.
-  - sipnab now reads the config file and declares the node name before it writes the record.
-  - The config's settings still take effect after it.
-- **`--call-report` prints the SIPREC recording block in its text and Markdown
-  forms.**
-  - It printed the block only in its JSON form.
-  - [See who is on a recorded call](docs/examples.md#see-who-is-on-a-recorded-call)
-    shows it in the text report.
-  - `--call-report` and `--report` now print it from one function.
-- **`explain_attribution` reports a relay endpoint sniffed off a capture
-  interface as `port-gated-only`.**
-  - It gave such an endpoint the HEP listener's posture, `hmac-verified` or `plain-secret`.
-    - The listener never saw the datagram.
-  - Now only an endpoint the listener delivered (`input_origin: hep`) takes that posture.
+  - Was: its column labels took the terminal's default color, gray on most terminals, on the bright cyan band.
+  - Was: the call list header had white on cyan at about 2.9:1.
+  - Effect: both table headers now take black or white, whichever has the higher WCAG 2 contrast ratio against the band; on cyan, black, about 7.2:1.
+  - Credit: Reported by liwangob ([@WangKLi](https://github.com/WangKLi)) in [#470](https://github.com/NormB/sipnab/issues/470).
+- **`--run-provenance-file` no longer replaces the node name with the host name.**
+  - Was: the record read the node name before sipnab applied `--node-name` or `[capture] node_name`.
+  - Was: the record and every vCon of the run named the system host name.
+  - Effect: sipnab reads the config file and declares the node name before it writes the record.
+- **`--call-report` prints the SIPREC recording block in its text and Markdown forms.**
+  - Was: it printed the block only in its JSON form.
+  - Docs: [See who is on a recorded call](docs/examples.md#see-who-is-on-a-recorded-call).
+- **`explain_attribution` reports a relay endpoint sniffed off a capture interface as `port-gated-only`.**
+  - Was: it gave such an endpoint the HEP listener's posture, `hmac-verified` or `plain-secret`, though the listener never saw the datagram.
+  - Effect: only an endpoint the listener delivered (`input_origin: hep`) takes that posture.
 - **`--report` names the SIP a port gate set aside.**
-
-  - This applies to two kinds of SIP:
-    - SIP on ports outside `--portrange`
-    - SIP over WebSocket outside the WebSocket port set
-  - sipnab reported it on stderr, by `--analyze` and in a vCon, but not in the report.
-  - The report's `INCOMPLETE RUN` block now names each count.
-  - The `--json-dialogs` `sipnab_run` record carries them under `port_gate`.
-  - Neither changes the exit status.
-- **A diagnostic alias in the config file's `[filter] expression` works as it
-  does on `--filter`.**
-  - sipnab refused `expression = "short-calls"` at load.
-    - It said "unexpected input at position 0" and exited 1.
-  - `--filter short-calls` ran.
-  - Both now go through the same alias expansion.
+  - Was: sipnab reported it on stderr, by `--analyze` and in a vCon, but not in the report.
+  - Effect: the report's `INCOMPLETE RUN` block names each count: SIP on ports outside `--portrange`, and SIP over WebSocket outside the WebSocket port set.
+  - Effect: the `--json-dialogs` `sipnab_run` record carries them under `port_gate`; neither changes the exit status.
+- **A diagnostic alias in the config file's `[filter] expression` works as it does on `--filter`.**
+  - Was: sipnab refused `expression = "short-calls"` at load with "unexpected input at position 0" and exit 1, while `--filter short-calls` ran.
 - **`--vcon-digest` implies `--no-cli-print`.**
-  - With `-N` and no `--no-cli-print`, sipnab printed every SIP message on stdout beside the digests.
-  - The help describes redirecting a `--vcon-digest` run to `SHA256SUMS` and then running `sha256sum -c SHA256SUMS`.
-    - That reported the message lines as improperly formatted.
-- **`--export-vcon`'s help lists all five `capture_completeness.media`
-  values;**
-  - It left out `withheld-by-redaction`.
+  - Was: with `-N` and no `--no-cli-print`, sipnab printed every SIP message on stdout beside the digests.
+  - Was: `sha256sum -c SHA256SUMS` on the redirected output, as the help describes, reported the message lines as improperly formatted.
+- **`--export-vcon`'s help lists all five `capture_completeness.media` values.**
+  - Was: it left out `withheld-by-redaction`.
 - **Two `--redact` examples in `docs/cli-reference.md` run.**
-  - Both omitted `--export-vcon-when`.
-    - sipnab requires it with `--export-vcon-dir`.
-    - So they exited 2.
-  - The test that runs every documented command now also runs the sipnab command lines that open a list item.
-    - Before, it ran only fenced shell blocks.
-- **The docs describe what the code does:**
-  - A build without the `vcon` feature leaves `export_vcon` and `validate_vcon` out of the tool list.
-    - It does not refuse them.
-  - `--filter` does not narrow what `-O` writes.
-    - A BPF filter does.
-  - The docs describe the name popup's `Tab`, `Shift+Tab` and `Esc` keys.
-  - The `--redact` row no longer repeats a phrase.
-
-- **The homepage's notes list takes the newest how-tos and feature notes
-  together, by date.**
-  - It took the how-tos first.
-  - So no feature note could appear.
-- **MCP reports a relay's HEP-delivered endpoints with the trust the HEP
-  listener's authentication gives them.**
-  - sipnab built the MCP server without the run's `--hep-auth-mode`.
-  - So MCP reported every endpoint a relay asserted over HEP as `port-gated-only`.
-    - This included runs with `--hep-auth-mode hmac` and a secret.
-  - Now the trust is:
-    - `hmac-verified` with `hmac` and a secret
-    - `plain-secret` with a secret and the default mode
-    - `port-gated-only` when sipnab checks no secret
-- **`server_capabilities` reports `mcp_allow_relay_query` and
-  `hep_delivery_trust` in its `runtime` block,**
-  - They sit beside the other opt-ins.
-- **The `query_relay` description, the `--mcp-allow-save-findings` help and
-  the MCP guides no longer say a tool is the only one that transmits or writes,
-  or that no tool transmits.**
-  - `query_relay`, `relay_stats` and `relay_compare` all transmit to the relay.
-  - Several tools besides `save_findings` change state or write files.
+  - Was: both omitted `--export-vcon-when`, which sipnab requires with `--export-vcon-dir`, so they exited 2.
+- **The docs describe what the code does.**
+  - Effect: a build without the `vcon` feature leaves `export_vcon` and `validate_vcon` out of the tool list; it does not refuse them.
+  - Effect: `--filter` does not narrow what `-O` writes; a BPF filter does.
+  - Effect: the docs describe the name popup's `Tab`, `Shift+Tab` and `Esc` keys.
+- **The homepage's notes list takes the newest how-tos and feature notes together, by date.**
+  - Was: it took the how-tos first, so no feature note could appear.
+- **MCP reports a relay's HEP-delivered endpoints with the trust the HEP listener's authentication gives them.**
+  - Was: MCP reported every endpoint a relay asserted over HEP as `port-gated-only`, including runs with `--hep-auth-mode hmac` and a secret.
+  - Effect: the trust is `hmac-verified` with `hmac` and a secret, `plain-secret` with a secret and the default mode, and `port-gated-only` when sipnab checks no secret.
+- **`server_capabilities` reports `mcp_allow_relay_query` and `hep_delivery_trust` in its `runtime` block.**
+  - Effect: they sit beside the other opt-ins.
+- **The MCP help and guides no longer say only one tool transmits or writes.**
+  - Was: the `query_relay` description, the `--mcp-allow-save-findings` help and the MCP guides said one tool alone transmits or writes, or that no tool transmits.
+  - Effect: `query_relay`, `relay_stats` and `relay_compare` all transmit to the relay, and several tools besides `save_findings` change state or write files.
 - **The `--export-vcon` help no longer says no party carries a `name`.**
-  - The exporter writes a party `name` when the `From` or `To` header carried a display name.
-
-    - The display name can be quoted or bare.
-    - It sits beside `validation: "none"`.
-  - The exporter never takes a name from the URI's user part.
-  - These still denied it:
-    - the help text
-    - the `--export-vcon` row of `docs/cli-reference.md`
-    - the `vcon` feature row of `docs/internals/build-ci-release.md`
-  - They now state the rule.
-  - A test exports a dialog with and without a display name.
-    - It holds each of those surfaces to what the exporter wrote.
-  - Affected: readers of `--export-vcon --help` and those two pages.
+  - Effect: the exporter writes a party `name`, beside `validation: "none"`, when the `From` or `To` header carried a display name, quoted or bare.
+  - Limit: the exporter never takes a name from the URI's user part.
+  - Was: the help text, the `--export-vcon` row of `docs/cli-reference.md` and the `vcon` feature row of `docs/internals/build-ci-release.md` still denied it.
 - **A vCon callee's `sip_user_agent` no longer comes from a proxy.**
-  - The exporter read the callee's `User-Agent`/`Server` and `Contact` from the first response in the ladder.
-  - Through a proxy, that is the proxy's own `100 Trying`.
-    - [RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.7) keeps it hop by hop.
-  - So a call through OpenSIPS exported the proxy's `Server` banner as the callee's software.
-    - It exported no callee `Contact`.
-  - Both now come only from messages the callee sent:
-    - a response from 101 to 699 carrying the dialog's remote `To` tag
-    - a request carrying that tag as its `From` tag
-  - A callee that names no software gets no `sip_user_agent`.
-  - Affected: every `--export-vcon`, `--export-vcon-when` and MCP
-    `export_vcon` container for a call that crossed a proxy.
+  - Was: the exporter read the callee's `User-Agent`/`Server` and `Contact` from the first response, through a proxy its own hop-by-hop `100 Trying` ([RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.7)).
+  - Was: a call through OpenSIPS exported the proxy's `Server` banner as the callee's software and no callee `Contact`.
+  - Effect: both come only from messages the callee sent; a callee that names no software gets no `sip_user_agent`.
+  - Effect: those are a response from 101 to 699 carrying the dialog's remote `To` tag, or a request carrying that tag as its `From` tag.
+  - Effect: this changes every `--export-vcon`, `--export-vcon-when` and MCP `export_vcon` container for a call that crossed a proxy.
 - **A live vCon run no longer ends with `Wrote 0 vCon container(s)`.**
-  - Consider a live `--export-vcon-when` run that ended on its own (`--duration`, `--autostop`).
-    - Its sweeps had already written every container.
-    - It printed a count of zero for the same directory.
-    - That reads as an export that wrote nothing.
-  - The last line now counts what the sweeps wrote: `Wrote no further vCon containers to '<dir>' at the end of the run; N container(s) were written there as their calls ended.`
-  - When both wrote, it gives the end-of-run count and the total.
-  - Runs without live sweeps print the line they did.
-  - Affected: live captures with `--export-vcon-when`.
+  - Was: a live `--export-vcon-when` run that ended on its own (`--duration`, `--autostop`) printed a count of zero though its sweeps had written every container.
+  - Effect: it prints `Wrote no further vCon containers to '<dir>' at the end of the run; N container(s) were written there as their calls ended.`
+  - Effect: when both wrote, it gives the end-of-run count and the total; runs without live sweeps print the line they did.
 - **An output the drop user cannot create fails the run at startup.**
-  - Run as root, sipnab drops privileges.
-  - It opened its outputs late:
-    - `-O` only when the first packet arrived
-    - `--export-vcon-dir` and `--vcon-out` when a call ended or the run did
-    - `--redact-map` at the end
-  - So with a directory the drop user could not write, the run read packets and then exited `1` on `Permission denied`.
-  - sipnab now checks right after the drop, before the first packet.
-    - It asks the kernel (`faccessat` with `AT_EACCESS`) whether the user it runs as can create each of those outputs.
-    - When it cannot, sipnab exits `1` with the same message.
-
-  - The drop user still creates the outputs after the drop.
-  - The check creates nothing.
-  - Affected: root runs with any of those flags pointing at a directory the
-    drop user cannot write.
-
-- **Two calls that reuse the same media ports and SSRC are two sets of
-  streams.**
-  - sipnab keyed a stream on its SSRC and socket pair alone.
-  - A second call could reuse both.
-    - A test tool that replays one recorded media file per call does this.
-  - sipnab counted that second call into the first call's streams:
-    - `--report` showed one stream per direction across both calls.
-    - It measured a telephone-event stream's jitter across the gap between them.
-    - The second call had no media at all.
-  - A stream now ends when SDP from a different Call-ID renegotiates one of its ports after it began.
-  - The next packet starts the later call's stream.
-  - `--report`, `--json-dialogs`, `GET /v1/streams` and MCP `rtp_stats` list each call's streams with that call's packets.
-  - `StreamKey` gains a `session` field.
-    - It numbers the streams on one SSRC and socket pair.
-
-  - `StreamStore::get_live` returns the stream that a packet on them belongs to now.
+  - Was: sipnab opened `-O` at the first packet, `--export-vcon-dir` and `--vcon-out` when a call or the run ended, and `--redact-map` at the end.
+  - Was: with a directory the drop user could not write, a root run read packets and then exited `1` on `Permission denied`.
+  - Effect: right after the drop, before the first packet, sipnab checks it can create each output and otherwise exits `1` with the same message.
+  - Effect: the check creates nothing, and the drop user still creates the outputs after the drop.
+- **Two calls that reuse the same media ports and SSRC are two sets of streams.**
+  - Was: sipnab keyed a stream on its SSRC and socket pair alone, so a second call reusing both was counted into the first call's streams.
+  - Was: `--report` showed one stream per direction across both calls, and the second call had no media at all.
+  - Effect: a stream ends when SDP from a different Call-ID renegotiates one of its ports after it began; the next packet starts the later call's stream.
+  - Effect: `--report`, `--json-dialogs`, `GET /v1/streams` and MCP `rtp_stats` list each call's streams with that call's packets.
+  - Effect: `StreamKey` gains a `session` field, and `StreamStore::get_live` returns the stream that a packet belongs to now.
 - **The `--report` stream tables stay aligned with long values.**
-  - The Codec column was eight characters wide.
-
-    - So a `telephone-event` row pushed every later column of that row to the right.
-  - An IPv6 socket did the same to the Source and Destination columns of both stream tables.
-  - Each column now widens to its longest value.
-  - A table of short values prints as before.
+  - Was: the Codec column was eight characters wide, so a `telephone-event` row pushed every later column of that row to the right.
+  - Was: an IPv6 socket did the same to the Source and Destination columns of both stream tables.
+  - Effect: each column widens to its longest value; a table of short values prints as before.
 - **MCP prompts named tools the server did not load.**
-  - `prompts/list` served every prompt, whatever `--mcp-tools` selected.
-  - So under `core`, the `triage-outage` prompt told the model to call `show_evidence`.
-    - `core` does not register that tool.
-  - The server now serves a prompt only when every tool its text names is registered.
-  - `prompts/get` on one that is not refuses with -32602.
-    - It names the missing tools and the bundles that hold them.
-- **The MCP tool reference listed `actions_revert` among the tools that omit
-  `source_exhausted`.**
-  - The code's list does not hold it.
-  - The paragraph now names the eighteen tools the code lists.
-  - A test derives the paragraph from that list.
-  - The table of tools without a cursor named two tools.
-    - It now lists the eight that lack a cursor or a total.
+  - Was: `prompts/list` served every prompt, whatever `--mcp-tools` selected; under `core`, `triage-outage` told the model to call `show_evidence`, which `core` does not register.
+  - Effect: the server serves a prompt only when every tool its text names is registered.
+  - Effect: `prompts/get` on one that is not refuses with -32602 and names the missing tools and the bundles that hold them.
+- **The MCP tool reference listed `actions_revert` among the tools that omit `source_exhausted`.**
+  - Was: the code's list does not hold `actions_revert`.
+  - Effect: the paragraph names the eighteen tools the code lists.
+  - Effect: the table of tools without a cursor, which named two tools, lists the eight that lack a cursor or a total.
 
 ## [0.5.211] - 2026-10-11
 
 ### Changed
 
 - **`--vcon-forward-kind vcon-store` sends each container unchanged.**
-  - vcon.store accepted the forms the vCon drafts define when measured on 2026-10-09:
-    - `extensions` as an array of strings.
-    - The `recording` Dialog Object without `parties` that sipnab writes for a call without audio.
-  - For any kind, the forwarder no longer does two things:
-    - It no longer sends `extensions` as an object.
-    - It no longer refuses a Dialog Object without `type` or `parties`.
-  - A store that still refuses the array form answers `400`.
-    - The container then goes to the failed directory with that answer.
-  - The `vcon-store` kind now names `409` as the store's answer for a uuid it already holds.
-    - This was measured on 2026-10-11.
-    - Without a replace URL, the container goes to the failed directory.
-    - With `--vcon-forward-replace-url <base>/v1/vcons/{uuid}`, sipnab sends it there with `PUT`.
-    - The store answered `200`.
-  - [Send sipnab's vCons to vcon.store](docs/vcon-store.md#the-measurements)
-    has the measurements.
-
+  - Effect: for any kind, the forwarder no longer sends `extensions` as an object or refuses a Dialog Object without `type` or `parties`.
+  - Effect: vcon.store accepted `extensions` as an array of strings and a `recording` Dialog Object without `parties` when measured on 2026-10-09.
+  - Limit: a store that still refuses the array form answers `400`; that container, and a `409` one without a replace URL, goes to the failed directory.
+  - Do: for the `409` the store answers for a uuid it already holds, give `--vcon-forward-replace-url <base>/v1/vcons/{uuid}` to send the container there with `PUT`.
+  - Docs: [Send sipnab's vCons to vcon.store](docs/vcon-store.md#the-measurements), with the measurements of 2026-10-09 and 2026-10-11.
 
 ## [0.5.210] - 2026-10-10
 
 ### Changed
 
-- **`--seccomp enforce` refuses to start when no enforcing filter is in
-  force.**
-  - It used to warn "No filter is in force" and capture unfiltered in these cases:
-    - There was no `SIPNAB_SECCOMP_ALLOWLIST`.
-    - The list was unreadable or invalid.
-    - The kernel refused the filter.
-  - It now prints the reason and exits with status 1.
-    - `--sandbox required` does the same without a sandbox.
-  - 0.5.166 described it as refusing without a list.
-    - The code did not do that.
-  - Affected: any run that passed `--seccomp enforce` without a usable allowlist.
-    - Such a run now stops instead of capturing.
+- **`--seccomp enforce` refuses to start when no enforcing filter is in force.**
+  - Was: it warned "No filter is in force" and captured unfiltered with no `SIPNAB_SECCOMP_ALLOWLIST`, an unreadable or invalid list, or a filter the kernel refused.
+  - Effect: it prints the reason and exits with status 1, as `--sandbox required` does without a sandbox.
+  - Was: 0.5.166 described it as refusing without a list; the code did not do that.
+  - Effect: any run that passed `--seccomp enforce` without a usable allowlist now stops instead of capturing.
 - **The homepage explains how sipnab works first.**
-  - "How sipnab fits together" now follows the hero.
-    - It covers what sipnab reads, what it works out, and where you read the answer.
-  - The sections after it run in a visitor's order:
-    - The terminal UI animation.
-    - What you can do with it.
-    - Install and first capture.
-    - What an AI agent can ask.
-    - The voice stack.
-    - What sipnab supports.
-    - Production details.
-    - The guides.
-  - Install still comes before the AI-agent demos.
-    - Those demos need a source checkout.
-  - The hero heading is still the page's largest paint.
-  - The screenshot stays below the first screen on desktop and phone.
+  - Effect: "How sipnab fits together" follows the hero: what sipnab reads, what it works out, and where you read the answer.
+  - Effect: the sections after it run in a visitor's order, and install still comes before the AI-agent demos, which need a source checkout.
 
 ### Added
 
 - **Two overview pages on sipnab.com: Features and Deployments.**
-  - `/features/` lists three things for each feature:
-    - What sipnab does.
-    - The flag or setting that turns the feature on.
-    - The page that documents it.
-  - `/deployments/` describes four reference topologies:
-    - One host.
-    - A fleet of SIP servers sending HEP.
-    - An observability stack.
-    - AI agents over MCP.
-  - It links each topology to the guides that set it up.
-    - It adds no commands of its own.
-  - The site footer links both pages.
-  - The accessibility scan covers them.
-- **The homepage shows sipnab's GitHub star count on its "View on GitHub"
-  button.**
-  - The deploy reads the count from the GitHub API with `scripts/github-stars.py`.
-    - The script accepts only a whole number for this repository.
-    - It writes `website/data/github.toml`, which is never committed.
-  - Two cases show the button without a count:
-    - A local build.
-    - A deploy whose API call failed.
-  - In that case the deploy warns rather than failing.
+  - Effect: `/features/` lists, for each feature, what sipnab does, the flag or setting that turns it on, and the page that documents it.
+  - Effect: `/deployments/` describes four reference topologies: one host, a fleet of SIP servers sending HEP, an observability stack, and AI agents over MCP.
+  - Effect: it links each topology to the guides that set it up and adds no commands of its own; the site footer links both pages.
+- **The homepage shows sipnab's GitHub star count on its "View on GitHub" button.**
+  - Effect: the deploy reads the count from the GitHub API.
+  - Limit: a local build, or a deploy whose API call failed, shows the button without a count.
 
 ### Fixed
 
 - **Diagram edge labels on sipnab.com meet WCAG AA contrast.**
-  - Flowchart edge labels drew `#cbccc6` text on a `#585858` background.
-    - Mermaid derived that background on its own.
-    - The ratio was 4.4:1, under the 4.5:1 minimum.
-  - The diagram theme now sets the label background to `#2d3640`.
-    - That measures 7.58:1.
-  - Affected: every docs page with a flowchart that labels its edges.
+  - Was: flowchart edge labels drew `#cbccc6` text on a `#585858` background, a ratio of 4.4:1, under the 4.5:1 minimum.
+  - Effect: the label background is `#2d3640`, which measures 7.58:1, on every docs page with a flowchart that labels its edges.
 - **Four documented commands that start a HEP listener now start.**
-  - The four commands were:
-    - The `sipnab-mcp.service` units in two guides:
-      - "Keep a capture running between agent sessions" (`docs/mcp-deploy.md`).
-      - "Collect captures from several SIP servers in one place" (`docs/mcp-estate.md`).
-    - The HEP-plus-metrics command in `contrib/observability/README.md`.
-    - The collector example in the CLI reference.
-
-  - Each bound `-L 0.0.0.0:<port>` with neither `--hep-allow` nor `--hep-auth-file`.
-  - So sipnab refused to start: "HEP listener refuses to
-    start: --hep-listen 0.0.0.0:9060 is non-loopback".
-  - Each now passes `--hep-allow 192.0.2.0/24`.
-    - Each says to replace it with the proxies' addresses.
-  - The two units also dropped `--hep-parse`.
-    - That flag unwraps HEP inside captured traffic.
-    - It does nothing beside `-L`.
-  - Each corrected command was run and stayed up.
-  - Affected: anyone who copied one of those four commands.
+  - Was: each bound `-L 0.0.0.0:<port>` with neither `--hep-allow` nor `--hep-auth-file`, so sipnab refused: "HEP listener refuses to start: --hep-listen 0.0.0.0:9060 is non-loopback".
+  - Effect: each passes `--hep-allow 192.0.2.0/24` and says to replace it with the proxies' addresses.
+  - Effect: the commands are the `sipnab-mcp.service` units of `docs/mcp-deploy.md` and `docs/mcp-estate.md`, the HEP-plus-metrics command in `contrib/observability/README.md` and the CLI reference's collector example.
+  - Effect: the two units also dropped `--hep-parse`, which unwraps HEP inside captured traffic and does nothing beside `-L`.
 - **`--seccomp`'s help and the CLI reference describe `enforce`.**
-  - Both said the killing mode was not implemented.
-  - `enforce` shipped in 0.5.166.
-  - They now say what it does.
-  - They also say what happens without `SIPNAB_SECCOMP_ALLOWLIST`:
-    - It installs no filter.
-    - It logs a warning.
-    - The run continues unfiltered.
+  - Was: both said the killing mode was not implemented; `enforce` shipped in 0.5.166.
+  - Effect: they say what it does, and that without `SIPNAB_SECCOMP_ALLOWLIST` it installs no filter, logs a warning and the run continues unfiltered.
 - **The cookbook's Grafana recipe no longer calls two wired metrics empty.**
-  - It said `sipnab_responses_total` and `sipnab_security_alerts_total` exist in
-    name only.
-  - Both are recorded:
-    - Every response class appears on every scrape at `0` or above.
-    - An alert type appears once it has fired.
-
+  - Was: it said `sipnab_responses_total` and `sipnab_security_alerts_total` exist in name only.
+  - Effect: both are recorded: every response class appears on every scrape at `0` or above, and an alert type appears once it has fired.
 - **The REST API's `filter` parameter accepts the named filter aliases.**
-  - `GET /v1/dialogs?filter=problems` answered `400 unexpected input at position 0`.
-  - Other surfaces accept that alias:
-    - The OpenAPI document gives `problems` as an example.
-    - `--filter problems` accepts it.
-    - The MCP `filter` argument accepts it.
-  - Four routes take `filter`:
-    - `/v1/dialogs`
-    - `/v1/aggregate`
-    - `/v1/dialogs/rates`
-    - `/v1/talkers`
-  - They now compile it the way the command line and the MCP tools do.
-    - All use one shared function.
-    - So an alias returns the dialogs its expansion returns.
-  - A name that is not an alias is still a `400` naming the text.
-  - Affected: every `--api` run that passed an alias as `filter`.
-
+  - Was: `GET /v1/dialogs?filter=problems` answered `400 unexpected input at position 0`, though `--filter problems`, the MCP `filter` argument and the OpenAPI example accept that alias.
+  - Effect: `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates` and `/v1/talkers` compile `filter` the way the command line and the MCP tools do.
+  - Limit: a name that is not an alias is still a `400` naming the text.
 - **An alias given to the MCP or REST `filter` uses the run's thresholds.**
-  - The servers expanded `slow-setup`, `problems` and `short-calls` with the
-    shipped thresholds.
-  - So some settings changed what `--filter` selected, but not what the MCP `filter` argument selected:
-    - `--pdd-threshold`
-    - `--loss-bad-pct`
-    - `--jitter-bad-ms`
-    - `--fraud-short-call`
-    - Their config keys.
-  - Both servers now receive the thresholds the command line resolves.
-  - Affected: `--mcp` and `--api` runs that set any of those thresholds.
-
+  - Was: the servers expanded `slow-setup`, `problems` and `short-calls` with the shipped thresholds.
+  - Was: `--pdd-threshold`, `--loss-bad-pct`, `--jitter-bad-ms`, `--fraud-short-call` and their config keys changed what `--filter` selected, but not what the MCP `filter` argument selected.
+  - Effect: both servers receive the thresholds the command line resolves.
 - **A non-INVITE dialog reports its final status.**
-  - `final_status_code` read only responses to INVITE.
-  - So some dialogs showed no final status:
-    - A `PUBLISH` refused with 489.
-    - A `SUBSCRIBE`, a `MESSAGE`, an `OPTIONS` or a `REGISTER`.
-  - Meanwhile the state read `Failed` and the hint named the code.
-  - A dialog without an INVITE now reports the final response to the request that opened it.
-    - An answered challenge is skipped, as before.
-  - A dialog with an INVITE reports the INVITE's outcome, as before.
-  - Affected, for every non-INVITE dialog:
-    - The TUI compare view (`c`).
-    - `--json-dialogs`.
-    - `--report`.
-    - The REST dialog routes and the MCP dialog tools.
-    - The `response_code` filter field.
-  - Call counts (seizures, answered, failed) still count INVITE dialogs only.
-
+  - Was: `final_status_code` read only responses to INVITE, so a `PUBLISH` refused with 489, a `SUBSCRIBE`, a `MESSAGE`, an `OPTIONS` or a `REGISTER` showed no final status.
+  - Effect: a dialog without an INVITE reports the final response to the request that opened it; an answered challenge is skipped, as before.
+  - Effect: this reaches the TUI compare view (`c`), `--json-dialogs`, `--report`, the REST dialog routes, the MCP dialog tools and the `response_code` filter field.
+  - Limit: call counts (seizures, answered, failed) still count INVITE dialogs only.
 - **The TUI names the source of the capture filter after a `B` re-scan.**
-  - A filter applied by re-scanning a capture file was marked `[live capture]`.
-    - No live capture ran.
-  - Status line 2 now marks it `[file re-scan]`.
-  - It keeps `[live capture]` for a file opened with `O` while a live capture runs
-    behind it.
-  - It adds no marker when a session started on files opens another.
-  - Affected: the TUI status line in two cases:
-    - After `B` on a capture file.
-    - After `O` in a session started with `-I`.
+  - Was: a filter applied by re-scanning a capture file was marked `[live capture]`, though no live capture ran.
+  - Effect: status line 2 marks it `[file re-scan]`, and keeps `[live capture]` for a file opened with `O` while a live capture runs behind it.
+  - Effect: it adds no marker when a session started on files opens another.
 
 ## [0.5.209] - 2026-10-09
 
 ### Added
 
 - **MCP over HTTP serves beside the TUI.**
-  - `sipnab -I capture.pcap --mcp --mcp-transport http` opens the TUI and serves MCP from the same process.
-    - An operator watches the capture while an agent queries it.
-    - Both read the same dialogs and streams.
-  - The status line shows the address MCP listens on.
-    - This includes the port the kernel picked for `--mcp-bind 127.0.0.1:0`.
-  - Quitting the TUI stops the server.
-  - The HTTP rules are unchanged.
-    - A non-loopback bind still needs a token.
-  - sipnab refuses these flags with the TUI up:
-    - `--mcp-allow-shutdown`
-    - `--mcp-allow-open-capture`
-    - `--mcp-allow-tls-capture`
-    - `--mcp-allow-save-findings`
-    - `--mcp-allow-relay-query`
-  - The refusal names each flag and `-N`.
-    - Each flag acts on the process or the relay that the operator at the
-      terminal owns.
-  - MCP `security_findings` beside the TUI reports the detectors the TUI armed.
-  - `source_exhausted` turns `true` once the file is read.
-  - See [Query a capture over MCP while the TUI is open](docs/mcp.md#query-a-capture-over-mcp-while-the-tui-is-open).
+  - Do: `sipnab -I capture.pcap --mcp --mcp-transport http` opens the TUI and serves MCP from the same process; both read the same dialogs and streams.
+  - Effect: the status line shows the address MCP listens on, including the port the kernel picked for `--mcp-bind 127.0.0.1:0`.
+  - Effect: quitting the TUI stops the server; the HTTP rules are unchanged, and a non-loopback bind still needs a token.
+  - Effect: `security_findings` beside the TUI reports the detectors the TUI armed, and `source_exhausted` turns `true` once the file is read.
+  - Docs: [Query a capture over MCP while the TUI is open](docs/mcp.md#query-a-capture-over-mcp-while-the-tui-is-open).
+- **With the TUI up, sipnab refuses five MCP opt-in flags.**
+  - Effect: it refuses `--mcp-allow-shutdown`, `--mcp-allow-open-capture`, `--mcp-allow-tls-capture`, `--mcp-allow-save-findings` and `--mcp-allow-relay-query`.
+  - Effect: the refusal names each flag and `-N`; each flag acts on the process or the relay that the operator at the terminal owns.
 - **`--vcon-fetch` reads stored vCons back by uuid.**
-  - It is a separate process, like the forwarder.
-    - It captures nothing.
-    - sipnab refuses it beside any capture flag.
-  - `--vcon-fetch <UUID>...` reads each container from the store at `--vcon-fetch-url`.
-    - Use `-` for uuids on standard input.
-    - It writes each one to `<uuid>.vcon.json` in `--vcon-fetch-out`, mode `0600`.
-    - It never replaces a file without `--vcon-fetch-overwrite`.
-  - `--vcon-fetch-kind` names the store:
-    - `vcon-store`: `GET /v1/vcons/{uuid}`, `Authorization: Bearer`, the `_meta`
-      member removed.
-    - `conserver`: `GET /vcon/{uuid}`, `x-conserver-api-token`.
-    - `vcon-mcp`: `GET /api/v1/vcons/{uuid}`, `Authorization: Bearer`, the `vcon`
-      member of the answer kept.
-    - `generic`: a URL template holding `{uuid}`.
-  - sipnab checks each container against the vendored schema.
-    - It writes and reports one the schema refuses.
-    - The run then exits `1`.
-  - Exit codes follow the forwarder's:
-    - `0`
-    - `1`
-    - `2` for refused settings.
-    - `3` for a refused credential, after which nothing more is fetched.
-  - Each of these flags has a `[vcon_fetch]` key:
-    - `--vcon-fetch-auth-file`
-    - `--vcon-fetch-ca`
-    - `--vcon-fetch-timeout`
-    - `--vcon-fetch-max-size`
-    - `--vcon-fetch-max-response-head`
-  - See [Fetch a stored vCon](docs/vcon.md#fetch-a-stored-vcon).
+  - Do: `--vcon-fetch <UUID>...` reads each container from the store at `--vcon-fetch-url`; use `-` for uuids on standard input.
+  - Effect: it writes each one to `<uuid>.vcon.json` in `--vcon-fetch-out`, mode `0600`, and never replaces a file without `--vcon-fetch-overwrite`.
+  - Effect: `--vcon-fetch-kind` names the store: `vcon-store`, `conserver`, `vcon-mcp`, or `generic`, a URL template holding `{uuid}`.
+  - Limit: it is a separate process, like the forwarder; it captures nothing, and sipnab refuses it beside any capture flag.
+  - Docs: [Fetch a stored vCon](docs/vcon.md#fetch-a-stored-vcon).
+- **`--vcon-fetch` checks each container against the schema and exits as the forwarder does.**
+  - Effect: sipnab checks each container against the vendored schema; it writes and reports one the schema refuses, and the run then exits `1`.
+  - Effect: exit codes follow the forwarder's: `0`, `1`, `2` for refused settings, and `3` for a refused credential, after which nothing more is fetched.
+  - Effect: `--vcon-fetch-auth-file`, `--vcon-fetch-ca`, `--vcon-fetch-timeout`, `--vcon-fetch-max-size` and `--vcon-fetch-max-response-head` each have a `[vcon_fetch]` key.
 
 ### Changed
 
 - **Breaking: `--mcp --mcp-transport http` without `-N` opens the TUI.**
-  - It used to imply `-N`.
-  - A unit or script that relied on that runs without a terminal.
-    - It now exits 1 saying the TUI could not start.
-    - Add `-N`.
-  - Every invocation in the shipped documentation, unit files and scripts already
-    carries it.
-  - `--mcp` with the stdio transport still implies `-N`.
+  - Was: it used to imply `-N`.
+  - Do: add `-N` to a unit or script that runs without a terminal; without it the run exits 1 saying the TUI could not start.
+  - Effect: every invocation in the shipped documentation, unit files and scripts already carries it; `--mcp` with the stdio transport still implies `-N`.
 - **A refused or busy `--mcp-bind` stops the run at startup, exit 2.**
-  - The listener used to be bound on the servers thread.
-    - There, a port in use or a non-loopback bind with no token was only logged.
-    - That happened after the run had started.
-  - It is now bound on the calling thread before the servers thread starts.
-    - `--api` already worked this way.
+  - Was: a port in use, or a non-loopback bind with no token, was only logged, after the run had started.
+  - Effect: the listener is bound before the servers thread starts, as `--api` already worked.
 
 ### Fixed
 
-- **A stdio MCP client receives the reply to a `shutdown_server` that stops
-  the process.**
-  - The tool set the shutdown flag before its reply was written.
-  - The keep-alive loop could exit the process first.
-    - The client then read end of file in place of `would_stop: true`.
-  - Over stdio, sipnab now sets the flag after the reply has been written to stdout.
-  - The HTTP transport stops as it did before.
-  - Affected: `--mcp` over stdio with `--mcp-allow-shutdown`.
-    - This applies on a confirmed or unconfirmed real stop (`dry_run=false`).
-
-- **A `--redact` export no longer names its files after the original
-  Call-ID.**
-  - `--export-vcon-dir` built each file name from the Call-ID on the wire.
-  - So a redacted container whose `sip_call_id` was a pseudonym got a name such as
-    `1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json`.
-  - The original Call-ID and the host address inside it appeared in these places:
-    - The spool.
-    - The `--vcon-digest` lines.
-    - The forwarder's `delivered/` and `failed/` directories.
-    - The forwarder's `error.json` records and its log lines.
-  - Under `--redact`, the name now comes from the pseudonymized Call-ID the container carries.
-    - It keeps the same SHA-256 suffix that keeps names unique.
-  - An export without `--redact` keeps its existing names.
+- **A stdio MCP client receives the reply to a `shutdown_server` that stops the process.**
+  - Was: the process could exit before the reply was written, and the client read end of file in place of `would_stop: true`.
+  - Effect: over stdio, sipnab sets the shutdown flag after the reply has been written to stdout; the HTTP transport stops as it did before.
+  - Effect: this reaches `--mcp` over stdio with `--mcp-allow-shutdown`, on a confirmed or unconfirmed real stop (`dry_run=false`).
+- **A `--redact` export no longer names its files after the original Call-ID.**
+  - Was: a redacted container whose `sip_call_id` was a pseudonym got a name such as `1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json`, built from the Call-ID on the wire.
+  - Was: the original Call-ID and its host address appeared in the spool, the `--vcon-digest` lines, and the forwarder's `delivered/`, `failed/`, `error.json` records and log lines.
+  - Effect: under `--redact`, the name comes from the pseudonymized Call-ID the container carries, with the same SHA-256 suffix that keeps names unique.
+  - Limit: an export without `--redact` keeps its existing names.
 - **The vCon documentation describes what the exporter does.**
-  - `docs/vcon.md` said two Call-IDs that differ only in replaced characters share one file
-    name.
-
-    - The SHA-256 suffix gives them two.
-  - The exporter's module documentation and the vCon design page said a party never carries a
-    `name`.
-    - It carries the `From` or `To` display name when the wire had one.
-    - `validation: "none"` is beside it.
-- **A call challenged for credentials keeps its parties on the vCon
-  recording.**
-  - A dialog took its remote tag from the first `To` tag it saw.
-    - For a challenged call, that is the tag of the `401` or `407`.
-    - That response creates no dialog ([RFC 3261 section 12.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1)).
-    - The re-sent INVITE is answered under another tag.
-  - The vCon exporter attributes an audio channel to one party.
-    - That party's own SDP advertised the stream's sending address.
-    - The exporter identifies the callee's SDP by that tag.
-  - So it found no callee endpoint.
-    - `--retain-audio` exported the call audio with no `parties`.
-    - It put the challenge's tag in `sip_to_tag`.
-    - vcon.store refuses that Dialog Object.
-  - The remote tag now comes from the strongest evidence seen, in this order:
-    - A 2xx answer to the opening request.
-    - A 101-199 response to it.
-    - Any other tag.
-  - `tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap` now exports `parties: [1, 0]`
-    and `sip_to_tag: as0b1a917b`.
-  - Affected: these surfaces, for a call whose first response carried a `To` tag that the answer did not:
-    - `--export-vcon`
-    - `--export-vcon-dir`
-    - The MCP `export_vcon` tool.
-    - `GET /v1/dialogs/{call_id}/vcon`
+  - Was: `docs/vcon.md` said two Call-IDs that differ only in replaced characters share one file name; the SHA-256 suffix gives them two.
+  - Was: the exporter's module documentation and the vCon design page said a party never carries a `name`.
+  - Effect: a party carries the `From` or `To` display name when the wire had one, with `validation: "none"` beside it.
+- **A call challenged for credentials keeps its parties on the vCon recording.**
+  - Was: the remote tag was the first `To` tag seen, for a challenged call a `401` or `407`, which creates no dialog ([RFC 3261 section 12.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1)).
+  - Was: `--retain-audio` exported the call audio with no `parties` and the challenge's tag in `sip_to_tag`, a Dialog Object vcon.store refuses.
+  - Effect: the remote tag comes from the strongest evidence: a 2xx answer to the opening request, then a 101-199 response to it, then any other tag.
+  - Effect: `tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap` now exports `parties: [1, 0]` and `sip_to_tag: as0b1a917b`.
+  - Effect: this reaches `--export-vcon`, `--export-vcon-dir`, MCP `export_vcon` and `GET /v1/dialogs/{call_id}/vcon` when the first response carried a `To` tag the answer lacked.
 
 ## [0.5.208] - 2026-10-09
 
 ### Added
 
 - **The MCP `find_in_captures` job bounds are operator settings.**
-  - `--mcp-sweep-max-running` / `[limits] mcp_sweep_max_running` sets how many sweeps one server runs at once.
-    - Default 4, accepted 1 to 64.
-  - `--mcp-sweep-max-held-results` / `[limits] mcp_sweep_max_held_results` sets how many finished results wait for a
-    poll.
-    - Default 16, accepted 1 to 256.
-  - `--mcp-sweep-result-retention-secs` /
-    `[limits] mcp_sweep_result_retention_secs` sets how long a finished result waits.
-    - Default 600, accepted 1 to 43200 (twelve hours).
-  - Before this, the source fixed the three at those defaults.
-  - The flag overrides the key.
-  - The refusal of a sweep past the running bound reports the configured bound.
-    - It names its setting.
-  - The refusal of an unknown job id reports the configured retention and held bound.
-    - It names both flags.
+  - Effect: `--mcp-sweep-max-running` / `[limits] mcp_sweep_max_running` sets how many sweeps one server runs at once: default 4, accepted 1 to 64.
+  - Effect: `--mcp-sweep-max-held-results` / `[limits] mcp_sweep_max_held_results` sets how many finished results wait for a poll: default 16, accepted 1 to 256.
+  - Effect: `--mcp-sweep-result-retention-secs` / `[limits] mcp_sweep_result_retention_secs` sets how long a finished result waits: default 600, accepted 1 to 43200 (twelve hours).
+  - Was: the source fixed the three at those defaults.
+  - Effect: the flag overrides the key; a refusal for the running bound or an unknown job id reports the configured values and names the settings.
 
 ### Changed
 
-- **vCon export and validation follow
-  [draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04) (7 September 2026) instead of `-03`.**
-  - The syntax version stays `"0.4.0"`.
-    - `-04` also requires it.
-  - What changes for a consumer:
-    - Every Dialog Object now names its `type`.
-      - A call with no media and no observed failure was a Dialog Object with no `type`.
-      - `-03` allowed that, and `-04` does not.
-      - It is now the `recording` placeholder of
-        [section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3).
-      - It has no `body`, `url` or `mediatype`.
-      - The unseen consultative call of an attended transfer was `{}`.
-      - It is now `{"type": "recording"}`.
-      - A consumer that selects `type == "recording"` and reads the content has to check that `body` or `url` is present.
-    - The vendored schema, `tests/schemas/vcon.schema.json`, is the working
-      group's `-04` file unchanged.
-      - It is byte for byte the same as `tests/schemas/publisher/vcon_json_schema.json`.
-      - That file moves to the `draft-ietf-vcon-vcon-core-04` tag (commit `99589dd0`).
-      - The local deviation that removed `type` from the Dialog Object's `required` list is
-        gone.
-
-    - Three surfaces enforce the rules `-04` added:
-      - The MCP `validate_vcon` tool.
-      - The REST `POST /v1/vcon/validate` route.
-      - `clients/python/vcon_validate.py`.
-    - The rules are:
-      - Per-type prohibitions on Dialog Objects (for example `parties` or `session_id` on a
-        `transfer`).
-      - `disposition` on `incomplete`.
-      - `recordings` on `recording-set`.
-      - `encoding` and `mediatype` beside a non-empty `body`.
-      - `content_hash` beside a `url`.
-      - `button` on `keydown` and `keyup` events.
-      - Single-integer transfer indices.
-      - `redacted` and `amended` never together.
-      - `uuid` on an `amended` object with no `url`.
-    - `start` is no longer required on a Dialog Object.
-    - sipnab's validator gained the `allOf`, `if`,
-      `then`, `else` and `not` keywords to read that schema.
-    - **Breaking for clients of the validator:**
-      - The `validate_vcon` and `POST /v1/vcon/validate` responses move to `schema_version` 2.
-      - The `deviations` and `explanations` members are removed.
-      - The `valid-except-documented-deviation` verdict is removed.
-      - `verdict` is `valid` or `invalid`.
-      - Every finding is in `errors`.
-      - A container written by an earlier sipnab with a type-free or empty Dialog Object is now
-        `invalid`.
-    - THIRD-PARTY-NOTICES.md records `tests/schemas/vcon.schema.json` as the working group's file.
-
-      - The binary compiles that file in.
-    - Section 7 of `docs/design/vcon.md` inventories three things:
-      - The `-03` to `-04` changes.
-      - Where the new Appendix C CDDL contradicts the prose.
-      - The questions `-04` leaves open.
+- **vCon export and validation follow [draft-ietf-vcon-vcon-core-04](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04) (7 September 2026) instead of `-03`.**
+  - Effect: the syntax version stays `"0.4.0"`, which `-04` also requires; `start` is no longer required on a Dialog Object.
+  - Effect: every Dialog Object now names its `type`; `-03` allowed one without, and `-04` does not.
+  - Effect: a call with no media and no observed failure is the `recording` placeholder of [section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3), with no `body`, `url` or `mediatype`.
+  - Effect: the unseen consultative call of an attended transfer was `{}` and is now `{"type": "recording"}`.
+  - Do: a consumer that selects `type == "recording"` and reads the content has to check that `body` or `url` is present.
+- **`validate_vcon`, `POST /v1/vcon/validate` and `clients/python/vcon_validate.py` enforce the rules `-04` added.**
+  - Effect: per-type prohibitions on Dialog Objects (for example `parties` or `session_id` on a `transfer`), `disposition` on `incomplete`, and `recordings` on `recording-set`.
+  - Effect: `encoding` and `mediatype` beside a non-empty `body`, `content_hash` beside a `url`, and `button` on `keydown` and `keyup` events.
+  - Effect: single-integer transfer indices, `redacted` and `amended` never together, and `uuid` on an `amended` object with no `url`.
+  - Effect: the vendored schema is the working group's `-04` file unchanged; THIRD-PARTY-NOTICES.md records it, and the binary compiles it in.
+  - Effect: section 7 of `docs/design/vcon.md` inventories the `-03` to `-04` changes, where the Appendix C CDDL contradicts the prose, and the questions `-04` leaves open.
+- **Breaking for clients of the validator: the responses move to `schema_version` 2.**
+  - Effect: the `validate_vcon` and `POST /v1/vcon/validate` responses lose the `deviations` and `explanations` members and the `valid-except-documented-deviation` verdict.
+  - Effect: `verdict` is `valid` or `invalid`, and every finding is in `errors`.
+  - Limit: a container written by an earlier sipnab with a type-free or empty Dialog Object is now `invalid`.
 
 ### Fixed
 
-- **A run with `--report` on a capture that holds RTP and no SIP told the
-  operator to pass `--report`.**
-  - The run summary ended with `No SIP signaling found, but N RTP packets across M stream(s) were parsed. Use --report to see stream details.`
-  - It did so even when the same run had printed the stream report.
-  - When the run prints the report, the summary now states the counts.
-    - It leaves out the second sentence.
-
-  - Without `--report`, the message is unchanged.
-- **A `tcp` or `tls` `--hep-send` connect no longer waits for the operating
-  system's limit.**
-  - The sender dialed the collector with no time limit.
-    - It did so at startup and on every reconnect.
-  - Some collectors' hosts or firewalls drop the connection request instead of refusing it.
-    - Such a collector held the connect for the operating system's own limit.
-    - That is about 127 seconds on Linux with the default six SYN retries.
-  - The dial runs on the thread that forwards packets.
-    - So for that time nothing was sent, counted or stopped.
-  - On the macOS CI runner, the test of a refused reconnect took 79 to 82 seconds for this reason.
-  - Every connect now gives up after 3 seconds.
-    - It counts as a `connect` failure, as a refused one does.
-  - Three seconds covers the first connection request and one retransmission.
-    - A TCP sender sends the retransmission one second after the first
-      ([RFC 6298](https://www.rfc-editor.org/rfc/rfc6298.html)).
-    - The next packet dials again.
-  - The limit is a fixed value with no flag or key.
-    - The 10-second TLS handshake limit is the same.
-  - Affected: `--hep-send` with `--hep-send-transport tcp` or `tls`.
-
-- **sipnab read HEP v1 and v2 packets at the wrong offsets, and refused HEP
-  v1.**
-  - The version 2 reader took the ports from bytes 2 to 5.
-  - It took two IPv4 addresses from bytes 6 to 13.
-  - Those bytes belong to the `struct hep_hdr` of `captagent`, sipcapture's capture agent.
-    - Kamailio's `sipcapture` module reads it the same way.
-  - The real layout is:
-    - Bytes 2 and 3 hold the address family and the IP protocol.
-    - Bytes 4 to 7 hold the ports.
-    - The addresses follow from byte 8.
-    - Each address is 4 bytes for IPv4 and 16 bytes for IPv6.
-  - The reader also started the payload at the header length byte.
-
-    - That byte does not count the 12-byte time header a version 2 packet carries.
-    - So every message it produced began with header bytes and did not parse as SIP.
-  - It assumed IPv4 and UDP and never read the time.
-  - sipnab now reads these fields:
-    - The family.
-    - The IP protocol.
-    - IPv4 or IPv6 addresses.
-    - For version 2, the time (`tv_sec` and `tv_usec`, little-endian, as Kamailio reads them) and the capture ID.
-  - A version 2 message takes the time its packet carries.
-  - A version 1 message carries no time.
-    - It takes the time sipnab received or sniffed it.
-  - The transport comes from the IP protocol byte by the rule HEP v3 uses.
-  - The header size follows from the family byte alone, as in Kamailio's receiver.
-  - sipnab does not read the header length byte.
-
-    - So it now accepts the HEP v2 packets `sngrep` sends.
-    - Those carry one byte of the total datagram length there.
-  - sipnab refuses some packets with a message that names the field:
-    - A packet whose family is neither IPv4 nor IPv6.
-    - A packet that ends inside its addresses or time header.
-  - Affected: any sender configured for HEP version 1 or 2, read with
-    `--hep-listen` or `--hep-parse`.
-  - The change leaves HEP v3 as it was.
+- **A `--report` run on RTP without SIP told the operator to pass `--report`.**
+  - Was: the run summary ended with `No SIP signaling found, but N RTP packets across M stream(s) were parsed. Use --report to see stream details.`
+  - Effect: when the run prints the report, the summary states the counts and leaves out the second sentence; without `--report` the message is unchanged.
+- **A `tcp` or `tls` `--hep-send` connect no longer waits for the operating system's limit.**
+  - Was: the dial had no time limit; a collector that drops the request held it about 127 seconds on Linux with the default six SYN retries.
+  - Was: the dial runs on the thread that forwards packets, so for that time nothing was sent, counted or stopped.
+  - Effect: every connect gives up after 3 seconds, which covers the request and one retransmission a second later ([RFC 6298](https://www.rfc-editor.org/rfc/rfc6298.html)).
+  - Effect: a connect that gives up counts as a `connect` failure, as a refused one does; the next packet dials again.
+  - Limit: for `--hep-send` with `--hep-send-transport tcp` or `tls`, a fixed value with no flag or key, as is the 10-second TLS handshake limit.
+- **sipnab read HEP v1 and v2 packets at the wrong offsets, and refused HEP v1.**
+  - Was: the version 2 reader took the ports from bytes 2 to 5 and two IPv4 addresses from bytes 6 to 13.
+  - Was: it assumed IPv4 and UDP, never read the time, and every message it produced began with header bytes and did not parse as SIP.
+  - Effect: bytes 2 and 3 hold the address family and the IP protocol, bytes 4 to 7 the ports, and the addresses follow from byte 8.
+  - Effect: sipnab reads the family, the IP protocol, IPv4 or IPv6 addresses and, for version 2, the time and the capture ID; HEP v3 is unchanged.
+  - Effect: a version 2 message takes the time its packet carries; a version 1 message takes the time sipnab received or sniffed it.
+- **sipnab accepts the HEP v2 packets `sngrep` sends.**
+  - Effect: sipnab does not read the header length byte, where those packets carry one byte of the total datagram length.
+  - Effect: the header size follows from the family byte alone, as in Kamailio's receiver; the IP protocol byte gives the transport by the HEP v3 rule.
+  - Effect: the version 2 time is read as `tv_sec` and `tv_usec`, little-endian, as Kamailio reads them.
+  - Limit: sipnab refuses, naming the field, a packet whose family is neither IPv4 nor IPv6 or that ends inside its addresses or time header.
+  - Effect: this reaches any sender configured for HEP version 1 or 2, read with `--hep-listen` or `--hep-parse`.
 
 ## [0.5.207] - 2026-10-08
 
 ### Added
 
 - **The MCP `find_in_captures` limits are operator settings.**
-  - Two settings set the ceilings the tool clamps its per-call `max_files`
-    and `deadline_ms` to:
-    - `--mcp-sweep-max-files` / `[limits] mcp_sweep_max_files`.
-      - Default 20, accepted 1 to 4294967295.
-    - `--mcp-sweep-deadline-ms` / `[limits] mcp_sweep_deadline_ms`.
-      - Default 30000, accepted 1 to 43200000 (twelve hours).
-  - Before this, the tool clamped both to fixed values of 20 files and 30000 ms.
-    - So a sweep of a spool with more than 20 rotated files could not reach the older ones.
-  - The flag overrides the key.
-  - The response carries a new `limits` object with the values the sweep ran
-    under.
+  - Effect: `--mcp-sweep-max-files` / `[limits] mcp_sweep_max_files` sets the ceiling for the per-call `max_files`: default 20, accepted 1 to 4294967295.
+  - Effect: `--mcp-sweep-deadline-ms` / `[limits] mcp_sweep_deadline_ms` sets the ceiling for `deadline_ms`: default 30000, accepted 1 to 43200000 (twelve hours).
+  - Was: both were fixed at 20 files and 30000 ms, so a sweep of more than 20 rotated files could not reach the older ones.
+  - Effect: the flag overrides the key, and the response carries a new `limits` object with the values the sweep ran under.
 - **Breaking: an MCP `find_in_captures` sweep is a background job.**
-  - The call waits up to its new `wait_seconds` parameter.
-
-    - Default 30, clamped to `--mcp-max-wait-seconds`.
-  - It returns the result when the sweep finishes in that time.
-  - Otherwise it returns a `job_id` with `status: "running"` and
-    `progress` (`files_examined`, `files_total`, `elapsed_ms`).
-  - The new `find_in_captures_status` tool polls a job.
-    - It hands over the finished result once.
-
-  - The new `cancel_find_in_captures` tool stops one.
-  - A sweep stops before its next packet in three cases:
-    - Its deadline passes.
-    - A cancel arrives.
-    - SIGTERM arrives.
-  - `stopped_because` gains `canceled` and `shutdown`.
-  - At most four sweeps run per server.
-  - sipnab keeps a finished result for 600 seconds.
-  - At most 16 results wait for a poll.
-  - The response is `schema_version` 2.
-    - It adds `job_id`, `status` and `progress`.
-    - It leaves out `sweep` while the job runs.
-  - A client that reads `sweep` checks `status` first.
-    - A sweep that finishes within `wait_seconds` returns `sweep` as before.
-    - One still running returns no `sweep` until `find_in_captures_status` hands it over.
+  - Effect: the call waits up to its new `wait_seconds` (default 30, clamped to `--mcp-max-wait-seconds`) and returns the result when the sweep finishes in that time.
+  - Effect: otherwise it returns a `job_id` with `status: "running"` and `progress` (`files_examined`, `files_total`, `elapsed_ms`).
+  - Effect: the new `find_in_captures_status` tool polls a job and hands over the finished result once; the new `cancel_find_in_captures` tool stops one.
+  - Do: a client that reads `sweep` checks `status` first; the `schema_version` 2 response leaves out `sweep` while the job runs.
+  - Limit: at most four sweeps run per server, a finished result is kept 600 seconds, and at most 16 results wait for a poll.
+- **A `find_in_captures` sweep stops before its next packet on deadline, cancel or SIGTERM.**
+  - Effect: `stopped_because` gains `canceled` and `shutdown`.
 
 ### Changed
 
 - **Breaking: a refused config value exits 1 wherever startup refuses it.**
-  - A config-file value that `bootstrap::load_config` refused exited 1.
-  - One that `bootstrap::plan` refused exited 2:
-    - `[capture] portrange`
-    - `[filter] expression`
-    - `[actions] tfps`
-    - `[mcp] tools`
-    - `[security] alert`
-    - Half a TLS pair written in `[api]`, `[mcp]` or `[metrics]`.
-    - A `[vcon_forward] url` or `replace_url`.
-  - Each now exits 1.
-    - That is the code the exit status table gives a refused configuration.
-  - The same value given as a flag still exits 2.
-  - A script that tested for 2 after one of these keys reads 1.
-  - `[filter] from` and `[filter] to` are now checked when the file loads.
-  - An unknown `[security] alert` rule names the key.
-  - Planning used to refuse both, naming `--from`, `--to` or nothing.
+  - Was: these exited 2: `[capture] portrange`, `[filter] expression`, `[actions] tfps`, `[mcp] tools`, `[security] alert`, and a `[vcon_forward] url` or `replace_url`.
+  - Was: half a TLS pair written in `[api]`, `[mcp]` or `[metrics]` also exited 2.
+  - Effect: each exits 1, the code the exit status table gives a refused configuration; the same value given as a flag still exits 2.
+  - Do: a script that tested for 2 after one of these keys reads 1.
+  - Effect: `[filter] from` and `[filter] to` are checked when the file loads, and an unknown `[security] alert` rule names the key.
 - **Breaking: `--keylog` naming a file sipnab cannot read stops the run.**
-  - It logged an error, and the run went on without decrypting anything, exit 0.
-  - `--tls-key` and `--dtls-keylog` refuse the same condition.
-  - All three now exit 1 with `Failed to load --<flag> <path>: <reason>`.
-- **Breaking: sipnab refuses `--snaplen 0`, `--buffer 0`, `[capture] snaplen
-  = 0` and `[capture] buffer = 0`.**
-  - A zero snapshot keeps no byte of any packet.
-  - A zero buffer asks the kernel for no ring.
-  - Both started and captured nothing usable.
-  - The flags exit 2 and the keys exit 1.
-    - `--count 0` and the `[limits]` counts follow the same rule.
-- **Breaking: sipnab refuses an empty TLS path for the REST API, MCP or the
-  metrics endpoint at startup.**
-  - These used to start and fail when the listener opened the file:
-    - `--api-tls-cert ""` and `--api-tls-key ""`.
-    - Their `--mcp-` and `--metrics-` forms.
-    - An empty `tls_cert` or `tls_key` in `[api]`, `[mcp]` or `[metrics]`.
-  - The flags exit 2 and the keys exit 1.
-    - The `[hep]` TLS paths already did this.
-- **Breaking: sipnab refuses, on the command line, HEP options for a side the
-  run does not start.**
-  - The rules:
-    - `--hep-allow`, `--hep-rate-limit`, `--hep-rate-limit-per-peer` and `--hep-hmac-window` need `--hep-listen`.
-    - `--hep-id` needs `--hep-send`.
-    - `--hep-auth-mode` and `--hep-auth-file` need one of the two.
-  - sipnab accepted each without it, and it did nothing.
-  - `-E` is not enough.
-    - It reads no allowlist, rate limit or credential.
-  - sipnab does not refuse the same settings in a config file.
-
-    - One file serves runs with and without a listener.
-  - Instead, each of these gets a startup warning naming the key:
-    - `[limits] hep_rate_limit`, `[security] hep_hmac_window_secs`, `[hep] tls_cert` and `tls_key` on a run without
-      `--hep-listen`.
-    - `[hep] tls_ca` and `tls_extra_ca` on a run without `--hep-send`.
+  - Was: it logged an error, and the run went on without decrypting anything, exit 0.
+  - Effect: `--keylog`, `--tls-key` and `--dtls-keylog` exit 1 with `Failed to load --<flag> <path>: <reason>`.
+- **Breaking: sipnab refuses a zero `--snaplen`, `--buffer`, `[capture] snaplen` and `[capture] buffer`.**
+  - Was: `--snaplen 0` keeps no byte of any packet and `--buffer 0` asks the kernel for no ring; both started and captured nothing usable.
+  - Effect: the flags exit 2, and `[capture] snaplen = 0` and `[capture] buffer = 0` exit 1.
+  - Effect: `--count 0` and the `[limits]` counts follow the same rule.
+- **Breaking: startup refuses an empty TLS path for the REST API, MCP or metrics.**
+  - Was: `--api-tls-cert ""` and `--api-tls-key ""`, their `--mcp-` and `--metrics-` forms, and an empty `tls_cert` or `tls_key` in `[api]`, `[mcp]` or `[metrics]` were accepted.
+  - Was: the run started and failed when the listener opened the file.
+  - Effect: the flags exit 2 and the keys exit 1, as the `[hep]` TLS paths already did.
+- **Breaking: the command line refuses HEP options for a side the run does not start.**
+  - Effect: `--hep-allow`, `--hep-rate-limit`, `--hep-rate-limit-per-peer` and `--hep-hmac-window` need `--hep-listen`; `--hep-id` needs `--hep-send`; `--hep-auth-mode` and `--hep-auth-file` need one of the two.
+  - Was: sipnab accepted each without it, and it did nothing.
+  - Limit: `-E` is not enough: it reads no allowlist, rate limit or credential.
+  - Effect: a config file is not refused, since one file serves runs with and without a listener; each such key gets a startup warning naming it.
+  - Effect: warned are `[limits] hep_rate_limit`, `[security] hep_hmac_window_secs`, `[hep] tls_cert` and `tls_key` without `--hep-listen`, and `[hep] tls_ca` and `tls_extra_ca` without `--hep-send`.
 - **`--names` and `[names] hosts_file` load through one resolver.**
-
-  - Startup may accept a `hosts_file` that later fails to load.
-  - sipnab now warns about it, as it does for a `--names` file.
-    - Before, it skipped the file without a word.
-- **Every flag and key pair has a startup precedence test.**
-  - These were exempt because their effect showed only after startup:
-    - `--alert`, `--alert-exec`, `--alert-json`
-    - `--syslog`, `--chroot`, `--user`
-    - `--fraud-destination`, `--from`, `--to`, `--from-to-mode`
-    - `--names` and `--node-name`
-  - Each consumer now reads one resolver.
-  - The precedence test drives it.
-- **`.githooks/pre-push` runs clippy for the other Linux architecture.**
-
-  - Code under `#[cfg(target_arch = "x86_64")]` never compiles on an aarch64 host.
-    - So every local gate passed over it.
-    - On 2026-10-07, nine x86_64-only test lines passed both hooks and failed CI.
-  - `scripts/cross-arch-target.sh` names the other target.
-  - The hook runs `cargo clippy --target <it> --features full --tests -- -D warnings`.
-  - When that target is not installed, it prints NOT CHECKED.
-    - It also prints the `rustup target add` command.
-- **Unit tests under `src/` return `Result` and use `?` (LINT8).**
-  - The `#[cfg(test)]` code no longer calls these:
-    - `.unwrap()`
-    - `.expect(`
-    - `.expect_err(`
-    - `.unwrap_err()`
-    - `panic!(`
-  - A failure returns an error that names what was being done.
-  - The test names and count are unchanged.
-  - The calls that remain are the ones whose panic is the behavior under test:
-    - The three crash-handler probes in `src/crash.rs`.
-    - The panicking socket thread in `src/capture/live.rs`.
-    - The `#[should_panic]` power-of-two test in `src/capture/uprobe/perf.rs`.
-  - No user-visible behavior changes.
-- **The hardcoded-material gate no longer reports a counter in a test that
-  returns `Result<(), _>`.**
-  - `tests/hardcoded_crypto_material_test.rs` treated some functions as ones that return material.
-    - These had a material word in the name and a return type.
-  - A test returning `Result<(), TestError>` returns no value.
-  - A function returning material inside a `Result` is still reported.
+  - Effect: sipnab warns about a `hosts_file` that startup accepted and that later fails to load, as it does for a `--names` file.
+  - Was: it skipped the file without a word.
 
 ### Fixed
 
-- **`-H` over UDP no longer loses a datagram to an earlier one's ICMP
-  error.**
-  - The sender used a connected UDP socket.
-  - A datagram sent to a port with no listener gets an ICMP port-unreachable answer.
-    - That answer made the next send fail with `ECONNREFUSED`.
-    - sipnab lost that datagram.
-  - Example: `sipnab -N -I tests/fixtures/sip_call.pcap -H 127.0.0.1:19063` with nothing bound.
-    - It reported "4 packet(s) sent, 3 failed (write 3)".
-  - It now sends each datagram from an unconnected socket with `send_to`.
-    - The same run to a port with no listener reports 7 sent and none failed.
-  - TCP and TLS export work as before.
+- **`-H` over UDP no longer loses a datagram to an earlier one's ICMP error.**
+  - Was: on a connected UDP socket, the ICMP port-unreachable answer to one datagram made the next send fail with `ECONNREFUSED`, and sipnab lost that datagram.
+  - Was: `sipnab -N -I tests/fixtures/sip_call.pcap -H 127.0.0.1:19063` with nothing bound reported "4 packet(s) sent, 3 failed (write 3)".
+  - Effect: each datagram goes from an unconnected socket, and the same run reports 7 sent and none failed.
+  - Limit: TCP and TLS export work as before.
 - **A HEP packet that carries no time keeps the receive or capture time.**
-  - A HEP v3 packet without `TS_SEC`/`TS_USEC` chunks parsed as
-    1970-01-01T00:00:00Z.
-  - A HEP v2 packet took the time sipnab parsed it.
-  - Both happened on `-L` and `-E`.
-  - `HepPacket::timestamp` is now an `Option`.
-    - It is set only when the packet carries a `TS_SEC` chunk.
-  - Without one, `-L` uses the time the packet arrived.
-  - Without one, `-E` uses the time sipnab captured the wrapper.
-
-    - So a capture file read later keeps its own times.
-  - The HMAC replay window reads the token's own timestamp, not this one.
-    - It behaves as before.
-- **Breaking: an `[vcon_forward] auth_file` the forwarder cannot use exits
-  1.**
-  - The config key can name a credential file that sipnab cannot read, or that holds no credential.
-    - That stopped `--vcon-forward` with exit 2.
-    - Every other refused config value exits 1.
-  - The exit code now follows the setting that named the file.
-
-    - The rule lives in `settings::Origin`.
-    - The key exits 1.
-    - `--vcon-forward-auth-file` still exits 2.
-- **Breaking: sipnab refuses an empty `--node-name` and an empty `[capture]
-  node_name`.**
-  - sipnab accepted `--node-name ""` and then passed over it.
-    - So the run reported `[capture] node_name` from the config file, or the hostname.
-    - It said nothing.
-  - It passed over `node_name = ""` for the hostname the same way.
-  - The flag exits 2 at parse.
-
-    - The listener TLS path flags follow the same rule.
-
-  - The key exits 1 when the file loads.
-  - Each refusal names its setting.
-  - A value of only whitespace still passes to the next source.
+  - Was: on `-L` and `-E`, a HEP v3 packet without `TS_SEC`/`TS_USEC` chunks parsed as 1970-01-01T00:00:00Z, and a HEP v2 packet took the time sipnab parsed it.
+  - Effect: without a `TS_SEC` chunk, `-L` uses the time the packet arrived and `-E` the time sipnab captured the wrapper.
+  - Effect: a capture file read later keeps its own times; `HepPacket::timestamp` is now an `Option`.
+  - Limit: the HMAC replay window reads the token's own timestamp and behaves as before.
+- **Breaking: an `[vcon_forward] auth_file` the forwarder cannot use exits 1.**
+  - Was: a key naming a credential file sipnab cannot read, or that holds no credential, stopped `--vcon-forward` with exit 2.
+  - Effect: the key exits 1, as every other refused config value does; `--vcon-forward-auth-file` still exits 2.
+- **Breaking: sipnab refuses an empty `--node-name` and an empty `[capture] node_name`.**
+  - Was: sipnab passed over `--node-name ""` for the config file's `[capture] node_name` or the hostname, and over `node_name = ""` for the hostname, saying nothing.
+  - Effect: the flag exits 2 at parse, as the listener TLS path flags do, and the key exits 1 when the file loads.
+  - Effect: each refusal names its setting.
+  - Limit: a value of only whitespace still passes to the next source.
 - **`--exec-rate-limit` and `--api-max-conn` say that `0` means no limit.**
-  - Neither the help text nor the reference row said so.
-  - The `--api-max-conn` text also said it bounds connections.
-    - It bounds requests handled at once.
-    - It answers 503 past it.
+  - Was: neither the help text nor the reference row said so.
+  - Was: the `--api-max-conn` text said it bounds connections; it bounds requests handled at once and answers 503 past it.
 - **The exit status tables name both meanings of exit 3.**
-  - The CLI reference named only the lint gate.
-  - The man page named only the vCon forwarder's `401`/`403` stop.
-  - Both exit 3.
-- **`find_in_captures` no longer blocks every other MCP call and REST request
-  while it reads.**
-  - One thread serves REST and MCP.
-  - The sweep read its files on that thread inside the tool call.
-    - So no other request was answered until the sweep ended.
-  - The sweep now reads on its own thread.
+  - Was: the CLI reference named only the lint gate, and the man page only the vCon forwarder's `401`/`403` stop.
+- **`find_in_captures` no longer blocks every other MCP call and REST request while it reads.**
+  - Was: the sweep read its files on the one thread that serves REST and MCP, so no other request was answered until the sweep ended.
+  - Effect: the sweep reads on its own thread.
 
 ## [0.5.206] - 2026-10-07
 
 ### Security
 
 - **`--help` no longer prints secrets from the environment.**
-  - Some variables could be exported:
-    - `SIPNAB_API_KEY`
-    - `SIPNAB_API_SIGNING_KEY`
-    - `SIPNAB_MCP_SIGNING_KEY`
-    - `SIPNAB_HEP_AUTH`
-  - With one exported, `sipnab --help` printed the value beside the flag
-    (`[env: SIPNAB_HEP_AUTH=<value>]`).
-  - Help now names the variable only.
-  - `tests/help_env_values_test.rs` reads every environment-backed flag from the
-    parser.
-
-    - So a flag added later is held to the same rule.
+  - Was: with `SIPNAB_API_KEY`, `SIPNAB_API_SIGNING_KEY`, `SIPNAB_MCP_SIGNING_KEY` or `SIPNAB_HEP_AUTH` exported, `sipnab --help` printed the value beside the flag (`[env: SIPNAB_HEP_AUTH=<value>]`).
+  - Effect: help names the variable only.
 - **`--run-provenance-file` no longer records secrets.**
-  - The record held the command line as given.
-  - So some flags wrote their secret to the file:
-    - `--hep-auth <key>`
-    - `--api-key=<key>`
-    - The other flags that take a secret inline.
-
-  - Their values are now recorded as `[redacted]`.
-  - `cli::SECRET_FLAGS` lists those flags.
-  - `tests/secret_flags_test.rs` fails when one of these flags is missing from it:
-    - A flag read from an environment variable.
-    - A flag whose value is named as a key, token, password, header or `user:pass`.
+  - Was: the record held the command line as given, so `--hep-auth <key>`, `--api-key=<key>` and the other flags taking a secret inline wrote it to the file.
+  - Effect: their values are recorded as `[redacted]`.
 - **sipnab no longer echoes or records the user name and password in a URL.**
-  - sipnab refused `--vcon-forward-url https://user:pass@host/`.
-    - The message quoted the whole URL, password included.
-  - The run provenance record kept any URL argument as given.
-  - Two places now show the user name and password as `[redacted]`:
-    - Every refusal of a forwarder URL.
-    - Every URL argument in the provenance record (`--flag value` and `--flag=value`).
-  - Both use one function, `run_provenance::redact_url_userinfo`.
+  - Was: the refusal of `--vcon-forward-url https://user:pass@host/` quoted the whole URL, password included, and the run provenance record kept any URL argument as given.
+  - Effect: every refusal of a forwarder URL shows the user name and password as `[redacted]`.
+  - Effect: so does every URL argument in the provenance record (`--flag value` and `--flag=value`).
 
 ### Added
 
 - **The vCon forwarder takes its settings from `sipnab.toml`.**
-  - A `[vcon_forward]` section has a key for each forwarder flag that is not
-    per-run:
-    - `kind`, `url`, `replace_url`, `auth_file`, `ca`
-    - `done`, `failed`, `interval`, `timeout`, `compat`
-    - `backoff_first`, `backoff_cap`
-    - `max_response_head` and `max_error_body`
-  - A flag overrides its key.
-  - Each key is checked by the rule its flag follows.
-  - `--dump-config` shows them.
-  - `--vcon-forward` no longer requires `--vcon-forward-url` and
-    `--vcon-forward-auth-file` on the command line.
-  - Without a URL or a credential from either source, sipnab refuses the run with exit 2.
-    - The refusal names the flag and the key.
-- **`--vcon-forward-kind` (`generic`, `vcon-store`, `conserver`) and
-  `[vcon_forward] kind`.**
-  - A kind supplies what that store needs, as measured on 2026-10-07:
-    - The ingest path for a base URL:
-      - `/v1/vcons` for vcon.store.
-      - `/vcon/external-ingress?ingress_list=sipnab` for a conserver.
-    - The header for a bare key:
-      - `Authorization: Bearer <key>`.
-      - `x-conserver-api-token: <key>`.
-  - An explicit URL path or a full header line overrides each.
-  - `generic`, the default, supplies nothing, as before.
-  - `docs/vcon.md` shows how to chain two forwarders to deliver to two stores.
+  - Effect: a `[vcon_forward]` section has a key for each forwarder flag that is not per-run; a flag overrides its key, and `--dump-config` shows them.
+  - Effect: the keys are `kind`, `url`, `replace_url`, `auth_file`, `ca`, `done`, `failed`, `interval`, `timeout`, `compat`, `backoff_first`, `backoff_cap`, `max_response_head` and `max_error_body`.
+  - Effect: each key is checked by the rule its flag follows.
+  - Effect: `--vcon-forward` no longer requires `--vcon-forward-url` and `--vcon-forward-auth-file` on the command line.
+  - Limit: without a URL or a credential from either source, sipnab refuses the run with exit 2, naming the flag and the key.
+- **`--vcon-forward-kind` (`generic`, `vcon-store`, `conserver`) and `[vcon_forward] kind`.**
+  - Effect: a kind supplies the ingest path for a base URL: `/v1/vcons` for vcon.store, `/vcon/external-ingress?ingress_list=sipnab` for a conserver, as measured on 2026-10-07.
+  - Effect: it supplies the header for a bare key: `Authorization: Bearer <key>` or `x-conserver-api-token: <key>`.
+  - Effect: an explicit URL path or a full header line overrides each; `generic`, the default, supplies nothing, as before.
+  - Effect: `docs/vcon.md` shows how to chain two forwarders to deliver to two stores.
 - **The forwarder's credential from the environment.**
-  - `SIPNAB_VCON_FORWARD_AUTH` holds what the auth file holds.
-    - So does `--vcon-forward-auth`, whose value the process list shows.
-  - sipnab refuses it when empty.
-  - sipnab refuses it beside `--vcon-forward-auth-file` or `[vcon_forward] auth_file`.
-  - `--help` does not show its value.
-  - sipnab removes it from every log line, failure record and stop reason.
-    - It does the same for the file's value.
-
+  - Effect: `SIPNAB_VCON_FORWARD_AUTH` holds what the auth file holds; so does `--vcon-forward-auth`, whose value the process list shows.
+  - Limit: sipnab refuses it when empty, and beside `--vcon-forward-auth-file` or `[vcon_forward] auth_file`.
+  - Effect: `--help` does not show its value, and sipnab removes it, and the file's value, from every log line, failure record and stop reason.
 - **The forwarder's fixed numbers are settings.**
-  - Two flags space the retries:
-    - `--vcon-forward-backoff-first` (default 2 s).
-    - `--vcon-forward-backoff-cap` (default 300 s).
-  - They refuse 0 and a first delay longer than the cap.
-  - Two flags bound what is read of a store's answer and kept of a refusal:
-    - `--vcon-forward-max-response-head` (default 65536 bytes).
-    - `--vcon-forward-max-error-body` (default 8192 bytes).
-  - They refuse 0.
-  - The defaults are the former constants.
-  - The constants that remain each state why they are not settings.
+  - Effect: `--vcon-forward-backoff-first` (default 2 s) and `--vcon-forward-backoff-cap` (default 300 s) space the retries; they refuse 0 and a first delay longer than the cap.
+  - Effect: `--vcon-forward-max-response-head` (default 65536 bytes) and `--vcon-forward-max-error-body` (default 8192 bytes) bound what is read of a store's answer and kept of a refusal, and refuse 0.
+  - Effect: the defaults are the former constants.
 
 ### Changed
 
 - **Values that did nothing, or did the wrong thing, are refused at startup.**
-  - A program tries every flag and every `sipnab.toml` key with accepted,
-    boundary and refused values.
-    - It lives in `tests/config_cli_flag_values_test.rs` and
-      `tests/config_cli_key_values_test.rs`.
-  - It found each of the cases below.
-  - Each has a test in `tests/config_cli_defects_test.rs`.
-  - A command line or config file that used one of them now stops with an error naming the flag or key.
-  - The cases:
-    - `--kill-ua ""` matched every User-Agent.
-      - So every caller counted as a scanner.
-      - On a live capture, that armed the kill response.
-      - An empty or invalid pattern is refused.
-      - The flag and the detector share one compile rule.
-
-    - Some flags accepted 0, negative, NaN and infinite values, and
-      percentages over 100.
-      - These were `--pdd-threshold`, `--ack-timeout`, `--no-final-response-timeout`,
-        `--duration-asymmetry-pct`, `--duration-asymmetry-secs` and
-        `--late-media-ms`.
-      - Their keys refuse those values.
-    - `--mcp-max-rows`, `--max-streams` and `--max-reassembly` accepted 0.
-    - Several zero values did nothing useful:
-      - `--count 0` read no packet and `--limitlen 0` parsed no byte, each exiting 0.
-      - `--duration 0` (also `0s`, `0m`, `0h`) stopped a live capture before its
-        first packet and exited 0.
-      - `--cores 0` ran as `--cores 1`.
-    - `--alert` with an unknown channel was a warning.
-      - It is refused.
-    - A fraud destination the dial plan never labels was accepted and matched nothing, on both surfaces.
-      - An example is `US`.
-      - The plan labels `NANP`, `USA`, `XX`.
-    - A negative or non-finite declared one-way delay was dropped from the MOS
-      calculation without a message.
-    - MOS boundaries above 5 and loss boundaries above 100 were accepted.
-    - `[display] color` accepted any value and ran as `auto`.
-    - `[limits] api_rate_limit_per_peer` above 4,294,967,295 was clamped.
-      - The `--api-rate-limit-per-peer` flag refuses it.
-    - These were accepted when empty:
-      - `[journal] dir`
-      - `[tfps] ctl`
-      - `[tfps] db`
-      - `[hep] tls_*`
-      - `[crash] report_dir`
-    - Some values were dropped with a warning the TUI screen hid:
-      - Invalid `[theme]` and `[keybindings]` values.
-      - `[display] from_to`.
-      - `[display] visible_columns`.
-      - `[names.manual]` entries.
-    - An unreadable `--names` file was a warning.
-    - An unreadable `[names] hosts_file` was skipped without one.
+  - Effect: a command line or config file that used one of these values now stops with an error naming the flag or key.
+  - Was: `--kill-ua ""` matched every User-Agent, so every caller counted as a scanner, which on a live capture armed the kill response.
+  - Effect: an empty or invalid `--kill-ua` pattern is refused.
+  - Was: `--alert` with an unknown channel was a warning; an unreadable `--names` file was a warning, and an unreadable `[names] hosts_file` was skipped without one.
+  - Was: a fraud destination the dial plan never labels, such as `US`, was accepted and matched nothing, on both surfaces; the plan labels `NANP`, `USA`, `XX`.
+- **Numeric flags refuse zero, negative, non-finite and out-of-range values.**
+  - Was: `--pdd-threshold`, `--ack-timeout`, `--no-final-response-timeout`, `--duration-asymmetry-pct`, `--duration-asymmetry-secs` and `--late-media-ms` accepted 0, negative, NaN and infinite values, and percentages over 100; their keys refuse those values.
+  - Was: `--mcp-max-rows`, `--max-streams` and `--max-reassembly` accepted 0; `--cores 0` ran as `--cores 1`.
+  - Was: `--count 0` read no packet and `--limitlen 0` parsed no byte, each exiting 0.
+  - Was: `--duration 0` (also `0s`, `0m`, `0h`) stopped a live capture before its first packet and exited 0.
+  - Was: MOS boundaries above 5 and loss boundaries above 100 were accepted; a negative or non-finite declared one-way delay left the MOS calculation without a message.
+- **Config keys refuse values that were accepted, clamped or dropped.**
+  - Was: `[display] color` accepted any value and ran as `auto`.
+  - Was: `[limits] api_rate_limit_per_peer` above 4,294,967,295 was clamped; the `--api-rate-limit-per-peer` flag refuses it.
+  - Was: `[journal] dir`, `[tfps] ctl`, `[tfps] db`, `[hep] tls_*` and `[crash] report_dir` were accepted when empty.
+  - Was: invalid `[theme]` and `[keybindings]` values, `[display] from_to`, `[display] visible_columns` and `[names.manual]` entries were dropped with a warning the TUI screen hid.
 
 ### Fixed
 
 - **`-E` times each message by the HEP packet's own timestamp.**
-  - It kept the time the HEP datagram was sniffed.
-    - So every message in a feed got the sniffer's clock.
-    - A 60 s call relayed or replayed as HEP showed as seven messages in the same millisecond.
-  - `--hep-listen` already used the HEP timestamp.
-  - Both now follow one rule.
-  - Found from Giovanni Maruzzelli's
-    ([@gmaruzz](https://github.com/gmaruzz)) retest of the loopback HEP setup in
-    [#343](https://github.com/NormB/sipnab/issues/343).
-    - That retest also showed that a HEP port with no listener loses messages.
-    - See `[capture]` in the configuration reference.
-
+  - Was: it kept the HEP datagram's sniff time, so a 60 s call relayed or replayed as HEP showed as seven messages in the same millisecond.
+  - Effect: `-E` and `--hep-listen`, which already used the HEP timestamp, follow one rule.
+  - Limit: the retest also showed that a HEP port with no listener loses messages; see `[capture]` in the configuration reference.
+  - Credit: Found from Giovanni Maruzzelli's ([@gmaruzz](https://github.com/gmaruzz)) retest of the loopback HEP setup in [#343](https://github.com/NormB/sipnab/issues/343).
 - **Refusals name the setting the user wrote.**
-
-  - Some refusals named the wrong setting:
-    - Quality band flags were refused naming `[quality]` keys.
-    - `--business-hours` was refused naming `[security] business_hours`.
-    - An empty `--hep-auth` or `--metrics-auth` was refused naming the `--*-file` flag.
-    - `--uprobe-tls` was refused naming a flag that was not given.
-    - `[capture] portrange` was refused naming `--portrange`.
-  - Some refusals did not name the setting at all:
-    - `-I`
-    - `--input-name`
-    - `--bpf-file`
-    - `--alert`
-    - `--uprobe-library`
-    - `[filter] expression`
-- A malformed `--ws-portrange` exits 2, as `--portrange` does, instead of 1.
-- The `exec_queue_depth` refusal message no longer contains runs of spaces.
-- `--vcon-forward-once --help` names exit `3`.
-  - A `401` or `403` from the store already produced that exit.
-  - The man page describes these:
-    - `--vcon-forward-kind`
-    - `--vcon-forward-auth`
-    - `SIPNAB_VCON_FORWARD_AUTH`
-    - The back-off and size flags.
-    - `[vcon_forward]`.
-    - Every forwarder exit status.
-  - The man page lists exit `3`.
-- The command reference and configuration reference state the range each
-  setting accepts.
-  - This covers every value listed under Changed above.
-
+  - Was: quality band flags were refused naming `[quality]` keys, `--business-hours` naming `[security] business_hours`, and `[capture] portrange` naming `--portrange`.
+  - Was: an empty `--hep-auth` or `--metrics-auth` was refused naming the `--*-file` flag, and `--uprobe-tls` naming a flag that was not given.
+  - Was: refusals of `-I`, `--input-name`, `--bpf-file`, `--alert`, `--uprobe-library` and `[filter] expression` did not name the setting at all.
+  - Effect: a malformed `--ws-portrange` exits 2, as `--portrange` does, instead of 1.
+  - Effect: the `exec_queue_depth` refusal message no longer contains runs of spaces.
+- **`--vcon-forward-once --help` and the man page name exit `3`.**
+  - Was: a `401` or `403` from the store already produced that exit.
+  - Effect: the man page describes `--vcon-forward-kind`, `--vcon-forward-auth`, `SIPNAB_VCON_FORWARD_AUTH`, the back-off and size flags, `[vcon_forward]` and every forwarder exit status.
+- **The command reference and configuration reference state the range each setting accepts.**
+  - Effect: this covers every value listed under Changed above.
 - **Captures read through MCP and REST apply the run's options.**
-  - Three surfaces read capture files with the pipeline defaults:
-    - MCP `open_capture`.
-    - MCP `compare_captures`.
-    - REST `GET /v1/captures/compare`.
-  - So `-E` / `--hep-parse` (and `[capture] hep_parse`) did not apply there.
-    - A HEP copy that `-I file -E` decoded showed no SIP when opened through a server.
-  - The servers now read every capture file with the run's options.
-    - The same function builds them for the packet loop and the TUI.
-    - The options are `--hep-parse`, `--no-rtp`,
-      `--no-dialog`, `--rtpproxy-control` and `--quiet-bad-parse`.
-  - MCP `find_in_captures` reads with them too.
-  - A file opened through a server still reads SIP on every port.
-    - The TUI's own file open does the same.
-    - `--portrange` does not apply there.
+  - Was: MCP `open_capture`, MCP `compare_captures` and REST `GET /v1/captures/compare` read capture files with the pipeline defaults.
+  - Was: `-E` / `--hep-parse` (and `[capture] hep_parse`) did not apply there, so a HEP copy that `-I file -E` decoded showed no SIP through a server.
+  - Effect: the servers, and MCP `find_in_captures`, read every capture file with the run's `--hep-parse`, `--no-rtp`, `--no-dialog`, `--rtpproxy-control` and `--quiet-bad-parse`.
+  - Limit: a file opened through a server still reads SIP on every port, as the TUI's own file open does; `--portrange` does not apply there.
 
 ## [0.5.205] - 2026-10-07
 
 ### Added
 
-- **`sipnab --vcon-forward <SPOOL_DIR>` delivers a vCon spool to a store
-  (VCON-FWD).**
-  - It is a separate process.
-    - sipnab refuses it beside any capture flag.
-    - So the capture process still makes no outbound connection.
-  - It POSTs each container in an `--export-vcon-dir` spool to `--vcon-forward-url`, byte for byte.
-  - Each request carries these headers:
-    - `Content-Type: application/json`.
-    - `User-Agent: sipnab/<version>`.
-    - One header read from `--vcon-forward-auth-file` (`Header-Name: value`).
-      - sipnab refuses that file when other users can read it.
-      - The archive password file already followed that rule.
-
-  - What each answer does:
-    - A `2xx` moves the container to `--vcon-forward-done`.
-    - Another `4xx` moves it to `--vcon-forward-failed` beside a `<name>.error.json` record.
-    - A `5xx`, timeout or refused connection leaves it for a retry.
-      - The retry comes after 2 s, doubling to 5 minutes.
-      - It does not hold up the rest.
-  - A `401` or `403` refuses the credentials or the client for every container.
-
-    - So the forwarder stops there.
-    - It sends nothing more and moves no file.
-    - It logs the status and the first 200 bytes of the answer.
-    - That includes a Cloudflare front's `error code: 1010`.
-    - It exits `3`.
-  - When `--vcon-forward-replace-url` is set, a `409` is PUT there with the container's uuid.
-  - A container sipnab rewrites under the same name goes again.
-  - The auth value never appears in a log line, an error or a record.
-    - This holds even when a store echoes it back.
-  - `--vcon-forward-once` makes one pass.
-    - It exits `0` only when everything was delivered.
-  - Otherwise it polls until SIGTERM and sends nothing after it.
-  - HTTPS uses rustls with the host's CA bundle or `--vcon-forward-ca`.
-    - There is no new crate.
-  - A `2xx` is reported as delivered, never as stored.
-- **sipnab.com publishes the `contrib/` index (SITE-CONTRIB).**
-  - `scripts/build-site-pages.py` generates `/docs/contrib/` from `contrib/README.md`.
-  - It is listed in the docs navigation, `llms.txt` and `llms-full.txt`. The generator
-- **sipnab.com publishes the contributor guide and the `contrib/` index
-  (SITE-CONTRIB).**
-  - `scripts/build-site-pages.py` generates two pages:
-    - `/docs/contributing/` from `CONTRIBUTING.md`.
-    - `/docs/contrib/` from `contrib/README.md`.
-  - Both are listed in the docs navigation, `llms.txt` and `llms-full.txt`.
-  - The guide's private-identity examples are now invented (`buildbox-7`, `sbc-east-2`, `192.0.2.40`).
-    - Before, they were lab names.
-    - `private_identity_test` bans lab names from every site page.
-    - `b10_the_guide_names_the_role_alternative` requires the invented name.
-
-  - The generator now resolves a page's relative links from that page's own directory.
-    - Before, it resolved them from `docs/`.
-  - It rewrites links to repo files that are neither pages nor code to GitHub URLs.
-  - `contributor_docs_are_generated_site_pages` requires three things:
-    - Both pages.
-    - Their generated banners.
-    - Links that resolve.
-  - `site_pages_mirror_is_current` holds them equal to their sources.
-  - The `contrib/README.md` link to the MCP walkthrough now points at `docs/mcp-deploy.md`.
-    - That page was renamed earlier.
-
-- **The call report and the vCon carry MOS (CMP6).**
-  - Wherever sipnab computes a stream's MOS from the capture, it now reports it.
-  - The call report's text gains `mos=<x> R=<r>` per stream.
-    - It shows `mos=unknown (<grounding>)` when the MOS rests on no published or declared impairment value.
-
-  - The Markdown report gains `MOS` and `MOS_CQEW` columns.
-  - A vCon's analysis body gains `media_quality`.
-    - It holds MOS, R-factor, grounding and the AMR-WB wideband score per stream.
-    - It leaves addresses out.
-    - The key is additive.
-    - It is omitted for a dialog with no media.
-  - Some per-stream objects gain `mos`, `r_factor`, `mos_grounded`, `mos_grounding`, `mos_note` and the wideband fields:
-    - `--json-dialogs`.
-    - `GET /v1/streams/{id}`.
-    - The exec hooks' `SIPNAB_STREAM_JSON`.
-  - Every surface takes the figures from the projection `GET /v1/streams` serializes.
-    - So none can disagree.
+- **`sipnab --vcon-forward <SPOOL_DIR>` delivers a vCon spool to a store.**
+  - Effect: it POSTs each container in an `--export-vcon-dir` spool to `--vcon-forward-url`, byte for byte, with one header read from `--vcon-forward-auth-file` (`Header-Name: value`).
+  - Limit: it is a separate process that sipnab refuses beside any capture flag, so the capture process still makes no outbound connection.
+  - Effect: a `2xx` moves the container to `--vcon-forward-done`; another `4xx` moves it to `--vcon-forward-failed` beside a `<name>.error.json` record.
+  - Effect: a `5xx`, timeout or refused connection leaves it for a retry after 2 s, doubling to 5 minutes, without holding up the rest.
+  - Effect: `--vcon-forward-once` makes one pass and exits `0` only when everything was delivered; otherwise it polls until SIGTERM and sends nothing after it.
+- **The forwarder stops on `401` or `403`, and never logs the auth value.**
+  - Effect: a `401` or `403` refuses the credentials or the client for every container, so the forwarder sends nothing more, moves no file and exits `3`.
+  - Effect: it logs the status and the first 200 bytes of the answer, which includes a Cloudflare front's `error code: 1010`.
+  - Effect: the auth value never appears in a log line, an error or a record, even when a store echoes it back.
+  - Limit: sipnab refuses the auth file when other users can read it; the archive password file already followed that rule.
+  - Effect: with `--vcon-forward-replace-url`, a `409` is PUT there with the container's uuid; a container sipnab rewrites under the same name goes again.
+- **The forwarder's requests use HTTPS with the host's CA bundle or `--vcon-forward-ca`.**
+  - Effect: each request carries `Content-Type: application/json` and `User-Agent: sipnab/<version>`.
+  - Limit: a `2xx` is reported as delivered, never as stored.
+- **sipnab.com publishes the contributor guide and the `contrib/` index.**
+  - Effect: `/docs/contributing/` comes from `CONTRIBUTING.md` and `/docs/contrib/` from `contrib/README.md`; both are in the docs navigation, `llms.txt` and `llms-full.txt`.
+  - Effect: the guide's private-identity examples are invented (`buildbox-7`, `sbc-east-2`, `192.0.2.40`); before, they were lab names.
+  - Effect: the `contrib/README.md` link to the MCP walkthrough points at `docs/mcp-deploy.md`, a page renamed earlier.
+- **The call report and the vCon carry MOS.**
+  - Effect: the call report's text gains `mos=<x> R=<r>` per stream, or `mos=unknown (<grounding>)` when the MOS rests on no published or declared impairment value.
+  - Effect: the Markdown report gains `MOS` and `MOS_CQEW` columns.
+  - Effect: a vCon's analysis body gains `media_quality`: MOS, R-factor, grounding and the AMR-WB wideband score per stream, without addresses; a dialog with no media omits it.
+  - Effect: `--json-dialogs`, `GET /v1/streams/{id}` and the exec hooks' `SIPNAB_STREAM_JSON` gain `mos`, `r_factor`, `mos_grounded`, `mos_grounding`, `mos_note` and the wideband fields.
+  - Effect: the `media_quality` key is additive; every surface takes the figures from the projection `GET /v1/streams` serializes, so none can disagree.
 - **MCP `render_ladder` with `format: "mermaid"` annotates the diagram.**
-  - Each arrow carries these:
-    - Its offset from the first message.
-    - `PDD <n>ms` on the first 180.
-    - The SDP change against the call's previous SDP (`+G722`, `−PCMU`, `HOLD`, `UNHOLD`).
-    - `retransmission`.
-  - IPv6 endpoints are bracketed.
-  - The browser analyzer's export draws the same rows.
-  - The SDP change badge is the TUI ladder's own rule, now shared.
-- **Retried rtpproxy commands are counted (RP4).**
-  - rtpproxy answers a repeated cookie from its reply cache.
-  - So a capture shows a retry as the same cookie sent twice.
-
-    - The proxy did not hear an answer in time.
-  - MCP `reconcile_orphans` gains `relay_control`.
-    - It has one row per control socket read with `--rtpproxy-control`.
-    - Each row gives `commands`, `retried_commands` and `retried_after_answer`.
-    - The last counts retries sent after the relay's answer was already on the wire.
-    - For those, the answer was lost or late on its way back.
-  - A headless run warns with the same counts at the end.
-  - The counts are per capture.
-
-    - So re-reading a capture does not turn every command into a retry.
+  - Effect: each arrow carries its offset from the first message, `PDD <n>ms` on the first 180, the SDP change against the call's previous SDP, and `retransmission`.
+  - Effect: the SDP change reads `+G722`, `−PCMU`, `HOLD` or `UNHOLD`, by the TUI ladder's own rule.
+  - Effect: IPv6 endpoints are bracketed, and the browser analyzer's export draws the same rows.
+- **Retried rtpproxy commands are counted.**
+  - Effect: a retry shows in a capture as the same cookie sent twice; the proxy did not hear an answer in time.
+  - Effect: MCP `reconcile_orphans` gains `relay_control`, one row per control socket read with `--rtpproxy-control`, giving `commands`, `retried_commands` and `retried_after_answer`.
+  - Effect: `retried_after_answer` counts retries sent after the relay's answer was already on the wire; for those, the answer was lost or late on its way back.
+  - Effect: a headless run warns with the same counts at the end.
+  - Limit: the counts are per capture, so re-reading a capture does not turn every command into a retry.
 
 ### Changed
 
 - **The README links every guide the home page's voice-stack tiles do.**
-  - A new "Add it to your voice stack" section mirrors the six tiles and their 19 guides.
-    - The tiles are SIP proxy, Call records, Attack blocking, Media relay, Call history and Metrics.
-  - The vCon bullet says which builds carry `--vcon-forward`.
-  - `readme_homepage_parity_test` now reads the tiles from the page.
-    - It fails when one links a guide the README does not.
-- **No `#[allow(clippy::too_many_arguments)]` remains; each was a design
-  fix instead.**
-  - Values that travel together are now named types.
-  - Two library signatures change (the library API is unstable):
-    - `PcapWriter::with_provenance(path, link_type, PcapWriterOptions)`.
-    - `build_hep_v3_hmac(endpoint, timestamp, protocol, capture_id, &HepHmacSigning { key, token_ts, nonce }, payload)`.
-  - A gate test, `lint_suppression_test`, refuses the attribute anywhere in the tree.
-
-- **The README agrees with the home page and the code again, and a test keeps
-  it that way.**
-  - The README had these errors:
-    - The hero image's description named a REGISTER and a re-INVITE the image does not show.
-    - Two sentences called features shipped in 0.5.197 and 0.5.203 unreleased.
-    - The MCP paragraph said every tool only reads out of the box.
-      - 13 write, each gated as `docs/mcp-protocol.md` describes.
-    - It described `--srtp-keys` as SDES keys.
-      - It is a master-keys file.
-      - SDES keys come from the SDP.
-  - Seven home page capabilities the README left out are now in it.
-  - `readme_homepage_parity_test` requires these:
-    - Every home page capability row is covered.
-    - The hero description matches.
-    - The tool and write counts agree.
-    - The filter DSL size agrees.
-    - The `unsafe` count agrees.
-    - No released version is called unreleased.
-- **No `large_enum_variant` or `type_complexity` suppression remains
-  either.**
-  - `PacketAction::Sip` boxes its parsed message.
-
-    - So the enum every classified packet returns is 120 bytes instead of 336.
-    - `packet_action_stays_small` pins it.
-    - The cost is one allocation per SIP message.
-  - A test helper's four-value tuple is a named struct.
-  - The gate refuses both lints.
-- **No `unused_mut` or `unused_variables` suppression remains.**
-  - cfg blocks used to fill in some values.
-  - Each is now computed in one expression per feature set:
-    - `mint-token` picks its signing key from the API and then MCP in one chain.
-    - The server list is collected from each door's optional server.
-    - The ICMP capture path reads its message through the same constructor `parse_icmp_error` uses.
-  - The gate refuses both lints.
-- **Every import names what it brings in, and no scope holds five one-letter
-  bindings.**
-  - `clippy::wildcard_imports` and `clippy::many_single_char_names` are now denied.
-  - The 23 `use crate::tui::*` and `use super::*` imports in the TUI list their names.
-  - The three functions with single-letter bindings name them for what they hold.
-  - The gate refuses an allow for either lint.
-- **No function exceeds clippy's cognitive-complexity threshold (LINT6).**
-  - `clippy::cognitive_complexity` is now enabled at its default threshold of 25.
-  - clippy runs with `-D warnings` in CI and the pre-push hook.
-    - So a function over the threshold fails the build.
-  - Every function that was over it is split along its decisions into named steps.
-    - Each step is testable alone.
-
-  - The gate refuses an allow for the lint.
-  - The split found and fixed two defects:
-    - The SIP parser stored the header before an over-long last line twice.
-
-      - This happened when that line had no CRLF after it.
-      - Test: `an_oversize_unterminated_last_line_does_not_repeat_the_header_before_it`.
-    - The call-flow ladder matched IPv6 endpoints against the bracketed participant labels with an unbracketed address.
-      - So every IPv6 message was drawn from the first column to the second, whichever way it went.
-      - Columns are now matched on the address and port.
-      - Test: `ipv6_messages_are_drawn_between_their_own_columns`.
-- **The lint gate reads `#[expect]` attributes as well as `#[allow]` ones.**
-  - The earlier entries above said no `too_many_arguments`, `type_complexity` or `unused_mut` suppression remained.
-    - That was true of `allow` only.
-  - The gate matched `allow(` on one line.
-
-    - So eight `#[expect]` attributes for those lints survived.
-    - One was a `cfg_attr` that applied `expect` to `unused_mut`, spread over several lines.
-  - `lint_suppression_test` now reads each attribute whole:
-    - Across lines.
-    - Inside `cfg_attr` too.
-    - It ignores `//` inside a string.
-  - The eight are gone:
-    - `batch::run` takes a `CaptureFeed`.
-    - The HEP listener takes one start-up value.
-    - `openapi_json` merges each optional route set as a new value.
-    - The test helpers take named structs.
+  - Effect: a new "Add it to your voice stack" section mirrors the six tiles and their 19 guides.
+  - Effect: the tiles are SIP proxy, Call records, Attack blocking, Media relay, Call history and Metrics.
+  - Effect: the vCon bullet says which builds carry `--vcon-forward`.
+- **Two library signatures change (the library API is unstable).**
+  - Effect: `PcapWriter::with_provenance(path, link_type, PcapWriterOptions)`.
+  - Effect: `build_hep_v3_hmac(endpoint, timestamp, protocol, capture_id, &HepHmacSigning { key, token_ts, nonce }, payload)`.
+- **The README agrees with the home page and the code again.**
+  - Was: the hero image's description named a REGISTER and a re-INVITE the image does not show.
+  - Was: two sentences called features shipped in 0.5.197 and 0.5.203 unreleased.
+  - Was: the MCP paragraph said every tool only reads out of the box; 13 write, each gated as `docs/mcp-protocol.md` describes.
+  - Was: it described `--srtp-keys` as SDES keys; it is a master-keys file, and SDES keys come from the SDP.
+  - Effect: seven home page capabilities the README left out are now in it.
 
 ### Fixed
 
-- **A redacted vCon export no longer carries an empty `recording` Dialog
-  Object.**
-  - `--redact` with `--retain-audio` decoded the audio and typed the Dialog Object `recording`.
-  - Then redaction deleted the body.
-    - That left a `recording` with `parties` and no content.
-    - A caveat beside it said the media was inline.
-  - sipnab now builds a redacted export without the audio:
-    - The Dialog Object is the signaling one, typed by what it carries.
-      - That is no `type`, or `incomplete` with the disposition when a final failure was observed.
-    - `capture_completeness.media` says `withheld-by-redaction`.
-    - The note says the export, not the call, carries no audio.
+- **The SIP parser no longer stores the header before an over-long last line twice.**
+  - Was: this happened when that line had no CRLF after it.
+- **The call-flow ladder draws IPv6 messages between their own columns.**
+  - Was: it matched IPv6 endpoints against the bracketed participant labels with an unbracketed address.
+  - Was: every IPv6 message was drawn from the first column to the second, whichever way it went.
+  - Effect: columns are matched on the address and port.
+- **A redacted vCon export no longer carries an empty `recording` Dialog Object.**
+  - Was: `--redact` with `--retain-audio` typed the Dialog Object `recording`, then redaction deleted the body, leaving `parties`, no content and a caveat that the media was inline.
+  - Effect: a redacted export is built without the audio; its Dialog Object has no `type`, or `incomplete` with the disposition when a final failure was observed.
+  - Effect: `capture_completeness.media` says `withheld-by-redaction`, and the note says the export, not the call, carries no audio.
 - **A vCon container is never given a dot-prefixed name.**
-  - A Call-ID that started with a dot produced a container named like sipnab's own staging file.
-  - The spool contract tells every reader to skip such files.
-    - So the container was written and never forwarded.
-  - A leading dot now becomes `_`.
+  - Was: a Call-ID starting with a dot produced a container named like sipnab's own staging file, which every spool reader skips, so it was never forwarded.
+  - Effect: a leading dot becomes `_`.
 
 ## [0.5.204] - 2026-10-06
 
 ### Added
 
 - **Every yes/no setting now has a flag for each direction.**
-  - A config file could set one.
-    - `--no-config` was then the only way to override it for a run.
-  - Eight new flags complete the pairs.
-  - The last of a pair typed wins.
-  - Six turn off a feature the file turned on:
-    - `--no-hep-parse`
-    - `--no-delta-time`
-    - `--no-fraud-detect`
-    - `--no-kill-scanner`
-    - `--no-reverse-dns`
-    - `--no-resolve`
-  - Two turn back on a feature the file turned off:
-    - `--rtp` (against `[capture] no_rtp`).
-    - `--priv-drop` (against `[privilege] no_priv_drop`).
-  - `--no-resolve` turns name display off whatever else would turn it on.
-    - This includes `--names` files and `[names.manual]`.
-- **A match expression or a file name typed where sipnab expects a capture
-  filter now gets an error that says what to type.**
-  - `sngrep` and `sipgrep` take a match expression before the capture filter.
-  - sipnab takes only the filter.
-    - It matches SIP text with `-e`.
-  - `sipnab -I call.pcap INVITE` used to fail with libpcap's own syntax error.
-    - It now says to use `-e '<pattern>'`.
-  - `sipnab call.pcap`, which sngrep accepts, read the file name as a capture filter.
-    - sipnab now refuses it before any capture opens.
-    - The refusal names the `sipnab -I call.pcap` it meant.
+  - Was: a config file could set one, and `--no-config` was then the only way to override it for a run.
+  - Effect: `--no-hep-parse`, `--no-delta-time`, `--no-fraud-detect`, `--no-kill-scanner`, `--no-reverse-dns` and `--no-resolve` turn off a feature the file turned on.
+  - Effect: `--rtp` (against `[capture] no_rtp`) and `--priv-drop` (against `[privilege] no_priv_drop`) turn back on a feature the file turned off.
+  - Effect: the last of a pair typed wins.
+  - Limit: `--no-resolve` turns name display off whatever else would turn it on, `--names` files and `[names.manual]` included.
+- **A pattern or file name given as capture filter names what to type.**
+  - Was: `sipnab -I call.pcap INVITE`, as `sngrep` and `sipgrep` take it, failed with libpcap's own syntax error.
+  - Effect: it now says to use `-e '<pattern>'`; sipnab takes only the filter and matches SIP text with `-e`.
+  - Effect: `sipnab call.pcap`, which sngrep accepts, is refused before any capture opens, naming the `sipnab -I call.pcap` it meant.
 
 ### Fixed
 
 - **MCP `rtp_stats` carries an AMR-WB stream's wideband score.**
-
-  - REST (`GET /v1/streams`) and the TUI's `MOS_CQEW` row carried the G.107.1 `MOS_CQEW` since it shipped.
-  - `docs/mos-and-codecs.md` said MCP did too.
-  - `rtp_stats` builds its stream from the NDJSON line.
-    - It carried only the narrowband `mos`.
-    - That is the figure the wideband score exists to correct.
-  - It now adds `mos_wideband`, `mos_wideband_context` and `mos_wideband_unavailable`.
-    - They come from the same projection REST serializes.
+  - Was: REST (`GET /v1/streams`) and the TUI's `MOS_CQEW` row carried the G.107.1 `MOS_CQEW`, and `docs/mos-and-codecs.md` said MCP did too.
+  - Was: `rtp_stats` carried only the narrowband `mos`, the figure the wideband score exists to correct.
+  - Effect: it adds `mos_wideband`, `mos_wideband_context` and `mos_wideband_unavailable`, from the same projection REST serializes.
 - **A closed stderr no longer crashes a finished run with exit 101.**
-  - `sipnab -N -I call.pcap 2>&1 | head -1` closes the pipe after one line.
-
-    - Every later stderr write then fails.
-  - tracing-subscriber reported each failed log line with an `eprintln!` to the same stderr.
-  - sipnab printed its own stderr lines with `eprintln!`.
-  - Both panic on a failed write.
-
-    - So the panic hook exited 101 and wrote a crash report.
-  - The subscriber no longer reports its own write failures.
-  - sipnab's 65 stderr lines go through one macro that drops a failed write.
-  - The run now exits with the code it would have had.
-    - That is 0 for that command.
-
-### Removed
-
-- **AI agent planning documents are no longer in the repository.**
-  - `docs/superpowers/` held three specs and plans written on 2026-07-24 and 2026-07-25.
-  - A gate test now fails if `docs/superpowers/` or `.superpowers/` is tracked again.
-  - Some exclusions named the directory.
-    - They were in the docs gates, Vale, codespell and lychee configs.
-    - They are gone with it.
-  - The files remain in git history.
+  - Was: `sipnab -N -I call.pcap 2>&1 | head -1` closes the pipe after one line, and the next failed stderr write panicked.
+  - Was: the panic hook then exited 101 and wrote a crash report.
+  - Effect: a failed stderr write is dropped, and the run exits with the code it would have had: 0 for that command.
 
 ### Security
 
-- **The TypeScript MCP client example pins `@modelcontextprotocol/sdk`
-  1.32.1, past CVE-2026-104850 (GHSA-6qxp-vccf-f47h).**
-  - Versions 1.12.0 to 1.30.x let an MCP server choose the authorization server.
-    - The SDK's OAuth client sends credentials to that server.
-  - 1.31.0 fixed it.
-  - `clients/typescript` pinned 1.30.1.
-  - The example does not use OAuth.
-  - sipnab itself has no npm dependency in its binary.
-
-- **Legacy `%from`-style exec placeholders now reach the hook as one quoted
-  word (CWE-78).**
-  - Some templates used unquoted rewrites:
-    - `--on-dialog-exec` and `--on-quality-exec` templates rewrote `%from` to an unquoted `$SIPNAB_FROM`.
-    - `--alert-exec` did the same for `%src`, `%rule` and `%detail`.
-  - So `sh -c` split a captured value on its spaces and expanded `*` in it.
-    - A crafted SIP header could add or replace hook arguments.
-  - Each placeholder now becomes one of these:
-    - `"${SIPNAB_FROM}"` outside quotes.
-    - `${SIPNAB_FROM}` inside double quotes.
-    - `'"${SIPNAB_FROM}"'` inside single quotes.
-      - There, the old rewrite left the literal text `$SIPNAB_FROM`.
-  - The braces also fix `%from_x`.
-    - It expanded an unset `SIPNAB_FROM_x`.
-    - It should expand the From value followed by `_x`.
-  - Both hooks now share one rewrite.
-  - Templates that use `$SIPNAB_*` directly are unchanged.
+- **The TypeScript MCP client example pins `@modelcontextprotocol/sdk` 1.32.1, past CVE-2026-104850 (GHSA-6qxp-vccf-f47h).**
+  - Was: `clients/typescript` pinned 1.30.1; versions 1.12.0 to 1.30.x let an MCP server choose the authorization server the SDK's OAuth client sends credentials to.
+  - Limit: 1.31.0 fixed it; the example does not use OAuth, and sipnab itself has no npm dependency in its binary.
+- **Legacy `%from`-style exec placeholders now reach the hook as one quoted word (CWE-78).**
+  - Was: `--on-dialog-exec` and `--on-quality-exec` rewrote `%from` to an unquoted `$SIPNAB_FROM`; `--alert-exec` did the same for `%src`, `%rule` and `%detail`.
+  - Was: `sh -c` split a captured value on its spaces and expanded `*` in it, so a crafted SIP header could add or replace hook arguments.
+  - Effect: each placeholder becomes `"${SIPNAB_FROM}"` outside quotes, `${SIPNAB_FROM}` inside double quotes, and `'"${SIPNAB_FROM}"'` inside single quotes.
+  - Effect: `%from_x` expands the From value followed by `_x`, not an unset `SIPNAB_FROM_x`; inside single quotes the old rewrite left the literal `$SIPNAB_FROM`.
+  - Limit: templates that use `$SIPNAB_*` directly are unchanged.
 
 ### Changed
 
-- **Rust 1.99.0, the latest stable release, replaces 1.98.1 as the pinned
-  toolchain.**
-  - `rust-version` moves to 1.99 in the four crates that state it.
-  - These jobs install 1.99.0: CI, quality, bench, pages, reproducible and release.
-
-    - They use `dtolnay/rust-toolchain` at its `1.99.0` branch, pinned by SHA.
-  - Both Dockerfiles build on `rust:1.99-slim-trixie`.
-  - The gnu release builds on a `rust:1-bookworm` digest whose rustc is 1.99.0.
-  - Building from source now needs Rust 1.99+.
+- **Rust 1.99.0 replaces 1.98.1 as the pinned toolchain.**
+  - Do: building from source now needs Rust 1.99+; `rust-version` is 1.99 in the four crates that state it.
+  - Effect: both Dockerfiles build on `rust:1.99-slim-trixie`, and the gnu release builds on a `rust:1-bookworm` digest whose rustc is 1.99.0.
 
 ## [0.5.203] - 2026-10-05
 
 ### Added
 
 - **MCP over HTTP and the metrics endpoint serve HTTPS themselves.**
-  - `--mcp-tls-cert` / `--mcp-tls-key` and `--metrics-tls-cert` /
-    `--metrics-tls-key` take a PEM certificate chain and private key.
-  - `--api-tls-cert` / `--api-tls-key` already did this for the REST API.
-  - The port then speaks HTTPS only, TLS 1.2 and 1.3.
-  - The bearer token or Basic credential is unchanged.
-  - Startup refuses each of these cases and names the file or flag:
-    - one half of a pair
-    - an unreadable file
-    - a file with no certificate or no key
-    - a key other users can read
-    - a key that is not the certificate's
-  - MCP shares the REST API's accept loop, now in `src/tls_listener.rs`:
-    - 10-second handshake timeout
-    - 256 handshakes at once
-  - See [MCP TLS](docs/mcp-deploy.md#mcp-tls) and
-    [Metrics TLS](docs/prometheus-metrics.md#metrics-tls).
+  - Do: give `--mcp-tls-cert` / `--mcp-tls-key` or `--metrics-tls-cert` / `--metrics-tls-key` a PEM certificate chain and private key, as `--api-tls-cert` / `--api-tls-key` already take.
+  - Effect: the port then speaks HTTPS only, TLS 1.2 and 1.3; the bearer token or Basic credential is unchanged.
+  - Limit: startup refuses half a pair, an unreadable file, a file lacking certificate or key, a key others can read, or a mismatched key.
+  - Effect: MCP shares the REST API's accept loop: a 10-second handshake timeout and 256 handshakes at once.
+  - Docs: [MCP TLS](docs/mcp-deploy.md#mcp-tls), [Metrics TLS](docs/prometheus-metrics.md#metrics-tls).
 - **`--hep-tls-extra-ca` trusts a CA in addition to the host's bundle.**
-
-  - The HEP sender's `--hep-tls-ca` still REPLACES the trust store.
-  - The new flag is the separate, explicit way to add a private collector's
-    issuer.
-  - With it, the public roots still count.
-  - The two flags cannot be combined.
-  - On a host with no CA bundle, startup refuses the new flag and names
-    `--hep-tls-ca`.
+  - Effect: it adds a private collector's issuer while the public roots still count; `--hep-tls-ca` still REPLACES the trust store.
+  - Limit: the two flags cannot be combined, and on a host with no CA bundle startup refuses the new flag and names `--hep-tls-ca`.
 - **Every TLS flag has a `sipnab.toml` key.**
-  - `[api]`, `[mcp]` and `[metrics]` take `tls_cert` and `tls_key`.
-  - A new `[hep]` section takes `tls_ca`, `tls_extra_ca`, `tls_cert` and
-    `tls_key`.
-  - Each flag replaces its own key.
-    - So a certificate on the command line and its key in the file make a
-      pair.
-  - The HEP sender's trust is one setting.
-    - A `--hep-tls-ca` or `--hep-tls-extra-ca` flag replaces both trust keys.
-  - Pending flags in `src/settings.rs` fall from 103 to 98.
+  - Effect: `[api]`, `[mcp]` and `[metrics]` take `tls_cert` and `tls_key`; a new `[hep]` section takes `tls_ca`, `tls_extra_ca`, `tls_cert` and `tls_key`.
+  - Effect: each flag replaces its own key, so a certificate on the command line and its key in the file make a pair.
+  - Limit: the HEP sender's trust is one setting: a `--hep-tls-ca` or `--hep-tls-extra-ca` flag replaces both trust keys.
 
 ### Fixed
 
 - **`-E` / `[capture] hep_parse` works in the TUI and under `--cores`.**
-  - Only the single-threaded headless run unwrapped HEP.
-  - The TUI showed no dialogs for a proxy's HEP copy sniffed on `lo`
-    (`-d lo -E "udp dst port 9063"`).
-    - `-N` decoded the same traffic in full.
-  - `-I file --cores N -E` reported no calls.
-  - One rule, `pipeline::apply_hep_parse`, now runs on every path:
-    - headless
-    - `--cores`
-    - the TUI's capture thread
-    - a capture opened or re-scanned inside the TUI
-  - Reported by Giovanni Maruzzelli
-    ([@gmaruzz](https://github.com/gmaruzz)).
+  - Was: the TUI showed no dialogs for a proxy's HEP copy sniffed on `lo` (`-d lo -E "udp dst port 9063"`).
+  - Was: `-N` decoded the same traffic in full.
+  - Was: `-I file --cores N -E` reported no calls.
+  - Effect: HEP is unwrapped headless, under `--cores`, in the TUI's capture thread and in a capture opened or re-scanned inside the TUI.
+  - Credit: Reported by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)).
 - **A `--hep-send` run whose sender cannot start now fails with exit 2.**
-  - These cases used to be logged as an error while the run went on and
-    exited 0:
-    - an unreachable or untrusted collector
-    - a name that does not resolve
-  - So `sipnab -N -I capture.pcap --hep-send collector.example.com:9060 && echo forwarded` reported success
-    with nothing sent.
-  - `--metrics` and `--api` already refused the same way.
+  - Was: an unreachable or untrusted collector, or a name that does not resolve, was logged while the run went on and exited 0.
+  - Was: `sipnab -N -I capture.pcap --hep-send collector.example.com:9060 && echo forwarded` reported success with nothing sent.
+  - Effect: `--metrics` and `--api` already refused the same way.
 
 ### Changed
 
-- **The e2e test tooling takes proxy-addr 2.0.8 and compression 1.8.2.**
-  - `e2e/package-lock.json` is for Lighthouse CI only and is never shipped.
-  - It moves off two versions, both published 2026-10-05:
-    - proxy-addr 2.0.7 (GHSA-jqcg-44mw-7w3h, critical)
-    - compression 1.8.1 (GHSA-vc2v-76pw-4v95, high)
-  - sprintf-js 1.0.3 (GHSA-hp3w-g68c-fv3c) has no fixed release.
-    - `osv-scanner.toml` and the VEX document record it as not affecting
-      sipnab.
-    - sipnab does not contain it.
-
-- **The home page groups TFPS with fail2ban and gives rtpproxy its own map
-  item.**
-  - TFPS and fail2ban share the "Attack blocking" tile.
-    - In the same way, rtpengine and rtpproxy share "Media relay".
-  - The system map's relay entry is split.
-    - rtpproxy links to its own guide with `--rtpproxy-control`.
-  - The page no longer names other SIP capture tools.
-
+- **The home page groups TFPS with fail2ban and gives rtpproxy its own map item.**
+  - Effect: TFPS and fail2ban share the "Attack blocking" tile, as rtpengine and rtpproxy share "Media relay".
+  - Effect: the system map's rtpproxy entry links to its own guide with `--rtpproxy-control`.
 - **The TLS pairing rules run after the config file is read.**
-  - One half of a certificate/key pair stops the run with exit 2.
-    - The half can come from either the flags or the file.
-    - The error names the flag and the key for the missing half.
-  - The check covers every listener's keys, whether or not the run starts it.
-  - The same applies to `--hep-listen-transport tls` with no certificate or
-    key.
-  - `--hep-tls-cert` and `--hep-tls-key` no longer require each other on the
-    command line.
-
-    - The other half may be in `[hep]`.
-    - Each now requires `--hep-listen-transport`.
-- **The port-based BPF filter warning is not printed for a loopback
-  capture.**
-  - The warning that a port filter misses SIP inside VLAN, QinQ, PPPoE or
-    MPLS reads: "Your BPF filter is used as given and was not modified. Note
-    that a port-based filter is matched against the outer headers only: it
-    will not see SIP inside a VLAN tag, QinQ, PPPoE or MPLS, and the packets
-    are dropped in the kernel where no sipnab counter can report them. Drop
-    the filter to get sipnab's encapsulation-aware one, or add
-    --capture-tunnels for UDP-tunneled signaling."
-  - Loopback (`lo`, `lo0`) carries none of those.
-
-    - So on a capture of loopback only, the warning was wrong.
-  - Any other interface, `any`, or a mix keeps the warning.
-  - Reported by Giovanni Maruzzelli
-    ([@gmaruzz](https://github.com/gmaruzz)).
-- **The `metrics` feature depends on `rustls`**, for the metrics endpoint's
-  HTTPS.
-  - `metrics` is a default feature.
-  - So a default build now compiles rustls and ring.
-
+  - Effect: half a certificate/key pair, from flags or file, stops the run with exit 2, naming the flag and key of the missing half.
+  - Effect: the check covers every listener's keys, whether or not the run starts it, and `--hep-listen-transport tls` with no certificate or key.
+  - Effect: `--hep-tls-cert` and `--hep-tls-key` no longer require each other on the command line, since the other half may be in `[hep]`.
+  - Do: each now requires `--hep-listen-transport`.
+- **The port-based BPF filter warning is not printed for a loopback capture.**
+  - Was: the warning that a port filter misses SIP inside VLAN, QinQ, PPPoE or MPLS was printed for loopback (`lo`, `lo0`).
+  - Effect: loopback carries none of those; any other interface, `any`, or a mix keeps the warning.
+  - Docs: [A live capture that sees nothing](docs/troubleshooting.md#a-live-capture-that-sees-nothing).
+  - Credit: Reported by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)).
+- **The `metrics` feature depends on `rustls`, for the metrics endpoint's HTTPS.**
+  - Effect: `metrics` is a default feature, so a default build now compiles rustls and ring.
 - **Dependencies move to their latest compatible releases.**
-  - `jsonschema` 0.57.0 to 0.58.3.
-    - It is a test-only dependency.
-    - It checks vCon and MCP output against their schemas.
-  - `rmcp` 3.5.0.
-  - `tokio-rustls` 0.26.6.
-  - `smallvec` 1.16.2.
-  - The `wasm-bindgen` family 0.2.129.
-  - The fuzzing images' OSS-Fuzz Rust base.
-    - Both images use the same digest, so ClusterFuzzLite and OSS-Fuzz build
-      alike.
-  - osv.dev lists no advisory against any of the new versions.
+  - Effect: `rmcp` 3.5.0, `tokio-rustls` 0.26.6, `smallvec` 1.16.2 and the `wasm-bindgen` family 0.2.129.
+  - Effect: osv.dev lists no advisory against any of the new versions.
 
 ## [0.5.202] - 2026-10-03
 
 ### Added
 
 - **The homepage shows how sipnab fits together.**
-  - A map sits above the terminal animation.
-  - It lays out what sipnab reads:
-    - a live interface
-    - capture files
-    - HEP from OpenSIPS, Kamailio and rtpengine
-    - encrypted SIP
-    - tunnels
-    - media relays
-  - It lays out the four stages sipnab works through: unwrap, parse, track,
-    judge.
-  - It lays out where you read the answer:
-    - the terminal UI
-    - script output
-    - the REST API
-    - the MCP server for AI agents
-    - Prometheus
-    - HEP to Homer
-    - vCon
-  - It also lays out what sipnab can act on: alerts, fail2ban, TFPS bans.
-  - Each item links to its guide and names the flag that turns it on.
-  - The map is plain HTML.
-    - So it reads the same with scripting off, to a screen reader and to an
-      AI agent.
+  - Effect: a map above the terminal animation lays out what sipnab reads: a live interface, capture files, HEP, encrypted SIP, tunnels and media relays.
+  - Effect: it lays out the four stages sipnab works through (unwrap, parse, track, judge) and what sipnab can act on: alerts, fail2ban, TFPS bans.
+  - Effect: it lays out where you read the answer: the terminal UI, script output, the REST API, MCP, Prometheus, HEP to Homer and vCon.
+  - Effect: each item links to its guide and names the flag that turns it on; the map is plain HTML, readable with scripting off.
 - **sipnab honors `$XDG_CONFIG_HOME`.**
-  - The per-user config file is `$XDG_CONFIG_HOME/sipnab/sipnab.toml`.
-  - It is `~/.config/sipnab/sipnab.toml` only when that variable is unset,
-    empty or not an absolute path.
-    - The XDG Base Directory specification says so.
-  - Saves from the terminal UI follow it too.
+  - Effect: the per-user config file is `$XDG_CONFIG_HOME/sipnab/sipnab.toml`, and saves from the terminal UI follow it too.
+  - Limit: it is `~/.config/sipnab/sipnab.toml` only when that variable is unset, empty or not an absolute path, as the XDG Base Directory specification says.
 - **sipnab says when a config file is being ignored.**
-  - sipnab reads only the first config file it finds.
-  - So a setting in `~/.sipnabrc` did nothing while
-    `~/.config/sipnab/sipnab.toml` existed, and sipnab said nothing.
-  - Now, when more than one default location holds a file, sipnab names the
-    one it read and the ones it did not.
-  - It does so in three places:
-    - on stderr
-    - in `--dump-config` (`# Also present and NOT read:`)
-    - on the status line when the terminal UI opens
+  - Was: sipnab reads only the first config file it finds, so a setting in `~/.sipnabrc` did nothing while `~/.config/sipnab/sipnab.toml` existed.
+  - Effect: when more than one default location holds a file, sipnab names the one it read and the ones it did not.
+  - Effect: it does so on stderr, in `--dump-config` (`# Also present and NOT read:`) and on the status line when the terminal UI opens.
 
 ### Changed
 
 - **A misspelled `[media] listening_context` stops the run.**
-  - The valid values are `"monotic"` and `"diotic"`.
-    - Case and surrounding spaces do not matter.
-  - sipnab used to ignore any other value.
-    - `"monotic"` stayed in force, and sipnab said nothing.
-  - Startup now refuses such a value with an error naming the key.
+  - Was: sipnab ignored any value but `"monotic"` and `"diotic"`, and `"monotic"` stayed in force without a word.
+  - Effect: startup refuses such a value with an error naming the key; case and surrounding spaces do not matter.
 
 ### Fixed
 
 - **Saving from the terminal UI no longer hides your `~/.sipnabrc`.**
-  - Two saves always wrote `~/.config/sipnab/sipnab.toml`:
-    - the F10 column selector's `s`
-    - name edits under `[names] persist_to_config`
-  - That file comes before `~/.sipnabrc` in the search order.
-
-    - So after one saved layout, every later run loaded the new file.
-    - Those runs ignored every other setting in `~/.sipnabrc`.
-  - Under `--config` or `$SIPNAB_CONFIG`, the save went to a file the run
-    never read.
-  - Both saves now write the file the run loaded.
-    - They keep its comments and other settings.
-  - With no file loaded, they create the user config file as before.
-
-    - That is `$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default
-      `~/.config/sipnab/sipnab.toml`.
-  - When the settings came from `/etc/sipnab/sipnab.toml`, sipnab refuses the
-    save.
-    - It says why on the status line.
-    - The reason: a file of your own would hide every setting in it.
-
-- **The CLI and config references now say which flag and which key set the
-  same thing, for every pair.**
-  - 36 flag rows in the
-    [CLI reference](https://sipnab.com/docs/cli/) lacked the
-    `Config: [section] key` note their key needed.
-    - Among them: `--device`, `--portrange`, `--snaplen`, `--limit`
-      (`[limits] dialog_limit`) and `--no-promisc` (`[capture] promisc`).
-  - 28 key rows in the
-    [config reference](https://sipnab.com/docs/config/) never named their
-    flag.
-  - `[media] listening_context` had no row at all.
-  - Each key row now also says how its flag combines with it. The flag does
-    one of these:
-    - overrides it
-    - also turns it on
-    - adds to it
-    - forces it off
-  - A new table in the source pairs every flag with its key.
-  - Tests hold both references to that table.
-
-    - So the two cannot drift apart again.
+  - Was: the F10 column selector's `s` and name edits under `[names] persist_to_config` always wrote `~/.config/sipnab/sipnab.toml`.
+  - Was: that file comes first in the search order, so later runs ignored `~/.sipnabrc`; under `--config` or `$SIPNAB_CONFIG` the save went to an unread file.
+  - Effect: both saves write the file the run loaded, keeping its comments and other settings; with no file loaded they create the user config file.
+  - Limit: when the settings came from `/etc/sipnab/sipnab.toml`, sipnab refuses the save and says why on the status line.
+- **The CLI and config references say which flag and which key set the same thing.**
+  - Was: 36 flag rows of the CLI reference lacked their `Config: [section] key` note, among them `--limit` (`[limits] dialog_limit`) and `--no-promisc` (`[capture] promisc`).
+  - Was: 28 key rows of the config reference never named their flag, and `[media] listening_context` had no row at all.
+  - Effect: each key row says whether its flag overrides it, also turns it on, adds to it or forces it off.
+  - Docs: [CLI reference](https://sipnab.com/docs/cli/), [config reference](https://sipnab.com/docs/config/).
 
 ## [0.5.201] - 2026-10-02
 
 ### Added
 
 - **`[capture] hep_parse` and `[capture] bpf_filter` config keys.**
-  - The loopback HEP setup had two options with no key.
-  - These two can now live in `sipnab.toml`.
-    - So a bare `sipnab` reads a proxy's HEP mirror on `lo`.
-  - `hep_parse = true` does what `-E` does.
-  - `bpf_filter` is the capture filter that the trailing positional argument
-    sets.
-    - That argument or `--bpf-file` replaces it.
-  - When sipnab reads a capture file through a filter from the config, it
-    says so on stderr.
-
-    - So a file whose calls fall outside the filter does not read as empty.
-  - Requested by Giovanni Maruzzelli
-    ([@gmaruzz](https://github.com/gmaruzz)) in
-    [#343](https://github.com/NormB/sipnab/issues/343).
+  - Effect: `hep_parse = true` does what `-E` does, so a bare `sipnab` reads a proxy's HEP mirror on `lo`.
+  - Effect: `bpf_filter` is the capture filter the trailing positional argument sets; that argument or `--bpf-file` replaces it.
+  - Effect: sipnab says on stderr when it reads a capture file through a config filter, so a filtered file does not read as empty.
+  - Credit: Requested by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in [#343](https://github.com/NormB/sipnab/issues/343).
 
 ### Fixed
 
-- **The rtpengine guides now say what a real call through rtpengine shows.**
-  - Every block of two guides ran again:
-    - [Add rtpengine to your voice stack](https://sipnab.com/docs/rtpengine-relay/)
-    - [Let sipnab name rtpengine's media](https://sipnab.com/docs/rtpengine-sipnab/)
-  - The runs used clean Debian 13 and Ubuntu 24.04.
-    - The calls' audio crossed the relay.
-  - Each claim was checked against what the machines printed.
-  - Corrected:
-    - Step 4's capture ends with `No SIP signaling found`, not
-      `No SIP traffic found`.
-    - The four streams of step 3 are two PCMA and two PCMU.
-      - The reason: rtpengine converts between codecs for SIPp's PCMU-only
-        callee.
-
-    - With nothing listening at the `homer` address, rtpengine logs
-      `Write error to Homer` for each call.
-      - It does not log only `Connection error from Homer`.
-  - The [rtpengine reference](https://sipnab.com/docs/rtpengine/) restarted a
-    unit named `rtpengine`.
-    - A relay packaged from rtpengine's source tree does not have that unit.
-    - There it is `ngcp-rtpengine-daemon`.
+- **The rtpengine guides say what a real call through rtpengine shows.**
+  - Effect: every block of [Add rtpengine to your voice stack](https://sipnab.com/docs/rtpengine-relay/) and [Let sipnab name rtpengine's media](https://sipnab.com/docs/rtpengine-sipnab/) ran again on clean Debian 13 and Ubuntu 24.04.
+  - Was: step 4's capture was said to end with `No SIP traffic found`; it ends with `No SIP signaling found`.
+  - Effect: the four streams of step 3 are two PCMA and two PCMU, as rtpengine converts between codecs for SIPp's PCMU-only callee.
+  - Effect: with nothing listening at the `homer` address, rtpengine logs `Write error to Homer` for each call, not only `Connection error from Homer`.
+  - Was: the [rtpengine reference](https://sipnab.com/docs/rtpengine/) restarted a unit named `rtpengine`; a relay packaged from rtpengine's source tree has `ngcp-rtpengine-daemon`.
 
 ## [0.5.200] - 2026-10-01
 
 ### Changed
 
 - **The OpenSIPS and Kamailio guides' test calls now carry audio.**
-  - They used SIPp's `uac` scenario.
-    - That scenario sends SDP and no RTP.
-    - So sipnab never had media to show.
-  - The calls now play SIPp's G.711 sample (`uac_pcap`) to a callee that
-    echoes it.
-  - The guides and their sipnab pages ran again on Debian 13 and Ubuntu
-    24.04.
-    - The runs checked the audio on the wire.
-
-  - The runs moved the pages:
-    - The sipnab pages say what the report shows under the call: four RTP
-      streams, 236 `PCMA` and 10 `telephone-event` packets each way.
-    - They quote the `100` each proxy actually sends, not `100 Trying`:
-      - `100 Giving it a try`
-      - `100 trying -- your call is important to us`
-    - Their troubleshooting item quotes what sipnab prints when it sees the
-      call's audio but not its SIP, such as `No SIP signaling found, but 839 RTP packets across 2 stream(s) were parsed. Use --report to see stream details.`
-    - With both proxies on one machine, they say how the two calls' audio
-      shows.
-      - The audio is sent from the same ports with the same SSRC.
-      - It shows as one stream per direction.
+  - Was: they used SIPp's `uac` scenario, which sends SDP and no RTP, so sipnab never had media to show.
+  - Effect: the calls play SIPp's G.711 sample (`uac_pcap`) to a callee that echoes it; the guides ran again on Debian 13 and Ubuntu 24.04.
+  - Effect: the sipnab pages show four RTP streams, quote each proxy's actual `100`, not `100 Trying`, and quote sipnab's `No SIP signaling found` message.
+  - Limit: with both proxies on one machine, both calls' audio comes from the same ports with the same SSRC and shows as one stream per direction.
+  - Docs: [Watch a call through OpenSIPS](docs/opensips-sipnab.md#watch-a-call-through-opensips), [Watch a call through Kamailio](docs/kamailio-sipnab.md#watch-a-call-through-kamailio).
 
 ### Fixed
 
-- **The shipped fail2ban jail banned nobody on Debian 13 or Ubuntu 24.04.**
-  - `contrib/fail2ban/sipnab-jail.conf` banned with `iptables-allports`.
-  - Installing fail2ban on Debian 13 brings nftables, not the `iptables`
-    command. The result:
-    - fail2ban listed the scanner as banned.
-    - The ban action failed with `returned 127`.
-    - The scanner's traffic still got through.
-  - On Ubuntu 24.04 the jail named no `backend`.
-    - So the distribution's `backend = systemd` made it read the journal.
-    - It never read `/var/log/sipnab.log`.
-  - The jail now sets `backend = auto`.
-  - It bans with `nftables[type=allports]` on UDP and TCP.
-  - It shows the iptables action in a comment, for hosts that still ban with
-    iptables.
-  - It also bans after 5 detections within `findtime`, not 1.
-  - A test pins all three settings.
-  - [Feed fail2ban from sipnab](https://sipnab.com/docs/fail2ban-sipnab/) now
-    does three things:
-    - It installs the jail as shipped.
-    - It shows four detections not banning and the fifth banning.
-    - It has a tested section for the iptables action.
-  - The jail in
-    [Detect SIP scanners and auto-block via fail2ban](https://sipnab.com/docs/cookbook/#detect-sip-scanners-and-auto-block-via-fail2ban)
-    bans with nftables too.
-
-### Security
-
-- **The site-test tooling no longer pulls in a vulnerable `basic-ftp`.**
-  - CVE-2026-102990 (GHSA-c475-qrg2-pj4r, high) affects every `basic-ftp`
-    before 6.2.1.
-    - It is a quadratic-time denial of service in its directory-listing
-      parser.
-  - `e2e/package-lock.json` resolved 5.3.1 through the Lighthouse runner's
-    proxy agent.
-  - An `overrides` entry in `e2e/package.json` now resolves 6.2.1.
-  - Nothing here ships to a user: `e2e/` is build-time only.
+- **The shipped fail2ban jail bans on Debian 13 and Ubuntu 24.04.**
+  - Was: on Debian 13 its `iptables-allports` action failed with `returned 127`, for want of `iptables`, and the scanner's traffic still got through.
+  - Was: on Ubuntu 24.04 the jail named no `backend`, so it read the journal and never `/var/log/sipnab.log`.
+  - Effect: `contrib/fail2ban/sipnab-jail.conf` sets `backend = auto`, bans with `nftables[type=allports]` on UDP and TCP, and shows the iptables action in a comment.
+  - Effect: it bans after 5 detections within `findtime`, not 1; the cookbook's [scanner jail](docs/examples.md#detect-sip-scanners-and-auto-block-via-fail2ban) bans with nftables too.
+  - Docs: [Install sipnab's filter and jail](docs/fail2ban-sipnab.md#install-sipnabs-filter-and-jail), [Ban with iptables instead of nftables](docs/fail2ban-sipnab.md#ban-with-iptables-instead-of-nftables).
 
 ## [0.5.199] - 2026-10-01
 
 ### Added
 
 - **Two voice-stack guides for fail2ban.**
-  - [Ban SIP scanners with fail2ban](https://sipnab.com/docs/fail2ban/):
-    - OpenSIPS logs scanners and wrong passwords.
-    - fail2ban bans them with nftables.
-    - Meanwhile a phone keeps registering and calling.
-    - No sipnab is involved.
-  - [Feed fail2ban from sipnab](https://sipnab.com/docs/fail2ban-sipnab/):
-    - It runs sipnab's scanner and registration-flood detectors as a
-      service.
-    - fail2ban bans what they find, with `contrib/fail2ban`'s filter and
-      jail.
-    - It says what `--kill-scanner` sends back to a scanner: a `200 OK` from
-      the SIP server's address.
-    - It says that the contrib jail as shipped bans nobody on either system
-      tested:
-      - On Debian 13 its `iptables-allports` action fails for want of
-        `iptables`.
-      - On Ubuntu 24.04 it reads the journal instead of its log file.
-
-    - The page's `.local` override fixes both.
-  - Every block ran as written on clean Debian 13 and Ubuntu 24.04.
+  - Effect: [Ban SIP scanners with fail2ban](docs/fail2ban.md) has OpenSIPS log scanners and wrong passwords for fail2ban to ban with nftables, without sipnab.
+  - Effect: meanwhile a phone keeps registering and calling.
+  - Effect: [Feed fail2ban from sipnab](docs/fail2ban-sipnab.md) runs sipnab's scanner and registration-flood detectors as a service, banned through `contrib/fail2ban`'s filter and jail.
+  - Effect: it says `--kill-scanner` sends a scanner a `200 OK` from the SIP server's address, and every block ran on clean Debian 13 and Ubuntu 24.04.
+  - Limit: the page says the contrib jail as shipped bans nobody on either system tested; its `.local` override fixes both.
 
 ### Security
 
 - **Release tags are signed, and an unsigned tag cannot be pushed.**
-  - The `pre-push` gate now refuses a `v*` tag unless both are true:
-    - It is an annotated tag.
-    - It has a good SSH signature from a key in `.github/allowed_signers`.
-  - Tags v0.5.176 to v0.5.197 went out unsigned.
-    - The reason: `tag.gpgSign` was not set.
-  - The maintainer has re-signed every existing `v*` tag with the
-    maintainer's key.
-    - Each tag points at the same commit as before.
+  - Effect: every `v*` tag is annotated and carries a good SSH signature from a key in `.github/allowed_signers`.
+  - Was: tags v0.5.176 to v0.5.197 went out unsigned, because `tag.gpgSign` was not set.
+  - Effect: the maintainer re-signed every existing `v*` tag; each points at the same commit as before.
+  - Docs: [Hooks](docs/internals/build-ci-release.md#hooks).
 
 ## [0.5.198] - 2026-09-30
 
 ### Added
 
 - **Two voice-stack guides for rtpproxy.**
-  - [Add rtpproxy to your voice stack](https://sipnab.com/docs/rtpproxy-relay/):
-    - It installs rtpproxy 3.2.0 from the project's own packages.
-    - OpenSIPS or Kamailio anchors every call's media on it.
-    - A test call proves it: rtpproxy's own counters show it relaying the
-      audio.
-    - No sipnab is involved.
-  - [Let sipnab name rtpproxy's media](https://sipnab.com/docs/rtpproxy-sipnab/):
-    - sipnab names the media on the relay from rtpproxy's control traffic,
-      with `--rtpproxy-control`.
-    - It works beside the SIP proxy.
-    - It also works on the relay's own machine, where no SIP passes.
-  - Every command ran as written on clean Debian 13 and Ubuntu 24.04.
-    - The own-machine case ran on two machines.
-  - The home page's media relay tile links both.
+  - Effect: [Add rtpproxy to your voice stack](docs/rtpproxy-relay.md) installs rtpproxy 3.2.0 from the project's own packages, with no sipnab.
+  - Effect: OpenSIPS or Kamailio anchors every call's media on it, and rtpproxy's own counters show a test call's audio relayed.
+  - Effect: [Let sipnab name rtpproxy's media](docs/rtpproxy-sipnab.md) names the relay's media from its control traffic with `--rtpproxy-control`.
+  - Effect: that works beside the SIP proxy and on the relay's own machine, where no SIP passes; the home page's media relay tile links both.
+  - Effect: every command ran as written on clean Debian 13 and Ubuntu 24.04; the own-machine case ran on two machines.
 - **The Linux release binary is reproducible.**
-  - Building a release's tag gives the same bytes as the published `sipnab`
-    binary, given the same toolchain.
-  - Two builds of one commit used to differ:
-    - The embedded eBPF programs carried the build directory and the
-      builder's `$CARGO_HOME`.
-    - Their compiler was whatever `nightly` meant that day.
-  - The paths are now remapped.
-  - The eBPF nightly is pinned to a date.
-  - A weekly job builds twice in two directories and fails on any
-    difference.
-  - [Rebuild a release and compare it](docs/install.md#rebuild-a-release-and-compare-it)
-    shows how to check a download yourself.
-- **How to upgrade.**
-  - [docs/install.md](docs/install.md#upgrade-sipnab) now gives the upgrade
-    command for every install route:
-    - install script
-    - tarball
-    - `.deb`
-    - `.rpm` with `rpm -U`
-    - Homebrew
-    - cargo
-    - source
-    - Docker
-  - It says what survives an upgrade.
-  - It says when to rerun `--setup-caps` or restart the service.
+  - Effect: building a release's tag with the same toolchain gives the same bytes as the published `sipnab` binary.
+  - Was: the embedded eBPF programs carried the build directory and `$CARGO_HOME`, and were built with that day's `nightly`.
+  - Effect: the paths are now remapped and the eBPF nightly is pinned to a date.
+  - Docs: [Rebuild a release and compare it](docs/install.md#rebuild-a-release-and-compare-it).
+- **The install page says how to upgrade.**
+  - Effect: it gives the upgrade command for the install script, tarball, `.deb`, `.rpm` (`rpm -U`), Homebrew, cargo, source and Docker.
+  - Effect: it says what survives an upgrade, and when to rerun `--setup-caps` or restart the service.
+  - Docs: [Upgrade sipnab](docs/install.md#upgrade-sipnab).
 - **An assurance case.**
-  - [docs/assurance-case.md](docs/assurance-case.md) argues, with code
-    citations, how sipnab applies each secure-design principle.
-  - It answers each entry of the 2025 CWE Top 25.
-  - It names the gaps it found.
-- **Code review requirements** in
-  [CONTRIBUTING.md](CONTRIBUTING.md#code-review).
-  - Who reviews.
-  - How.
-  - What is checked.
-  - What a change needs before it merges.
+  - Effect: it argues, with code citations, how sipnab applies each secure-design principle, and answers each entry of the 2025 CWE Top 25.
+  - Effect: it names the gaps it found.
+  - Docs: [docs/assurance-case.md](docs/assurance-case.md).
+- **Code review requirements.**
+  - Effect: they say who reviews, how, what is checked, and what a change needs before it merges.
+  - Docs: [Code review](CONTRIBUTING.md#code-review).
 
 ### Security
 
 - **The raw `--kill-scanner` send sockets are opened close-on-exec.**
-  - sipnab opens them while it still has `CAP_NET_RAW`.
-  - It holds them until the scanner-kill worker process starts.
-  - They were opened without close-on-exec.
-    - So any program that sipnab or a library in it started during that time
-      inherited a raw send socket.
-  - Now they are closed at exec.
-  - The worker still gets its copies.
-  - A new log line is written once the capturing process has closed its own
-    copies:
-    `scanner-kill: this process closed its copies of the send descriptors handed to worker process <pid>`.
-    - It names each socket by inode.
-
-- **The REST API refuses a web page that rebinds its name to your server
-  (DNS rebinding, CWE-352).**
-  - A keyless API on loopback served any request that reached it.
-  - A page at `http://evil.example:8080/` could point `evil.example` at
-    `127.0.0.1`.
-    - Then, as a same-origin request from the victim's browser, it could read
-      `/v1/dialogs` or flip `POST /v1/persistence`.
-  - The API now checks the `Host` header before anything else runs.
-  - It accepts:
-    - `localhost`, `127.0.0.1`, `::1` and the bound address, on any port
-    - any IP address on a `0.0.0.0` or `::` bind
-    - names added with the new `--api-allowed-host` flag or
-      `[api] allowed_hosts` key
-  - Anything else gets `403` naming the host and the flag.
-  - A request with no `Host` gets `400`.
-  - `*` turns the check off.
-  - **Breaking for a deployment reached by a DNS name:**
-    - Add that name with `--api-allowed-host`.
-    - Or have the reverse proxy send `Host: 127.0.0.1`.
-- The MCP HTTP transport now uses the same `Host` rule.
-
-  - The rule is shared in one module.
-  - It replaces rmcp's built-in check.
-  - It also accepts the bound address (any IP address on a wildcard bind).
-  - It refuses a bad `Host` before the bearer check.
-    - So a rebound page learns nothing about the credential it lacks.
-  - The `403` body now names the host and `--mcp-allowed-host`.
-- **Two-factor authentication is now mandatory** for anyone with write
-  access to the repository or access to the project's credentials.
-  - It uses an authenticator app or a security key.
-  - SMS is not accepted
-    ([MAINTAINERS.md](MAINTAINERS.md#getting-commit-access), linked from
-    [SECURITY.md](SECURITY.md)).
+  - Was: sipnab opens them with `CAP_NET_RAW` and holds them until the scanner-kill worker starts; any program started meanwhile inherited one.
+  - Effect: they are now closed at exec, and the worker still gets its copies.
+  - Effect: the capturing process logs `scanner-kill: this process closed its copies of the send descriptors handed to worker process <pid>`.
+  - Effect: that line names each socket by inode.
+- **The REST API refuses a web page's DNS rebinding (CWE-352).**
+  - Was: a page at `http://evil.example:8080/` could point its name at `127.0.0.1` and read `/v1/dialogs` or flip `POST /v1/persistence`.
+  - Effect: the API checks `Host` first: `localhost`, `127.0.0.1`, `::1` and the bound address pass, any IP on a `0.0.0.0` or `::` bind.
+  - Effect: names added with `--api-allowed-host` or `[api] allowed_hosts` pass; others get `403` naming the host and flag; no `Host` gets `400`; `*` disables it.
+  - Do: a deployment reached by a DNS name adds it with `--api-allowed-host`, or has the reverse proxy send `Host: 127.0.0.1`.
+  - Docs: [Which `Host` names the API answers](docs/rest-api.md#which-host-names-the-api-answers).
+- **The MCP HTTP transport uses the same `Host` rule.**
+  - Effect: it also accepts the bound address (any IP address on a wildcard bind), in place of rmcp's built-in check.
+  - Effect: it refuses a bad `Host` before the bearer check, so a rebound page learns nothing about the credential it lacks.
+  - Effect: the `403` body names the host and `--mcp-allowed-host`.
+  - Docs: [Stop a browser reaching your server](docs/mcp-deploy.md#stop-a-browser-reaching-your-server---mcp-allowed-host).
+- **Two-factor authentication is mandatory for write access and the project's credentials.**
+  - Effect: it uses an authenticator app or a security key; SMS is not accepted.
+  - Docs: [Getting commit access](MAINTAINERS.md#getting-commit-access), linked from [SECURITY.md](SECURITY.md).
 
 ### Fixed
 
-- The Homebrew install command in [docs/install.md](docs/install.md) read
-  `brew install sipnab`.
-  - The formula lives in the tap.
-  - So it is now `brew install NormB/tap/sipnab`.
-- `THIRD-PARTY-NOTICES.md` now records three vendored items:
-  - the Mermaid script
-  - the Scalar script
-  - the vCon schema copy
-  - Each one has its version, source, license and hash.
+- **The Homebrew install command names the tap.**
+  - Was: [docs/install.md](docs/install.md) read `brew install sipnab`, but the formula lives in the tap.
+  - Effect: it is now `brew install NormB/tap/sipnab`.
+- **`THIRD-PARTY-NOTICES.md` records three vendored items.**
+  - Effect: the Mermaid script, the Scalar script and the vCon schema copy, each with its version, source, license and hash.
 
 ## [0.5.197] - 2026-09-30
 
 ### Added
 
 - **MCP tool bundles: load only the tools a client needs.**
-  - `--mcp-tools` now takes a comma-separated list of these:
-    - bundles: `core`, `signaling`, `captures`, `security`, `media`, `relay`,
-      `tfps`, `server`, `vcon`, `tls`
-    - single tool names
-    - your own bundles from `[mcp.bundles]`
-  - `full` stays the default.
-  - The list can also be set in the config file as `[mcp] tools`.
-    - The flag replaces it.
-  - An unknown or empty name refuses the run, exit 2.
-    - The error lists the valid bundles.
-  - The handshake names what was loaded and the bundles that were not.
-  - [Choosing which tools load](docs/mcp-tools.md#choosing-which-tools-load)
-    lists every bundle and what it costs a client.
-
-- **`max_capture_sources` sets how many capture sources sipnab remembers by
-  name.**
-
-  - Each of these takes one slot:
-    - input files
-    - the device
-    - HEP senders
-    - traced processes
-  - A slot is how a packet points back at its bytes.
-    - That is the `frame` field of `--json`, which `--show-frame` follows.
-  - Set it with `--max-capture-sources N` or `[limits] max_capture_sources`.
-    - Default 65536, floor 1.
-  - sipnab refuses to start, exit 2, when the limit cannot hold the input
-    files or device plus `max_tracked_peers` HEP senders.
-  - Past the limit, sipnab still analyzes a packet from a new source.
-
-    - That packet carries no frame pointer.
-    - sipnab warns once and counts it.
-  - The table is read-only on every surface:
-    - `sipnab_capture_sources`, `sipnab_capture_sources_max` and
-      `sipnab_capture_sources_refused_total` on `/metrics`
-    - `capture_sources` and `capture_sources_refused_total` in
-      `runtime_stats` and `GET /v1/runtime`
-    - `capture_sources` in MCP `capture_health`
+  - Effect: `--mcp-tools` takes a comma-separated list of bundles, single tool names and your own bundles from `[mcp.bundles]`.
+  - Effect: the bundles are `core`, `signaling`, `captures`, `security`, `media`, `relay`, `tfps`, `server`, `vcon` and `tls`; `full` stays the default.
+  - Effect: `[mcp] tools` sets the list in the config file, and the flag replaces it; the handshake names what loaded and what did not.
+  - Limit: an unknown or empty name refuses the run, exit 2, and the error lists the valid bundles.
+  - Docs: [Choosing which tools load](docs/mcp-tools.md#choosing-which-tools-load).
+- **`max_capture_sources` sets how many capture sources sipnab remembers by name.**
+  - Effect: each input file, device, HEP sender and traced process takes a slot, which the `--json` `frame` field uses to point back at its bytes.
+  - Do: set it with `--max-capture-sources N` or `[limits] max_capture_sources`; default 65536, floor 1.
+  - Limit: startup refuses, exit 2, when it cannot hold the inputs plus `max_tracked_peers` HEP senders; past it, a new source's packets carry no frame pointer.
+  - Effect: `/metrics`, `runtime_stats`, `GET /v1/runtime` and MCP `capture_health` show the table's size and refusals.
+  - Docs: [`[limits]`](docs/config-reference.md#limits).
 
 ### Changed
 
 - **Breaking: MCP output schemas are off by default.**
-  - `tools/list` no longer carries each tool's `outputSchema`.
-  - This cut what every tool costs a client from 181,691 bytes to 78,920
-    (measured on 0.5.196).
-  - MCP makes output schemas optional.
-  - Every response still carries the same JSON as text and as
-    `structuredContent`.
-  - A client that validates responses against the declared shape turns them
-    back on with `--mcp-output-schemas` or `[mcp] output_schemas = true`.
-
-- **CI's feature matrix runs on the project's own runners, and the pre-push
-  hook no longer repeats it.**
-  - The Features job builds every reduced combination on the aarch64
-    self-hosted runners.
-    - It no longer uses GitHub's hosted queue.
-
-  - Some steps assume a disposable VM. They now run only on hosted runners:
-    - freeing disk by deleting preinstalled software
-    - restoring and uploading the cargo cache
-  - `python3 scripts/check-feature-matrix.py` still builds the whole matrix by
-    hand before a push.
-  - The hook keeps its reduced-combination check.
-- **The pre-push corpus gate builds without LTO.**
-  - It built under the `profiling` profile.
-
-    - That profile inherits release's full LTO and single codegen unit.
-    - So the 21 corpus test binaries took 827 s to rebuild after any library
-      change.
-  - A new `[profile.corpus]` keeps what the gate needs:
-    - the optimization
-    - the unwinding the gate needs to name a failing test
-  - It drops LTO.
-    - Rebuild: 83 s.
-    - The run takes 174 s instead of 161 s.
-  - About twelve minutes come off every push that changes the library.
-
+  - Effect: `tools/list` no longer carries each tool's `outputSchema`; what every tool costs a client fell from 181,691 bytes to 78,920 (measured on 0.5.196).
+  - Effect: MCP makes output schemas optional, and every response still carries the same JSON as text and as `structuredContent`.
+  - Do: a client that validates responses against the declared shape sets `--mcp-output-schemas` or `[mcp] output_schemas = true`.
 - **`--pcap-export-mode decrypted` works.**
-  - It has exited 2 since 0.5.181.
-    - That release made it refuse, because it used to embed TLS keys while
-      the docs promised plaintext.
-  - It now writes what sipnab decrypted as plaintext, and no key material:
-    - SIP from TLS and WSS as one plain TCP frame per message
-    - SRTP as plain RTP with the authentication tag removed
-    - both on the captured addresses, ports and capture times
-    - everything else as captured
-  - The rebuilt frames replace a decrypted TLS connection's captured segments.
-    - Their sequence numbers run on.
-    - So a stream reassembler reads the SIP in order.
-  - Frames wait up to 5 s of capture time for a late decryption.
-    - They leave in capture order.
-    - A stop discards what is still waiting.
-  - PCAP-NG exports say they were decrypted, in the section comment.
-    - They name each rebuilt frame's source.
-
-  - The run ends with a line of counts.
-  - The TUI's live `-O` rewrites SRTP only.
-    - The reason: the TUI does not decrypt TLS.
-  - The file can hold readable signaling and listenable audio.
+  - Was: it has exited 2 since 0.5.181, the release that made it refuse because it embedded TLS keys while the docs promised plaintext.
+  - Effect: it writes plaintext and no key material: SIP from TLS and WSS as one TCP frame per message, SRTP as RTP without the tag.
+  - Effect: rebuilt frames keep the captured addresses, ports and times, and wait up to 5 s for a late decryption; PCAP-NG exports name their source.
+  - Limit: the TUI's live `-O` rewrites SRTP only, as the TUI does not decrypt TLS; a stop discards frames still waiting.
+  - Docs: [Write the decrypted call to a file](docs/tls-capture.md#write-the-decrypted-call-to-a-file).
 
 ### Fixed
 
 - **An output file sipnab cannot create now says why.**
-  - These reported only `Failed to create output file '<path>'`:
-    - `-O`
-    - a `--split` file created mid-run
-    - a TUI pcap or WAV save
-  - That message dropped the operating system's reason
-    (`Permission denied`, `No such file or directory`).
-  - The whole cause now follows the path.
-  - Sometimes the reason is `Permission denied` and sipnab had dropped
-    privileges. Then the line also names:
-    - the user sipnab runs as
-    - three ways out:
-      - make the directory writable by that user
-      - pass `--user`
-      - pass `--no-priv-drop`
-  - Run as root, sipnab creates output files after the drop.
-    - By default it runs as `nobody` then.
-    - So a `root:root` `0755` directory refused them, and nothing said so.
-  - [An output file sipnab cannot create](docs/troubleshooting.md#an-output-file-sipnab-cannot-create).
+  - Was: `-O`, a `--split` file created mid-run and a TUI pcap or WAV save reported only `Failed to create output file '<path>'`.
+  - Effect: the operating system's reason (`Permission denied`, `No such file or directory`) now follows the path.
+  - Effect: after a privilege drop the `Permission denied` line names the user and three ways out: a writable directory, `--user` or `--no-priv-drop`.
+  - Was: run as root, sipnab creates output files as `nobody` after the drop, so a `root:root` `0755` directory refused them silently.
+  - Docs: [An output file sipnab cannot create](docs/troubleshooting.md#an-output-file-sipnab-cannot-create).
 - **The media tools now find a call on a media-relay host.**
-  - A relay sees the RTP and its own control traffic, never the SIP.
-    - So its dialog store is empty.
-    - Its streams still carry the Call-ID the relay named.
-  - `rtp_stats`, `media_diagnostics`, `explain_attribution` and
-    `export_audio` looked the Call-ID up among the dialogs first.
-    - So on such a host every call was "not found".
-  - `GET /v1/dialogs/{call_id}/audio` answered 404 the same way.
-  - They now answer from the streams when no dialog is held.
-  - The MCP answers carry `dialog_seen: false` and a `dialog_absent` object.
-    - Its `reason` and `note` are the ones `reconcile_orphans` uses.
-  - The REST route sends a `Sipnab-Dialog-Seen` header.
-  - sipnab still refuses a Call-ID that neither a dialog nor any stream
-    carries.
-    - The message now names both searches:
-      `no SIP dialog and no RTP stream associated with call_id 'no-such-call@192.0.2.1' in this capture`.
-  - The SIP-only tools still need the dialog.
-  - See [`rtp_stats`](docs/mcp-tools-core.md#rtp_stats).
-- **A HEP listener or uprobe capture no longer grows memory with every
-  packet.**
-  - Each packet's source label (`capture_id@address`, `uprobe:comm/pid`) was
-    built fresh and stored again.
-  - So the table of source names grew with the packet count.
-    - It should grow with the number of senders.
-  - sipnab now stores each name once.
-  - `max_capture_sources` bounds the table.
+  - Was: `rtp_stats`, `media_diagnostics`, `explain_attribution`, `export_audio` and `GET /v1/dialogs/{call_id}/audio` found no call where no SIP passes.
+  - Effect: they answer from the streams; MCP adds `dialog_seen: false` and `dialog_absent`, and REST a `Sipnab-Dialog-Seen` header.
+  - Limit: a Call-ID no dialog or stream carries is refused with `no SIP dialog and no RTP stream associated with call_id 'no-such-call@192.0.2.1' in this capture`.
+  - Limit: the SIP-only tools still need the dialog.
+  - Docs: [`rtp_stats`](docs/mcp-tools-core.md#rtp_stats).
+- **A HEP listener or uprobe capture no longer grows memory with every packet.**
+  - Was: each packet's source label (`capture_id@address`, `uprobe:comm/pid`) was stored again, so the table grew with the packet count.
+  - Effect: sipnab stores each name once, and `max_capture_sources` bounds the table.
 - **A build in a git worktree no longer rebuilds everything every time.**
-
-  - The build script watched three paths so that a new commit re-stamps
-    `sipnab --version`:
-    - `.git/HEAD`
-    - `.git/packed-refs`
-    - the branch's ref file
-  - In a linked worktree, `.git` is a file that names the real git directory.
-    - So none of those paths existed.
-  - cargo treats a missing watched path as changed.
-    - So every cargo command re-ran the build script.
-    - It rebuilt sipnab and all of its test binaries.
-  - A second `cargo test --no-run` with nothing changed took 95 s.
-    - It now takes 1 s.
-  - The script now follows `.git` to the worktree's own directory and the
-    shared one.
-  - It watches only files that exist.
-    - This also fixes a clone that has never packed its refs.
-- **The pre-commit hook runs the test binaries side by side.**
-  - `cargo test` runs the suite's ~355 test binaries one at a time.
-
-    - So the hook's test step kept one core busy on a 14-core machine:
-      314 s.
-  - It now goes through `scripts/parallel-tests.py`.
-    - cargo hands each binary to a recording runner.
-    - The script then runs the recordings in a pool.
-    - Result: 58 s, with the same 358 result lines and 10412 passes.
-  - Every binary runs even after one fails.
-    - So one run shows every failure.
-
-  - `SIPNAB_TEST_JOBS` sets the pool size.
-    - `1` runs them one at a time.
-
-  - The hang watchdog now reaches the test binaries under the pool.
-- **The pre-commit hook's own test harness passes again, and CI runs it.**
-  - `scripts/test-pre-commit.sh` was 33 passed, 5 failed on `main`.
-    - Its sandbox copied a hand-kept list of the hook's Python gates.
-    - The list had gone stale.
-    - The hook died before reaching the gates that four scenarios test.
-  - The list now comes from the hook itself.
-  - The `Git hook scenarios` CI job runs the harness beside the pre-push one.
-- **A git hook from another checkout refuses to run.**
-  - `core.hooksPath` was set to an absolute path into one checkout.
-    - So that checkout's branch's hooks gated a commit in any worktree.
-
-  - On 2026-09-29 that was a branch whose pre-commit lacked the
-    `sipnab-bpf-types` step.
-    - Commits on `main` went through without it.
-  - Both hooks now check first that they are the tree's own.
-  - Otherwise they exit and name the fix:
-    `git config core.hooksPath .githooks`.
-  - `SIPNAB_HOOK_ANY_TREE=1` turns the check off, and says so.
-- **The two slowest test binaries overlap their waits.**
-  - In `config_wiring_test`, three `[limits]` probes each prove an absence.
-
-    - Each waits out a whole observation window, about 10 s apiece.
-    - They ran one after another.
-    - They now run on their own threads while the other probes run.
-    - The test takes 10.2 s instead of 37.7 s.
-  - `doc_commands_run_test` ran its 313 documented commands one at a time.
-
-    - They now run on a few threads: 6.2 s instead of 22.7 s.
-  - Each command also gets a home directory of its own inside its sandbox
-    directory.
-    - They inherited the real `HOME`.
-    - So a local config could change what the gate saw.
-- **`crash_test` resolves a crash report's frames in one symbolizer run.**
-  - Each `addr2line` run loads the whole 184 MB debug binary.
-  - So one call per frame made it the slowest test binary, at 55.8 s.
-  - It now takes about 9 s.
+  - Was: the build script watched `.git` paths that do not exist in a linked worktree, so every cargo command rebuilt sipnab and its tests.
+  - Effect: it follows `.git` to the worktree's own and the shared git directory, and watches only files that exist.
+  - Effect: this also fixes a clone that has never packed its refs.
 
 ## [0.5.196] - 2026-09-29
 
 ### Added
 
-- **sipnab records the actions it takes on other systems, and can undo
-  them.**
-  - sipnab writes every ban and unban it asks TFPS for to an actions journal.
-    - It writes the action before TFPS is asked.
-    - It writes the outcome after.
-  - The journal is in `/var/lib/sipnab/journal` by default.
-    - Or set `--journal-dir` / `[journal] dir`.
-  - After a restart or a crash, sipnab knows three things:
-    - which bans are its own
-    - what was in flight
-      - It asks TFPS and settles it before any new action.
-    - how much of each rate limit is spent
-  - `sipnab --journal-show` prints what the journal holds.
-  - `sipnab --revert-actions all` or `--revert-actions <id>` lifts bans sipnab
-    placed.
-    - It works with actions switched off.
-  - Over REST, `POST /v1/actions/revert` does the same.
-  - Over MCP, the new `actions_revert` tool does the same.
-  - Once a minute, sipnab checks its bans against TFPS.
-    - TFPS forgets manual bans when it restarts.
-    - sipnab stops counting a ban TFPS dropped as its own.
-  - The packaged unit gains `StateDirectory=sipnab`.
-    - It is the one directory the hardened service may write.
-
+- **sipnab records the actions it takes on other systems, and can undo them.**
+  - Effect: every ban and unban it asks TFPS for goes to an actions journal, the action before TFPS is asked and the outcome after.
+  - Effect: after a restart or crash it knows its own bans, settles what was in flight with TFPS before acting, and keeps rate-limit spend.
+  - Do: the journal is `/var/lib/sipnab/journal` by default, or set `--journal-dir` / [`[journal] dir`](docs/config-reference.md#journal); the packaged unit gains `StateDirectory=sipnab`.
+  - Effect: `--journal-show` prints it; `--revert-actions all` or `<id>`, `POST /v1/actions/revert` and MCP `actions_revert` lift sipnab's bans, even with actions off.
+  - Effect: once a minute sipnab checks its bans against TFPS, which forgets manual bans on restart, and stops counting a dropped one.
 - **Rules and rate limits on every action.**
-  - sipnab never bans these addresses:
-    - `0.0.0.0`
-    - broadcast
-    - loopback
-    - multicast
-  - Every ban expires.
-    - An hour, unless the caller says otherwise.
-    - 7 days at most.
-  - Rate limits:
-    - at most 10 actions a minute for the server
-    - 5 for one caller
-    - one per address a minute
-  - A refusal says when to retry (`429` with `Retry-After` over REST).
-  - `[action_limits]` changes them.
-  - None can be turned off.
-- **`--allow-action TARGET:SURFACE` and `[actions]`** enable an action per
-  target and surface.
-  - `--token-scope actions` mints the only token that may act.
-
-- **`--rtpproxy-control ADDR:PORT` names the calls rtpproxy's media belongs
-  to.**
-  - sipnab decoded rtpproxy's control protocol, but nothing in the binary
-    used it.
-    - So sipnab reported media relayed by rtpproxy as orphaned.
-  - With this flag, sipnab reads two things on that one socket:
-    - the SIP proxy's commands
-    - rtpproxy's replies
-  - It pairs them and names each relayed stream's call.
-  - The names appear in these places:
-    - the report
-    - the TUI, including a capture opened inside it
-    - under `--cores`
-  - It is passive.
-    - rtpproxy has no command that lists its sessions.
-    - So sipnab never asks it anything.
-  - sipnab never names recording streams as a call's media.
+  - Effect: sipnab never bans `0.0.0.0`, broadcast, loopback or multicast addresses.
+  - Effect: every ban expires: an hour unless the caller says otherwise, 7 days at most.
+  - Limit: at most 10 actions a minute for the server, 5 for one caller, one per address a minute; none can be turned off.
+  - Effect: a refusal says when to retry (`429` with `Retry-After` over REST), and `[action_limits]` changes the limits.
+  - Docs: [`[action_limits]`](docs/config-reference.md#action_limits).
+- **`--allow-action TARGET:SURFACE` and `[actions]` enable an action per target and surface.**
+  - Effect: `--token-scope actions` mints the only token that may act.
+- **`--rtpproxy-control ADDR:PORT` names the calls rtpproxy's media belongs to.**
+  - Was: sipnab decoded rtpproxy's control protocol but nothing used it, so media relayed by rtpproxy was reported as orphaned.
+  - Effect: sipnab reads the proxy's commands and rtpproxy's replies on that socket, pairs them, and names each relayed stream's call.
+  - Effect: the names appear in the report, the TUI (a capture opened inside it included) and under `--cores`.
+  - Limit: it is passive, as rtpproxy has no command that lists its sessions; recording streams are never named as a call's media.
+  - Docs: [Let sipnab name rtpproxy's media](docs/rtpproxy-sipnab.md).
 
 ### Changed
 
-- **Breaking: sipnab changes no system outside itself unless you enable
-  it.**
-  - These used to run `tfps_ctl` for any credential that could read:
-    - `POST /v1/tfps/ban` and `/unban`
-    - the `tfps_ban` and `tfps_unban` MCP tools
-  - They now refuse unless both are true:
-    - The server was started with `--allow-action tfps:rest` (or
-      `tfps:mcp`).
-    - The caller holds a token minted with `--token-scope actions`.
-  - A `full` token or a static `--api-key` reads everything and acts on
-    nothing.
-  - With an action enabled, sipnab needs a journal directory it can use.
-    - It refuses to start without one.
+- **Breaking: sipnab changes no system outside itself unless you enable it.**
+  - Was: `POST /v1/tfps/ban` and `/unban` and the MCP `tfps_ban` and `tfps_unban` tools ran `tfps_ctl` for any credential that could read.
+  - Effect: they refuse unless the server runs with `--allow-action tfps:rest` (or `tfps:mcp`) and the caller's token has `--token-scope actions`.
+  - Effect: a `full` token or a static `--api-key` reads everything and acts on nothing.
+  - Limit: with an action enabled, sipnab refuses to start without a journal directory it can use.
 - **Breaking: ban and unban answer with the action, not TFPS's raw reply.**
-  - The answer is `{"id", "applied", "refused"}`.
-    - `id` names the action in the journal.
-  - An unban lifts only a ban sipnab placed and still holds.
-    - Otherwise: `409`, or an MCP error result.
-  - sipnab refuses `ttl_secs: 0` rather than banning forever.
-  - With no TFPS installed, sipnab refuses a ban as one TFPS could not be
-    asked about (`502`).
-    - It no longer answers `installed: false`.
+  - Effect: the answer is `{"id", "applied", "refused"}`, where `id` names the action in the journal.
+  - Limit: an unban lifts only a ban sipnab placed and still holds; otherwise `409`, or an MCP error result.
+  - Limit: sipnab refuses `ttl_secs: 0` rather than banning forever.
+  - Effect: with no TFPS installed, a ban is refused as one TFPS could not be asked about (`502`), not `installed: false`.
 - **The home page's voice-stack tiles name the role, not the product.**
-  - The OpenSIPS and Kamailio tile is headed "SIP proxy".
-  - The rtpengine tile is headed "Media relay".
-    - It has the same pair of links as the proxy tile: "Use rtpengine" and
-      "Run sipnab beside it".
-  - The rest follow:
-    - Homer's tile is "Call history".
-    - Prometheus's is "Metrics".
-    - TFPS's is "Attack blocking".
-    - The vCon server's is "Call records".
-    - Each keeps its own pair of links: "Add Homer" and "Connect sipnab to it", "Add Prometheus and Grafana" and "Add sipnab's metrics", "Add TFPS" and "Let sipnab see and control it", "Add a vCon server" and "Send sipnab's vCons to it".
-  - Every tile's text now reads as working together:
-    - Each voice-stack tile says what its project does and how sipnab works
-      beside it.
-    - The Inspect, Diagnose and Export tiles say how sipnab helps you and
-      your team.
+  - Effect: the tiles are "SIP proxy", "Media relay", "Call history", "Metrics", "Attack blocking" and "Call records", each with its pair of links.
+  - Effect: each tile says what its project does and how sipnab works beside it; Inspect, Diagnose and Export say how sipnab helps your team.
 
 ### Fixed
 
 - **The home page no longer says sipnab asks rtpproxy for its counters.**
-  - sipnab asks rtpengine only.
-  - With rtpproxy, it reads the control traffic and asks nothing.
-  - Some pages said sipnab "never bans anything". They now say what is true:
-    - It never decides a ban itself.
-    - It asks TFPS only when an operator asks and `--allow-action` enables
-      it.
-- **The home page's Homer tile shows its colored top trim without a
-  hover.**
-  - It was the only tile without a color.
-
-    - So its trim was blank until the pointer was over it.
-    - Then it was white.
-  - A test now checks that every tile has one.
-
-### Security
-
-- The end-to-end browser tests' `ip-address` dependency moves from 10.5.0 to
-  10.7.2.
-  - This moves past two advisories published on 2026-09-28:
-    - GHSA-rpw4-54j3-4h4q
-    - GHSA-2vr4-cq9g-pvrc
-    - Both are fixed in 10.5.1.
-  - It is a test-harness dependency.
-  - Nothing in sipnab's binary or site uses it.
+  - Effect: sipnab asks rtpengine only; with rtpproxy it reads the control traffic and asks nothing.
+  - Was: some pages said sipnab "never bans anything".
+  - Effect: they now say it never decides a ban itself, and asks TFPS only when an operator asks and `--allow-action` enables it.
+- **The home page's Homer tile shows its colored top trim without a hover.**
+  - Was: it was the only tile without a color, so its trim was blank until the pointer was over it, and then white.
 
 ## [0.5.195] - 2026-09-28
 
 ### Changed
 
-- **Every step of the fourteen voice-stack guides ran as written on clean
-  Debian 13 and Ubuntu 24.04 machines**, including their troubleshooting
-  items and uninstall steps.
-  - The runs moved the guides:
-    - Putting rtpengine, Homer, Prometheus or the vCon server on its own
-      machine is now a set of commands.
-      - Each ran across two machines.
-    - The pages now wait for four things that each lost a race on some run:
-      - the vCon server's database
-      - the recorder
-      - Homer's first capture
-      - Prometheus's first scrape
-    - Troubleshooting items quote what the software prints.
-    - The TFPS guides build TFPS from `master` at `984577dc`.
-      - That is the first commit with `tfps_ctl --json`.
-      - This holds until a release carries it.
-    - The OpenSIPS and Kamailio guides explain the apt lock that unattended
-      upgrades hold on a new machine.
-    - Each page's "Tested on" section names the machines and the sections
-      they covered.
-
-### Fixed
-
-- Four code comments said `xcid_headers` defaults to `X-Call-ID`.
-  - It defaults to empty, as the configuration reference says.
+- **Every step of the fourteen voice-stack guides ran on clean Debian 13 and Ubuntu 24.04.**
+  - Effect: troubleshooting items and uninstall steps ran too; putting rtpengine, Homer, Prometheus or the vCon server on its own machine is now commands.
+  - Effect: the pages wait for the vCon server's database, the recorder, Homer's first capture and Prometheus's first scrape, which each lost a race once.
+  - Effect: troubleshooting items quote what the software prints, and each page's "Tested on" section names the machines and sections they covered.
+  - Limit: the TFPS guides build TFPS from `master` at `984577dc`, the first commit with `tfps_ctl --json`, until a release carries it.
+  - Effect: the OpenSIPS and Kamailio guides explain the apt lock that unattended upgrades hold on a new machine.
 
 ## [0.5.194] - 2026-09-28
 
 ### Added
 
 - **Two guides for the SIP server the voice-stack guides build on.**
-  - [Use OpenSIPS as your voice stack's SIP server](https://sipnab.com/docs/opensips/):
-    - It installs OpenSIPS 4.0 from the OpenSIPS project's packages, or
-      builds it from source.
-    - It sets it up as a proxy that stays in each call's path.
-    - It proves it with a test call.
-  - [Use Kamailio as your voice stack's SIP server](https://sipnab.com/docs/kamailio/)
-    does the same with Kamailio 6.1 from the Kamailio project's packages.
-  - Each has a sipnab companion:
-    - [Run sipnab beside OpenSIPS](https://sipnab.com/docs/opensips-sipnab/)
-    - [Run sipnab beside Kamailio](https://sipnab.com/docs/kamailio-sipnab/)
-  - Each has a section for running both proxies on one machine:
-    - OpenSIPS on 5060
-    - Kamailio on 5062
-    - sipnab with `--portrange 5060-5062`
-  - Every command ran as written on clean Debian 13 and Ubuntu 24.04
-    machines.
-  - The home page's voice-stack section links all four.
+  - Effect: [Use OpenSIPS as your voice stack's SIP server](docs/opensips.md) installs OpenSIPS 4.0 from its packages or source, as a proxy in each call's path.
+  - Effect: [Use Kamailio as your voice stack's SIP server](docs/kamailio.md) does the same with Kamailio 6.1 from its project's packages; each proves it with a test call.
+  - Effect: each has a sipnab companion, [Run sipnab beside OpenSIPS](docs/opensips-sipnab.md) and [Run sipnab beside Kamailio](docs/kamailio-sipnab.md).
+  - Effect: each runs both proxies on one machine: OpenSIPS on 5060, Kamailio on 5062, sipnab with `--portrange 5060-5062`.
+  - Effect: every command ran as written on clean Debian 13 and Ubuntu 24.04; the home page's voice-stack section links all four.
 
 ### Changed
 
-- **Every voice-stack guide now serves four readers:**
-  - one with no SIP server yet
-  - one already running OpenSIPS (from the packages or built from source)
-  - one running Kamailio
-  - one running both
-  - Each add-on guide has a "Before you start" section. It does three things:
-    - It names the steps to skip.
-    - It finds the OpenSIPS configuration and module directory of either
-      install.
-    - It says which module package the OpenSIPS packages need.
-  - The rtpengine, Homer and Prometheus guides each have a "With Kamailio"
-    section.
-    - Each has a configuration that ran: Kamailio's `rtpengine`, `siptrace`
-      and `xhttp_prom` modules.
-  - TFPS needs nothing from the proxy and says so.
-  - Their titles drop "OpenSIPS".
+- **Every voice-stack guide now serves four readers.**
+  - Effect: one with no SIP server yet, one running OpenSIPS (packages or source), one running Kamailio, and one running both.
+  - Effect: each add-on guide's "Before you start" names the steps to skip, finds either OpenSIPS install's configuration and module directory, and names the module package.
+  - Effect: the rtpengine, Homer and Prometheus guides each have a "With Kamailio" section with a configuration that ran.
+  - Effect: TFPS needs nothing from the proxy and says so, and the titles drop "OpenSIPS".
 - **The vCon server guide states Kamailio's gap plainly.**
-  - Kamailio has no SIPREC module, in 6.1 or on its development branch.
-    - So it cannot record calls into vcon-server.
-
-  - [Send sipnab's vCons to a vCon server](https://sipnab.com/docs/vcon-sipnab/)
-    is how a Kamailio stack gets vCons.
-  - Its new Kamailio section ran with Kamailio.
+  - Limit: Kamailio has no SIPREC module, in 6.1 or on its development branch, so it cannot record calls into vcon-server.
+  - Effect: [Send sipnab's vCons to a vCon server](docs/vcon-sipnab.md) is how a Kamailio stack gets vCons; its new Kamailio section ran with Kamailio.
 
 ### Fixed
 
-- **Guide steps that failed, or passed by luck, on a reader's machine.**
-
-  - Running each guide as written on a clean virtual machine found them:
-    - The source build's `/usr/local/etc/opensips` is readable by root
-      alone.
-
-      - So a configuration lookup run as the reader found nothing.
-      - It now runs under `sudo`.
-    - `systemctl enable --now` left an already-running sipnab on its old
-      flags after a drop-in changed.
-      - The Prometheus guide's next line then waited forever for the new
-        metrics port.
-      - The sipnab guides now `enable`, then `restart`.
-    - Homer's and the vCon server's first test found nothing. It queried
-      too early:
-      - before heplify-server had created its tables
-      - or before the conserver's worker had started
-      - Both now wait for them.
-    - With both proxies on one machine, a wider capture filter alone gave
-      sipnab no vCons for Kamailio's calls.
-      - sipnab reads SIP only on its `--portrange`.
-      - The guide sets both.
-- **The OpenSIPS and Kamailio guides' troubleshooting now quotes what the
-  software says.**
-  - Causing each fault they describe showed three wrong:
-    - Kamailio 6.1 reports a function with no module loaded as
-      `parse error in config file` and `unknown command, missing loadmodule?`.
-      - It does not say `bad config file`.
-    - `opensips-cli`'s error for OpenSIPS 3's command name does not list the
-      accepted names.
-    - SIPp can report a call through Kamailio as successful when its `BYE`
-      got no answer.
-      - The page now explains this.
-  - Every block of the four SIP server guides ran as written on clean Debian
-    13 and Ubuntu 24.04 machines, uninstall included.
+- **Guide steps that failed, or passed by luck, on a clean machine.**
+  - Was: a source build's `/usr/local/etc/opensips` is readable by root alone, so the configuration lookup found nothing; it now runs under `sudo`.
+  - Was: `systemctl enable --now` left a running sipnab on its old flags after a drop-in changed; the sipnab guides now `enable`, then `restart`.
+  - Was: Homer's and the vCon server's first test queried before heplify-server's tables or the conserver's worker existed; both now wait.
+  - Was: with both proxies on one machine, a wider capture filter alone gave no vCons for Kamailio's calls; the guide also sets `--portrange`.
+- **The OpenSIPS and Kamailio guides' troubleshooting now quotes what the software says.**
+  - Was: Kamailio 6.1 reports a function with no module loaded as `parse error in config file` and `unknown command, missing loadmodule?`, not `bad config file`.
+  - Was: the pages said `opensips-cli`'s error for OpenSIPS 3's command name lists the accepted names; it does not.
+  - Effect: the page explains that SIPp can report a call through Kamailio as successful when its `BYE` got no answer.
+  - Effect: every block of the four SIP server guides ran on clean Debian 13 and Ubuntu 24.04, uninstall included.
 
 ## [0.5.193] - 2026-09-27
 
 ### Added
 
 - **Two voice-stack guides for Prometheus and Grafana.**
-  - [Add Prometheus and Grafana to an OpenSIPS voice stack](https://sipnab.com/docs/prometheus/):
-    - It builds OpenSIPS with its `httpd` and `prometheus` modules.
-    - It runs Prometheus and Grafana.
-    - It watches a test call move OpenSIPS's dialog counter.
-    - No sipnab is involved.
-  - [Add sipnab's metrics to Prometheus](https://sipnab.com/docs/prometheus-sipnab/):
-    - It runs sipnab as a service with its metrics on a port beside
-      Prometheus's.
-    - It scrapes it.
-    - It imports `contrib/grafana`'s dashboard.
-  - Every command ran as written on clean Debian 13 and Ubuntu 24.04.
+  - Effect: [Add Prometheus and Grafana](docs/prometheus.md) builds OpenSIPS with `httpd` and `prometheus`, runs both, and watches a test call move OpenSIPS's dialog counter, without sipnab.
+  - Effect: [Add sipnab's metrics to Prometheus](docs/prometheus-sipnab.md) runs sipnab as a service with metrics beside Prometheus, scrapes it, and imports `contrib/grafana`'s dashboard.
+  - Effect: every command ran as written on clean Debian 13 and Ubuntu 24.04.
 - **Two voice-stack guides for Homer.**
-  - [Add Homer to an OpenSIPS voice stack](https://sipnab.com/docs/homer/):
-    - It runs heplify-server, homer-app and PostgreSQL.
-    - OpenSIPS sends every call to Homer over HEP.
-    - It finds the call.
-    - No sipnab is involved.
-  - [Connect sipnab to Homer](https://sipnab.com/docs/homer-sipnab/):
-    - OpenSIPS sends the same HEP to sipnab.
-    - sipnab on a second machine forwards what it captures to Homer under its
-      own capture id.
-  - Every command ran as written on clean Debian 13 and Ubuntu 24.04.
-    - The forwarding case ran on two machines.
+  - Effect: [Add Homer](docs/homer.md) runs heplify-server, homer-app and PostgreSQL, and finds a call OpenSIPS sent over HEP, without sipnab.
+  - Effect: [Connect sipnab to Homer](docs/homer-sipnab.md): OpenSIPS sends the same HEP to sipnab, and sipnab on a second machine forwards its capture under its own capture id.
+  - Effect: every command ran as written on clean Debian 13 and Ubuntu 24.04; the forwarding case ran on two machines.
 - **Two voice-stack guides for rtpengine.**
-  - [Add rtpengine to an OpenSIPS voice stack](https://sipnab.com/docs/rtpengine-relay/):
-    - It builds rtpengine and OpenSIPS.
-    - It anchors every call's media on the relay.
-    - It proves it with a test call.
-    - No sipnab is involved.
-  - [Let sipnab name rtpengine's media](https://sipnab.com/docs/rtpengine-sipnab/)
-    has sipnab name the media on the relay, in two ways:
-    - by asking the relay about calls already up
-    - from the relay's mirrored control plane, when the relay has a machine
-      of its own
-  - Every command ran as written on clean Debian 13 and Ubuntu 24.04.
-    - The two-machine case ran on two machines.
-  - The home page's voice-stack section links both.
+  - Effect: [Add rtpengine](docs/rtpengine-relay.md) builds rtpengine and OpenSIPS, anchors every call's media on the relay, and proves it with a test call, without sipnab.
+  - Effect: [Let sipnab name rtpengine's media](docs/rtpengine-sipnab.md) names the relay's media by asking about calls already up, or from its mirrored control plane.
+  - Effect: every command ran on clean Debian 13 and Ubuntu 24.04, the two-machine case on two machines; the home page links both.
 
 ### Changed
 
-- **The OpenAPI document lists a nullable reference's alternatives in a
-  different order.**
-  - utoipa 6 writes the reference first and `null` second.
-  - utoipa 5 wrote them the other way round.
-  - With the alternatives of each `oneOf` sorted, the old and new documents
-    are identical.
-    - So the contract a client codes against is unchanged.
+- **The OpenAPI document lists a nullable reference's alternatives in a different order.**
+  - Effect: utoipa 6 writes the reference first and `null` second; utoipa 5 wrote them the other way round.
+  - Effect: with each `oneOf`'s alternatives sorted the old and new documents are identical, so the contract a client codes against is unchanged.
 
 ### Fixed
 
 - **A live capture measures media by default.**
-  - With no filter of your own, sipnab generated a kernel filter that
-    admitted SIP signaling only.
-    - So every default live capture dropped every RTP packet. This included
-      the packaged systemd service.
-    - It reported calls with no media.
-    - Meanwhile the documentation said media was never gated.
-  - A call through an rtpengine relay reported 13 SIP messages and 0 RTP
-    packets.
-  - The generated filter now also admits UDP on any port whose first payload
-    byte marks RTP version 2, over IPv4 and IPv6.
-  - `--no-rtp` keeps it signaling-only.
-  - With `--hep-listen` as well as `-d`, the interface takes the media only.
-    - The mirror delivers the signaling.
-    - It used to take the signaling a second time and no media.
-  - The TUI's status line now describes the filter it runs with.
-    - It said `SIP + RTP` while the filter admitted no RTP.
-- **The vCon server guide's uninstall removes rtpengine's build
-  dependencies.**
-  - It purged the two rtpengine packages.
-  - It left `ngcp-rtpengine-build-deps`, and with it every package the build
-    had pulled in.
+  - Was: with no filter of your own, the generated kernel filter admitted SIP only, so every default live capture, the packaged service's too, reported no media.
+  - Effect: it now also admits UDP on any port whose first payload byte marks RTP version 2, over IPv4 and IPv6; `--no-rtp` keeps it signaling-only.
+  - Effect: with `--hep-listen` as well as `-d`, the interface takes the media only; it used to take the signaling twice and no media.
+  - Was: the TUI's status line said `SIP + RTP` while the filter admitted no RTP; it now describes the filter it runs with.
+- **The vCon server guide's uninstall removes rtpengine's build dependencies.**
+  - Was: it purged the two rtpengine packages but left `ngcp-rtpengine-build-deps`, and with it every package the build had pulled in.
 
 ## [0.5.192] - 2026-09-26
 
 ### Added
 
-- **The [runnable examples](https://sipnab.com/docs/examples/) page shows
-  which languages have a program for each step.**
-  - Six languages: Rust, Python, Go, JavaScript, C, C++.
-  - Six steps: configure, capture, read, command, process, stop.
-  - "Not yet" marks where a language has no program.
-  - A test does three things:
-    - It holds the table to the programs in `clients/`.
-    - It checks each one makes the call its step needs.
-    - It pins the number of gaps at 29.
+- **The runnable examples page shows which languages have a program for each step.**
+  - Effect: a table of six languages (Rust, Python, Go, JavaScript, C, C++) by six steps (configure, capture, read, command, process, stop).
+  - Effect: "Not yet" marks where a language has no program, and the table is held to the programs in `clients/`.
+  - Docs: [runnable examples](https://sipnab.com/docs/examples/).
 - **The home page links the voice-stack guides.**
-  - A new "Add it to your voice stack" section follows "What you can do with
-    it".
-  - It has a card each for vCon and TFPS.
-    - Each card links the stand-alone install guide and the sipnab guide.
-  - A test holds the section to the docs navigation's voice-stack group.
-    - So a guide added to one and not the other fails the build.
-- **The Python examples on the
-  [API clients](https://sipnab.com/docs/api-clients/) page run in CI.**
-  - The four examples are programs under `clients/python/`:
-    - a `requests` client
-    - an `httpx` poller
-    - a failed-call monitor
-    - a paginator
-  - They are held byte for byte to the page.
-  - The client smoke run executes each against a replayed capture.
-  - `requests` and `httpx` are pinned by hash in
-    `clients/python/requirements-examples.txt`.
-  - The monitor and paginator now read `SIPNAB_URL` and `SIPNAB_API_KEY`
-    like the other examples.
-  - Every one that meets a wrong key now says `401`.
+  - Effect: a new "Add it to your voice stack" section follows "What you can do with it".
+  - Effect: it has a card each for vCon and TFPS, linking the stand-alone install guide and the sipnab guide.
+- **The Python examples on the API clients page are programs that run.**
+  - Effect: the `requests` client, `httpx` poller, failed-call monitor and paginator are under `clients/python/`, held byte for byte to the page.
+  - Effect: `requests` and `httpx` are pinned by hash in `clients/python/requirements-examples.txt`.
+  - Effect: the monitor and paginator read `SIPNAB_URL` and `SIPNAB_API_KEY` like the other examples, and each says `401` on a wrong key.
+  - Docs: [API clients](https://sipnab.com/docs/api-clients/).
 
 ### Fixed
 
-- **A live `--export-vcon` writes its call's container when the call ends,
-  and a stop writes nothing.**
-  - On a live capture (`-d` or `--hep-listen`),
-    `--export-vcon <CALL-ID> --vcon-out <FILE>` created the file only when
-    sipnab was stopped.
-    - So SIGTERM left call data on disk.
-  - sipnab now writes the container about ten seconds after the call ends,
-    while the capture runs.
-    - It goes to `--vcon-out` or to stdout.
-  - A stopped live run writes nothing.
-    - It exits as it would have without the export.
-  - A live run that ends on its own (`--duration`, `--autostop`) writes the
-    call then, if it was not already written.
-    - It still fails when the Call-ID never appeared.
-  - `-I` runs still write at the end.
-  - A live `--export-vcon` now refuses `--redact` and `--redact-map`.
-    - Those only write at the end of a run.
-    - They still work with `-I`.
-
+- **A live `--export-vcon` writes the container when the call ends; a stop writes nothing.**
+  - Was: on `-d` or `--hep-listen`, `--export-vcon <CALL-ID> --vcon-out <FILE>` wrote only when sipnab was stopped, so SIGTERM left call data on disk.
+  - Effect: the container goes to `--vcon-out` or stdout about ten seconds after the call ends; a stopped live run writes nothing.
+  - Effect: a run that ends on its own (`--duration`, `--autostop`) writes the call then if not yet written; `-I` runs still write at the end.
+  - Limit: it still fails when the Call-ID never appeared, and a live run refuses `--redact` and `--redact-map`, which work with `-I`.
 - **The configuration reference describes `[tfps] db` as sipnab passes it.**
-  - It said `--db=<path>`.
-  - sipnab passes `--db` and the path as two arguments.
-    - That is what a wrapper script standing in for `tfps_ctl` receives.
-  - A test now builds the argument list and holds the page to it.
-- **The client smoke run no longer prints `ok` for a check it just failed.**
-  - `expect` and `expect_exit` counted a missing line as a failure.
-  - They then printed `ok` for the same check.
-  - They now live in `scripts/lib/smoke-expect.sh`, with tests.
+  - Was: it said `--db=<path>`; sipnab passes `--db` and the path as two arguments, as a wrapper standing in for `tfps_ctl` receives them.
+  - Docs: [`[tfps]`](docs/config-reference.md#tfps).
 - **A TUI that cannot start exits 1 and says why.**
-  - With no terminal, `sipnab -I <file>` logged
-    `TUI error: No such device or address` and exited 0.
-    - So a script, a service manager or a CI step saw a run that worked.
-    - The cookbook checker counted five TUI commands as passing that had
-      done nothing.
-  - It now prints this on stderr, even with logging off:
-    `sipnab: the terminal UI could not start: No such device or address (os error 6). It needs a terminal; add -N for a run without one.`
-  - It exits 1 after the normal shutdown.
-  - The checker counts that refusal, and only that, as a TUI command having
-    run as far as it can without a terminal.
+  - Was: with no terminal, `sipnab -I <file>` logged `TUI error: No such device or address` and exited 0, so scripts saw a run that worked.
+  - Effect: it prints `sipnab: the terminal UI could not start: <reason>. It needs a terminal; add -N for a run without one.`
+  - Effect: that goes to stderr even with logging off, and it exits 1 after the normal shutdown.
 
 ## [0.5.191] - 2026-09-26
 
 ### Added
 
-- **The output of every cookbook command that runs without a live host is
-  now pinned.**
-  - `scripts/check-cookbook.py` already ran each command in
-    `docs/examples.md` that reads a capture file.
-    - It checked its exit status.
-    - But a command that exits 0 can still print the wrong thing.
-  - Each of the 72 distinct commands it runs now has a trycmd golden under
-    `tests/cli/cookbook/`.
-    - The golden holds its exact output.
-    - It is generated from the same command-to-fixture mapping the checker
-      uses.
-  - The checker fails in two cases:
-    - a command it runs has no golden and no reason recorded
-    - a golden matches no command
-  - Five commands stay exit-status-only.
-    - They open the terminal interface, which a golden cannot drive.
-
-  - These two commands regenerate the goldens:
-    - `python3 scripts/check-cookbook.py --bless`
-    - then `TRYCMD=overwrite cargo test --features full --test cli_goldens`
+- **`clients/python/vcon_forward.py` sends the vCons sipnab writes to a vCon server.**
+  - Was: sipnab's `--export-vcon-dir` spool was a queue nothing drained.
+  - Effect: it posts each container to vcon-server's scoped ingress route, and deletes it only once the server took it and the file is unchanged.
+  - Effect: it stops on a refused key and moves a container the server rejects to `rejected/`.
+  - Limit: it uses the Python standard library only.
+  - Docs: [Install the forwarder](docs/vcon-sipnab.md#install-the-forwarder).
 
 ### Security
 
-- **`thread_local` goes from 1.1.9 to 1.1.10**, the release that fixes the
-  two advisories a dependency scanner raised against 1.1.9.
-  - The advisories: an out-of-bounds read and an integer underflow.
-  - It is a transitive dependency.
-  - The fuzz lockfile already had 1.1.10.
+- **`thread_local` goes from 1.1.9 to 1.1.10, which fixes two advisories against 1.1.9.**
+  - Effect: the advisories are an out-of-bounds read and an integer underflow in this transitive dependency.
 - **The Go example clients declare Go 1.26, not 1.24.**
-  - 1.24 stopped receiving security updates when 1.26 was released.
-  - CI already built them with Go 1.27.1.
-    - So only the declared minimum was out of date.
-
-### Added
-
-- **`clients/python/vcon_forward.py` sends the vCons sipnab writes to a vCon
-  server.**
-  - sipnab's `--export-vcon-dir` spool is a queue nothing drained.
-  - The forwarder posts each container to vcon-server's scoped ingress route.
-  - It deletes a container only when both are true:
-    - The server has taken it.
-    - The file is still the one it sent.
-  - It stops on a refused key.
-  - It moves a container the server rejects to `rejected/`.
-  - It uses the standard library only.
-  - It is tested against a real HTTP server.
+  - Was: 1.24 stopped receiving security updates when 1.26 was released; CI already built them with Go 1.27.1.
 
 ### Fixed
 
-- **`--export-vcon-when` containers carry the call's audio when the run kept
-  it.**
-  - The spool writer built every container with the signaling-only exporter.
-
-    - So with `--retain-audio`, the audio was held and never written.
-    - A call that had media read as one without.
-  - Only the single-call `--export-vcon` inlined it.
-  - Both now decode the audio through one function.
-  - A test holds the spool's recording to be byte-identical to the
-    single-call export's for the same call.
+- **`--export-vcon-when` containers carry the call's audio when the run kept it.**
+  - Was: the spool writer built every container without audio, so with `--retain-audio` a call with media read as one without.
+  - Effect: the spool's recording is byte-identical to the single-call `--export-vcon` one for the same call.
 - **The systemd unit in the `.deb` and `.rpm` can start.**
-  - It ran `/usr/local/bin/sipnab`, while both packages install
-    `/usr/bin/sipnab`.
-    - So `systemctl start sipnab` failed with `status=203/EXEC` on every
-      install.
-  - It also had these faults:
-    - It passed `-d %i` in a unit that is not a template (an empty
-      interface).
-    - It opened the REST API on every interface with no key.
-    - It streamed every SIP message into the journal.
-    - It took port 9100, which node_exporter uses.
-  - It now does this:
-    - It captures on every interface as the `sipnab` user.
-    - It has only `CAP_NET_RAW` and `CAP_NET_ADMIN`.
-    - It logs to syslog.
-    - It serves metrics on `127.0.0.1:9090`.
-    - It leaves the API off.
-  - `tests/packaged_unit_test.rs` ties it to two things:
-    - the paths the package builders install
-    - sipnab's own argument parser
-- **A live `--export-vcon-when` writes each call's container while the
-  capture runs, and a stopped run writes nothing more.**
-
-  - On a live capture (`-d` or `--hep-listen`), sipnab wrote no container
-    while calls completed.
-    - It then wrote them all when it was stopped.
-    - That left the spool directory empty for as long as the capture ran.
-    - It kept call data on disk after a stop.
-
-  - Now sipnab writes a matching call's container about ten seconds after
-    the call ends.
-  - SIGTERM, Ctrl-C or an MCP client going away writes nothing.
-  - A live run that ends on its own (`--duration`, `--autostop`) writes only
-    the calls not already written.
-  - `-I` runs still write at the end.
-  - A live `--export-vcon-when` now refuses `--redact`, `--redact-map` and
-    `--content-deny-tombstone`.
-    - Those only write at the end of a run.
-    - They still work with `-I`.
-- **MCP tool schemas no longer name number formats JSON Schema does not
-  define.**
-
-  - Every tool's input and output schema carried formats such as `uint32`,
-    `uint64`, `int64` and `double`.
-    - The Rust schema generator writes these for number types.
-    - There were 205 of them across 69 tools.
-  - The MCP TypeScript SDK's validator warned `unknown format "uint"` for
-    each.
-  - A strict validator refuses such a schema.
-  - The server no longer advertises them.
-  - The `minimum: 0` bounds that say a value is unsigned stay.
-  - Any format JSON Schema does define is kept.
+  - Was: it ran `/usr/local/bin/sipnab` while both packages install `/usr/bin/sipnab`, so `systemctl start sipnab` failed with `status=203/EXEC`.
+  - Was: it passed `-d %i` though not a template, opened the REST API everywhere with no key, logged every SIP message, and took port 9100.
+  - Effect: it captures on every interface as the `sipnab` user, with only `CAP_NET_RAW` and `CAP_NET_ADMIN`, and logs to syslog.
+  - Effect: it serves metrics on `127.0.0.1:9090` and leaves the API off.
+- **A live `--export-vcon-when` writes each container while the capture runs, none at a stop.**
+  - Was: on `-d` or `--hep-listen` the spool stayed empty while the capture ran, and every container was written at the stop.
+  - Effect: a matching call's container is written about ten seconds after the call ends; SIGTERM, Ctrl-C or an MCP client leaving writes nothing.
+  - Effect: a run that ends on its own (`--duration`, `--autostop`) writes only calls not yet written; `-I` runs still write at the end.
+  - Limit: a live run refuses `--redact`, `--redact-map` and `--content-deny-tombstone`, which still work with `-I`.
+- **MCP tool schemas no longer name number formats JSON Schema does not define.**
+  - Was: input and output schemas carried formats such as `uint32`, `uint64`, `int64` and `double`, 205 of them across 69 tools.
+  - Was: the MCP TypeScript SDK's validator warned `unknown format "uint"` for each, and a strict validator refuses such a schema.
+  - Effect: the server no longer advertises them; the `minimum: 0` bounds and any format JSON Schema does define stay.
 
 ## [0.5.190] - 2026-09-25
 
 ### Added
 
-- **The Go, TypeScript and Rust clients on the site's
-  [Call the REST API from code](https://sipnab.com/docs/api-clients/) page
-  are programs CI compiles and runs.**
-  - Each is now a complete program under `clients/`.
-  - A test holds the page's code to it byte for byte.
-    - It already did this for the REST, metrics and MCP deployment references.
-  - The Rust one, `clients/rust`, is a Cargo workspace member.
-
-    - So the Clippy step compiles it with warnings as errors.
-    - cargo-deny and cargo-audit read the lockfile that pins its `reqwest`,
-      `serde` and `anyhow`.
-    - It adds no crate that lockfile did not already hold.
-  - `scripts/smoke-clients.sh` runs all three against a replayed capture and
-    with a wrong token.
-  - Compiling them fixed what nothing had checked:
-    - The Rust example called `serde_json` and `urlencoding`.
-      - Neither was in the dependencies it listed.
-      - It did not check the status of the single-dialog request.
-    - The TypeScript one typed an unmeasured post-dial delay as `null`.
-      - A single dialog omits it instead.
-      - It printed it as `pdd=—ms`.
-    - The Go one discarded the errors of `url.Parse` and `http.NewRequest`.
-      - It skipped without a word any dialog it could not fetch.
-  - The page's Python examples still use `requests` and `httpx`.
-    - CI does not install these.
-    - These examples are not yet held.
-- **Three AI-task programs: what an agent does with sipnab over MCP, each run
-  end to end in CI.**
-  - [Runnable examples](docs/client-examples.md) has a new section for them.
-    - The [MCP guide](docs/mcp.md) links to it.
-  - `clients/python/agent_triage.py`:
-    - It pages `list_dialogs` and asks `get_capture_report`.
-    - It prints `triage.py`'s verdict with a summary by state.
-    - It also prints the calls to call `triage_call` on next.
-    - It calls a failed dialog that no finding names inconclusive rather than
-      clean.
-    - It runs over MCP stdio.
-    - It also runs over HTTP with a read-scoped token minted from a signing
-      key, the shape cookbook recipe "Set up the MCP server for a hosted agent" deploys.
-    - CI checks that the two transports print the same verdict.
-    - CI checks that each of these gets a `401`:
-      - A token signed with another key.
-      - A token minted for the REST API.
-      - A request with no token.
-  - `clients/python/evidence_handoff.py`:
-    - It has `build_evidence_package` and `generate_repro` write a package
-      and a SIPp scenario per call under `--mcp-file-root`.
-    - It then reads every file back against the answers.
-    - CI runs it twice over one capture and requires byte-identical files.
-  - `clients/python/aggregate_for_model.py`:
-    - It sends a filter-DSL expression to `aggregate_dialogs`.
-    - It cuts the answer to a byte budget by folding whole buckets into
-      `other_count`.
-    - So the JSON stays valid and its counts still add up.
-  - `clients/python/mcp_calls.py` gives the three one tool-call interface over
-    either transport.
-    - It reuses the MCP SDK for stdio and `mcp_probe.py` for HTTP.
-    - It waits for `capture_status` to report the file read to its end before
-      any question.
-- **Five operator-task programs, one per multi-step cookbook recipe, each run
-  end to end in CI.**
-  - [Runnable examples](docs/client-examples.md) has a new section for them.
-  - Each recipe links to its program.
-  - `clients/python/triage.py` (recipes "Triage a pcap fast" and "Analyze a capture into one machine-readable verdict"):
-    - It turns `--json-analyze` into a verdict and an exit status.
-    - It reports a capture with no dialog to judge as inconclusive rather
-      than clean.
-  - `clients/python/failed_calls.py` (recipes "Find every failed call, grouped by response code" and "Find calls that answered and were never acknowledged"):
-    - It groups failed calls once each under their final response code over
-      REST.
-    - It names the calls answered and never acknowledged.
-  - `clients/python/one_way_audio.py` (recipes "Diagnose a one-way audio complaint", "Find why a call sounds bad in one direction only" and "Measure whether the loss is yours or the network's"):
-    - It prints one call's one-way diagnosis and its asymmetry signals.
-    - It prints whether the loss is the network's or the capture's.
-  - `clients/python/scanner_ban.py` (recipes "Detect SIP scanners and auto-block via fail2ban" and "Find the device flooding REGISTER"):
-    - It bans through `POST /v1/tfps/ban` only the sources that
-      `--recommend-block` finds no counter-evidence for.
-    - It counts a ban only once TFPS lists it.
-  - `clients/python/customer_export.py` (recipes "Collect a directory of rotated captures into one analysis", "Export one customer's calls as a smaller capture" and "Open the same evidence in Wireshark"):
-    - It exports one customer's calls from rotated captures.
-    - It reads the export back.
-    - It removes the export when another customer's call shares an address.
-    - It prints the `tshark` command that opens it.
-  - `scripts/smoke-clients.sh` runs each program against committed captures.
-    - It has a failure case for each.
-  - Two captures are new and synthetic:
-    - `tests/fixtures/sip-answered-never-acked.pcap`
-    - `tests/fixtures/sip-scanner-and-register-flood.pcap`
-  - CI's Check job now installs `tshark`.
-    - It opens the export and runs the command the program printed.
-  - TFPS cannot run on a CI runner.
-
-    - So the ban runs against `clients/python/tests/fake_tfps_ctl.py`.
-    - Its tests hold this stand-in to the fixtures pinned against the real
-      `tfps_ctl`.
-- **Every Go, JavaScript, Python and TypeScript example on the REST, metrics
-  and MCP deployment pages is now a program CI compiles and runs.**
-  - These pages showed each request in several languages:
-    - [REST API](docs/rest-api.md)
-    - [Prometheus metrics](docs/prometheus-metrics.md)
-    - [MCP deployment](docs/mcp-deploy.md)
-  - Nothing compiled any of them.
-    - The Go examples discarded every error with `_`.
-      - So a wrong token printed a zero value instead of a 401.
-    - The Python ones needed `requests`.
-      - The page never said to install it.
-  - Each example is now the core of a complete program under one of these:
-    - `clients/go/`
-    - `clients/javascript/`
-    - `clients/python/`
-    - `clients/typescript/`
-  - The Go, JavaScript and Python programs check the HTTP status.
-    - They exit non-zero on failure.
-
-  - The Python ones use only the standard library.
-  - `tests/client_snippets_test.rs` holds every such fence on those pages to a
-    marked region of its program, byte for byte.
-  - CI runs these checks:
-    - `gofmt -l`, `go vet` and `go build` on the Go programs.
-    - `node --check` on the JavaScript ones.
-    - `tsc --noEmit` on the TypeScript MCP client, against the SDK its
-      lockfile pins.
-  - `scripts/smoke-clients.sh` then runs every program against a sipnab
-    replaying committed captures.
-    - Each must print what the captures hold.
-    - Each REST client must fail on a wrong token.
-  - The deployment page shows an MCP loop for reading a reply that arrives as
-    Server-Sent Events.
-    - That loop is now the one `clients/python/mcp_probe.py` runs.
-- **Four runnable examples of what sipnab does that a single-capture tool
-  does not, each run end to end in CI.**
-  - [Runnable examples](docs/client-examples.md) has a new section for them.
-  - `clients/python/leg_correlate.py` joins one call across two sipnabs on
-    loopback.
-    - One replays the new `tests/fixtures/opensips-proxy-signaling.pcap`.
-      - That is the proxy's signaling for the call in
-        `rtpengine-opensips-ng.pcap`.
-    - The other replays that relay capture.
-    - The program's table no longer truncates the codec column.
-      - It printed a transcoding call's `G722,PCMU` as `G722,P`.
-  - `clients/python/vcon_validate.py` checks exported vCons against the
-    working group's schema file with jsonschema.
-    - The file is vendored unchanged at
-      `tests/schemas/publisher/vcon_json_schema.json`.
-    - It is pinned to its commit and SHA-256.
-    - A test now holds sipnab's own copy to that file, except for the one
-      documented deviation.
-  - `clients/python/hep_senders.py` prints a HEP collector's sender roster.
-    - CI feeds one collector from two sipnab agents.
-    - CI checks both, and the collector's dialogs.
-  - `examples/tls_plaintext_records.rs` runs the half of TLS-without-keys that
-    needs no kernel.
-    - It takes records laid out as the BPF program publishes them.
-    - It runs them through the decode the backend runs.
+- **The code examples on the API client and deployment pages are complete programs that run.**
+  - Effect: the Go, TypeScript and Rust clients of [Call the REST API from code](https://sipnab.com/docs/api-clients/) are programs under `clients/`, held byte for byte.
+  - Effect: so are the Go, JavaScript, Python and TypeScript examples of the [REST API](docs/rest-api.md), [Prometheus metrics](docs/prometheus-metrics.md) and [MCP deployment](docs/mcp-deploy.md) pages.
+  - Effect: the Go, JavaScript and Python programs check the HTTP status and exit non-zero on failure; the Python ones need only the standard library.
+  - Was: the Rust example lacked `serde_json` and `urlencoding`, TypeScript printed `pdd=—ms`, and Go discarded errors, printing a zero value for a wrong token.
+  - Effect: the deployment page's loop for a Server-Sent Events reply is the one `clients/python/mcp_probe.py` runs.
+- **Three AI-task programs show what an agent does with sipnab over MCP.**
+  - Effect: `clients/python/agent_triage.py` pages `list_dialogs`, asks `get_capture_report`, prints a verdict by state and the calls for `triage_call`.
+  - Effect: it runs over MCP stdio, or over HTTP with a read-scoped token minted from a signing key, and prints the same verdict on both.
+  - Effect: `evidence_handoff.py` has `build_evidence_package` and `generate_repro` write a package and SIPp scenario per call under `--mcp-file-root`.
+  - Effect: `aggregate_for_model.py` cuts an `aggregate_dialogs` answer to a byte budget by folding whole buckets into `other_count`; `mcp_calls.py` serves both transports.
+  - Docs: [Runnable examples](docs/client-examples.md), linked from the [MCP guide](docs/mcp.md).
+- **Five operator-task programs, one per multi-step cookbook recipe.**
+  - Effect: [`triage.py`](docs/client-examples.md) turns `--json-analyze` into a verdict and exit status; a capture with no dialog to judge is inconclusive.
+  - Effect: `failed_calls.py` groups failed calls by final response code over REST and names calls answered and never acknowledged.
+  - Effect: `one_way_audio.py` prints one call's one-way diagnosis, its asymmetry signals, and whether the loss is the network's or the capture's.
+  - Effect: `scanner_ban.py` bans through `POST /v1/tfps/ban` only sources `--recommend-block` finds no counter-evidence for, counting a ban once TFPS lists it.
+  - Effect: `customer_export.py` exports one customer's calls from rotated captures, removes it if another customer shares an address, and prints its `tshark` command.
+- **Four runnable examples of what sipnab does that a single-capture tool does not.**
+  - Effect: `clients/python/leg_correlate.py` joins one call across two sipnabs; its table no longer cuts `G722,PCMU` to `G722,P`.
+  - Effect: `clients/python/vcon_validate.py` checks exported vCons against the working group's schema file with jsonschema.
+  - Effect: `clients/python/hep_senders.py` prints a HEP collector's sender roster.
+  - Effect: `examples/tls_plaintext_records.rs` runs the half of TLS-without-keys that needs no kernel, on records laid out as the BPF program publishes them.
+  - Docs: [Runnable examples](docs/client-examples.md).
 
 ### Fixed
 
 - **`--mcp-tools core` now carries `get_capture_report`.**
-  - Cookbook recipe "Set up the MCP server for a hosted agent" describes how to set up a server.
-  - A server set up that way could list calls.
-  - It could not say whether the capture as a whole is healthy.
-  - The agent triage in the client examples got "tool not found" there.
-  - The core profile is now nine tools.
-  - The client smoke run serves `core`.
-    - So CI proves the recipe's own setup.
-
-- **A build without vCon export now refuses every vCon flag instead of
-  exporting nothing.**
-  - `--export-vcon-when` with `--export-vcon-dir` ran to completion in a
-    build without the `vcon` feature.
-    - It exited 0 and wrote no container.
-    - Such builds include the musl tarballs and the `-noaudio` packages.
-  - Only `--export-vcon` was refused.
-  - Now all of these are refused before any capture opens:
-    - `--export-vcon`
-    - `--export-vcon-when`
-    - `--export-vcon-dir`
-    - `--vcon-digest`
-    - `--vcon-max-inline-media`
-  - The message names each flag given and the feature that provides it.
-
-- **A `netmap:` capture on a silent link now stops on SIGTERM and at
-  `--duration`.**
-  - libpcap's netmap module waits for a frame inside its own read.
-  - It goes back to waiting after every poll timeout or signal.
-  - So on a link with no traffic, sipnab never got control back.
-    - It could not see that it had been asked to stop.
-  - A small thread beside each live capture now calls `pcap_breakloop` when a
-    stop is due.
-  - The capture ends at once without reading anything still queued.
-  - Measured on a silent veth pair:
-    - The older build was still running 15 seconds after SIGTERM in 10 runs
-      of 10.
-    - The fixed build exited in 30 to 71 ms.
-    - It exited at 3.0 seconds under `--duration 3s`.
+  - Was: a server set up as recipe "Set up the MCP server for a hosted agent" says could list calls but not judge the capture's health.
+  - Effect: the core profile is now nine tools.
+- **A build without vCon export now refuses every vCon flag instead of exporting nothing.**
+  - Was: in a build without the `vcon` feature (musl tarballs, `-noaudio` packages), `--export-vcon-when` with `--export-vcon-dir` exited 0 and wrote nothing.
+  - Effect: `--export-vcon`, `--export-vcon-when`, `--export-vcon-dir`, `--vcon-digest` and `--vcon-max-inline-media` are refused before any capture opens.
+  - Effect: the message names each flag given and the feature that provides it.
+- **A `netmap:` capture on a silent link now stops on SIGTERM and at `--duration`.**
+  - Was: libpcap's netmap module waits for a frame inside its own read, so on a link with no traffic sipnab never got control back.
+  - Effect: a thread beside each live capture calls `pcap_breakloop` when a stop is due; the capture ends without reading what is queued.
+  - Effect: on a silent veth pair, the fixed build exited in 30 to 71 ms after SIGTERM, where the older one still ran after 15 seconds.
 
 ## [0.5.189] - 2026-09-24
 

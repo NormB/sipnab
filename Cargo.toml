@@ -50,7 +50,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.272"
+version = "0.5.273"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Norm Brandinger"]
@@ -99,6 +99,9 @@ include = [
   "/tests/schemas/vcon.schema.json",
   # The test PKI src/tls_listener.rs's unit tests mount with #[path].
   "/tests/support/tls_pki.rs",
+  # The production-source scanner src/sip/message/cache_tests.rs's
+  # stale-data guard mounts with #[path].
+  "/tests/support/source_scan.rs",
   "/yang/**",
 ]
 

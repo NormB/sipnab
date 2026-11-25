@@ -1941,10 +1941,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // sngrep's keys and colors" (config-reference.md and keybindings.md).
     // 2763 -> 2764 (relay rates, +1): docs/cli-reference.md's
     // `--relay-sessions` row links "Read the rate media arrives at".
-    // 2764 -> 2763 (FILE-2 a, -1): docs/run-as-a-service.md "Rotate the audit
+    // 2764 -> 2765 (MEM-2, +1): docs/tls-capture.md 1, the bounds paragraph
+    // links the error reference.
+    // 2765 -> 2764 (FILE-2 a, -1): docs/run-as-a-service.md "Rotate the audit
     // and provenance files" no longer links "Write a unit of your own"; its
     // verify example is now a stdio run, not a run of that unit.
-    const EXPECTED_WIKI_LINKS: usize = 2763;
+    const EXPECTED_WIKI_LINKS: usize = 2764;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
