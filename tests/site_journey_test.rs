@@ -6972,7 +6972,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // twice (+5). Measurement: before the GENERATED entry the scan read 348,
     // 345 with origin/main's pages.yml swapped back in and 343 with
     // origin/main's cert-expiry.yml.
-    const EXPECTED_REFERENCES: usize = 347;
+    // 347 -> 348 (security.txt link check): quality.yml's docs dead-link pass
+    // remaps the live URL to `website/static/.well-known/security.txt` and its
+    // comment names that file (+1). Measurement: the scan read 348 with the
+    // change staged.
+    const EXPECTED_REFERENCES: usize = 348;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
