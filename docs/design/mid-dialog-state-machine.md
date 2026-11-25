@@ -560,7 +560,7 @@ machine sees the messages."*
   detectors quietly ignore the calls it fixed would recreate the shape
   `15b6337` warned about, one layer out.
 - **`DialogState` is public API.** It is re-exported at
-  [`lib.rs:493`](https://github.com/NormB/sipnab/blob/main/src/lib.rs#L493)<!-- "pub use sip::dialog::{DialogState," --> and is `serde::Serialize`, so any new variant
+  [`lib.rs:496`](https://github.com/NormB/sipnab/blob/main/src/lib.rs#L496)<!-- "pub use sip::dialog::{DialogState," --> and is `serde::Serialize`, so any new variant
   is a semver event. `#[non_exhaustive]` leaves room to add one;
   [section 7, "Open questions"](#7-open-questions) has the question of whether
   one is needed.

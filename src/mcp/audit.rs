@@ -154,6 +154,17 @@ impl AuditSink {
     /// EXISTING file's mode is left alone — it is the operator's, and this is
     /// the append case rather than the create case.
     pub fn open(path: &Path) -> std::io::Result<Self> {
+        let file = Self::open_file(path)?;
+        Ok(Self {
+            file: Mutex::new(file),
+            path: path.to_path_buf(),
+            next_seq: AtomicU64::new(1),
+        })
+    }
+
+    /// The one set of open flags, for the first open and every reopen after
+    /// rotation.
+    fn open_file(path: &Path) -> std::io::Result<std::fs::File> {
         let mut opts = std::fs::OpenOptions::new();
         // `append`, never `truncate` and never bare `write`: the whole
         // guarantee of this type is that opening the file cannot destroy what
@@ -168,12 +179,7 @@ impl AuditSink {
             // the host.
             opts.mode(0o600);
         }
-        let file = opts.open(path)?;
-        Ok(Self {
-            file: Mutex::new(file),
-            path: path.to_path_buf(),
-            next_seq: AtomicU64::new(1),
-        })
+        opts.open(path)
     }
 
     /// The path this sink appends to.
@@ -249,6 +255,10 @@ impl AuditSink {
         // opposite order to their numbers and a reader would read a gap that
         // is not one.
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        // After the number is taken, so a record that cannot be written
+        // because its rotated file cannot be opened again still leaves the
+        // gap a reader can see.
+        crate::append_file::reopen_if_moved(&mut file, &self.path, Self::open_file)?;
         let mut line = render(seq, chrono::Utc::now());
         line.push('\n');
         // One call with the newline already attached. Writing the record and
@@ -634,6 +644,358 @@ mod tests {
             mode, 0o600,
             "the record carries tool arguments, so it is not for every account \
              on the host"
+        );
+        Ok(())
+    }
+}
+
+/// Log rotation (logrotate's default `create` mode, or a plain `mv`) renames
+/// the file away while sipnab holds it open. Every record after that must
+/// land in a file at the configured path, not in the renamed one the
+/// operator has moved on from, and the sequence must run on unbroken.
+#[cfg(all(test, unix))]
+mod rotation_follow_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A record for tests.
+    fn rec(tool: &str) -> AuditRecord<'_> {
+        AuditRecord {
+            tool,
+            request_id: "1",
+            caller: "stdio",
+            outcome: "ok",
+            elapsed_ms: 0,
+            args: "{}",
+            error: "",
+        }
+    }
+
+    /// The `seq` of every line of `path`, in file order.
+    fn seqs(path: &Path) -> Result<Vec<u64>, TestError> {
+        let text = std::fs::read_to_string(path)?;
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let v: serde_json::Value = serde_json::from_str(line)?;
+            out.push(v["seq"].as_u64().ok_or("a record without seq")?);
+        }
+        Ok(out)
+    }
+
+    /// The `tool` of every line of `path`, in file order.
+    fn tools(path: &Path) -> Result<Vec<String>, TestError> {
+        let text = std::fs::read_to_string(path)?;
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let v: serde_json::Value = serde_json::from_str(line)?;
+            out.push(
+                v["tool"]
+                    .as_str()
+                    .ok_or("a record without tool")?
+                    .to_string(),
+            );
+        }
+        Ok(out)
+    }
+
+    // ── SUCCESS ──────────────────────────────────────────────────────────
+
+    /// After a rename, the next record goes to a new file at the path and
+    /// the renamed file keeps only what was written before.
+    #[test]
+    fn a_record_after_a_rename_lands_at_the_path() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("audit.jsonl");
+        let rotated = dir.path().join("audit.jsonl.1");
+        let sink = AuditSink::open(&path)?;
+        sink.append(&rec("before"))?;
+        std::fs::rename(&path, &rotated)?;
+        sink.append(&rec("after"))?;
+        assert_eq!(
+            tools(&path)?,
+            vec!["after"],
+            "the record after rotation belongs in the file at the path"
+        );
+        assert_eq!(
+            tools(&rotated)?,
+            vec!["before"],
+            "the rotated file keeps only the records written before"
+        );
+        Ok(())
+    }
+
+    /// After the file is deleted, the next record creates it again.
+    #[test]
+    fn a_record_after_a_removal_creates_the_file_again() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("audit.jsonl");
+        let sink = AuditSink::open(&path)?;
+        sink.append(&rec("before"))?;
+        std::fs::remove_file(&path)?;
+        sink.append(&rec("after"))?;
+        assert_eq!(
+            tools(&path)?,
+            vec!["after"],
+            "a removed audit file must be created again, not written unlinked"
+        );
+        Ok(())
+    }
+
+    /// The sequence runs on across the rotation: the new file starts at the
+    /// next number, so the two files read as one trail.
+    #[test]
+    fn the_sequence_continues_into_the_new_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("audit.jsonl");
+        let rotated = dir.path().join("audit.jsonl.1");
+        let sink = AuditSink::open(&path)?;
+        for t in ["a", "b", "c"] {
+            sink.append(&rec(t))?;
+        }
+        std::fs::rename(&path, &rotated)?;
+        sink.append(&rec("d"))?;
+        sink.append(&rec("e"))?;
+        assert_eq!(seqs(&rotated)?, vec![1, 2, 3], "the old file holds 1-3");
+        assert_eq!(seqs(&path)?, vec![4, 5], "the new file goes on at 4");
+        Ok(())
+    }
+
+    /// The file created after rotation is mode 0600, as the first one was.
+    #[test]
+    fn the_new_file_is_private() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("audit.jsonl");
+        let sink = AuditSink::open(&path)?;
+        sink.append(&rec("before"))?;
+        std::fs::rename(&path, dir.path().join("old"))?;
+        sink.append(&rec("after"))?;
+        let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the recreated audit file must be 0600");
+        Ok(())
+    }
+
+    /// Rotation followed twice: each file holds its own stretch.
+    #[test]
+    fn two_rotations_are_both_followed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("audit.jsonl");
+        let sink = AuditSink::open(&path)?;
+        sink.append(&rec("one"))?;
+        std::fs::rename(&path, dir.path().join("r1"))?;
+        sink.append(&rec("two"))?;
+        std::fs::rename(&path, dir.path().join("r2"))?;
+        sink.append(&rec("three"))?;
+        assert_eq!(tools(&dir.path().join("r1"))?, vec!["one"], "first file");
+        assert_eq!(tools(&dir.path().join("r2"))?, vec!["two"], "second file");
+        assert_eq!(tools(&path)?, vec!["three"], "current file");
+        Ok(())
+    }
+
+    /// The TUI action trail rides the same sink, so it follows rotation too.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn the_tui_action_trail_follows_a_rename() -> Result<(), TestError> {
+        use crate::tui::action_trail::{ActionRecord, ActionTrail};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("trail.jsonl");
+        let trail = ActionTrail::open(&path)?;
+        let record = ActionRecord {
+            action: "export",
+            target: "calls.pcap",
+            format: "pcap",
+            outcome: "ok",
+            error: "",
+        };
+        assert_eq!(trail.record(&record), None, "the first record is written");
+        std::fs::rename(&path, dir.path().join("trail.jsonl.1"))?;
+        assert_eq!(trail.record(&record), None, "the second record is written");
+        assert_eq!(
+            std::fs::read_to_string(&path)?.lines().count(),
+            1,
+            "the TUI record after rotation belongs in the file at the path"
+        );
+        Ok(())
+    }
+
+    /// Without rotation nothing changes: every record in the one file.
+    #[test]
+    fn without_rotation_every_record_stays_in_one_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("audit.jsonl");
+        let sink = AuditSink::open(&path)?;
+        for t in ["a", "b", "c", "d"] {
+            sink.append(&rec(t))?;
+        }
+        assert_eq!(seqs(&path)?, vec![1, 2, 3, 4], "one file, four records");
+        assert_eq!(
+            std::fs::read_dir(dir.path())?.count(),
+            1,
+            "no other file is created"
+        );
+        Ok(())
+    }
+
+    // ── EDGE ─────────────────────────────────────────────────────────────
+
+    /// logrotate `create` makes the new file itself, with its own mode; the
+    /// sink appends to that file and leaves its mode alone.
+    #[test]
+    fn a_file_created_by_the_rotator_is_appended_to_as_it_is() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("audit.jsonl");
+        let sink = AuditSink::open(&path)?;
+        sink.append(&rec("before"))?;
+        std::fs::rename(&path, dir.path().join("audit.jsonl.1"))?;
+        std::fs::write(&path, "")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))?;
+        sink.append(&rec("after"))?;
+        assert_eq!(
+            tools(&path)?,
+            vec!["after"],
+            "appended to the rotator's file"
+        );
+        let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640, "the rotator's mode is the operator's choice");
+        Ok(())
+    }
+
+    /// A file moved onto the path that already holds records is appended
+    /// to, never truncated.
+    #[test]
+    fn a_file_moved_onto_the_path_keeps_its_records() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("audit.jsonl");
+        let other = dir.path().join("other.jsonl");
+        let sink = AuditSink::open(&path)?;
+        sink.append(&rec("before"))?;
+        std::fs::write(&other, "{\"seq\":90,\"tool\":\"kept\"}\n")?;
+        std::fs::rename(&other, &path)?;
+        sink.append(&rec("after"))?;
+        assert_eq!(
+            tools(&path)?,
+            vec!["kept", "after"],
+            "the file now at the path keeps its records and gains the new one"
+        );
+        Ok(())
+    }
+
+    /// Records written by many threads while the file rotates: none is lost
+    /// or written twice, and the two files together hold every sequence.
+    #[test]
+    fn concurrent_records_across_a_rotation_are_all_kept() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("audit.jsonl");
+        let rotated = dir.path().join("audit.jsonl.1");
+        let sink = std::sync::Arc::new(AuditSink::open(&path)?);
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let s = std::sync::Arc::clone(&sink);
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..50 {
+                    if s.append(&rec("t")).is_err() {
+                        return false;
+                    }
+                }
+                true
+            }));
+        }
+        std::fs::rename(&path, &rotated)?;
+        for h in handles {
+            assert!(
+                h.join().map_err(|_| "a writer panicked")?,
+                "every append succeeded"
+            );
+        }
+        sink.append(&rec("last"))?;
+        let mut all = seqs(&rotated)?;
+        all.extend(seqs(&path)?);
+        all.sort_unstable();
+        assert_eq!(all, (1..=201).collect::<Vec<u64>>(), "every record once");
+        assert_eq!(
+            tools(&path)?.last().map(String::as_str),
+            Some("last"),
+            "the record after the rotation is in the file at the path"
+        );
+        Ok(())
+    }
+
+    /// The predicate itself: the same file is not moved; a rename, a
+    /// removal and a replacement are.
+    #[test]
+    fn path_moved_tells_the_open_file_from_the_path() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("f");
+        std::fs::write(&path, "")?;
+        let open = std::fs::OpenOptions::new().append(true).open(&path)?;
+        let moved = crate::append_file::path_moved;
+        assert!(!moved(&open, &path), "the same file has not moved");
+        std::fs::rename(&path, dir.path().join("g"))?;
+        assert!(moved(&open, &path), "a renamed path has moved");
+        std::fs::write(&path, "")?;
+        assert!(moved(&open, &path), "another file at the path has moved");
+        std::fs::remove_file(&path)?;
+        assert!(moved(&open, &path), "a removed path has moved");
+        Ok(())
+    }
+
+    // ── FAILURE ──────────────────────────────────────────────────────────
+
+    /// A rotation that took the directory away: the record cannot be written
+    /// and the caller hears so (the MCP call is refused).
+    #[test]
+    fn a_reopen_that_fails_is_an_error() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let sub = dir.path().join("logs");
+        std::fs::create_dir(&sub)?;
+        let path = sub.join("audit.jsonl");
+        let sink = AuditSink::open(&path)?;
+        sink.append(&rec("before"))?;
+        std::fs::remove_file(&path)?;
+        std::fs::remove_dir(&sub)?;
+        assert!(
+            sink.append(&rec("after")).is_err(),
+            "a record that has nowhere to go must be an error, not written unlinked"
+        );
+        Ok(())
+    }
+
+    /// The failed record still consumes its number, so the next record that
+    /// lands shows the gap.
+    #[test]
+    fn a_failed_reopen_leaves_a_visible_gap() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let sub = dir.path().join("logs");
+        std::fs::create_dir(&sub)?;
+        let path = sub.join("audit.jsonl");
+        let sink = AuditSink::open(&path)?;
+        sink.append(&rec("one"))?;
+        std::fs::remove_file(&path)?;
+        std::fs::remove_dir(&sub)?;
+        assert!(sink.append(&rec("lost")).is_err(), "the reopen fails");
+        std::fs::create_dir(&sub)?;
+        sink.append(&rec("three"))?;
+        assert_eq!(seqs(&path)?, vec![3], "seq 2 is the visible hole");
+        Ok(())
+    }
+
+    /// A directory put at the path: the reopen fails and says which path.
+    #[test]
+    fn a_directory_at_the_path_is_an_error_naming_it() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("audit.jsonl");
+        let sink = AuditSink::open(&path)?;
+        sink.append(&rec("before"))?;
+        std::fs::rename(&path, dir.path().join("old"))?;
+        std::fs::create_dir(&path)?;
+        let err = sink
+            .append(&rec("after"))
+            .err()
+            .ok_or("appending to a directory must fail")?;
+        assert!(
+            err.to_string().contains("audit.jsonl"),
+            "the error names the path: {err}"
         );
         Ok(())
     }

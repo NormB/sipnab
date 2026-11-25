@@ -20,6 +20,11 @@ entry that carries them.
 
 ### Fixed
 
+- **The audit and evidence files follow log rotation.**
+  - Was: After a rename or removal, sipnab wrote `--mcp-audit-file`, `--tui-audit-file` and `--evidence-out` records into the moved or deleted file until it restarted.
+  - Effect: The next record goes to a new file at the configured path, and `seq` continues from the old file.
+  - Do: Rotate with logrotate's default `create` mode; `copytruncate` is no longer needed.
+  - Docs: [Rotate the audit and provenance files](docs/run-as-a-service.md#rotate-the-audit-and-provenance-files)
 - **`--split` and `--autostop filesize:` count name and TLS key blocks in pcapng output.**
   - Was: They left out the name-resolution and key-log blocks, so files and runs grew past the limit.
   - Effect: Both limits count every byte of the file on disk.
