@@ -1188,7 +1188,17 @@ impl App {
     /// the stores.
     fn drive_relay_sessions(&mut self, call_id: Option<&str>, mode: RelayStatsMode) {
         let now = std::time::Instant::now();
-        self.relay_sessions.absorb(now);
+        // The store is read only while a snapshot is in flight: a landed one
+        // samples the capture once, for its capture rate.
+        if self.relay_sessions.pending() {
+            let ss = self.stream_store.read();
+            let counts = crate::output::query::relay_capture::counts_in(&ss);
+            self.relay_sessions.absorb_rated(
+                now,
+                crate::relay::rate::monotonic_now(),
+                Some(&counts),
+            );
+        }
         let access = match &self.relay_query {
             relay_stats::RelayQueryState::Ready(a) => a.clone(),
             other => {
@@ -5982,6 +5992,7 @@ mod relay_s0_tests {
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .push(format!("query {c}"));
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: c.to_string(),
                 tags: vec![RelayTag {
                     tag: "caller-tag-1".to_string(),

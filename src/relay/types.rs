@@ -365,6 +365,9 @@ pub struct CallView {
     pub call_id: String,
     /// Each side of the call.
     pub tags: Vec<RelayTag>,
+    /// Which call of the ones that used this Call-ID the relay answered
+    /// about, from its creation stamp; `None` when the reply carried none.
+    pub incarnation: Option<crate::relay::rate::Incarnation>,
 }
 
 #[cfg(test)]
@@ -384,6 +387,7 @@ mod tests {
             ),
             (
                 ControlReply::Call(CallView {
+                    incarnation: None,
                     call_id: "call-1@192.0.2.10".to_string(),
                     tags: Vec::new(),
                 }),

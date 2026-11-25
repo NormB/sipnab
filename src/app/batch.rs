@@ -3071,6 +3071,9 @@ pub struct CaptureFeed {
 /// takes over the kill worker process and spawns the companion-server
 /// thread) and drives its receive loop to completion. Either way this
 /// function blocks until the batch run is over.
+///
+/// Returns the run's stores, everything else already dropped: see
+/// [`RunStores`].
 pub fn run(
     cli: Cli,
     config: &Config,
@@ -3078,7 +3081,7 @@ pub fn run(
     feed: CaptureFeed,
     batch: BatchProcessing,
     policy: CapturePolicy,
-) {
+) -> RunStores {
     let CaptureFeed {
         handle,
         rx,
@@ -3120,8 +3123,89 @@ pub fn run(
             fatal.exit_after(|| capture::stop_and_join(handle, rx));
         }
     };
-    runner.run_loop(capture_config, handle, rx);
+    runner.run_loop(capture_config, handle, rx)
 }
+
+/// The dialog and stream stores of a finished batch run, handed back by
+/// [`run`] instead of freed with the rest of the run's state.
+///
+/// Freeing the dialog store is one reference-count decrement and one free per
+/// retained message part: 1.89% of the instructions of a SIP-only batch run
+/// in a callgrind profile, spent on memory the operating system takes back
+/// when the process exits a moment later. A caller about to exit passes the
+/// stores to [`RunStores::release_run_and_exit`], which keeps them alive
+/// until the exit. A caller that keeps running drops this value, which frees
+/// both stores as before.
+///
+/// Neither store owns a file, socket, thread, channel or child process, or
+/// any value whose `Drop` writes, flushes, renames or deletes something: the
+/// writer, the event engine, the companion servers and the SRTP keys belong
+/// to the run itself and are dropped with it, in the same order as before.
+#[must_use = "dropping RunStores frees both stores; pass them to \
+              RunStores::release_run_and_exit when the process is about to exit"]
+pub struct RunStores {
+    /// The run's dialog store (the same `Arc` the companion servers read).
+    dialogs: Arc<RwLock<DialogStore>>,
+    /// The run's RTP stream store (the same `Arc` the companion servers read).
+    streams: Arc<RwLock<StreamStore>>,
+}
+
+impl RunStores {
+    /// The stores of one run.
+    pub(crate) fn new(
+        dialogs: Arc<RwLock<DialogStore>>,
+        streams: Arc<RwLock<StreamStore>>,
+    ) -> Self {
+        Self { dialogs, streams }
+    }
+
+    /// [`crate::capture::archive::release_run_and_exit`] with `code`. A batch
+    /// run's `stores` (`None` after a run with none, such as the TUI) are kept
+    /// alive until the process is gone instead of being freed first.
+    ///
+    /// The stores stay reachable from a process-wide static, so a leak
+    /// checker reports them as still reachable at exit, not as lost.
+    pub fn release_run_and_exit(stores: Option<Self>, code: i32) -> ! {
+        Self::keep(stores, &EXIT_HOLD);
+        crate::capture::archive::release_run_and_exit(code)
+    }
+
+    /// Hand `stores`, when there are any, to `hold`.
+    fn keep(stores: Option<Self>, hold: &ExitHold) {
+        if let Some(stores) = stores {
+            hold.hold((stores.dialogs, stores.streams));
+        }
+    }
+}
+
+/// Values kept alive until the process exits, reachable from a static.
+pub(crate) struct ExitHold {
+    /// Everything handed over, in order.
+    held: parking_lot::Mutex<Vec<Box<dyn std::any::Any + Send>>>,
+}
+
+impl ExitHold {
+    /// An empty hold; `const` so it can be a `static`.
+    pub(crate) const fn new() -> Self {
+        Self {
+            held: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Keep `value` alive for as long as this hold lives.
+    pub(crate) fn hold<T: Send + 'static>(&self, value: T) {
+        self.held.lock().push(Box::new(value));
+    }
+
+    /// How many values this hold keeps.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.held.lock().len()
+    }
+}
+
+/// The process-wide hold [`RunStores::release_run_and_exit`] fills.
+static EXIT_HOLD: ExitHold = ExitHold::new();
 
 /// All owned batch-mode state: writer, detector engines, decryption state,
 /// stores, and companion-server handles. Built once by `BatchRunner::new`
@@ -4225,12 +4309,15 @@ impl BatchRunner {
     /// `--call-report` lookup (code 1), or a failed output-file *write* or
     /// final flush (code 1) — the last of which previously logged and exited
     /// 0, so a capture truncated by ENOSPC reported success.
+    ///
+    /// Returns the two stores; the rest of the runner is dropped here, as
+    /// before (see [`RunStores`]).
     fn run_loop(
         mut self,
         capture_config: CaptureConfig,
         handle: capture::CaptureHandle,
         rx: capture::channel::PacketRx,
-    ) {
+    ) -> RunStores {
         let mut lp = ReceiveLoop::new(&mut self);
 
         // Taken before `rx` is dropped at the end of the loop: the meter is
@@ -4368,6 +4455,16 @@ impl BatchRunner {
             crate::output::run_integrity::print_exit_notice();
             crate::capture::archive::release_run_and_exit(code);
         }
+
+        // Only the two stores move out. Every other field of the runner, and
+        // the locals above, still drop at the end of this function in the
+        // order they always did.
+        let BatchRunner {
+            dialog_store,
+            stream_store,
+            ..
+        } = self;
+        RunStores::new(dialog_store, stream_store)
     }
 
     /// One pass of the receive loop: the stop checks, the periodic work, one
@@ -10782,6 +10879,9 @@ fn apply_plugins(
     out.push('\n');
     out
 }
+
+#[cfg(test)]
+mod run_stores_tests;
 
 #[cfg(test)]
 mod tests {

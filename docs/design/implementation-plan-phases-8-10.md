@@ -251,7 +251,7 @@ Two cleanups land before any MCP work because every subsequent sub-phase builds 
 
 **8.0a — Parse-path consolidation** (~1.5 days)
 
-- [ ] **Audit the double-parse in batch+API mode.** Verified call chain today: `processor.process()` ([`src/app/batch.rs:2412`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2412)<!-- "tls.late_still_held ));" -->) does Ethernet/IP/TCP/UDP reassembly only — no SIP parsing. `process_parsed_packet()` ([`src/app/batch.rs:6039`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L6039)<!-- "fn process_parsed_packet(" -->) does the first SIP parse + `dialog_store.process_message` against the local store. `mirror_to_shared_stores()` (`:1326` invocation, `:2142` definition) does a second full SIP parse + a second `dialog_store.process_message` against the `Arc<RwLock<...>>` shared store. Result: every matching packet is parsed twice when `--api` is on in batch mode.
+- [ ] **Audit the double-parse in batch+API mode.** Verified call chain today: `processor.process()` ([`src/app/batch.rs:2412`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2412)<!-- "tls.late_still_held ));" -->) does Ethernet/IP/TCP/UDP reassembly only — no SIP parsing. `process_parsed_packet()` ([`src/app/batch.rs:6136`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L6136)<!-- "fn process_parsed_packet(" -->) does the first SIP parse + `dialog_store.process_message` against the local store. `mirror_to_shared_stores()` (`:1326` invocation, `:2142` definition) does a second full SIP parse + a second `dialog_store.process_message` against the `Arc<RwLock<...>>` shared store. Result: every matching packet is parsed twice when `--api` is on in batch mode.
 - [ ] **Refactor batch mode to share stores from the start**, mirroring the TUI mode pattern (which already passes `Arc<RwLock<...>>` between the processing thread and `start_api_server`). After the refactor: one parse per packet, regardless of how many output sinks are attached. The EventBus from 8.4a will subscribe off this single parse path.
 - [ ] **Gate:** `cargo bench parser_bench` shows no regression in batch-without-API throughput, and shows the previous batch-with-API throughput approximately double (because the second parse is gone). An end-to-end test confirms `cargo run -- -I <pcap> --api :0 --json` produces JSON output identical to the pre-refactor output.
 
@@ -1682,17 +1682,17 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5943`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5943)<!-- "async fn get_stats(" -->) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5947`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5947)<!-- "async fn get_stats(" -->) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1249`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1249)<!-- "pub fn parse_bind_addr(addr:" -->) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1253`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1253)<!-- "pub fn parse_bind_addr(addr:" -->) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:288`](https://github.com/NormB/sipnab/blob/4eadcc9d8d9a2a8b6db252ec3d9a3a8008f0e15f/src/output/api.rs#L288), `:309`) |
-| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:587`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L587)<!-- "pub struct RateLimiter {" -->) |
+| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:591`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L591)<!-- "pub struct RateLimiter {" -->) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |
-| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:1092`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1092)<!-- "pub fn build_router(state:" -->) with new routes; reuse the existing `guard()` middleware |
+| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:1096`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1096)<!-- "pub fn build_router(state:" -->) with new routes; reuse the existing `guard()` middleware |
 
 | Phase 8.4 sink | Wraps |
 |---|---|

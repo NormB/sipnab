@@ -143,13 +143,20 @@ pub(super) fn relay_sessions(
         routing,
         sdp_of: &no_sdp,
     });
-    let answer = relay_sessions_routed(
-        relay,
-        routed.as_ref(),
-        permit,
-        &ask,
-        &|_| false,
-        &chrono::Utc::now,
+    let interval = sessions_interval(cli);
+    let answer = sessions_answer(
+        &mut || {
+            relay_sessions_routed(
+                relay,
+                routed.as_ref(),
+                permit,
+                &ask,
+                &|_| false,
+                &chrono::Utc::now,
+            )
+        },
+        interval,
+        &mut std::thread::sleep,
     );
     let json = !matches!(super::answer_form(cli), super::AnswerForm::Table(_));
     if !answer.answered() && !json {
@@ -168,6 +175,46 @@ pub(super) fn relay_sessions(
     } else {
         FAILED
     }
+}
+
+/// The gap between the two snapshots of a rated `--relay-sessions`:
+/// `--relay-stats-interval`, or `None` for one snapshot.
+fn sessions_interval(cli: &crate::cli::Cli) -> Option<std::time::Duration> {
+    cli.rtp_args
+        .relay_stats_interval
+        .map(std::time::Duration::from_secs)
+}
+
+/// The answer `--relay-sessions` prints: one snapshot from `take`, its
+/// sockets reading `no_rate_yet`, or, with `interval`, two snapshots
+/// `interval` apart (`wait` sleeps between them), the second carrying each
+/// RTP socket's rate since the first.
+///
+/// The run reads no media, so every `captured_rate` reads `not_captured`.
+/// A first snapshot whose `list` was not answered is the answer: nothing is
+/// asked again.
+fn sessions_answer(
+    take: &mut dyn FnMut() -> crate::output::query::relay_sessions::RelaySessions,
+    interval: Option<std::time::Duration>,
+    wait: &mut dyn FnMut(std::time::Duration),
+) -> crate::output::query::relay_sessions::RelaySessions {
+    let mut memory = crate::relay::rate::RateMemories::default();
+    let Some(gap) = interval else {
+        // One snapshot: every socket reads `no_rate_yet`, the same answer a
+        // first REST or MCP ask gives.
+        let mut only = take();
+        only.attach_rates(&mut memory, None, crate::relay::rate::monotonic_now());
+        return only;
+    };
+    let mut first = take();
+    if !first.answered() {
+        return first;
+    }
+    first.attach_rates(&mut memory, None, crate::relay::rate::monotonic_now());
+    wait(gap);
+    let mut second = take();
+    second.attach_rates(&mut memory, None, crate::relay::rate::monotonic_now());
+    second
 }
 
 /// The exit status of a relay ask that brought back no call list.
@@ -273,6 +320,199 @@ mod tests {
         ];
         argv.extend_from_slice(extra);
         Ok(crate::cli::Cli::try_parse_from_args(argv)?)
+    }
+
+    /// One snapshot of `relay` as `--relay-sessions` takes it.
+    fn snapshot_of(
+        relay: &Listing,
+        permit: &TransmitPermit,
+    ) -> crate::output::query::relay_sessions::RelaySessions {
+        use crate::output::query::relay_sessions::{SessionsAsk, relay_sessions};
+        let cap = crate::relay::scan_cap::ScanCap {
+            cap: crate::relay::scan_cap::SCAN_CAP_DEFAULT,
+            clamped: None,
+        };
+        relay_sessions(
+            relay,
+            permit,
+            &SessionsAsk::capped(None, true, cap),
+            &|_| false,
+            &chrono::Utc::now,
+        )
+    }
+
+    #[test]
+    fn success_a_rated_ask_takes_two_snapshots_the_interval_apart() -> Result<(), TestError> {
+        let relay = Listing::new(2);
+        let p = permit()?;
+        let mut waits = Vec::new();
+        let answer = super::sessions_answer(
+            &mut || snapshot_of(&relay, &p),
+            Some(std::time::Duration::from_secs(3)),
+            &mut |d| waits.push(d),
+        );
+        assert!(answer.answered(), "the second snapshot is the answer");
+        assert_eq!(
+            waits,
+            [std::time::Duration::from_secs(3)],
+            "one wait of the interval"
+        );
+        assert_eq!(
+            relay.lists_and_queries()?,
+            (vec!["list 32".to_string(), "list 32".to_string()], 4),
+            "two lists and two queries per held call, nothing more"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_interval_is_relay_stats_interval() -> Result<(), TestError> {
+        let cli = cli(&["--relay-sessions", "--relay-stats-interval", "5"])?;
+        assert_eq!(
+            super::sessions_interval(&cli),
+            Some(std::time::Duration::from_secs(5)),
+            "the flag's seconds"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_without_an_interval_one_snapshot_and_no_wait() -> Result<(), TestError> {
+        let relay = Listing::new(2);
+        let p = permit()?;
+        let mut waited = false;
+        let answer = super::sessions_answer(&mut || snapshot_of(&relay, &p), None, &mut |_| {
+            waited = true;
+        });
+        assert!(answer.answered(), "answered");
+        assert!(!waited, "no interval, no wait");
+        assert_eq!(
+            relay.lists_and_queries()?,
+            (vec!["list 32".to_string()], 2),
+            "one list and its queries"
+        );
+        assert_eq!(
+            super::sessions_interval(&cli(&["--relay-sessions"])?),
+            None,
+            "no flag, no interval"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_unanswered_first_snapshot_is_not_asked_again() -> Result<(), TestError> {
+        let relay = Listing::new(2);
+        let p = permit()?;
+        let mut waited = false;
+        let answer = super::sessions_answer(
+            &mut || {
+                let mut s = snapshot_of(&relay, &p);
+                s.reach = "unreachable".to_string();
+                s
+            },
+            Some(std::time::Duration::from_secs(1)),
+            &mut |_| waited = true,
+        );
+        assert!(!answer.answered(), "the failure is the answer");
+        assert!(!waited, "no wait after a failure");
+        assert_eq!(
+            relay.lists_and_queries()?.0.len(),
+            1,
+            "the relay was asked once"
+        );
+        Ok(())
+    }
+
+    /// `s` with each call answered and holding one RTP socket: the listing
+    /// relay answers no query, so the rate tests give its calls a socket.
+    fn with_one_rtp_socket(
+        mut s: crate::output::query::relay_sessions::RelaySessions,
+    ) -> crate::output::query::relay_sessions::RelaySessions {
+        use crate::output::query::relay_sessions::{
+            Counters, KernelVerdict, SessionSocket, SessionTag,
+        };
+        for c in &mut s.calls {
+            c.outcome = "ok".to_string();
+            c.tags = vec![SessionTag {
+                tag: "caller-tag-1".to_string(),
+                in_dialogue_with: Vec::new(),
+                is_media_subscriber: false,
+                sockets: vec![SessionSocket {
+                    local_address: "192.0.2.11".to_string(),
+                    local_port: 30000,
+                    media_index: Some(1),
+                    kind: "rtp".to_string(),
+                    endpoint: None,
+                    ingress: Counters {
+                        packets: Some(0),
+                        bytes: Some(0),
+                        errors: None,
+                    },
+                    egress: Counters::default(),
+                    last_packet: None,
+                    kernel: KernelVerdict::NotReported,
+                    ingress_rate: None,
+                    captured_rate: None,
+                }],
+            }];
+        }
+        s
+    }
+
+    /// The first socket of the first call.
+    fn first_socket(
+        s: &crate::output::query::relay_sessions::RelaySessions,
+    ) -> Result<&crate::output::query::relay_sessions::SessionSocket, TestError> {
+        Ok(s.calls
+            .first()
+            .and_then(|c| c.tags.first())
+            .and_then(|t| t.sockets.first())
+            .ok_or("no socket")?)
+    }
+
+    /// One snapshot gives the answer a first REST or MCP ask gives:
+    /// `no_rate_yet` from the relay, `not_captured` from the capture.
+    #[test]
+    fn success_a_one_shot_answer_reads_no_rate_yet_like_a_first_rest_ask() -> Result<(), TestError>
+    {
+        let relay = Listing::new(1);
+        let p = permit()?;
+        let answer = super::sessions_answer(
+            &mut || with_one_rtp_socket(snapshot_of(&relay, &p)),
+            None,
+            &mut |_| {},
+        );
+        let socket = first_socket(&answer)?;
+        assert_eq!(
+            socket.ingress_rate,
+            Some(crate::relay::rate::RateView::NoRateYet),
+            "one answer, no rate yet"
+        );
+        assert_eq!(
+            socket.captured_rate,
+            Some(crate::relay::rate::RateView::NotCaptured),
+            "the CLI reads no media"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_rated_answer_carries_rates_and_no_capture() -> Result<(), TestError> {
+        let relay = Listing::new(1);
+        let p = permit()?;
+        let answer = super::sessions_answer(
+            &mut || with_one_rtp_socket(snapshot_of(&relay, &p)),
+            Some(std::time::Duration::from_secs(1)),
+            &mut |_| {},
+        );
+        let socket = first_socket(&answer)?;
+        assert!(socket.ingress_rate.is_some(), "a relay rate is attached");
+        assert_eq!(
+            socket.captured_rate,
+            Some(crate::relay::rate::RateView::NotCaptured),
+            "the CLI reads no media"
+        );
+        Ok(())
     }
 
     /// `--relay-sessions` scans up to `--relay-holdings-max`.
