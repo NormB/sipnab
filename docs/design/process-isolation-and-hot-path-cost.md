@@ -140,7 +140,7 @@ in `playback.rs`, `privilege.rs`, `process_isolation.rs`, `crash.rs`,
 `etherparse`, `opus-decoder` (pure Rust, no FFI), `flate2` (`rust_backend`) and
 `wasmi` (interpreter, no JIT) are all memory-safe.
 
-The exception is **libpcap** (`pcap = "2"`, [`Cargo.toml:136`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L136)<!-- "pcap = { version = "2", optional = true }" -->),
+The exception is **libpcap** (`pcap = "2"`, [`Cargo.toml:139`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L139)<!-- "pcap = { version = "2", optional = true }" -->),
 a C library that touches every untrusted byte before Rust ever sees it, on both
 the live and the offline path. A memory-safety bug there executes inside an
 address space that also holds:
@@ -370,10 +370,10 @@ that copy is worth anything either.
 contains no `asm!`, no `core::arch`, and no `target_feature` anywhere:
 
 - `memchr` — SIMD CRLF scan in the SIP line scanner, replacing scalar
-  `windows(2)` ([`Cargo.toml:128`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L128)<!-- "memchr = "2"" -->),
+  `windows(2)` ([`Cargo.toml:131`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L131)<!-- "memchr = "2"" -->),
 - `ahash` — AES-backed hashing for the per-packet store lookups, replacing
   SipHash, which had been *"profiled at ~7% of total instructions"*
-  ([`Cargo.toml:124`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L124)<!-- "# keys (5-tuple/SSRC," -->),
+  ([`Cargo.toml:127`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L127)<!-- "# keys (5-tuple/SSRC," -->),
 - `smallvec` — removes the per-packet heap allocation in
   `PacketProcessor::process`,
 - `mimalloc` — replaces the system allocator for the whole native binary.

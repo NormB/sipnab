@@ -162,6 +162,7 @@ mod tests {
             input_origin: None,
             is_retransmission: false,
             also_seen_by: 0,
+            cache: Default::default(),
         };
 
         // This must not panic — the u16 fields saturate instead of overflowing.

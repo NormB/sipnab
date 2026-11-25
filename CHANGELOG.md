@@ -8,6 +8,17 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Repeated MCP reports, `find_problems` and `/metrics` scrapes use less CPU on large captures.**
+  - Effect: sipnab keeps each SIP message's CSeq position, and a summary of its SDP media lines once a query reads them.
+  - Effect: On a 100,000-call capture, 3 `get_capture_report` calls ran 33% fewer instructions, 3 `find_problems` calls 42%, 3 `GET /metrics` scrapes 39%.
+  - Effect: Reading 150,000 packets of a SIP capture with `-N` ran 0.85% fewer instructions; replies and output are unchanged.
+  - Limit: On the 100,000-call capture, resident memory was 3.2% higher after loading it and 4.6% higher after 3 reports.
+  - Docs: [Estimate memory for a larger capture](docs/benchmarks.md#estimate-memory-for-a-larger-capture)
+
 ## [0.5.271] - 2026-11-24
 
 ### Changed

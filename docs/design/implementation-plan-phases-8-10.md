@@ -1736,7 +1736,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `duration_asymmetry` | Compares stream start/end timestamps already tracked in `RtpStream` |
 | `late_media` | Compares first RTP packet timestamp against dialog's 200 OK timestamp (already tracked in `dialog.timing`) |
 | `one_sided_silence` | New analysis on decoded PCM samples from `audio_export`; energy threshold computation |
-| All six tags | Extend existing `MediaDiagnosis` struct in [`src/rtp/diagnosis.rs:239`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs#L239)<!-- "pub struct MediaDiagnosis {" --> (additive — backwards compatible JSON) |
+| All six tags | Extend existing `MediaDiagnosis` struct in [`src/rtp/diagnosis.rs:240`](https://github.com/NormB/sipnab/blob/main/src/rtp/diagnosis.rs#L240)<!-- "pub struct MediaDiagnosis {" --> (additive — backwards compatible JSON) |
 | Six new diagnostic aliases | Extend `expand_alias` in [`src/sip/dsl.rs:958`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L958)<!-- "pub fn expand_alias(alias:" --> |
 | TUI badges | Extend existing badge column in [`src/tui/call_list.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/call_list.rs) |
 | MCP `find_problems` integration | No code change — it consumes `expand_alias` already (Phase 8.3) |
