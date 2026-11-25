@@ -3114,6 +3114,12 @@ The script holds four rules:
 - `[Unreleased]` holds each heading once and each entry once.
 - A blank line comes before `## [Unreleased]`, before each of its headings and before the first released heading.
 - The released part of the base, from the first `## [x.y.z]` heading to the end, is the end of the staged file, byte for byte.
+  The same holds for the released part of `HEAD` and of the merge base of `HEAD` and `origin/main`.
+  - Why: on 2026-11-25 a merge train merged a branch from before release 0.5.272 into a train that held it.
+    The merge put the branch's `[Unreleased]` entries inside the released `[0.5.272]` section.
+    The branch's released part ends at 0.5.271, so a comparison with the branch alone passed four such merges.
+  - `HEAD` is the first parent of a merge, or the commit that a rebase or a cherry-pick builds on.
+  - With `--base <ref>`, the script compares the released part with that commit only.
 
 Verify: the script prints `the CHANGELOG is as the base <commit> has it` and exits 0.
 Exit 1 lists each problem with the first line of the entry and the two headings.
@@ -3127,6 +3133,8 @@ Troubleshooting:
   - When the commit rewrites released sections on purpose, write the sha256 that the message prints to
     [`.config/changelog-released.sha256`](../../.config/changelog-released.sha256) in the same commit.
     The rule passes when that file holds the sha256 of the released part and the base holds another value.
+- A message that starts with `against <commit> (HEAD, the commit this one is built on)`: the merge moved entries into a release that `HEAD` holds.
+  Move them back under `[Unreleased]`, under their headings.
 - The script does not judge the form of an entry. That is the subject of the format gate of the changelog.
 
 ### Re-measuring the benchmarks

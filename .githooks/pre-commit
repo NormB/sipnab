@@ -1055,7 +1055,9 @@ fi
 # a heading joined to an entry with no blank line; main's `Changed` entry
 # under the branch's `### Fixed`. The script compares the CHANGELOG.md of the
 # index with the one of the commit being merged (MERGE_HEAD), or of the
-# merge base with origin/main: the rules are in its docstring. A repository
+# merge base with origin/main, and the released part also with HEAD's, so a
+# merge of an old car into a train that holds a newer release cannot put
+# the car's entries inside it: the rules are in its docstring. A repository
 # with no origin/main and no merge in progress has no base to compare with,
 # and the step says so; CI runs the same script where the base always exists.
 step "CHANGELOG as the base has it"

@@ -23,12 +23,26 @@ otherwise the merge base of HEAD and origin/main, or `--base`.
 2. Each `###` heading is in [Unreleased] once, and each entry once.
 3. A blank line comes before `## [Unreleased]`, before each `###` heading of
    it and before the first released heading.
-4. The base's released part (from the first `## [x.y.z]` heading to the end)
-   is the end of ours, byte for byte. A release commit adds a section on top
-   and passes. A commit that rewrites released sections on purpose writes
-   the sha256 of the released part it leaves to
-   `.config/changelog-released.sha256`: the rule passes when the pin of the
-   index is that sha256 and is not the base's pin.
+4. The released part (from the first `## [x.y.z]` heading to the end) of
+   every commit the result is built on is the end of ours, byte for byte:
+   the base, HEAD (the first parent, or the commit a rebase or a
+   cherry-pick replays onto) and the merge base of HEAD and origin/main. A
+   release commit adds a section on top and passes. A commit that rewrites
+   released sections on purpose writes the sha256 of the released part it
+   leaves to `.config/changelog-released.sha256`: the rule passes against a
+   commit when the pin of the index is that sha256 and is not that commit's
+   pin. With `--base`, that commit alone is compared.
+
+   Why every commit and not the base alone: on 2026-11-25 a merge train
+   merged a car branch forked before the 0.5.272 release (MERGE_HEAD) into a
+   train that held it, and the merge put the car's [Unreleased] entries
+   inside the released [0.5.272] section. The car's released part, 0.5.271
+   and older, is the end of any newer one, so the gate passed four such
+   merges. HEAD held 0.5.272 and refuses them. Neither origin/main's tip nor
+   the newest tag is the rule: a branch forked before a release does not
+   hold it and would fail against either for no fault of its own, and a tag
+   may not be fetched. A commit never changes what was released before it,
+   so each commit it is built on judges its own released part.
 
 The format of an entry is not judged here: that is the subject of the
 changelog's format gate.
@@ -133,8 +147,12 @@ def released_problem(ours: str, base: str, pin: str, base_pin: str) -> list[str]
             f"{digest} to {PIN} in the same commit."]
 
 
-def check(ours: str, base: str, pin: str = "", base_pin: str = "") -> list[str]:
-    """The problems of `ours` against `base`, both whole CHANGELOG texts."""
+def check(ours: str, base: str, pin: str = "", base_pin: str = "", others=()) -> list[str]:
+    """The problems of `ours` against `base`, both whole CHANGELOG texts.
+
+    `others` holds (label, CHANGELOG text or None, pin) of the other commits
+    the result is built on: rule 4 alone applies to them. A commit without a
+    CHANGELOG has released nothing."""
     problems = []
     our_unreleased, our_released = split(ours)
     base_unreleased, base_released = split(base)
@@ -158,6 +176,10 @@ def check(ours: str, base: str, pin: str = "", base_pin: str = "") -> list[str]:
                             f"the base: move it (its lead line and its sub-bullets) {where(entry.heading)}.")
     problems += blank_line_problems(ours)
     problems += released_problem(our_released, base_released, pin, base_pin)
+    for label, text, other_pin in others:
+        if text is not None:
+            problems += [f"against {label}: {problem}"
+                         for problem in released_problem(our_released, split(text)[1], pin, other_pin)]
     return problems
 
 
@@ -180,15 +202,39 @@ def git(repo, *args):
     return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
 
 
-def find_base(repo) -> tuple[str | None, str]:
-    """(the base commit, how it was chosen)."""
-    merging = git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD^{commit}")
-    if merging:
-        return merging.strip(), "MERGE_HEAD, the commit being merged"
-    base = git(repo, "merge-base", "HEAD", "origin/main")
-    if base:
-        return base.strip(), "the merge base of HEAD and origin/main"
-    return None, "no merge base of HEAD and origin/main: fetch origin/main, or pass --base"
+MERGING = "MERGE_HEAD, the commit being merged"
+MAIN_BASE = "the merge base of HEAD and origin/main"
+ON_TOP_OF = "HEAD, the commit this one is built on"
+
+
+def choose_bases(explicit: str, merge_head: str, head: str, main_base: str):
+    """(the base, how it was chosen, [(commit, how)] whose released part ours
+    must end with), from the commits git names; an empty string is a commit
+    that does not exist. The base is None when there is none."""
+    if explicit:
+        return explicit, "--base", [(explicit, "--base")]
+    base, how = (merge_head, MERGING) if merge_head else (main_base, MAIN_BASE)
+    if not base:
+        return None, "no merge base of HEAD and origin/main: fetch origin/main, or pass --base", []
+    released = []
+    for commit, why in ((base, how), (head, ON_TOP_OF), (main_base, MAIN_BASE)):
+        if commit and commit not in (c for c, _ in released):
+            released.append((commit, why))
+    return base, how, released
+
+
+def commit_of(repo, rev) -> str:
+    """The full name of `rev`, or an empty string when it does not exist."""
+    return (git(repo, "rev-parse", "-q", "--verify", f"{rev}^{{commit}}") or "").strip()
+
+
+def find_bases(repo, explicit: str = ""):
+    """choose_bases() for the repository's MERGE_HEAD, HEAD and merge base of
+    HEAD and origin/main."""
+    if explicit:
+        return choose_bases(explicit, "", "", "")
+    return choose_bases("", commit_of(repo, "MERGE_HEAD"), commit_of(repo, "HEAD"),
+                        (git(repo, "merge-base", "HEAD", "origin/main") or "").strip())
 
 
 def main(argv=None) -> int:
@@ -199,7 +245,7 @@ def main(argv=None) -> int:
         args = p.parse_args(argv)
     except SystemExit:
         return 2
-    base, how = (args.base, "--base") if args.base else find_base(args.repo)
+    base, how, released = find_bases(args.repo, args.base)
     if not base:
         print(f"check-changelog-merge: {how}", file=sys.stderr)
         return 2
@@ -209,13 +255,17 @@ def main(argv=None) -> int:
         which = "the index" if ours is None else base
         print(f"check-changelog-merge: {FILE} could not be read from {which}", file=sys.stderr)
         return 2
-    problems = check(ours, theirs, pin_of(git(args.repo, "show", f":{PIN}")), pin_of(git(args.repo, "show", f"{base}:{PIN}")))
+    others = [(f"{commit[:12]} ({why})", git(args.repo, "show", f"{commit}:{FILE}"),
+               pin_of(git(args.repo, "show", f"{commit}:{PIN}"))) for commit, why in released if commit != base]
+    problems = check(ours, theirs, pin_of(git(args.repo, "show", f":{PIN}")),
+                     pin_of(git(args.repo, "show", f"{base}:{PIN}")), others)
     if problems:
         print(f"check-changelog-merge: {FILE} of the index against {base[:12]} ({how}):", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
-    print(f"check-changelog-merge: the CHANGELOG is as the base {base[:12]} has it ({how})")
+    also = "".join(f"; its released part holds the one of {label}" for label, _, _ in others)
+    print(f"check-changelog-merge: the CHANGELOG is as the base {base[:12]} has it ({how}){also}")
     return 0
 
 

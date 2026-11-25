@@ -19,6 +19,7 @@ Default OUTPUT_DIR is `build/wiki`.
 
 from __future__ import annotations
 
+import argparse
 import posixpath
 import re
 import sys
@@ -381,10 +382,26 @@ def build_footer() -> str:
     )
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """The optional output path. argparse, not a fixed slot of the argument list: a `--help` read
+    as a path writes the wiki into a directory named `--help`. Tested by
+    scripts/tests/test_generator_args.py."""
+    p = argparse.ArgumentParser(
+        prog="build-wiki.py",
+        description="Build the GitHub wiki pages from docs/.",
+    )
+    p.add_argument(
+        "output_dir", nargs="?", type=Path, metavar="OUTPUT_DIR",
+        help="where the pages go (default build/wiki)",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     root = Path(__file__).resolve().parent.parent
     docs = root / "docs"
-    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else root / "build" / "wiki"
+    out_dir = args.output_dir or root / "build" / "wiki"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     missing = [s for s in PAGES if not (docs / s).is_file()]
