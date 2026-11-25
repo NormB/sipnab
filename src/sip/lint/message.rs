@@ -21,9 +21,9 @@ use super::finding::{
     BRANCH_COOKIE, CONTACT_MISSING_IN_2XX, CONTENT_LENGTH_MISMATCH, CSEQ_MALFORMED,
     CSEQ_METHOD_MISMATCH, HEADER_CONTROL_BYTE, MANDATORY_HEADER_MISSING, MAX_FORWARDS_MISSING,
     MAX_FORWARDS_RANGE, MIN_SE_TOO_SMALL, RECORD_ROUTE_NOT_LOOSE, REFRESHER_MISSING,
-    RELIABLE_PROVISIONAL_WITHOUT_RSEQ, SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL,
-    SESSION_ID_LEGACY_FORM, SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE, SINGULAR_HEADER_REPEATED,
-    URI_BRACKETS, URI_PARAM_DEMOTED, VIA_BRANCH_DUPLICATE,
+    RELIABLE_PROVISIONAL_WITHOUT_RSEQ, REQUEST_LINE_SPACING, SESSION_EXPIRES_BELOW_MIN_SE,
+    SESSION_EXPIRES_TOO_SMALL, SESSION_ID_LEGACY_FORM, SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE,
+    SINGULAR_HEADER_REPEATED, URI_BRACKETS, URI_PARAM_DEMOTED, VIA_BRANCH_DUPLICATE,
 };
 
 /// The five header fields [RFC 3261 section 8.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1) makes mandatory in every request and
@@ -121,12 +121,50 @@ pub(crate) fn content_length_overrun(msg: &SipMessage) -> Option<usize> {
     (declared > msg.body.len()).then_some(declared)
 }
 
-/// True when `s` holds a C0 control byte or DEL.
+/// True for a C0 control byte or DEL other than tab, which is legal linear
+/// whitespace in a header value.
+const fn is_control_byte(b: u8) -> bool {
+    (b < 0x20 && b != b'\t') || b == 0x7f
+}
+
+/// True when `s` holds a control byte that no `quoted-pair` makes legal.
 ///
-/// Tab is legal linear whitespace in a header value, so it is excluded. CR and
-/// LF cannot survive line parsing, so finding one here is itself anomalous.
+/// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) gives `quoted-pair = "\" (%x00-09 / %x0B-0C / %x0E-7F)`
+/// inside a `quoted-string`, so an escaped BEL, NUL or DEL in a quoted display
+/// name is well formed: [RFC 4475 section 3.1.1.2](https://www.rfc-editor.org/rfc/rfc4475.html#section-3.1.1.2) (`intmeth`) sends exactly that
+/// and calls the message valid. Every other control byte is outside the
+/// grammar. An escape counts only once its quoted-string closes, because a
+/// quote that never closes holds no quoted-pair. CR and LF cannot survive line
+/// parsing, so finding one here, escaped or not, is itself anomalous.
 fn has_control_bytes(s: &str) -> bool {
-    s.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7f)
+    let mut bytes = s.bytes();
+    let mut in_quote = false;
+    // An escaped control byte inside a quoted-string that has not closed yet.
+    let mut escaped_in_open_quote = false;
+    while let Some(b) = bytes.next() {
+        if !in_quote {
+            if b == b'"' {
+                in_quote = true;
+            } else if is_control_byte(b) {
+                return true;
+            }
+            continue;
+        }
+        match b {
+            b'\\' => match bytes.next() {
+                Some(b'\r' | b'\n') => return true,
+                Some(e) if is_control_byte(e) => escaped_in_open_quote = true,
+                _ => {}
+            },
+            b'"' => {
+                in_quote = false;
+                escaped_in_open_quote = false;
+            }
+            _ if is_control_byte(b) => return true,
+            _ => {}
+        }
+    }
+    escaped_in_open_quote
 }
 
 /// The names of every header whose name or value carries a control byte.
@@ -219,6 +257,7 @@ pub(crate) fn lint(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     uri_brackets(msg, index, sink);
     max_forwards(msg, index, sink);
     branch_cookie(msg, index, sink);
+    request_line_spacing(msg, index, sink);
     cseq_method(msg, index, sink);
     session_timers(msg, index, sink);
     dialog_target(msg, index, sink);
@@ -746,6 +785,42 @@ fn branch_cookie(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
          identifies a stack predating RFC 3261 in one field. Transaction matching then \
          falls back to the RFC 2543 rules, and CANCEL and ACK correlation stop being \
          reliable.",
+    );
+}
+
+/// Whether a Request-Line breaks the single-SP rule of [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1):
+/// whitespace before the method or after the version, a run of more than one
+/// SP or HTAB, or an HTAB used as the separator.
+pub(crate) fn request_line_spacing_broken(line: &[u8]) -> bool {
+    let sp = |b: &u8| matches!(b, b' ' | b'\t');
+    line.first().is_some_and(sp)
+        || line.last().is_some_and(sp)
+        || line.contains(&b'\t')
+        || line.windows(2).any(|w| w[0] == b' ' && w[1] == b' ')
+}
+
+/// [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1) — Request-Line elements separated by single SP.
+///
+/// Requests only: a Status-Line's Reason-Phrase may hold any run of spaces.
+/// The parser tolerates the extra whitespace (RFC 4475 sections 3.1.2.9 and
+/// 3.1.2.10 permit that), so this is where it becomes visible.
+fn request_line_spacing(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    if !msg.is_request {
+        return;
+    }
+    let raw: &[u8] = &msg.raw;
+    let line = crate::sip::parser::find_crlf(raw).map_or(raw, |end| &raw[..end]);
+    if !request_line_spacing_broken(line) {
+        return;
+    }
+    sink.push(
+        &REQUEST_LINE_SPACING,
+        index,
+        "Request-Line with extra or trailing whitespace",
+        "Method SP Request-URI SP SIP-Version CRLF, one SP each",
+        "§7.1 separates the three elements by single SP characters. A strict \
+         receiver rejects the extra whitespace with 400; a lenient one forwards a \
+         line it has to rewrite.",
     );
 }
 

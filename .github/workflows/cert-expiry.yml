@@ -39,6 +39,10 @@ on:
       - '.github/workflows/cert-expiry.yml'
       - 'website/static/CNAME'
       - 'website/config.toml'
+      # The security.txt check and the files it reads.
+      - 'scripts/check-security-txt.py'
+      - 'website/static/.well-known/security.txt'
+      - 'SECURITY.md'
 
 permissions:
   contents: read
@@ -84,6 +88,18 @@ jobs:
 
       - name: The edge certificate has time left
         run: sh scripts/check-cert-expiry.sh sipnab.com
+
+      - name: The committed security.txt has time left
+        # RFC 9116 security.txt carries an Expires date, after which the file
+        # is stale. This fails while 30 days or fewer are left, so the file is
+        # renewed before it expires, and it runs on a push of the file.
+        run: python3 scripts/check-security-txt.py --file website/static/.well-known/security.txt
+
+      - name: The live security.txt has time left
+        # The file the site serves. Not on a push: a push that changes the
+        # file cannot have been deployed yet.
+        if: github.event_name != 'push'
+        run: python3 scripts/check-security-txt.py --url https://sipnab.com/.well-known/security.txt
 
       - name: The origin certificate, and whether anything depends on it
         # The one that actually expired. GitHub Pages' addresses are stable and

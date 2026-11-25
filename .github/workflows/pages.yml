@@ -58,6 +58,10 @@ on:
       # The `live` job's check, and the stamp the build writes for it.
       - 'scripts/pages-live.py'
       - 'scripts/verify-site-advertises.sh'
+      # The security.txt check before the upload, and the policy it holds
+      # the file to.
+      - 'scripts/check-security-txt.py'
+      - 'SECURITY.md'
   # release.yml's `advertise` job dispatches this on main once a release's
   # assets are published, with `expect` set to that release, and waits for
   # the run (RELEASE-FAST C: no phase-two pull request).
@@ -239,6 +243,9 @@ jobs:
           # pre-commit hook runs, applied to the artifact actually deployed.
           python3 scripts/check-wasm-exports.py
           ls -l website/static/wasm/sipnab_bg.wasm
+          # wasm-pack writes a .gitignore into its output directory. The
+          # upload includes hidden paths (for /.well-known/), so it goes.
+          rm -f website/static/wasm/.gitignore
 
       # The YANG module the RFC 7951 export validates against, served at
       # https://sipnab.com/yang/<module>@<revision>.yang. Copied here rather
@@ -391,6 +398,13 @@ jobs:
           test -s website/public/pagefind/pagefind.js
           test -s website/public/pagefind/pagefind-entry.json
 
+      # The built site serves /.well-known/security.txt, valid and not within
+      # 30 days of its Expires, and holds no other hidden path, because the
+      # upload below includes hidden paths. It reads the tree and changes
+      # nothing, so the record below stays the last step before the upload.
+      - name: The built site's security.txt
+        run: python3 scripts/check-security-txt.py --site website/public
+
       # What the built download page advertises, as a static file beside the
       # stamp: the stamp, the release and the page's sha256
       # (CDN-REFUSED-RELEASE-CHECK-FROM-RUNNER). The CDN answers a hosted
@@ -406,10 +420,15 @@ jobs:
       - name: Record what the built download page advertises
         run: python3 scripts/pages-live.py advertised --site website/public --config website/config.toml
 
+      # RFC 9116 places security.txt under /.well-known/, and the upload
+      # action leaves out every path that starts with a dot unless
+      # include-hidden-files is true: without it the site answered 404 there.
+      # The step before the upload refuses any other hidden path.
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: website/public
+          include-hidden-files: true
 
       # The workspace's own executables are rebuilt by any change to the
       # sources, so they are removed before the save; see the script.

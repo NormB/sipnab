@@ -6516,11 +6516,14 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
             //
             // `sipnab.js` is NOT here and must keep existing: it is text, the
             // export guard reads it, and its absence is a real failure.
-            const GENERATED: [&str; 9] = [
+            const GENERATED: [&str; 10] = [
                 "website/public",
                 "build/",
                 "target/",
                 "website/static/wasm/sipnab_bg.wasm",
+                // wasm-pack writes it beside the bundle; pages.yml deletes it
+                // before the upload, which includes hidden paths.
+                "website/static/wasm/.gitignore",
                 // pages.yml copies the YANG module here at deploy; yang/ holds
                 // the one committed copy.
                 "website/static/yang",
@@ -6961,7 +6964,15 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 338 -> 340 (CodeQL bundle pinned): codeql.yml names
     // `scripts/codeql-full-analysis.py` in its comment and in its command
     // (+2). Measurement: the scan read 340 with the change staged.
-    const EXPECTED_REFERENCES: usize = 340;
+    // 340 -> 347 (security.txt): pages.yml's path filter and its new step
+    // name `scripts/check-security-txt.py` (+2); its `rm` of
+    // `website/static/wasm/.gitignore` is on the GENERATED list and not
+    // counted. cert-expiry.yml's path filter and its two new steps name the
+    // script three times and `website/static/.well-known/security.txt`
+    // twice (+5). Measurement: before the GENERATED entry the scan read 348,
+    // 345 with origin/main's pages.yml swapped back in and 343 with
+    // origin/main's cert-expiry.yml.
+    const EXPECTED_REFERENCES: usize = 347;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
