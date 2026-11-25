@@ -25,7 +25,7 @@ entry that carries them.
   - Effect: The operating system takes the memory back at exit; the output, the output files and the exit status stay the same.
   - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 1.90% fewer instructions, and one with RTP 1.75% fewer.
   - Limit: callgrind counted the instructions; there is no wall-time figure, because the host stayed busy.
-- **Changelog sections 0.5.214 down to 0.5.190 are outlines too.**
+- **Changelog sections 0.5.214 down to 0.5.187 are outlines too.**
   - Effect: each entry says what changed, what to do and where the detail is; entries about hooks, CI and tests are removed.
   - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
 
@@ -3652,689 +3652,163 @@ entry that carries them.
 
 ### Added
 
-- **`sipnab-bpf-types` 0.1.2 shows how its records are read, and reads
-  them itself.**
-  - The crate behind `--uprobe-backend bpf` had no example on its docs.rs
-    page.
-  - The rules a reader must get right lived only in sipnab's private decoder.
-  - Its README is now also its docs.rs front page.
-    - It opens with what the crate powers.
-    - It says how an operator turns that capture on.
-    - It links the
-      [uprobe walkthrough](docs/uprobe-walkthrough.md#walkthrough-the-ebpf-backend).
-  - New public functions carry the reading rules:
-    - `TlsRecord::read` refuses a sample shorter than the header.
-      - It bounds the payload by `len`, `MAX_PAYLOAD` and the bytes that
-        arrived.
-    - `TlsRecord::socket_addrs` reports a peer only under `FLAG_HAS_TUPLE`.
-    - `command`, `header_bytes` and `ZEROED` complete them.
-  - sipnab's decoder calls them, and its private copy is gone.
-
-    - So sipnab now requires `sipnab-bpf-types` 0.1.2.
-  - Every example on the page runs as a doctest and asserts.
-  - The pre-commit hook and CI now run that crate's tests.
-    - Neither ran them before.
-  - `tests/crate_front_page_test.rs` holds this page to the same rules as
-    sipnab's own front page.
-  - The `crates-io` release job publishes 0.1.2 with the next sipnab release.
-
+- **`sipnab-bpf-types` 0.1.2 documents how to read its records, and reads them itself.**
+  - Was: the crate behind `--uprobe-backend bpf` had no example on its docs.rs page, and the reading rules lived only in sipnab's private decoder.
+  - Effect: its README is its docs.rs front page: what the crate powers, how to turn the capture on, and every example runs as a doctest.
+  - Effect: `TlsRecord::read` refuses a short sample and bounds the payload by `len`, `MAX_PAYLOAD` and the bytes that arrived.
+  - Effect: `TlsRecord::socket_addrs` reports a peer only under `FLAG_HAS_TUPLE`; sipnab now uses these functions and requires `sipnab-bpf-types` 0.1.2.
+  - Docs: [uprobe walkthrough](docs/uprobe-walkthrough.md#walkthrough-the-ebpf-backend).
 - **`--reg-flood` takes its counting window and transaction timeout from you.**
-  - The detector counted refused credentialed REGISTERs inside a fixed
-    one-second window.
-  - It dropped any challenge that arrived more than 32 seconds after its
-    REGISTER.
-    - That figure is Timer F from
-      [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2)
-      at the default T1 of 500 ms.
-    - It is wrong for a network that runs a longer T1.
-      - [section 17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.1)
-        recommends that on slow links.
-    - It is also wrong behind a proxy whose final-response timer runs longer.
-  - `--reg-flood-window <SECS>` sets the window.
-    - The key is `[security] reg_flood_window_secs`.
-    - The default is 1, and the range is 1-3600.
-  - `--reg-flood-transaction-timeout <MS>` sets the timeout.
-    - The key is `[security] reg_flood_transaction_timeout_ms`.
-    - The default is 32000, and the range is 1000-600000.
-  - Both refuse a value outside the range by name, from the flag and from the
-    file.
-  - The defaults are unchanged.
-  - The detector-state sweep now outlasts both.
-    - So a declared ten-minute timeout is not cut to the two-minute sweep.
-  - [Registration-flood timers](docs/troubleshooting.md#registration-flood-timers)
-    says which value matches an OpenSIPS `fr_timeout` or Kamailio `fr_timer`.
-
+  - Was: a fixed one-second window, and a 32-second timeout, Timer F of [RFC 3261 section 17.1.2.2](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.2.2) at T1 500 ms.
+  - Was: that timeout is wrong with a longer T1 ([section 17.1.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-17.1.1.1) recommends one on slow links) or a longer proxy timer.
+  - Do: set `--reg-flood-window <SECS>` (`[security] reg_flood_window_secs`, default 1, range 1-3600).
+  - Do: set `--reg-flood-transaction-timeout <MS>` (`[security] reg_flood_transaction_timeout_ms`, default 32000, range 1000-600000); sipnab refuses a value out of range by name.
+  - Docs: [Registration-flood timers](docs/troubleshooting.md#registration-flood-timers) gives the value for an OpenSIPS `fr_timeout` or Kamailio `fr_timer`.
 - **Each release publishes a symbol file for every binary it ships.**
-  - Published binaries are stripped.
-    - So a crash backtrace or a core dump from one names no functions.
-    - On an aarch64 release build, twelve of the fourteen frames in a crash
-      report read `<unknown>`.
-  - The release now keeps the line tables through the build.
-  - It splits them into these files:
-    - `sipnab-<version>-<target>.debug` (Linux, `-noaudio` builds included).
-    - `sipnab-<version>-<target>.dSYM.zip` (macOS).
-  - Each file is paired with the binary by its GNU build ID or Mach-O UUID.
-  - The release then strips the binary as before.
-  - The shipped code is unchanged.
-    - On aarch64, `.text` matches the previous linker-stripped build byte for
-      byte.
+  - Was: the stripped binaries named no functions in a backtrace or core dump.
+  - Effect: `sipnab-<version>-<target>.debug` (Linux, `-noaudio` included) and `sipnab-<version>-<target>.dSYM.zip` (macOS) pair with the binary by build ID or UUID.
+  - Limit: the shipped code stays the same; the release strips the binary as before.
 - **A crash report records what the published symbol file resolves.**
-  - The report gains an `Image:` section with these fields:
-    - The executable's GNU build ID (Linux) or Mach-O UUID (macOS).
-    - Its load base.
-    - The target triple.
-  - It gains a `Raw frames` list.
-    - It gives each frame as `sipnab+0x` and the address of the call in the
-      file, in hex, such as `sipnab+0x1233`.
-  - `addr2line`, `llvm-symbolizer` or `atos` resolve those against the
-    matching `.debug` or `.dSYM`.
-    - On an aarch64 release build, the self-test panic's frames resolve to
-      `sipnab::main` at `src/main.rs:152`.
-    - That is the line the report's `Location:` names.
-  - [Send us a crash report](docs/troubleshooting.md#send-us-a-crash-report)
-    covers what to send and how to read it.
+  - Effect: an `Image:` section gives the GNU build ID or Mach-O UUID, the load base and the target triple.
+  - Effect: a `Raw frames` list gives each frame as `sipnab+0x` and an offset, such as `sipnab+0x1233`.
+  - Do: resolve the frames with `addr2line`, `llvm-symbolizer` or `atos` against the matching `.debug` or `.dSYM`.
+  - Docs: [Send us a crash report](docs/troubleshooting.md#send-us-a-crash-report).
 
 ### Changed
 
-- **The static musl tarballs and the `-noaudio` packages read ZIP and 7z
-  archives, password-protected ones included.**
-  - The `archive` feature sat in the `full` build only.
-  - So `-I evidence.zip`, `-I evidence.7z` and every `--archive-password*`
-    flag worked on these:
-    - The gnu tarballs.
-    - The full packages.
-    - macOS.
-  - They did not work on the musl tarballs or the `-noaudio` `.deb` and
-    `.rpm`.
-    - There, a password flag refused with "archive passwords need the
-      'archive' feature".
-  - The [CLI reference](docs/cli-reference.md#archives) already said the
-    release binaries include it.
-  - Every release binary now does.
-  - The no-audio feature set is `full` minus `audio`, `plugins` and `vcon`.
-  - A release gate now fails when `full` gains a feature that does neither of
-    these:
-    - Reach these artifacts.
-    - Get excluded by name.
-
-  - CI's feature matrix compiles both published no-audio sets with their
-    tests.
-    - So the combination builds before a tag rather than on one.
-
+- **The musl tarballs and `-noaudio` packages read ZIP and 7z archives, with passwords.**
+  - Was: there `-I evidence.zip`, `-I evidence.7z` and `--archive-password*` refused with "archive passwords need the 'archive' feature".
+  - Effect: every release binary now has the `archive` feature, as the [CLI reference](docs/cli-reference.md#archives) already said.
+  - Limit: the no-audio feature set is `full` minus `audio`, `plugins` and `vcon`.
 - **The published binary size ceiling is 18 MB, up from 17 MB.**
-  - `archive` added 459,264 bytes to a local aarch64 musl build of the
-    no-audio set.
-    - x86_64 is unmeasured.
-  - The 0.5.188 x86_64 musl binary sat 642,104 bytes under 17 MB.
-  - The ceiling record in `website/config.toml` now counts measured growth
-    that has not shipped yet against the margin.
-    - So a change like this one raises the ceiling before the release that
-      carries it.
-    - It no longer fails that release.
-
-  - The homepage and the [install guide](docs/install.md) quote the new
-    figure.
+  - Effect: `archive` added 459,264 bytes to an aarch64 musl no-audio build; the 0.5.188 x86_64 musl binary sat 642,104 bytes under 17 MB.
+  - Limit: nobody measured the growth on x86_64.
+  - Docs: the homepage and the [install guide](docs/install.md) quote the new figure.
 
 ### Fixed
 
 - **A wrong password no longer opens a 7z, one time in 256.**
-  - A wrong key decrypts a 7z member to noise.
-  - When the noise's first byte was 0x00, LZMA2 read it as the end of the
-    stream.
-  - The member came out empty with no error.
-    - The 7z library checks a member's CRC only after it reads the size its
-      header declares.
-  - sipnab took the password as the right one.
-    - It reported the member as empty.
-    - It never tried the remaining passwords.
-  - A member that ends before its declared size is now an error.
-    - A password trial counts it against the password.
-    - An ordinary read reports the member as broken rather than empty.
-
-- **A `netmap:` capture no longer crashes on the first frame its filter
-  drops.**
-  - libpcap's netmap module counts a frame its BPF filter rejects as a
-    successful read.
-    - It delivers no data for it.
-  - `pcap_next_ex` then returns 1 with a null data pointer and the previous
-    packet's header.
-  - sipnab copied that header's length from address 0.
-  - The capture thread died: the kernel log recorded a segfault at address 0
-    in the `capture-netmap` thread.
-    - The crash was in `memcpy` called from `capture_live_group`.
-  - It looked like a crash at shutdown.
-    - The dropped frame is usually IPv6 link chatter, such as a neighbor
-      solicitation.
-    - That chatter arrives while the capture sits idle.
-
-  - The live capture loop now checks that a packet was delivered before it
-    copies anything.
-    - It reads again when none was.
-  - Measured on the x86_64 OpenSIPS VM:
-    - Debian 13, kernel 6.12.105, netmap 389daea.
-    - 5 SIP messages through `netmap:nmv0` on a veth pair, 3 s idle, then
-      SIGTERM.
-    - Before the fix, 10 of 10 runs crashed before the SIGTERM, after 1 to 4
-      messages.
-    - After it, 10 of 10 runs captured all 5, printed the summary and exited
-      0.
-
+  - Was: when the wrong key's noise began with 0x00, LZMA2 ended the member early, empty, with no error.
+  - Was: sipnab took that password as right, reported the member empty and tried no other password.
+  - Effect: a member that ends before its declared size is an error; a trial counts it against the password.
+- **A `netmap:` capture no longer crashes on the first frame its filter drops.**
+  - Was: libpcap's netmap module returned such a frame with no data, and sipnab copied from address 0 and the capture thread died.
+  - Was: it looked like a crash at shutdown, since the dropped frame is usually IPv6 link chatter on an idle link.
+  - Effect: the capture loop checks that libpcap delivered a packet before it copies, and reads again when it delivered none.
 - **`--reg-flood` says when the capture cannot show a credential failure.**
-
-  - The detector counts the registrar's `401`/`407` to a credentialed
-    REGISTER.
-  - Some captures hold the REGISTERs and not the answers.
-    - Examples are a one-way tap or a request-only filter.
-    - Such a capture gave the detector nothing to count.
-    - It reported nothing, which reads as "nobody was guessing passwords".
-  - It now warns at the end of the run:
-    - `reg_flood cannot establish credential failures` when no REGISTER drew
-      a captured final response.
-    - `reg_flood cannot establish the outcome of N of M credentialed REGISTER(s)` when some went unanswered
-      inside the transaction timeout.
-  - The MCP `security_findings` tool and `GET /v1/security/findings` carry the
-    same statement.
-    - It is in a new, always-present `observation_gaps` array.
-    - On a live run, it is refreshed every five seconds of capture time.
-
-  - The statement names no source and files no finding.
-  - It never reaches a jail line.
-    - A REGISTER count with no outcome behind it is a volume.
-    - The detector still refuses to act on volume.
-  - A retransmitted REGISTER counts once.
+  - Was: a capture with the REGISTERs and not the `401`/`407` answers reported nothing, which reads as "nobody was guessing passwords".
+  - Effect: the run ends with `reg_flood cannot establish credential failures`, or `reg_flood cannot establish the outcome of N of M credentialed REGISTER(s)`.
+  - Effect: MCP `security_findings` and `GET /v1/security/findings` carry it in an always-present `observation_gaps` array, refreshed every five seconds live.
+  - Limit: it names no source, files no finding and never reaches a jail line; a retransmitted REGISTER counts once.
 
 ## [0.5.188] - 2026-09-23
 
 ### Fixed
 
 - **`-L` shows the TLS and WebSocket legs OpenSIPS and Kamailio trace.**
-  - Both proxies send a decrypted TLS or WebSocket message over HEP.
-    - They put a fake number in the IP protocol chunk (`0x0002`) to name its
-      transport.
-  - OpenSIPS `tracer` sends 22 (`IPPROTO_IDP`) for TLS.
-    - It sends 50 (`IPPROTO_ESP`) for WS and WSS.
-    - Source: [`tracer.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/tracer/tracer.c#L3584-L3591).
-    - Its own
-      [`proto_hep.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/proto_hep/proto_hep.c#L1132-L1138)
-      reads these back the same way.
-  - Kamailio `siptrace` sends 22 for TLS, WS and WSS alike.
-
-    - Source: [`siptrace_hep.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace_hep.c#L480-L495).
-  - sipnab read only 6, 17 and 132.
-    - So every such message counted as a NOT DECODED frame.
-    - The reasons were `no transport (IP protocol 22)` and `ESP not NULL-encrypted (IP protocol 50)`.
-    - The encrypted legs never appeared next to the wire capture.
-  - A HEP message now decodes as TLS for 22 and as WS for 50.
-  - A top Via of `SIP/2.0/WS` or `SIP/2.0/WSS` narrows either to WS or WSS.
-    - WSS is the new transport name for secure WebSocket.
-  - The Via also narrows a 6 to WS or WSS.
-    - Kamailio traces a message it sends with the protocol of its sending
-      socket ([`siptrace.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace.c#L1393)).
-    - A WebSocket connection's socket is TCP.
-    - So its replies to a WS client arrive as 6.
-  - This reading applies to HEP input only. On a captured frame:
-    - 50 is still a real ESP packet.
-    - 22 is still refused.
-    - 6 is TCP.
-  - Any other unknown number stays NOT DECODED, by number.
-  - `--hep-parse` now applies the same rule.
-    - It reads HEP datagrams out of a capture file or off an interface.
-    - It had labeled every unwrapped message UDP.
-    - So the same tracer feed read TLS through `-L` and UDP from a file.
-  - A HEP message also stays out of TLS decryption under `--keylog`.
-    - With `-d any --keylog <file> -L`, the wire leg and the tracer's copy of
-      it share an address pair.
-    - sipnab appended a HEP message marked TCP to the wire's held partial TLS
-      record.
-    - That record then never decrypted.
-  - A HEP message marked 50 never reaches the ESP decoder either.
-    - A new test pins this.
-  - `--portrange` no longer gates HEP messages on `-L` or `--hep-parse`.
-    - It exists to pick SIP out of a capture.
-    - A HEP sender has already chosen what to send.
-    - So a proxy tracing SIP on 7060 needed `--portrange 1-65535` before any
-      of its messages showed.
-  - SIP that sipnab captures itself is gated as before.
-  - Reported by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz))
-    in [#301](https://github.com/NormB/sipnab/issues/301).
+  - Was: sipnab read only protocols 6, 17 and 132: `no transport (IP protocol 22)`, `ESP not NULL-encrypted (IP protocol 50)`.
+  - Effect: OpenSIPS [`tracer.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/tracer/tracer.c#L3584-L3591) sends 22 (`IPPROTO_IDP`) for TLS and 50 (`IPPROTO_ESP`) for WS and WSS; a HEP message now decodes so.
+  - Effect: OpenSIPS's own [`proto_hep.c`](https://github.com/OpenSIPS/opensips/blob/5fa4e627187f23544e702db0a47dbe877a407117/modules/proto_hep/proto_hep.c#L1132-L1138) reads them back the same way.
+  - Effect: Kamailio [`siptrace_hep.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace_hep.c#L480-L495) sends 22 for all three; a top Via of `SIP/2.0/WS` or `SIP/2.0/WSS` narrows it, and WSS is a new transport name.
+  - Credit: Reported by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in [#301](https://github.com/NormB/sipnab/issues/301).
+- **A traced reply to a WebSocket client shows as WS or WSS, not TCP.**
+  - Was: Kamailio traces a sent message with its socket's protocol ([`siptrace.c`](https://github.com/kamailio/kamailio/blob/24cbec17f6030f7a9a3c632f0a0842a37b46bdf5/src/modules/siptrace/siptrace.c#L1393)), so a WebSocket reply arrives as 6.
+  - Effect: the top Via narrows a 6 to WS or WSS.
+  - Limit: for HEP input only; on a captured frame 50 is ESP, sipnab refuses 22, 6 is TCP, and other numbers stay NOT DECODED.
+- **`--hep-parse` reads the transport of a traced message the way `-L` does.**
+  - Was: it labeled every message it unwrapped from a capture file or an interface UDP.
+  - Effect: the same tracer feed now reads the same through `-L` and from a file.
+- **A HEP message stays out of TLS decryption and the ESP decoder.**
+  - Was: with `-d any --keylog <file> -L`, a HEP message marked TCP joined the wire's held partial TLS record, which then never decrypted.
+  - Effect: a HEP message marked 6 or 50 never reaches TLS decryption or the ESP decoder.
+- **`--portrange` no longer filters HEP messages on `-L` or `--hep-parse`.**
+  - Was: a proxy tracing SIP on 7060 needed `--portrange 1-65535` before any of its messages showed.
+  - Limit: `--portrange` filters SIP that sipnab captures itself as before.
 - **A decrypted WSS leg is SIP over WSS.**
-  - With the keys, the TLS records of a SIP-over-secure-WebSocket leg
-    decrypted to WebSocket frames.
-  - sipnab kept only decrypted plaintext that was itself SIP.
-    - So the leg produced no messages at all.
-    - A lab run recovered 12 records and showed no SIP.
-  - A decrypted record that is one WebSocket frame carrying SIP now becomes
-    that message.
-    - sipnab labels it WSS, on any port.
-    - TLS already said what the session is.
-  - That covers two cases:
-    - Records decrypted as they arrive.
-    - Records recovered when their keys come later.
-  - Found while reproducing
-    [#301](https://github.com/NormB/sipnab/issues/301).
-  - OpenSIPS writes each WebSocket frame as two TLS records.
-    - The first is the 4-byte header, and the second is the payload.
-    - So every message it sent over WSS was still lost.
-    - A lab run showed the client's 3 messages and none of the proxy's 4.
-  - Decrypted WebSocket bytes now go through a per-direction stream. It does
-    these things:
-    - It joins a frame across records.
-    - It splits several frames out of one record.
-    - It joins a message fragmented across frames
-      ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.4)),
-      up to `MAX_WS_MESSAGE_SIZE` (65,536) bytes.
-  - Some frames now count in the NOT DECODED line instead of vanishing:
-    - A frame the capture never finished.
-    - A frame that breaks RFC 6455.
-  - OpenSIPS also writes its `101 Switching Protocols` answer as three TLS
-    records.
-    - The last holds only the blank line that ends the HTTP head.
-    - sipnab read the later two as frame bytes.
-    - That lost the proxy's first reply after the upgrade.
-
-  - Each direction now reads the HTTP upgrade head across records.
-    - The limit is `MAX_WS_HANDSHAKE_SIZE` (8,192) bytes.
-    - Frames start at the byte after its blank line.
-    - This includes a frame in the same record as the `101`.
-- **`--keylog` is read before sipnab drops privileges.**
-  - A FIFO and `--keylog-fd` already were.
-  - An ordinary keylog file was opened only after the drop.
-  - A proxy's keylog is usually readable by the proxy's user alone.
-
-    - So a run as root that dropped to `nobody` could capture the wire.
-    - It could not read its own keys.
-  - The error then said only `Failed to initialize TLS decryptor: Loading keylog from <path>`.
-    - Now it carries the reason, such as `No such file or directory`.
-  - `--keylog-watch` keeps reading what the producer appends.
-    - It reads through the file opened before the drop.
-  - Found while reproducing
-    [#301](https://github.com/NormB/sipnab/issues/301).
-- **Key recovery under `--keylog-watch` no longer loses the packet that
-  follows the keys.**
-  - Keys can arrive for TLS records sipnab held.
-    - The next packet runs the recovery, whatever that packet is.
-    - sipnab analyzed the recovered messages instead of it.
-  - That packet was lost.
-    - A lab run of `-d any --keylog <file> --keylog-watch -L` lost a HEP BYE
-      on every build.
-    - 0.5.187 loses a different message in the same run.
-  - The recovered messages also copied that packet's origin, DSCP and HEP
-    metadata.
-    - So wire records could report as HEP input.
-  - Recovered messages now come in addition to the packet in hand.
-    - sipnab builds each from its own record as wire TLS.
-  - sipnab analyzes a packet's messages in capture-time order.
-  - Found while reproducing
-    [#301](https://github.com/NormB/sipnab/issues/301).
+  - Was: sipnab kept only decrypted plaintext that was SIP, so WebSocket frames carrying SIP produced no messages.
+  - Effect: a decrypted WebSocket frame carrying SIP is that message, labeled WSS on any port, as it arrives or when its keys come later.
+  - Effect: frames join across records, split within one, and a fragmented message joins ([RFC 6455 section 5.4](https://www.rfc-editor.org/rfc/rfc6455.html#section-5.4)) up to 65,536 bytes.
+  - Effect: the HTTP upgrade head reads across records up to 8,192 bytes, so sipnab keeps OpenSIPS's first reply after its `101 Switching Protocols`.
+  - Credit: Found while reproducing [#301](https://github.com/NormB/sipnab/issues/301).
+- **An unfinished or broken WebSocket frame counts in the NOT DECODED line.**
+  - Was: such a frame vanished.
+  - Effect: the line counts a frame the capture never finished, or one that breaks RFC 6455.
+- **sipnab reads `--keylog` before it drops privileges.**
+  - Was: a run as root that dropped to `nobody` could capture the wire but not read a keylog only the proxy's user could read.
+  - Effect: the error `Failed to initialize TLS decryptor: Loading keylog from <path>` now carries the reason, such as `No such file or directory`.
+  - Effect: `--keylog-watch` keeps reading what the producer appends, through the file opened before the drop.
+  - Credit: Found while reproducing [#301](https://github.com/NormB/sipnab/issues/301).
+- **Key recovery under `--keylog-watch` no longer loses the packet that follows the keys.**
+  - Was: sipnab analyzed the recovered messages instead of the packet that ran the recovery; 0.5.187 loses a different message in the same run.
+  - Was: recovered messages copied that packet's origin, DSCP and HEP metadata, so wire records could report as HEP input.
+  - Effect: recovered messages come in addition to the packet, each built from its own record as wire TLS, in capture-time order.
+  - Credit: Found while reproducing [#301](https://github.com/NormB/sipnab/issues/301).
 - **`-L` no longer loses every HEP message marked TCP.**
-  - A HEP sender marks a TCP leg with IP protocol 6.
-  - sipnab handed each such message to its TCP stream reassembler.
-    - The reassembler orders segments by sequence number.
-    - HEP carries none, so it returned nothing.
-    - The message appeared nowhere.
-    - It counted as neither SIP nor NOT DECODED.
-  - A run said `26 packets captured, 12 SIP messages`, with seven TCP-leg messages unaccounted for.
-  - A HEP payload is one whole message the proxy already parsed.
-    - sipnab now reads it that way.
-    - It already did this for uprobe reads.
-  - TCP captured from an interface or a file still goes through reassembly.
-  - Found while reproducing
-    [#301](https://github.com/NormB/sipnab/issues/301) against OpenSIPS and
-    Kamailio.
-
-- **A log-capturing unit test no longer misses events at random.**
-  - tracing-core caches, per call site, whether any subscriber wants its
-    events.
-  - While only one dispatcher is registered, it asks only the thread
-    registering the call site.
-  - A test thread with no subscriber answered "never".
-    - So a capture running at that moment lost the event.
-    - That is how
-      `a_relay_that_is_down_is_reported_once_not_once_per_stream` dropped its
-      closing line in CI.
-  - `test_utils::capture_logs` now keeps a second dispatcher registered for
-    the whole run.
-    - This turns the shortcut off.
-  - A new unit test reproduces the race on demand.
-    - It failed on the previous fix.
-    - That fix rebuilt the cache only at the start of a capture.
+  - Was: sipnab sent each to its TCP reassembler, which needs sequence numbers HEP lacks, so it counted as neither SIP nor NOT DECODED.
+  - Effect: a HEP payload reads as one whole message, as uprobe reads already did.
+  - Limit: TCP captured from an interface or a file still goes through reassembly.
+  - Credit: Found while reproducing [#301](https://github.com/NormB/sipnab/issues/301) against OpenSIPS and Kamailio.
 
 ## [0.5.187] - 2026-09-22
 
 ### Added
 
 - **`-I` reads password-protected ZIP archives.**
-  - Point `-I` at a ZIP, and sipnab reads the captures inside.
-    - It leaves no decrypted copy behind.
-  - It reads these members:
-    - Stored or deflated.
-    - Unencrypted, WinZip AES (128, 192 or 256-bit) or legacy ZipCrypto.
-    - Nested in a tar, or holding one.
-
-  - Passwords come from these sources:
-    - `--archive-password-file`, one per line.
-      - sipnab refuses it when you own it and others can read it, as ssh
-        refuses a key.
-    - `--archive-password-command`, run without a shell.
-    - `--archive-password-stdin`.
-    - The systemd credential `archive-password`.
-    - `SIPNAB_ARCHIVE_PASSWORD`.
-    - `--archive-password`, which warns on every use.
-  - sipnab also tries a non-ASCII password in NFC, NFD, CP437, CP850 and
-    CP1252, as one attempt.
-    - `--archive-password-encoding` pins one.
-
-  - Each locked member gets a `Skipping` line. It says one of these:
-    - `encrypted, and no password was supplied`
-    - `encrypted, and no password supplied opens it`
-  - A named archive of which nothing opens fails the run with exit status
-    `1`.
-  - ZipCrypto warns once per archive that it protects nothing.
-  - The password appears in no log line at any level, no error and no output.
-  - A run holding one turns core dumps off.
-  - New `archive` feature, part of `full`.
+  - Effect: stored or deflated members, unencrypted, WinZip AES (128, 192 or 256-bit) or ZipCrypto, nested in a tar or holding one; sipnab leaves no decrypted copy.
+  - Do: give passwords by `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, credential `archive-password`, `SIPNAB_ARCHIVE_PASSWORD` or `--archive-password` (warns).
+  - Effect: sipnab refuses a password file you own that others can read, as ssh refuses a key; the command runs without a shell.
+  - Effect: sipnab tries a non-ASCII password in NFC, NFD, CP437, CP850 and CP1252 as one attempt; `--archive-password-encoding` pins one.
+  - Limit: requires the new `archive` feature, part of `full`.
+- **sipnab reports a locked ZIP member and never shows a password.**
+  - Effect: each locked member gets a `Skipping` line: `encrypted, and no password was supplied` or `encrypted, and no password supplied opens it`.
+  - Effect: a named archive of which nothing opens fails the run with exit status `1`; ZipCrypto warns once per archive that it protects nothing.
+  - Effect: the password appears in no log line, error or output, and a run holding one turns core dumps off.
 - **sipnab asks for an archive password on the terminal.**
-  - It asks when no configured password opens a locked member.
-  - It prompts on `/dev/tty` with echo off.
-    - It names the archive, the member and the attempt.
-    - It allows three tries per archive.
-    - It does this even with stdin redirected.
-  - An empty entry skips the archive.
-  - Ctrl-C stops the run.
-  - The terminal comes back on every path.
-  - With no terminal, or with the new `--no-password-prompt`, it never asks
-    and never waits.
-  - `-O`, `--strip-secrets` and `--write-annotated` from a decrypted member
-    warn once that they write the data unencrypted.
-    - A `--write-annotated` copy's section comment says so.
+  - Effect: when no configured password opens a member, it prompts on `/dev/tty` with echo off, naming archive, member and attempt, three tries per archive.
+  - Effect: an empty entry skips the archive, Ctrl-C stops the run, and sipnab restores the terminal on every path; it asks even with stdin redirected.
+  - Do: pass `--no-password-prompt` to never ask; with no terminal it never asks or waits.
+  - Limit: `-O`, `--strip-secrets` and `--write-annotated` from a decrypted member warn once that they write unencrypted; the annotated copy's comment says so.
 - **The TUI asks for an archive password in a popup.**
-  - These actions park the load and ask:
-    - Opening a password-protected ZIP from the file browser.
-    - Re-scanning one.
-
-  - The popup shows the archive, the member and attempt n of 3.
-    - It masks the input with one dot per character.
-  - Ctrl-R shows what you typed until the next attempt.
-    - The title says so.
-  - Esc skips the archive.
-  - Ctrl-U clears.
-  - A paste arrives whole.
-  - The session remembers the password for that archive.
-    - It forgets it when another capture opens.
-  - The action trail records `archive_password_accepted` or
-    `archive_locked_members_skipped` by archive name.
-  - The status line counts locked members and marks ZipCrypto.
-  - A TUI run asks for its `-I` archives on the terminal before it draws.
-
-- **REST takes an archive password in the `Sipnab-Archive-Password`
-  header.**
-  - It applies on `GET /v1/captures/compare`, for that request only.
-  - sipnab tries it after the operator's configured ones.
-  - It is accepted only from a loopback client, unless the new
-    `--api-accept-archive-passwords` is set.
-    - Otherwise the answer is 403.
-  - A password-like query parameter gets 400 on every route.
-
-    - The answer advises treating it as exposed.
-  - 5 wrong passwords per client per archive in 15 minutes earn 429 with
-    `Retry-After`.
-    - sipnab audits each at `warn` by token fingerprint and archive name.
-
-  - Every such response is `Cache-Control: no-store`.
-  - A locked archive answers 422 naming `encrypted_no_password` or
-    `encrypted_wrong_password`.
-  - OpenAPI documents the header as `format: password`.
+  - Effect: opening or re-scanning a protected ZIP from the file browser shows the archive, the member and attempt n of 3, masked one dot per character.
+  - Effect: Ctrl-R shows the input until the next attempt, Esc skips the archive, Ctrl-U clears, and a paste arrives whole.
+  - Effect: the session remembers the password per archive until another capture opens; the status line counts locked members and marks ZipCrypto.
+  - Effect: the action trail records `archive_password_accepted` or `archive_locked_members_skipped`; sipnab asks for `-I` archives' passwords on the terminal before the TUI draws.
+- **REST takes an archive password in the `Sipnab-Archive-Password` header.**
+  - Effect: on `GET /v1/captures/compare`, for that request only, tried after the operator's passwords; a locked archive answers 422 `encrypted_no_password` or `encrypted_wrong_password`.
+  - Limit: only from a loopback client unless you set `--api-accept-archive-passwords`, else 403; a password-like query parameter gets 400 on every route.
+  - Limit: 5 wrong passwords per client per archive in 15 minutes earn 429 with `Retry-After`, each audited at `warn` by token fingerprint.
+  - Effect: every such response is `Cache-Control: no-store`, and OpenAPI documents the header as `format: password`.
 - **`-I` reads 7z archives, password-protected ones included.**
-  - It reads these members:
-    - LZMA and LZMA2.
-    - Unencrypted or AES-256.
-    - With or without an encrypted member list.
-    - Nested in a tar, or holding one.
-
-  - One password opens the whole archive.
-    - sipnab tries it from the same sources as a ZIP's.
-    - It tries it in its NFC and NFD forms, since 7z stores a password as
-      UTF-16 text.
-  - sipnab refuses an archive asking for more than 2^24 key-derivation rounds
-    as `bound_exceeded (7z key derivation)`.
-- **A fuzz target for the archive and password layer.**
-  - `fuzz_archive_password` feeds hostile bytes through every archive layer.
-    - It also feeds a password taken from those bytes.
-  - The layers are these:
-    - ZIP in all three encryptions.
-    - 7z with and without encrypted headers.
-    - gzip and tar, nested.
-    - Trial and rollback.
-  - ClusterFuzzLite builds it with the others.
-  - `tests/archive_fuzz_replay_test.rs` replays the same entry point on every
-    `cargo test`.
-    - It uses truncations and byte flips of real archives.
+  - Effect: LZMA and LZMA2 members, unencrypted or AES-256, with or without an encrypted member list, nested in a tar or holding one.
+  - Effect: one password opens the archive, from the same sources as a ZIP's, tried in NFC and NFD forms.
+  - Limit: sipnab refuses an archive asking for more than 2^24 key-derivation rounds as `bound_exceeded (7z key derivation)`.
 - **MCP takes no archive password, on any tool.**
-  - sipnab refuses a call carrying a password-like argument before dispatch.
-    - It audits the argument as `[REDACTED]`.
-  - The file-opening tools refuse unknown arguments.
-  - `open_capture` opens encrypted ZIPs with the operator's configured
-    passwords.
-  - `capture_status` says when members stayed locked.
-    - It says that the operator supplies the password.
-  - `list_captures` marks `encrypted`.
+  - Effect: sipnab refuses a call with a password-like argument before dispatch and audits it as `[REDACTED]`; the file-opening tools refuse unknown arguments.
+  - Effect: `open_capture` opens encrypted ZIPs with the operator's passwords; `capture_status` says when members stayed locked; `list_captures` marks `encrypted`.
 
 ### Changed
 
-- **The docs read one idea at a time.**
-
-  - Long paragraphs across the user and developer docs are split into one
-    idea each.
-  - Sentences joined by semicolons are split in two, with no fact dropped.
-  - References such as "recipe 11", "the 2C tunnel" and "Section 4" now name
-    their target and link to it.
-  - Some setup blocks ran several commands from one copy button.
-    - Where the commands are independent, these are now numbered steps with
-      one command each.
-  - The command-line reference opens with a "Start here" list.
-    - It names the six flags a first run needs.
-  - The filter language page explains MOS thresholds without naming internal
-    source functions.
+- **The docs and site read one idea at a time, titled by task.**
+  - Effect: the docs split long paragraphs and semicolon-joined sentences, and references such as "recipe 11" name and link their target.
+  - Effect: independent setup commands become numbered steps with one command and one copy button each, on the docs and on /download.
+  - Effect: the command-line reference opens with a "Start here" list of the six flags a first run needs.
+  - Effect: page titles, the Docs menu and the sidebar read as tasks, such as "Install sipnab"; links carry the title of the page they open.
 - **The REST API client examples work when pasted.**
-  - The curl examples put the bearer token in a shell variable.
-
-    - Word splitting broke it into four words, quotes included.
-    - So every authenticated call sent a malformed header.
-  - Each example is now its own block with the header written out.
-  - The note on status codes says which limits answer 503.
-- **Docs pages are titled for the job they do.**
-  - Page titles read as tasks, and so do the Docs menu and sidebar. Examples:
-    - "Install sipnab"
-    - "Look up a command-line flag"
-    - "Stop a capture dropping packets"
-    - "Read TLS without keys (eBPF)"
-    - "Recipes for common tasks"
-    - "Learn from real captures"
-  - Three pages were all called some kind of "Examples".
-    - Each now says what it holds.
-  - Headings on the integrations page follow suit.
-    - The two links into it are updated.
-- **A docs page states its purpose once.**
-
-  - On 19 pages, the grey lead under the title and the first paragraph said
-    the same thing.
-  - The site generators now mark such a page.
-
-    - The lead is skipped there.
-
-  - Page descriptions no longer show raw Markdown (backticks, "--") as
-    literal text.
-- **Code blocks read on a phone.**
-
-  - The language badge and copy button sat on top of a command's first line.
-
-    - They hid the end of any command wider than the screen.
-  - The copy button appeared only on hover.
-    - A touch screen never sends hover.
-  - Both now sit in a band above the code.
-  - The button shows wherever there is no hover.
-
-- **Smaller site fixes.**
-  - The analyze page asks for "a capture file".
-    - It lists the zip and tar archives it opens.
-  - /download shows its header and tabs without a fade-in.
-  - /api-reference/ has one top-level heading for screen readers.
-  - The notes index group headings read as headings.
-  - The build page said "Rust 1.97+" while the crate needs 1.98.
-    - A test now holds every published Rust floor to Cargo.toml.
-- **The homepage cards and stat tiles always show.**
-  - "What you can do with it" and "Built for production" hid their cards and
-    tiles until a script saw them scroll into view.
-  - So these readers saw headings over blank space:
-    - A reader who jumped past them.
-    - A full-page screenshot.
-    - Every visitor in the minute after a deploy, before the CDN pinned the
-      new script's hash.
-  - Browser tests now check the cards and tiles are visible in three cases:
-    - On load.
-    - With scripting off.
-    - With the page's script blocked.
-- **Docs links carry the title of the page they open.**
-  - The Docs menu and the docs sidebar show each page's own title again.
-  - Short task labels left a reader unsure the click had worked.
-    - An example is "Fix a common problem" for a page headed "Examples &
-      Recipes".
-  - The /download sidebar now uses the same wording as its section headings.
-- **Quick Start is compact.**
-  - Each command is one slim line with its Copy button.
-  - On a phone, it scrolls sideways instead of breaking a URL across lines.
-  - The hero's pause button sits in the image's empty top corner.
-    - Before, it sat over the key hints.
-- **/download reads as tasks, one command per copy button.**
-  - Method headings say what the reader does. Examples:
-    - "Install with Homebrew"
-    - "Download a static Linux binary"
-  - "for the seasoned" is now "every file, for scripted installs".
-  - The build, Docker and raw-URL blocks each split into one block per
-    command.
-    - So a copy button never pastes two.
-  - Prose splits its semicolon-joined sentences.
-- **The glossary and the command-line triage tutorial are on the site.**
-  - Both are generated from `docs/`.
-  - Both are listed under "Start here" in the docs navigation.
-  - The authentication page is generated too.
-    - So its site copy follows the source's steps-first order instead of
-      drifting from it.
-- **Smaller site fixes.**
-  - /api-reference/ has one `<h1>` instead of two.
-  - The docs index says what it offers in one sentence.
-  - The sentence "All 19 RFC 3261 and IANA compact header forms all resolve" no longer says "all" twice.
-  - Long explanatory HTML comments in the site templates are Tera comments.
-    - So they no longer ship to every visitor.
-  - `scripts/rfc-links.py` and its gate leave front matter alone.
-
-    - So a page description stays plain text.
-  - Links inside the standards cards are underlined.
-    - axe requires this against their dimmed text.
+  - Was: the curl examples kept the bearer token in a shell variable, which word splitting broke, so every authenticated call sent a malformed header.
+  - Effect: each example is its own block with the header written out; the status-code note says which limits answer 503.
+- **The site shows its content on every device and reader.**
+  - Was: the homepage cards and stat tiles stayed blank until a script saw them scroll into view.
+  - Was: code-block badges and the hover-only copy button hid long commands and never showed on a touch screen.
+  - Effect: both now show; Call-IDs such as `busy-3a2b1c@192.0.2.30` are no longer rewritten to `[email protected]` by the CDN.
 - **The homepage starts with something a newcomer can run.**
-  - "Install and open your first capture" now sits directly under the hero.
-    - It has one command per block and copy button.
-    - The steps are: install, download the sample capture, open it in the
-      terminal UI, print a report with `-N --report`, capture live.
-
-  - The MCP demo wall is titled "Ask an AI agent about a capture".
-    - It says its commands run from a source checkout.
-  - The hero defines HEP instead of "estate" and "collector tier".
-  - Its looping animation has a pause button (WCAG 2.2.2).
-  - Its alt text follows the image that is showing.
-  - Capability rows are shorter.
-  - Headings are sentence case.
-  - Homepage prose carries no semicolons.
-  - The two standards bands moved to a new `/standards/` page.
-    - It is linked as "See the standards behind every number".
-    - Every standards gate reads them there.
-
-  - Small text is at least 0.75rem.
-  - Code on narrow screens is 0.85rem.
-  - Kickers, note chips and group titles are no longer forced to uppercase.
-
-- **The site's docs navigation is one list.**
-  - The Docs dropdown and the docs sidebar both render
-    `[[extra.docs_nav]]` in `website/config.toml`.
-  - So a page carries one task-first label in both. Examples:
-    - "Install sipnab"
-    - "Fix a common problem"
-    - "Look up CLI flags"
-    - "Connect an AI agent (MCP)"
-  - Groups read as follows:
-    - "Start here"
-    - "Capture in hard places"
-    - "Use the terminal UI"
-    - "Script and automate"
-    - "Connect other tools"
-    - "Build and measure"
-  - The dropdown shows these:
-    - The main pages of each group.
-    - One link to the developer docs.
-    - "All docs".
-  - The active entry comes from the page it links.
-    - "Learn from real captures" no longer lights up on the cookbook page.
-    - The library and examples pages now light up at all.
-  - Group headings label their groups for screen readers.
-    - Before, they were hidden from them.
-- **The site's notes lead with how-tos.**
-  - The homepage notes block is now titled "How-tos and walkthroughs".
-    - It shows how-tos and feature notes and never a post-mortem.
-  - The notes sidebar collapses its post-mortems behind a disclosure.
-
-    - The notes index already did this.
-    - It opens it only on a post-mortem's own page.
-  - Kind chips read "How-to", "Feature" and "Post-mortem" instead of the
-    front-matter slug.
-  - Dates no longer carry a leading space on the first nine days of a month.
-  - Three note descriptions that printed raw Markdown are plain text.
-- **Call-IDs in code blocks survive the CDN.**
-  - Cloudflare's Email Obfuscation rewrote Call-IDs for readers without
-    JavaScript.
-    - For example, `busy-3a2b1c@192.0.2.30` became `[email protected]`.
-  - Every page's content now sits inside the CDN's `<!--email_off-->`
-    markers.
-
-### Internal
-
-- **The MCP password-refusal test no longer prints the refusal on failure.**
-
-  - CodeQL (`rust/cleartext-logging`, alerts 424 and 425) followed the test's
-    secret from the tool arguments into two assert messages.
-  - The refusal names only the argument, never its value.
-  - The asserts now fail with plain text.
-    - The repository keeps test code clean at the source.
-
-- **Unit tests capture logs through one helper, which cannot miss an
-  event.**
-  - `tracing` caches per call site, for the whole process, whether any
-    subscriber wants its events.
-  - `with_default` covers one thread.
-  - A test thread running with no subscriber could leave "nobody" cached.
-    - `a_relay_that_is_down_is_reported_once_not_once_per_stream` then lost
-      its closing line in one CI leg.
-    - It passed every time alone.
-
-  - Five copies of the capture helper are now `test_utils::capture_logs`.
-    - It rebuilds that cache after installing its subscriber.
-  - `tests/log_capture_hygiene_test.rs` fails on any other `with_default`
-    call under `src/`.
-
-- **The blocked-script homepage test refuses the script the way a browser
-  does.**
-  - It cut `<script>` elements out with a regular expression.
-    - CodeQL flagged this as an incomplete HTML filter (alert 423).
-    - It tested a page with no script at all.
-  - It now serves the real page under a policy that forbids inline scripts.
-  - It fails unless the browser reports refusing one.
-
-- **The pre-commit hook checks RFC links on every commit.**
-  - Locally, only the script tests enforced the first-mention rule.
-
-    - The hook runs them when `scripts/` is staged.
-    - So a docs-only commit with an unlinked `RFC N` passed the hook and
-      failed CI.
-  - The hook now runs `scripts/rfc-links.py` in check mode on every commit.
+  - Effect: "Install and open your first capture" sits under the hero: install, download the sample, open it, `-N --report`, capture live.
+  - Effect: the hero defines HEP, its animation has a pause button (WCAG 2.2.2), and the standards bands moved to `/standards/`.
+  - Effect: the MCP demo's title is "Ask an AI agent about a capture" and says its commands run from a source checkout.
+- **The site's docs navigation and notes are one list each.**
+  - Effect: the Docs dropdown and sidebar share one task-first list in groups such as "Start here" and "Connect other tools".
+  - Effect: the glossary, the command-line triage tutorial and the authentication page are on the site, under "Start here".
+  - Effect: the notes lead with how-tos; post-mortems sit behind a disclosure, and kind chips read "How-to", "Feature" and "Post-mortem".
+  - Was: the build page said "Rust 1.97+" while the crate needs 1.98.
 
 ## [0.5.186] - 2026-09-22
 
