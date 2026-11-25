@@ -50,11 +50,16 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from lib_markdown import fence_mask  # noqa: E402
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FILE = "CHANGELOG.md"
 PIN = ".config/changelog-released.sha256"
 UNRELEASED = "## [Unreleased]"
 RELEASE_HEADING = re.compile(r"## \[[0-9]")
+HEADING = re.compile(r"#{1,6} ")
 # How many differing lines of a released part a message shows.
 SHOWN = 6
 # How much of each of those lines: an entry from before the outline format
@@ -105,12 +110,14 @@ def where(heading: str) -> str:
 
 
 def blank_line_problems(text: str) -> list[str]:
+    """Every Markdown heading below the first line, outside a code fence, has a blank line above it.
+
+    2026-11-25: this read only [Unreleased], its `###` headings and the first
+    released heading, and main held 14 joined headings further down.
+    """
     lines = [line.rstrip("\r\n") for line in text.splitlines()]
-    first = next((i for i, line in enumerate(lines) if RELEASE_HEADING.match(line)), len(lines))
-    start = next((i for i, line in enumerate(lines[:first]) if line.rstrip() == UNRELEASED), None)
-    wanted = [] if start is None else [start] + [i for i in range(start + 1, first) if lines[i].startswith("### ")]
-    if first < len(lines):
-        wanted.append(first)
+    code = fence_mask(text)
+    wanted = [i for i, line in enumerate(lines) if not code[i] and HEADING.match(line)]
     return [f"no blank line before the heading '{lines[i].rstrip()}' (line {i + 1}): a merge joined it to the "
             "line above; put one empty line between them."
             for i in wanted if i > 0 and lines[i - 1].strip()]

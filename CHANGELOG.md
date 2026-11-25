@@ -11024,6 +11024,7 @@ No change to the binary.
   - Nothing an operator is shown changes.
   - A port that was never asked about still reports the ceiling as the reason,
     not a relay that disowned it.
+
 ## [0.5.125] - 2026-08-25
 
 ### Added
@@ -12239,6 +12240,7 @@ No change to the binary.
     - then a record from a connection whose handshake predates the capture.
   - That test is the regression gate for the originally reported failure.
   - It is what the unit tests could not see.
+
 ## [0.5.115] - 2026-08-20
 
 ### Fixed
@@ -13099,6 +13101,7 @@ Not released.
 - **The build table and the next-steps list name `plugins` and `bpf`.**
   - Both are non-default features an operator chooses deliberately.
   - Neither appeared in the table that tells a reader what is in their binary.
+
 ## [0.5.105] - 2026-08-17
 
 ### Changed
@@ -13494,6 +13497,7 @@ Not released.
     - and the MCP tools.
   - `rtp::diagnosis` produces the text once, rather than each surface
     formatting it.
+
 ## [0.5.100] - 2026-08-14
 
 ### Added
@@ -14119,6 +14123,7 @@ Not released.
   - `stream_list::displayed_streams` takes the evidence.
   - `sipnab::estimate_mos` is unchanged and still exported.
   - Nothing inside the crate calls it any more.
+
 ### Fixed
 
 - **The stream-detail pane gave two answers about one stream.**
@@ -14760,6 +14765,7 @@ What sipnab claims about itself is now checked against what it does.
     - the DSL's `setup_time`,
     - the TUI timeline,
     - and the WASM build.
+
 ## [0.5.93] - 2026-08-11
 
 - MOS stops guessing.
@@ -15376,6 +15382,7 @@ Profiling, and what it overturned.
 - So no tag and no assets exist for that number.
 - We did not publish it late and out of order. Its entries are folded here.
 - A version a reader cannot download is worse than a merged section.
+
 ### Security
 
 - **A quoted display name could spoof the host and user a call is attributed
@@ -15648,6 +15655,7 @@ Nothing here changes the shipped binary.
     - the production report directory, where a predictable path is the point,
     - and a filename that asserts a file does *not* exist.
   - Mutation-proved by restoring the old pattern.
+
 ## [0.5.84] - 2026-08-07
 
 - The conformance linter reaches the command line.
@@ -17054,6 +17062,7 @@ Not released.
   ring arithmetic.
 - Nobody benchmarked them against a live NIC at line rate.
 - The drop counters added above are the instrument that measurement needs.
+
 ## [0.5.75] - 2026-08-03
 
 ### Added
@@ -18249,6 +18258,7 @@ Not released.
   - `tcpdump` leaves the newest ring-buffer member short whenever a capture is
     still running.
   - So this is the common case, not a corrupt-file edge case.
+
 ## [0.5.70] - 2026-07-31
 
 ### Fixed
@@ -19654,6 +19664,7 @@ Not released.
     - The sidebar label beside it is a separate field.
     - The script warns not to touch it.
     - Changing it silently reorders the docs navigation.
+
 ## [0.5.67] - 2026-07-30
 
 ### Changed
@@ -20668,6 +20679,7 @@ Not released.
     - the renderer's own slug rule.
   - Each was observed failing on the specific defect before being accepted.
   - `docs/design/lessons.md` records the rule and its corollary.
+
 ## [0.5.55] - 2026-07-28
 
 ### Added
@@ -21956,6 +21968,7 @@ No shipped-code changes.
 - Restored `--api-max-conn` test coverage lost in a test refactor.
 - Gated security_test's counting allocator to the `api` feature.
   - So reduced-feature CI builds compile.
+
 ## [0.5.36] - 2026-07-24
 
 ### Changed
@@ -23255,6 +23268,7 @@ No packet-path code changes versus 0.5.18.
 - 17 doctests run in CI.
   - Up from 4 compiled + 1 ignored.
 - Compiled examples are the only ones CI keeps honest.
+
 ## [0.4.19] - 2026-07-03
 
 ### Fixed — multi-stream (audio + video) SDP timeline
