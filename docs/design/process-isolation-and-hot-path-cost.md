@@ -140,7 +140,7 @@ in `playback.rs`, `privilege.rs`, `process_isolation.rs`, `crash.rs`,
 `etherparse`, `opus-decoder` (pure Rust, no FFI), `flate2` (`rust_backend`) and
 `wasmi` (interpreter, no JIT) are all memory-safe.
 
-The exception is **libpcap** (`pcap = "2"`, [`Cargo.toml:136`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L136)<!-- "pcap = { version = "2", optional = true }" -->),
+The exception is **libpcap** (`pcap = "2"`, [`Cargo.toml:139`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L139)<!-- "pcap = { version = "2", optional = true }" -->),
 a C library that touches every untrusted byte before Rust ever sees it, on both
 the live and the offline path. A memory-safety bug there executes inside an
 address space that also holds:
@@ -198,7 +198,7 @@ Elsewhere, contention is **asserted but never measured**. The oldest claim,
 [`implementation-plan-v6.md:368`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/docs/design/implementation-plan-v6.md#L368), says the store
 lock is *"read-heavy, write-rare, so RwLock contention is minimal"* — which is
 simply stale: the batch loop takes `dialog_store.write()` **once per packet**
-([`batch.rs:5017`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5017)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
+([`batch.rs:5047`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5047)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
 most frequent operation in the process, not a rare one. No benchmark in
 `benches/` acquires a lock; no metric reports contention. *We do not know what
 it costs, and neither does anyone else.*
@@ -211,7 +211,7 @@ Specific to this codebase, not in general.
 
 **The stores are the product, and four surfaces read them in-process.** The
 same `Arc<RwLock<DialogStore>>` / `Arc<RwLock<StreamStore>>` is held by the
-capture loop ([`batch.rs:4154-4159`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4154-L4159)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
+capture loop ([`batch.rs:4184-4189`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4184-L4189)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
 every MCP tool ([`mcp/server.rs`](../../src/mcp/server.rs)), the Prometheus
 exporter and the TUI. Forking the capture away from the servers turns every one
 of those reads into IPC. That is not a refactor; it is a new wire protocol,
@@ -370,10 +370,10 @@ that copy is worth anything either.
 contains no `asm!`, no `core::arch`, and no `target_feature` anywhere:
 
 - `memchr` — SIMD CRLF scan in the SIP line scanner, replacing scalar
-  `windows(2)` ([`Cargo.toml:128`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L128)<!-- "memchr = "2"" -->),
+  `windows(2)` ([`Cargo.toml:131`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L131)<!-- "memchr = "2"" -->),
 - `ahash` — AES-backed hashing for the per-packet store lookups, replacing
   SipHash, which had been *"profiled at ~7% of total instructions"*
-  ([`Cargo.toml:124`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L124)<!-- "# keys (5-tuple/SSRC," -->),
+  ([`Cargo.toml:127`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L127)<!-- "# keys (5-tuple/SSRC," -->),
 - `smallvec` — removes the per-packet heap allocation in
   `PacketProcessor::process`,
 - `mimalloc` — replaces the system allocator for the whole native binary.

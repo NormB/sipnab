@@ -500,6 +500,18 @@ for them. Nothing was discarded and starting the capture earlier would not
 have helped -- the key source never produced those secrets.
 ```
 
+A long `--keylog-watch` run also has bounds on the key material it keeps:
+`MAX_KEYLOG_ENTRIES` (65,536) key log entries, `MAX_OBSERVED_HANDSHAKES`
+(4,096) ServerHello messages that no key has arrived for, and
+`MAX_TLS_SESSIONS` (16,384) sessions. sipnab drops entries whose session
+exists first, which costs nothing. sipnab keeps a key log file read at
+startup whole: when that file holds more entries than the key bound, its entry
+count is the bound for the run, and the line and the warning print that
+number. When a bound drops
+something that a later record needed, the end of the run says so in one line
+that names each count, and a warning says it the first time it happens. The
+[error reference](errors.md) has the line.
+
 
 ## What does not work, and why
 
