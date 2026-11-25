@@ -30,6 +30,9 @@ struct SignalFlags {
     /// Set when SIGHUP is received: the stop it requests ends in
     /// [`HANGUP_EXIT_CODE`].
     hangup: AtomicBool,
+    /// Set by [`request_low_disk_stop`]: why the run stopped, which ends it in
+    /// [`LOW_DISK_EXIT_CODE`]. The first reason set is kept.
+    low_disk: std::sync::OnceLock<String>,
 }
 
 impl SignalFlags {
@@ -39,7 +42,20 @@ impl SignalFlags {
             shutdown: AtomicBool::new(false),
             rotate: AtomicBool::new(false),
             hangup: AtomicBool::new(false),
+            low_disk: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Request the stop a `--min-free-disk` floor asks for: shutdown, ending
+    /// in [`LOW_DISK_EXIT_CODE`], with `reason` kept for the end of the run.
+    fn request_low_disk_stop(&self, reason: String) {
+        let _ = self.low_disk.set(reason);
+        self.request_shutdown();
+    }
+
+    /// The reason of a low-disk stop, when one was requested.
+    fn low_disk_reason(&self) -> Option<&str> {
+        self.low_disk.get().map(String::as_str)
     }
 
     /// Whether shutdown was requested. Reading does not clear it.
@@ -70,10 +86,13 @@ impl SignalFlags {
     }
 
     /// The status to exit with when the run would exit `code`: a run that
-    /// would succeed exits [`HANGUP_EXIT_CODE`] after SIGHUP, and any other
-    /// code is kept, since it already says the run failed.
+    /// would succeed exits [`LOW_DISK_EXIT_CODE`] after a low-disk stop, else
+    /// [`HANGUP_EXIT_CODE`] after SIGHUP, and any other code is kept, since it
+    /// already says the run failed.
     fn exit_code(&self, code: i32) -> i32 {
-        if code == 0 && self.hangup.load(Ordering::SeqCst) {
+        if code == 0 && self.low_disk.get().is_some() {
+            LOW_DISK_EXIT_CODE
+        } else if code == 0 && self.hangup.load(Ordering::SeqCst) {
             HANGUP_EXIT_CODE
         } else {
             code
@@ -85,6 +104,25 @@ impl SignalFlags {
 /// reports for a process the signal ended. Not 0, so a supervisor that
 /// restarts on failure restarts it.
 pub const HANGUP_EXIT_CODE: i32 = 128 + libc::SIGHUP;
+
+/// The exit status of a run stopped because free disk space under one of its
+/// outputs fell below `--min-free-disk` (see [`crate::disk_floor`]). A code of
+/// its own, so a supervisor can be told not to restart into the same full
+/// disk (`RestartPreventExitStatus=4` in the packaged systemd unit).
+pub const LOW_DISK_EXIT_CODE: i32 = 4;
+
+/// Request the stop a `--min-free-disk` floor asks for: the stop SIGTERM
+/// requests, ending in [`LOW_DISK_EXIT_CODE`]. `reason` is printed on stderr
+/// as the process exits ([`low_disk_reason`]).
+pub fn request_low_disk_stop(reason: String) {
+    FLAGS.request_low_disk_stop(reason);
+}
+
+/// The reason a `--min-free-disk` floor stopped the run, when it did.
+#[must_use]
+pub fn low_disk_reason() -> Option<&'static str> {
+    FLAGS.low_disk_reason()
+}
 
 /// The process's flags, written by the signal handlers.
 static FLAGS: SignalFlags = SignalFlags::new();
@@ -115,8 +153,9 @@ pub fn request_hangup() {
 /// The status the process exits with when the run would exit `code`.
 ///
 /// Every exit of a run goes through this, through
-/// `capture::archive::release_run_and_exit` or the end of `main`: after
-/// SIGHUP a run that would exit 0 exits [`HANGUP_EXIT_CODE`].
+/// `capture::archive::release_run_and_exit` or the end of `main`: a run that
+/// would exit 0 exits [`LOW_DISK_EXIT_CODE`] after a low-disk stop, and
+/// [`HANGUP_EXIT_CODE`] after SIGHUP.
 #[must_use]
 pub fn exit_code(code: i32) -> i32 {
     FLAGS.exit_code(code)
@@ -245,6 +284,52 @@ mod tests {
             0,
             "SIGTERM ends a successful run with 0"
         );
+    }
+
+    /// A low-disk stop requests the same shutdown SIGTERM does, keeps its
+    /// reason, and turns a successful exit into 4.
+    #[test]
+    fn s_a_low_disk_stop_requests_shutdown_and_exits_4() {
+        let flags = SignalFlags::new();
+        assert_eq!(flags.low_disk_reason(), None, "no stop: no reason");
+        flags.request_low_disk_stop("disk full".to_string());
+        assert!(
+            flags.shutdown_requested(),
+            "a low-disk stop requests shutdown"
+        );
+        assert_eq!(
+            flags.low_disk_reason(),
+            Some("disk full"),
+            "the reason is kept"
+        );
+        assert_eq!(
+            flags.exit_code(0),
+            4,
+            "a successful run stopped for disk exits 4"
+        );
+        assert_eq!(LOW_DISK_EXIT_CODE, 4, "the documented code");
+    }
+
+    /// A run that failed for its own reason keeps that code after a low-disk
+    /// stop: 1 says more than 4 does.
+    #[test]
+    fn f_a_failed_run_keeps_its_code_after_a_low_disk_stop() {
+        let flags = SignalFlags::new();
+        flags.request_low_disk_stop("disk full".to_string());
+        assert_eq!(flags.exit_code(1), 1, "a failure keeps its own code");
+        assert_eq!(flags.exit_code(2), 2, "a usage failure too");
+    }
+
+    /// A low-disk stop and a hangup in one run exit 4: the disk is the reason
+    /// a restart would not help. The first reason is the one kept.
+    #[test]
+    fn e_a_low_disk_stop_wins_over_a_hangup_and_keeps_its_first_reason() {
+        let flags = SignalFlags::new();
+        flags.request_hangup();
+        flags.request_low_disk_stop("first".to_string());
+        flags.request_low_disk_stop("second".to_string());
+        assert_eq!(flags.exit_code(0), 4, "low disk, not 129");
+        assert_eq!(flags.low_disk_reason(), Some("first"), "the first reason");
     }
 
     /// The two flags are independent: rotation does not request shutdown,

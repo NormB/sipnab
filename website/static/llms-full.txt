@@ -21577,6 +21577,18 @@ sipnab -N -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --aut
 - Verify: the run ends by itself, and `ls -l /var/captures` shows `sip.pcapng` and `sip_00001.pcapng` to `sip_00003.pcapng`, about 200 MiB together.
 - Troubleshoot: before 0.5.264, `--autostop filesize` read only the size of the open file, which each rotation starts again, so with a `--split` smaller than the limit the run never stopped. Upgrade, or stop that run with `--duration` or Ctrl-C.
 
+Stop the capture while 2 GiB are still free under `/var/captures`. The run closes its files and exits `4`:
+
+```bash
+sipnab -N -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --min-free-disk 2G
+```
+
+Turn the free-disk check off, the 1 GiB warning included, for a run on a disk that always has less than 1 GiB free:
+
+```bash
+sipnab -N -d eth0 -O /var/captures/sip.pcapng --min-free-disk 0
+```
+
 **The drop user creates the output files.** Run as root, sipnab does this:
 
 - It opens the capture device.
@@ -21669,6 +21681,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use. With `--split` it counts all split files together |
 | `--split` | `<CONDITION>` | -- | 0.3.0 | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | 0.5.100 | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
+| `--min-free-disk` | `<SIZE>` | warn under 1 GiB | Unreleased | Stop the capture when the free disk space under an output falls below SIZE, such as `2G` or `500M` (binary units: `1G` is 1024 MiB; sipnab refuses a bare number other than `0`, and `MB`/`GB`). sipnab reads the free space of the directory of `-O` (every `--split` file sits beside it), `--mcp-audit-file`, `--tui-audit-file`, `--evidence-out` and each vCon rule before the capture opens and every 5 seconds. Below SIZE before the capture opens, the run does not start; below it later, the run stops as `SIGTERM` stops it. Either way it exits `4`. Without the flag a directory under 1 GiB free gets one warning and the run goes on; `0` turns the check and the warning off. See [Stop a capture before the disk fills](run-as-a-service.md#stop-a-capture-before-the-disk-fills) |
 | `--replay` | -- | off | 0.3.0 | Replay packets from a pcap file at original timing |
 | `--pcapng` | -- | off | 0.3.0 | Use pcapng format for output files. [pcapng Metadata](#pcapng-metadata) covers the metadata sipnab writes into pcapng output |
 | `<BPF_FILTER>...` | positional | -- | 0.3.0 | BPF capture filter expression (trailing positional args), handed to libpcap as typed. Not the display filter (`--filter`). Replaces the filter sipnab would otherwise generate from `--portrange`. `--bpf-file` takes precedence, and either one replaces `[capture] bpf_filter`. The filter applies to `-I` capture files as well as live capture. When `[capture] bpf_filter` filters a file run, sipnab prints a warning naming the key, so a file whose calls fall outside the filter does not look empty. Unlike `sngrep` and `sipgrep`, sipnab takes no match expression here; match SIP text with `-e`. A filter typed here that does not compile says so, and sipnab refuses a lone argument that names an existing file, naming the `-I` it was missing. Config: `[capture] bpf_filter` |
@@ -24667,6 +24680,7 @@ Scripts can rely on these:
 | `2` | Invalid usage — bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code. A relay question the run cannot ask also exits `2` before the run reads anything: `--relay-stats`, `--relay-stats-call`, `--relay-stats-list`, `--relay-stats-interval` or `--relay-compare` with no `--rtpengine-control`, on a run that reads a capture file, or naming an address that is not `IP:port` |
 | `3` | A check failed — the tool worked and the input failed a check you asked for. `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity, an `--expect` rule failed, `--vcon-validate` found the container invalid, or the vCon forwarder stopped because the store answered `401` or `403` (`--vcon-forward`). Distinct from `1` on purpose: `1` means the tool failed, `3` means the input did |
 | `101` | Internal failure — sipnab panicked. Its panic hook writes a crash report and ends the process with `101`. With `[crash] core = true` it aborts instead, so the kernel can write a core dump, and the shell reports the signal (`134` for `SIGABRT`) |
+| `4` | Stopped for disk space: the free space under an output fell below `--min-free-disk`. The last stderr line names the directory, its free bytes and the floor. Below the floor before the capture opened, the run did not start. A run that would have exited non-zero for its own reason keeps that code. See [Stop a capture before the disk fills](run-as-a-service.md#stop-a-capture-before-the-disk-fills) |
 | `129` | Stopped by `SIGHUP`, or the terminal of a terminal interface run went away. sipnab stops as it does for `SIGTERM`, which exits `0` like `SIGINT`, and exits `129` instead, so a supervisor that restarts on failure restarts it. A run that would have exited non-zero keeps that code |
 | `130` | Interrupted — Ctrl-C typed at the archive password prompt (an encrypted `.zip` or `.7z` input read on a terminal). sipnab reads nothing more and exits. A stop signal at the prompt is a stop like any other: `0`, or `129` after `SIGHUP` |
 
@@ -24809,6 +24823,7 @@ each one covers in full.
 | `1` | The run failed: a capture or I/O error, a capture not read in full, a report sipnab could not produce, or a configuration file sipnab refused. |
 | `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. So does a relay question the run cannot ask, such as `--relay-stats` on a capture file. |
 | `3` | The tool worked and the input failed a check you asked for: `--lint-fail-on`, a failed `--expect` rule, an invalid container under `--vcon-validate`, or the vCon forwarder refused with `401` or `403`. |
+| `4` | Free disk space under an output fell below `--min-free-disk`. The last stderr line starts `sipnab stopped: free disk space under` and names the directory, its free bytes and the floor. Free space there, or lower the floor. |
 | `101` | sipnab panicked, an internal failure. Report it with the crash report sipnab wrote. With `[crash] core = true` the process aborts instead, and the shell shows the signal (`134`). |
 | `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away. `SIGTERM` and `SIGINT` stop it the same way and exit `0`. |
 | `130` | You pressed Ctrl-C at the archive password prompt. |
@@ -68345,6 +68360,7 @@ unit.
   LimitNOFILE=65535
   Restart=on-failure
   RestartSec=5
+  RestartPreventExitStatus=4
 
   [Install]
   WantedBy=multi-user.target
@@ -68684,6 +68700,90 @@ Troubleshoot:
   `AUDIT TRAIL INCOMPLETE: '<action>' was not recorded to <path> (<error>)`.
 - **The new file has the wrong owner or mode.** `logrotate` made it from the
   `create` line; sipnab appends to that file and leaves its mode alone.
+
+## Stop a capture before the disk fills
+
+A capture that runs for days fills its disk one record at a time. When the
+disk is full, every output fails at once: `-O`, the vCon files and the audit
+trail. `--min-free-disk SIZE` stops the capture while there is still room, with
+its files closed, and exits 4.
+
+What sipnab watches: the directory of `-O` (every `--split` file sits beside
+it), of `--mcp-audit-file`, `--tui-audit-file` and `--evidence-out`, and of
+each vCon rule. For a rule directory that does not exist yet, sipnab watches
+the nearest directory above it that does. sipnab reads the free space before
+the capture opens and then every 5 seconds, never per packet.
+
+- **Without the flag**, a directory under 1 GiB free gets one warning when it
+  crosses under, and the run goes on. The floor is `DEFAULT_WARN_FLOOR`
+  (1,073,741,824) bytes. A second warning comes only after the directory has
+  recovered to the floor plus a tenth.
+- **With `--min-free-disk SIZE`**, a directory under SIZE stops the run. Under
+  SIZE before the capture opens, the run does not start.
+- **With `--min-free-disk 0`**, sipnab reads nothing and prints no warning.
+
+Prerequisites:
+
+- A sipnab binary with `--min-free-disk` in `sipnab --help`.
+- On systemd, a unit with `RestartPreventExitStatus=4`. The packaged unit has
+  it, and so does the unit in [Write a unit of your own](#write-a-unit-of-your-own).
+  Without it, `Restart=on-failure` starts sipnab again after `RestartSec=`,
+  into the same full disk.
+
+Steps:
+
+1. Pick the floor: what the outputs need between the stop and someone freeing
+   space, plus what other programs on that file system need. Units are
+   binary: `2G` is 2048 MiB.
+2. Add the flag to `ExecStart=` with a drop-in
+   ([Change the packaged unit with a drop-in](#change-the-packaged-unit-with-a-drop-in)
+   shows how):
+
+   ```ini
+   [Service]
+   ExecStart=
+   ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog -O /var/lib/sipnab/sip.pcapng --pcapng --split filesize:100 --split-keep 48 --min-free-disk 2G
+   ```
+
+3. Reload and restart: `sudo systemctl daemon-reload` and then
+   `sudo systemctl restart sipnab`.
+
+Verify: give the run a floor no disk can meet, and check that it does not
+start. `16777215T` is the largest value the flag takes. This run read a
+capture file into a temporary directory, shown here as `DIR`:
+
+```bash
+sipnab -N -I capture.pcap -O DIR/out.pcap --min-free-disk 16777215T
+```
+
+```text
+WARN sipnab::disk_floor: stopping the capture: free disk space under DIR is 1626433282048 bytes (1.5 TiB), below --min-free-disk 18446742974197923840 bytes (16777215.0 TiB)
+sipnab stopped: free disk space under DIR is 1626433282048 bytes (1.5 TiB), below --min-free-disk 18446742974197923840 bytes (16777215.0 TiB); exit 4
+```
+
+`echo $?` right after it printed `4`. `DIR` holds no `out.pcap`: the capture
+never opened. The same command with
+`--min-free-disk 1G` read the file, wrote `out.pcap` and exited 0. The
+`sipnab stopped:` line goes to stderr even with `SIPNAB_LOG=off`.
+
+After a stop under systemd, `systemctl status sipnab` shows
+`status=4/NOPERMISSION` (systemd's name for status 4), and the service stays
+stopped.
+
+Troubleshoot:
+
+- **`invalid value '500' for '--min-free-disk <SIZE>'`.** A number needs a
+  unit: `500M`. sipnab refuses `MB` and `GB` because the units are binary; write
+  `M` or `MiB`.
+- **The service starts again after a disk stop.** The unit has no
+  `RestartPreventExitStatus=4`; add it in a drop-in.
+- **`cannot read the free disk space under DIR`.** sipnab could not open the
+  directory before the capture opened. That directory is not checked; the
+  others still are.
+- **A `--cores` run does not stop mid-read.** sipnab checks a multi-core file
+  read only before it starts, not every 5 seconds.
+- **The warning appears and nothing stops.** That is the 1 GiB default
+  warning. It stops nothing; pass `--min-free-disk SIZE` to stop.
 
 ## When the service does not start
 
@@ -88644,7 +88744,7 @@ It also runs on a push to `main` that changes a file those suites compile.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 160 `unsafe` blocks are libc FFI.
+- Most of this crate's 161 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.

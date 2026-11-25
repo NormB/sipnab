@@ -10,6 +10,14 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`--min-free-disk SIZE` stops a capture before its disk fills.**
+  - Effect: When an output directory falls under SIZE free, the run stops with its files closed and exits `4`.
+  - Do: Add `--min-free-disk 2G`, for example; the packaged unit does not restart after exit `4`.
+  - Limit: Without the flag sipnab only warns, once per crossing, under 1 GiB free; `0` turns that off.
+  - Docs: [Stop a capture before the disk fills](docs/run-as-a-service.md#stop-a-capture-before-the-disk-fills)
+
 ### Fixed
 
 - **The audit and evidence files follow log rotation.**

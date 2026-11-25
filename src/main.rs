@@ -162,6 +162,14 @@ fn main() {
 
     say_when_headless_only_by_the_build(&cli);
 
+    // 7e. The free-disk floor of the run's outputs (`--min-free-disk`):
+    //     checked once now, before the capture opens, chroots or drops its
+    //     privileges (each directory is opened here, so the watch still
+    //     reaches it after), then every 5 s on a thread `launch_and_dispatch`
+    //     starts after the launch. Below a `--min-free-disk` floor now, the
+    //     run does not start: exit 4. A `--cores` run is checked only here.
+    let disk_watch = start_disk_watch(&cli, &plan.vcon_rules);
+
     // 8. Multi-core offline reconstruction bypasses the capture thread.
     //
     //    It still needs the file set, and the set is already on the plan:
@@ -182,13 +190,24 @@ fn main() {
     }
 
     // 9-10. Launch the capture and hand it to the selected mode.
-    let stores = launch_and_dispatch(cli, loaded, plan);
+    let stores = launch_and_dispatch(cli, loaded, plan, disk_watch);
 
     // A run that ends here, rather than through an earlier
     // `release_run_and_exit`, releases what `-I` extracted and exits 0, or 129
     // when SIGHUP stopped it (OPS-5). A batch run's stores are kept until the
     // exit rather than freed just before it (see `batch::RunStores`).
     batch::RunStores::release_run_and_exit(stores, 0);
+}
+
+/// Step 7e of [`main`]: the first free-disk check, before the launch. Below a
+/// `--min-free-disk` floor the run does not start: `disk_floor::start` has
+/// printed why, and the process exits 4 (row `--min-free-disk` of
+/// `sipnab::early_exit`). Returns the watch the launch keeps checking.
+fn start_disk_watch(cli: &Cli, rules: &[batch::VconRule]) -> Option<sipnab::disk_floor::DiskWatch> {
+    match sipnab::disk_floor::start(cli, rules) {
+        Ok(watch) => watch,
+        Err(code) => sipnab::capture::archive::release_run_and_exit(code),
+    }
 }
 
 /// Step 0c of [`main`]: `sipnab fleet ...`, with `sipnab fleet` as the
@@ -433,10 +452,13 @@ fn say_when_headless_only_by_the_build(cli: &Cli) {
 
 /// Steps 9 and 10 of [`main`]: launch the capture, then run the TUI or the
 /// batch runner over it. Returns a batch run's stores; `None` after the TUI.
+/// `disk_watch`, the free-disk watch step 7e started, is checked every 5 s
+/// from the end of the launch on.
 fn launch_and_dispatch(
     cli: Cli,
     loaded: sipnab::config::LoadedConfig,
     plan: bootstrap::RunPlan,
+    disk_watch: Option<sipnab::disk_floor::DiskWatch>,
 ) -> Option<batch::RunStores> {
     // 9. Launch the capture: channel, capture thread, readiness handshake,
     //    chroot, privilege drop, runtime hardening.
@@ -449,6 +471,12 @@ fn launch_and_dispatch(
         &plan.mode,
         &plan.vcon_rules,
     );
+
+    // 9b. The free-disk watch's thread: after the launch, so it never exists
+    //     when the privilege drop runs.
+    if let Some(watch) = disk_watch {
+        sipnab::disk_floor::watch_during_run(watch);
+    }
 
     // 10. Dispatch to the selected mode.
     match plan.mode {

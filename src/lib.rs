@@ -461,6 +461,10 @@ pub mod input_wait;
 #[doc(hidden)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod signals;
+// The free-disk floor of a run's outputs (`--min-free-disk`): read by the
+// CLI's value parser and started by `main` beside the signal handlers.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod disk_floor;
 pub mod sip;
 pub mod sort;
 pub mod text;

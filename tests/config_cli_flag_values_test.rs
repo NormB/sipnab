@@ -361,6 +361,23 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    (
+        "min-free-disk",
+        Kind::Text {
+            accept: &["0", "1K", "64KiB", "2g"],
+            reject: &[
+                ("x", 2),
+                ("", 2),
+                (" ", 2),
+                ("500", 2),
+                ("-1G", 2),
+                ("1.5G", 2),
+                ("2GB", 2),
+                ("16777216T", 2),
+            ],
+        },
+        &[],
+    ),
     ("replay", Kind::Switch, &[]),
     ("pcapng", Kind::Switch, &[]),
     (

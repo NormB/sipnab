@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 416 | 344 | 29 | 43 | 0 |
+| CLI flags | 417 | 345 | 29 | 43 | 0 |
 | HTTP routes | 53 | 53 | -- | 0 | 0 |
 | MCP tools | 80 | 80 | -- | 0 | 0 |
 
@@ -83,10 +83,10 @@ behind them.
 
 | Flag | Short | Value | Group | Detected | Where | Audited | What a person found |
 |---|---|---|---|---|---|---|---|
-| `--help` | `-h` |  | Options | e2e | `tests/api_test.rs`, `tests/cli_help_test.rs` +8 |  |  |
+| `--help` | `-h` |  | Options | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +9 |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/api_test.rs`, `tests/cli_options_test.rs` +7 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `src/app/tui_mode.rs`, `tests/capture_probe_test.rs` +7 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +166 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +167 |  |  |
 | `--drop-method` |  | `METHOD` | Capture | e2e | `tests/cores_parity_test.rs` |  |  |
 | `--only-method` |  | `METHOD` | Capture | e2e | `tests/cores_parity_test.rs` |  |  |
 | `--recursive` |  |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/input_set_accounting_test.rs` +1 |  |  |
@@ -95,7 +95,7 @@ behind them.
 | `--vcon-signer-ca` |  |  | Capture | e2e | `tests/vcon_reader_forms_test.rs`, `tests/vcon_resign_test.rs` |  |  |
 | `--vcon-signer-sha256` |  | `HEX` | Capture | e2e | `tests/vcon_reader_forms_test.rs` |  |  |
 | `--vcon-x5u-ca` |  |  | Capture | e2e | `tests/vcon_x5u_test.rs` |  |  |
-| `--output` | `-O` | `FILE` | Capture | e2e | `src/app/tui_mode.rs`, `tests/archive_password_prompt_test.rs` +16 |  |  |
+| `--output` | `-O` | `FILE` | Capture | e2e | `src/app/tui_mode.rs`, `tests/archive_password_prompt_test.rs` +17 |  |  |
 | `--buffer` | `-B` | `MIB` | Capture | e2e | `tests/howto_claims_test.rs` |  |  |
 | `--buffer-budget` |  | `MIB` | Capture | parsed | `src/cli.rs` |  |  |
 | `--snaplen` |  | `BYTES` | Capture | e2e | `tests/cli_options_test.rs` |  |  |
@@ -111,24 +111,25 @@ behind them.
 | `--no-promisc` | `-p` |  | Capture | e2e | `tests/plugin_example_test.rs`, `tests/support/tmux_pane.rs` +1 |  |  |
 | `--bpf-file` |  | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--capture-tunnels` |  |  | Capture | parsed | `src/cli.rs` |  |  |
-| `--count` | `-n` | `N` | Capture | e2e | `tests/autostop_split_test.rs`, `tests/child_lifetime_test.rs` +7 |  |  |
+| `--count` | `-n` | `N` | Capture | e2e | `tests/autostop_split_test.rs`, `tests/batch_run_paths_test.rs` +8 |  |  |
 | `--duration` |  | `DURATION` | Capture | e2e | `tests/capture_probe_test.rs`, `tests/cli_flag_behavior_test.rs` +6 |  |  |
 | `--autostop` |  | `CONDITION` | Capture | e2e | `tests/autostop_split_test.rs`, `tests/parse_path_test.rs` |  |  |
 | `--split` |  | `CONDITION` | Capture | e2e | `tests/autostop_split_test.rs`, `tests/cli_flag_behavior_test.rs` +2 |  |  |
 | `--split-keep` |  | `N` | Capture | e2e | `tests/autostop_split_test.rs`, `tests/cli_flag_behavior_test.rs` |  |  |
+| `--min-free-disk` |  | `SIZE` | Capture | e2e | `tests/min_free_disk_test.rs` |  |  |
 | `--replay` |  |  | Capture | e2e | `tests/capture_clock_test.rs`, `tests/commands_drop_root_test.rs` +3 |  |  |
-| `--pcapng` |  |  | Capture | e2e | `tests/cli_flag_behavior_test.rs`, `tests/integration_test.rs` +3 |  |  |
+| `--pcapng` |  |  | Capture | e2e | `tests/batch_run_paths_test.rs`, `tests/cli_flag_behavior_test.rs` +4 |  |  |
 | `--archive-password-file` |  | `FILE` | Archives | e2e | `tests/archive_password_prompt_test.rs`, `tests/archive_password_test.rs` +2 |  |  |
 | `--archive-password-command` |  | `CMD` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--archive-password-stdin` |  |  | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--archive-password` |  | `PASSWORD` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--archive-password-encoding` |  | `ENC` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--no-password-prompt` |  |  | Archives | referenced | `tests/archive_password_prompt_test.rs` |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +156 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +157 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `tests/calls_only_dialogs_test.rs`, `tests/child_lifetime_test.rs` +7 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/cli_options_test.rs`, `tests/cores_refusal_test.rs` +6 |  |  |
 | `--dtmf-cleartext` |  |  | Mode | e2e | `tests/decryption_wrapper_matrix_test.rs`, `tests/dtmf_dynamic_payload_type_test.rs` +1 | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
-| `--quiet` | `-q` |  | Mode | e2e | `tests/app_servers_wiring_test.rs`, `tests/capture_clock_test.rs` +74 |  |  |
+| `--quiet` | `-q` |  | Mode | e2e | `tests/app_servers_wiring_test.rs`, `tests/batch_run_paths_test.rs` +76 |  |  |
 | `--resolve` |  |  | Name resolution | e2e | `tests/integration_test.rs` |  |  |
 | `--no-resolve` |  |  | Name resolution | referenced | `src/cli.rs` |  |  |
 | `--reverse-dns` |  |  | Name resolution | parsed | `src/cli.rs` |  |  |
@@ -149,7 +150,7 @@ behind them.
 | `--to` |  | `PATTERN` | Matching | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` +2 |  |  |
 | `--contact` |  | `PATTERN` | Matching | e2e | `tests/cli_options_test.rs`, `tests/cores_refusal_test.rs` |  |  |
 | `--ua` |  | `PATTERN` | Matching | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
-| `--filter` |  | `EXPR` | Matching | e2e | `tests/analyze_test.rs`, `tests/calls_only_dialogs_test.rs` +21 |  |  |
+| `--filter` |  | `EXPR` | Matching | e2e | `tests/analyze_test.rs`, `tests/batch_run_paths_test.rs` +22 |  |  |
 | `--since` |  |  | Matching | e2e | `tests/cli_time_window_test.rs` |  |  |
 | `--until` |  |  | Matching | e2e | `tests/cli_time_window_test.rs` |  |  |
 | `--problems` |  |  | Diagnostic aliases | e2e | `tests/cli_find_in_files_test.rs`, `tests/cli_options_test.rs` +5 |  |  |
@@ -159,21 +160,21 @@ behind them.
 | `--nat-issues` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +1 | **behavior** | nat_issues_filter plus the_nat_issues_alias_selects_the_rewritten_call (tests/media_diagnosis_wiring_test.rs) |
 | `--sngrep-mode` |  |  | Output | parsed | `src/tui/sngrep_mode_tests.rs` |  |  |
 | `--no-sngrep-mode` |  |  | Output | parsed | `src/tui/sngrep_mode_tests.rs` |  |  |
-| `--json` |  |  | Output | e2e | `tests/annotate_cli_test.rs`, `tests/archive_input_test.rs` +44 |  |  |
+| `--json` |  |  | Output | e2e | `tests/annotate_cli_test.rs`, `tests/archive_input_test.rs` +45 |  |  |
 | `--json-pretty` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/json_schema_test.rs` +2 |  |  |
-| `--json-dialogs` |  |  | Output | e2e | `tests/archive_input_test.rs`, `tests/archive_password_prompt_test.rs` +49 |  |  |
+| `--json-dialogs` |  |  | Output | e2e | `tests/archive_input_test.rs`, `tests/archive_password_prompt_test.rs` +51 |  |  |
 | `--plugin` |  | `PATH` | Output | e2e | `tests/partial_run_exit_code_test.rs`, `tests/plugin_example_test.rs` |  |  |
 | `--report` |  |  | Output | e2e | `tests/archive_input_test.rs`, `tests/batch_run_paths_test.rs` +39 |  |  |
 | `--stun` |  |  | Output | e2e | `tests/cores_refusal_test.rs`, `tests/stun_test.rs` +1 |  |  |
 | `--json-stun` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cores_refusal_test.rs` +2 |  |  |
-| `--analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cores_refusal_test.rs` +1 |  |  |
-| `--json-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +9 |  |  |
+| `--analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/batch_run_paths_test.rs` +2 |  |  |
+| `--json-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +10 |  |  |
 | `--yang-analyze` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cli_flag_behavior_test.rs` +2 |  |  |
 | `--print-yang-module` |  |  | Output | e2e | `tests/startup_refusal_stderr_test.rs`, `tests/yang_module_test.rs` |  |  |
-| `--call-report` |  |  | Output | e2e | `tests/call_report_siprec_test.rs`, `tests/cli_flag_behavior_test.rs` +8 |  |  |
+| `--call-report` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/call_report_siprec_test.rs` +9 |  |  |
 | `--export-vcon` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/cli_flag_behavior_test.rs` +15 |  |  |
-| `--export-vcon-when` |  | `EXPR` | Output | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +13 |  |  |
-| `--export-vcon-dir` |  | `DIR` | Output | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +14 |  |  |
+| `--export-vcon-when` |  | `EXPR` | Output | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +14 |  |  |
+| `--export-vcon-dir` |  | `DIR` | Output | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +15 |  |  |
 | `--vcon-max-inline-media` |  | `MIB` | Output | e2e | `tests/config_wiring_test.rs`, `tests/whole_call_audio_test.rs` |  |  |
 | `--content-deny-header` |  | `NAME` | Output | e2e | `tests/app_servers_wiring_test.rs`, `tests/config_cli_flag_values_test.rs` +2 |  |  |
 | `--content-deny-tombstone` |  |  | Output | parsed | `src/cli.rs` |  |  |
@@ -194,9 +195,9 @@ behind them.
 | `--color` |  | `WHEN` | Output | e2e | `tests/cli_options_test.rs`, `tests/config_wiring_test.rs` +1 |  |  |
 | `--payload-limit` |  | `BYTES` | Output | e2e | `tests/cli_options_test.rs` | **behavior** | payload_limit_truncates_raw_dump: [truncated] appears, User-Agent disappears, against a no-flag baseline |
 | `--text-dump` | `-T` |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
-| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +88 |  |  |
+| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +90 |  |  |
 | `--wireshark` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/closed_stdout_test.rs` +1 | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
-| `--lint` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/config_cli_flag_values_test.rs` +4 |  |  |
+| `--lint` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/cli_options_test.rs` +5 |  |  |
 | `--lint-fail-on` |  | `SEVERITY` | Output | e2e | `tests/cli_options_test.rs` | **parse-only** | EXIT 3 IS NEVER OBSERVED. The assertion is guarded behind `if findings > 0` and no checked-in capture produces a lint finding |
 | `--lint-max-per-rule` |  | `N` | Output | e2e | `tests/threshold_wiring_test.rs` | **behavior** | lint_max_per_rule_bounds_the_findings_one_rule_prints (tests/threshold_wiring_test.rs); proves the flag can raise the cap |
 | `--lint-suppress-file` |  | `FILE` | Output | e2e | `tests/doc_commands_run_test.rs` |  |  |
@@ -207,7 +208,7 @@ behind them.
 | `--max-groups` |  | `N` | Output | referenced | `src/cli.rs`, `src/output/group.rs` | **behavior** | via config key: probe_max_groups (tests/config_wiring_test.rs); flag and key share one resolver. The flag itself is never passed |
 | `--max-grouped-messages` |  | `N` | Output | referenced | `src/cli.rs`, `src/output/group.rs` | **behavior** | via config key: probe_max_grouped_messages; same shared resolver, same caveat |
 | `--node-name` |  | `NAME` | Output | e2e | `tests/api_capture_identity_test.rs`, `tests/demo_mcp_stdio_test.rs` +8 | **behavior** | the_node_name_flag_lands_in_capture_identity (tests/node_identity_test.rs); read back through MCP |
-| `--limit` | `-l` | `N` | Dialog | e2e | `src/app/tui_mode.rs`, `tests/cli_flag_behavior_test.rs` +5 |  |  |
+| `--limit` | `-l` | `N` | Dialog | e2e | `src/app/tui_mode.rs`, `tests/batch_run_paths_test.rs` +6 |  |  |
 | `--rotate` | `-R` |  | Dialog | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +2 |  |  |
 | `--no-rotate` |  |  | Dialog | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cores_parity_test.rs` |  |  |
 | `--dialog-track` |  | `METHOD` | Dialog | e2e | `src/app/tui_mode.rs`, `tests/cli_flag_behavior_test.rs` |  |  |
@@ -222,8 +223,8 @@ behind them.
 | `--rtpengine-ng-engine` |  |  | RTP | e2e | `tests/relay_fetch_end_to_end_test.rs` |  |  |
 | `--rtpproxy-control` |  |  | RTP | e2e | `src/app/tui_mode.rs`, `tests/cores_parity_test.rs` +3 |  |  |
 | `--relay-stats` |  |  | RTP | e2e | `tests/batch_run_paths_test.rs`, `tests/howto_claims_test.rs` +1 |  |  |
-| `--relay-stats-call` |  |  | RTP | e2e | `tests/relay_fetch_end_to_end_test.rs` |  |  |
-| `--relay-stats-list` |  |  | RTP | e2e | `tests/relay_fetch_end_to_end_test.rs` |  |  |
+| `--relay-stats-call` |  |  | RTP | e2e | `tests/batch_run_paths_test.rs`, `tests/relay_fetch_end_to_end_test.rs` |  |  |
+| `--relay-stats-list` |  |  | RTP | e2e | `tests/batch_run_paths_test.rs`, `tests/relay_fetch_end_to_end_test.rs` |  |  |
 | `--relay-compare` |  |  | RTP | e2e | `tests/batch_run_paths_test.rs`, `tests/cores_refusal_test.rs` +1 |  |  |
 | `--relay-stats-interval` |  | `SECONDS` | RTP | e2e | `tests/batch_run_paths_test.rs`, `tests/relay_fetch_end_to_end_test.rs` |  |  |
 | `--max-streams` |  | `N` | RTP | e2e | `tests/cli_options_test.rs`, `tests/config_wiring_test.rs` +1 |  |  |
@@ -249,7 +250,7 @@ behind them.
 | `--allow-action` |  |  | Security | e2e | `tests/actions_cli_test.rs`, `tests/actions_journal_mcp_test.rs` +5 |  |  |
 | `--fraud-detect` |  |  | Security | e2e | `src/app/tui_mode.rs`, `tests/cli_options_test.rs` +2 |  |  |
 | `--no-fraud-detect` |  |  | Security | referenced | `src/cli.rs` |  |  |
-| `--evidence-out` |  |  | Security | e2e | `tests/batch_run_paths_test.rs`, `tests/cli_flag_behavior_test.rs` +1 |  |  |
+| `--evidence-out` |  |  | Security | e2e | `tests/batch_run_paths_test.rs`, `tests/cli_flag_behavior_test.rs` +2 |  |  |
 | `--fraud-destination` |  |  | Security | parsed | `src/cli.rs` |  |  |
 | `--reg-flood` |  |  | Security | e2e | `src/app/tui_mode.rs`, `tests/api_test.rs` +4 | **behavior** | reg_flood_threshold_decides_when_a_burst_is_a_flood (tests/threshold_wiring_test.rs); an inert flag fails it |
 | `--reg-flood-threshold` |  | `N` | Security | e2e | `tests/cli_flag_behavior_test.rs`, `tests/howto_claims_test.rs` +1 | **behavior** | same test, third run: the flag silences a burst the config key raised |
@@ -314,7 +315,7 @@ behind them.
 | `--fleet-report-token-file` |  | `FILE` | Fleet | e2e | `tests/config_cli_flag_values_test.rs`, `tests/fleet_member_test.rs` |  |  |
 | `--fleet-report-ca-file` |  | `FILE` | Fleet | e2e | `tests/fleet_member_test.rs` |  |  |
 | `--fleet-spool-dir` |  | `DIR` | Fleet | e2e | `tests/config_cli_flag_values_test.rs`, `tests/fleet_member_test.rs` |  |  |
-| `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/actions_journal_mcp_test.rs`, `tests/analyze_test.rs` +26 |  |  |
+| `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/actions_journal_mcp_test.rs`, `tests/analyze_test.rs` +27 |  |  |
 | `--mcp-transport` |  | `TRANSPORT` | MCP (Model Context Protocol) | e2e | `tests/config_cli_defects_test.rs`, `tests/config_cli_flag_values_test.rs` +12 |  |  |
 | `--mcp-bind` |  | `ADDR` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/howto_claims_test.rs` +7 |  |  |
 | `--mcp-token` |  | `TOKEN` | MCP (Model Context Protocol) | e2e | `tests/listener_tls_test.rs`, `tests/mcp_http_test.rs` +2 |  |  |
@@ -370,7 +371,7 @@ behind them.
 | `--mos-bad` |  | `MOS` | Analysis | referenced | `src/cli.rs` | **behavior** | same test, case mos_bad: MOS 3.5 moves Warning -> Bad |
 | `--rtt-warn-ms` |  | `MS` | Analysis | referenced | `src/cli.rs` | **behavior** | same test, case rtt_warn_ms |
 | `--rtt-bad-ms` |  | `MS` | Analysis | referenced | `src/cli.rs` | **behavior** | same test, case rtt_bad_ms |
-| `--hep-listen` | `-L` | `ADDR` | HEP | e2e | `src/app/tui_mode.rs`, `tests/cli_flag_behavior_test.rs` +15 |  |  |
+| `--hep-listen` | `-L` | `ADDR` | HEP | e2e | `src/app/tui_mode.rs`, `tests/cli_flag_behavior_test.rs` +16 |  |  |
 | `--hep-send` | `-H` | `ADDR` | HEP | e2e | `tests/batch_run_paths_test.rs`, `tests/config_cli_flag_values_test.rs` +10 |  |  |
 | `--hep-send-transport` |  |  | HEP | e2e | `tests/config_cli_flag_values_test.rs`, `tests/hep_test.rs` +2 |  |  |
 | `--hep-send-queue` |  | `MIB` | HEP | parsed | `src/cli.rs` |  |  |
@@ -419,7 +420,7 @@ behind them.
 | `--max-tcp-buffer` |  | `BYTES` | Resource limits | parsed | `src/cli.rs` |  |  |
 | `--max-metadata-file-bytes` |  | `BYTES` | Resource limits | referenced | `src/capture/pcapng_meta.rs`, `src/cli.rs` | **behavior** | probe_max_metadata_file_bytes turns "stripped" into "refused" at a 10-byte cap |
 | `--max-gunzip-bytes` |  | `BYTES` | Resource limits | e2e | `tests/archive_input_test.rs` | **behavior** | probe_max_gunzip_bytes turns "stripped" into "refused" at a 100-byte ceiling |
-| `--cores` |  | `N` | Resource limits | e2e | `tests/archive_input_test.rs`, `tests/batch_run_paths_test.rs` +36 |  |  |
+| `--cores` |  | `N` | Resource limits | e2e | `tests/archive_input_test.rs`, `tests/batch_run_paths_test.rs` +37 |  |  |
 | `--mint-token` |  |  | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/feature_gate_test.rs` +2 |  |  |
 | `--token-id` |  | `ID` | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/howto_claims_test.rs` +1 |  |  |
 | `--token-scope` |  | `SCOPE` | Token minting | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
@@ -473,7 +474,7 @@ behind them.
 | `--vcon-resign-cert` |  | `FILE` | vCon archive | e2e | `tests/commands_drop_root_test.rs`, `tests/config_cli_flag_values_test.rs` +2 |  |  |
 | `--vcon-resign-out` |  | `FILE` | vCon archive | e2e | `tests/commands_drop_root_test.rs`, `tests/config_cli_flag_values_test.rs` +2 |  |  |
 | `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +54 |  |  |
-| `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/api_test.rs` +41 |  |  |
+| `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/api_test.rs` +42 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/api_test.rs`, `tests/cli_flag_behavior_test.rs` +10 |  |  |
 | `--completions` |  | `SHELL` | Config | e2e | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |
 | `--timeline` |  |  | Queries | e2e | `tests/cli_timeline_test.rs` |  |  |

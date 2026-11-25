@@ -76,6 +76,7 @@ each one covers in full.
 | `1` | The run failed: a capture or I/O error, a capture not read in full, a report sipnab could not produce, or a configuration file sipnab refused. |
 | `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. So does a relay question the run cannot ask, such as `--relay-stats` on a capture file. |
 | `3` | The tool worked and the input failed a check you asked for: `--lint-fail-on`, a failed `--expect` rule, an invalid container under `--vcon-validate`, or the vCon forwarder refused with `401` or `403`. |
+| `4` | Free disk space under an output fell below `--min-free-disk`. The last stderr line starts `sipnab stopped: free disk space under` and names the directory, its free bytes and the floor. Free space there, or lower the floor. |
 | `101` | sipnab panicked, an internal failure. Report it with the crash report sipnab wrote. With `[crash] core = true` the process aborts instead, and the shell shows the signal (`134`). |
 | `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away. `SIGTERM` and `SIGINT` stop it the same way and exit `0`. |
 | `130` | You pressed Ctrl-C at the archive password prompt. |

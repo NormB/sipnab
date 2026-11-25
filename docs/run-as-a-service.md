@@ -211,6 +211,7 @@ unit.
   LimitNOFILE=65535
   Restart=on-failure
   RestartSec=5
+  RestartPreventExitStatus=4
 
   [Install]
   WantedBy=multi-user.target
@@ -550,6 +551,90 @@ Troubleshoot:
   `AUDIT TRAIL INCOMPLETE: '<action>' was not recorded to <path> (<error>)`.
 - **The new file has the wrong owner or mode.** `logrotate` made it from the
   `create` line; sipnab appends to that file and leaves its mode alone.
+
+## Stop a capture before the disk fills
+
+A capture that runs for days fills its disk one record at a time. When the
+disk is full, every output fails at once: `-O`, the vCon files and the audit
+trail. `--min-free-disk SIZE` stops the capture while there is still room, with
+its files closed, and exits 4.
+
+What sipnab watches: the directory of `-O` (every `--split` file sits beside
+it), of `--mcp-audit-file`, `--tui-audit-file` and `--evidence-out`, and of
+each vCon rule. For a rule directory that does not exist yet, sipnab watches
+the nearest directory above it that does. sipnab reads the free space before
+the capture opens and then every 5 seconds, never per packet.
+
+- **Without the flag**, a directory under 1 GiB free gets one warning when it
+  crosses under, and the run goes on. The floor is `DEFAULT_WARN_FLOOR`
+  (1,073,741,824) bytes. A second warning comes only after the directory has
+  recovered to the floor plus a tenth.
+- **With `--min-free-disk SIZE`**, a directory under SIZE stops the run. Under
+  SIZE before the capture opens, the run does not start.
+- **With `--min-free-disk 0`**, sipnab reads nothing and prints no warning.
+
+Prerequisites:
+
+- A sipnab binary with `--min-free-disk` in `sipnab --help`.
+- On systemd, a unit with `RestartPreventExitStatus=4`. The packaged unit has
+  it, and so does the unit in [Write a unit of your own](#write-a-unit-of-your-own).
+  Without it, `Restart=on-failure` starts sipnab again after `RestartSec=`,
+  into the same full disk.
+
+Steps:
+
+1. Pick the floor: what the outputs need between the stop and someone freeing
+   space, plus what other programs on that file system need. Units are
+   binary: `2G` is 2048 MiB.
+2. Add the flag to `ExecStart=` with a drop-in
+   ([Change the packaged unit with a drop-in](#change-the-packaged-unit-with-a-drop-in)
+   shows how):
+
+   ```ini
+   [Service]
+   ExecStart=
+   ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog -O /var/lib/sipnab/sip.pcapng --pcapng --split filesize:100 --split-keep 48 --min-free-disk 2G
+   ```
+
+3. Reload and restart: `sudo systemctl daemon-reload` and then
+   `sudo systemctl restart sipnab`.
+
+Verify: give the run a floor no disk can meet, and check that it does not
+start. `16777215T` is the largest value the flag takes. This run read a
+capture file into a temporary directory, shown here as `DIR`:
+
+```bash
+sipnab -N -I capture.pcap -O DIR/out.pcap --min-free-disk 16777215T
+```
+
+```text
+WARN sipnab::disk_floor: stopping the capture: free disk space under DIR is 1626433282048 bytes (1.5 TiB), below --min-free-disk 18446742974197923840 bytes (16777215.0 TiB)
+sipnab stopped: free disk space under DIR is 1626433282048 bytes (1.5 TiB), below --min-free-disk 18446742974197923840 bytes (16777215.0 TiB); exit 4
+```
+
+`echo $?` right after it printed `4`. `DIR` holds no `out.pcap`: the capture
+never opened. The same command with
+`--min-free-disk 1G` read the file, wrote `out.pcap` and exited 0. The
+`sipnab stopped:` line goes to stderr even with `SIPNAB_LOG=off`.
+
+After a stop under systemd, `systemctl status sipnab` shows
+`status=4/NOPERMISSION` (systemd's name for status 4), and the service stays
+stopped.
+
+Troubleshoot:
+
+- **`invalid value '500' for '--min-free-disk <SIZE>'`.** A number needs a
+  unit: `500M`. sipnab refuses `MB` and `GB` because the units are binary; write
+  `M` or `MiB`.
+- **The service starts again after a disk stop.** The unit has no
+  `RestartPreventExitStatus=4`; add it in a drop-in.
+- **`cannot read the free disk space under DIR`.** sipnab could not open the
+  directory before the capture opened. That directory is not checked; the
+  others still are.
+- **A `--cores` run does not stop mid-read.** sipnab checks a multi-core file
+  read only before it starts, not every 5 seconds.
+- **The warning appears and nothing stops.** That is the 1 GiB default
+  warning. It stops nothing; pass `--min-free-disk SIZE` to stop.
 
 ## When the service does not start
 
