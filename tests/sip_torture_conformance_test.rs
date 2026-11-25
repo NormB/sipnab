@@ -15,11 +15,12 @@ use std::net::{IpAddr, Ipv4Addr};
 use sipnab::net::TransportProto;
 use sipnab::sip::lint::{LintConfig, Linter};
 use sipnab::sip::message::SipMessage;
-use sipnab::sip::parser::parse_sip;
+use sipnab::sip::parser::{parse_sip, starts_sip_message};
 
 type TestError = Box<dyn std::error::Error>;
 
 const CONTROL_BYTE: &str = "SIP-3261-25.1-HEADER-CONTROL-BYTE";
+const LINE_SPACING: &str = "SIP-3261-7.1-REQUEST-LINE-SPACING";
 
 /// The headers every request below starts from: all six RFC 3261 section 8.1.1
 /// fields, a cookie branch and the recommended Max-Forwards, so a finding can
@@ -183,4 +184,155 @@ fn a_control_byte_after_a_closed_quoted_string_is_flagged() -> Result<(), TestEr
         "the escape inside the quotes does not cover a byte after them"
     );
     Ok(())
+}
+
+// RFC 4475 sections 3.1.2.9 (lwsstart) and 3.1.2.10 (trws): extra SP between
+// the Request-Line elements, or after the version, is outside RFC 3261
+// section 7.1. Rejecting is acceptable and so is ignoring the SP; sipnab
+// ignores it, as it already did inside the line, and reports it.
+
+#[test]
+fn a_request_line_with_trailing_spaces_is_parsed() -> Result<(), TestError> {
+    let msg = parse(&build(b"OPTIONS sip:user@example.com SIP/2.0  ", &[]))?;
+    assert!(
+        msg.is_request,
+        "RFC 4475 3.1.2.10 allows ignoring trailing SP"
+    );
+    assert_eq!(
+        msg.request_uri.as_deref(),
+        Some("sip:user@example.com"),
+        "the Request-URI stops before the version"
+    );
+    assert_eq!(
+        msg.method.map(|m| m.to_string()).as_deref(),
+        Some("OPTIONS"),
+        "the method is read as on a clean line"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_request_line_with_trailing_spaces_is_sniffed_as_sip() {
+    assert!(
+        starts_sip_message(&build(b"OPTIONS sip:user@example.com SIP/2.0  ", &[])),
+        "the capture sniff must keep what the parser accepts, or the message never reaches it"
+    );
+}
+
+#[test]
+fn a_request_line_with_a_trailing_tab_is_parsed() -> Result<(), TestError> {
+    let msg = parse(&build(b"OPTIONS sip:user@example.com SIP/2.0\t", &[]))?;
+    assert_eq!(
+        msg.request_uri.as_deref(),
+        Some("sip:user@example.com"),
+        "a trailing HTAB is whitespace as SP is"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_single_spaced_request_line_is_not_flagged() -> Result<(), TestError> {
+    let found = findings(&options(&[]))?;
+    assert!(
+        !found.contains(&LINE_SPACING),
+        "one SP between each element is the grammar, got {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn trailing_spaces_on_a_request_line_are_flagged() -> Result<(), TestError> {
+    let found = findings(&build(b"OPTIONS sip:user@example.com SIP/2.0  ", &[]))?;
+    assert!(
+        found.contains(&LINE_SPACING),
+        "RFC 4475 3.1.2.10 trailing SP must be reported, got {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_single_trailing_space_on_a_request_line_is_flagged() -> Result<(), TestError> {
+    let found = findings(&build(b"OPTIONS sip:user@example.com SIP/2.0 ", &[]))?;
+    assert!(
+        found.contains(&LINE_SPACING),
+        "one SP after the version is still outside section 7.1, got {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_leading_space_before_the_method_is_flagged() -> Result<(), TestError> {
+    let data = build(b" OPTIONS sip:user@example.com SIP/2.0", &[]);
+    assert!(
+        parse(&data)?.is_request,
+        "the parser already skips leading whitespace"
+    );
+    assert!(
+        findings(&data)?.contains(&LINE_SPACING),
+        "whitespace before the method is outside section 7.1"
+    );
+    Ok(())
+}
+
+#[test]
+fn doubled_spaces_between_request_line_elements_are_flagged() -> Result<(), TestError> {
+    let data = build(b"OPTIONS  sip:user@example.com  SIP/2.0", &[]);
+    let msg = parse(&data)?;
+    assert_eq!(
+        msg.request_uri.as_deref(),
+        Some("sip:user@example.com"),
+        "RFC 4475 3.1.2.9 is still parsed"
+    );
+    assert!(
+        findings(&data)?.contains(&LINE_SPACING),
+        "RFC 4475 3.1.2.9 doubled SP must be reported"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_trailing_tab_on_a_request_line_is_flagged() -> Result<(), TestError> {
+    let found = findings(&build(b"OPTIONS sip:user@example.com SIP/2.0\t", &[]))?;
+    assert!(
+        found.contains(&LINE_SPACING),
+        "HTAB is not the SP separator, got {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn spaces_in_a_reason_phrase_are_not_flagged() -> Result<(), TestError> {
+    let data = build(b"SIP/2.0 200 OK  then  more ", &[]);
+    let found = findings(&data)?;
+    assert!(
+        !found.contains(&LINE_SPACING),
+        "a Status-Line's Reason-Phrase may hold any spaces, got {found:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn text_after_the_version_is_still_not_sip() {
+    let data = build(b"OPTIONS sip:user@example.com SIP/2.0 x", &[]);
+    assert!(
+        parse(&data).is_err(),
+        "only whitespace after the version is ignored"
+    );
+    assert!(
+        !starts_sip_message(&data),
+        "the sniff refuses what the parser refuses"
+    );
+}
+
+#[test]
+fn a_request_line_with_no_uri_and_trailing_space_is_refused() {
+    let data = build(b"OPTIONS SIP/2.0 ", &[]);
+    assert!(
+        parse(&data).is_err(),
+        "trimming the trailing SP must not invent a Request-URI"
+    );
+    assert!(
+        !starts_sip_message(&data),
+        "the sniff still needs a URI between method and version"
+    );
 }

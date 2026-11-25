@@ -156,7 +156,9 @@ pub fn starts_sip_message(data: &[u8]) -> bool {
     let Some(line_end) = find_crlf(data) else {
         return false;
     };
-    let first_line = &data[..line_end];
+    // Trailing SP or HTAB after the version is tolerated, as `parse_first_line`
+    // tolerates it (RFC 4475 section 3.1.2.10); the linter reports it.
+    let first_line = trim_request_line_end(&data[..line_end]);
     // SP-anchored so `sip:aSIP/2.0` (no space) does not satisfy it.
     if !first_line.ends_with(b" SIP/2.0") {
         return false;
@@ -385,6 +387,31 @@ struct FirstLine {
     request_uri: Option<String>,
 }
 
+/// `line` without the SP and HTAB that end it.
+///
+/// [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1) ends a Request-Line at `SIP-Version CRLF`. RFC 4475
+/// section 3.1.2.10 (`trws`) sends `SIP/2.0` followed by two SP and says a
+/// liberal element may ignore them. Treating them as part of the version made
+/// the line "not SIP" and the message vanished, while extra SP between the
+/// elements (section 3.1.2.9) was already tolerated. The linter reports both
+/// (`SIP-3261-7.1-REQUEST-LINE-SPACING`).
+fn trim_request_line_end(line: &[u8]) -> &[u8] {
+    let end = line
+        .iter()
+        .rposition(|b| !matches!(b, b' ' | b'\t'))
+        .map_or(0, |i| i + 1);
+    &line[..end]
+}
+
+/// The request-line `line` up to and including its ` SIP/2.0` version, with
+/// any trailing SP or HTAB removed, or `None` when it does not end in that
+/// version. One rule for [`starts_sip_message`] and [`parse_first_line`].
+fn request_line_body(line: &str) -> Option<&str> {
+    // The trimmed bytes are ASCII, so the shortened length is a char boundary.
+    let body = &line[..trim_request_line_end(line.as_bytes()).len()];
+    body.ends_with(" SIP/2.0").then_some(body)
+}
+
 /// Parse the SIP first line (request-line or status-line).
 ///
 /// # Arguments
@@ -439,7 +466,7 @@ fn parse_first_line(line: &str) -> Result<FirstLine, ParseError> {
             reason: Some(reason),
             request_uri: None,
         })
-    } else if line.ends_with(" SIP/2.0") {
+    } else if let Some(line) = request_line_body(line) {
         // Request: "INVITE sip:bob@example.com SIP/2.0". The version token is
         // anchored to a leading SP so a glued `...ASIP/2.0` is not accepted.
         let first_space = line.find(' ').ok_or_else(|| ParseError::InvalidFirstLine {

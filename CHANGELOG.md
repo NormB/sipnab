@@ -32,6 +32,10 @@ entry that carries them.
   - Was: A display name such as `"BEL:\<BEL>"`, valid per [RFC 4475 section 3.1.1.2](https://www.rfc-editor.org/rfc/rfc4475.html#section-3.1.1.2), raised `SIP-3261-25.1-HEADER-CONTROL-BYTE` and a `--json` malformation.
   - Effect: A raw control byte, or one escaped in a quote that never closes, is still reported.
   - Docs: [SIP conformance rules](docs/sip-lint-rules.md#syntactic-rules)
+- **A request with spaces after `SIP/2.0` is kept instead of dropped as not SIP.**
+  - Was: The capture and the parser refused the whole message, as in [RFC 4475 section 3.1.2.10](https://www.rfc-editor.org/rfc/rfc4475.html#section-3.1.2.10).
+  - Effect: The new rule `SIP-3261-7.1-REQUEST-LINE-SPACING` reports that whitespace, and extra spaces between the request-line elements.
+  - Docs: [SIP conformance rules](docs/sip-lint-rules.md#syntactic-rules)
 
 ## [0.5.271] - 2026-11-24
 

@@ -21,9 +21,9 @@ use super::finding::{
     BRANCH_COOKIE, CONTACT_MISSING_IN_2XX, CONTENT_LENGTH_MISMATCH, CSEQ_MALFORMED,
     CSEQ_METHOD_MISMATCH, HEADER_CONTROL_BYTE, MANDATORY_HEADER_MISSING, MAX_FORWARDS_MISSING,
     MAX_FORWARDS_RANGE, MIN_SE_TOO_SMALL, RECORD_ROUTE_NOT_LOOSE, REFRESHER_MISSING,
-    RELIABLE_PROVISIONAL_WITHOUT_RSEQ, SESSION_EXPIRES_BELOW_MIN_SE, SESSION_EXPIRES_TOO_SMALL,
-    SESSION_ID_LEGACY_FORM, SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE, SINGULAR_HEADER_REPEATED,
-    URI_BRACKETS, URI_PARAM_DEMOTED, VIA_BRANCH_DUPLICATE,
+    RELIABLE_PROVISIONAL_WITHOUT_RSEQ, REQUEST_LINE_SPACING, SESSION_EXPIRES_BELOW_MIN_SE,
+    SESSION_EXPIRES_TOO_SMALL, SESSION_ID_LEGACY_FORM, SESSION_ID_MALFORMED, SESSION_ID_UPPERCASE,
+    SINGULAR_HEADER_REPEATED, URI_BRACKETS, URI_PARAM_DEMOTED, VIA_BRANCH_DUPLICATE,
 };
 
 /// The five header fields [RFC 3261 section 8.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1) makes mandatory in every request and
@@ -257,6 +257,7 @@ pub(crate) fn lint(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
     uri_brackets(msg, index, sink);
     max_forwards(msg, index, sink);
     branch_cookie(msg, index, sink);
+    request_line_spacing(msg, index, sink);
     cseq_method(msg, index, sink);
     session_timers(msg, index, sink);
     dialog_target(msg, index, sink);
@@ -784,6 +785,42 @@ fn branch_cookie(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
          identifies a stack predating RFC 3261 in one field. Transaction matching then \
          falls back to the RFC 2543 rules, and CANCEL and ACK correlation stop being \
          reliable.",
+    );
+}
+
+/// Whether a Request-Line breaks the single-SP rule of [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1):
+/// whitespace before the method or after the version, a run of more than one
+/// SP or HTAB, or an HTAB used as the separator.
+pub(crate) fn request_line_spacing_broken(line: &[u8]) -> bool {
+    let sp = |b: &u8| matches!(b, b' ' | b'\t');
+    line.first().is_some_and(sp)
+        || line.last().is_some_and(sp)
+        || line.contains(&b'\t')
+        || line.windows(2).any(|w| w[0] == b' ' && w[1] == b' ')
+}
+
+/// [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1) — Request-Line elements separated by single SP.
+///
+/// Requests only: a Status-Line's Reason-Phrase may hold any run of spaces.
+/// The parser tolerates the extra whitespace (RFC 4475 sections 3.1.2.9 and
+/// 3.1.2.10 permit that), so this is where it becomes visible.
+fn request_line_spacing(msg: &SipMessage, index: usize, sink: &mut FindingSink<'_>) {
+    if !msg.is_request {
+        return;
+    }
+    let raw: &[u8] = &msg.raw;
+    let line = crate::sip::parser::find_crlf(raw).map_or(raw, |end| &raw[..end]);
+    if !request_line_spacing_broken(line) {
+        return;
+    }
+    sink.push(
+        &REQUEST_LINE_SPACING,
+        index,
+        "Request-Line with extra or trailing whitespace",
+        "Method SP Request-URI SP SIP-Version CRLF, one SP each",
+        "§7.1 separates the three elements by single SP characters. A strict \
+         receiver rejects the extra whitespace with 400; a lenient one forwards a \
+         line it has to rewrite.",
     );
 }
 
