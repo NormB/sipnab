@@ -1,24 +1,16 @@
 +++
-title = "Contributor License Agreement"
-description = "sipnab requires every contributor to sign a Contributor License Agreement (CLA) before their pull request can be merged. Read the agreement and sign it here."
+title = "Contributor License Agreement (retired)"
+description = "The sipnab Contributor License Agreement is retired: the project no longer collects signatures. Contributors sign off their commits under the Developer Certificate of Origin instead."
 template = "page.html"
 +++
 
-Before your first pull request to **sipnab** can be merged, you need to sign the
-sipnab Individual Contributor License Agreement (CLA). It is a one-time step.
+**This agreement is retired.** sipnab no longer collects signatures for the
+Individual Contributor License Agreement (CLA), and no check on a pull request
+asks for one. Contributors sign off each commit under the Developer Certificate
+of Origin instead, as
+[Signing off commits](@/docs/contributing.md#signing-off-commits) describes.
 
-- It covers all of your past, present and future contributions.
-- You keep full ownership of your work.
-
-Signing is handled by [CLA Assistant](https://cla-assistant.io/).
-
-- When you open a pull request, a bot checks whether you have signed.
-- If you have not, it leaves a comment with a link.
-- You sign in the browser with your GitHub account.
-
-<p>
-<a class="btn btn-primary" href="https://cla-assistant.io/NormB/sipnab" target="_blank" rel="noopener noreferrer">Sign the CLA &rarr;</a>
-</p>
+The text below stays published for the contributions made under it.
 
 ---
 

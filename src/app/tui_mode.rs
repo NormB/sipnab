@@ -337,6 +337,38 @@ fn tui_capture_mode(cli: &Cli, config: &Config) -> String {
     }
 }
 
+/// The words that name the session's capture source, for the command line the
+/// call list's `Y` copies.
+///
+/// The rule [`tui_capture_mode`] labels the source by: every `-I` input as
+/// given (and `--recursive`), else the interface (`-d`, or `[capture] device`)
+/// and the HEP listener (`-L`, or `[hep] listen`). Empty when the run named
+/// none, as a live capture on the default interface does.
+fn tui_capture_source(cli: &Cli, config: &Config) -> Vec<String> {
+    let mut words = Vec::new();
+    if !cli.capture_args.input.is_empty() {
+        for input in &cli.capture_args.input {
+            words.extend(["-I".to_owned(), input.clone()]);
+        }
+        if cli.capture_args.recursive {
+            words.push("--recursive".to_owned());
+        }
+        return words;
+    }
+    let device = cli
+        .capture_args
+        .device
+        .as_ref()
+        .or(config.capture.device.as_ref());
+    if let Some(device) = device {
+        words.extend(["-d".to_owned(), device.clone()]);
+    }
+    if let Some(hep) = cli.hep_listen(config) {
+        words.extend(["-L".to_owned(), hep.to_owned()]);
+    }
+    words
+}
+
 /// The From/To column's starting mode: the CLI flag wins, then the
 /// `[display] from_to` config value, else the built-in default. A value that
 /// names no mode is refused at startup by
@@ -685,8 +717,12 @@ pub fn run_tui_mode(
     });
 
     // Build resolved theme and keymap from config
-    let theme = crate::tui::Theme::from_config(&config.theme);
+    let mut theme = crate::tui::Theme::from_config(&config.theme);
     let keymap = crate::tui::Keymap::from_config(&config.keybindings);
+    // sngrep mode: `--sngrep-mode` / `--no-sngrep-mode`, else `[display] sngrep_mode`.
+    if cli.sngrep_mode(&config) {
+        crate::tui::enable_sngrep_mode(&mut theme);
+    }
     let config_save = crate::config::save_target(
         origin.source.as_deref(),
         crate::config::default_user_config_path().as_deref(),
@@ -713,6 +749,7 @@ pub fn run_tui_mode(
             config_save: crate::tui::ConfigSave(config_save),
             startup_notice: startup_notice(
                 crate::config::config_notice(origin.source.as_deref(), &origin.shadowed),
+                crate::tui::DisplayPrefs::ignored_notice(&config.display, cli.sngrep_mode(&config)),
                 servers.as_ref().and_then(|h| h.mcp_http_addr),
                 cli.mcp_tls_files(&config).0.is_some(),
             ),
@@ -777,6 +814,9 @@ pub fn run_tui_mode(
             capture_options: tui_pipeline_options(&cli, &config, no_rtp),
             rescan_path: (cli.capture_args.input.len() == 1)
                 .then(|| std::path::PathBuf::from(&cli.capture_args.input[0])),
+            // The source words the call list's `Y` puts in the command line
+            // it copies.
+            capture_source: tui_capture_source(&cli, &config),
             // The same test `tui_capture_mode` uses for its `Offline (...)`
             // label: any `-I` input means no live capture runs.
             offline: !cli.capture_args.input.is_empty(),
@@ -784,8 +824,17 @@ pub fn run_tui_mode(
             notes_path,
             // -c / --calls-only: the session opens filtered to calls (#474).
             calls_only: cli.mode_args.calls_only,
+            // --filter / [filter] expression: pre-filled in F7's Expression
+            // field and applied (#841).
+            filter_expression: crate::app::bootstrap::typed_filter_text(&cli, &config)
+                .map(str::to_owned),
             mouse_capture_off: tui_mouse_capture_off(&config),
             view_filter_detail: tui_view_filter_detail(&config),
+            // `[display]` keys over the mode's defaults (CLI > key > mode).
+            display: Some(crate::tui::DisplayPrefs::resolve(
+                &config.display,
+                cli.sngrep_mode(&config),
+            )),
         },
     )
     .err();
@@ -1033,14 +1082,16 @@ fn armed_kinds(armed: &[String]) -> Vec<&'static str> {
         .collect()
 }
 
-/// The status-line notice the session opens with: the config notice, and
-/// where MCP over HTTP is listening when it runs beside the TUI.
+/// The status-line notice the session opens with: the config notice, a
+/// `[display]` key the mode ignores ([`crate::tui::DisplayPrefs::ignored_notice`]),
+/// and where MCP over HTTP is listening when it runs beside the TUI.
 ///
-/// The address is on screen because nothing else in a TUI run says it: the
+/// These are on screen because nothing else in a TUI run says them: the
 /// run logs only errors, and with `--mcp-bind 127.0.0.1:0` the port is the
 /// kernel's choice.
 fn startup_notice(
     config: Option<String>,
+    display: Option<String>,
     mcp_http: Option<std::net::SocketAddr>,
     https: bool,
 ) -> Option<String> {
@@ -1050,7 +1101,7 @@ fn startup_notice(
             if https { "https" } else { "http" }
         )
     });
-    let notices: Vec<String> = config.into_iter().chain(mcp).collect();
+    let notices: Vec<String> = config.into_iter().chain(display).chain(mcp).collect();
     (!notices.is_empty()).then(|| notices.join(" | "))
 }
 
@@ -2161,6 +2212,81 @@ mod tests {
         Ok(())
     }
 
+    /// The `[display]` keys a mode only supplies defaults for: unset takes
+    /// sipnab's own defaults, a set key wins.
+    #[test]
+    fn display_prefs_keys_win_over_the_mode_default() -> Result<(), TestError> {
+        use crate::tui::{ColorMode, DisplayPrefs, SdpDisplayMode};
+        let own = DisplayPrefs::resolve(&Config::default().display, false);
+        assert_eq!(
+            own,
+            DisplayPrefs::mode_default(false),
+            "no [display] key: the defaults"
+        );
+        assert!(
+            own.fold && own.autoscroll && !own.extended_flow,
+            "defaults: fold on, autoscroll on, extended flow off"
+        );
+        let set: Config = toml::from_str(
+            "[display]\nfold = false\nautoscroll = false\nsdp_display = \"full\"\n\
+             color_mode = \"cseq\"\nextended_flow = true\n",
+        )?;
+        let p = DisplayPrefs::resolve(&set.display, false);
+        assert!(
+            !p.fold && !p.autoscroll && p.extended_flow,
+            "each set boolean key wins over its default"
+        );
+        assert_eq!(
+            p.sdp_display,
+            SdpDisplayMode::Full,
+            "sdp_display = \"full\" wins"
+        );
+        assert_eq!(p.color_mode, ColorMode::CSeq, "color_mode = \"cseq\" wins");
+        Ok(())
+    }
+
+    /// sngrep mode is a set of defaults: retx/auth as separate
+    /// arrows, Call-ID coloring, the multi-leg flow, autoscroll off, sngrep's
+    /// SDP form; the user's `[display]` keys still win over each.
+    #[test]
+    fn sngrep_mode_defaults_yield_to_the_users_keys() -> Result<(), TestError> {
+        use crate::tui::{ColorMode, DisplayPrefs, SdpDisplayMode};
+        let sng = DisplayPrefs::resolve(&Config::default().display, true);
+        assert!(
+            !sng.fold && !sng.autoscroll && sng.extended_flow,
+            "sngrep defaults: no fold, no autoscroll, extended flow: {sng:?}"
+        );
+        assert_eq!(
+            sng.sdp_display,
+            SdpDisplayMode::Sngrep,
+            "sngrep's SDP form by default"
+        );
+        assert_eq!(
+            sng.color_mode,
+            ColorMode::CallId,
+            "Call-ID colors by default"
+        );
+        let set: Config = toml::from_str(
+            "[display]\nfold = true\ncolor_mode = \"method\"\nextended_flow = false\n",
+        )?;
+        let p = DisplayPrefs::resolve(&set.display, true);
+        assert!(
+            p.fold && !p.extended_flow,
+            "the user's fold and extended_flow win: {p:?}"
+        );
+        assert_eq!(
+            p.color_mode,
+            ColorMode::Method,
+            "the user's color_mode wins"
+        );
+        assert_eq!(
+            p.sdp_display,
+            SdpDisplayMode::Sngrep,
+            "unset keys keep sngrep's"
+        );
+        Ok(())
+    }
+
     /// `[display] view_filter_detail` sets how line 3 opens; unset is the
     /// summary.
     #[test]
@@ -2661,6 +2787,74 @@ mod tests {
         Ok(())
     }
 
+    // ── The source words of the copied command line (`Y`) ─────────────────
+
+    /// Each `-I` input is kept as given, in order, with `--recursive`.
+    #[test]
+    fn the_copied_source_names_each_input_as_given() -> Result<(), TestError> {
+        let cli = cli_from(&["-I", "/cases/a b.pcap", "-I", "dir", "--recursive"]);
+        assert_eq!(
+            super::tui_capture_source(&cli, &Config::default()),
+            ["-I", "/cases/a b.pcap", "-I", "dir", "--recursive"],
+            "the inputs as typed"
+        );
+        Ok(())
+    }
+
+    /// An input beats an interface, as it does for the status bar: `-I`
+    /// never opens one.
+    #[test]
+    fn the_copied_source_prefers_the_input_over_the_interface() -> Result<(), TestError> {
+        let cli = cli_from(&["-I", "a.pcap", "-d", "eth0"]);
+        assert_eq!(
+            super::tui_capture_source(&cli, &Config::default()),
+            ["-I", "a.pcap"],
+            "no -d with -I"
+        );
+        Ok(())
+    }
+
+    /// `-d` names the interface; the config file's device stands in for it.
+    #[test]
+    fn the_copied_source_names_the_interface() -> Result<(), TestError> {
+        let mut config = Config::default();
+        config.capture.device = Some("eth1".to_string());
+        assert_eq!(
+            super::tui_capture_source(&cli_from(&["-d", "eth0"]), &config),
+            ["-d", "eth0"],
+            "the flag wins"
+        );
+        assert_eq!(
+            super::tui_capture_source(&cli_from(&[]), &config),
+            ["-d", "eth1"],
+            "the config's device"
+        );
+        Ok(())
+    }
+
+    /// A HEP listener is named with `-L`, beside an interface.
+    #[test]
+    fn the_copied_source_names_a_hep_listener() -> Result<(), TestError> {
+        let cli = cli_from(&["-d", "eth0", "-L", "udp:0.0.0.0:9060"]);
+        assert_eq!(
+            super::tui_capture_source(&cli, &Config::default()),
+            ["-d", "eth0", "-L", "udp:0.0.0.0:9060"],
+            "both sources"
+        );
+        Ok(())
+    }
+
+    /// A run that names no source has no source words.
+    #[test]
+    fn the_copied_source_is_empty_when_none_is_named() -> Result<(), TestError> {
+        assert_eq!(
+            super::tui_capture_source(&cli_from(&[]), &Config::default()),
+            Vec::<String>::new(),
+            "the default interface needs no words"
+        );
+        Ok(())
+    }
+
     // ── From/To column mode ───────────────────────────────────────────────
 
     /// `--from-to-mode` wins over the `[display] from_to` config value.
@@ -2947,18 +3141,48 @@ mod processor_tests {
     #[test]
     fn the_startup_notice_names_the_mcp_address() -> Result<(), TestError> {
         let addr: std::net::SocketAddr = "127.0.0.1:43929".parse()?;
-        assert_eq!(startup_notice(None, None, false), None);
         assert_eq!(
-            startup_notice(None, Some(addr), false).as_deref(),
+            startup_notice(None, None, None, false),
+            None,
+            "nothing to say, no notice"
+        );
+        assert_eq!(
+            startup_notice(None, None, Some(addr), false).as_deref(),
             Some("MCP over HTTP at http://127.0.0.1:43929/mcp")
         );
         assert_eq!(
-            startup_notice(Some("Reading A.".into()), Some(addr), true).as_deref(),
+            startup_notice(Some("Reading A.".into()), None, Some(addr), true).as_deref(),
             Some("Reading A. | MCP over HTTP at https://127.0.0.1:43929/mcp")
         );
         assert_eq!(
-            startup_notice(Some("Reading A.".into()), None, false).as_deref(),
+            startup_notice(Some("Reading A.".into()), None, None, false).as_deref(),
             Some("Reading A.")
+        );
+        Ok(())
+    }
+
+    /// Success (sngrep mode): a `[display]` key the mode ignores is said on
+    /// the status line, between the config notice and the MCP address; a
+    /// TUI run logs only errors, so its log warning alone is never seen.
+    #[test]
+    fn the_startup_notice_names_an_ignored_display_key() -> Result<(), TestError> {
+        let addr: std::net::SocketAddr = "127.0.0.1:43929".parse()?;
+        let cfg: Config = toml::from_str("[display]\nsdp_display = \"sngrep\"\n")?;
+        let ignored = crate::tui::DisplayPrefs::ignored_notice(&cfg.display, false);
+        let text = ignored
+            .clone()
+            .ok_or("the key is ignored with the mode off")?;
+        assert_eq!(
+            startup_notice(None, ignored.clone(), None, false).as_deref(),
+            Some(text.as_str()),
+            "the notice alone"
+        );
+        assert_eq!(
+            startup_notice(Some("Reading A.".into()), ignored, Some(addr), false),
+            Some(format!(
+                "Reading A. | {text} | MCP over HTTP at http://127.0.0.1:43929/mcp"
+            )),
+            "between the config notice and the MCP address"
         );
         Ok(())
     }

@@ -119,6 +119,10 @@ demos/mcp-stdio.sh tests/pcap-samples/sip-problem-call.pcap \
 }
 ```
 
+The helper calls the tool only after the capture has finished loading. It asks
+`capture_status` at most `MCP_MAX_POLLS` times (400 by default), then stops
+with `mcp-stdio: <capture> never finished loading`.
+
 A verdict, not a packet list:
 
 - signaling rather than media,
@@ -347,9 +351,10 @@ What to know when you write a pattern:
   line end.
 - **The pattern sees the bytes of the message,** the bytes `payload =~` scans
   in a [filter expression](@/docs/filter-dsl.md).
-- **Three limits bound a pattern:** it is at most 1024 bytes long, it compiles
-  to at most 1000000 bytes, and one call scans for at most 5 s. The syntax has
-  no look-around and no back references.
+- **Four limits bound a pattern:** it is at most 1024 bytes long, it holds at
+  most 16 character classes (each `[`, `\p` or `\P`), it compiles to at most
+  1000000 bytes, and one call scans for at most 5 s. The syntax has no
+  look-around and no back references.
 
 ### Check that the regex search worked
 
@@ -424,7 +429,7 @@ it does these things:
 It does for this surface what <https://sipnab.com/api-reference/> does for the
 [REST API](@/docs/api.md).
 
-sipnab registers 79 MCP tools. That is more than anyone reads in a table. The
+sipnab registers 80 MCP tools. That is more than anyone reads in a table. The
 Tools tab is the fastest way to find the one you want.
 
 The MCP project maintains Inspector, not sipnab. When a tool
@@ -620,7 +625,7 @@ true
 
 The test suite runs this check on each build: it sends the three messages of
 the fence above to the binary and reads the same two fields. On Ubuntu 24.04
-(Linux 6.8, aarch64) the full build answered `sipnab` and listed 79 tools,
+(Linux 6.8, aarch64) the full build answered `sipnab` and listed 80 tools,
 `triage_call` among them. The suite reads the answers in Rust, not with `jq`.
 
 ## When something does not work

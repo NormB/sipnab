@@ -60,6 +60,10 @@ MAX_ATTEMPTS = 3
 # the same two, so that a run that passed does not start a job to say so.
 RERUN_CONCLUSIONS = ("failure", "cancelled")
 
+# The workflows whose runs .github/workflows/rerun-not-acquired.yml looks into,
+# by the names they carry (its `workflows:` list; a test holds the two equal).
+WORKFLOWS = ("CI", "Release")
+
 PER_PAGE = 100
 # 50 pages of 100: more jobs than one run can hold.
 MAX_PAGES = 50
@@ -108,6 +112,11 @@ def never_started(job, annotations) -> bool:
     return is_candidate(job) and _has_message(annotations)
 
 
+def attempts_left(attempt, max_attempts=MAX_ATTEMPTS) -> bool:
+    """Whether a run on attempt `attempt` may still be re-run."""
+    return _is_count(attempt) and attempt < max_attempts
+
+
 def run_blocks(run, max_attempts=MAX_ATTEMPTS):
     """Why the run itself rules a re-run out, or None when it does not."""
     if not isinstance(run, dict):
@@ -120,9 +129,33 @@ def run_blocks(run, max_attempts=MAX_ATTEMPTS):
     attempt = run.get("run_attempt")
     if not _is_count(attempt):
         return f"the run's attempt number is {attempt!r}"
-    if attempt >= max_attempts:
+    if not attempts_left(attempt, max_attempts):
         return f"the run is on attempt {attempt} of at most {max_attempts}"
     return None
+
+
+def rerun_coming(workflow, run, job, annotations, max_attempts=MAX_ATTEMPTS) -> bool:
+    """Whether this script will re-run `job` when its run completes, as far
+    as one job can tell: the run belongs to a watched workflow, the job never
+    started, it belongs to the run's current attempt, and that attempt is
+    below the limit. A run that is not completed yet counts by its attempt
+    alone; a completed one must also have concluded as `decide` looks into.
+
+    scripts/release-train.py reads a canceled check through this, so that a
+    job this script re-runs is waited for, not taken as a failure
+    (RELEASE-TRAIN-STOPS-ON-NOT-ACQUIRED). It cannot see the run's other
+    jobs: one that fails makes `decide` leave the run, and that job is a
+    failed check of its own."""
+    if workflow not in WORKFLOWS or not isinstance(run, dict) or not isinstance(job, dict):
+        return False
+    if not never_started(job, annotations):
+        return False
+    attempt = run.get("run_attempt")
+    if job.get("run_attempt") != attempt or not attempts_left(attempt, max_attempts):
+        return False
+    if run.get("status") == "completed":
+        return run.get("conclusion") in RERUN_CONCLUSIONS
+    return True
 
 
 def _annotations_of(annotations, job_id):

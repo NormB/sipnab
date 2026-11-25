@@ -81,7 +81,8 @@ Any other key leaves the question on screen.
 
 ## Copying text
 
-Clipboard copies (`y` in the Raw Message view, `E` in the Call Flow view) use
+Clipboard copies (`y` in the Raw Message view, `E` in the Call Flow view, `Y`
+in the Call List) use
 **OSC 52**. This is an escape sequence the terminal maps to your system
 clipboard.
 
@@ -123,6 +124,8 @@ To start every session with capture off, set `mouse_capture = false` under
 | < | Sort by previous column |
 | > | Sort by next column |
 | Z | Reverse sort direction |
+| L | Sort by each dialog's last message, the one updated last at the bottom; `L` again returns to `#` order. Status line 1 always names the sort (`Sort: Last update ▲`) |
+| d | Show only the dialogs that are not over; `d` again shows all. A REGISTER whose challenge got no answering REGISTER, or whose registration expired by the capture's clock, counts as over. Status line 1 says `Showing: not over` while it is on |
 | A | Toggle autoscroll **(configurable: `autoscroll`)** |
 | p | Pause/resume capture **(configurable: `pause`)** |
 | / | Activate search **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list, Space stars rows, and Enter commits the query and opens the selection in one press |
@@ -147,6 +150,7 @@ To start every session with capture off, set `mouse_capture = false` under
 | S | Open the **Relay statistics** view — asks the live relay for its own counters (`s` asks what this capture saw, `S` asks what the relay says). See [Relay statistics](#relay-statistics) |
 | D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | T | Open the call timeline for the selected dialog (Esc / q closes it) |
+| Y | Copy the view filter in force as a `sipnab` command line with `--filter`, and show it. See [Run the same filter from a shell](tui-walkthrough.md#run-the-same-filter-from-a-shell) |
 | O | Open pcap file (File Open dialog) |
 | F8 | Open Settings popup **(configurable: `settings`)** |
 | Tab | Switch to RTP Streams view |
@@ -181,7 +185,7 @@ active filter.
 | Home | Jump to first message (or top of detail when focused) |
 | End | Jump to last message (or bottom of detail when focused) |
 | Enter | Open full-screen raw message view — or, with the cursor on an RTP stream's row, that stream's Stream Detail view (MOS, jitter, quality intervals, burst/gap analysis, silence detection, sparklines) |
-| Space | Select message for diff (press on two messages to compare) |
+| Space | Select message for diff (press on two messages to compare). `Space` again on the selected message clears the selection and its hint |
 | q | Quit, after a confirmation **(configurable: `quit`)** |
 | Esc | Back to call list |
 | d | Cycle SDP display mode (hidden / summary / full) |
@@ -699,15 +703,18 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **M
 
 | Key | Action |
 |-----|--------|
-| Esc | Cancel without applying |
+| Esc | Cancel without applying. With the field help shown, Esc hides it first; with a `Kept @name for this session only` note shown, Esc closes the note first |
 | Enter | Apply filter (or cancel if Cancel button focused) |
 | Tab | Focus next field |
 | Shift+Tab / BackTab | Focus previous field |
-| Down | Next field (or checkbox down) |
-| Up | Previous field (or checkbox up) |
+| Down | Next field (or checkbox down). In Expression during a recall: the next newer expression, then the text you typed |
+| Up | Previous field (or checkbox up). In Expression: the expression applied before, newest first; past the oldest, the previous field |
 | Left / Right | Move within checkboxes or text cursor |
 | Space | Toggle checkbox / activate button |
-| F9 | Clear all fields and active filter, close popup |
+| F1 | Show or hide the Filter DSL field names and operators in place of the method boxes. Esc hides them first |
+| F2 | Save the dialog's filter as a `[filters]` entry: type the name, Enter saves, Esc closes the prompt. See [Save the dialog's filter under a name](tui-walkthrough.md#save-the-dialogs-filter-under-a-name) |
+| F3 | With a `Kept @name for this session only` note shown: copy its `[filters]` entry line to the clipboard. Without the note, nothing |
+| F9 | Clear all fields, the Expression field included, and the active filter, close popup |
 | Backspace / Delete | Text editing in focused text field |
 | Home / End | Jump to start/end of text field |
 | (any char) | Insert character in focused text field |
@@ -920,6 +927,100 @@ Related flags:
 See [cli-reference.md](cli-reference.md#name-resolution) and the `[names]`
 section of [config-reference.md](config-reference.md#names).
 
+## sngrep mode
+
+`--sngrep-mode` (or `[display] sngrep_mode = true`) gives the call list, call
+flow, raw message and message compare screens sngrep's keys, colors and
+bottom key bar. Keys these tables do not list work as in sipnab. Under
+`NO_COLOR` the keys, help and key bar are the same and sipnab draws no color.
+See [Use sngrep's keys and colors](tui-walkthrough.md#use-sngreps-keys-and-colors).
+
+### Call list in sngrep mode
+
+| Key | Action |
+|-----|--------|
+| Ctrl+F / Ctrl+B | Page down / up (Ctrl+D / Ctrl+U too) |
+| Ctrl+A / Ctrl+E | First / last call |
+| Enter | Call flow |
+| F4, x | Extended call flow |
+| F6, r, R | Raw messages of the call |
+| F7, f, F | Filter dialog |
+| F3, /, Tab, P | Search |
+| F10, t, T | Column selector; in it `-` and `+` move a column |
+| F8, o, O | Settings |
+| F2, s, S | Save |
+| F5, Ctrl+L | Clear calls |
+| F9 | Clear the calls that do not match the filter |
+| i | Statistics |
+| c / C | Cycle ladder colors / toggle syntax colors |
+| a | Cycle name resolution |
+| z | Reverse sort; `<` `>` change the sort column |
+| M | Sort by last update; again for `#` order (sipnab's `L`) |
+| d | Only the dialogs that are not over; again for all |
+| p, Space | Pause; check a call |
+| A | Autoscroll on or off. Moving the cursor or searching turns it off. It starts off |
+| Ctrl+W | Clear the check mark of every call |
+| K | Letters instead of function keys on the bottom bar |
+| F1, h, H, ? | Help |
+| q, Q, Esc | Quit |
+
+### Call flow in sngrep mode
+
+| Key | Action |
+|-----|--------|
+| Enter | Raw message of the selected arrow |
+| F6, r, R | Raw messages of the whole call |
+| F2, d | SDP form: hidden, summary, full, sngrep (the default: `INV (192.0.2.26)` on the arrow and one `audio 12220 (PCMU)` line per RTP stream) |
+| F3, m | RTP streams in the ladder |
+| F4, x | Extended call flow |
+| F7, f, F | Filter dialog |
+| 9 / 0 | Raw pane two columns wider / narrower |
+| T | Raw pane back to its default width |
+| t | Show or hide the raw pane |
+| D | Only the messages with SDP |
+| M | Only media |
+| s | One column per host |
+| F5, Ctrl+L, F9 | Clear calls (F9: the calls that do not match the filter) |
+| K | Letters instead of function keys on the bottom bar |
+| w | Absolute or delta time |
+| c / C, F8 | Cycle colors / toggle syntax colors |
+| Space | Compare two messages (Ctrl+W resets the choice) |
+| S | Save |
+| q, Q, Esc | Back to the call list |
+
+### Raw message in sngrep mode
+
+| Key | Action |
+|-----|--------|
+| F2, s, S | Save |
+| C, F8 | Toggle syntax colors |
+| F5, Ctrl+L, F9 | Clear calls (F9: the calls that do not match the filter) |
+| q, Q, Esc | Back |
+
+### sipnab keys that move in sngrep mode
+
+sngrep uses these keys for its own commands, so the sipnab command moves.
+
+| Key in sngrep mode | sipnab command | Its key outside the mode |
+|-----|--------|--------|
+| L | RTP streams | `Tab` (call list), `r` (call flow) |
+| w | Cycle timestamps (call list) | `t` |
+| W | Relay statistics | `S` |
+| X | TFPS observe (call list) | `x` |
+| J | RFC conformance (call list), transaction filter (call flow) | `f` |
+| G | Filter summary or full on status line 3 | `F` |
+| Y | SDP timeline (call list), wrap (call flow) | `o`, `w` |
+| U | Open a pcap file (call list) | `O` |
+| E | Security findings (call list) | `a` |
+| y | Call timeline (call list) | `T` |
+| # | Capture health (call list) | `h` |
+| = | Compare two calls (call list) | `c` |
+| Backslash | Clear the view filter and search (call list, call flow) | `F9` |
+| b / B | Mark / clear marks (call flow) | `m` / `M` |
+| g | Combined detail of the transaction (call flow) | `a` |
+| u | Header names form (call flow, raw message) | `h` |
+| Z | Operator note (call flow, raw message) | `C` |
+
 ---
 
 ## TUI views
@@ -947,7 +1048,7 @@ sipnab draws into.
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Call List</span>
 </div>
-<pre class="terminal-body"><span class="t-header"> Live capture: eth0    Dialogs: 47 shown of 47    Autoscroll: on</span>
+<pre class="terminal-body"><span class="t-header"> Live capture: eth0    Dialogs: 47 shown of 47    Sort: # ▲    Autoscroll: on</span>
 <span class="t-muted"> Capture filter (BPF): port 5060</span>
 <span class="t-muted"> View filter: none</span>
 <span class="t-muted">  #  Method     From           To             Src IP         Dst IP         State        Msgs  +Prev       PDD</span>
@@ -984,6 +1085,7 @@ way out, and fewer of them on a narrow terminal.
 
 > **Tip:**
 >
+> - The `#` column is the dialog's own number, given when sipnab first sees it. It stays the same through a filter, a search, a sort, eviction and a clear.
 > - Press `Space` to star dialogs. A starred row shows `[*]` in the `#` column (the `▸` above is just the cursor).
 > - `F2` then saves only the starred dialogs.
 > - `Enter` opens two or more of them as a single merged flow.
@@ -1095,23 +1197,24 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Filter Dialog</span>
 </div>
-<pre class="terminal-body"><span class="t-muted"> ┌ Filter ──────────────────────────────────────────────┐</span>
-<span class="t-muted"> │</span>  <span class="t-header">From user:</span>       <span class="t-selected">[alice                          ]</span>  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">To user:</span>         [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Source IP:</span>       [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Destination IP:</span>  [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Text in message:</span> [                               ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Header:</span>          [<span class="t-muted">Name: text</span>                     ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">After:</span>           [<span class="t-muted">2026-07-07T08:00:00Z</span>           ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Before:</span>          [<span class="t-muted">2026-07-07T09:00:00Z</span>           ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  <span class="t-header">Named filter:</span>    [<span class="t-muted">sales, support      </span>           ]  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  ──────────────────────────────────────────────────  <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  All       <span class="t-good">[*]</span>                                       <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  REGISTER  <span class="t-good">[*]</span>             OPTIONS   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
-<span class="t-muted"> │</span>  INVITE    <span class="t-good">[*]</span>             PUBLISH   <span class="t-good">[*]</span>             <span class="t-muted">│</span>
-<span class="t-muted"> │</span>     <span class="t-good">[ Filter ]</span>                 <span class="t-muted">[ Cancel ]</span>            <span class="t-muted">│</span>
-<span class="t-muted"> └──────────────────────────────────────────────────────┘</span>
-<span class="t-muted"> Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear</span></pre>
+<pre class="terminal-body"><span class="t-muted"> ┌ Filter ──────────────────────────────────────────────────────────────────┐</span>
+<span class="t-muted"> │</span>  <span class="t-header">From user:</span>       <span class="t-selected">[alice                                              ]</span>  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">To user:</span>         [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Source IP:</span>       [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Destination IP:</span>  [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Text in message:</span> [                                                   ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Header:</span>          [<span class="t-muted">Name: text</span>                                         ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">After:</span>           [<span class="t-muted">2026-07-07T08:00:00Z</span>                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Before:</span>          [<span class="t-muted">2026-07-07T09:00:00Z</span>                               ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Named filter:</span>    [<span class="t-muted">sales, support</span>                                     ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Expression:</span>      [<span class="t-muted">any --filter expression</span>                            ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  ──────────────────────────────────────────────────────────────────────  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  All       <span class="t-good">[*]</span>                                                           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  REGISTER  <span class="t-good">[*]</span>                       OPTIONS   <span class="t-good">[*]</span>                       <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  INVITE    <span class="t-good">[*]</span>                       PUBLISH   <span class="t-good">[*]</span>                       <span class="t-muted">│</span>
+<span class="t-muted"> │</span>     <span class="t-good">[ Filter ]</span>                           <span class="t-muted">[ Cancel ]</span>                      <span class="t-muted">│</span>
+<span class="t-muted"> └──────────────────────────────────────────────────────────────────────────┘</span>
+<span class="t-muted"> Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear  F1 Fields</span></pre>
 </div>
 
 Each label says what its field matches:
@@ -1127,10 +1230,31 @@ Each label says what its field matches:
 - Named filter takes the names of [`[filters]`](config-reference.md#filters)
   entries, separated by spaces, with or without the leading `@`. While it is
   empty, it lists the names the config defines.
+- Expression takes any [Filter DSL](filter-dsl.md) expression, typed as it
+  is: the text `--filter` takes, `@name` references and alias names included.
+  - It joins the other fields with AND: a dialog must match it and every
+    other field to stay in the list.
+  - A session started with `--filter` or `[filter] expression` opens with
+    that text here, already applied.
+  - When Enter refuses it, the dialog stays open with the parser's message
+    and position, the cursor moves to that position, and the filter in force
+    stays.
+  - Up recalls the expressions applied earlier in the session, newest first,
+    and Down walks back to the text you typed. The session keeps the newest
+    50, each once.
+  - `F1` lists every field name and operator the DSL takes.
+  - [Filter with an expression](tui-walkthrough.md#filter-with-an-expression)
+    walks through it.
 
-> **Tip:** Press `F9` to clear every field and the method boxes at once. For
-anything the fields cannot say, the [Filter DSL](filter-dsl.md) takes the full
-expression.
+> **Tip:** Press `F9` to clear every field and the method boxes at once,
+the Expression field included.
+
+`F2` saves the dialog's filter under a name in `[filters]`. When sipnab may
+write no config file, it keeps the name for the session and the dialog shows
+the entry to add to a file. `F3` copies that entry, and `Esc` closes the
+note. [Save the dialog's filter under a
+name](tui-walkthrough.md#save-the-dialogs-filter-under-a-name) walks through
+it.
 
 Status line 3 shows the applied selections as a summary, one short item per
 field:
@@ -1139,6 +1263,7 @@ field:
   as in `INVITE`.
 - `From~alice` names the field and the text it matches.
 - `@sales` names a `[filters]` entry.
+- `expr msg_count > 5` repeats a typed expression.
 - `after 2026-07-07T08:00:00Z` repeats a time bound.
 
 For example, `F7: 7 methods, From~alice, To~bob · F full`.

@@ -22,48 +22,92 @@ The threading topology and lock discipline live in
 By participating in this project you agree to abide by the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
+[GOVERNANCE.md](GOVERNANCE.md) says who holds which role, how someone becomes
+a committer and how the project makes decisions.
+
+## Your first change
+
+- The
+  [`good first issue` list](https://github.com/NormB/sipnab/labels/good%20first%20issue)
+  holds issues a maintainer has marked as small and self-contained.
+- A starter issue says what to change, where in the code, how to test it and
+  what a reviewer checks. The
+  [starter task form](.github/ISSUE_TEMPLATE/starter_task.yml)
+  (`.github/ISSUE_TEMPLATE/starter_task.yml`) asks for those four things.
+- Comment on the issue before you start, so two people do not make the same
+  change.
+- Then follow [Pull request process](#pull-request-process).
+
 ## Contributor license agreement
 
-Sign the sipnab [Contributor License Agreement](CLA.md) before your first pull
-request merges.
+The project retired the [Contributor License Agreement](CLA.md). It no longer
+collects signatures, and no check asks for one. Sign off your commits instead,
+as [Signing off commits](#signing-off-commits) describes.
+[MAINTAINERS.md](MAINTAINERS.md#the-contributor-agreement) says what changed.
 
-- It is a one-time step covering all of your contributions.
-- You keep full ownership of your work.
+## Signing off commits
 
-The text exists in three copies:
+Every commit of a pull request carries a
+[Developer Certificate of Origin](https://developercertificate.org/) (DCO)
+sign-off, and branch protection on `main` requires the `DCO` check that reads
+it.
 
-- `CLA.md` holds the text.
-- <https://sipnab.com/cla/> republishes it.
-- [CLA Assistant](https://cla-assistant.io/NormB/sipnab) shows the same words
-  to signers.
-- A gate keeps the first two copies identical.
-  [MAINTAINERS.md](MAINTAINERS.md#the-contributor-agreement) records who
-  re-checks the third.
+**What a sign-off is.** It is one line at the end of the commit message, with
+your name and the author email of the commit, which must be your GitHub
+noreply address:
 
-Open your pull request as normal. If anyone who committed to it has not signed,
-the `CLAassistant` bot comments within a minute or so. You have two ways to
-answer it:
+```text
+Signed-off-by: Your Name <your GitHub noreply address>
+```
 
-- follow its link and authorize CLA Assistant with your GitHub account,
-- or post this exact sentence as a pull request comment.
+By adding it you state that you have the right to submit the change under the
+project's license, as the DCO text says. The line stays in the history of
+`main` for anyone to read, so it names GitHub's alias for you, never a
+personal mailbox. The `DCO` check refuses a sign-off that names any other
+address.
 
-> I have read the CLA Document and I hereby sign the CLA
+**Before you start.**
 
-Post it verbatim.
+- On GitHub, open Settings, then Emails. Turn on "Keep my email addresses
+  private" and copy the noreply address the page shows: `ID+login` followed
+  by `@users.noreply.github.com`.
+- In your clone, run `git config user.email` with that address, so git
+  writes it as the author email and into the sign-off.
 
-- The bot matches the whole sentence.
-- So a reworded version reads as an ordinary comment and signs nothing.
-- The bot then reports a `license/cla` status on the pull request.
-- It turns the status green once everyone who committed to that branch has
-  signed.
+**How to add it.**
 
-**A merge waits for it.**
+- `git commit -s` adds the line for you, from `user.name` and `user.email`.
+- To sign off every commit already on your branch, run
+  `git rebase --signoff origin/main`, then push again. If those commits carry
+  another author email, also run
+  `git rebase --exec 'git commit --amend --no-edit --reset-author' origin/main`
+  first, after setting `user.email`.
+- The `commit-msg` hook warns, without refusing the commit, when your author
+  email is not a noreply address or the message has no sign-off that names it.
 
-- Branch protection on `main` requires `license/cla` alongside `CI success`.
-- So a pull request cannot merge until everyone who committed to it has signed.
-- Bot accounts such as Dependabot cannot sign an agreement. They are on the
-  allowlist in the CLA Assistant settings. So their pull requests pass the
-  check without one.
+**Verify.** `git log -1` shows the noreply address on the `Author:` line, and
+the message ends with the `Signed-off-by:` line naming that address. On the
+pull request, the `DCO` check passes.
+
+**What checks it.** The `DCO` job in `.github/workflows/pr-text.yml` runs
+`scripts/check-dco.py` on every commit of a pull request, merge commits
+included. The line must name a name and the author email of the commit, and
+that email must be a GitHub noreply address. Two kinds of commits need no
+sign-off:
+
+- a commit by a GitHub bot account, such as Dependabot, when GitHub has
+  verified its signature.
+- a commit that the repository owner authored and committed, when GitHub has
+  verified its signature. The owner holds the rights to that work already.
+
+**Troubleshoot.** Each failing commit has one line in the `DCO` check's log:
+
+- `no Signed-off-by line`: sign the commit off as above.
+- `the author email is not a GitHub noreply address`: set `user.email`, reset
+  the author of the commit and sign it off again, as above.
+- `no Signed-off-by line names the author email`: the line names another
+  address, has no name, or has text after the address. Sign off again with
+  `git commit --amend -s` or `git rebase --signoff origin/main`.
 
 ## Prerequisites
 
@@ -271,7 +315,7 @@ them blocks the push:
 | `cd fuzz && cargo clippy --all-targets -- -D warnings` | `fuzz/` is a separate workspace that nothing else compiles or lints. |
 | `cd bpf && cargo clippy -- -D warnings` | `bpf/` is a separate workspace on the dated nightly in `bpf/rust-toolchain.toml`, which nothing else lints. |
 | `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
-| `cargo clippy --no-default-features --features <set> --tests -- -D warnings` for each row marked `hook` in `.github/feature-combos.txt` | The pre-commit hook builds only `--features full`, and `cargo check` reports a warning and passes. A binding, import or item that only code behind a feature reads is a clippy failure in CI for every set without that feature. The marked rows are `native`, the default features and the headless recipe; `python3 scripts/check-feature-matrix.py --hook-rows` prints them with their commands. |
+| `cargo clippy --no-default-features --features <set> --tests -- -D warnings` for each row of `.github/feature-combos.txt` the push picks | The pre-commit hook builds only `--features full`, and `cargo check` reports a warning and passes. A binding, import or item that only code behind a feature reads is a clippy failure in CI for every set without that feature. The rows marked `hook` (`native`, the default features and the headless recipe) always run. A change behind a feature gate adds the rows with the fewest features that compile it. Any other Rust or Cargo change adds every single-feature row. The hook prints one line that says which rows and how many combinations stay in CI. `python3 scripts/check-feature-matrix.py --push-rows` reads one pre-push line on standard input and prints the rows. |
 | `sh scripts/check-non-linux.sh` | Re-checks a copy of the tree with the `target_os` values swapped, so the macOS arm of every platform split compiles here. CI is the only non-Linux build in this project, and two macOS breaks reached it on 2026-08-07 with every other gate green. Runs on Linux hosts only — on macOS or a BSD your ordinary `cargo clippy` already is that build, and the gate says `NOT CHECKED` rather than pretending. |
 | `python3 scripts/check-yang.py` | A generator writes the `sipnab-diagnosis` YANG module from the analysis's tables, and a Rust test proves the committed file matches them; only a YANG implementation can say it is valid YANG. `pyang --lint` and `yanglint` compile it, `pyang --check-update-from` holds a new revision to the last, and `yanglint -t data` validates the [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) export every door writes. `NOT CHECKED` on a host with neither tool; CI installs both and fails without them. |
 | `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md` | Prose style is invisible to every cargo command. Turned main red on 2026-08-03. |
@@ -402,7 +446,7 @@ gates when GitHub already proved the tagged commit:
 - every tagged commit is on `main`, by GitHub's compare API;
 - every check that `main` requires concluded `success` on that commit, or on
   the head of the merged pull request it merges, when GitHub reports the same
-  tree for both. The PR-text check and `license/cla` run only on a pull
+  tree for both. The PR-text checks, `DCO` among them, run only on a pull
   request's head.
 
 The hook then prints one line naming the commit, the number of required checks
@@ -421,6 +465,31 @@ tag-only push: b255c4f28 (merge of PR #694, head 8ae7313e2, same tree) is on ori
 - `SIPNAB_GATE_NO_CACHE=1` also runs every gate.
 - The rule is `decide` in `scripts/tag-push-proof.py`.
 
+**Which copy of the proof judges a tag push.** The release train checks out
+the merge commit before it pushes the tag. For a push that holds a tag, the
+hook runs `origin/main`'s copy of `scripts/tag-push-proof.py`, so a fix to the
+proof merged after the release merge still judges that release's tag:
+
+- The hook uses `origin/main`'s copy when `origin/main` resolves to a commit,
+  every tagged commit is on it, and the file there is a regular, non-empty
+  file. It writes the copy to the git directory and removes it when the hook
+  exits.
+- Otherwise the hook uses this checkout's copy and prints one line that says
+  why (the example below). Run `git fetch origin main` and push the tag again
+  to use `origin/main`'s copy.
+- The copy it names gives the verdict. A refusal from `origin/main`'s copy
+  blocks the push.
+- This applies only to a tag whose tagged commit holds this hook. The hook of
+  an older commit runs the copy of that commit.
+- To see the choice without pushing, run `sh scripts/pick-tag-proof.sh
+  scripts/tag-push-proof.py <copy path>` with one pre-push line on standard
+  input. The first line it prints is the copy the hook would run. When that is
+  `<copy path>`, delete that file afterwards.
+
+```text
+  tag proof: this checkout's scripts/tag-push-proof.py judges this push: the tagged commit 1a2b3c4d5e6f is not on origin/main 0f1e2d3c4b5a (a stale origin/main? run: git fetch origin main)
+```
+
 **The tag CI gate and the merged pull request's head.** The CI check of a
 tag passes when every workflow run on the tagged commit succeeded. It also
 passes while the runs on the merge commit are still going, when the head of the
@@ -431,7 +500,14 @@ merged pull request proves the same tree:
 - every check that `main` requires concluded `success` on the head.
 - every workflow run on the head succeeded: the newest of each name, with
   scheduled runs set aside. So the macOS leg, which `CI success` leaves out,
-  still gates the release.
+  still gates the release. The check leaves out two skipped runs, here and on
+  the tagged commit: the `pull_request` run of
+  `.github/workflows/pr-closed.yml`, which skips its only job when a pull
+  request merges, and the `workflow_run` run of
+  `.github/workflows/rerun-not-acquired.yml`, which skips its only job when
+  the CI run it watches succeeded. The script reads the workflow file from
+  GitHub's run record, so a workflow of another file with the same name still
+  counts. A canceled, failed or pending run of those workflows counts too.
 - no run on the tagged commit itself concluded `failure`, `timed_out`,
   `action_required` or `startup_failure`.
 
@@ -538,9 +614,14 @@ the same.
   `scripts/gate-cache.py` could not read the inputs: the script exited with an
   error, and its message is above that line. Every step runs, so the hook
   skips nothing.
-- `No pass stamp for <step>: its inputs changed while it ran`: a file changed
+- `No pass stamp for <step>: its inputs changed while it ran`: an input changed
   during the run, so the run cannot vouch for the tree as it is now. The next
-  run checks it.
+  run checks it. The text in parentheses names what changed: `files` or
+  `ignored` (a file changed), `index_tree` (the index changed), `head` (a
+  commit), `tags` (someone created or moved a tag), `env.NAME` (an environment
+  variable), `tools.NAME` (a tool version) or `hook_scripts` (the hook or a
+  script under `scripts/` or `.config/`). `its inputs at the start were not
+  recorded` means the start-of-run record was missing or unreadable.
 - A step you expected to skip ran: something in its key differed. Common
   causes are an untracked file, a different `RUSTFLAGS`, a rebuilt toolchain,
   or a file that a tool or test rewrote under `docs/` or `website/data/`.
@@ -801,6 +882,16 @@ The rest of the page is hand-written. The same test checks three things:
 - it names every environment variable sipnab reads,
 - `groff -man -ww` formats it without a warning.
 
+The files under `tests/fixtures/pcap-writer-golden/` are byte-for-byte goldens
+of what the capture writer writes. The `tests::golden` tests in
+`src/capture/writer.rs` fail when one byte of the writer's output changes.
+Rewrite them only for an intended change of the file format, say so in the
+commit, and update their hashes in `tests/PROVENANCE.md`:
+
+```bash
+SIPNAB_GOLDEN_APPLY=1 cargo test --features full --lib capture::writer::tests::golden::
+```
+
 `docs/internals/` *does* publish to the site.
 
 - It publishes ten pages under `website/content/docs/internals/`.
@@ -962,6 +1053,11 @@ The reviewer checks the rest:
   - It reports findings as code scanning alerts.
   - [`osv-scanner.toml`](osv-scanner.toml) lists the accepted advisories, each
     with its reason.
+  - OSV-Scanner and OpenSSF Scorecard read only the `osv-scanner.toml` in a
+    lock file's own directory. So each directory with a lock file holds an
+    exact copy of the root file. Edit the root file, then copy it over each
+    copy. [`tests/osv_config_copies_test.rs`](tests/osv_config_copies_test.rs)
+    fails on a missing, changed or stray copy.
 
 When you add or update a dependency, run the same checks CI runs before you
 push. Install the tools once with `cargo install cargo-audit cargo-deny`.
@@ -1105,6 +1201,37 @@ To update one:
 - a script's recorded version is not the one the script itself contains,
 - a new minified script under `website/static/js/` has no row yet.
 
+### Updating code adapted from other projects
+
+One source file adapts another project's code, and sipnab compiles it. It
+keeps that project's license and copyright notice in its header,
+and has a row in the "Adapted code" table of
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+| File | What it is | Where it came from |
+|---|---|---|
+| [`src/tui/input_parse.rs`](src/tui/input_parse.rs) | crossterm's Unix input parser, which turns the bytes the TUI reads from its terminal into key, mouse and paste events | `src/event/sys/unix/parse.rs` and the `Parser` of `src/event/source/unix/mio.rs` in [crossterm](https://github.com/crossterm-rs/crossterm) 0.29.0 |
+
+When `Cargo.lock` moves crossterm to a new version:
+
+- Compare the two crossterm files of the new version with the old ones, and
+  carry each change into `src/tui/input_parse.rs`.
+- Record crossterm's events again, then paste the table the run prints over
+  `CROSSTERM_0_29` in `src/tui/input_parse.rs`:
+
+  ```bash
+  cargo test --features tui --lib record_crossterm_events -- --ignored --nocapture
+  ```
+
+- Change the version and commit in the file's header and in `ADAPTED` in
+  [`scripts/build-third-party-notices.py`](scripts/build-third-party-notices.py),
+  then regenerate the notices.
+
+`every_adapted_file_keeps_its_origin_and_license` in
+[`tests/docs_drift_test.rs`](tests/docs_drift_test.rs) fails when a file
+under `src/` says `Adapted from` in its header and has no row, or when its
+header does not carry the row's license notice, version and commit.
+
 ## Commit messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) format:
@@ -1218,19 +1345,19 @@ maintainer writes.
 - **A changelog entry.** A user-visible change adds an entry under
   `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md), in
   [the format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
-- **The contributor agreement.** Everyone who committed to the branch has
-  signed the [CLA](#contributor-license-agreement).
+- **The sign-off.** Every commit carries a DCO sign-off, as
+  [Signing off commits](#signing-off-commits) describes.
 
 ### What a change needs before it can merge
 
 A pull request is acceptable when all of these hold:
 
 - **The required checks are green.**
-  - Branch protection on `main` requires `CI success` and `license/cla`.
+  - Branch protection on `main` requires `CI success` and `DCO`.
   - It requires the branch to be up to date with `main` before it merges.
   - `CI success` passes only when every CI job it depends on passes.
-  - `license/cla` passes when everyone who committed to the branch has signed
-    the CLA.
+  - `DCO` passes when every commit of the branch carries a sign-off, or needs
+    none.
 - **Every commit carries a signature.**
   - Branch protection on `main` requires signed commits. So GitHub refuses a
     merge that contains an unsigned or unverified one.

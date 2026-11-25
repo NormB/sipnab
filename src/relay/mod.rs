@@ -41,6 +41,7 @@ pub mod engines;
 // none of, and only the builds that ask an engine have a question to put.
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod fan_out;
+pub mod rate;
 pub mod reconcile;
 pub mod rtpproxy;
 pub mod scan_cap;

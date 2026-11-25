@@ -998,6 +998,15 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
 - For broader detection, combine flags: `sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood --alert syslog`
 - Use `--digest-leak` to check if any endpoints are leaking credentials in cleartext.
 
+### The run stops answering scanners when stderr goes away
+
+`--kill-scanner` sends its responses from a separate worker process, which writes its log lines to the run's stderr.
+
+- Before 0.5.263, the worker ended at its next log line when a write to that stderr failed. Two examples: a pipe whose reader had exited (`2>&1 | head`), and a full disk.
+- From then on the run detected scanners and answered none, and its `DISABLED` warning went to the same lost stderr.
+- Since 0.5.263, the worker drops a log line it cannot write, and keeps answering.
+- To keep the log lines themselves, send stderr to a file or to the journal, not to a pipe that can end before the run.
+
 ---
 
 ## Registration-flood timers
@@ -1864,6 +1873,16 @@ From 0.5.235, a terminal interface whose terminal is still
 there also stops on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
 0.5.233 and earlier ignored `SIGTERM` and `SIGINT`, and `SIGHUP` ended the
 process at once, with no end-of-run summary.
+
+0.5.235 to 0.5.260 can still keep running in one case: the terminal goes in
+the moment sipnab reads a key from it. The process shows in state `R` and uses
+a full CPU, on macOS and on Linux. In CI on macOS, 1 launch in 60 did this
+after `tmux kill-session`.
+
+- **Fix:** upgrade to the release after 0.5.260. sipnab reads its terminal
+  itself, and a read that finds the terminal gone stops the run, with exit
+  status 129.
+- **On 0.5.235 to 0.5.260:** end the process with `SIGKILL`, as above.
 
 ## A run that ignores SIGTERM while it waits for input
 

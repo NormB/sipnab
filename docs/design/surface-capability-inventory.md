@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 412, TUI 25, REST 51, MCP 79.
+Totals: CLI 416, TUI 25, REST 53, MCP 80.
 
-## CLI flags (412)
+## CLI flags (416)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -78,6 +78,7 @@ Totals: CLI 412, TUI 25, REST 51, MCP 79.
 - `--dialog-track`
 - `--digest-leak`
 - `--dns-cache-entries`
+- `--drop-method`
 - `--dtls-keylog`
 - `--dtmf-cleartext`
 - `--dump-config`
@@ -254,6 +255,7 @@ Totals: CLI 412, TUI 25, REST 51, MCP 79.
 - `--no-reverse-dns`
 - `--no-rotate`
 - `--no-rtp`
+- `--no-sngrep-mode`
 - `--no-tui`
 - `--node-name`
 - `--notes`
@@ -261,6 +263,7 @@ Totals: CLI 412, TUI 25, REST 51, MCP 79.
 - `--on-quality-exec`
 - `--one-way`
 - `--one-way-delay`
+- `--only-method`
 - `--output`
 - `--panic-selftest`
 - `--payload-limit`
@@ -333,6 +336,7 @@ Totals: CLI 412, TUI 25, REST 51, MCP 79.
 - `--single-line`
 - `--slow-setup`
 - `--snaplen`
+- `--sngrep-mode`
 - `--split`
 - `--split-keep`
 - `--srtp-keys`
@@ -456,7 +460,7 @@ Totals: CLI 412, TUI 25, REST 51, MCP 79.
 - `Talkers`
 - `TfpsObserve`
 
-## REST routes (51)
+## REST routes (53)
 
 - `/health`
 - `/metrics`
@@ -479,6 +483,8 @@ Totals: CLI 412, TUI 25, REST 51, MCP 79.
 - `/v1/dialogs/{call_id}/tree`
 - `/v1/dialogs/{call_id}/vcon`
 - `/v1/endpoints`
+- `/v1/filters`
+- `/v1/filters/validate`
 - `/v1/hep/senders`
 - `/v1/inventory`
 - `/v1/persistence`
@@ -510,7 +516,7 @@ Totals: CLI 412, TUI 25, REST 51, MCP 79.
 - `/v1/vcon/spool`
 - `/v1/vcon/validate`
 
-## MCP tools (79)
+## MCP tools (80)
 
 - `actions_revert`
 - `aggregate_dialogs`
@@ -554,6 +560,7 @@ Totals: CLI 412, TUI 25, REST 51, MCP 79.
 - `lint_dialog`
 - `list_captures`
 - `list_dialogs`
+- `list_named_filters`
 - `list_tls_libraries`
 - `media_diagnostics`
 - `open_capture`

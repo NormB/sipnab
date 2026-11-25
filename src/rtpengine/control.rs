@@ -416,6 +416,24 @@ pub fn parse_statistics_reply(body: &[u8]) -> anyhow::Result<ControlReply> {
     Ok(ControlReply::Statistics(pairs))
 }
 
+/// The call's incarnation from a `query` reply's top-level `created` and
+/// `created_us`: which of the calls that used the Call-ID answered.
+///
+/// `None` when `created` is absent or not a whole number of seconds; a
+/// missing or out-of-range `created_us` reads as 0, so a relay that reports
+/// only whole seconds still tells calls a second or more apart.
+fn incarnation_of(v: &super::bencode::Value<'_>) -> Option<crate::relay::rate::Incarnation> {
+    let created_s = v.get_int(b"created")?;
+    let created_us = v
+        .get_int(b"created_us")
+        .and_then(|us| u32::try_from(us).ok())
+        .unwrap_or(0);
+    Some(crate::relay::rate::Incarnation {
+        created_s,
+        created_us,
+    })
+}
+
 /// refused is not an error: see [`ControlReply::Refused`].
 pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlReply> {
     use anyhow::{Context, bail};
@@ -551,6 +569,7 @@ pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlRe
     crate::sort::sort_by_dyn(&mut tags, &mut |a, b| a.tag.cmp(&b.tag));
 
     Ok(ControlReply::Call(CallView {
+        incarnation: incarnation_of(&v),
         call_id: call_id.to_owned(),
         tags,
     }))
@@ -872,7 +891,7 @@ impl ControlClient {
                 );
             }
             let deadline = std::time::Instant::now() + self.timeout;
-            let n = read_until(deadline, &std::time::Instant::now, |left| {
+            let n = crate::timed_io::retry_until(deadline, &std::time::Instant::now, |left| {
                 conn.set_read_timeout(Some(left))?;
                 conn.read(&mut chunk)
             })
@@ -925,12 +944,14 @@ impl ControlClient {
         sock.connect(self.addr)
             .with_context(|| format!("connecting to the relay at {}", self.addr))?;
 
-        sock.send(&request.to_wire())
+        // A send the socket buffer makes wait is bounded by the same timeout
+        // as the reply, and a signal during that wait is not a failed send.
+        send_datagram(&sock, &request.to_wire(), self.timeout)
             .with_context(|| format!("sending {} to {}", request.command, self.addr))?;
 
         let mut buf = vec![0u8; MAX_REPLY_BYTES];
         let deadline = std::time::Instant::now() + self.timeout;
-        let n = read_until(deadline, &std::time::Instant::now, |left| {
+        let n = crate::timed_io::retry_until(deadline, &std::time::Instant::now, |left| {
             sock.set_read_timeout(Some(left))?;
             sock.recv(&mut buf)
         })
@@ -954,6 +975,65 @@ mod tests {
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
+
+    /// A receiver held for the test's life and a socket connected to it.
+    #[cfg(feature = "native")]
+    fn connected_pair() -> Result<(std::net::UdpSocket, std::net::UdpSocket), TestError> {
+        let receiver = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        receiver.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        sock.connect(receiver.local_addr()?)?;
+        Ok((receiver, sock))
+    }
+
+    /// A request sent through [`send_datagram`] arrives whole. The retry
+    /// after a signal cannot be timed onto a real send from a test (a UDP
+    /// send to a relay seldom waits at all), so it is driven with a scripted
+    /// send in src/timed_io.rs; this checks the wiring.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_request_datagram_arrives_whole() -> Result<(), TestError> {
+        let (receiver, sock) = connected_pair()?;
+        let sent = send_datagram(&sock, b"cookie d7:command4:pinge", Duration::from_secs(1))?;
+        let mut buf = [0u8; 64];
+        let n = receiver.recv(&mut buf)?;
+        assert_eq!(
+            (sent, &buf[..n]),
+            (24, &b"cookie d7:command4:pinge"[..]),
+            "sent whole"
+        );
+        Ok(())
+    }
+
+    /// Each try sets what is left of the timeout as the write timeout, so a
+    /// send waits no longer than the control timeout.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_request_send_waits_no_longer_than_the_timeout() -> Result<(), TestError> {
+        let (_receiver, sock) = connected_pair()?;
+        sock.set_write_timeout(Some(Duration::from_secs(30)))?;
+        send_datagram(&sock, b"x", Duration::from_secs(1))?;
+        let timeout = sock.write_timeout()?.ok_or("no write timeout is set")?;
+        assert!(
+            timeout <= Duration::from_secs(1),
+            "within the timeout: {timeout:?}"
+        );
+        Ok(())
+    }
+
+    /// A request too large for one datagram fails as itself, at once.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_request_too_large_for_udp_fails_at_once() -> Result<(), TestError> {
+        let (_receiver, sock) = connected_pair()?;
+        let got = send_datagram(&sock, &vec![b'x'; 70_000], Duration::from_secs(1));
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.kind() != std::io::ErrorKind::WouldBlock),
+            "a 70,000-byte datagram is refused, not timed out: {got:?}"
+        );
+        Ok(())
+    }
 
     /// Every cookie is different, and that is the whole point.
     ///
@@ -1793,6 +1873,68 @@ mod query_reply_tests {
         }
     }
 
+    /// The recorded reply's own `created` and `created_us` are the
+    /// incarnation a rate compares.
+    #[test]
+    fn success_real_reply_yields_the_call_incarnation() -> Result<(), TestError> {
+        let call = parsed()?;
+        assert_eq!(
+            call.incarnation,
+            Some(crate::relay::rate::Incarnation {
+                created_s: 1_787_517_788,
+                created_us: 160_191,
+            }),
+            "the top-level creation stamp of the recorded 12.5.1 reply"
+        );
+        Ok(())
+    }
+
+    fn view_of(body: &[u8]) -> Result<CallView, TestError> {
+        match parse_query_reply(body, "a@example.invalid") {
+            Ok(ControlReply::Call(c)) => Ok(c),
+            other => Err(format!("expected a call view, got {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn failure_a_reply_without_created_has_no_incarnation() -> Result<(), TestError> {
+        let call = view_of(b"d6:result2:ok4:tagsdee")?;
+        assert_eq!(call.incarnation, None, "absent, never a made-up stamp");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_created_that_is_not_a_number_has_no_incarnation() -> Result<(), TestError> {
+        let call = view_of(b"d7:created3:now10:created_usi5e6:result2:ok4:tagsdee")?;
+        assert_eq!(call.incarnation, None, "a string is not a stamp");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_created_without_microseconds_reads_them_as_zero() -> Result<(), TestError> {
+        let call = view_of(b"d7:createdi1787517788e6:result2:ok4:tagsdee")?;
+        assert_eq!(
+            call.incarnation,
+            Some(crate::relay::rate::Incarnation {
+                created_s: 1_787_517_788,
+                created_us: 0,
+            }),
+            "whole seconds still tell calls apart"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_microseconds_out_of_range_read_as_zero() -> Result<(), TestError> {
+        let call = view_of(b"d7:createdi7e10:created_usi-1e6:result2:ok4:tagsdee")?;
+        assert_eq!(
+            call.incarnation.map(|i| i.created_us),
+            Some(0),
+            "a negative microsecond count is not kept"
+        );
+        Ok(())
+    }
+
     /// Both sides of the call are read, and the Call-ID comes from the ASK.
     #[test]
     fn real_reply_yields_both_tags_and_the_requested_call_id() -> Result<(), TestError> {
@@ -2491,36 +2633,22 @@ impl crate::relay::reconcile::ReadOnlyRelay for ControlClient {
     }
 }
 
-/// Run one blocking read with what is left of its timeout, again whenever a
-/// signal interrupts it, until `deadline`.
-///
-/// A read on a socket with a receive timeout fails with `EINTR` when any
-/// handled signal reaches the thread, even with `SA_RESTART` (signal(7)),
-/// and sipnab handles `SIGUSR1` and `SIGHUP`. Without the retry, an engine
-/// that was about to answer read as one that `did not answer`, after any
-/// fraction of its timeout: under the library test suite, 1.5 s waits ended
-/// after 0.7 s with `Interrupted system call (os error 4)`. `attempt` is given the time left, which it
-/// sets as the socket's timeout. Past `deadline` this fails as a timeout
-/// does, `WouldBlock`.
+/// Ask each of `clients` for its own counters, all at once, and return the/// Send `wire` on the connected `sock` within `timeout`: each try sets what
+/// is left of `timeout` as the write timeout, and a try a signal interrupts
+/// is made again ([`crate::timed_io::send_within`]).
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
-fn read_until<T>(
-    deadline: std::time::Instant,
-    now: &dyn Fn() -> std::time::Instant,
-    mut attempt: impl FnMut(Duration) -> std::io::Result<T>,
-) -> std::io::Result<T> {
-    loop {
-        let left = deadline.saturating_duration_since(now());
-        if left.is_zero() {
-            return Err(std::io::ErrorKind::WouldBlock.into());
-        }
-        match attempt(left) {
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            done => return done,
-        }
-    }
+fn send_datagram(
+    sock: &std::net::UdpSocket,
+    wire: &[u8],
+    timeout: Duration,
+) -> std::io::Result<usize> {
+    crate::timed_io::send_within(timeout, &std::time::Instant::now, |left| {
+        sock.set_write_timeout(Some(left))?;
+        sock.send(wire)
+    })
 }
 
-/// Ask each of `clients` for its own counters, all at once, and return the/// Ask each of `clients` for its own counters, all at once, and return the
+/// Ask each of `clients` for its own counters, all at once, and return the
 /// answers in the order of `clients`.
 ///
 /// The one fetch `--relay-stats` and `--relay-stats-interval` make of every
@@ -2816,6 +2944,7 @@ mod session_fixture_tests {
     fn exactly_the_limit_returned_is_truncated_and_fewer_is_not() -> Result<(), TestError> {
         let at = chrono::Utc::now;
         let ask = |list_limit| SessionsAsk {
+            clock: crate::relay::rate::monotonic_now,
             selected: None,
             scan: false,
             cap: 32,
@@ -2864,6 +2993,7 @@ mod session_fixture_tests {
             query: "h-twoway-query-after-bye",
         };
         let ask = SessionsAsk {
+            clock: crate::relay::rate::monotonic_now,
             selected: Some("sg6-12calls-list-1000-1@example.invalid"),
             scan: false,
             cap: 32,
@@ -2997,103 +3127,5 @@ mod statistics_of_each_tests {
             "the prompt engine's cut reply second: {got:?}"
         );
         Ok(())
-    }
-}
-
-/// [`read_until`]: a read a signal interrupts is retried with what is left
-/// of its timeout, and nothing else is.
-#[cfg(all(test, not(target_arch = "wasm32"), feature = "native"))]
-mod read_until_tests {
-    use super::*;
-    use std::cell::{Cell, RefCell};
-    use std::io::ErrorKind;
-    use std::time::Instant;
-
-    type TestError = Box<dyn std::error::Error>;
-
-    /// A clock that moves `step` each time it is read.
-    fn stepping(start: Instant, step: Duration) -> impl Fn() -> Instant {
-        let reads = Cell::new(0_u32);
-        move || {
-            let t = start + step * reads.get();
-            reads.set(reads.get() + 1);
-            t
-        }
-    }
-
-    /// An interrupted read is tried again, and its answer is the answer.
-    #[test]
-    fn an_interrupted_read_is_retried_and_answers() -> Result<(), TestError> {
-        let start = Instant::now();
-        let clock = stepping(start, Duration::from_millis(100));
-        let mut tries = 0;
-        let got = read_until(start + Duration::from_secs(2), &clock, |_| {
-            tries += 1;
-            if tries < 3 {
-                Err(ErrorKind::Interrupted.into())
-            } else {
-                Ok(42)
-            }
-        })?;
-        assert_eq!((got, tries), (42, 3), "the third try answered");
-        Ok(())
-    }
-
-    /// Interrupted until the deadline, the read fails as a timeout does.
-    #[test]
-    fn interrupted_until_the_deadline_is_a_timeout() {
-        let start = Instant::now();
-        let clock = stepping(start, Duration::from_millis(500));
-        let mut tries = 0;
-        let got: std::io::Result<()> = read_until(start + Duration::from_secs(2), &clock, |_| {
-            tries += 1;
-            Err(ErrorKind::Interrupted.into())
-        });
-        assert_eq!(
-            got.map_err(|e| e.kind()),
-            Err(ErrorKind::WouldBlock),
-            "interrupted to the deadline reads as a timeout"
-        );
-        assert_eq!(tries, 4, "tried at 0, 0.5, 1 and 1.5 s, not at 2 s");
-    }
-
-    /// Each try is given only what is left of the timeout.
-    #[test]
-    fn each_try_gets_what_is_left_of_the_timeout() {
-        let start = Instant::now();
-        let clock = stepping(start, Duration::from_millis(600));
-        let given = RefCell::new(Vec::new());
-        let _: std::io::Result<()> = read_until(start + Duration::from_secs(2), &clock, |left| {
-            given.borrow_mut().push(left);
-            Err(ErrorKind::Interrupted.into())
-        });
-        assert_eq!(
-            given.into_inner(),
-            vec![
-                Duration::from_millis(2000),
-                Duration::from_millis(1400),
-                Duration::from_millis(800),
-                Duration::from_millis(200),
-            ],
-            "each try gets only what is left",
-        );
-    }
-
-    /// Any other failure is returned at once, not retried.
-    #[test]
-    fn any_other_failure_is_not_retried() {
-        let start = Instant::now();
-        let clock = stepping(start, Duration::from_millis(1));
-        let mut tries = 0;
-        let got: std::io::Result<()> = read_until(start + Duration::from_secs(2), &clock, |_| {
-            tries += 1;
-            Err(ErrorKind::ConnectionRefused.into())
-        });
-        assert_eq!(
-            got.map_err(|e| e.kind()),
-            Err(ErrorKind::ConnectionRefused),
-            "a refused connection is not retried"
-        );
-        assert_eq!(tries, 1, "tried once");
     }
 }

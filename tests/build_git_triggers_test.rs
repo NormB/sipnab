@@ -19,6 +19,13 @@ type TestError = Box<dyn std::error::Error>;
 
 #[path = "../build_script/git_triggers.rs"]
 mod git_triggers;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
+/// A source tarball has no `.git`; CI and every clone do.
+const GIT_CHECKOUT: test_prereq::Need = test_prereq::Need::Optional(
+    "a source tarball has no git checkout; CI and every clone have one.",
+);
 
 use std::path::{Path, PathBuf};
 
@@ -150,8 +157,15 @@ fn this_checkout_watches_its_head_and_nothing_missing() -> Result<(), TestError>
         .args(["rev-parse", "--path-format=absolute", "--git-path", "HEAD"])
         .current_dir(repo)
         .output()?;
-    if !out.status.success() {
-        eprintln!("SKIPPED: not a git checkout");
+    let probe = if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`git rev-parse` says this is not a git checkout: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    };
+    if !test_prereq::present("git-checkout", GIT_CHECKOUT, probe) {
         return Ok(());
     }
     let head = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).canonicalize()?;

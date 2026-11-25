@@ -245,6 +245,22 @@ static SPECS: &[Spec] = &[
     ("rtp", Kind::Switch, &[]),
     ("no-promisc", Kind::Switch, &[]),
     (
+        "drop-method",
+        Kind::Text {
+            accept: &["OPTIONS", "invite", "Notify", "KDMQ", "kdmq"],
+            reject: &[("x", 2), ("INVTE", 2), ("", 2), ("KDQM", 2)],
+        },
+        &[],
+    ),
+    (
+        "only-method",
+        Kind::Text {
+            accept: &["INVITE", "register", "Message", "KdMq"],
+            reject: &[("x", 2), ("KDQM", 2), ("", 2)],
+        },
+        &[],
+    ),
+    (
         "bpf-file",
         Kind::Text {
             accept: &["/dev/null"],
@@ -860,6 +876,8 @@ static SPECS: &[Spec] = &[
     ("hexdump", Kind::Switch, &[]),
     ("delta-time", Kind::Switch, &[]),
     ("no-delta-time", Kind::Switch, &[]),
+    ("sngrep-mode", Kind::Switch, &[]),
+    ("no-sngrep-mode", Kind::Switch, &[]),
     (
         "after",
         Kind::Int {
@@ -4082,7 +4100,9 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.metadata_file_byte_cap(config)),
         format!("{:?}", cli.tcp_buffer_cap(config)),
         format!("{:?}", cli.no_rtp(config)),
+        format!("{:?}", cli.method_filter(config)),
         format!("{:?}", cli.delta_time(config)),
+        format!("{:?}", cli.sngrep_mode(config)),
         format!("{:?}", cli.no_priv_drop(config)),
         format!("{:?}", cli.fraud_detect(config)),
         format!("{:?}", cli.kill_scanner(config)),
@@ -4190,7 +4210,12 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         Ok(p) => {
             let items = [
                 format!("{:?}", p.source),
-                format!("{:?}", p.input_files),
+                format!(
+                    "{:?}",
+                    p.inputs
+                        .as_ref()
+                        .map(sipnab::capture::input_set::NamedSet::paths)
+                ),
                 format!("{:?}", p.capture_config),
                 format!("{:?}", p.portrange),
                 format!("{:?}", p.policy.split_bytes),

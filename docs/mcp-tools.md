@@ -46,7 +46,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | Bundle | Tools | What its tools answer |
 |---|---|---|
 | [`core`](mcp-tools-core.md) | 9 | The smallest set that answers what happened on one call, and whether the fault was in signaling or media, from listing the calls to the bytes that prove it. |
-| [`signaling`](mcp-tools-signaling.md) | 21 | Follow-up questions about SIP signaling: single messages, call flows, SDP negotiation, related call legs, RFC conformance, time windows, and reproducing a call. |
+| [`signaling`](mcp-tools-signaling.md) | 22 | Follow-up questions about SIP signaling: single messages, call flows, SDP negotiation, related call legs, RFC conformance, time windows, and reproducing a call. |
 | [`captures`](mcp-tools-captures.md) | 11 | Capture files in the file root: listing, searching, comparing, opening and exporting them, and the evidence that ties a finding to captured bytes. |
 | [`security`](mcp-tools-security.md) | 6 | Who sent what: scanner and fraud findings, the busiest sources, one endpoint's activity, registration problems, pass/fail expectations, and fail2ban rules. |
 | [`media`](mcp-tools-media.md) | 4 | Where a call's media endpoints came from, why a stream has no dialog, the facts under a quality score, and audio export. |
@@ -126,17 +126,17 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,648 | 62,047 |
-| signaling | 21 | 23,524 | 78,739 |
+| core | 9 | 12,959 | 62,358 |
+| signaling | 22 | 24,046 | 80,515 |
 | captures | 11 | 12,723 | 30,259 |
-| security | 6 | 9,954 | 9,954 |
+| security | 6 | 10,046 | 10,046 |
 | media | 4 | 3,480 | 16,122 |
-| relay | 5 | 4,988 | 39,164 |
+| relay | 5 | 4,988 | 42,165 |
 | tfps | 7 | 5,717 | 16,267 |
 | server | 6 | 5,976 | 38,359 |
-| vcon | 7 | 10,714 | 34,582 |
+| vcon | 7 | 10,806 | 34,674 |
 | tls | 3 | 2,903 | 5,009 |
-| full | 79 | 92,627 | 330,502 |
+| full | 80 | 93,644 | 335,774 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
@@ -196,6 +196,7 @@ links to its section on the bundle's page.
 | [`lint_dialog`](mcp-tools-signaling.md#lint_dialog) | [signaling](mcp-tools-signaling.md) | Conformance findings for one call, declaration against observation included, each with its RFC and section |
 | [`list_captures`](mcp-tools-captures.md#list_captures) | [captures](mcp-tools-captures.md) | Capture files and stored vCon containers in `--mcp-file-root`, with sizes and each one's kind |
 | [`list_dialogs`](mcp-tools-core.md#list_dialogs) | [core](mcp-tools-core.md) | A page of dialog summaries, with the total behind it |
+| [`list_named_filters`](mcp-tools-signaling.md#list_named_filters) | [signaling](mcp-tools-signaling.md) | The operator's named filters from the `[filters]` table, each name with its definition as written |
 | [`list_tls_libraries`](mcp-tools-tls.md#list_tls_libraries) | [tls](mcp-tools-tls.md) | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 | [`media_diagnostics`](mcp-tools-media.md#media_diagnostics) | [media](mcp-tools-media.md) | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
 | [`open_capture`](mcp-tools-captures.md#open_capture) | [captures](mcp-tools-captures.md) | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
@@ -228,7 +229,7 @@ links to its section on the bundle's page.
 | [`timeline`](mcp-tools-signaling.md#timeline) | [signaling](mcp-tools-signaling.md) | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
 | [`top_talkers`](mcp-tools-security.md#top_talkers) | [security](mcp-tools-security.md) | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
 | [`triage_call`](mcp-tools-core.md#triage_call) | [core](mcp-tools-core.md) | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
-| [`validate_filter`](mcp-tools-signaling.md#validate_filter) | [signaling](mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
+| [`validate_filter`](mcp-tools-signaling.md#validate_filter) | [signaling](mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message and position when it does not, and how many dialogs it selects — with no rows |
 | [`validate_message`](mcp-tools-signaling.md#validate_message) | [signaling](mcp-tools-signaling.md) | Conformance findings for one message, read alone |
 | [`validate_vcon`](mcp-tools-vcon.md#validate_vcon) | [vcon](mcp-tools-vcon.md) | Checks a container against the working group's draft-ietf-vcon-vcon-core-04 schema and names every finding |
 | [`vcon_directory_report`](mcp-tools-vcon.md#vcon_directory_report) | [vcon](mcp-tools-vcon.md) | Every stored container in a directory of the file root: per container its status, form, schema finding count, calls, dispositions and duration, or why sipnab skipped it, then the totals. The report `-I <dir> --report` prints |
@@ -455,10 +456,12 @@ When `source_exhausted` is `false`, `total_matched` counts only what had
 loaded. Repeat the call, or poll `capture_status` until `source_exhausted`
 reads `true`, before treating a count as final.
 
-Twenty-three tools are the exception, because their answer cannot move with
+Twenty-four tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
-- Fourteen read something other than the capture store:
+- Fifteen read something other than the capture store:
+  - `list_named_filters`, which lists the named filters the run read from
+    its config file at startup;
   - `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
     `show_evidence`, `list_captures`, `list_tls_libraries`,
     `server_capabilities`;

@@ -61,6 +61,46 @@ struct Finished {
     code: Option<i32>,
     /// How long the run took.
     took: Duration,
+    /// The shell's trace of the run (`bash -x`), one command a line, with
+    /// the marker taken off; empty unless the run was [`Run::traced`].
+    trace: Vec<String>,
+}
+
+/// What `PS4` is set to in a traced run. bash repeats the first character
+/// once per level of nesting, so a line of the trace is any number of `+`
+/// and then the rest of this.
+const TRACE_MARK: &str = "+[mcp-stdio-trace] ";
+
+/// `stderr` of a traced run split into what the script wrote and the
+/// shell's trace, each in order; the trace lines without their marker.
+fn split_trace(stderr: &str) -> (String, Vec<String>) {
+    let mark = TRACE_MARK.trim_start_matches('+');
+    let mut said = String::new();
+    let mut trace = Vec::new();
+    for line in stderr.split_inclusive('\n') {
+        match line.trim_start_matches('+').strip_prefix(mark) {
+            Some(rest) if line.starts_with('+') => {
+                trace.push(rest.trim_end_matches('\n').to_string());
+            }
+            _ => said.push_str(line),
+        }
+    }
+    (said, trace)
+}
+
+/// How many one-second read waits of `await` ran out with no answer, read
+/// from a trace: each one is followed by the assignment `waited=N`, which
+/// the trace prints with `N` worked out. (The `local ... waited=0` that
+/// starts each `await` is one line with other names on it, so it is not
+/// counted.)
+fn timed_out_waits(trace: &[String]) -> usize {
+    trace
+        .iter()
+        .filter(|l| {
+            l.strip_prefix("waited=")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .count()
 }
 
 /// One run of the script: its arguments and environment.
@@ -73,6 +113,8 @@ struct Run<'a> {
     bin: String,
     /// Where the run keeps its temporary files.
     tmp: tempfile::TempDir,
+    /// Run the script under `bash -x`, so a test can count what it did.
+    traced: bool,
 }
 
 impl<'a> Run<'a> {
@@ -83,7 +125,15 @@ impl<'a> Run<'a> {
             env: Vec::new(),
             bin: env!("CARGO_BIN_EXE_sipnab").to_string(),
             tmp: tempfile::tempdir()?,
+            traced: false,
         })
+    }
+
+    /// Run the script under `bash -x` with [`TRACE_MARK`] as `PS4`; the
+    /// trace is taken out of `stderr` into [`Finished::trace`].
+    fn traced(mut self) -> Self {
+        self.traced = true;
+        self
     }
 
     /// Set `name` to `value` for the run.
@@ -105,6 +155,11 @@ impl<'a> Run<'a> {
     /// its process group is stopped first.
     fn finish(&self, wait: Duration) -> Result<Finished, TestError> {
         let mut cmd = Command::new(BASH);
+        if self.traced {
+            cmd.arg("-x").env("PS4", TRACE_MARK);
+        } else {
+            cmd.env_remove("PS4");
+        }
         cmd.arg(SCRIPT)
             .args(self.args)
             .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -161,11 +216,18 @@ impl<'a> Run<'a> {
                 format!("{SCRIPT} {:?} was still running after {wait:?}", self.args).into(),
             );
         };
+        let stderr = stderr.join().map_err(|_| "the stderr reader panicked")?;
+        let (stderr, trace) = if self.traced {
+            split_trace(&stderr)
+        } else {
+            (stderr, Vec::new())
+        };
         let finished = Finished {
             stdout: stdout.join().map_err(|_| "the stdout reader panicked")?,
-            stderr: stderr.join().map_err(|_| "the stderr reader panicked")?,
+            stderr,
             code: status.code(),
             took,
+            trace,
         };
         if left {
             return Err(format!(
@@ -535,7 +597,9 @@ fn a_missing_capture_is_named() -> Result<(), TestError> {
 /// seconds later as a server that did not answer.
 #[test]
 fn a_binary_that_does_not_exist_is_named_at_once() -> Result<(), TestError> {
-    let run = Run::new(&[CAPTURE, "list_dialogs"])?.bin(Path::new("/nonexistent/sipnab"));
+    let run = Run::new(&[CAPTURE, "list_dialogs"])?
+        .bin(Path::new("/nonexistent/sipnab"))
+        .traced();
     let done = run.finish(run_wait())?;
     assert_eq!(done.code, Some(1), "stdout: {}", done.stdout);
     assert!(
@@ -543,10 +607,11 @@ fn a_binary_that_does_not_exist_is_named_at_once() -> Result<(), TestError> {
         "the binary and the variable are named: {}",
         done.stderr
     );
+    // Counted, not timed: "at once" means before any wait for an answer.
     assert!(
-        done.took < test_timeout(10),
-        "it took {:?}, which is a wait for an answer",
-        done.took
+        !done.trace.iter().any(|l| l.contains("read -r -t 1")),
+        "a missing binary was waited for: {:?}",
+        done.trace
     );
     Ok(())
 }
@@ -572,17 +637,30 @@ fn a_missing_jq_is_named() -> Result<(), TestError> {
     Ok(())
 }
 
-/// A server that never answers ends the run after `MCP_TIMEOUT` seconds with
-/// a message that names the binary, and the server is stopped.
-#[test]
-fn a_server_that_never_answers_ends_the_run() -> Result<(), TestError> {
+/// A run against a server that reads and never answers, with `MCP_TIMEOUT`
+/// set to `timeout`, traced.
+fn silent_server_run(timeout: &str) -> Result<Finished, TestError> {
     let dir = tempfile::tempdir()?;
     let fake = executable(dir.path(), "fake", FAKE_SERVER)?;
     let run = Run::new(&[CAPTURE, "anything"])?
         .bin(&fake)
         .env("FAKE_SILENT", "1")
-        .env("MCP_TIMEOUT", "1");
-    let done = run.finish(run_wait())?;
+        .env("MCP_TIMEOUT", timeout)
+        .traced();
+    run.finish(run_wait())
+}
+
+/// A server that never answers ends the run after `MCP_TIMEOUT` seconds with
+/// a message that names the binary, and the server is stopped.
+///
+/// `MCP_TIMEOUT` is a count of one-second waits, and the count is what is
+/// asserted, read from the shell's trace: exactly one wait ran out. The
+/// run's wall time is held only from below (a wait is a real second). This
+/// test once asserted `took < 10 s`, which a loaded host can break while
+/// the script is right (its sibling did, at 18.3 s, on 2026-11-16).
+#[test]
+fn a_server_that_never_answers_ends_the_run() -> Result<(), TestError> {
+    let done = silent_server_run("1")?;
     assert_eq!(done.code, Some(1), "stdout: {}", done.stdout);
     assert!(
         done.stderr.contains("no initialize reply from") && done.stderr.contains("fake"),
@@ -590,23 +668,150 @@ fn a_server_that_never_answers_ends_the_run() -> Result<(), TestError> {
         done.stderr
     );
     assert_eq!(done.stdout, "", "nothing is printed for a call never made");
+    assert_eq!(
+        timed_out_waits(&done.trace),
+        1,
+        "MCP_TIMEOUT=1 must be one one-second wait: {:?}",
+        done.trace
+    );
     assert!(
-        done.took < test_timeout(10),
-        "MCP_TIMEOUT=1 was not the wait: the run took {:?}",
+        done.took >= Duration::from_secs(1),
+        "the one wait is a whole second: the run took {:?}",
         done.took
     );
     Ok(())
 }
 
-/// A capture that never finishes loading ends the run after `MCP_MAX_POLLS`
-/// polls, naming the capture.
+/// `MCP_TIMEOUT=3` is three waits that run out, not one and not the
+/// default twenty.
+#[test]
+fn mcp_timeout_is_the_number_of_one_second_waits() -> Result<(), TestError> {
+    let done = silent_server_run("3")?;
+    assert_eq!(done.code, Some(1), "stdout: {}", done.stdout);
+    assert!(
+        done.stderr.contains("no initialize reply from"),
+        "{}",
+        done.stderr
+    );
+    assert_eq!(
+        timed_out_waits(&done.trace),
+        3,
+        "MCP_TIMEOUT=3 must be three waits: {:?}",
+        done.trace
+    );
+    Ok(())
+}
+
+/// `MCP_TIMEOUT=0` waits not at all: the run ends at once, with the same
+/// message.
+#[test]
+fn mcp_timeout_zero_waits_not_at_all() -> Result<(), TestError> {
+    let done = silent_server_run("0")?;
+    assert_eq!(done.code, Some(1), "stdout: {}", done.stdout);
+    assert!(
+        done.stderr.contains("no initialize reply from"),
+        "{}",
+        done.stderr
+    );
+    assert!(
+        !done.trace.iter().any(|l| l.contains("read -r -t 1")),
+        "MCP_TIMEOUT=0 still waited: {:?}",
+        done.trace
+    );
+    Ok(())
+}
+
+/// A server that answers costs no wait that runs out: every wait ends with
+/// a line.
+#[test]
+fn a_server_that_answers_costs_no_timed_out_wait() -> Result<(), TestError> {
+    let run = Run::new(&[CAPTURE, "list_dialogs"])?.traced();
+    let done = run.finish(run_wait())?;
+    assert_eq!(done.code, Some(0), "stderr: {}", done.stderr);
+    assert_eq!(
+        done.stderr, "",
+        "the trace is not left in what the script said"
+    );
+    assert!(
+        done.trace.iter().any(|l| l.contains("read -r -t 1")),
+        "the trace holds the waits: {:?}",
+        done.trace
+    );
+    // A real server answers within a second on any host this runs on; the
+    // count is held from above only by the run having worked at all.
+    assert!(
+        done.stdout.contains("test-call-1@192.0.2.1"),
+        "the answer is printed: {}",
+        done.stdout
+    );
+    Ok(())
+}
+
+/// The trace is told apart from what the script writes, at any depth of
+/// nesting, and keeps its order.
+#[test]
+fn split_trace_separates_the_trace_from_the_script_s_words() {
+    let stderr = "+[mcp-stdio-trace] send x\nmcp-stdio: no initialize reply from fake\n\
+                  ++[mcp-stdio-trace] jq -r .id\n+[mcp-stdio-trace] waited=1\n";
+    let (said, trace) = split_trace(stderr);
+    assert_eq!(
+        said, "mcp-stdio: no initialize reply from fake\n",
+        "only the script's own line is left"
+    );
+    assert_eq!(
+        trace,
+        ["send x", "jq -r .id", "waited=1"],
+        "every trace line, marker removed, in order"
+    );
+}
+
+/// A line that only looks like the marker, or has it in the middle, is the
+/// script's.
+#[test]
+fn split_trace_keeps_lines_that_are_not_the_trace() {
+    let stderr = "[mcp-stdio-trace] no plus\nsay +[mcp-stdio-trace] inside\n+other\n";
+    let (said, trace) = split_trace(stderr);
+    assert_eq!(said, stderr, "nothing here is a trace line");
+    assert!(trace.is_empty(), "no trace: {trace:?}");
+}
+
+/// Only the assignments of a whole number to `waited` are counted: not the
+/// `local` that starts each wait, not a read, not some other name.
+#[test]
+fn timed_out_waits_counts_only_the_waited_assignments() {
+    let trace: Vec<String> = [
+        "local want=1 line got waited=0",
+        "read -r -t 1 -u 4 line",
+        "waited=1",
+        "kill -0 4242",
+        "waited=2",
+        "waited=",
+        "waited=x",
+        "notwaited=3",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    assert_eq!(timed_out_waits(&trace), 2, "waited=1 and waited=2 only");
+    assert_eq!(timed_out_waits(&[]), 0, "an empty trace has no wait");
+}
+
+/// A capture that never finishes loading ends the run after exactly
+/// `MCP_MAX_POLLS` polls, naming the capture.
+///
+/// The bound is proved by counting the `capture_status` requests the server
+/// read, not by the run's wall time: on 2026-11-16 a loaded host stretched
+/// this run to 18.3 s and the old `took < 10 s` check failed a correct
+/// script, while the script itself sent one poll more than the bound.
 #[test]
 fn a_capture_that_never_loads_ends_the_run() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
     let fake = executable(dir.path(), "fake", FAKE_SERVER)?;
+    let log = dir.path().join("requests");
     let run = Run::new(&[CAPTURE, "anything"])?
         .bin(&fake)
         .env("FAKE_EXHAUSTED", "false")
+        .env("FAKE_LOG", &log.display().to_string())
         .env("MCP_MAX_POLLS", "3");
     let done = run.finish(run_wait())?;
     assert_eq!(done.code, Some(1), "stdout: {}", done.stdout);
@@ -615,10 +820,13 @@ fn a_capture_that_never_loads_ends_the_run() -> Result<(), TestError> {
         format!("mcp-stdio: {CAPTURE} never finished loading\n"),
         "the one line that says what did not happen"
     );
-    assert!(
-        done.took < test_timeout(10),
-        "MCP_MAX_POLLS=3 was not the bound: the run took {:?}",
-        done.took
+    let polls = std::fs::read_to_string(&log)?
+        .lines()
+        .filter(|l| l.contains("\"capture_status\""))
+        .count();
+    assert_eq!(
+        polls, 3,
+        "MCP_MAX_POLLS=3 must mean exactly 3 capture_status polls"
     );
     Ok(())
 }
@@ -631,7 +839,8 @@ fn a_server_that_exits_at_once_ends_the_run() -> Result<(), TestError> {
     let quitter = executable(dir.path(), "quitter", "#!/bin/sh\nexit 3\n")?;
     let run = Run::new(&[CAPTURE, "anything"])?
         .bin(&quitter)
-        .env("MCP_TIMEOUT", "60");
+        .env("MCP_TIMEOUT", "60")
+        .traced();
     let done = run.finish(run_wait())?;
     assert_eq!(done.code, Some(1), "stdout: {}", done.stdout);
     assert!(
@@ -639,10 +848,15 @@ fn a_server_that_exits_at_once_ends_the_run() -> Result<(), TestError> {
         "{}",
         done.stderr
     );
+    // Counted, not timed: a wait that runs out with the server gone ends
+    // the run before `waited` is counted up, so a gone server is counted
+    // 0 times (1 if bash had not yet reaped it at the first check). A
+    // script that does not look for it counts all 60.
+    let waits = timed_out_waits(&done.trace);
     assert!(
-        done.took < test_timeout(20),
-        "a server that is gone was waited for: the run took {:?} of a 60 s timeout",
-        done.took
+        waits < 60,
+        "a server that is gone was waited for: {waits} of 60 waits: {:?}",
+        done.trace
     );
     Ok(())
 }
@@ -810,26 +1024,22 @@ fn the_system_bash_on_macos_is_32() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The macOS leg of CI runs the whole suite, this file included: the step
-/// is there, it runs every target, and it names no target to leave out. That
-/// leg is the one place the script meets bash 3.2.
+include!("support/macos_suite.rs");
+
+/// The macOS leg of CI runs the whole suite, this file included: its shards
+/// run every target with every feature and name no target to leave out
+/// (tests/support/macos_suite.rs is the rule). That leg is the one place the
+/// script meets bash 3.2.
 #[test]
 fn the_macos_leg_of_ci_runs_the_whole_suite() -> Result<(), TestError> {
     let ci = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/ci.yml"),
     )?;
-    let at = ci
-        .find("- name: Test (macOS, every target)")
-        .ok_or("ci.yml has no macOS step that runs every target")?;
-    let step: String = ci[at..].lines().take(3).collect::<Vec<_>>().join("\n");
+    let problems = macos_suite_problems(&ci);
     assert!(
-        step.contains("if: runner.os == 'macOS'")
-            && step.contains("run: python3 scripts/parallel-tests.py -- --all-features"),
-        "the macOS step no longer runs the whole suite with every feature:\n{step}"
-    );
-    assert!(
-        !step.contains("--skip") && !step.contains("-E "),
-        "the macOS step leaves tests out:\n{step}"
+        problems.is_empty(),
+        "the macOS leg no longer runs the whole suite with every feature:\n{}",
+        problems.join("\n")
     );
     Ok(())
 }

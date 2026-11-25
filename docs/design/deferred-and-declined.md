@@ -88,17 +88,17 @@ generators and proxies — where operators most want to compare two captures.
 ### What the `-I` set actually gave us, and why it is not this
 
 `-I` now accepts a file, a directory, a glob, or a repeated set
-([`cli.rs:774-799`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L774-L799)<!-- "/// Read packets from a capture file" -->), resolves it into one chronologically
+([`cli.rs:787-812`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L787-L812)<!-- "/// Read packets from a capture file" -->), resolves it into one chronologically
 ordered list (`input_set::resolve`,
-[`input_set.rs:355`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L355)<!-- "/// resolves" -->), and streams every file
+[`input_set.rs:380`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L380)<!-- "/// resolves" -->), and streams every file
 into **one** `DialogStore` through one channel
-(`capture_files`, [`file.rs:586`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L586)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->). It is tempting to
+(`capture_files`, [`file.rs:599`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L599)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->). It is tempting to
 read that as "sipnab now has a cross-capture story, so the comparison request is
 satisfied."
 
 It is the opposite operation, and the module that implements it says so in as
 many words. `warn_on_overlap`
-([`input_set.rs:1351`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1351)<!-- "/// A clean ring" -->) exists precisely to warn
+([`input_set.rs:1491`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1491)<!-- "/// A clean ring" -->) exists precisely to warn
 an operator away from the comparison use case:
 
 ```
@@ -107,7 +107,7 @@ the same traffic, packets present in both are counted twice
 ```
 
 and its companion in the read path, `overlap_message`
-([`file.rs:1335`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1335)<!-- "/// anyway, so" -->), repeats the consequence for the
+([`file.rs:1389`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1389)<!-- "/// anyway, so" -->), repeats the consequence for the
 end-against-start case: *"they overlap by {by} ms, so packets present in both
 are counted twice."* The doc comment above `warn_on_overlap` is explicit that
 *"Overlap means the set is not one sequence — most often two capture runs, or
@@ -133,7 +133,7 @@ produce — silently, with `--problems` adding nothing.
 The `same instant` warning did fire, which is the design working. But the
 warning detects overlap in *time*, not overlap in *identity*: `same_instant_pairs`
 compares consecutive files' first-packet timestamps against `SAME_INSTANT_SECS`
-(1 ms, [`input_set.rs:1382`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1382)<!-- "const SAME_INSTANT_SECS:" -->) and
+(1 ms, [`input_set.rs:1522`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1522)<!-- "const SAME_INSTANT_SECS:" -->) and
 `overlap_message` compares the previous file's end against the next one's start.
 Two captures that share Call-IDs without overlapping in time trip neither — and
 that population is not exotic, since a load generator reuses Call-IDs across
@@ -162,10 +162,10 @@ retains no record of which capture anything came from.**
   ([`dialog.rs:87-140`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/sip/dialog.rs#L87-L140)) have no source field. `tags` on
   `SipDialog` is the operator's `--tag` string, not provenance.
 - The TUI's only notion of where its data came from is one display string,
-  `capture_mode` ([`tui/mod.rs:247`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L247)<!-- "/// Capture mode" -->), overwritten wholesale
-  on each in-TUI open ([`file_open.rs:832`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L832)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
+  `capture_mode` ([`tui/mod.rs:274`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L274)<!-- "/// Capture mode" -->), overwritten wholesale
+  on each in-TUI open ([`file_open.rs:834`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L834)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
   The `-I` set never reaches the TUI: `plan.source` is consumed by
-  `bootstrap::launch` ([`main.rs:444-447`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L444-L447)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
+  `bootstrap::launch` ([`main.rs:443-446`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L443-L446)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
   ([`state.rs:218-229`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/tui/state.rs#L218-L229)) carries no path.
 - Opening a capture from inside the TUI **clears** both stores rather than
   merging — `reset_for_load`
@@ -198,7 +198,7 @@ The cheap version — load both captures into one store and add a "capture A / B
 column — cannot work, because the column has nothing to read. There is no field
 to populate. Adding one means touching `Packet`, `ParsedPacket`, `SipMessage`
 and `SipDialog`, which is the zero-copy payload spine (D3) and the hot path;
-`process_message` ([`dialog_store.rs:1471-1473`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1471-L1473)<!-- "// Look up by the borrowed Call-ID" -->) is
+`process_message` ([`dialog_store.rs:1672-1674`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1672-L1674)<!-- "// Look up by the borrowed Call-ID" -->) is
 written to avoid even a single owned-key allocation per message. A per-message
 `String` source label is a straightforward regression of that work.
 
@@ -286,15 +286,15 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:8546`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8546)<!-- "pub async fn export_capture(" -->) writes a pcap, `export_audio`
-([`server.rs:8602`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8602)<!-- "pub async fn export_audio(" -->) writes a WAV, `list_captures`
-([`server.rs:8321`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8321)<!-- "pub async fn list_captures(&self)" -->) reads a directory, and
-`shutdown_server` ([`server.rs:9094`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9094)<!-- "pub async fn shutdown_server(" -->) ends the process.
+([`server.rs:8609`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8609)<!-- "pub async fn export_capture(" -->) writes a pcap, `export_audio`
+([`server.rs:8665`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8665)<!-- "pub async fn export_audio(" -->) writes a WAV, `list_captures`
+([`server.rs:8384`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8384)<!-- "pub async fn list_captures(&self)" -->) reads a directory, and
+`shutdown_server` ([`server.rs:9157`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9157)<!-- "pub async fn shutdown_server(" -->) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
 `crate::signals::request_shutdown()`
-([`server.rs:9205`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9205)<!-- "None => crate::signals::request_shutdown()," -->) — the same flag SIGTERM sets. The
+([`server.rs:9268`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9268)<!-- "None => crate::signals::request_shutdown()," -->) — the same flag SIGTERM sets. The
 rule as written is intact, unqualified, across every tool. It does not need an
 exception because nothing has taken one.
 
@@ -339,14 +339,14 @@ guards, each visible in the code:
    ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut" -->) and only set by `with_shutdown()`
    ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut" -->), which `servers.rs` calls only
    when `cli.mcp_allow_shutdown` is set
-   ([`servers.rs:956-960`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L956-L960)<!-- "let s = if cli.mcp_args.mcp_allow_shutdown" -->). Refusal is the first
-   statement of the handler ([`server.rs:9100`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9100)<!-- "if !self.allow_shutdown {" -->).
+   ([`servers.rs:957-961`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L957-L961)<!-- "let s = if cli.mcp_args.mcp_allow_shutdown" -->). Refusal is the first
+   statement of the handler ([`server.rs:9163`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9163)<!-- "if !self.allow_shutdown {" -->).
 2. **Dry run by default.** `params.dry_run.unwrap_or(true)`
-   ([`server.rs:9111`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9111)<!-- "let dry_run = params.dry_run.unwrap_or(true);" -->) — an agent that omits the
+   ([`server.rs:9174`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9174)<!-- "let dry_run = params.dry_run.unwrap_or(true);" -->) — an agent that omits the
    argument gets a report.
 3. **The destructive path must be named.** An unsaved live capture is refused
    unless `save_to` or `discard_unsaved=true`
-   ([`server.rs:9141-9149`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9141-L9149)<!-- "if !dry_run && unsaved && saved_to.is_none()" -->).
+   ([`server.rs:9204-9212`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9204-L9212)<!-- "if !dry_run && unsaved && saved_to.is_none()" -->).
 4. **The blast radius is bounded and legible.** The process either exists or it
    does not; there is no partially-shut-down state to misread. And a live
    capture is the only thing that can be lost, which is exactly what guard 3
@@ -369,7 +369,7 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:54-58`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L58)<!-- "/// User portion of the From" -->) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:5871`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5871)<!-- "pub async fn get_message(" -->) returns the parsed
+- `get_message` ([`server.rs:5934`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5934)<!-- "pub async fn get_message(" -->) returns the parsed
   message through `message_to_json_value`. Until 0.5.159 the phrasing here was
   *"headers and body included"*, and measured against 0.5.130 that was false:
   the projection had a closed field list and no headers map, so a `Diversion`
@@ -404,7 +404,7 @@ agent reads it verbatim through any of the three tools above; and with a
 write-back tool present, the text it reads can reach a verb that changes what
 the operator sees. Today the worst that text can reach is a read, a file write
 confined to `--mcp-file-root` by `resolve_in_root`
-([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->), or — only if armed, only on a
+([`server.rs:1234`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1234)<!-- "pub(crate) fn resolve_in_root(" -->), or — only if armed, only on a
 second call, only having named the discard — a process stop. That is a
 qualitative gap, not a matter of degree.
 
@@ -530,7 +530,7 @@ claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 socket opened in the privileged window and handed to the worker
 (`RawKillSocket::open`, [`process_isolation.rs:152`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L152)<!-- "/// Open the raw IPv4 and IPv6 send sockets." -->),
 `--kill-spoof {auto|raw|ephemeral}` with a loud failure for `raw`
-([`bootstrap.rs:4793-4801`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4793-L4801)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
+([`bootstrap.rs:5318-5326`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5318-L5326)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
 matters most — the forged source is never a parameter. It is always the sniffed
 packet's own destination ([`batch.rs:1775-1776`, `:1816-1817`](../../src/app/batch.rs)),
 so `-K` is a targeted transaction reply and not a general spoofer.
@@ -548,7 +548,7 @@ with the reason stated above it: *"a HEP sender asserts the inner src/dst
 addresses, so absent receiver-side authentication an attacker could steer the
 kill response at a chosen victim (SSRF-style)."* `--hep-allow-kill` is off by
 default and a test pins that it stays off
-([`cli.rs:11855-11860`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L11855-L11860)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
+([`cli.rs:12141-12146`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L12141-L12146)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
 be opt-in (SN-01)"*).
 
 **Field injection into the input of a ban decision.** `fail2ban.rs`'s
@@ -695,17 +695,17 @@ Three things changed since [`mcp-tool-roadmap.md`](mcp-tool-roadmap.md) filed
 state — needs the same opt-in treatment as shutdown."*
 
 **The opt-in treatment now exists and is proven.** `shutdown_server` shipped with
-a flag ([`cli.rs:4254-4267`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L4254-L4267)<!-- "/// Allow the `shutdown_server`" -->), an off-by-default field
+a flag ([`cli.rs:4356-4369`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L4356-L4369)<!-- "/// Allow the `shutdown_server`" -->), an off-by-default field
 ([`server.rs:187`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L187)<!-- "allow_shutdown: bool, /// Where" -->), a builder
 ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut self) -> Self {" -->) and a first-statement refusal
-([`server.rs:9100`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9100)<!-- "if !self.allow_shutdown {" -->). Copying that shape costs almost
+([`server.rs:9163`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9163)<!-- "if !self.allow_shutdown {" -->). Copying that shape costs almost
 nothing.
 
 **The path-confinement problem is solved.** The roadmap's other Tier 3 entry,
 `list_captures`, was filed with *"needs a path allowlist or it is an
 arbitrary-file-read"*. It shipped ([`server.rs:2096`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L2096))
 with `--mcp-file-root` and `resolve_in_root`
-([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->), which accepts a bare filename and
+([`server.rs:1234`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1234)<!-- "pub(crate) fn resolve_in_root(" -->), which accepts a bare filename and
 rejects anything with a separator, a `..`, a root prefix or a drive letter before
 touching the filesystem. So an agent can already *see* the corpus, safely, and
 `open_capture` would need no new security machinery.
@@ -734,7 +734,7 @@ would have to refuse outright when `capture.live`.
 
 **A long read inside a handler stalls every other surface.** The API and MCP
 servers share one thread running one `tokio::runtime::Builder::new_current_thread()`
-([`servers.rs:1107`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L1107)<!-- "let rt = match tokio::runtime::Builder::new_current_thread()" -->). Reading a multi-gigabyte pcap
+([`servers.rs:1108`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L1108)<!-- "let rt = match tokio::runtime::Builder::new_current_thread()" -->). Reading a multi-gigabyte pcap
 inside a tool handler blocks that thread for the duration — every other MCP tool
 call and every REST request behind it. This is not a lock-across-await violation
 (invariant "No lock across `.await`" is enforced by `clippy::await_holding_lock = "deny"` and would not
@@ -749,7 +749,7 @@ documents *"the tool server; cloned per HTTP session"* and
 ([`server.rs:64`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L64)) is a plain field, not an `Arc`,
 built once at startup ([`servers.rs:633-658`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L633-L658)<!-- "let capture_state" -->) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
-argument ([`cli.rs:8608-8610`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8608-L8610)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
+argument ([`cli.rs:8735-8737`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8735-L8737)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
 `capture_status` ([`server.rs:1548`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L1548)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
@@ -779,7 +779,7 @@ worse version of something already free.
 
 That leaves persistent HTTP, where a restart is genuinely disruptive. But there
 `-I` now takes a whole directory, a glob, or a repeated set
-([`cli.rs:774-799`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L774-L799)<!-- "/// Read packets from a capture file" -->), so the corpus can be loaded at start —
+([`cli.rs:787-812`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L787-L812)<!-- "/// Read packets from a capture file" -->), so the corpus can be loaded at start —
 subject, and this is the honest caveat, to the finding in
 [section 1 (multi-capture comparison)](#1-tui-multi-session--multi-capture-comparison)
 that the load is a union
@@ -845,8 +845,8 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:9094-9100`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9094-L9100)<!-- "pub async fn shutdown_server(" -->), and `--mcp-file-root` with
-`resolve_in_root` ([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->).
+([`server.rs:9157-9163`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9157-L9163)<!-- "pub async fn shutdown_server(" -->), and `--mcp-file-root` with
+`resolve_in_root` ([`server.rs:1234`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1234)<!-- "pub(crate) fn resolve_in_root(" -->).
 
 **What shipped**, against those three:
 
@@ -863,10 +863,10 @@ A narrower tool is worth building alongside it, and carries none of the above:
 **`capture_sources` (read-only)** — report the *full* resolved `-I` set
 rather than `primary_input()`'s first element, with each file's first-packet
 timestamp. `input_set::resolve` already computes that timestamp into
-`ResolvedInput.first_packet` ([`input_set.rs:106-122`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L106-L122)<!-- "pub struct ResolvedInput" -->)
+`ResolvedInput.first_packet` ([`input_set.rs:131-147`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L131-L147)<!-- "pub struct ResolvedInput" -->)
 and `bootstrap` then throws it away —
-[`bootstrap.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1233)<!-- "let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(" --> is
-`resolved.into_iter().map(|r| r.path).collect()`. An agent's actual complaint in
+[`bootstrap.rs:1486`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1486)<!-- "let (paths, handed) = resolve_planned_inputs(cli, config, named)?" --> keeps
+only the paths of the judged set. An agent's actual complaint in
 the persistent case is usually *"I do not know what I am holding"*, and that is
 the tool for it. It is Tier 1 by the roadmap's own criterion — *"the agent
 cannot see its own context"* — and it mutates nothing.

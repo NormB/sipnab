@@ -91,13 +91,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// `target` is `Some((triple, linker))` to cross-compile. `build_id` false
 /// passes `--build-id=none`, so the refusal path can be driven.
 ///
-/// Returns `None`, after saying why on stderr, when this host cannot compile
-/// for `target`. The host target must always compile.
+/// Returns `Ok(Err(why))` when this host cannot compile for `target`, for
+/// the caller to hand to `src/test_prereq.rs`. The host target must always
+/// compile.
 pub fn build_fixture(
     dir: &Path,
     target: Option<(&str, &str)>,
     build_id: bool,
-) -> std::io::Result<Option<PathBuf>> {
+) -> std::io::Result<Result<PathBuf, String>> {
     let src = dir.join("fixture.rs");
     std::fs::write(&src, FIXTURE)?;
     let bin = dir.join("fixture");
@@ -128,15 +129,37 @@ pub fn build_fixture(
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(target.is_some(), "the host fixture must compile:\n{stderr}");
-        eprintln!(
-            "SKIPPED: cannot compile the fixture for {} on this host:\n{stderr}",
+        return Ok(Err(format!(
+            "cannot compile the fixture for {} on this host: {stderr}",
             target.map(|t| t.0).unwrap_or("host")
-        );
-        return Ok(None);
+        )));
     }
-    Ok(Some(bin))
+    Ok(Ok(bin))
 }
 
+/// Whether `tool` resolves on `PATH`, as a probe for `src/test_prereq.rs`.
+///
+/// # Errors
+/// When it does not.
+pub fn tool_probe(tool: &str) -> Result<(), String> {
+    if have(tool) {
+        Ok(())
+    } else {
+        Err(format!("{tool} is not on PATH"))
+    }
+}
+
+/// Whether `llvm-symbolizer` or `addr2line` resolves on `PATH`.
+///
+/// # Errors
+/// When neither does.
+pub fn symbolizer_probe() -> Result<(), String> {
+    if have("llvm-symbolizer") || have("addr2line") {
+        Ok(())
+    } else {
+        Err("neither llvm-symbolizer nor addr2line is on PATH".to_owned())
+    }
+}
 /// Run the split script on `bin`, writing `<stem>.debug`.
 pub fn split(bin: &Path, stem: &Path) -> std::io::Result<Output> {
     Command::new("bash")

@@ -36,6 +36,15 @@ pub struct Theme {
     /// draws a color of its own, one that is not a slot above, leaves it out
     /// when this is set and marks state with a text attribute instead.
     pub no_color: bool,
+    /// sngrep mode is on: the one flag of the mode. The key dispatcher reads
+    /// it for sngrep's keys and the views read it for sngrep's layout, help
+    /// and key bar. The views paint sngrep's colors only when
+    /// [`Self::no_color`] is not set (see `sngrep_mode::tone`). Set by
+    /// `sngrep_mode::apply_theme`.
+    pub sngrep: bool,
+    /// sngrep mode, `K`: the bottom key bar names each command's
+    /// letter instead of its function key.
+    pub sngrep_alt_hints: bool,
 }
 
 impl Default for Theme {
@@ -59,6 +68,8 @@ impl Default for Theme {
             border: Color::White,
             status_bg: Color::Rgb(48, 48, 64), // Dark blue-gray, readable on both dark and light
             no_color: false,
+            sngrep: false,
+            sngrep_alt_hints: false,
         }
     }
 }
@@ -131,6 +142,8 @@ impl Theme {
             border: Color::Reset,
             status_bg: Color::Reset,
             no_color: true,
+            sngrep: false,
+            sngrep_alt_hints: false,
         }
     }
 }

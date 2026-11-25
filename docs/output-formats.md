@@ -17,15 +17,19 @@ documents the machine-readable formats the command line writes.
 | One JSON line per SIP message, to pipe into `jq` | `sipnab -N -I capture.pcap --json` | [NDJSON](#ndjson---json) |
 | One readable line per call | `sipnab -N -I capture.pcap --report --no-cli-print` | [Summary-only output](#summary-only-output) |
 | One call explained, as text or JSON | `--call-report "$CALL_ID"`, plus `--json` for JSON | [Summary-only output](#summary-only-output) |
-| One JSON object per call | `--json-dialogs --no-cli-print` | [One object per dialog](#one-object-per-dialog) |
-| Every STUN and TURN exchange | `--json-stun --no-cli-print` | [STUN / TURN JSON](#stun--turn-json---json-stun) |
-| One verdict for the whole capture | `--json-analyze --no-cli-print` | [Capture analysis](#capture-analysis---json-analyze) |
-| The same verdict as YANG-modeled data | `--yang-analyze --no-cli-print` | [YANG export](#yang-export---yang-analyze) |
+| One JSON object per call | `--json-dialogs` | [One object per dialog](#one-object-per-dialog) |
+| Every STUN and TURN exchange | `--json-stun` | [STUN / TURN JSON](#stun--turn-json---json-stun) |
+| One verdict for the whole capture | `--json-analyze` | [Capture analysis](#capture-analysis---json-analyze) |
+| The same verdict as YANG-modeled data | `--yang-analyze` | [YANG export](#yang-export---yang-analyze) |
 | One call as a vCon container | `--export-vcon` | [vCon](#vcon---export-vcon) |
 | The packets, for Wireshark | `-O calls.pcapng --pcapng` | [pcap / pcapng](#pcap--pcapng) |
 | A Wireshark display filter for the capture | `-N --wireshark` | [CLI reference](cli-reference.md#output) |
 | Log lines fail2ban reads | `-N --fail2ban` with `--kill-scanner` | [CLI reference](cli-reference.md#output) |
 | A call's ladder as a Mermaid diagram, or its audio as WAV | the save dialog in the terminal UI (`F2`) | [Save popup](keybindings.md#save-popup) |
+
+`--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` keep
+the per-message lines off stdout by themselves, so their output pipes straight
+into `jq`. Add `--json` or `-T` to get the per-message stream as well.
 
 > **Prerequisites:**
 >
@@ -415,6 +419,21 @@ it holds one, otherwise the request that opened it.
 - A `SUBSCRIBE` reports the answer to the SUBSCRIBE, not to a later NOTIFY.
 - Both are absent while that request has no final response.
 
+`forked_answers` lists the other legs that answered a forked call.
+
+- A proxy that forks an INVITE can draw a `2xx` from more than one leg.
+  [RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.2.4)
+  makes each answer a dialog of its own, and the caller usually ends the extra
+  ones with a `BYE`.
+- The first answer stays the dialog. The array holds the `To` tag of each
+  later answering leg, in the order the answers arrived.
+- The key is absent on a call that one leg answered.
+
+```bash
+sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet \
+  | jq -c 'select(.forked_answers) | {call_id, forked_answers}'
+```
+
 For registrations, `signaling_diagnosis` says more than the code:
 
 - `final_failure.code` carries the status for any dialog.
@@ -491,6 +510,44 @@ commonest codes sends you:
   packet. The peer may be perfectly healthy, and the fix is the filter.
 - `host unreachable` means nothing reached the host at all. So the capture says
   nothing about its ports.
+
+### Messages two sources delivered: `seen_by`
+
+A run that reads the wire and a HEP feed of the same proxy gets each message
+twice: once from the wire and once from the proxy's HEP report. Examples are
+`sipnab -d any -L 0.0.0.0:9060`, or `-I` of a capture that holds both with
+`--hep-parse`.
+
+- sipnab keeps such a message once. `msg_count` counts it once, and it is not
+  a retransmission.
+- Two copies are one message when their bytes are identical, they belong to
+  the same transaction, and they arrived within 2 seconds of each other.
+- `seen_by` says how many of the dialog's messages each source delivered:
+
+```json
+"seen_by": { "hep": 7, "wire": 7 }
+```
+
+- A source that missed a message shows the smaller count. For example,
+  `"wire": 6` beside `"hep": 7` means the wire never carried one message the
+  proxy reported.
+- `seen_by` is absent when one source delivered every message.
+
+To check a composite run, read each dialog's counts:
+
+```bash
+sipnab -N -I both.pcap --hep-parse --json-dialogs | jq -c '{call_id, msg_count, seen_by, r: .timing.retransmits}'
+```
+
+Troubleshooting:
+
+- Counts twice as high as the call, and as many retransmissions as messages:
+  that was sipnab before 0.5.264. Upgrade.
+- Two copies stay apart when the proxy reported bytes the wire did not carry,
+  or when the HEP sender's clock is more than 2 seconds off the capture host's.
+  Compare the clocks first: `chronyc tracking` on both hosts.
+- The `--json` message stream still prints one line per arrival, each with its
+  own `input_origin`.
 
 ### STUN evidence inside the media diagnosis
 
@@ -938,16 +995,16 @@ To check it, save the module this sipnab writes against. Then hand both to
 `yanglint`:
 
 ```bash
-sipnab --print-yang-module > sipnab-diagnosis@2026-11-08.yang
+sipnab --print-yang-module > sipnab-diagnosis@2026-11-20.yang
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-11-20.yang analysis.json
 ```
 
 `--print-yang-module` prints the module this sipnab validates against. The
 repository commits the same file at
-[`yang/sipnab-diagnosis@2026-11-08.yang`](../yang/sipnab-diagnosis@2026-11-08.yang).
+[`yang/sipnab-diagnosis@2026-11-20.yang`](../yang/sipnab-diagnosis@2026-11-20.yang).
 
 The document has one member, `sipnab-diagnosis:capture-analysis`. It differs
 from the `--json-analyze` object only in how it writes the same facts:

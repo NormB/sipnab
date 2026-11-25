@@ -847,17 +847,18 @@ fn relay_poll_target(
         permit.is_some(),
     ) {
         RelayPollPlan::Idle => return None, // Nothing polls by default.
+        // Refused before the capture opened, with exit 2
+        // (`bootstrap::refuse_unaskable_relay_questions`); reached here only
+        // when the source that opened differs from the one planned.
         RelayPollPlan::NotConfigured => {
-            tracing::error!(
-                "--relay-stats-interval needs a relay to poll. Name one with \
-                 --rtpengine-control <addr>."
+            crate::app::bootstrap::report_relay_poll_blocked(
+                &crate::app::bootstrap::RelayAskBlocked::NotConfigured,
             );
             return None;
         }
         RelayPollPlan::NotPermitted => {
-            tracing::error!(
-                "--relay-stats-interval will not poll a relay on a run that reads a \
-                 file: polling transmits. Poll from a live capture (-d <device>)."
+            crate::app::bootstrap::report_relay_poll_blocked(
+                &crate::app::bootstrap::RelayAskBlocked::NotPermitted,
             );
             return None;
         }
@@ -1382,30 +1383,33 @@ pub fn run_cores_file(
     config: &Config,
     capture_config: &CaptureConfig,
     portrange: (u16, u16),
-    paths: &[PathBuf],
+    inputs: Option<crate::capture::input_set::NamedSet>,
     filter: Option<&FilterExpr>,
     vcon_rules: &[VconRule],
 ) {
-    if paths.is_empty() {
-        // Unreachable through `main`: `RunMode::CoresFile` requires `-I`, and
-        // `input_set::resolve` already failed the run if nothing resolved. Say
-        // so loudly anyway rather than exiting 0 with an empty report, which is
-        // precisely the failure this path used to have.
+    // Unreachable through `main`: `RunMode::CoresFile` requires `-I`, so the
+    // plan names a set. Said loudly anyway rather than exiting 0 with an
+    // empty report, which is precisely the failure this path used to have.
+    let Some(named) = inputs else {
         stderr_line!("--cores: no capture files to read");
         crate::capture::archive::release_run_and_exit(1);
-    }
+    };
+    // Drops privileges first, then judges the set as the user it dropped
+    // to (CAPTURE-RESOLVE-AS-ROOT).
+    let (paths, pre_opened) = match crate::app::bootstrap::prepare_cores_inputs(
+        cli,
+        config,
+        named,
+        capture_config.bpf_filter.is_none(),
+        vcon_rules,
+    ) {
+        Ok(prepared) => prepared,
+        Err(e) => e.exit(),
+    };
+    let paths = paths.as_slice();
     crate::app::bootstrap::refuse_cores_without_a_view(cli, !vcon_rules.is_empty());
     let no_rtp = cli.no_rtp(config);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);
-    let pre_opened = match crate::app::bootstrap::prepare_cores_inputs(
-        cli,
-        config,
-        paths,
-        capture_config.bpf_filter.is_none(),
-    ) {
-        Ok(set) => set,
-        Err(e) => e.exit(),
-    };
     let inputs = match &pre_opened {
         Some(set) => crate::parallel::Inputs::PreOpened(set),
         None => crate::parallel::Inputs::ByPath,
@@ -1431,6 +1435,7 @@ pub fn run_cores_file(
             // through the one `ReadTally::report`, so the two paths cannot
             // reach different verdicts about the same file set.
             if !reports_ok || crate::output::run_integrity::run_failed() {
+                crate::output::run_integrity::print_exit_notice();
                 crate::capture::archive::release_run_and_exit(1);
             }
             if lint_tripped {
@@ -1510,7 +1515,7 @@ fn report_parallel_run(
         report_icmp_summary(&r.stream_store);
         report_relay_retries(&r.stream_store);
         report_impossible_rates(&r.stream_store);
-        report_retention_losses(&r.dialog_store);
+        report_retention_losses(&r.dialog_store, &r.stream_store);
         report_capture_quality();
         report_llmnr_summary();
     }
@@ -1657,11 +1662,12 @@ fn report_impossible_rates(streams: &crate::rtp::stream_store::StreamStore) {
 /// - at capacity with `--no-rotate`, a new dialog is REJECTED, so the earliest
 ///   calls are the ones you keep
 /// - at capacity while rotating, the OLDEST dialog is discarded instead
+/// - at `--max-streams`, the OLDEST RTP streams are discarded
 ///
 /// Silent when nothing was shed, so a clean run stays quiet — the same rule
 /// the `-I` resolution accounting follows.
-fn report_retention_losses(dialogs: &DialogStore) {
-    if let Some(msg) = retention_summary(dialogs) {
+fn report_retention_losses(dialogs: &DialogStore, streams: &StreamStore) {
+    if let Some(msg) = retention_summary(dialogs, streams.total_capacity_streams_evicted()) {
         tracing::warn!("{msg}");
     }
 }
@@ -1744,11 +1750,11 @@ fn th_callid_guidance(summary: &crate::sip::dialog_store::ThCallidSummary) -> Ve
 /// Split from the logging so the wording is testable: the value of this line
 /// is entirely in what it says, and a test that only checked "something was
 /// logged" would pass on a sentence naming the wrong number.
-fn retention_summary(dialogs: &DialogStore) -> Option<String> {
+fn retention_summary(dialogs: &DialogStore, streams_rotated: u64) -> Option<String> {
     let msgs = dialogs.total_idle_messages_evicted();
     let dropped = dialogs.total_capacity_dialogs_dropped();
     let rotated = dialogs.total_capacity_dialogs_evicted();
-    if msgs == 0 && dropped == 0 && rotated == 0 {
+    if msgs == 0 && dropped == 0 && rotated == 0 && streams_rotated == 0 {
         return None;
     }
 
@@ -1766,6 +1772,11 @@ fn retention_summary(dialogs: &DialogStore) -> Option<String> {
     if rotated > 0 {
         parts.push(format!(
             "{rotated} oldest dialog(s) discarded at capacity by rotation"
+        ));
+    }
+    if streams_rotated > 0 {
+        parts.push(format!(
+            "{streams_rotated} oldest RTP stream(s) discarded at capacity (--max-streams)"
         ));
     }
 
@@ -2101,12 +2112,19 @@ fn capture_quality_summary() -> Option<String> {
     // resumed at the next message behind each, so what is missing is the
     // data in the hole and any message it cut.
     let (holes, hole_bytes) = crate::capture::reassembly::tcp_gaps_skipped();
+    // A seventh: SIP messages and WebSocket frames dropped at a size limit
+    // (D17). Each was counted and warned as it went; this is the total.
+    let oversize = oversize_parts(
+        crate::capture::sip_oversize_dropped(),
+        crate::pipeline::ws_oversize_frames(),
+    );
     if dropped == 0
         && if_dropped == 0
         && bad_ts == 0
         && undecodable.frames == 0
         && snapped == 0
         && holes == 0
+        && oversize.is_empty()
     {
         return None;
     }
@@ -2170,6 +2188,7 @@ fn capture_quality_summary() -> Option<String> {
              capture point missed)"
         ));
     }
+    parts.extend(oversize);
 
     Some(format!(
         "capture quality: {}. THIS ANALYSIS IS INCOMPLETE — the counts above are \
@@ -2177,6 +2196,26 @@ fn capture_quality_summary() -> Option<String> {
          docs/tuning-capture.md.",
         parts.join("; ")
     ))
+}
+
+/// The capture-quality clauses for data dropped at a size limit: SIP/TCP
+/// messages past the reassembly ceiling and WebSocket frames past 64 KiB.
+/// Empty when nothing was dropped.
+fn oversize_parts(sip_messages: u64, ws_frames: u64) -> Vec<String> {
+    let mut parts = Vec::new();
+    if sip_messages > 0 {
+        parts.push(format!(
+            "{sip_messages} SIP/TCP message(s) longer than the reassembly ceiling were \
+             dropped (raise --max-tcp-buffer to keep them)"
+        ));
+    }
+    if ws_frames > 0 {
+        parts.push(format!(
+            "{ws_frames} WebSocket frame(s) longer than the 65536-byte frame limit were \
+             dropped, so the SIP in them was not analyzed"
+        ));
+    }
+    parts
 }
 
 /// Share of frames that must fail to decode before the notice stops being
@@ -3032,6 +3071,9 @@ pub struct CaptureFeed {
 /// takes over the kill worker process and spawns the companion-server
 /// thread) and drives its receive loop to completion. Either way this
 /// function blocks until the batch run is over.
+///
+/// Returns the run's stores, everything else already dropped: see
+/// [`RunStores`].
 pub fn run(
     cli: Cli,
     config: &Config,
@@ -3039,7 +3081,7 @@ pub fn run(
     feed: CaptureFeed,
     batch: BatchProcessing,
     policy: CapturePolicy,
-) {
+) -> RunStores {
     let CaptureFeed {
         handle,
         rx,
@@ -3081,8 +3123,89 @@ pub fn run(
             fatal.exit_after(|| capture::stop_and_join(handle, rx));
         }
     };
-    runner.run_loop(capture_config, handle, rx);
+    runner.run_loop(capture_config, handle, rx)
 }
+
+/// The dialog and stream stores of a finished batch run, handed back by
+/// [`run`] instead of freed with the rest of the run's state.
+///
+/// Freeing the dialog store is one reference-count decrement and one free per
+/// retained message part: 1.89% of the instructions of a SIP-only batch run
+/// in a callgrind profile, spent on memory the operating system takes back
+/// when the process exits a moment later. A caller about to exit passes the
+/// stores to [`RunStores::release_run_and_exit`], which keeps them alive
+/// until the exit. A caller that keeps running drops this value, which frees
+/// both stores as before.
+///
+/// Neither store owns a file, socket, thread, channel or child process, or
+/// any value whose `Drop` writes, flushes, renames or deletes something: the
+/// writer, the event engine, the companion servers and the SRTP keys belong
+/// to the run itself and are dropped with it, in the same order as before.
+#[must_use = "dropping RunStores frees both stores; pass them to \
+              RunStores::release_run_and_exit when the process is about to exit"]
+pub struct RunStores {
+    /// The run's dialog store (the same `Arc` the companion servers read).
+    dialogs: Arc<RwLock<DialogStore>>,
+    /// The run's RTP stream store (the same `Arc` the companion servers read).
+    streams: Arc<RwLock<StreamStore>>,
+}
+
+impl RunStores {
+    /// The stores of one run.
+    pub(crate) fn new(
+        dialogs: Arc<RwLock<DialogStore>>,
+        streams: Arc<RwLock<StreamStore>>,
+    ) -> Self {
+        Self { dialogs, streams }
+    }
+
+    /// [`crate::capture::archive::release_run_and_exit`] with `code`. A batch
+    /// run's `stores` (`None` after a run with none, such as the TUI) are kept
+    /// alive until the process is gone instead of being freed first.
+    ///
+    /// The stores stay reachable from a process-wide static, so a leak
+    /// checker reports them as still reachable at exit, not as lost.
+    pub fn release_run_and_exit(stores: Option<Self>, code: i32) -> ! {
+        Self::keep(stores, &EXIT_HOLD);
+        crate::capture::archive::release_run_and_exit(code)
+    }
+
+    /// Hand `stores`, when there are any, to `hold`.
+    fn keep(stores: Option<Self>, hold: &ExitHold) {
+        if let Some(stores) = stores {
+            hold.hold((stores.dialogs, stores.streams));
+        }
+    }
+}
+
+/// Values kept alive until the process exits, reachable from a static.
+pub(crate) struct ExitHold {
+    /// Everything handed over, in order.
+    held: parking_lot::Mutex<Vec<Box<dyn std::any::Any + Send>>>,
+}
+
+impl ExitHold {
+    /// An empty hold; `const` so it can be a `static`.
+    pub(crate) const fn new() -> Self {
+        Self {
+            held: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Keep `value` alive for as long as this hold lives.
+    pub(crate) fn hold<T: Send + 'static>(&self, value: T) {
+        self.held.lock().push(Box::new(value));
+    }
+
+    /// How many values this hold keeps.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.held.lock().len()
+    }
+}
+
+/// The process-wide hold [`RunStores::release_run_and_exit`] fills.
+static EXIT_HOLD: ExitHold = ExitHold::new();
 
 /// All owned batch-mode state: writer, detector engines, decryption state,
 /// stores, and companion-server handles. Built once by `BatchRunner::new`
@@ -3989,7 +4112,9 @@ impl BatchRunner {
         let input_files = batch.input_files;
         let filter_expr = batch.filter_expr;
         let vcon_rules = batch.vcon_rules;
-        let output_opts = batch.output_opts;
+        // `auto` color is decided here, once, rather than by an `isatty`
+        // system call for every message this run prints.
+        let output_opts = batch.output_opts.resolved();
         let event_exec = batch.event_exec;
         // 16. Output writer placeholder for -O — opened lazily on the first
         //     packet in run_loop, once the link type is known.
@@ -4184,12 +4309,15 @@ impl BatchRunner {
     /// `--call-report` lookup (code 1), or a failed output-file *write* or
     /// final flush (code 1) — the last of which previously logged and exited
     /// 0, so a capture truncated by ENOSPC reported success.
+    ///
+    /// Returns the two stores; the rest of the runner is dropped here, as
+    /// before (see [`RunStores`]).
     fn run_loop(
         mut self,
         capture_config: CaptureConfig,
         handle: capture::CaptureHandle,
         rx: capture::channel::PacketRx,
-    ) {
+    ) -> RunStores {
         let mut lp = ReceiveLoop::new(&mut self);
 
         // Taken before `rx` is dropped at the end of the loop: the meter is
@@ -4324,8 +4452,19 @@ impl BatchRunner {
             lint_gate_tripped,
             query_gate: crate::app::queries::gate_exit_code(),
         }) {
+            crate::output::run_integrity::print_exit_notice();
             crate::capture::archive::release_run_and_exit(code);
         }
+
+        // Only the two stores move out. Every other field of the runner, and
+        // the locals above, still drop at the end of this function in the
+        // order they always did.
+        let BatchRunner {
+            dialog_store,
+            stream_store,
+            ..
+        } = self;
+        RunStores::new(dialog_store, stream_store)
     }
 
     /// One pass of the receive loop: the stop checks, the periodic work, one
@@ -4981,14 +5120,14 @@ impl BatchRunner {
             return true;
         }
 
-        // Check --autostop filesize
-        if let Some(max_bytes) = self.policy.autostop_filesize_bytes
-            && let Some(ref w) = self.writer
-            && w.bytes_written() >= max_bytes
-        {
+        // Check --autostop filesize, against what the run wrote to EVERY file
+        // (FILE-1).
+        let written = self.writer.as_ref().map(PcapWriter::run_bytes_written);
+        if filesize_autostop_reached(self.policy.autostop_filesize_bytes, written) {
             tracing::info!(
                 "Autostop: filesize limit reached ({} MiB)",
-                max_bytes / crate::capture::writer::BYTES_PER_MIB
+                self.policy.autostop_filesize_bytes.unwrap_or_default()
+                    / crate::capture::writer::BYTES_PER_MIB
             );
             return true;
         }
@@ -5303,7 +5442,7 @@ impl BatchRunner {
         report_icmp_summary(&self.stream_store.read());
         report_relay_retries(&self.stream_store.read());
         report_impossible_rates(&self.stream_store.read());
-        report_retention_losses(&self.dialog_store.read());
+        report_retention_losses(&self.dialog_store.read(), &self.stream_store.read());
         report_th_callid(&self.dialog_store.read());
         report_capture_quality();
         report_llmnr_summary();
@@ -5386,6 +5525,21 @@ enum LimitStop {
 /// drains for at most `HEP_STREAM_DRAIN_BUDGET` (1 s) after its own deadline,
 /// and its deadline comes first, because its clock started first.
 const DURATION_FINISH_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether `--autostop filesize` has been reached.
+///
+/// # Arguments
+///
+/// * `limit` — the limit in bytes, `None` without `--autostop filesize`.
+/// * `written` — the bytes the run wrote to all its `-O` files together
+///   ([`PcapWriter::run_bytes_written`]), `None` without `-O`.
+///
+/// # Returns
+///
+/// `true` once `written` reaches `limit`; `false` when either is absent.
+fn filesize_autostop_reached(limit: Option<u64>, written: Option<u64>) -> bool {
+    matches!((limit, written), (Some(limit), Some(written)) if written >= limit)
+}
 
 /// The receive loop's next step after `--duration` was reached at or before
 /// `now`: go on reading until [`DURATION_FINISH_GRACE`] after the first time
@@ -6016,7 +6170,8 @@ fn process_parsed_packet(
     #[cfg(not(feature = "tls"))]
     let mut decrypt = crate::pipeline::MediaDecrypt::default();
 
-    let action = crate::pipeline::classify_packet(pp, state.rtp_heuristic, &opts, &mut decrypt);
+    let crate::pipeline::ClassifiedPacket { action, sdp } =
+        crate::pipeline::classify_packet_read(pp, state.rtp_heuristic, &opts, &mut decrypt);
     let mut packet = PacketPass {
         ctx,
         state,
@@ -6027,7 +6182,7 @@ fn process_parsed_packet(
     match action {
         crate::pipeline::PacketAction::None => {}
         crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
-            packet.on_sip(pp, &msg, &sdp_links);
+            packet.on_sip(pp, &msg, &sdp_links, &sdp);
         }
         crate::pipeline::PacketAction::ThMapping(event) => {
             // A mapping is call association, so `--no-dialog` opts out of it
@@ -6122,6 +6277,7 @@ impl PacketPass<'_, '_, '_> {
         pp: &ParsedPacket,
         sip_msg: &sip::SipMessage,
         sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
+        sdp: &sip::sdp::SdpRead,
     ) {
         let cli = self.ctx.cli;
         self.counters.sip_count += 1;
@@ -6131,7 +6287,7 @@ impl PacketPass<'_, '_, '_> {
 
         // Track dialog regardless of filter (needed for filter DSL evaluation)
         if !cli.dialog_args.no_dialog {
-            self.track_dialog(pp, sip_msg, sdp_links);
+            self.track_dialog(pp, sip_msg, sdp_links, sdp);
         }
 
         // Apply DSL filter (evaluated after dialog update)
@@ -6198,6 +6354,7 @@ impl PacketPass<'_, '_, '_> {
         pp: &ParsedPacket,
         sip_msg: &sip::SipMessage,
         sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
+        sdp: &sip::sdp::SdpRead,
     ) {
         let cli = self.ctx.cli;
         let dialog_store = &mut *self.state.dialog_store;
@@ -6207,7 +6364,9 @@ impl PacketPass<'_, '_, '_> {
             .and_then(|id| dialog_store.get(id))
             .map(|d| d.state().clone());
 
-        dialog_store.process_message(sip_msg.clone());
+        // With the SDP classification parsed for the links, so the dialog's
+        // SDP timeline does not parse the body again.
+        dialog_store.process_message_read(sip_msg.clone(), sdp);
 
         // Apply --tag to the dialog
         if let Some(ref tag_label) = cli.dialog_args.tag
@@ -6486,8 +6645,13 @@ fn dsl_filter_passes(
     let Some(dialog) = dialog_store.get(call_id) else {
         return false;
     };
-    let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
-        stream_store.streams_for(call_id).collect();
+    // Runs once per SIP message: a filter that reads no stream field is not
+    // handed the call's streams, and gives the same verdict without them.
+    let dialog_streams: Vec<&crate::rtp::stream::RtpStream> = if expr.needs_streams() {
+        stream_store.streams_for(call_id).collect()
+    } else {
+        Vec::new()
+    };
     expr.matches_dialog(
         dialog,
         &dialog_streams,
@@ -8962,15 +9126,14 @@ fn write_vcon_containers(
         batch.frames_read,
     );
     // What this run deliberately did not write. Recorded on the facts BEFORE
-    // the analysis runs, so every container built from them carries the same
+    // the blind spots are read, so every container built from them carries the same
     // account -- a container that named a different number from its siblings
     // would read as two runs.
     facts.dialogs_suppressed_by_deny = batch.suppressed_by_deny;
     facts.gate_closed_during_run = batch
         .gate
         .is_some_and(crate::output::persistence::PersistenceGate::closed_during_run);
-    let analysis =
-        crate::analysis::analyze_with(batch.dialog_store, batch.stream_store, None, &facts);
+    let analysis = crate::analysis::analyze_blind_spots(&facts);
     let header = cli
         .output_args
         .content_deny_header
@@ -8985,11 +9148,28 @@ fn write_vcon_containers(
         header,
         redactor,
     };
+    // The related legs of every single-leg container from one correlation
+    // pass, in unit order: one pass per container read every dialog's SDP
+    // once per container.
+    let linked: Vec<&crate::sip::dialog::SipDialog> = units
+        .iter()
+        .filter_map(|unit| match unit {
+            ContainerUnit::Leg(dialog, _) => Some(*dialog),
+            ContainerUnit::Call(_) => None,
+        })
+        .collect();
+    let related_of_legs = crate::output::vcon::related_legs_many(batch.dialog_store, &linked);
+    let mut related_legs = related_of_legs.iter();
     let mut written = 0_usize;
     for unit in units {
         let (container, root, what) = match unit {
             ContainerUnit::Leg(dialog, withheld) => (
-                writer.leg(dialog, *withheld, true, written)?,
+                writer.leg(
+                    dialog,
+                    *withheld,
+                    related_legs.next().map_or(&[], Vec::as_slice),
+                    written,
+                )?,
                 *dialog,
                 if *withheld {
                     "withheld-dialog vCon"
@@ -9000,7 +9180,7 @@ fn write_vcon_containers(
             ContainerUnit::Call(group) => {
                 let mut legs = Vec::with_capacity(group.legs.len());
                 for dialog in &group.legs {
-                    legs.push(writer.leg(dialog, false, false, written)?);
+                    legs.push(writer.leg(dialog, false, &[], written)?);
                 }
                 let uuid = crate::output::vcon::call_uuid(
                     &group.legs,
@@ -9144,8 +9324,11 @@ fn matched_filters<'f>(
         .iter()
         .filter(|(_, filter)| {
             legs.iter().any(|leg| {
-                let own: Vec<&crate::rtp::stream::RtpStream> =
-                    streams.streams_for(&leg.call_id).collect();
+                let own: Vec<&crate::rtp::stream::RtpStream> = if filter.needs_streams() {
+                    streams.streams_for(&leg.call_id).collect()
+                } else {
+                    Vec::new()
+                };
                 filter.matches_dialog(leg, &own, capture, delay)
             })
         })
@@ -9478,7 +9661,8 @@ struct LegWriter<'a> {
 #[cfg(feature = "vcon")]
 impl LegWriter<'_> {
     /// One dialog's container, withheld or with the rule's audio, naming the
-    /// call's other legs when `link` is set.
+    /// call's other legs as `related` lists them (empty for a leg merged into
+    /// a call container, which names its legs itself).
     ///
     /// A `url` rule's WAV is written here, beside where the container will
     /// go, so the file the container names exists before the container does.
@@ -9490,10 +9674,10 @@ impl LegWriter<'_> {
         &self,
         dialog: &crate::sip::dialog::SipDialog,
         withheld: bool,
-        link: bool,
+        related: &[crate::output::vcon::RelatedLeg],
         written: usize,
     ) -> Result<crate::output::vcon::Vcon, (usize, String)> {
-        let mut container = self.leg_container(dialog, withheld, link, written)?;
+        let mut container = self.leg_container(dialog, withheld, related, written)?;
         // A withheld container carries the caveat alone, so nothing is added
         // to it.
         if !withheld {
@@ -9561,7 +9745,7 @@ impl LegWriter<'_> {
         &self,
         dialog: &crate::sip::dialog::SipDialog,
         withheld: bool,
-        link: bool,
+        related: &[crate::output::vcon::RelatedLeg],
         written: usize,
     ) -> Result<crate::output::vcon::Vcon, (usize, String)> {
         let Self {
@@ -9574,18 +9758,13 @@ impl LegWriter<'_> {
             redactor,
         } = *self;
         let media = crate::output::vcon::media_quality_for(batch.stream_store, &dialog.call_id);
-        let related = if link {
-            crate::output::vcon::related_legs(batch.dialog_store, dialog)
-        } else {
-            Vec::new()
-        };
         let context = crate::output::vcon::ExportContext {
             capture_id: crate::output::vcon::dialog_capture_id(dialog),
             facts,
             analysis: Some(analysis),
             max_inline_media_bytes: target.max_inline.or_else(|| media_budget(cli)),
             media: &media,
-            related_legs: &related,
+            related_legs: related,
         };
         if withheld {
             return Ok(crate::output::vcon::export_withheld_dialog(
@@ -10397,11 +10576,12 @@ fn dialog_carries_header(dialog: &crate::sip::dialog::SipDialog, header: &str) -
 /// "the requested output was produced" — rather than having to know whether
 /// this run asked for a container at all.
 ///
-/// The capture analysis is run here rather than reused from `--analyze`,
-/// because `--export-vcon` does not require `--analyze` and a container that
-/// skipped the analysis reports its blind spots as `null`: "nobody looked",
-/// which is a weaker claim than the one this run can make. It is deliberately
-/// unfiltered for the reason [`crate::analysis::analyze`] gives — an
+/// The capture's blind spots ([`crate::analysis::analyze_blind_spots`], the
+/// part of the analysis a container quotes) are read here rather than reused
+/// from `--analyze`, because `--export-vcon` does not require `--analyze` and
+/// a container that skipped them reports its blind spots as `null`: "nobody
+/// looked", which is a weaker claim than the one this run can make. They are
+/// deliberately unfiltered for the reason [`crate::analysis::analyze`] gives — an
 /// undecodable frame belongs to no dialog, so narrowing it would drop the
 /// evidence that bounds every count in the container.
 ///
@@ -10508,8 +10688,10 @@ fn export_vcon(
 /// THE single-call writer: the end-of-run export and every live sweep call
 /// it, so the container is the same whichever of them wrote it.
 ///
-/// The capture analysis is run here rather than reused from `--analyze`,
-/// because `--export-vcon` does not require `--analyze` (see [`export_vcon`]).
+/// The capture's blind spots are read here rather than reused from
+/// `--analyze`, because `--export-vcon` does not require `--analyze` (see
+/// [`export_vcon`]). Only the capture-level part is read: this writer runs once
+/// per swept call in a live run, and a full analysis reads every dialog.
 #[cfg(feature = "vcon")]
 fn write_single_vcon(
     cli: &Cli,
@@ -10520,7 +10702,7 @@ fn write_single_vcon(
 ) -> bool {
     let call_id = dialog.call_id.as_str();
     let facts = crate::analysis::CaptureFacts::observed(dialog_store, stream_store, frames_read);
-    let analysis = crate::analysis::analyze_with(dialog_store, stream_store, None, &facts);
+    let analysis = crate::analysis::analyze_blind_spots(&facts);
 
     // Media is attempted ALWAYS, never gated on a second flag. `--retain-audio`
     // is already the operator's opt-in: without it there is no payload to
@@ -10699,6 +10881,9 @@ fn apply_plugins(
 }
 
 #[cfg(test)]
+mod run_stores_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
@@ -10826,7 +11011,6 @@ mod tests {
 
     /// A final response, so a fixture dialog can carry a status code the
     /// filter language can read.
-    #[cfg(feature = "vcon")]
     fn response_msg(
         call_id: &str,
         code: u16,
@@ -10860,7 +11044,6 @@ mod tests {
     }
 
     /// Two dialogs, one of which failed.
-    #[cfg(feature = "vcon")]
     fn two_dialogs_one_failed() -> Result<DialogStore, TestError> {
         let mut store = DialogStore::new(16, true);
         store.process_message(invite_msg("ok-call@example.com")?);
@@ -10887,6 +11070,174 @@ mod tests {
         assert_eq!(calls.len(), 2, "{calls:?}");
         assert!(calls.contains(&vec!["outside@example.com"]), "{calls:?}");
         assert!(calls.contains(&vec!["ok-call@example.com"]), "{calls:?}");
+        Ok(())
+    }
+
+    // ── --filter per message (PERF-UI-BATCH-FILTER-STREAMS-PER-MESSAGE) ──
+
+    /// The two-call store with 50 PCMU frames linked to the answered call
+    /// and none to the failed one.
+    fn filter_fixture() -> Result<(DialogStore, StreamStore), TestError> {
+        let dialogs = two_dialogs_one_failed()?;
+        let mut streams = StreamStore::new(16);
+        for seq in 0..50u16 {
+            let (packet, header) = pcmu_frame(40010, 0xF001, seq);
+            streams.process_rtp(&packet, &header, packet.timestamp);
+        }
+        streams.link_to_dialog(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            40010,
+            "ok-call@example.com",
+        );
+        Ok((dialogs, streams))
+    }
+
+    /// `dsl_filter_passes` for `call_id`'s INVITE under `filter`, and how many
+    /// times it asked the stream store for a call's streams.
+    fn filter_verdict(
+        filter: &str,
+        call_id: &str,
+        dialogs: &DialogStore,
+        streams: &StreamStore,
+    ) -> Result<(bool, usize), TestError> {
+        let expr = FilterExpr::parse(filter).map_err(|e| format!("{filter}: {e:?}"))?;
+        let msg = invite_msg(call_id)?;
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let pass = dsl_filter_passes(Some(&expr), &msg, dialogs, streams);
+        let asked = crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get);
+        Ok((pass, asked))
+    }
+
+    /// A filter that reads no stream field does not ask the stream store for
+    /// the message's streams: each such question is a pass over every stream,
+    /// and it was asked once per SIP message, which made
+    /// `--filter 'method == INVITE'` 12 times slower than no filter on a
+    /// 100,000-call capture.
+    #[test]
+    fn a_sip_only_filter_does_not_read_the_stream_store_per_message() -> Result<(), TestError> {
+        let (dialogs, streams) = filter_fixture()?;
+        for filter in [
+            "method == INVITE",
+            "response_code >= 400",
+            "from.user == '1001' OR state == 'Failed'",
+            "NOT call_id =~ 'failed'",
+            "header.X-Never == 'x'",
+        ] {
+            for call_id in ["ok-call@example.com", "failed-call@example.com"] {
+                let (_, asked) = filter_verdict(filter, call_id, &dialogs, &streams)?;
+                assert_eq!(
+                    asked, 0,
+                    "{filter} on {call_id} asked for streams {asked} times"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// A filter that reads a stream field still asks for the call's streams,
+    /// once per message, and judges by them: the answered call has 50
+    /// packets, the failed call none.
+    #[test]
+    fn a_stream_filter_reads_the_calls_streams_once() -> Result<(), TestError> {
+        let (dialogs, streams) = filter_fixture()?;
+        for (filter, ok, failed) in [
+            ("rtp.packets > 0", true, false),
+            ("rtp.packets == 0", false, true),
+            ("rtp.codec == PCMU", true, false),
+            ("method == INVITE AND rtp.ssrc == '0x0000f001'", true, false),
+            ("NOT (rtp.packets > 0)", false, true),
+            ("no_media == true OR method == BYE", false, false),
+        ] {
+            let got_ok = filter_verdict(filter, "ok-call@example.com", &dialogs, &streams)?;
+            let got_failed = filter_verdict(filter, "failed-call@example.com", &dialogs, &streams)?;
+            assert_eq!(got_ok, (ok, 1), "{filter} on the answered call");
+            assert_eq!(got_failed, (failed, 1), "{filter} on the failed call");
+        }
+        Ok(())
+    }
+
+    /// Skipping the streams changes no verdict of a filter that reads none:
+    /// each verdict equals the one the dialog gives with its streams.
+    #[test]
+    fn a_sip_only_filter_gives_the_verdict_it_gives_with_the_streams() -> Result<(), TestError> {
+        let (dialogs, streams) = filter_fixture()?;
+        let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&streams);
+        let delay = crate::rtp::quality::MosDelay::from_capture(&streams);
+        for filter in [
+            "method == INVITE",
+            "method == BYE",
+            "response_code >= 400",
+            "response_class == successful",
+            "from.user == '1001' OR state == 'Failed'",
+            "call_id =~ 'ok'",
+            "msg_count > 1",
+        ] {
+            let expr = FilterExpr::parse(filter).map_err(|e| format!("{filter}: {e:?}"))?;
+            for call_id in ["ok-call@example.com", "failed-call@example.com"] {
+                let dialog = dialogs.get(call_id).ok_or("fixture dialog")?;
+                let own: Vec<&crate::rtp::stream::RtpStream> =
+                    streams.streams_for(call_id).collect();
+                let with_streams = expr.matches_dialog(dialog, &own, capture, delay);
+                let (pass, _) = filter_verdict(filter, call_id, &dialogs, &streams)?;
+                assert_eq!(pass, with_streams, "{filter} on {call_id}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A message whose dialog the store does not hold passes no filter and
+    /// asks for no streams, SIP-only filter or not.
+    #[test]
+    fn an_untracked_message_asks_for_no_streams() -> Result<(), TestError> {
+        let (dialogs, streams) = filter_fixture()?;
+        for filter in ["method == INVITE", "rtp.packets >= 0"] {
+            let got = filter_verdict(filter, "unknown@example.com", &dialogs, &streams)?;
+            assert_eq!(got, (false, 0), "{filter} on an untracked call");
+        }
+        Ok(())
+    }
+
+    /// The `--export-vcon-when` rule match reads no streams for a filter that
+    /// reads none, and reads each leg's streams for one that does; the names
+    /// it returns are the same either way.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn matched_filters_reads_streams_only_for_a_stream_filter() -> Result<(), TestError> {
+        let (dialogs, streams) = filter_fixture()?;
+        let parse = |name: &str, text: &str| -> Result<(String, FilterExpr), TestError> {
+            Ok((
+                name.to_string(),
+                FilterExpr::parse(text).map_err(|e| format!("{text}: {e:?}"))?,
+            ))
+        };
+        let legs = [
+            dialogs.get("ok-call@example.com").ok_or("answered")?,
+            dialogs.get("failed-call@example.com").ok_or("failed")?,
+        ];
+        let sip_only = [
+            parse("invites", "method == INVITE")?,
+            parse("busy", "response_code == 486")?,
+        ];
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let names = matched_filters(&sip_only, &legs, &streams);
+        let asked = crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get);
+        assert_eq!(names, vec!["invites", "busy"], "SIP-only rule names");
+        assert_eq!(asked, 0, "SIP-only rules asked for streams {asked} times");
+
+        let media = [
+            parse("media", "rtp.packets > 0")?,
+            parse("silent", "rtp.packets > 100")?,
+        ];
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let names = matched_filters(&media, &legs[1..], &streams);
+        let asked = crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get);
+        assert!(names.is_empty(), "the failed leg has no media: {names:?}");
+        assert_eq!(asked, 2, "one question per rule for the one leg");
+        assert_eq!(
+            matched_filters(&media, &legs, &streams),
+            vec!["media"],
+            "the answered leg's 50 packets match the first rule only"
+        );
         Ok(())
     }
 
@@ -12227,7 +12578,6 @@ mod tests {
     }
 
     /// One 20 ms PCMU frame from `10.0.0.1:src_port`, sequence `seq`.
-    #[cfg(feature = "vcon")]
     fn pcmu_frame(
         src_port: u16,
         ssrc: u32,
@@ -14190,6 +14540,118 @@ mod tests {
             "the gate was closed and {} container(s) were written anyway",
             written.len()
         );
+        Ok(())
+    }
+
+    /// `--export-vcon <call-id>` (also the writer every live sweep calls) reads
+    /// its blind spots from the run's facts, without analyzing every dialog,
+    /// and the container still carries the list that says somebody looked.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_single_call_form_reads_its_blind_spots_without_analyzing_every_dialog()
+    -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let out = tmp.path().join("one.vcon.json");
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.output_args.export_vcon = Some("failed-call@example.com".to_owned());
+        cli.output_args.vcon_out = Some(out.clone());
+
+        crate::analysis::ANALYZE_WITH_CALLS.with(|c| c.set(0));
+        assert!(
+            export_vcon(
+                &cli,
+                &[],
+                &two_dialogs_one_failed()?,
+                &StreamStore::new(16),
+                7,
+                None,
+                VconRunEnd::Whole,
+            ),
+            "the container is written"
+        );
+        assert_eq!(
+            crate::analysis::ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            0,
+            "no full capture analysis per container"
+        );
+        // Process-global facts (stored vCons other tests read) may put rows in
+        // the list; what this pins is that the list is there, not `null`.
+        // The file is pretty-printed JSON.
+        let text = std::fs::read_to_string(&out).map_err(|e| format!("written: {e:?}"))?;
+        assert!(
+            text.contains("\"blind_spots\": [") && !text.contains("\"blind_spots\": null"),
+            "the container carries the list: {text}"
+        );
+        Ok(())
+    }
+
+    /// `--export-vcon-when` reads the blind spots of its containers from the
+    /// run's facts, without analyzing every dialog, and each container still
+    /// carries the list that says somebody looked.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_predicate_form_reads_its_blind_spots_without_analyzing_every_dialog()
+    -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+
+        crate::analysis::ANALYZE_WITH_CALLS.with(|c| c.set(0));
+        assert!(
+            export_vcon_selection(
+                &cli,
+                None,
+                &two_dialogs_one_failed()?,
+                &StreamStore::new(16),
+                7,
+                None,
+            ),
+            "the containers are written"
+        );
+        assert_eq!(
+            crate::analysis::ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            0,
+            "no full capture analysis per run"
+        );
+        // Process-global facts (stored vCons other tests read) may put rows in
+        // the list; what this pins is that the list is there, not `null`.
+        let completeness = first_completeness(tmp.path())?;
+        assert!(
+            completeness["blind_spots"].is_array(),
+            "the container carries the list: {completeness}"
+        );
+        Ok(())
+    }
+
+    /// `--export-vcon-when` finds the related legs of all its containers in one
+    /// correlation pass: each dialog's SDP origins are read once, not once per
+    /// container.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_predicate_form_reads_each_dialogs_sdp_origins_once() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let cli = cli_exporting_to(tmp.path(), "response_code >= 200");
+        let mut store = DialogStore::new(16, true);
+        for i in 0..4 {
+            let (offer, answer) =
+                crate::test_utils::sdp_offer_and_answer(&format!("sdp-{i}@example.com"))?;
+            store.process_message(offer);
+            store.process_message(answer);
+        }
+
+        crate::sip::dialog_store::ORIGIN_KEY_READS.with(|c| c.set(0));
+        assert!(
+            export_vcon_selection(&cli, None, &store, &StreamStore::new(16), 8, None),
+            "the containers are written"
+        );
+        assert_eq!(
+            crate::sip::dialog_store::ORIGIN_KEY_READS.with(std::cell::Cell::get),
+            4,
+            "one read per dialog in the store, not one per dialog per container"
+        );
+        let written = std::fs::read_dir(tmp.path())
+            .map_err(|e| format!("readable: {e:?}"))?
+            .count();
+        assert_eq!(written, 4, "four containers");
         Ok(())
     }
 
@@ -17670,10 +18132,115 @@ mod tests {
         store.process_message(invite_msg("kept-1@example.com")?);
 
         assert_eq!(
-            retention_summary(&store),
+            retention_summary(&store, 0),
             None,
             "nothing was shed, so there is nothing to warn about"
         );
+        Ok(())
+    }
+
+    /// Nothing dropped at a size limit adds no clause.
+    #[test]
+    fn no_oversize_clause_when_nothing_was_dropped() -> Result<(), TestError> {
+        assert!(oversize_parts(0, 0).is_empty(), "nothing dropped");
+        Ok(())
+    }
+
+    /// Dropped SIP/TCP messages are named with their count and remedy.
+    #[test]
+    fn dropped_sip_messages_are_named() -> Result<(), TestError> {
+        let parts = oversize_parts(4, 0);
+        assert_eq!(parts.len(), 1, "{parts:?}");
+        assert!(parts[0].starts_with("4 SIP/TCP message(s)"), "{parts:?}");
+        assert!(parts[0].contains("--max-tcp-buffer"), "{parts:?}");
+        Ok(())
+    }
+
+    /// Dropped WebSocket frames are named with their count.
+    #[test]
+    fn dropped_websocket_frames_are_named() -> Result<(), TestError> {
+        let parts = oversize_parts(0, 2);
+        assert_eq!(parts.len(), 1, "{parts:?}");
+        assert!(parts[0].starts_with("2 WebSocket frame(s)"), "{parts:?}");
+        assert!(parts[0].contains("not analyzed"), "{parts:?}");
+        Ok(())
+    }
+
+    /// Both are named, SIP first.
+    #[test]
+    fn both_drops_are_named_sip_first() -> Result<(), TestError> {
+        let parts = oversize_parts(1, 1);
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        assert!(parts[0].contains("SIP/TCP"), "{parts:?}");
+        assert!(parts[1].contains("WebSocket"), "{parts:?}");
+        Ok(())
+    }
+
+    /// The largest counts print whole.
+    #[test]
+    fn the_largest_oversize_counts_print_whole() -> Result<(), TestError> {
+        let parts = oversize_parts(u64::MAX, u64::MAX);
+        assert!(
+            parts.iter().all(|p| p.contains(&u64::MAX.to_string())),
+            "{parts:?}"
+        );
+        Ok(())
+    }
+
+    /// RTP streams discarded at `--max-streams` are named with their count,
+    /// even when no dialog was shed (backlog IMPORT-V6 stream eviction).
+    #[test]
+    fn streams_discarded_at_capacity_are_named_with_their_count() -> Result<(), TestError> {
+        let store = DialogStore::new(16, true);
+        let msg = retention_summary(&store, 37).ok_or("a stream eviction must be reported")?;
+        assert!(
+            msg.contains("37 oldest RTP stream(s) discarded at capacity"),
+            "count and cause: {msg}"
+        );
+        assert!(msg.contains("--max-streams"), "the remedy: {msg}");
+        Ok(())
+    }
+
+    /// One stream discarded is enough to report.
+    #[test]
+    fn one_stream_discarded_is_reported() -> Result<(), TestError> {
+        let store = DialogStore::new(16, true);
+        let msg = retention_summary(&store, 1).ok_or("one stream eviction must be reported")?;
+        assert!(msg.contains("1 oldest RTP stream(s)"), "{msg}");
+        Ok(())
+    }
+
+    /// No stream discarded adds no stream clause beside a dialog loss.
+    #[test]
+    fn no_stream_clause_when_no_stream_was_discarded() -> Result<(), TestError> {
+        let mut store = DialogStore::new(1, true);
+        store.process_message(invite_msg("a@example.com")?);
+        store.process_message(invite_msg("b@example.com")?);
+        let msg = retention_summary(&store, 0).ok_or("the dialog eviction is reported")?;
+        assert!(!msg.contains("RTP stream"), "no stream clause: {msg}");
+        Ok(())
+    }
+
+    /// Dialog and stream losses share one sentence, dialogs first.
+    #[test]
+    fn dialog_and_stream_losses_share_one_sentence() -> Result<(), TestError> {
+        let mut store = DialogStore::new(1, true);
+        store.process_message(invite_msg("c@example.com")?);
+        store.process_message(invite_msg("d@example.com")?);
+        let msg = retention_summary(&store, 4).ok_or("both losses are reported")?;
+        let dialogs = msg.find("oldest dialog(s)").ok_or("dialog clause")?;
+        let streams = msg.find("oldest RTP stream(s)").ok_or("stream clause")?;
+        assert!(dialogs < streams, "dialogs first: {msg}");
+        assert_eq!(msg.matches("retention:").count(), 1, "one sentence: {msg}");
+        Ok(())
+    }
+
+    /// The largest count prints whole.
+    #[test]
+    fn the_largest_stream_count_prints_whole() -> Result<(), TestError> {
+        let store = DialogStore::new(16, true);
+        let msg = retention_summary(&store, u64::MAX).ok_or("reported")?;
+        assert!(msg.contains(&u64::MAX.to_string()), "{msg}");
         Ok(())
     }
 
@@ -17697,7 +18264,7 @@ mod tests {
             "the fixture must actually evict, or this test proves nothing"
         );
 
-        let msg = retention_summary(&store).ok_or("an eviction must be reported")?;
+        let msg = retention_summary(&store, 0).ok_or("an eviction must be reported")?;
         assert!(
             msg.contains('1') && msg.contains("discarded at capacity"),
             "the warning must carry the count and the cause: {msg}"
@@ -20296,6 +20863,64 @@ mod tests {
         Ok(())
     }
 
+    /// An INVITE from 10.0.0.1 carrying one audio `m=` line on port 40000.
+    fn invite_with_sdp_bytes(call_id: &str) -> Vec<u8> {
+        let body = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\n\
+                    t=0 0\r\nm=audio 40000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
+        format!(
+            "INVITE sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-sdp1\r\n\
+             From: <sip:alice@example.com>;tag=a1\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: {call_id}\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Type: application/sdp\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    /// A batch run parses an INVITE's SDP once: classification reads it for
+    /// the media links and hands it to the dialog store, which used to parse
+    /// the same body a second time for the SDP timeline.
+    #[test]
+    fn a_batch_run_parses_one_messages_sdp_once() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.output_args.no_cli_print = true;
+        let pp = parsed_sip_packet(invite_with_sdp_bytes("sdp-once@example.com"), 5060, 5060);
+        let (parses, driven) = crate::sip::sdp::sdp_parses_during(|| {
+            drive_packets_kept(
+                &cli,
+                std::slice::from_ref(&pp),
+                EventExecEngine::new(
+                    None,
+                    None,
+                    0,
+                    0.0,
+                    crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+                ),
+            )
+        });
+        let driven = driven?;
+        assert_eq!(parses, 1, "the INVITE's SDP is parsed once");
+        let dialog = driven
+            .dialogs
+            .get("sdp-once@example.com")
+            .ok_or("the INVITE opens a dialog")?;
+        assert_eq!(
+            dialog.sdp_timeline.len(),
+            1,
+            "the SDP timeline still records the offer"
+        );
+        assert_eq!(
+            dialog.sdp_timeline[0].media_port,
+            Some(40000),
+            "with its media port"
+        );
+        Ok(())
+    }
+
     /// Garbage payloads and SIP messages outside the port range are not
     /// counted as SIP.
     #[test]
@@ -21853,7 +22478,11 @@ mod redaction_map_tests {
     /// The child half of the test below: run under a file-size limit with
     /// SIGXFSZ ignored, so a write past the limit fails with EFBIG part way
     /// through the table, as a full disk would.
+    ///
+    /// `#[ignore]`d: run on its own it has nothing to do and would report a
+    /// pass; only the parent runs it, with `--ignored`.
     #[test]
+    #[ignore = "child role: run by a_write_that_fails_part_way_leaves_no_map"]
     fn redaction_map_fsize_child() -> Result<(), TestError> {
         let Some(dir) = std::env::var_os(CHILD_DIR) else {
             return Ok(());
@@ -21885,6 +22514,7 @@ mod redaction_map_tests {
             .args([
                 "--exact",
                 "app::batch::redaction_map_tests::redaction_map_fsize_child",
+                "--ignored",
                 "--nocapture",
             ])
             .env(CHILD_DIR, dir.path())
@@ -21921,6 +22551,62 @@ mod redaction_map_tests {
 }
 
 /// CAP-2: a `--duration` stop finishes the input the source already queued.
+/// FILE-1: the `--autostop filesize` comparison.
+#[cfg(test)]
+mod filesize_autostop_tests {
+    use super::filesize_autostop_reached as reached;
+
+    /// Below the limit: go on.
+    #[test]
+    fn below_the_limit_goes_on() {
+        assert!(!reached(Some(100), Some(99)), "99 of 100 bytes goes on");
+    }
+
+    /// At the limit exactly: stop.
+    #[test]
+    fn at_the_limit_stops() {
+        assert!(reached(Some(100), Some(100)), "100 of 100 bytes stops");
+    }
+
+    /// Past the limit: stop.
+    #[test]
+    fn past_the_limit_stops() {
+        assert!(reached(Some(100), Some(5000)), "5000 of 100 bytes stops");
+    }
+
+    /// No limit set: never stop, however much was written.
+    #[test]
+    fn no_limit_never_stops() {
+        assert!(!reached(None, Some(u64::MAX)), "no limit, no stop");
+    }
+
+    /// No `-O`: nothing to measure, no stop.
+    #[test]
+    fn no_output_never_stops() {
+        assert!(!reached(Some(1), None), "no writer, no stop");
+    }
+
+    /// Neither: no stop.
+    #[test]
+    fn neither_never_stops() {
+        assert!(!reached(None, None), "neither set");
+    }
+
+    /// The smallest limit, before and after the first byte.
+    #[test]
+    fn a_one_byte_limit_stops_at_the_first_byte() {
+        assert!(!reached(Some(1), Some(0)), "0 bytes goes on");
+        assert!(reached(Some(1), Some(1)), "1 byte stops");
+    }
+
+    /// The largest values compare without overflow.
+    #[test]
+    fn the_largest_values_compare() {
+        assert!(reached(Some(u64::MAX), Some(u64::MAX)), "equal at the top");
+        assert!(!reached(Some(u64::MAX), Some(u64::MAX - 1)), "one short");
+    }
+}
+
 #[cfg(test)]
 mod duration_finish_tests {
     use super::*;

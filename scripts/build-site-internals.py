@@ -272,6 +272,7 @@ DOCS_TO_SITE = {
     "follow-a-call.md": "follow-a-call.md",
     "expectations.md": "expectations.md",
     "output-formats.md": "output-formats.md",
+    "stability.md": "stability.md",
     "config-reference.md": "config.md",
     "rest-api.md": "api.md",
     "mcp.md": "mcp.md",

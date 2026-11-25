@@ -1,0 +1,29 @@
+---
+source: tests/tui_snapshot_test.rs
+assertion_line: 1461
+expression: output
+---
+ Live capture: any    Dialogs: 2 shown of 3    Sort: # ▲    Autoscroll: on
+ Capture filter (BPF): none
+ Copying the filter command line to the clipboard…
+  # ▲    Method    From      To         State      Msgs +Prev    PDD    Duration
+> [ ] 1  INVITE    1001      1002       Completed  4    +0.000s  1000ms 1m2s
+  [ ] 2  INVITE    1003      1004       FAILED ⚠   2    +5.000s         1.0s
+
+
+
+  ┌ Command line ────────────────────────────────────────────────────────────┐
+  │ sipnab --filter 'from.user =~ '\''1003'\'' OR msg_count > 3'             │
+  │                                                                          │
+  │ Esc/Enter close · the status line reports the copy                       │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+Esc/Enter Close

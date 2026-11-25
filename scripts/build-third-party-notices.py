@@ -147,6 +147,24 @@ VENDORED = [
     ),
 ]
 
+# Source files adapted from another project's code and compiled into sipnab.
+# Each keeps the other project's license and copyright notice in its header;
+# CONTRIBUTING.md ("Updating code adapted from other projects") says how to follow an update.
+#
+# (repo path, what it is and where it came from, version, upstream, license)
+ADAPTED = [
+    (
+        "src/tui/input_parse.rs",
+        "crossterm's Unix input parser: `src/event/sys/unix/parse.rs` and the "
+        "`Parser` of `src/event/source/unix/mio.rs`, changed where the file's "
+        "documentation says. The TUI reads its terminal itself and parses the "
+        "bytes with it.",
+        "0.29.0, commit 36d95b26a26e64b0f8c12edfe11f410a6d56a812",
+        "<https://github.com/crossterm-rs/crossterm>",
+        "MIT",
+    ),
+]
+
 # Crates offering a copyleft option alongside permissive ones. sipnab elects a
 # permissive license in each case; recording the election is the point.
 ELECTIONS = {
@@ -311,6 +329,19 @@ def render(rows: list[tuple[str, str, str]]) -> str:
     out.append("|---|---|---|---|---|---|")
     for path, component, version, upstream, license, sha in VENDORED:
         out.append(f"| `{path}` | {component} | {version} | {upstream} | {license} | `{sha}` |")
+
+    out += ["", "## Adapted code", ""]
+    out.append(
+        "Source files adapted from another project's code and compiled into "
+        "sipnab. Each keeps that project's license and copyright notice in its "
+        "header. CONTRIBUTING.md, under \"Updating code adapted from other projects\", says how to "
+        "follow a new release of the project."
+    )
+    out.append("")
+    out.append("| File | Adapted from | Version | Upstream | License |")
+    out.append("|---|---|---|---|---|")
+    for path, origin, version, upstream, license in ADAPTED:
+        out.append(f"| `{path}` | {origin} | {version} | {upstream} | {license} |")
 
     out += ["", f"## Rust crates ({len(rows)})", ""]
     out.append("| Crate | Version | License |")

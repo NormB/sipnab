@@ -79,7 +79,7 @@ So a green `--features full` says nothing about whether `--features tls` alone
 compiles.
 That is exactly why CI has a feature matrix.
 
-## The nineteen workflows
+## The twenty-one workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -94,12 +94,14 @@ That is exactly why CI has a feature matrix.
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |
 | `release.yml` | `v*` tags | The release. See below. |
-| `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + on its own path | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
+| `sanitizers.yml` | weekly cron (Tuesdays 06:11 UTC) + manual + a push that changes its own files or a file its suites compile | ThreadSanitizer over the threaded integration suites. Nightly as a tool, not as the toolchain. |
 | `memcheck.yml` | weekly cron (Wednesdays 07:23 UTC) + manual + on its own path | Runs sipnab under Valgrind across its offline, archive, HEP, MCP and REST paths, built with `--cfg sipnab_tsan` so it allocates through the C library's heap, the only heap Valgrind sees. A definitely or indirectly lost block, or an invalid read, write or free, fails the job ([`scripts/memcheck-verdict.py`](../../scripts/memcheck-verdict.py)), and so does a log with no leak summary. Valgrind must first report a probe program's one known 4,096-byte leak, or the job fails. Runs on the local runners. |
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `pr-text.yml` | `pull_request_target`: PR opened, edited, reopened or pushed to | Checks the text a pull request publishes for the lab's private identities and for AI attribution with [`scripts/check-message-identity.sh`](../../scripts/check-message-identity.sh), the script the `commit-msg` hook runs. The `Commit messages and PR title name no private identity` job reads the title, the branch name and every commit message in the pull request's range, which is what a merge puts on `main`, and fails on a finding. The `PR description names no private identity (advisory)` job reads the description, which stays on the pull request page, and reports a finding as a warning without failing. Both jobs check out the base branch (no checkout names a ref, which Scorecard's Dangerous-Workflow check would report), so main's workflow, script and test judge the pull request, and the job fetches the pull request's commits from `refs/pull/N/head` as data and never checks them out or runs them; the fetched head must equal the event's head SHA. `contents: read` at the workflow level and no cache, because a `pull_request_target` run otherwise holds a write token and a cache it saves is restorable on main. Every value from the event reaches the shell only through `env:`. The pull request that added the workflow was not checked by it, because main had no `pr-text.yml` yet. Not required by `ci-success`. |
+| `pr-closed.yml` | PR closed or merged | Ends the `CI` run of a closed pull request. `ci.yml` groups a pull request's runs as `ci-CI-<number>`; this workflow enters that group with `cancel-in-progress`, so GitHub cancels the run still in progress. Before it, a closed pull request's run went on to its end and held the self-hosted runners other pull requests waited for. It checks out nothing, calls no action and asks for no permission. A merge also sends `closed`; GitHub creates the run and marks its job skipped (`merged == false`), since a merged pull request's run is already over. GitHub's documentation has not stated whether a skipped job's run still enters the group; the group names only the pull request's number, so it is never main's group `ci-CI-refs/heads/main`. Limit: GitHub runs no `pull_request` workflow for a pull request with a merge conflict, so closing such a pull request leaves its run going. [`scripts/tests/test_ci_cancel_on_close.py`](../../scripts/tests/test_ci_cancel_on_close.py) holds the two group names together. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](../../bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
+| `binary-size.yml` | weekly cron (Fridays 05:17 UTC), manual, and PRs touching the manifests, the lockfile, the build scripts or the ceiling | Builds the x86_64 musl release binary the way `release.yml` does, splits its symbols, and fails when it exceeds `binary_size_ceiling_mb`, through [`scripts/check-binary-size.sh`](../../scripts/check-binary-size.sh), the script `release.yml`'s size step runs. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
 | `rerun-not-acquired.yml` | when a `CI` or `Release` run completes without success; manual, which prints the decision for one run and re-runs nothing | Re-runs the failed jobs of a run in which every job that did not succeed has the conclusion `skipped` or never started, because no hosted runner took it. See [A job no runner took](#a-job-no-runner-took). |
 
@@ -109,6 +111,13 @@ That is exactly why CI has a feature matrix.
 `-Zsanitizer=thread`, weekly.
 It exists because nothing else in the suite can see a data race.
 
+It also runs on a push to `main` that changes a file those suites compile.
+
+- The push filter lists every file the run step's `--test` targets compile under `tests/`, through `mod`, `#[path]` and `include!` lines, beside the workflow, `ops/tsan/**` and [`src/main.rs`](../../src/main.rs).
+- Pull request #821 fixed [`tests/hep_test.rs`](../../tests/hep_test.rs), the test this job failed on in 0.5.258, and the filter did not list it, so main's CI never ran this job on that fix.
+- [`tests/sanitizers_paths_test.rs`](../../tests/sanitizers_paths_test.rs) derives the list from the run step. It fails on a file missing from the filter and on a `tests/` path no target compiles.
+- To add a suite, add its `--test` line to the run step, run `cargo test --features full --test sanitizers_paths_test`, and add the paths it names as missing.
+
 - The tests exercise the capture thread, the channel, and the
   processing thread.
 - But to `cargo test`, a test that passes and a test that raced are
@@ -117,7 +126,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 153 `unsafe` blocks are libc FFI.
+- Most of this crate's 160 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -396,15 +405,15 @@ So `quality.yml` has a second job, `coverage-branch`.
   and the job failed 147 s before CodeQL uploaded the analysis, with no alert open.
 - [`test_code_scanning_wait.py`](../../scripts/tests/test_code_scanning_wait.py) holds the rule.
 
-`ci-success` leaves out the macOS leg of Check, the job `check-macos`, on purpose.
+`ci-success` leaves out the macOS jobs, `check-macos`, `test-macos` and `symbol-split-macos`, on purpose.
 
 - On 2026-11-02 GitHub canceled Check (macos-latest) on both runs of pull request #601
   (41510139494 and 41514782896) with "The job was not acquired by Runner of type hosted even after
   multiple attempts".
   The rerun of the second took 27 minutes (20:22:04 to 20:49:15 UTC).
 - So on a pull request, `CI success` neither waits for macOS nor fails when GitHub cancels the macOS leg.
-- `check-macos` still runs on every pull request, which shows its result, and on every push to `main`.
-- On `main`, a failed `check-macos` fails the CI workflow run of that commit.
+- The macOS jobs still run on every pull request, which shows their results, and on every push to `main`.
+- On `main`, a failed macOS job fails the CI workflow run of that commit.
   A failed job fails its run whether or not another job needs it.
   The pre-push hook's tag gate refuses to tag a commit whose CI run is not green,
   so a macOS break on `main` blocks the release.
@@ -414,7 +423,7 @@ So `quality.yml` has a second job, `coverage-branch`.
   - No job `CI success` needs, directly or through another job, runs on macOS only.
   - No job runs on macOS beside another OS: `needs` takes a matrix job whole, so such a job would either block pull requests on macOS or leave its other leg out of the required check.
   - The macOS jobs have no job-level `if:` or `continue-on-error`, and `ci.yml` runs on every push to `main` and every pull request.
-  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
+  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, `test-macos` runs `test`'s through `*test-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
 - The macOS half of the symbol split is `symbol-split-macos`, by the same rule.
   GitHub canceled it for capacity on pull request #631 (run 41725010284).
 
@@ -423,8 +432,7 @@ Their contents are worth spelling out.
 
 - **`check`** (Linux; `check-macos` runs the same steps on macOS):
   - `cargo build --all-features`
-  - On macOS, `cargo test --all-features`, whole.
-    On Linux the suite runs in `test`, below.
+  - The suite runs in `test` and `test-macos`, below, not here.
   - `cargo clippy --workspace --all-features --all-targets -D warnings`
   - [`scripts/check-rustfmt.sh`](../../scripts/check-rustfmt.sh) (the pinned nightly rustfmt)
   - `cargo doc --no-deps --all-features --workspace`
@@ -482,6 +490,7 @@ Their contents are worth spelling out.
     goes green over nothing.
 - **`test`** and **`test-results`**: the `--all-features` suite on Linux, under cargo-nextest, split into shards.
   See [The suite in shards](#the-suite-in-shards).
+- **`test-macos`**: the same suite on macOS, through `test`'s steps (`*test-steps`), in shards by the same rule.
 - **`audit`**: `cargo-audit` and `cargo-deny`.
 - **`fuzz-check`**: the `fuzz/` workspace compiles.
 
@@ -496,15 +505,25 @@ The `test` job runs the Linux suite on two runners at once.
     A split of the run alone would save little.
 - [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) `--shard-index I --shard-count N` is the one rule for what each shard runs.
   - It asks `cargo metadata` for the package's integration-test targets.
-  - `partition` puts the library and binary unit tests and the doctests in shard 0, weighed as `UNIT_WEIGHT` test binaries.
+  - `partition` puts the library and binary unit tests and the doctests in shard 0, weighed as test binaries: `UNIT_WEIGHTS` for the platform `platform.system()` names, 40 on Linux.
+  - On macOS the weight is `measured_unit_weight` over `MACOS_SHARD_RECORDS`, the phases of six main runs read from their job logs: 198 binaries.
+    In those runs shard 1's `test` build, which compiles the library's unit-test binary, took 6m29s to 9m45s and shard 2's 2m32s to 4m07s, while their nextest phases were about equal.
+    The rule takes a target's cost from the shard without the unit tests and the unit tests' cost from the remainder of the shard with them.
+    To measure again, add the new runs' records and run `python3 -m pytest scripts/tests/test_parallel_tests_macos_weight.py`.
   - It gives each target, in name order, to the shard with the least weight so far.
   - The shard runs `cargo nextest run --profile suite --all-features` with one `--test NAME` for each target it holds, and shard 0 adds `--lib --bins` and a `cargo test --doc` run.
   - The `suite` profile in [`.config/nextest.toml`](../../.config/nextest.toml) stops any one test after three 60-second periods.
   - Every shard also builds the examples, as plain `cargo test` does, because `examples_run_test` runs them.
   - The job installs the pinned cargo-nextest through [`.github/actions/nextest`](../../.github/actions/nextest/action.yml) first.
-- The `shard:` matrix list is the only place that states N.
+- Each job's `shard:` matrix list is the only place that states its N.
   The step reads its index and count from `strategy.job-index` and `strategy.job-total`.
-- Each shard uploads its output, a manifest of what it ran and the YANG exports.
+- `test-macos` runs the macOS suite in shards through the same steps.
+  - The suite ran whole in `check-macos` until main's run 43880888975 (2026-11-16) canceled Check (macos-26) at its 45-minute cap.
+  - In that run the suite step took 38.2 of the job's 45.5 minutes, and Clippy had run 1.8 minutes when the cap ended it.
+  - On the three runs before it the suite step took 22.3 to 32.5 minutes.
+  - Its shards do not upload their outputs: the published test count describes the Linux suite.
+  - [`tests/support/macos_suite.rs`](../../tests/support/macos_suite.rs) holds the layout, and its cap stays at 45 minutes.
+- Each Linux shard uploads its output, a manifest of what it ran and the YANG exports.
 - `test-results` runs once both pass.
   - `parallel-tests.py merge` refuses the set unless every shard reported exactly once and every target ran in exactly one shard.
   - It writes the outputs in shard order as one `test-output.txt`.
@@ -554,6 +573,11 @@ The workflow's one job holds `actions: write` and no other permission.
 GitHub runs the workflow file of the default branch for a `workflow_run` event, and the checkout names no ref.
 The script that runs is the one on `main`, also when the completed run belongs to a pull request.
 
+The release train reads a canceled check through the same rule, `rerun_coming` in the script.
+A job the script re-runs counts as pending, not failed, while its run is in progress and for 600 seconds after the run completed.
+The 0.5.262 and 0.5.263 trains stopped at `ci-failed` on such a job, and a person restarted each one.
+The script's `WORKFLOWS` names the watched workflows, and a test holds it equal to the workflow file's `workflows:` list.
+
 **See what the script answers for one run.**
 Start the workflow by hand with the run's number.
 This prints the decision and re-runs nothing:
@@ -579,6 +603,34 @@ A run there whose one job did not start means the completed run concluded `succe
 No run there means the completed run belongs to another workflow.
 
 [`scripts/tests/test_rerun_not_acquired.py`](../../scripts/tests/test_rerun_not_acquired.py) tests the decision against two answers captured from GitHub's API, in [`tests/fixtures/rerun_not_acquired`](../../tests/fixtures/rerun_not_acquired), and against answers built in the same shape.
+
+### Every platform's crates before the suite
+
+**Every job that runs the suite runs `cargo fetch --locked` first.**
+
+- [`tests/release_pipeline_gate_test.rs`](../../tests/release_pipeline_gate_test.rs) runs `cargo tree --offline --locked --target all`.
+  That reads the crates of every platform from the local cargo registry.
+- A build downloads only the crates of the platform it builds for.
+  With a warm cargo cache the registry held the others, so the test passed.
+- On main b8700e3f2 (2026-11-17) the release's new `Cargo.lock` missed the macOS cargo cache.
+  macOS shard 2 then failed with `failed to download alsa v0.11.0` and `--offline was specified`.
+- `cargo fetch --locked` with no `--target` downloads every platform's crates, so the test holds on a cold cache too.
+  It runs after the cache restore, because a restore can replace the registry.
+
+[`scripts/check-suite-fetch.py`](../../scripts/check-suite-fetch.py) holds the rule for every workflow:
+
+- A step runs the suite when it runs [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) (not `merge`), `cargo llvm-cov` (not `report`) or [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py).
+- Its job needs a `cargo fetch --locked` step before the first such step, and after any `actions/cache` restore of `~/.cargo/registry` before it.
+- [`scripts/tests/test_check_suite_fetch.py`](../../scripts/tests/test_check_suite_fetch.py) runs it on every workflow of the repository.
+
+**On your own machine.** The same test fails on a registry that has only your platform's crates.
+Its message then ends with the fix:
+
+```sh
+cargo fetch --locked
+```
+
+Run it once (it needs the network), then run the test again.
 
 ### Dependabot bumps fail on a generated file, not on an API break
 
@@ -977,6 +1029,14 @@ The matrix has moved twice.
   - The pre-commit hook builds only `--features full`. In pull request #763 a binding read only under `#[cfg(feature = "hep")]` passed it and would have failed that command in CI for every set without `hep`.
   - [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py) `--hook-rows` prints each marked row's stamp step, features and command, and `--lint-row` runs one. The hook and [`scripts/gate-cache.py`](../../scripts/gate-cache.py) both read the rows through that script, so each row has a pass stamp of its own.
   - Measured on the aarch64 development host on 2026-11-12, the three rows together took 49 seconds after a change to the library's root source file alone and 163 seconds the first time after edits to test files, at a load average of about 23.
+- Since PREPUSH-LINTS-3-OF-22-FEATURE-ROWS the push's changed files pick more rows: `rows_for` in [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py), through `--push-rows`.
+  - Pull request #826 passed every local gate and failed the `g729` row in CI: a function only `vcon` and `api` code called was never used with `g729` alone.
+  - A file's feature gate comes from the `cfg` attributes on the `mod` lines that lead to it, and from the inner `cfg` attribute of a test target. Cargo's `[features]` table says which features a row turns on.
+  - No Rust or Cargo file changed: only the rows marked `hook`.
+  - Every changed Rust file is behind a gate: for each gate, the rows with the fewest features that compile it, and the rows marked `hook`.
+  - Any other change, or changes the script cannot read: every single-feature row the hook can lint (12 today) and the 3 rows marked `hook`. The other 7 combinations stay in CI.
+  - That fallback cannot catch a defect that needs two features in a file outside every gated module. CI still runs every row.
+  - Each row has its own pass stamp, as the marked rows do.
 - Pre-push and CI also run clippy on the library with no features:
   `cargo clippy --no-default-features --lib -- -D warnings`.
   - The main clippy gate runs `--all-features`, so a lint that fires only with every feature off never reaches it.
@@ -1023,10 +1083,13 @@ The workflow-shape test holds each job's runner.
 - On the `overflow` runners: two groups of the feature combinations.
   On a push to `main` the two groups take any of the four aarch64 runners instead.
   On 2026-11-11 a push to `main` waited 34 and 68 minutes for the two `overflow` runners behind pull request runs.
+  A release pull request takes the four runners too: one whose head branch starts with `release/` and lives in this repository, never a fork's.
+  On 2026-11-14 the 0.5.256 release pull request's two groups queued behind another pull request's job on the `overflow` pair.
+  This adds runners, not priority: GitHub documents no order among queued jobs for self-hosted runners.
   `test_the_workflow_carries_the_rendered_expression` holds the workflow to that rule.
 - On the x86_64 runner: the RPM packaging job.
   The RPM job builds no Rust, and the runner has every package it names, so it installs nothing there.
-- Only the four jobs above, and the feature combinations on a push to `main`, may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
+- Only the four jobs above, and the feature combinations on a push to `main` or a release pull request, may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
   `a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host` holds that, `an_x64_job_refuses_to_start_with_less_than_25_gb_free` the disk floor, and `a_pooled_job_builds_in_its_own_directory_and_removes_it` the build directory.
 - Everything else runs on GitHub's runners. The repository is public, so they cost nothing.
 
@@ -1199,7 +1262,7 @@ does not cover:
   [`bpf/rust-toolchain.toml`](../../bpf/rust-toolchain.toml)
 - the release-delivery tests
 - a check of the reduced feature combinations `tls`, `api` and `wasm`
-- CI's clippy command over the feature sets that [`.github/feature-combos.txt`](../../.github/feature-combos.txt) marks `hook`
+- CI's clippy command over the feature sets that [`.github/feature-combos.txt`](../../.github/feature-combos.txt) marks `hook`, and over the rows the push's changed files pick
 - a non-Linux compile of the whole tree
 - a YANG validation of the `sipnab-diagnosis` module
 - a `zola build` of the website
@@ -1423,6 +1486,24 @@ Two things keep it honest.
   A pattern that quietly matches nothing would compile an unmodified tree and print OK forever.
 - On a non-Linux host it prints `NOT CHECKED` instead of running.
   There, your ordinary `cargo clippy` already is the non-Linux build.
+
+### Tests that need something from the host
+
+Some tests need something the host may lack: `sudo` without a password, Landlock, `editcap`, `/dev/full`.
+One helper, [`src/test_prereq.rs`](../../src/test_prereq.rs), decides what such a test does when that prerequisite is missing.
+
+- A required prerequisite that is missing fails the test and names it.
+- An optional one that is missing skips the test.
+  The skip writes a `NOTICE` line to stderr and one line to the file `SIPNAB_PREREQ_SKIP_LEDGER` names.
+- `SIPNAB_REQUIRE_PREREQS` lists optional prerequisites that this run requires, comma-separated; `all` names every one.
+  CI's `Test` step sets it to what its runners have, one list for Linux and one for macOS.
+- [`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) points the ledger at a file in a temporary directory it removes afterward, and prints the count at the end of the run:
+  `parallel-tests: 3 tests skipped on a missing prerequisite (sudo 2, landlock 1)`.
+  nextest's `suite` profile prints nothing of a passing test, so this line is where a skip shows.
+- [`tests/prereq_skip_gate_test.rs`](../../tests/prereq_skip_gate_test.rs) refuses an early `return Ok(())` or `return;` in a test that the helper did not decide.
+  A return that is no skip (a child role, a state with nothing to check) carries `// not a prerequisite: <reason>`.
+
+To see which tests your host skips, run the suite and read that line, or run one test binary with `SIPNAB_REQUIRE_PREREQS=all`: every skip then fails and names its prerequisite.
 
 ### The corpus gate
 
@@ -1707,6 +1788,14 @@ in the release commit itself.
   It sets `Cargo.toml` to the same version.
   From then on the flag reads `x.y.z`.
 - Tagging the commit changes nothing, because the tag's history gives the same `x.y.z`.
+- Pull requests that land before the tag reaches GitHub put a new `[Unreleased]` above `[x.y.z]`.
+  - Until the tag exists, the commit that added `## [x.y.z]` to `CHANGELOG.md` stands in for it.
+  - A flag that commit declares reads `x.y.z`; a flag added later reads `Unreleased`.
+  - In a merge, the script looks for that commit from both `HEAD` and `MERGE_HEAD`, the parents of
+    the merge commit, so a branch that merges the release before its tag can commit the merge
+    Reading `HEAD` alone failed the pre-commit hook of every such merge (2026-11-21, `0.5.269`).
+  - Reading only the first heading made every flag of the release read `Unreleased` on every pull
+    request until the tag reached GitHub (2026-10-27, `0.5.231`).
 - So run `python3 scripts/flag-since.py --write` in the release commit,
   after the rename and the version bump.
 - If you forget, `the_since_column_is_what_tagged_history_says` in
@@ -1907,6 +1996,13 @@ A hook enforces this rather than merely advising it.
   required check concluded `success` on the head, every workflow run on the head succeeded,
   and no run on the merge commit itself concluded red.
   - The head's runs include the macOS leg, so a macOS break still blocks the release.
+  - Two skipped runs do not count, on the head or on the commit itself: the `pull_request` run
+    of [`pr-closed.yml`](../../.github/workflows/pr-closed.yml), which skips its only job on a
+    merge, and the `workflow_run` run of `rerun-not-acquired.yml`, which skips its only job
+    when the CI run it watches succeeded. The script reads the workflow file from GitHub's run
+    record (`SKIPPED_BY_DESIGN`), not the name; any other skipped run, and a canceled, failed
+    or pending run of those workflows, still blocks. Tested in
+    [`test_tag_proof_skipped_by_design.py`](../../scripts/tests/test_tag_proof_skipped_by_design.py).
   - The hook prints the pull request and head it used.
   - The rule is `tag_ci` in [`scripts/tag-push-proof.py`](../../scripts/tag-push-proof.py),
     tested in [`test_tag_ci_proof.py`](../../scripts/tests/test_tag_ci_proof.py) and in the
@@ -2206,6 +2302,17 @@ The gnu targets build inside a `rust:1-bookworm` container, so their glibc floor
 The aarch64 gnu target cross-compiles inside that
 same container via Debian multiarch rather than cross-rs, for the same reason.
 
+The container's package installs go through [`scripts/release-apt.sh`](../../scripts/release-apt.sh).
+
+- `apt_bounded` bounds and retries each `apt-get` run.
+  On a failure it prints one `::error::` line that names the kind: a timeout or a download failure (re-run the job), or a dependency resolution failure (a re-run fails the same way).
+- `multiarch_pins` installs `linux-libc-dev`, `libc6` and `libc6-dev` for amd64 and arm64 at the newest version both architectures' indexes carry.
+  These packages are `Multi-Arch: same`, so both architectures must hold one version.
+  Release run 43881101798 (v0.5.260) failed both aarch64 builds when `bookworm-security` carried `linux-libc-dev` 6.1.192-2 for arm64 and only 6.1.192-1 for amd64.
+- `pins_line` prints those pins on one `multiarch pins` notice line, the line before the install, so a release record can quote the versions each aarch64 build installed.
+  It refuses a word that is not `package:amd64=version` or `package:arm64=version`, and a package not pinned once for each architecture at one version.
+- [`scripts/tests/test_release_apt.py`](../../scripts/tests/test_release_apt.py) holds all three.
+
 Every gnu binary then passes a `readelf -V` gate.
 
 - It fails the build if the binary links a `GLIBC_` symbol newer than 2.36.
@@ -2373,7 +2480,7 @@ Every run reads where the release is from GitHub and git, so a re-run after a cr
 **Prerequisites.**
 
 - The release commit is on the branch `release/<version>`, and its pull request is open.
-- `heavy-run`, `land-queue`, `required-checks` and `cla-owner-exempt` are on `PATH`, or in the directory `--bin` names.
+- `heavy-run`, `land-queue` and `required-checks` are on `PATH`, or in the directory `--bin` names.
 - The prerequisites of [After the release](#after-the-release) hold.
 
 **Steps.** From a checkout with the tags fetched and no uncommitted changes to tracked files:
@@ -2391,7 +2498,7 @@ It runs these stages, each only when the facts say it is due:
 
 | Stage | What happens | Window |
 |---|---|---|
-| `ci-wait` | Posts the CLA status for the head, then waits for the pull request's checks. | Closed, then open for the last 15 minutes of the longest pending check |
+| `ci-wait` | Waits for the pull request's checks. The train posts no status for the retired `license/cla` check, which DCO sign-off replaced on 2026-11-20. | Closed, then open for the last 15 minutes of the longest pending check |
 | `land` | Lands the pull request through `land-queue` and `required-checks`, and prints what the two printed. | Open |
 | `tag` | Moves the checkout to the merge commit, waits for GitHub's proof of that commit, then makes the signed tag and pushes it in the lane. | Open |
 | `release-wait` | Waits for `release.yml` on the tag. | Closed |
@@ -2485,6 +2592,9 @@ To close it by hand:
 
 - `no-pr`: GitHub lists no pull request for the branch `release/<version>`, or GitHub closed it without merging.
 - `ci-failed: <names>`: fix the checks, push, and run the train again.
+- `awaits a re-run: <names>`: no hosted runner took those jobs, and `rerun-not-acquired.yml` runs them again when their run completes.
+  The train keeps waiting and keeps the release window closed.
+  When the re-run has not started 600 seconds after the run completed, the train stops at `ci-failed`: re-run the jobs by hand, then run the train again.
 - After an exit of 3 or 4 the train does not run the post checks again. To retry them, add `--retry-post`.
 - `the local tag v<version> is on <sha>, not the merge commit <sha>`: delete the stale local tag, then run the train again.
 - `this checkout is at <sha>, not the merge commit <sha>, and it has uncommitted changes`: commit the changes or set them aside, run the printed `git checkout --detach` command, then run the train again.

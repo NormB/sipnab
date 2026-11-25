@@ -1,8 +1,9 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 1872
 expression: output
 ---
- Live capture: any    Dialogs: 0 shown of 0    Autoscroll: o
+ Live capture: any    Dialogs: 0 shown of 0    Sort: # ▲
  Capture filter (BPF): none
  View filter: none
 ┌ Statistics ──────────────────────────────────────────────┐

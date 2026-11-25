@@ -37,6 +37,15 @@ type TestError = Box<dyn std::error::Error>;
 /// tests it excuses.
 const MANUAL_ONLY: &[(&str, &str, &str)] = &[
     (
+        "src/tui/terminal_input.rs",
+        "record_crossterm_events",
+        "a recorder and not a check: it prints the events crossterm's own reader \
+         gives for the input corpus, the table input_parse::CROSSTERM_0_29 holds, \
+         which changes only when crossterm or the corpus does. Run by hand on \
+         Linux with `cargo test --features tui --lib record_crossterm_events -- \
+         --ignored --nocapture`, as CONTRIBUTING.md says.",
+    ),
+    (
         "src/capture/fanout.rs",
         "fanout_applies_to_an_open_pcap_handle",
         "opens a live AF_PACKET socket, which needs CAP_NET_RAW. The GitHub-hosted \
@@ -124,9 +133,11 @@ fn ci_ignored_targets(workflow: &str) -> Vec<String> {
     out
 }
 
-/// Whether `file_src` spawns `test` itself as an `#[ignore]`d child role.
+/// Whether `file_src` spawns `test` itself as an `#[ignore]`d child role, by
+/// its name or (a unit test in the lib's binary) by its module path.
 fn is_self_spawned_child(file_src: &str, test: &str) -> bool {
-    file_src.contains("\"--ignored\"") && file_src.contains(&format!("\"{test}\""))
+    file_src.contains("\"--ignored\"")
+        && (file_src.contains(&format!("\"{test}\"")) || file_src.contains(&format!("::{test}\"")))
 }
 
 /// Why one ignore in `rel` breaks a rule, or `None` when it is clean.
@@ -277,6 +288,28 @@ fn each_runner_clears_a_reasoned_ignore() -> Result<(), TestError> {
     );
     let spawner = format!("{src}run(\"role\");\ncmd.args([\"--exact\", \"--ignored\"]);\n");
     assert_eq!(violation("tests/a_test.rs", &spawner, ig, &[], &[]), None);
+    Ok(())
+}
+
+/// A unit test's child role is spawned by its full module path, which is
+/// the name `--exact` matches in the lib's test binary.
+#[test]
+fn a_child_role_spawned_by_its_module_path_is_run() -> Result<(), TestError> {
+    let src = "#[ignore = \"child\"]\nfn role() {}\n";
+    let ig = &ignores_in(src)[0];
+    let spawner =
+        format!("{src}cmd.args([\"--exact\", \"app::x::tests::role\", \"--ignored\"]);\n");
+    assert_eq!(
+        violation("src/app/x.rs", &spawner, ig, &[], &[]),
+        None,
+        "the role is spawned by its path"
+    );
+    let other =
+        format!("{src}cmd.args([\"--exact\", \"app::x::tests::my_role\", \"--ignored\"]);\n");
+    assert!(
+        violation("src/app/x.rs", &other, ig, &[], &[]).is_some(),
+        "a path that ends in another name does not run this role"
+    );
     Ok(())
 }
 

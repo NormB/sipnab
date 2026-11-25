@@ -26,36 +26,27 @@ has to satisfy. Two things save the most time on both sides:
 
 [ROADMAP.md](ROADMAP.md) states where the project is going over the next year,
 and what it does not intend to do. Check it before proposing something large.
+[GOVERNANCE.md](GOVERNANCE.md) states the roles, the path to commit access and
+how the project makes decisions.
 
 ## The contributor agreement
 
-[CLA Assistant](https://cla-assistant.io/NormB/sipnab) runs the signing flow, and
-[CONTRIBUTING.md](CONTRIBUTING.md#contributor-license-agreement) tells a
-contributor how to use it. Two parts of that flow sit outside every gate in this
-repository, because they live in a hosted service and a gist. Only the
-repository owner can reach either, so this section states them rather than
-leaving them to memory.
-
-**A gist holds the words a signer agrees to.** CLA Assistant serves
-<https://gist.github.com/NormB/a26df8a470a426dda140822ca4050a8e>, which matches
-[CLA.md](CLA.md) byte for byte as of 2026-08-13.
-`cla_page_reproduces_the_agreement` in `tests/site_journey_test.rs` keeps
-`CLA.md` and the published page identical, and no test can reach the gist.
-Editing `CLA.md` therefore means editing the gist in the same sitting.
-Otherwise the bot records agreement to text this repository no longer contains,
-which is worse than recording none. Budget for the other half of that edit:
-CLA Assistant binds every signature to the gist revision current when the
-contributor signed, so a new revision asks each previous signer again.
-
-**`license/cla` is a required check on `main`**, next to `CI success`, since
-2026-09-29. Bot accounts, Dependabot among them, are on the allowlist in the
-CLA Assistant settings for this repository, because a bot cannot sign an
-agreement. Before that, nine Dependabot pull requests carried a pending
-`license/cla` and five of them merged that way. Adding a new bot that opens
-pull requests means adding it to that allowlist first, or its pull requests
-stall on a signature nobody can give.
+**Branch protection on `main` requires the `DCO` check**, next to
+`CI success`. The `DCO` job
+in `.github/workflows/pr-text.yml` checks every commit of a pull request for a
+Developer Certificate of Origin sign-off, as
+[CONTRIBUTING.md](CONTRIBUTING.md#signing-off-commits) describes. A verified
+commit from a GitHub bot account, or one the repository owner authored and
+committed, passes without a sign-off, so a new bot needs no allowlist entry.
 [`tests/branch_protection_drift_test.rs`](tests/branch_protection_drift_test.rs)
 fails if the required check and this page disagree.
+
+**The project retired the CLA.** Until the switch to the DCO, contributors signed the
+[Contributor License Agreement](CLA.md) through CLA Assistant, and branch
+protection required its `license/cla` status. The project no longer collects
+signatures: branch protection does not require `license/cla`, and CLA Assistant
+is off for this repository. `CLA.md` and the page at <https://sipnab.com/cla/>
+keep the text, marked retired, for the contributions made under it.
 
 ## How releases happen
 

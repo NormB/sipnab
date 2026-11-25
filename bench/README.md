@@ -104,8 +104,11 @@ it ran at.
 
 `SIPNAB_BENCH_ROUNDS` (default 5) sets the rounds. `SIPNAB_BENCH_QUIET_WAIT`
 (default 1200 s) and `SIPNAB_BENCH_IDLE_PCT` (default 90) bound the wait for a
-quiet host; `SIPNAB_BENCH_QUIET_WAIT=0` skips it. Without `--reference` the
-gate compares the candidate against the baseline alone.
+quiet host; `SIPNAB_BENCH_QUIET_WAIT=0` skips it. `SIPNAB_BENCH_BASELINE_FILE`
+names another baseline file in place of `bench/baseline.json`; the gate's own
+tests use it, so that a stand-in slowed by host load is not refused as too
+loaded to judge before its ratio is read. Without `--reference` the gate
+compares the candidate against the baseline alone.
 
 ## Live capture
 

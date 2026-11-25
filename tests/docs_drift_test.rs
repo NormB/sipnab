@@ -48,6 +48,22 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // "Every platform's crates before the suite" names cargo's `--offline`
+    // and `--target`.
+    (
+        "offline",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "target",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "A job no runner took" names `scripts/rerun-not-acquired.py --run-id`
     // and `--apply`.
     (
@@ -278,7 +294,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
+            // git's `fetch --tags`, which the stability page's comparison
+            // of two releases needs in an older clone.
+            "docs/stability.md",
+            "website/content/docs/stability.md",
         ],
+    ),
+    // scripts/contract-diff.py's `--kind openapi|schema`, which the
+    // stability page runs: the script's flag, not sipnab's.
+    (
+        "kind",
+        &["docs/stability.md", "website/content/docs/stability.md"],
     ),
     // `cargo clippy --no-default-features --lib -- -D warnings`, the
     // no-feature lint that CI and pre-push run: cargo's flag, not sipnab's.
@@ -326,8 +352,6 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
-            "CONTRIBUTING.md",
-            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -335,6 +359,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    // PREPUSH-LINTS-3-OF-22-FEATURE-ROWS: `--push-rows` reads one pre-push
+    // line and prints the rows that push lints. The script's flag, not sipnab's.
+    (
+        "push-rows",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     // The section on the suite in shards: `scripts/parallel-tests.py
@@ -370,6 +405,53 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     ),
     (
         "quick",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    // `scripts/pin-gates.py --hook` and `--source-gates`, the testing page's
+    // "The pre-check, before the hook". Flags of a repository script.
+    (
+        "hook",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "message",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "source-gates",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    // `scripts/pin-gates.py --script-tests --shard I/N [--budget S]`, the
+    // testing page's "The script tests in shards". Flags of a repository
+    // script, not sipnab's.
+    (
+        "script-tests",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "shard",
+        &[
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    (
+        "budget",
         &[
             "docs/internals/testing.md",
             "website/content/docs/internals/testing.md",
@@ -926,6 +1008,32 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // CI gate's verdict on one commit without pushing.
     (
         "tag-ci",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    // `cargo test --lib ... -- --ignored --nocapture`, the command that
+    // records crossterm's events in "Updating code adapted from other projects".
+    (
+        "lib",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    (
+        "ignored",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    (
+        "nocapture",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    // git's `rebase --signoff`, with which the contributing guide's section
+    // "Signing off commits" adds the DCO line to every commit of a branch.
+    (
+        "signoff",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    // git's `commit --amend --reset-author`, with which "Signing off commits"
+    // moves a commit's author email to the GitHub noreply address.
+    (
+        "reset-author",
         &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
     // git's `--no-verify`, which skips the commit-msg hook: the pre-push
@@ -4593,6 +4701,89 @@ fn every_vendored_file_is_recorded_with_its_version() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The rows of THIRD-PARTY-NOTICES.md's "Adapted code" table: each file
+/// with its version and license cells.
+fn adapted_notice_rows(
+    notices: &str,
+) -> Result<std::collections::BTreeMap<String, (String, String)>, TestError> {
+    let section = notices
+        .split("\n## Adapted code")
+        .nth(1)
+        .ok_or("THIRD-PARTY-NOTICES.md has no `## Adapted code` section")?;
+    let section = section.split("\n## ").next().unwrap_or(section);
+    let mut rows = std::collections::BTreeMap::new();
+    for line in section.lines().filter(|l| l.starts_with("| `")) {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 7 {
+            return Err(format!(
+                "adapted row has {} cells, expected File | Adapted from | Version | \
+                 Upstream | License: {line}",
+                cells.len()
+            )
+            .into());
+        }
+        rows.insert(
+            cells[1].trim_matches('`').to_string(),
+            (cells[3].to_string(), cells[5].to_string()),
+        );
+    }
+    Ok(rows)
+}
+
+/// A source file under `src/` whose header says it is adapted from another
+/// project's code has a row in the notices' "Adapted code" table, and its
+/// header names the version and commit the row records and carries that
+/// project's license notice, so a reader of either can find the other and
+/// tell when an update is due (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS
+/// brought the first, crossterm's input parser).
+#[test]
+fn every_adapted_file_keeps_its_origin_and_license() -> Result<(), TestError> {
+    const MARK: &str = "// Adapted from ";
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let notices = std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md"))?;
+    let rows = adapted_notice_rows(&notices)?;
+    let mut adapted = Vec::new();
+    for rel in tracked::ls_files(repo, &["--", "src/*.rs"])? {
+        let text = std::fs::read_to_string(repo.join(&rel))?;
+        let header: String = text.lines().take(40).collect::<Vec<_>>().join("\n");
+        if header.lines().any(|l| l.starts_with(MARK)) {
+            adapted.push((rel, header));
+        }
+    }
+    assert!(
+        !adapted.is_empty(),
+        "no adapted file found under src/; the scan is not seeing src/tui/input_parse.rs"
+    );
+    for (rel, header) in &adapted {
+        let (version, license) = rows.get(rel).ok_or_else(|| {
+            format!(
+                "{rel} says it is adapted from another project and has no row in \
+                 THIRD-PARTY-NOTICES.md's Adapted code table. Add it to ADAPTED in \
+                 scripts/build-third-party-notices.py and regenerate."
+            )
+        })?;
+        assert!(
+            header.contains(&format!("{license} License")),
+            "{rel}: its header must carry the {license} License notice its row records"
+        );
+        for part in version.split(", commit ") {
+            assert!(
+                header.contains(part.trim()),
+                "{rel}: its header must name `{}` from its row's version `{version}`",
+                part.trim()
+            );
+        }
+    }
+    for rel in rows.keys() {
+        assert!(
+            adapted.iter().any(|(path, _)| path == rel),
+            "THIRD-PARTY-NOTICES.md records adapted file {rel}, whose header does not \
+             say `{MARK}`"
+        );
+    }
+    Ok(())
+}
+
 /// The classifier above is what decides which scripts need a row, so it must
 /// tell sipnab's own readable scripts from a minified bundle.
 #[test]
@@ -4886,9 +5077,13 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // the newest reading of this run's own --relay-stats-interval poll. It
     // sends nothing and changes nothing, so the split moves to 66 read-only
     // of 79 and the thirteen write-capable tools are unchanged.
+    // 79 -> 80 by `list_named_filters` (src/mcp/tools/inspect.rs), which lists
+    // the `[filters]` table the run read at startup. It reads and changes
+    // nothing else, so the split moves to 67 read-only of 80 and the thirteen
+    // write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        79,
+        80,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -5648,7 +5843,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // website/content/docs/relay-engines.md.
     // 344 -> 346 (TOP3-MTLS): docs/mtls.md, the client-certificate how-to,
     // and its generated mirror website/content/docs/mtls.md.
-    const EXPECTED_MARKDOWN_FILES: usize = 346;
+    // 346 -> 347 (governance): GOVERNANCE.md, which has no site mirror.
+    // Attributed against the staged diff: `--diff-filter=A` lists it as the
+    // one markdown file added.
+    // 347 -> 349 (WC2a): docs/stability.md, the stability how-to, and its
+    // generated mirror website/content/docs/stability.md.
+    const EXPECTED_MARKDOWN_FILES: usize = 349;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -6566,7 +6766,34 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/fleet.md's "Verify the history store", with its site mirror (+2).
     // 1508 -> 1510 (`sipnab fleet verify`, measured): the table of measured
     // pass times in the same section, with its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1510;
+    // 1510 -> 1512 (the rebuild at start builds only the rows it can
+    // restore): the table of the rebuild's time before and after in
+    // docs/fleet.md's "The files of the history store", with its site
+    // mirror (+2).
+    // 1512 -> 1514 (G729-INSTALL-DOWNLOADS-AS-ROOT): the troubleshooting table
+    // of docs/g729.md's "Install as root", with its site mirror (+2).
+    // 1514 -> 1517 (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS): the
+    // table of adapted files in CONTRIBUTING.md's "Updating code adapted from
+    // other projects", with its site mirror (+2), and the "Adapted code" table
+    // of THIRD-PARTY-NOTICES.md (+1).
+    // 1517 -> 1518 (governance): the roles table in GOVERNANCE.md, which has
+    // no site mirror (+1).
+    // 1518 -> 1519 (TUI-FILTER-EXPRESSION, #841): the table of the typed
+    // expressions' rebuild times in benches/BASELINES.md's 2026-11-19 entry,
+    // which has no site mirror (+1).
+    // 1519 -> 1521 (named filters over REST and MCP): the parameter table of
+    // `GET /v1/filters/validate` in docs/rest-api.md, with its site mirror
+    // website/content/docs/api.md (+2).
+    // 1521 -> 1522 (named filters over REST and MCP): the "List the named
+    // filters" capability in docs/design/surface-capability-matrix.md, which
+    // has no site mirror (+1).
+    // 1522 -> 1524 (WC2a): the surfaces table of docs/stability.md and its
+    // site mirror (+2).
+    // 1524 -> 1532 (sngrep mode, #884): the four sngrep-mode key tables of
+    // docs/keybindings.md and their site mirrors (+8).
+    // 1532 -> 1534 (relay rates): the units table of "Read the rate media
+    // arrives at" in docs/relay-statistics.md and its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1534;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

@@ -613,7 +613,7 @@ impl Notes {
     /// Any error creating, writing or renaming the file. The previous file,
     /// if any, is left untouched on error, and the notes stay unsaved.
     pub fn save(&mut self, path: &Path) -> std::io::Result<()> {
-        crate::capture::atomic::write_atomic(path, |w| {
+        crate::capture::atomic::write_atomic_owner_only(path, |w| {
             for (frame, note) in self.entries() {
                 let line = serde_json::to_string(&LineOut {
                     frame,
@@ -933,6 +933,37 @@ mod tests {
     }
 
     // ── The notes file ───────────────────────────────────────────────────────
+
+    /// A save over a notes file another mode left readable makes it `0600`
+    /// again: the file holds free text about a call, so it does not keep
+    /// the mode of the file it replaces, as a config save does.
+    #[cfg(unix)]
+    #[test]
+    fn a_notes_save_over_a_readable_file_is_owner_only() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let path = dir.path().join("session.notes.jsonl");
+        for mode in [0o644, 0o664, 0o640] {
+            std::fs::write(&path, "").map_err(|e| format!("write: {e:?}"))?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                .map_err(|e| format!("chmod: {e:?}"))?;
+            let mut notes = Notes::new();
+            notes
+                .set(&frame("cap.pcap#3@00000000deadbeef")?, accepted("a note")?)
+                .map_err(|e| format!("room: {e:?}"))?;
+            notes.save(&path).map_err(|e| format!("save: {e:?}"))?;
+            let after = std::fs::metadata(&path)
+                .map_err(|e| format!("stat: {e:?}"))?
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                after, 0o600,
+                "a {mode:o} notes file is owner-only after a save"
+            );
+        }
+        Ok(())
+    }
 
     /// Save, read back, compare; the file is `0600` and marks the set saved.
     #[test]

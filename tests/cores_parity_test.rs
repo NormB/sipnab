@@ -259,6 +259,70 @@ fn the_merged_stream_store_holds_no_more_than_the_cap() -> Result<(), TestError>
     Ok(())
 }
 
+/// The streams-counted evidence of the `--json-analyze` retention finding
+/// that names `--max-streams`, or `None` when there is none.
+fn analyzed_streams_discarded(
+    inputs: &[std::path::PathBuf],
+    cores: usize,
+    cap: &str,
+) -> Result<Option<u64>, TestError> {
+    let stdout = run(inputs, cores, &["--json-analyze", "--max-streams", cap])?.stdout;
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .ok_or_else(|| format!("--cores {cores}: no JSON object in:\n{stdout}"))?;
+    let json: serde_json::Value = serde_json::from_str(line)?;
+    let findings = json["findings"]
+        .as_array()
+        .ok_or_else(|| format!("--cores {cores}: findings is not an array: {json}"))?;
+    Ok(findings
+        .iter()
+        .filter(|f| f["kind"] == "retention_loss")
+        .flat_map(|f| f["evidence"].as_array().cloned().unwrap_or_default())
+        .find(|e| {
+            e["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("--max-streams"))
+        })
+        .and_then(|e| e["counts"]["streams"].as_u64()))
+}
+
+/// STREAM-EVICTION-NOT-IN-ANALYSIS, end to end: `--analyze` counts the
+/// streams discarded at `--max-streams`, the same number at every core count
+/// (every stream created is held or counted, and the merged store holds the
+/// cap).
+#[test]
+fn the_analysis_counts_the_streams_discarded_at_every_core_count() -> Result<(), TestError> {
+    let (pairs, frames) = twelve_streams();
+    let cap = stream_cap(&pairs)?;
+    let dir = tempfile::tempdir()?;
+    let input = [write(dir.path(), "streams.pcap", &frames)?];
+    let want = (pairs.len() - cap) as u64;
+    for n in std::iter::once(1).chain(CORE_COUNTS) {
+        let got = analyzed_streams_discarded(&input, n, &cap.to_string())?;
+        assert_eq!(
+            got,
+            Some(want),
+            "--cores {n}: {} streams over a cap of {cap}",
+            pairs.len()
+        );
+    }
+    Ok(())
+}
+
+/// Edge: exactly at the cap the analysis names no stream loss.
+#[test]
+fn the_analysis_names_no_stream_loss_exactly_at_the_cap() -> Result<(), TestError> {
+    let (_, frames) = twelve_streams();
+    let dir = tempfile::tempdir()?;
+    let input = [write(dir.path(), "streams.pcap", &frames)?];
+    for n in std::iter::once(1).chain(CORE_COUNTS) {
+        let got = analyzed_streams_discarded(&input, n, "12")?;
+        assert_eq!(got, None, "--cores {n}: nothing was discarded");
+    }
+    Ok(())
+}
+
 /// Exactly at `--max-streams`, nothing is evicted at any count.
 #[test]
 fn streams_exactly_at_the_cap_are_all_kept() -> Result<(), TestError> {
@@ -1202,6 +1266,170 @@ fn quiet_past_the_limit_only_since_the_last_message_read_is_not_compacted() -> R
         idle_messages_kept(&set)?,
         37,
         "590 s from the newest message: all 37 messages kept"
+    );
+    Ok(())
+}
+
+// ── --drop-method / --only-method ───────────────────────────────────
+
+/// One call whose INVITE and BYE travel on two host pairs that land on
+/// different workers (a proxy in the path), and a stand-alone OPTIONS.
+fn a_call_over_two_pairs() -> Result<(tempfile::TempDir, [std::path::PathBuf; 1]), TestError> {
+    let first = leg(0);
+    let second = Leg {
+        caller: first.callee,
+        callee: pair_apart_from(&[(first.caller, first.callee)], |i| {
+            (first.callee, [192, 0, 2, i])
+        })
+        .1,
+    };
+    let opt = leg(3);
+    let mut frames = captures::answered_call(first, "split@example.com", 0);
+    frames.push((
+        SECOND,
+        captures::request(opt, "OPTIONS", "ping@example.com", 1, ""),
+    ));
+    frames.push((
+        SECOND + 1_000,
+        captures::response(opt, 200, "OPTIONS", "ping@example.com", 1, ""),
+    ));
+    frames.push((
+        2 * SECOND,
+        captures::request(second, "BYE", "split@example.com", 2, ""),
+    ));
+    frames.push((
+        2 * SECOND + 1_000,
+        captures::response(second, 200, "BYE", "split@example.com", 2, ""),
+    ));
+    assert_spread(&[(first.caller, first.callee), (second.caller, second.callee)]);
+    let dir = tempfile::tempdir()?;
+    let input = [write(dir.path(), "split.pcap", &frames)?];
+    Ok((dir, input))
+}
+
+/// `--only-method INVITE`: the call keeps its BYE although the BYE went
+/// through another worker; the OPTIONS dialog is dropped. The same at
+/// every core count.
+#[test]
+fn only_method_keeps_an_in_dialog_request_from_another_worker() -> Result<(), TestError> {
+    let (_dir, input) = a_call_over_two_pairs()?;
+    let args = ["--only-method", "INVITE"];
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&input, n, &args))?;
+    assert_eq!(
+        single.lines().count(),
+        1,
+        "only the call is kept:\n{single}"
+    );
+    assert!(
+        single.contains("split@example.com"),
+        "the call is kept:\n{single}"
+    );
+    Ok(())
+}
+
+/// One call, two KDMQ replication dialogs (Kamailio DMQ, each a request
+/// and its 200) and one OPTIONS, every dialog on a host pair of its own
+/// (RFC 5737 addresses), spread over the workers.
+fn kdmq_beside_a_call() -> Result<(tempfile::TempDir, [std::path::PathBuf; 1]), TestError> {
+    let legs = [leg(0), leg(1), leg(2), leg(3)];
+    let mut frames = captures::answered_call(legs[0], "call@example.com", 0);
+    for (i, id) in [(1usize, "dmq-1@example.com"), (2, "dmq-2@example.com")] {
+        let at = i as u64 * SECOND;
+        frames.push((at, captures::request(legs[i], "KDMQ", id, 1, "")));
+        frames.push((
+            at + 1_000,
+            captures::response(legs[i], 200, "KDMQ", id, 1, ""),
+        ));
+    }
+    frames.push((
+        3 * SECOND,
+        captures::request(legs[3], "OPTIONS", "ping@example.com", 1, ""),
+    ));
+    frames.push((
+        3 * SECOND + 1_000,
+        captures::response(legs[3], 200, "OPTIONS", "ping@example.com", 1, ""),
+    ));
+    assert_spread(&legs.map(|l| (l.caller, l.callee)));
+    let dir = tempfile::tempdir()?;
+    let input = [write(dir.path(), "kdmq.pcap", &frames)?];
+    Ok((dir, input))
+}
+
+/// The Call-IDs of the `--json-dialogs` lines `out` holds, in order.
+fn call_ids(out: &str) -> Vec<&'static str> {
+    [
+        "call@example.com",
+        "dmq-1@example.com",
+        "dmq-2@example.com",
+        "ping@example.com",
+    ]
+    .into_iter()
+    .filter(|id| out.contains(id))
+    .collect()
+}
+
+/// Edge: with no method flag the KDMQ dialogs are dialogs like the others,
+/// so the drop and only tests below remove something that is there.
+#[test]
+fn kdmq_dialogs_are_kept_without_a_method_flag() -> Result<(), TestError> {
+    let (_dir, input) = kdmq_beside_a_call()?;
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&input, n, &[]))?;
+    assert_eq!(single.lines().count(), 4, "four dialogs:\n{single}");
+    assert_eq!(
+        call_ids(&single).len(),
+        4,
+        "every dialog is kept:\n{single}"
+    );
+    Ok(())
+}
+
+/// Success: `--drop-method KDMQ` drops both KDMQ dialogs whole and keeps
+/// the call and the OPTIONS. The same at every core count.
+#[test]
+fn drop_method_kdmq_drops_the_kdmq_dialogs() -> Result<(), TestError> {
+    let (_dir, input) = kdmq_beside_a_call()?;
+    let args = ["--drop-method", "KDMQ"];
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&input, n, &args))?;
+    assert_eq!(single.lines().count(), 2, "two dialogs kept:\n{single}");
+    assert_eq!(
+        call_ids(&single),
+        ["call@example.com", "ping@example.com"],
+        "the call and the OPTIONS are kept, the KDMQ dialogs dropped:\n{single}"
+    );
+    Ok(())
+}
+
+/// Success: `--only-method kdmq` (lower case) keeps only the KDMQ dialogs.
+/// The same at every core count.
+#[test]
+fn only_method_kdmq_keeps_only_the_kdmq_dialogs() -> Result<(), TestError> {
+    let (_dir, input) = kdmq_beside_a_call()?;
+    let args = ["--only-method", "kdmq"];
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&input, n, &args))?;
+    assert_eq!(single.lines().count(), 2, "two dialogs kept:\n{single}");
+    assert_eq!(
+        call_ids(&single),
+        ["dmq-1@example.com", "dmq-2@example.com"],
+        "only the KDMQ dialogs are kept:\n{single}"
+    );
+    Ok(())
+}
+
+/// `--drop-method INVITE`: the whole call is dropped, its BYE from another
+/// worker too; the OPTIONS dialog is kept. The same at every core count.
+#[test]
+fn drop_method_drops_an_in_dialog_request_from_another_worker() -> Result<(), TestError> {
+    let (_dir, input) = a_call_over_two_pairs()?;
+    let args = ["--drop-method", "INVITE"];
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&input, n, &args))?;
+    assert_eq!(
+        single.lines().count(),
+        1,
+        "only the OPTIONS is kept:\n{single}"
+    );
+    assert!(
+        single.contains("ping@example.com"),
+        "the OPTIONS is kept:\n{single}"
     );
     Ok(())
 }

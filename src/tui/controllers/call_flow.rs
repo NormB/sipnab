@@ -5,7 +5,7 @@
 //! (raw message, message diff, combined detail).
 
 use crate::tui::{
-    App, Arc, KeyCode, KeyEvent, KeyModifiers, Keymap, Popup, RelayStatsMode, View, call_flow,
+    App, Arc, KeyCode, KeyEvent, KeyModifiers, Keymap, RelayStatsMode, View, call_flow,
     open_name_dialog_for, open_note_editor, open_save_popup,
 };
 
@@ -528,7 +528,7 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         CallFlowAction::CombinedDetailDialog => open_combined_detail(app, true),
         CallFlowAction::ToggleTransactionFilter => toggle_transaction_filter(app),
         CallFlowAction::CycleSdpMode => {
-            app.sdp_display_mode = app.sdp_display_mode.next();
+            app.sdp_display_mode = app.sdp_display_mode.next_in(app.theme.sngrep);
             app.status_error = Some(app.sdp_display_mode.label());
         }
         CallFlowAction::CycleTimestampMode => {
@@ -610,7 +610,7 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         }
         CallFlowAction::ExportMermaid => export_mermaid_to_clipboard(app),
         CallFlowAction::Close => {
-            app.flow.diff_selected = None;
+            clear_diff_selection(app);
             app.current_view = View::CallList;
         }
         CallFlowAction::Help => app.current_view = View::Help,
@@ -634,10 +634,7 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
                 Some("Compare: press Space on first message, then Space on second".to_string());
         }
         CallFlowAction::OpenFilterDialog => {
-            app.filter_dialog.focused_field = 0;
-            app.filter_dialog.sync_cursor();
-            app.filter_dialog.error = None;
-            app.active_popup = Some(Popup::FilterDialog);
+            crate::tui::controllers::filter_dialog::open_filter_dialog(app);
         }
         CallFlowAction::ClearFilter => {
             app.filter_dialog.clear();
@@ -836,22 +833,46 @@ fn diff_select(app: &mut App, msg_count: usize) {
                     app.set_status_error("Diff across dialogs is not supported");
                     return;
                 }
-                app.flow.diff_selected = None;
+                clear_diff_selection(app);
                 app.diff_scroll = 0;
                 app.current_view = View::MessageDiff {
                     call_id: cur_cid,
                     msg1_idx: first,
                     msg2_idx: cur,
                 };
+            } else {
+                // Space on the message that is already selected deselects
+                // it, the selection and its "Selected: message N" hint
+                // together.
+                clear_diff_selection(app);
             }
         } else {
             // First selection
             app.flow.diff_selected = Some((cur_cid, cur));
             app.status_error = Some(format!(
-                "Selected: message {} (press Space on another to diff)",
+                "{DIFF_HINT_PREFIX}{} (press Space on another to diff)",
                 cur + 1
             ));
         }
+    }
+}
+
+/// The start of the status-line hint the first compare press leaves.
+const DIFF_HINT_PREFIX: &str = "Selected: message ";
+
+/// Drop the pending compare selection AND its status-line hint, so the hint
+/// never outlives the selection it describes: opening the diff or leaving
+/// the ladder used to leave "Selected: message N (press Space on another to
+/// diff)" on the diff view, the ladder and the call list with nothing
+/// selected. Any other status message is left alone.
+fn clear_diff_selection(app: &mut App) {
+    app.flow.diff_selected = None;
+    if app
+        .status_error
+        .as_deref()
+        .is_some_and(|s| s.starts_with(DIFF_HINT_PREFIX))
+    {
+        app.status_error = None;
     }
 }
 
@@ -1005,6 +1026,7 @@ fn export_mermaid_to_clipboard(app: &mut App) {
                 resolver: app.resolver.as_ref(),
                 name_mode: app.name_mode,
                 rtp_streams: &rtp_streams,
+                fold: app.flow.fold,
             };
             let (participants, msgs) = call_flow::prepare_messages(
                 &d.messages,
@@ -1553,6 +1575,7 @@ mod tests {
     use crate::capture::parse::TransportProto;
     use crate::sip::SipMessage;
     use crate::sip::parser::parse_sip;
+    use crate::tui::Popup;
     use crate::tui::controllers::test_support::*;
     use chrono::{DateTime, TimeDelta, Utc};
 
@@ -2191,6 +2214,78 @@ mod tests {
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::F(2)));
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+        Ok(())
+    }
+
+    /// The compare hint lives only as long as its selection: leaving
+    /// the ladder after one Space, or opening the diff with the second, takes
+    /// the "Selected: message N" hint away with the selection.
+    #[test]
+    fn compare_hint_goes_with_the_selection() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(
+            app.flow.diff_selected.is_some(),
+            "Space selects the message"
+        );
+        assert!(
+            app.status_error
+                .as_deref()
+                .is_some_and(|s| s.starts_with(DIFF_HINT_PREFIX)),
+            "Space shows the compare hint: {:?}",
+            app.status_error
+        );
+        handle_call_flow_key(&mut app, key(KeyCode::Esc));
+        assert!(
+            matches!(app.current_view, View::CallList),
+            "Esc leaves the ladder for the call list"
+        );
+        assert_eq!(app.flow.diff_selected, None, "Esc drops the selection");
+        assert_eq!(app.status_error, None, "hint left on the call list");
+
+        // Second press opens the diff: the hint goes too.
+        app.status_error = Some(format!(
+            "{DIFF_HINT_PREFIX}1 (press Space on another to diff)"
+        ));
+        app.flow.diff_selected = Some(("call-1@test".to_string(), 0));
+        clear_diff_selection(&mut app);
+        assert_eq!(app.status_error, None, "opening the diff drops the hint");
+
+        // Another status message is not touched.
+        app.status_error = Some("Mark set".to_string());
+        clear_diff_selection(&mut app);
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("Mark set"),
+            "another status message stays"
+        );
+        Ok(())
+    }
+
+    /// Space on the message that is already selected deselects it: the
+    /// selection and its "Selected: message N" hint are both gone.
+    #[test]
+    fn space_on_the_selected_message_deselects_it() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(app.flow.diff_selected.is_some(), "the first Space selects");
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert_eq!(app.flow.diff_selected, None, "still selected");
+        assert!(
+            !app.status_error
+                .as_deref()
+                .is_some_and(|s| s.starts_with(DIFF_HINT_PREFIX)),
+            "hint left: {:?}",
+            app.status_error
+        );
+        // A third Space selects it again.
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(
+            app.flow.diff_selected.is_some(),
+            "a third Space selects again"
+        );
         Ok(())
     }
 

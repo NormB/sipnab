@@ -187,11 +187,37 @@ fi
 # and the v0.5.243 tag was pushed one second after it. Every gate runs then
 # too; the line says the proof is pending, and the release-delivery gate
 # below says so again if it refuses the push.
+#
+# WHICH COPY JUDGES (TAG-PUSH-GATE-RUNS-FROM-TAG-COMMIT). The release train
+# checks out the merge commit before it pushes the tag, so the copy of
+# tag-push-proof.py in this checkout is the one of the tagged commit: a gate
+# fix merged after the release merge never reached the 0.5.259 tag push.
+# scripts/pick-tag-proof.sh names origin/main's copy, written to the git dir,
+# when every tagged commit is on origin/main and the file is readable there;
+# otherwise this checkout's copy, with one line that says why. The copy named
+# gives the verdict at all three calls below (the proof, the delivery hint
+# and the tag CI gate); a failing verdict from main's copy blocks the push.
 TREE_PROVEN=0
 TAG_PROOF_PENDING=0
 TAG_PROOF="$(dirname "$0")/../scripts/tag-push-proof.py"
+TAG_PROOF_COPY=""
+tag_proof_cleanup() {
+	[ -z "$TAG_PROOF_COPY" ] || rm -f "$TAG_PROOF_COPY"
+}
 case "$PUSH_REFS" in
 *refs/tags/*)
+	TAG_PROOF_PICK="$(dirname "$0")/../scripts/pick-tag-proof.sh"
+	if [ -f "$TAG_PROOF_PICK" ]; then
+		TAG_PROOF_COPY="$(git rev-parse --absolute-git-dir 2>/dev/null || echo .git)/sipnab-tag-proof-main.$$.py"
+		trap tag_proof_cleanup EXIT
+		trap 'tag_proof_cleanup; exit 129' HUP
+		trap 'tag_proof_cleanup; exit 130' INT
+		trap 'tag_proof_cleanup; exit 143' TERM
+		TAG_PROOF_PICKED=$(printf '%s\n' "$PUSH_REFS" | sh "$TAG_PROOF_PICK" "$TAG_PROOF" "$TAG_PROOF_COPY" 2>&1) \
+			&& TAG_PROOF=$(printf '%s\n' "$TAG_PROOF_PICKED" | sed -n 1p) \
+			&& TAG_PROOF_PICKED=$(printf '%s\n' "$TAG_PROOF_PICKED" | sed 1d)
+		[ -z "$TAG_PROOF_PICKED" ] || printf '%s\n' "$TAG_PROOF_PICKED"
+	fi
 	if [ -f "$TAG_PROOF" ]; then
 		TAG_PROOF_RC=0
 		TAG_PROOF_LINE=$(printf '%s\n' "$PUSH_REFS" | python3 "$TAG_PROOF" 2>&1) || TAG_PROOF_RC=$?
@@ -275,7 +301,7 @@ gate_flush() {
 	python3 "$GATE_CACHE" pass pre-push $GATE_PASSED --hook-file "$0" || true
 	GATE_PASSED=""
 }
-trap gate_flush EXIT
+trap 'gate_flush; tag_proof_cleanup' EXIT
 
 # The tree gates, skipped on a proven tag-only push (above). Not re-indented.
 if [ "$TREE_PROVEN" = 0 ]; then
@@ -613,7 +639,8 @@ fi
 # self-hosted runners (moved there by Norm), which build all of it on the same
 # machine within minutes of the push, so the hook no longer repeats ALL of it.
 #
-# It lints the rows .github/feature-combos.txt marks `hook`. The pre-commit
+# It lints the rows .github/feature-combos.txt marks `hook`, and the rows the
+# push's changed files pick (below). The pre-commit
 # hook builds only `--features full`, the clippy gate above `--all-features`,
 # and the reduced-combination gate above runs `cargo check`, which reports a
 # warning and passes. In pull request #763 a binding read only under
@@ -638,8 +665,14 @@ fi
 # unused without a feature blocks the push, and an unmarked row is left to CI.
 FEATURE_MATRIX="$(dirname "$0")/../scripts/check-feature-matrix.py"
 if [ -f .github/feature-combos.txt ] && [ -f "$FEATURE_MATRIX" ]; then
-	if ! HOOK_ROWS=$(python3 "$FEATURE_MATRIX" --hook-rows); then
-		printf '  feature sets marked `hook` ... %bFAIL%b\n' "$RED" "$NC"
+	# Which rows (PREPUSH-LINTS-3-OF-22-FEATURE-ROWS): `--push-rows` reads
+	# this push's refs and picks the rows by the feature gates of the changed
+	# files (`rows_for`): the rows marked `hook` always; for a change behind
+	# a feature gate, the rows with the fewest features that compile it; for
+	# any other change, every single-feature row. Its line on standard error
+	# says which and how many combinations stay in CI.
+	if ! HOOK_ROWS=$(printf '%s\n' "$PUSH_REFS" | python3 "$FEATURE_MATRIX" --push-rows); then
+		printf '  feature sets for this push ... %bFAIL%b\n' "$RED" "$NC"
 		printf '%s\n' "$HOOK_ROWS" | sed 's/^/    /'
 		printf '\n'
 		printf '%bPush blocked: .github/feature-combos.txt could not be read.%b\n' "$RED" "$NC"

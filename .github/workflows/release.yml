@@ -164,9 +164,14 @@ jobs:
           targets: ${{ matrix.target }}
           components: llvm-tools
 
+      # Pinned to a commit: cross-rs has tagged no release since v0.2.5
+      # (2023-02-04), and an unpinned --git install builds whatever its main
+      # branch holds that day. a9301e91 is the commit v0.5.263's musl builds
+      # used. binary-size.yml installs the same commit, and the tests of
+      # scripts/check-binary-size.sh hold the two equal.
       - name: Install cross (Linux)
         if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --rev a9301e91f72bba3850460512685f6b16062015ff
 
       # ci.yml gets these from .deb files in actions/cache and reaches no
       # network at all (.github/actions/system-deps). This job cannot: it runs
@@ -192,21 +197,11 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          apt_bounded() { # apt_bounded <seconds> <apt args...>
-            local secs="$1"; shift
-            local what="$1"
-            # apt neither retries nor gives up on its own. Acquire::Retries
-            # covers a dropped connection; the Timeouts cover a stalled read;
-            # `timeout` covers the case neither does, a host that keeps the
-            # socket alive and sends nothing.
-            if ! timeout "$secs" apt-get \
-                 -o Acquire::Retries=5 \
-                 -o Acquire::http::Timeout=30 \
-                 -o Acquire::https::Timeout=30 "$@"; then
-              echo "::error::FETCH failure, not a build failure: apt-get $what did not complete within ${secs}s against the Debian archives. No sipnab source was compiled and nothing in this repository is broken — re-run the job."
-              exit 1
-            fi
-          }
+          # apt_bounded (bounded, retried, and a failure named as a timeout,
+          # a download or a resolution failure) and multiarch_pins are
+          # defined and tested in one place; scripts/tests/test_release_apt.py
+          # holds them.
+          . scripts/release-apt.sh
           apt_bounded 300 update
           # cmake builds libopus from the source opusic-sys vendors, for the
           # `opus` feature in `full`. rust:1-bookworm does not carry it. It
@@ -216,7 +211,19 @@ jobs:
           if [ "$TARGET" = "aarch64-unknown-linux-gnu" ]; then
             dpkg --add-architecture arm64
             apt_bounded 300 update
-            apt_bounded 600 install -y gcc-aarch64-linux-gnu libpcap-dev:arm64 libasound2-dev:arm64
+            # The Multi-Arch: same packages the arm64 dev packages pull must
+            # hold one version on both architectures. Release run 43881101798
+            # (v0.5.260) failed both aarch64 builds when bookworm-security
+            # carried linux-libc-dev arm64 6.1.192-2 and amd64 only 6.1.192-1;
+            # both are now installed at the newest version both indexes carry.
+            pins="$(multiarch_pins linux-libc-dev libc6 libc6-dev)"
+            # One `pkg:arch=version` word a line, none with spaces or globs;
+            # pins_line refuses any other word and prints the pins as one
+            # "multiarch pins" notice, the versions this build installs.
+            # shellcheck disable=SC2086
+            pins_line $pins
+            # shellcheck disable=SC2086
+            apt_bounded 600 install -y $pins gcc-aarch64-linux-gnu libpcap-dev:arm64 libasound2-dev:arm64
           else
             apt_bounded 600 install -y libpcap-dev libasound2-dev
           fi
@@ -764,23 +771,15 @@ jobs:
       # while the shipped musl binary was 9.34 MB, and the only gate compared
       # the tile's number to its own fallback text. This compares the claim to
       # the artifact, which is the only place the truth exists.
+      #
+      # The rule is scripts/check-binary-size.sh. binary-size.yml runs the
+      # same script on a pull-request build of x86_64 musl, so a change that
+      # grows the binary fails on its pull request and not here, at the tag.
       - name: Enforce published binary size (musl targets)
         if: contains(matrix.target, '-linux-musl')
         shell: bash
         run: |
-          ceiling=$(grep -m1 '^binary_size_ceiling_mb = ' website/config.toml | sed -E 's/.*"([0-9]+)".*/\1/')
-          [ -n "$ceiling" ] || { echo "::error::binary_size_ceiling_mb missing from website/config.toml"; exit 1; }
-          bin="target/${{ matrix.target }}/release/sipnab"
-          bytes=$(stat -c%s "$bin" 2>/dev/null || stat -f%z "$bin")
-          limit=$((ceiling * 1024 * 1024))
-          # Integer arithmetic only: `bc` is not guaranteed on a runner, and a
-          # gate that runs solely at release time must not fail on its own tools.
-          printf '%s is %s bytes (%s.%02d MB), ceiling %s MB\n' \
-            "$bin" "$bytes" "$((bytes / 1048576))" "$((bytes % 1048576 * 100 / 1048576))" "$ceiling"
-          if [ "$bytes" -gt "$limit" ]; then
-            echo "::error::$bin is $bytes bytes, over the ${ceiling} MB published on the homepage and in the build docs — shrink it or raise binary_size_ceiling_mb in website/config.toml (and the claims it feeds)"
-            exit 1
-          fi
+          bash scripts/check-binary-size.sh "target/${{ matrix.target }}/release/sipnab"
 
       # noaudio variants ship as packages only — a .deb and an .rpm, built by
       # the two steps after this one. Static musl tarballs already cover the

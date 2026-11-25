@@ -25,6 +25,7 @@ use std::path::PathBuf;
 mod corpus_support;
 #[path = "support/run.rs"]
 mod run_support;
+use corpus_support::test_prereq;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -202,8 +203,17 @@ fn corpus_directory_reports_what_it_did_not_enter() -> Result<(), TestError> {
         .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
         .count();
-    if subdirs == 0 {
-        eprintln!("corpus has no subdirectories — nothing to disclose, skipping");
+    if test_prereq::check(
+        "corpus",
+        test_prereq::Need::Optional(corpus_support::CORPUS_REASON),
+        if subdirs == 0 {
+            Err("the corpus has no subdirectories to disclose".to_owned())
+        } else {
+            Ok(())
+        },
+    )?
+    .is_none()
+    {
         return Ok(());
     }
 

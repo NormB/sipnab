@@ -461,6 +461,8 @@ pub mod signals;
 pub mod sip;
 pub mod sort;
 pub mod text;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub(crate) mod timed_io;
 
 #[doc(hidden)]
 #[cfg(feature = "tui")]
@@ -471,6 +473,8 @@ pub mod wasm;
 
 #[cfg(test)]
 pub mod test_alloc;
+#[cfg(test)]
+pub mod test_prereq;
 #[cfg(test)]
 pub mod test_scratch;
 #[cfg(test)]

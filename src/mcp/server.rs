@@ -1065,6 +1065,7 @@ impl SipnabMcp {
             permit,
             routing: None,
             holdings_max: None,
+            rates: std::sync::Arc::default(),
         });
         self
     }
@@ -1537,6 +1538,9 @@ pub struct ListDialogsParams {
     /// "codec-asym") or a raw DSL expression.
     /// Values may be bare or quoted.
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter` (`list_named_filters`
+    /// lists them).
+    pub named: Option<String>,
     /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
     /// Cursor: pass back the previous response's `next_cursor` verbatim
@@ -1589,6 +1593,8 @@ pub struct AggregateDialogsParams {
     /// aggregate can be scoped the same way a listing is.
     /// Values may be bare or quoted.
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Buckets to return, largest first. Bounded by `--mcp-max-rows`, the same
     /// knob that bounds dialog rows, and defaulted the same way.
     ///
@@ -1714,6 +1720,8 @@ pub struct FindProblemsParams {
     /// trunk".
     /// Values may be bare or quoted.
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
     /// Cursor: pass back the previous response's `next_cursor` verbatim
@@ -2670,6 +2678,8 @@ pub struct SearchByTimeParams {
     /// one call rather than two.
     /// Values may be bare or quoted.
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Maximum dialogs to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     pub limit: Option<u32>,
     /// Cursor: pass back the previous response's `next_cursor` verbatim
@@ -4321,6 +4331,13 @@ pub(crate) fn stream_identity(s: &crate::rtp::stream::RtpStream) -> String {
     }
 }
 
+/// The refusal text for an expression that did not compile: the expression
+/// as the caller gave it, then the parser's message. The one wording for every
+/// tool's `filter` refusal and for `validate_filter`'s `error`.
+pub(crate) fn invalid_filter_message(expr: &str, message: &str) -> String {
+    format!("invalid filter '{expr}': {message}")
+}
+
 // ── Tool implementations ────────────────────────────────────────────
 
 impl SipnabMcp {
@@ -4337,15 +4354,59 @@ impl SipnabMcp {
         &self,
         filter: Option<&str>,
     ) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
-        let Some(f) = filter else { return Ok(None) };
-        crate::sip::dsl::parse_filter(f, &self.alias_thresholds)
-            .map(Some)
-            .map_err(|e| {
-                errors::refuse_param(
-                    Reason::InvalidFilter,
-                    "filter",
-                    format!("invalid filter '{f}': {e}"),
-                )
+        self.compile_selected(filter, None)
+    }
+
+    /// Compile a tool's `filter` and `named` arguments: an alias or DSL
+    /// expression in `filter`, or the name of one `[filters]` entry or
+    /// built-in alias in `named`.
+    ///
+    /// The rule is [`crate::sip::filter_request::compile_request`], which the
+    /// REST routes apply too, over the `[filters]` table the run installed at
+    /// startup. Done outside every lock, as [`Self::compile_filter`] is.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602): `conflicting_params` when both are given;
+    /// `invalid_value` for an empty `named`; `invalid_choice` for a name
+    /// nothing defines, with the accepted names in `valid_values`; and
+    /// `invalid_filter` naming the expression when it does not compile.
+    pub(crate) fn compile_selected(
+        &self,
+        filter: Option<&str>,
+        named: Option<&str>,
+    ) -> Result<Option<FilterExpr>, rmcp::ErrorData> {
+        use crate::sip::filter_request::{FilterParam, FilterRequestError};
+        let snapshot = crate::sip::named_filters::installed();
+        let table = &*snapshot;
+        crate::sip::filter_request::compile_request(filter, named, table, &self.alias_thresholds)
+            .map_err(|e| match e {
+                FilterRequestError::Conflict => errors::refuse(
+                    Reason::ConflictingParams,
+                    crate::sip::filter_request::CONFLICT_MESSAGE,
+                ),
+                FilterRequestError::EmptyName => errors::refuse_param(
+                    Reason::InvalidValue,
+                    FilterParam::Named.name(),
+                    crate::sip::filter_request::EMPTY_NAME_MESSAGE,
+                ),
+                FilterRequestError::UnknownName { message, .. } => errors::refuse_choice(
+                    FilterParam::Named.name(),
+                    crate::sip::filter_request::accepted_names(table),
+                    message,
+                ),
+                FilterRequestError::Invalid { param, rejection } => {
+                    let shown = match param {
+                        FilterParam::Filter => filter,
+                        FilterParam::Named => named,
+                    }
+                    .unwrap_or_default();
+                    errors::refuse_param(
+                        Reason::InvalidFilter,
+                        param.name(),
+                        invalid_filter_message(shown, &rejection.message),
+                    )
+                }
             })
     }
 
@@ -4976,10 +5037,10 @@ impl SipnabMcp {
         let ds = self.dialog_store.read();
         let ss = self.stream_store.read();
 
-        // Group streams by Call-ID once. `streams_for` scans the whole stream
-        // store per dialog, which was affordable while these tools stopped at
-        // the first `limit` matches and is quadratic now that they must visit
-        // every dialog to count one.
+        // Group streams by Call-ID once: one pass over the store for every
+        // dialog these tools visit. `streams_for` once scanned the whole store
+        // per dialog, which was quadratic here because these tools must visit
+        // every dialog to count one; it now reads a per-call index.
         let mut by_call: std::collections::HashMap<&str, Vec<&crate::rtp::stream::RtpStream>> =
             std::collections::HashMap::new();
         for s in ss.iter() {
@@ -5236,7 +5297,7 @@ impl SipnabMcp {
         Parameters(params): Parameters<ListDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        let filter = self.compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
         let mut page = self.dialog_page(
             params.cursor.as_deref(),
             limit,
@@ -5311,7 +5372,7 @@ impl SipnabMcp {
         }
 
         let top_n = resolve_limit_with_cap(params.top_n, self.row_cap);
-        let filter = self.compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
 
         let (tally, total_matched, capture_identity) = {
             // Capture, dialogs, streams -- the order `CaptureState` documents.
@@ -5325,16 +5386,18 @@ impl SipnabMcp {
             let mut tally: std::collections::HashMap<String, usize> =
                 std::collections::HashMap::new();
             let mut total = 0usize;
+            // One grouping of the streams for the pass: a scan of the stream
+            // store per dialog made this cost dialogs x streams steps.
+            let by_call = ss.by_call();
             for d in ds.iter() {
-                let streams: Vec<&crate::rtp::stream::RtpStream> =
-                    ss.streams_for(&d.call_id).collect();
+                let streams = by_call.of(&d.call_id);
                 if let Some(expr) = filter.as_ref()
-                    && !expr.matches_dialog(d, &streams, capture, delay)
+                    && !expr.matches_dialog(d, streams, capture, delay)
                 {
                     continue;
                 }
                 total += 1;
-                let Some(value) = dialog_group_value(key, d, &streams) else {
+                let Some(value) = dialog_group_value(key, d, streams) else {
                     return Err(rmcp::ErrorData::internal_error(
                         format!("groupable key '{key}' has no extractor"),
                         None,
@@ -5665,7 +5728,7 @@ impl SipnabMcp {
                 }
             }
         }
-        let extra = self.compile_filter(params.filter.as_deref())?;
+        let extra = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
 
         // ANY alias AND the filter. The aliases answer "is this call
         // interesting", the filter answers "is it the one I am looking at" —
@@ -7376,7 +7439,7 @@ impl SipnabMcp {
             ));
         }
         let limit = crate::mcp::shape::resolve_limit_with_cap(params.limit, self.row_cap);
-        let filter = self.compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
                 super::shape::parse_cursor(raw)
@@ -7395,18 +7458,18 @@ impl SipnabMcp {
             let ss = self.stream_store.read();
             let capture = CaptureMedia::of_store(&ss);
             let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
+            // Grouped once, and only when a filter reads them: a scan of the
+            // stream store per dialog made a filtered search cost dialogs x
+            // streams steps.
+            let by_call = filter.as_ref().map(|_| ss.by_call());
             let mut matched: Vec<&crate::sip::dialog::SipDialog> = ds
                 .iter()
                 .filter(|d| crate::cursor::in_time_window(d.created_at, Some(start), end))
-                .filter(|d| {
-                    // Streams are collected only for the dialogs that survived
-                    // the window, which is the cheap test and usually the
-                    // selective one.
-                    filter.as_ref().is_none_or(|expr| {
-                        let streams: Vec<&crate::rtp::stream::RtpStream> =
-                            ss.streams_for(&d.call_id).collect();
-                        expr.matches_dialog(d, &streams, capture, delay)
-                    })
+                .filter(|d| match (filter.as_ref(), by_call.as_ref()) {
+                    (Some(expr), Some(by_call)) => {
+                        expr.matches_dialog(d, by_call.of(&d.call_id), capture, delay)
+                    }
+                    _ => true,
                 })
                 .collect();
             let total = matched.len();
@@ -13279,13 +13342,18 @@ mod tests {
             // 22_500 -> 24_000 and full 90_000 -> 91_500 by `th_mappings`,
             // the OpenSIPS topology-hiding mapping listing (1,102 bytes):
             // signaling measured 23,576 over 21 tools and full 91,074 over 77.
-            ("signaling", 24_000),
+            // 24_000 -> 24_500 by `list_named_filters` and the `named`
+            // argument (92 bytes on each tool that takes `filter`): signaling
+            // measured 23,524 -> 24,046 over 22 tools.
+            ("signaling", 24_500),
             // 11_000 -> 13_000 and full 79_000 -> 81_000 by
             // `find_in_captures_status` and `cancel_find_in_captures`, the
             // poll and cancel of the background sweep job (captures measured
             // 12,542, full 80,864).
             ("captures", 13_000),
-            ("security", 10_000),
+            // 10_000 -> 10_500 by the `named` argument on `top_talkers` (92
+            // bytes): security measured 9,954 -> 10,046.
+            ("security", 10_500),
             ("media", 3_500),
             // 4_500 -> 5_000 by `relay_stats_polled` (578 bytes): relay
             // measured 4,777 over 5 tools.
@@ -13346,7 +13414,12 @@ mod tests {
             // above says; full measured 92,136 over 79 tools.
             // full 92_500 -> 93_000: `regex` on `search_messages`, as the
             // core row above says; full measured 92,627 over 79 tools.
-            ("full", 93_000),
+            // full 93_000 -> 94_000: `list_named_filters` and the `named`
+            // argument on the seven tools that take `filter`, as the
+            // signaling and security rows above say (core 12,648 -> 12,959
+            // and vcon 10,714 -> 10,806 stay under theirs); full measured
+            // 92,627 -> 93,644 over 80 tools.
+            ("full", 94_000),
         ];
         let measured = bundle_measure(false)?;
         let mut over = Vec::new();
@@ -13641,6 +13714,7 @@ mod tests {
             .list_dialogs(Parameters(ListDialogsParams {
                 max_response_bytes: None,
                 filter: None,
+                named: None,
                 limit: Some(limit),
                 cursor: cursor.map(str::to_string),
                 fields: None,
@@ -14080,6 +14154,7 @@ mod tests {
                 start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
                 end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
                 filter: None,
+                named: None,
                 limit: Some(10),
                 cursor: None,
                 fields: None,
@@ -14613,6 +14688,78 @@ mod tests {
                 .ok_or("v[\"total_matched\"].as_u64() is None")?,
             "the buckets plus the remainder must account for every matched \
              dialog, or the agent is counting a subset it cannot see: {v}"
+        );
+        Ok(())
+    }
+
+    /// A server over [`crate::test_utils::calls_with_media`]: `n` dialogs, each
+    /// with one linked stream, and one stream linked to no call.
+    fn server_with_media(n: u8) -> Result<SipnabMcp, TestError> {
+        let (ds, ss) = crate::test_utils::calls_with_media(n)?;
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(ss)),
+        ))
+    }
+
+    /// The number of `streams_for` calls `f` makes on this thread.
+    async fn streams_for_calls_during<F: std::future::Future>(f: F) -> (F::Output, usize) {
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let out = f.await;
+        (
+            out,
+            crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get),
+        )
+    }
+
+    /// The aggregate reads each dialog's streams from one grouping of the
+    /// store: a pass over every stream per dialog made it take about 18 s on
+    /// a capture of 100,000 dialogs.
+    #[tokio::test]
+    async fn aggregate_dialogs_groups_the_streams_once_not_once_per_dialog() -> Result<(), TestError>
+    {
+        let server = server_with_media(6)?;
+        let (result, scans) = streams_for_calls_during(server.aggregate_dialogs(Parameters(
+            AggregateDialogsParams {
+                group_by: "method".to_string(),
+                filter: Some("rtp.packets > 0".to_string()),
+                ..Default::default()
+            },
+        )))
+        .await;
+        let result = result.map_err(|e| format!("aggregate should succeed: {e:?}"))?;
+        assert_eq!(scans, 0, "no per-dialog scan of the stream store");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        assert_eq!(
+            v["total_matched"], 6,
+            "every dialog has a stream with a packet, so the filter keeps all six: {v}"
+        );
+        Ok(())
+    }
+
+    /// `search_by_time` with a filter reads each dialog's streams from one
+    /// grouping of the store, not from a pass over every stream per dialog.
+    #[tokio::test]
+    async fn search_by_time_groups_the_streams_once_not_once_per_dialog() -> Result<(), TestError> {
+        let server = server_with_media(6)?;
+        let (result, scans) =
+            streams_for_calls_during(server.search_by_time(Parameters(SearchByTimeParams {
+                start: "2024-06-15T00:00:00Z".to_string(),
+                end: None,
+                filter: Some("rtp.packets > 0".to_string()),
+                named: None,
+                limit: None,
+                cursor: None,
+                fields: None,
+                max_response_bytes: None,
+            })))
+            .await;
+        let result = result.map_err(|e| format!("search_by_time should succeed: {e:?}"))?;
+        assert_eq!(scans, 0, "no per-dialog scan of the stream store");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        assert_eq!(
+            v["total_matched"], 6,
+            "every dialog has a stream with a packet, so the filter keeps all six: {v}"
         );
         Ok(())
     }
@@ -16454,6 +16601,7 @@ mod tests {
                     start: "yesterday".into(),
                     end: None,
                     filter: None,
+                    named: None,
                     limit: None,
                     cursor: None,
                     fields: None,
@@ -16474,6 +16622,7 @@ mod tests {
                     start: "2026-01-02T00:00:00Z".into(),
                     end: Some("2026-01-01T00:00:00Z".into()),
                     filter: None,
+                    named: None,
                     limit: None,
                     cursor: None,
                     fields: None,
@@ -16500,6 +16649,7 @@ mod tests {
             start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
             end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
             filter: None,
+            named: None,
             limit: Some(1),
             cursor,
             fields: None,
@@ -16550,6 +16700,7 @@ mod tests {
                 start: "2026-01-01T00:00:00Z".into(),
                 end: None,
                 filter: None,
+                named: None,
                 limit: None,
                 cursor: Some("not-a-time|abc@x".into()),
                 fields: None,
@@ -19844,6 +19995,7 @@ mod tests {
                             cursor: None,
                             limit: None,
                             filter: None,
+                            named: None,
                             fields: None,
                         }))
                         .await
@@ -20549,6 +20701,7 @@ mod tests {
             failed.find_problems(Parameters(FindProblemsParams {
                 kinds: None,
                 filter: None,
+                named: None,
                 limit: Some(6),
                 cursor,
                 fields: None,
@@ -20588,6 +20741,7 @@ mod tests {
                 start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
                 end: None,
                 filter: None,
+                named: None,
                 limit: Some(6),
                 cursor,
                 fields: None,
@@ -20960,6 +21114,11 @@ pub(crate) struct RelayQueryAccess {
     /// ask covers when the agent names no `max_calls`. See
     /// [`crate::relay::scan_cap::scan_cap`].
     pub holdings_max: Option<u32>,
+    /// The previous sample of each relay socket, shared by every clone of
+    /// this access and so by every agent, for the rate since the previous
+    /// sessions ask. Bounded per tier
+    /// ([`crate::relay::rate::RATE_MEMORY_SOCKETS`]).
+    pub rates: std::sync::Arc<parking_lot::Mutex<crate::relay::rate::RateMemories>>,
 }
 
 /// Tool handlers and protocol methods that no in-process test called.

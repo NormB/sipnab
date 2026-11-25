@@ -121,6 +121,14 @@ pub enum CallListAction {
     OpenDashboard,
     /// `T` — open the call timeline of the selected dialog.
     OpenTimeline,
+    /// `Y` — copy the filter in force as a `sipnab … --filter '…'` command
+    /// line, and show it.
+    CopyFilterCommand,
+    /// `L` — toggle "last updated last" (order by each dialog's last
+    /// message) against the number order.
+    ToggleLastUpdateOrder,
+    /// `d` — toggle "only dialogs not over" (state not final) against all.
+    ToggleOnlyOpen,
 }
 
 /// Pure key→action mapping for the call list view (keymap-aware).
@@ -191,6 +199,11 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         // 't' (lowercase) is the timestamp-mode cycle; the timeline opens
         // on Shift+T so both keep a call-list binding.
         KeyCode::Char('T') => OpenTimeline,
+        // `y` copies a message in the call flow; `Y` copies the filter that
+        // chose the calls on this list.
+        KeyCode::Char('Y') => CopyFilterCommand,
+        KeyCode::Char('L') => ToggleLastUpdateOrder,
+        KeyCode::Char('d') => ToggleOnlyOpen,
         _ => return None,
     })
 }
@@ -289,6 +302,10 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         CallListAction::SortPrevColumn => app.call_list.sort_prev_column(),
         CallListAction::SortNextColumn => app.call_list.sort_next_column(),
         CallListAction::ReverseSort => app.call_list.reverse_sort(),
+        CallListAction::ToggleLastUpdateOrder => app.call_list.toggle_last_update_order(),
+        CallListAction::ToggleOnlyOpen => {
+            app.call_list.only_open = !app.call_list.only_open;
+        }
         CallListAction::ToggleAutoscroll => {
             app.call_list.autoscroll = !app.call_list.autoscroll;
         }
@@ -313,11 +330,7 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         }
         CallListAction::OpenFilterDialog => {
             // Always open the filter dialog (state is preserved)
-            app.filter_dialog.focused_field = 0;
-            app.filter_dialog.sync_cursor();
-            app.filter_dialog.error = None;
-            app.filter_dialog.known_names = app.named_filters.names().map(str::to_owned).collect();
-            app.active_popup = Some(Popup::FilterDialog);
+            crate::tui::controllers::filter_dialog::open_filter_dialog(app);
         }
         CallListAction::OpenSettings => {
             app.settings_dialog.focused_item = 0;
@@ -438,6 +451,9 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             if let Some(call_id) = get_selected_call_id(app) {
                 app.current_view = View::CallTimeline(call_id);
             }
+        }
+        CallListAction::CopyFilterCommand => {
+            crate::tui::controllers::command_line::copy_filter_command(app);
         }
     }
 }
@@ -568,10 +584,11 @@ pub(in crate::tui) fn clear_non_matching(app: &mut App) {
         // looking at rather than a set scored on a guessed 100 ms path.
         let delay = crate::rtp::quality::MosDelay::of_run(app.declared_one_way_delay_ms, &ss);
         let before = ds.len();
-        ds.retain(|d| {
-            let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
-            filter.matches_dialog(d, &streams, capture, delay)
-        });
+        // One grouping of the streams for the whole pass: a scan of the
+        // stream store per dialog, under the dialog store's write lock,
+        // stalled the capture for dialogs x streams steps.
+        let by_call = ss.by_call();
+        ds.retain(|d| filter.matches_dialog(d, by_call.of(&d.call_id), capture, delay));
         before - ds.len()
     };
     app.call_list.clear_selections();
@@ -607,10 +624,10 @@ pub(in crate::tui) fn clear_matching(app: &mut App) {
         // looking at rather than a set scored on a guessed 100 ms path.
         let delay = crate::rtp::quality::MosDelay::of_run(app.declared_one_way_delay_ms, &ss);
         let before = ds.len();
-        ds.retain(|d| {
-            let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
-            !filter.matches_dialog(d, &streams, capture, delay)
-        });
+        // One grouping of the streams for the whole pass (see
+        // clear_non_matching).
+        let by_call = ss.by_call();
+        ds.retain(|d| !filter.matches_dialog(d, by_call.of(&d.call_id), capture, delay));
         before - ds.len()
     };
     app.call_list.clear_selections();
@@ -684,6 +701,55 @@ mod tests {
             app.dialog_store.read().len(),
             1,
             "a dialog matching only via its RTP stream must survive clear_non_matching"
+        );
+        Ok(())
+    }
+
+    /// An app over [`crate::test_utils::calls_with_media`] with `filter` on.
+    fn app_with_media(n: u8, filter: &str) -> Result<App, TestError> {
+        let (ds, ss) = crate::test_utils::calls_with_media(n)?;
+        let mut app = App::new_test();
+        *app.dialog_store.write() = ds;
+        *app.stream_store.write() = ss;
+        app.active_filter = Some(crate::sip::dsl::FilterExpr::parse(filter)?);
+        Ok(app)
+    }
+
+    /// The `streams_for` calls `f` makes on this thread.
+    fn streams_for_calls_during(f: impl FnOnce()) -> usize {
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        f();
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get)
+    }
+
+    /// Clearing the non-matching dialogs reads each dialog's streams from one
+    /// grouping of the store. It holds the dialog store's write lock, so a
+    /// pass over every stream per dialog stalled the capture for that long.
+    #[test]
+    fn clear_non_matching_groups_the_streams_once_not_once_per_dialog() -> Result<(), TestError> {
+        let mut app = app_with_media(6, "rtp.packets > 0")?;
+        let scans = streams_for_calls_during(|| clear_non_matching(&mut app));
+        assert_eq!(scans, 0, "no per-dialog scan of the stream store");
+        assert_eq!(
+            app.dialog_store.read().len(),
+            6,
+            "every dialog matches through its stream, so none is cleared"
+        );
+        Ok(())
+    }
+
+    /// Clearing the matching dialogs reads each dialog's streams from one
+    /// grouping of the store, and still clears every dialog that matches
+    /// through its stream.
+    #[test]
+    fn clear_matching_groups_the_streams_once_not_once_per_dialog() -> Result<(), TestError> {
+        let mut app = app_with_media(6, "rtp.packets > 0")?;
+        let scans = streams_for_calls_during(|| clear_matching(&mut app));
+        assert_eq!(scans, 0, "no per-dialog scan of the stream store");
+        assert_eq!(
+            app.dialog_store.read().len(),
+            0,
+            "every dialog matches through its stream, so all are cleared"
         );
         Ok(())
     }
@@ -768,6 +834,39 @@ mod tests {
             "hidden column must be absent"
         );
         assert!(cols.iter().any(|c| c == "Method"));
+        Ok(())
+    }
+
+    /// Saving the columns (and the names) writes only its own key: the
+    /// session's `[display]` defaults never land in the user's file, so the
+    /// file keeps meaning "what the user chose".
+    #[test]
+    fn config_writers_never_write_display_defaults() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, "[display]\nfold = false\n")?;
+        let mut app = App::new_test();
+        app.apply_display_prefs(crate::tui::DisplayPrefs::mode_default(true));
+        app.set_column_config_path(Some(path.clone()));
+        app.call_list.column_selector_open = true;
+        handle_call_list_key(&mut app, key(KeyCode::Char('s')));
+        crate::config::write_manual_mappings_file(
+            &path,
+            &[("10.0.0.1".to_string(), "pbx".to_string())],
+        )?;
+
+        let doc: toml::Table = std::fs::read_to_string(&path)?.parse()?;
+        let display = doc
+            .get("display")
+            .and_then(|d| d.as_table())
+            .ok_or("[display] kept")?;
+        let mut keys: Vec<&str> = display.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["fold", "visible_columns"],
+            "saving the columns keeps the other [display] keys"
+        );
         Ok(())
     }
 

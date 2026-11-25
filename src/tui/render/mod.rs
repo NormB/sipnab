@@ -7,8 +7,8 @@
 
 use super::{
     App, Block, Borders, Constraint, DialogStore, Layout, Line, Modifier, Paragraph, Popup, Rect,
-    RelayStatsMode, Span, StreamStore, Style, Theme, View, Wrap, call_flow, call_list, header_form,
-    help, msg_raw, stream_detail, stream_list,
+    RelayStatsMode, Span, StreamStore, Style, Theme, View, call_flow, call_list, header_form, help,
+    msg_raw, stream_detail, stream_list,
 };
 
 mod popups;
@@ -39,6 +39,8 @@ pub(in crate::tui) struct RenderFeedback {
     /// controller needs it to explain a press that can't move anything
     /// instead of leaving it silent (#188).
     pub(in crate::tui) flow_detail_max_hscroll: Option<u16>,
+    /// sngrep mode: `(raw pane text width, screen width)` just drawn.
+    pub(in crate::tui) sngrep_raw_drawn: Option<(u16, u16)>,
     /// `(cached_msg_count, cached_rtp_bar_indices, cached_raw_indices)`.
     pub(in crate::tui) flow_caches:
         Option<(usize, std::collections::HashSet<usize>, Vec<Option<usize>>)>,
@@ -180,6 +182,10 @@ pub(in crate::tui) fn render_app(
                         .cached_dialog_count
                         .saturating_sub(app.cached_displayed_count),
                     loading: app.pcap_load.is_some(),
+                    capture_now: app
+                        .displayed
+                        .capture_now
+                        .unwrap_or_else(|| store.capture_now()),
                 },
             );
         }
@@ -256,7 +262,32 @@ pub(in crate::tui) fn render_app(
                 // style). The ladder width is widened past the configured split
                 // when a multi-leg (B2BUA) flow needs it, so packed participant
                 // columns don't truncate their method/status arrow labels.
-                let (ladder_area, detail_area) = if app.flow.raw_preview {
+                let (ladder_area, detail_area) = if app.flow.raw_preview && app.theme.sngrep {
+                    // sngrep mode: the raw pane takes what the ladder leaves,
+                    // 9 / 0 move it in 2-column steps, T back to that width.
+                    let last = app.flow.ladder.participants.len().saturating_sub(1);
+                    let self_loop_last = app.flow.ladder.rows.iter().any(|r| {
+                        matches!(r.kind, call_flow::prepare::RowKind::Message { .. })
+                            && r.src_col == r.dst_col
+                            && r.src_col == last
+                    });
+                    let need = crate::tui::sngrep_mode::ladder_need(
+                        app.flow.ladder.participants.len(),
+                        self_loop_last,
+                    );
+                    let raw = crate::tui::sngrep_mode::raw_width(
+                        main_area.width,
+                        need,
+                        app.flow.sngrep_raw_fixed,
+                    )
+                    .min(main_area.width.saturating_sub(2));
+                    fb.sngrep_raw_drawn = Some((raw, main_area.width));
+                    let ladder_w = main_area.width.saturating_sub(raw + 2);
+                    let [left, right] =
+                        Layout::horizontal([Constraint::Length(ladder_w), Constraint::Min(0)])
+                            .areas(main_area);
+                    (left, Some(right))
+                } else if app.flow.raw_preview {
                     // Widest per-gap demand of the arrow labels actually on
                     // screen (a retx fold header carries its "(+N retx)"
                     // count on the arrow; an arrow spanning several columns
@@ -309,7 +340,13 @@ pub(in crate::tui) fn render_app(
                 // App::sync_caches (WS4.3c) and arrives as cached rows; the
                 // render pass only runs the cheap style stage — theme, color
                 // mode and the current selection.
-                let prepared = if app.flow.ladder.rows.is_empty() {
+                // sngrep mode's `M` with no media drawn leaves the participants and
+                // their lifelines on screen, not the call-gone notice.
+                let prepared = if app.flow.ladder.rows.is_empty()
+                    && !(app.theme.sngrep
+                        && app.flow.only_media
+                        && !app.flow.ladder.participants.is_empty())
+                {
                     None
                 } else {
                     let msgs = call_flow::style(
@@ -318,6 +355,7 @@ pub(in crate::tui) fn render_app(
                             color_mode: app.color_mode,
                             selected_msg: Some(sel),
                             theme: &app.theme,
+                            sngrep_marked: app.sngrep_marked_raw(&cid),
                         },
                     );
                     Some((app.flow.ladder.participants.clone(), msgs))
@@ -560,7 +598,8 @@ pub(in crate::tui) fn render_app(
             // the end (self-corrects an over-eager PgDn on the next frame).
             let visible = main_area.height.saturating_sub(2) as usize;
             let inner_width = main_area.width.saturating_sub(2) as usize;
-            let max_scroll = help::help_line_count(inner_width).saturating_sub(visible) as u16;
+            let max_scroll =
+                help::help_line_count(inner_width, app.theme.sngrep).saturating_sub(visible) as u16;
             let clamped = app.help_scroll.min(max_scroll);
             fb.help_scroll = Some(clamped);
             help::render_help(
@@ -662,6 +701,9 @@ pub(in crate::tui) fn render_app(
             Popup::UnsavedNotes => render_unsaved_notes_popup(frame, area, app),
             Popup::ArchivePassword => render_archive_password_popup(frame, area, app),
             Popup::G729Install => render_g729_install_popup(frame, area, app),
+            Popup::CommandLine(command) => {
+                render_command_line_popup(frame, area, command, &app.theme);
+            }
         }
     }
 
@@ -679,7 +721,7 @@ pub(in crate::tui) fn render_app(
 /// ladder carries each row's own dialog in its index map, a transaction filter
 /// renders a subset of the anchor dialog, and otherwise the index is the
 /// anchor dialog's own.
-fn row_message<'s>(
+pub(in crate::tui) fn row_message<'s>(
     app: &App,
     store: &'s DialogStore,
     anchor: &str,
@@ -996,10 +1038,12 @@ pub(in crate::tui) fn carrier_metrics_text(ds: &DialogStore, ss: &StreamStore) -
     let dimension = "dst.ip";
     let delay = crate::rtp::quality::MosDelay::from_capture(ss);
     let mut tally: HashMap<String, GroupAccumulator> = HashMap::new();
+    // One grouping of the streams, not a scan of the store per dialog.
+    let by_call = ss.by_call();
     for d in ds.iter() {
-        let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
-        if let Some(value) = group_value_raw(dimension, d, &streams) {
-            tally.entry(value).or_default().add(d, &streams, delay);
+        let streams = by_call.of(&d.call_id);
+        if let Some(value) = group_value_raw(dimension, d, streams) {
+            tally.entry(value).or_default().add(d, streams, delay);
         }
     }
     let mut rows: Vec<(&String, &GroupAccumulator)> = tally.iter().collect();
@@ -2042,22 +2086,6 @@ pub(in crate::tui) fn render_bpf_filter(
     clamped
 }
 
-/// Estimated rendered rows for `lines` wrapped to `width` columns: the
-/// ceil of each line's display width (the same accounting as the raw
-/// message view's `estimated_rows`). Word-wrap can add a stray row;
-/// close enough to clamp the scroll near the true bottom. Pure.
-fn estimated_wrapped_rows(lines: &[Line<'_>], width: u16) -> u16 {
-    let w = (width.max(1)) as usize;
-    lines
-        .iter()
-        .map(|l| {
-            let lw = l.width();
-            if lw == 0 { 1 } else { lw.div_ceil(w) }
-        })
-        .sum::<usize>()
-        .min(u16::MAX as usize) as u16
-}
-
 /// Word-wrap `text` to `width` columns with a hanging indent: a logical line
 /// that overflows continues on rows indented to where its text starts, so an
 /// indented explanation stays one readable block. A line shaped like a
@@ -2165,7 +2193,7 @@ pub(in crate::tui) fn render_text_panel(
 ///
 /// The BPF popup shows a machine-generated filter that runs to well over a
 /// thousand columns. The scroll clamp needs the true wrapped height, and
-/// [`estimated_wrapped_rows`] (ceil of width) UNDER-counts word-wrapped text,
+/// a ceil-of-width row estimate UNDER-counts word-wrapped text,
 /// which would leave the tail unreachable in the one view whose whole job is to
 /// show the filter in full. Wrapping here and rendering these exact lines keeps
 /// the clamp and the render in lockstep — without ratatui's unstable
@@ -2235,6 +2263,12 @@ fn lcs_line_alignment<'a>(
     left: &[&'a str],
     right: &[&'a str],
 ) -> Vec<(Option<&'a str>, Option<&'a str>)> {
+    lcs_alignment(left, right)
+}
+
+/// [`lcs_line_alignment`] over any items: lines, or the characters of one
+/// line ([`changed_chars_within`]). Pure.
+fn lcs_alignment<T: PartialEq + Copy>(left: &[T], right: &[T]) -> Vec<(Option<T>, Option<T>)> {
     let (n, m) = (left.len(), right.len());
     // lcs[i][j] = length of the LCS of left[i..] and right[j..].
     let mut lcs = vec![vec![0u16; m + 1]; n + 1];
@@ -2274,6 +2308,189 @@ fn lcs_line_alignment<'a>(
         j += 1;
     }
     out
+}
+
+/// Hard-wrap a styled line into rows of at most `width` display columns,
+/// keeping each span's style; an empty line stays one (empty) row. A wide
+/// glyph that would straddle the boundary moves wholly to the next row;
+/// zero-width characters stay on the current row. Pure. The call flow's
+/// detail pane wraps with it too.
+pub(in crate::tui) fn hard_wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthChar;
+    let w = width.max(1);
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut cur: Vec<Span<'static>> = Vec::new();
+    let mut cur_w = 0usize;
+    for span in line.spans {
+        let style = span.style;
+        let mut buf = String::new();
+        for ch in span.content.chars() {
+            let cw = ch.width().unwrap_or(0);
+            if cur_w + cw > w && cur_w > 0 {
+                if !buf.is_empty() {
+                    cur.push(Span::styled(std::mem::take(&mut buf), style));
+                }
+                rows.push(Line::from(std::mem::take(&mut cur)));
+                cur_w = 0;
+            }
+            buf.push(ch);
+            cur_w += cw;
+        }
+        if !buf.is_empty() {
+            cur.push(Span::styled(buf, style));
+        }
+    }
+    rows.push(Line::from(cur));
+    rows
+}
+
+/// The diff view's rows: [`lcs_line_alignment`], then each run of changed
+/// rows between two shared lines paired in order, the n-th line gone from
+/// the left with the n-th line new on the right, so a line that changed sits
+/// beside its new form (`CSeq: 101 INVITE` | `CSeq: 102 INVITE`) and
+/// [`changed_chars_within`] can mark only what differs. The lines left over in a
+/// run stay one-sided. Pure.
+fn paired_line_alignment<'a>(
+    left: &[&'a str],
+    right: &[&'a str],
+) -> Vec<(Option<&'a str>, Option<&'a str>)> {
+    let mut out = Vec::new();
+    let (mut gone, mut new): (Vec<&'a str>, Vec<&'a str>) = (Vec::new(), Vec::new());
+    let flush = |out: &mut Vec<_>, gone: &mut Vec<&'a str>, new: &mut Vec<&'a str>| {
+        let n = gone.len().max(new.len());
+        for k in 0..n {
+            out.push((gone.get(k).copied(), new.get(k).copied()));
+        }
+        gone.clear();
+        new.clear();
+    };
+    for row in lcs_line_alignment(left, right) {
+        match row {
+            (Some(l), None) => gone.push(l),
+            (None, Some(r)) => new.push(r),
+            shared => {
+                flush(&mut out, &mut gone, &mut new);
+                out.push(shared);
+            }
+        }
+    }
+    flush(&mut out, &mut gone, &mut new);
+    out
+}
+
+/// Shorter runs of shared characters inside a changed stretch count as
+/// changed: two different values seldom share more than a stray letter, and
+/// marking `a1b2` as four separate flecks reads worse than one stretch.
+const DIFF_MIN_SHARED_RUN: usize = 3;
+
+/// Lines longer than this (in characters, both sides multiplied) mark their
+/// whole middle changed instead of running the character LCS.
+const DIFF_MAX_CHAR_CELLS: usize = 250_000;
+
+/// [`changed_chars_within`] for one pair alone, with a budget of its own
+/// (the tests' entry point).
+#[cfg(test)]
+pub(in crate::tui) fn changed_chars(a: &str, b: &str) -> (Vec<bool>, Vec<bool>) {
+    let mut budget = DIFF_MAX_CHAR_CELLS;
+    changed_chars_within(a, b, &mut budget)
+}
+
+/// Which characters of `a` and of `b` differ, one flag per character
+/// (`chars()`), for the message diff view: the common prefix and
+/// suffix are shared, the middle is aligned by its longest common
+/// subsequence of characters, and a shared run shorter than
+/// [`DIFF_MIN_SHARED_RUN`] inside it counts as changed. Identical lines have
+/// no flag set; `CSeq: 101 INVITE` against `CSeq: 102 INVITE` flags the `1`
+/// and the `2`.
+///
+/// The work draws on a cell budget shared by every pair of one render: the
+/// character alignment of a middle of `m x n` characters runs only while
+/// `m * n` fits in `budget`, and spends it; past that the whole middle is
+/// flagged. The budget never exceeds [`DIFF_MAX_CHAR_CELLS`], so the
+/// per-pair cap holds too. Pure.
+fn changed_chars_within(a: &str, b: &str, budget: &mut usize) -> (Vec<bool>, Vec<bool>) {
+    let (ca, cb): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let (mut fa, mut fb) = (vec![false; ca.len()], vec![false; cb.len()]);
+    let pre = ca.iter().zip(&cb).take_while(|(x, y)| x == y).count();
+    let max_suf = ca.len().min(cb.len()) - pre;
+    let suf = ca
+        .iter()
+        .rev()
+        .zip(cb.iter().rev())
+        .take(max_suf)
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (ma, mb) = (&ca[pre..ca.len() - suf], &cb[pre..cb.len() - suf]);
+    let cells = ma.len().saturating_mul(mb.len());
+    if cells > (*budget).min(DIFF_MAX_CHAR_CELLS) || ma.is_empty() || mb.is_empty() {
+        fa[pre..ca.len() - suf].iter_mut().for_each(|f| *f = true);
+        fb[pre..cb.len() - suf].iter_mut().for_each(|f| *f = true);
+        return (fa, fb);
+    }
+    *budget -= cells;
+    // Walk the middle's alignment; a shared run is kept only when long.
+    let (mut i, mut j) = (pre, pre);
+    let mut run: Vec<(usize, usize)> = Vec::new();
+    let end_run = |run: &mut Vec<(usize, usize)>, fa: &mut [bool], fb: &mut [bool]| {
+        if run.len() < DIFF_MIN_SHARED_RUN {
+            for &(x, y) in run.iter() {
+                fa[x] = true;
+                fb[y] = true;
+            }
+        }
+        run.clear();
+    };
+    for pair in lcs_alignment(ma, mb) {
+        match pair {
+            (Some(_), Some(_)) => {
+                run.push((i, j));
+                i += 1;
+                j += 1;
+            }
+            (Some(_), None) => {
+                end_run(&mut run, &mut fa, &mut fb);
+                fa[i] = true;
+                i += 1;
+            }
+            (None, Some(_)) => {
+                end_run(&mut run, &mut fa, &mut fb);
+                fb[j] = true;
+                j += 1;
+            }
+            (None, None) => {}
+        }
+    }
+    end_run(&mut run, &mut fa, &mut fb);
+    (fa, fb)
+}
+
+/// One diff-view line: the characters flagged in `changed` in `diff`, the
+/// rest in `normal`, as few spans as the runs need. Pure.
+fn diff_line(text: &str, changed: &[bool], diff: Style, normal: Style) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_changed = None;
+    for (c, &f) in text.chars().zip(changed) {
+        if cur_changed != Some(f) && !cur.is_empty() {
+            let style = if cur_changed == Some(true) {
+                diff
+            } else {
+                normal
+            };
+            spans.push(Span::styled(std::mem::take(&mut cur), style));
+        }
+        cur_changed = Some(f);
+        cur.push(c);
+    }
+    if !cur.is_empty() {
+        let style = if cur_changed == Some(true) {
+            diff
+        } else {
+            normal
+        };
+        spans.push(Span::styled(cur, style));
+    }
+    Line::from(spans)
 }
 
 /// Parameters for the side-by-side message diff view.
@@ -2360,6 +2577,14 @@ pub(in crate::tui) fn render_message_diff(
 
     let mut left_lines: Vec<Line<'static>> = Vec::new();
     let mut right_lines: Vec<Line<'static>> = Vec::new();
+    // Inner (border-less) widths of the two panes: each pair is wrapped by
+    // hand at these widths and the shorter side padded.
+    let left_w = half_width.saturating_sub(2).max(1) as usize;
+    let right_w = area
+        .width
+        .saturating_sub(half_width)
+        .saturating_sub(2)
+        .max(1) as usize;
 
     // Header lines
     left_lines.push(Line::from(Span::styled(
@@ -2380,21 +2605,41 @@ pub(in crate::tui) fn render_message_diff(
         .add_modifier(Modifier::BOLD);
     let normal_style = Style::default();
 
-    // LCS alignment pairs shared lines and isolates insertions/removals as
-    // one-sided gaps; a paired row (both sides present) is always equal, so
-    // any differing pair is a gap and highlights only that single line.
-    for (l1, l2) in lcs_line_alignment(&lines1, &lines2) {
-        let is_diff = l1 != l2;
-        let style = if is_diff { diff_style } else { normal_style };
-
-        left_lines.push(Line::from(Span::styled(
-            l1.unwrap_or("").to_string(),
-            style,
-        )));
-        right_lines.push(Line::from(Span::styled(
-            l2.unwrap_or("").to_string(),
-            style,
-        )));
+    // LCS alignment pairs the shared lines; a run of changed lines between
+    // two shared ones is paired in order, so a changed line sits beside its
+    // new form and only its changed characters take the diff color.
+    // A line on one side only is colored as a whole. The character work of
+    // the whole frame shares one budget, so a message of many long changed
+    // lines costs no more per redraw than one capped pair.
+    let mut cell_budget = DIFF_MAX_CHAR_CELLS;
+    for (l1, l2) in paired_line_alignment(&lines1, &lines2) {
+        let (left, right) = match (l1, l2) {
+            (Some(a), Some(b)) if a == b => (
+                Line::from(Span::styled(a.to_string(), normal_style)),
+                Line::from(Span::styled(b.to_string(), normal_style)),
+            ),
+            (Some(a), Some(b)) => {
+                let (fa, fb) = changed_chars_within(a, b, &mut cell_budget);
+                (
+                    diff_line(a, &fa, diff_style, normal_style),
+                    diff_line(b, &fb, diff_style, normal_style),
+                )
+            }
+            (a, b) => (
+                Line::from(Span::styled(a.unwrap_or("").to_string(), diff_style)),
+                Line::from(Span::styled(b.unwrap_or("").to_string(), diff_style)),
+            ),
+        };
+        // One block per pair, as tall as the side that wraps into more
+        // rows; the shorter side gets blank rows (as `diff -y`), so the
+        // pairs below stay level on both sides.
+        let mut lrows = hard_wrap_line(left, left_w);
+        let mut rrows = hard_wrap_line(right, right_w);
+        let h = lrows.len().max(rrows.len());
+        lrows.resize(h, Line::from(""));
+        rrows.resize(h, Line::from(""));
+        left_lines.extend(lrows);
+        right_lines.extend(rrows);
     }
 
     let left_block = Block::default()
@@ -2404,23 +2649,18 @@ pub(in crate::tui) fn render_message_diff(
         .borders(Borders::ALL)
         .title(format!(" Message {} ", msg2_idx + 1));
 
-    // Both panes wrap, so the scroll clamp must count rendered (wrapped)
-    // rows — the unwrapped line count strands the wrapped tail of long
-    // headers below an unreachable bottom. Taller pane governs.
-    let left_rows = estimated_wrapped_rows(&left_lines, half_width.saturating_sub(2));
-    let right_rows = estimated_wrapped_rows(
-        &right_lines,
-        area.width.saturating_sub(half_width).saturating_sub(2),
-    );
-    let total_rows = left_rows.max(right_rows);
+    // Rows are already wrapped and padded pair by pair, so both panes hold
+    // the same number of rows and no further wrapping happens.
+    let total_rows = left_lines
+        .len()
+        .max(right_lines.len())
+        .min(u16::MAX as usize) as u16;
     let left_para = Paragraph::new(left_lines)
         .block(left_block)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
+        .scroll((scroll, 0));
     let right_para = Paragraph::new(right_lines)
         .block(right_block)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
+        .scroll((scroll, 0));
 
     frame.render_widget(left_para, left_area);
     frame.render_widget(right_para, right_area);
@@ -2937,6 +3177,25 @@ mod tests {
         assert!(
             busy_pos < quiet_pos,
             "the busier sender (2 dialogs) must rank above the quieter (1):\n{text}"
+        );
+        Ok(())
+    }
+
+    /// The carrier-metrics view reads each dialog's streams from one grouping
+    /// of the store, not from a pass over every stream per dialog.
+    #[test]
+    fn carrier_metrics_text_groups_the_streams_once_not_once_per_dialog() -> Result<(), TestError> {
+        let (ds, ss) = crate::test_utils::calls_with_media(6)?;
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let text = carrier_metrics_text(&ds, &ss);
+        assert_eq!(
+            crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get),
+            0,
+            "no per-dialog scan of the stream store"
+        );
+        assert!(
+            text.contains("198.51.100.1"),
+            "the one destination is listed:\n{text}"
         );
         Ok(())
     }
@@ -4255,10 +4514,460 @@ mod tests {
         Ok(())
     }
 
-    /// The diff panes wrap long lines (`Wrap { trim: false }`), but the
-    /// returned content height used to count UNWRAPPED lines — so the
-    /// caller's scroll clamp could never reach the true (wrapped) bottom
-    /// when a long header wraps to multiple rows.
+    /// A header that wraps on one side only must not push the rows below it
+    /// out of level: the line both messages share after it sits on the same
+    /// screen row in both panes (each pair padded to its taller side).
+    #[test]
+    fn render_message_diff_pairs_stay_level_after_a_one_sided_wrap() -> Result<(), TestError> {
+        use crate::capture::parse::TransportProto;
+        use crate::sip::parser::parse_sip;
+
+        let t0 = base_ts()?;
+        let long = format!("Contact: <sip:1001@10.0.0.1;thinfo={}>", "a".repeat(70));
+        let raw1 = build_sip(
+            "INVITE sip:1002@example.com SIP/2.0",
+            &[
+                "Call-ID: level@test",
+                "CSeq: 1 INVITE",
+                &long,
+                "Max-Forwards: 70",
+                "Content-Length: 0",
+            ],
+        );
+        let raw2 = build_sip(
+            "INVITE sip:1002@example.com SIP/2.0",
+            &[
+                "Call-ID: level@test",
+                "CSeq: 1 INVITE",
+                "Contact: <sip:1001@10.0.0.2>",
+                "Max-Forwards: 70",
+                "Content-Length: 0",
+            ],
+        );
+        let msg1 = parse_sip(
+            &raw1,
+            t0,
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("parse left: {e:?}"))?;
+        let msg2 = parse_sip(
+            &raw2,
+            t0 + chrono::TimeDelta::seconds(1),
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("parse right: {e:?}"))?;
+        let app = App::with_processed_messages(vec![msg1, msg2]);
+        let store = app.dialog_store.read();
+        let theme = Theme::default();
+        // 80 cols -> 40-wide panes (38 inner): the long Contact wraps to 3 rows.
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        terminal.draw(|frame| {
+            render_message_diff(
+                frame,
+                frame.area(),
+                &store,
+                &MessageDiffView {
+                    call_id: "level@test",
+                    msg1_idx: 0,
+                    msg2_idx: 1,
+                    scroll: 0,
+                    header_form: header_form::HeaderFormMode::AsCaptured,
+                    theme: &theme,
+                },
+            );
+        })?;
+        let buf = terminal.backend().buffer();
+        let row_of = |x0: u16, x1: u16| -> Result<u16, TestError> {
+            for y in 0..buf.area.height {
+                let mut line = String::new();
+                for x in x0..x1 {
+                    line.push_str(
+                        buf.cell((x, y))
+                            .ok_or("the cell is inside the buffer")?
+                            .symbol(),
+                    );
+                }
+                if line.contains("Max-Forwards: 70") {
+                    return Ok(y);
+                }
+            }
+            Err("Max-Forwards not on screen".into())
+        };
+        let (left, right) = (row_of(0, 40)?, row_of(40, 80)?);
+        assert_eq!(
+            left, right,
+            "the shared line must sit on the same row in both panes"
+        );
+        Ok(())
+    }
+
+    /// The text of each row `hard_wrap_line` makes.
+    fn wrapped(text: &str, width: usize) -> Vec<String> {
+        hard_wrap_line(Line::from(text.to_string()), width)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    /// Edge: a wide glyph that would straddle the boundary moves wholly to
+    /// the next row.
+    #[test]
+    fn hard_wrap_moves_a_wide_glyph_to_the_next_row() {
+        assert_eq!(
+            wrapped("ab\u{4e2d}", 3),
+            ["ab", "\u{4e2d}"],
+            "the 2-column glyph moves"
+        );
+        assert_eq!(
+            wrapped("abcd", 2),
+            ["ab", "cd"],
+            "plain text wraps at the width"
+        );
+    }
+
+    /// Edge: an empty line is one empty row, so row counts stay exact.
+    #[test]
+    fn hard_wrap_keeps_an_empty_line_as_one_row() {
+        assert_eq!(wrapped("", 10), [""], "one empty row");
+    }
+
+    /// Edge: at width 1 every character is a row, and a glyph wider than
+    /// the pane is a row of its own with no empty row before it.
+    #[test]
+    fn hard_wrap_at_width_one() {
+        assert_eq!(wrapped("abc", 1), ["a", "b", "c"], "one character per row");
+        assert_eq!(
+            wrapped("\u{4e2d}", 1),
+            ["\u{4e2d}"],
+            "no empty row before a wide glyph"
+        );
+        assert_eq!(wrapped("ab", 0), ["a", "b"], "width 0 is taken as 1");
+    }
+
+    /// The characters `changed_chars` flags, as a string of `^` / `.`.
+    fn marks(flags: &[bool]) -> String {
+        flags.iter().map(|&f| if f { '^' } else { '.' }).collect()
+    }
+
+    /// A change in the middle of a line flags only those characters.
+    #[test]
+    fn changed_chars_middle() {
+        let (a, b) = changed_chars("CSeq: 101 INVITE", "CSeq: 102 INVITE");
+        assert_eq!(marks(&a), "........^.......", "left: only the 1");
+        assert_eq!(marks(&b), "........^.......", "right: only the 2");
+        let (a, b) = changed_chars(
+            "Via: SIP/2.0/UDP 10.0.0.1:5060",
+            "Via: SIP/2.0/TCP 10.0.0.1:5060",
+        );
+        assert_eq!(marks(&a), ".............^^...............", "left: only UD");
+        assert_eq!(
+            marks(&b),
+            ".............^^...............",
+            "right: only TC"
+        );
+    }
+
+    /// A change at the end (a tag added, a value changed) flags only
+    /// the end.
+    #[test]
+    fn changed_chars_end() {
+        let (a, b) = changed_chars(
+            "To: <sip:9021@example.com>",
+            "To: <sip:9021@example.com>;tag=b1",
+        );
+        assert_eq!(
+            marks(&a),
+            "..........................",
+            "left: nothing changed"
+        );
+        assert_eq!(
+            marks(&b),
+            "..........................^^^^^^^",
+            "right: only the added tag"
+        );
+        let (a, b) = changed_chars("Content-Length: 229", "Content-Length: 177");
+        assert_eq!(marks(&a), "................^^^", "left: the whole value");
+        assert_eq!(marks(&b), "................^^^", "right: the whole value");
+    }
+
+    /// Two lines with nothing in common are changed as a whole (a
+    /// stray shared letter or two is not kept plain).
+    #[test]
+    fn changed_chars_whole_line() {
+        let (a, b) = changed_chars(
+            "INVITE sip:9021@example.com SIP/2.0",
+            "SIP/2.0 183 Session Progress",
+        );
+        assert!(
+            a.iter().filter(|f| !**f).count() <= 8,
+            "left mostly changed: {}",
+            marks(&a)
+        );
+        let (a, b2) = changed_chars("abc", "xyz");
+        assert_eq!(
+            (marks(&a), marks(&b2)),
+            ("^^^".to_string(), "^^^".to_string()),
+            "nothing shared: every character changed"
+        );
+        assert!(b.iter().any(|f| *f), "right: something is changed");
+    }
+
+    /// Identical lines flag nothing.
+    #[test]
+    fn changed_chars_identical() {
+        let (a, b) = changed_chars("Call-ID: x@example.com", "Call-ID: x@example.com");
+        assert!(
+            !a.iter().any(|f| *f) && !b.iter().any(|f| *f),
+            "identical lines flag nothing"
+        );
+        let (a, b) = changed_chars("", "");
+        assert!(a.is_empty() && b.is_empty(), "empty lines have no flags");
+    }
+
+    /// Edge: a pair above the cell cap is not aligned character by
+    /// character; its whole middle (between the shared prefix and suffix)
+    /// is flagged.
+    #[test]
+    fn changed_chars_over_the_cell_cap_flags_the_whole_middle() {
+        let n = 600; // 600 * 600 = 360,000 cells, above DIFF_MAX_CHAR_CELLS
+        assert!(n * n > DIFF_MAX_CHAR_CELLS, "the pair must be over the cap");
+        let left = format!("X-Big: <{}>", "ab".repeat(n / 2));
+        let right = format!("X-Big: <{}>", "ba".repeat(n / 2));
+        let (a, b) = changed_chars(&left, &right);
+        let middle = |f: &[bool]| f[8..f.len() - 1].iter().all(|x| *x);
+        assert!(
+            middle(&a) && middle(&b),
+            "over the cap: the whole middle is flagged"
+        );
+        assert!(!a[..8].iter().any(|x| *x), "the shared prefix stays plain");
+        assert!(!a[a.len() - 1], "the shared suffix stays plain");
+    }
+
+    /// The character work of one render is bounded as a whole, not per
+    /// pair: once the shared budget is spent, a later pair has its whole
+    /// middle flagged without the character alignment. A message of many
+    /// long changed lines then costs one budget per frame, not one per line.
+    #[test]
+    fn changed_chars_within_spends_one_budget_across_pairs() {
+        let left = format!("X-A: <{}>", "ab".repeat(200)); // 400-char middle
+        let right = format!("X-A: <{}>", "ba".repeat(200));
+        let mut budget = 200_000; // one 400 x 400 pair (160,000) fits, two do not
+        let (a1, _) = changed_chars_within(&left, &right, &mut budget);
+        assert_eq!(
+            budget,
+            200_000 - 400 * 400,
+            "the first pair spends its cells"
+        );
+        assert!(
+            a1[6..a1.len() - 1].iter().any(|x| !*x),
+            "inside the budget the alignment keeps shared runs plain: {}",
+            marks(&a1)
+        );
+        let (a2, b2) = changed_chars_within(&left, &right, &mut budget);
+        assert!(
+            a2[6..a2.len() - 1].iter().all(|x| *x) && b2[6..b2.len() - 1].iter().all(|x| *x),
+            "past the budget the whole middle is flagged"
+        );
+        assert_eq!(
+            budget,
+            200_000 - 400 * 400,
+            "a pair past the budget spends nothing"
+        );
+        assert_eq!(
+            changed_chars(&left, &right).0,
+            a1,
+            "changed_chars alone starts from a fresh budget"
+        );
+    }
+
+    /// Edge: a multi-byte character gets one flag, not one per byte.
+    #[test]
+    fn changed_chars_flags_a_multibyte_character_once() {
+        let (a, b) = changed_chars("Subject: café ok", "Subject: cafe ok");
+        assert_eq!(
+            a.len(),
+            "Subject: café ok".chars().count(),
+            "one flag per char"
+        );
+        assert_eq!(marks(&a), "............^...", "left: only the é");
+        assert_eq!(marks(&b), "............^...", "right: only the e");
+    }
+
+    /// Edge: a run with more removed than added lines pairs in order and
+    /// leaves the extra removed lines one-sided.
+    #[test]
+    fn paired_line_alignment_more_removed_than_added() {
+        let left = ["A", "X-1: a", "X-2: b", "X-3: c", "B"];
+        let right = ["A", "Y-1: z", "B"];
+        assert_eq!(
+            paired_line_alignment(&left, &right),
+            vec![
+                (Some("A"), Some("A")),
+                (Some("X-1: a"), Some("Y-1: z")),
+                (Some("X-2: b"), None),
+                (Some("X-3: c"), None),
+                (Some("B"), Some("B")),
+            ],
+            "the first removed line pairs with the one added line"
+        );
+    }
+
+    /// A changed line is paired with its new form; extra lines of a
+    /// run stay one-sided, shared lines stay shared.
+    #[test]
+    fn paired_line_alignment_pairs_changed_runs() {
+        let left = ["A", "CSeq: 1 INVITE", "B", "C"];
+        let right = ["A", "CSeq: 2 INVITE", "X-New: 1", "B", "C"];
+        assert_eq!(
+            paired_line_alignment(&left, &right),
+            vec![
+                (Some("A"), Some("A")),
+                (Some("CSeq: 1 INVITE"), Some("CSeq: 2 INVITE")),
+                (None, Some("X-New: 1")),
+                (Some("B"), Some("B")),
+                (Some("C"), Some("C")),
+            ],
+            "the changed line pairs with its new form; the extra line is one-sided"
+        );
+    }
+
+    /// The diff view draws a changed line beside its new form with
+    /// only the changed characters in the diff color; shared lines plain,
+    /// a line on one side only colored as a whole.
+    #[test]
+    fn render_message_diff_colors_only_changed_characters() -> Result<(), TestError> {
+        use crate::capture::parse::TransportProto;
+        use crate::sip::parser::parse_sip;
+        let t0 = base_ts()?;
+        let head = |cseq: &str| {
+            vec![
+                "From: <sip:1001@example.com>;tag=t1".to_string(),
+                "To: <sip:1002@example.com>".to_string(),
+                "Call-ID: chars@test".to_string(),
+                format!("CSeq: {cseq} INVITE"),
+            ]
+        };
+        let h1 = head("101");
+        let mut h2 = head("102");
+        h2.push("X-Only-Right: yes".to_string());
+        let r1: Vec<&str> = h1.iter().map(String::as_str).collect();
+        let r2: Vec<&str> = h2.iter().map(String::as_str).collect();
+        let raw1 = build_sip("INVITE sip:1002@example.com SIP/2.0", &r1);
+        let raw2 = build_sip("INVITE sip:1002@example.com SIP/2.0", &r2);
+        let parse = |raw: &[u8], dt| {
+            parse_sip(
+                raw,
+                t0 + chrono::TimeDelta::seconds(dt),
+                addr_a(),
+                addr_b(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse: {e:?}"))
+        };
+        let app = App::with_processed_messages(vec![parse(&raw1, 0)?, parse(&raw2, 1)?]);
+        let store = app.dialog_store.read();
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(100, 16))?;
+        terminal.draw(|frame| {
+            render_message_diff(
+                frame,
+                frame.area(),
+                &store,
+                &MessageDiffView {
+                    call_id: "chars@test",
+                    msg1_idx: 0,
+                    msg2_idx: 1,
+                    scroll: 0,
+                    header_form: header_form::HeaderFormMode::AsCaptured,
+                    theme: &theme,
+                },
+            );
+        })?;
+        let buf = terminal.backend().buffer().clone();
+        let row_of = |x0: u16, x1: u16, text: &str| -> Option<u16> {
+            (0..buf.area.height).find(|&y| {
+                let line: String = (x0..x1).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                line.contains(text)
+            })
+        };
+        let cell_fg = |x0: u16, y: u16, text: &str, at: usize| -> Option<ratatui::style::Color> {
+            // one char per cell (the border is multi-byte): search by chars
+            let cells: Vec<char> = (x0..x0 + 49)
+                .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                .collect();
+            let want: Vec<char> = text.chars().collect();
+            let col = cells
+                .windows(want.len())
+                .position(|w| w == want.as_slice())?
+                + at;
+            Some(buf[(x0 + col as u16, y)].fg)
+        };
+        let y = row_of(0, 50, "CSeq: 101").ok_or("no CSeq row on the left")?;
+        assert_eq!(
+            row_of(50, 100, "CSeq: 102"),
+            Some(y),
+            "the changed line sits beside its new form"
+        );
+        let warn = theme.warning;
+        assert_eq!(
+            cell_fg(0, y, "CSeq: 101", 8),
+            Some(warn),
+            "the changed 1 is colored"
+        );
+        assert_eq!(
+            cell_fg(50, y, "CSeq: 102", 8),
+            Some(warn),
+            "the changed 2 is colored"
+        );
+        assert_ne!(
+            cell_fg(0, y, "CSeq: 101", 6),
+            Some(warn),
+            "the shared 1 stays plain"
+        );
+        assert_ne!(
+            cell_fg(50, y, "CSeq: 102", 0),
+            Some(warn),
+            "CSeq: stays plain"
+        );
+        assert_ne!(
+            cell_fg(50, y, "CSeq: 102", 10),
+            Some(warn),
+            "INVITE stays plain"
+        );
+        let yc = row_of(0, 50, "Call-ID").ok_or("no Call-ID row")?;
+        assert_ne!(
+            cell_fg(0, yc, "Call-ID", 0),
+            Some(warn),
+            "a shared line stays plain"
+        );
+        let yr = row_of(50, 100, "X-Only-Right").ok_or("no right-only row")?;
+        assert_eq!(
+            cell_fg(50, yr, "X-Only-Right", 0),
+            Some(warn),
+            "a one-sided line is colored"
+        );
+        assert_eq!(
+            cell_fg(50, yr, "X-Only-Right", 14),
+            Some(warn),
+            "as a whole"
+        );
+        Ok(())
+    }
+
+    /// The diff panes wrap long lines, but the returned content height
+    /// used to count UNWRAPPED lines — so the caller's scroll clamp could
+    /// never reach the true (wrapped) bottom when a long header wraps to
+    /// multiple rows.
     #[test]
     fn render_message_diff_scroll_reaches_the_wrapped_bottom() -> Result<(), TestError> {
         use crate::capture::parse::TransportProto;

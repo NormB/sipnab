@@ -458,10 +458,13 @@ mod tests {
         let start = Instant::now();
         let mut b = default_at(start);
         let _ = drain(&mut b, start);
-        let Some(century) = start.checked_add(Duration::from_secs(100 * 365 * 86_400)) else {
-            // The platform cannot represent it; nothing to test.
-            return Ok(());
-        };
+        // Every platform this build targets holds a century in an Instant.
+        let century = crate::test_prereq::required(
+            "instant-range",
+            start
+                .checked_add(Duration::from_secs(100 * 365 * 86_400))
+                .ok_or_else(|| "Instant cannot hold a century from now".to_owned()),
+        )?;
         assert_eq!(
             b.available(century),
             DEFAULT_BUDGET,

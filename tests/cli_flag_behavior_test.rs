@@ -1872,7 +1872,7 @@ fn a_stopped_live_decrypted_export_writes_nothing_it_held() -> Result<(), TestEr
             let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..])?;
             let mut n = 0;
             while let Some(block) = reader.next_block() {
-                if matches!(block?, pcap_file::pcapng::Block::EnhancedPacket(_)) {
+                if matches!(block?.0, pcap_file::pcapng::Block::EnhancedPacket(_)) {
                     n += 1;
                 }
             }
@@ -2693,6 +2693,34 @@ fn json_dialogs_emits_one_object_per_dialog() -> Result<(), TestError> {
         "this capture contains a 488-rejected call; if none is Failed the \
          fixture or the state machine changed"
     );
+    Ok(())
+}
+
+/// The post-capture JSON flags write nothing but JSON to stdout (#823).
+///
+/// Each used to arrive behind the default per-message text line, so
+/// `sipnab -N -I x.pcap --json-dialogs | jq` failed on the first line unless
+/// `--no-cli-print` was also typed. Both fixtures carry SIP, so a text line
+/// would appear if the flag stopped implying `--no-cli-print`.
+#[test]
+fn post_capture_json_flags_write_only_json() -> Result<(), TestError> {
+    const SIP: &str = "tests/pcap-samples/sip-488-codec-reject.pcapng";
+    const SIP_AND_STUN: &str = "tests/fixtures/stun_sdp_mismatch.pcap";
+    let cases = [
+        (SIP, "--json-dialogs"),
+        (SIP, "--json-analyze"),
+        (SIP, "--yang-analyze"),
+        (SIP_AND_STUN, "--json-stun"),
+    ];
+    for (input, flag) in cases {
+        let out = run(&["-N", "-I", input, flag, "--quiet"])?;
+        let mut values = 0;
+        for value in serde_json::Deserializer::from_str(&out).into_iter::<serde_json::Value>() {
+            value.map_err(|e| format!("{flag} wrote a non-JSON stdout ({e}):\n{out}"))?;
+            values += 1;
+        }
+        assert!(values > 0, "{flag} on {input} wrote no JSON at all");
+    }
     Ok(())
 }
 

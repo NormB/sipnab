@@ -83,6 +83,12 @@ pub struct SipMessage {
     pub transport: TransportProto,
     /// Whether this message is a retransmission of a previously seen message.
     pub(crate) is_retransmission: bool,
+    /// The OTHER sources that delivered this same message, as a set of
+    /// [`origin_bit`]s: a run reading the wire and a HEP feed of one proxy
+    /// gets every message from both, and the second copy is merged into the
+    /// first rather than stored as a message of its own (DEDUP-1). Empty for
+    /// a message only its own source delivered. See [`Self::sources`].
+    pub(crate) also_seen_by: u8,
     /// Pointer back to the frame this message was parsed out of.
     ///
     /// This is where provenance stops being an idea about packets and starts
@@ -136,7 +142,56 @@ pub struct SipMessage {
     pub input_origin: Option<crate::capture::parse::InputOrigin>,
 }
 
+/// The bit that stands for `origin` in a set of sources
+/// ([`SipMessage::sources`]).
+pub(crate) fn origin_bit(origin: crate::capture::parse::InputOrigin) -> u8 {
+    1 << (origin as u8)
+}
+
+// Per-thread record of which messages had their CSeq or SDP parsed, test-only:
+// pins that one request over the stores parses each message's CSeq and SDP at
+// most once (thread-local so parallel tests cannot cross-talk).
+// `None` until a test starts recording, so a thread that never asks (an
+// allocation-count test, for one) sees no allocation from the record.
+#[cfg(test)]
+thread_local! {
+    /// Test-only parse counts, keyed by message address: `(cseq, sdp)`.
+    pub(crate) static PARSES: std::cell::RefCell<
+        Option<std::collections::HashMap<usize, (u32, u32)>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only: count one parse of `msg`'s CSeq (`cseq`) or SDP (`!cseq`),
+/// when this thread is recording.
+#[cfg(test)]
+fn note_parse(msg: &SipMessage, cseq: bool) {
+    PARSES.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(p) = p.as_mut() else { return };
+        let entry = p.entry(std::ptr::from_ref(msg) as usize).or_default();
+        if cseq {
+            entry.0 += 1;
+        } else {
+            entry.1 += 1;
+        }
+    });
+}
+
+/// Every message's [`SipMessage::cseq`], in message order: parsed once, for a
+/// pass over one dialog whose several readers (the final status, the
+/// signaling detectors) would otherwise each parse it again.
+pub(crate) fn cseqs(messages: &[SipMessage]) -> Vec<Option<(u32, &str)>> {
+    messages.iter().map(SipMessage::cseq).collect()
+}
+
 impl SipMessage {
+    /// Every source that delivered this message, as a set of [`origin_bit`]s:
+    /// its own origin and those of the copies merged into it. Empty for a
+    /// message that names no origin.
+    pub(crate) fn sources(&self) -> u8 {
+        self.input_origin.map_or(0, origin_bit) | self.also_seen_by
+    }
+
     /// Return the value of the `Call-ID` header, if present.
     pub fn call_id(&self) -> Option<&str> {
         self.header("Call-ID")
@@ -163,7 +218,9 @@ impl SipMessage {
     /// same Call-ID/CSeq but different top-Via branches belong to distinct
     /// transactions. An empty `branch=` value is treated as absent.
     pub fn top_via_branch(&self) -> Option<&str> {
-        let row = *self.via_headers().first()?;
+        // The first Via row, found without collecting every row into a
+        // `Vec`: this runs for every message a dialog takes in.
+        let row = self.header("Via")?;
         // The TOP Via is the first via-parm, not the first ROW. RFC 3261
         // §20.42 makes `Via` a comma-separated list and §7.3.1 lets any number
         // of rows be combined into one, so a single row may hold several hops
@@ -188,6 +245,8 @@ impl SipMessage {
     /// Returns `None` if the header is missing or malformed.
     /// The method string borrows from the header value (zero allocation).
     pub fn cseq(&self) -> Option<(u32, &str)> {
+        #[cfg(test)]
+        note_parse(self, true);
         let val = self.header("CSeq")?;
         // RFC 3261: CSeq = 1*DIGIT LWS Method, where Method is a single
         // token. Take the first two whitespace-separated tokens and ignore
@@ -274,6 +333,8 @@ impl SipMessage {
     ///
     /// Returns `None` if the body holds no SDP or if parsing fails.
     pub fn sdp(&self) -> Option<SdpSession> {
+        #[cfg(test)]
+        note_parse(self, false);
         match self.content_type() {
             Some(ct) if is_sdp_media_type(ct) => sdp::parse_sdp(&self.body).ok(),
             Some(ct) if is_multipart_media_type(ct) => multipart_sdp(ct, &self.body),
@@ -1401,6 +1462,75 @@ mod tests {
         parse_msg("OPTIONS sip:b@example.com SIP/2.0", &headers, b"")
     }
 
+    /// Reading the top Via's branch allocates nothing: it runs for every SIP
+    /// message, inside the retransmission key, and used to collect every Via
+    /// row into a `Vec` to take the first.
+    #[test]
+    fn the_top_via_branch_is_read_without_allocating() -> Result<(), TestError> {
+        let msg = msg_with_vias(&[
+            "Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKtop",
+            "Via: SIP/2.0/UDP b.example.com;branch=z9hG4bKnext",
+            "Via: SIP/2.0/UDP c.example.com;branch=z9hG4bKlast",
+        ])?;
+        let (allocations, branch) = crate::test_alloc::allocations_during(|| msg.top_via_branch());
+        assert_eq!(branch, Some("z9hG4bKtop"), "the first row's branch");
+        assert_eq!(
+            allocations, 0,
+            "reading the top Via branch must not allocate"
+        );
+        Ok(())
+    }
+
+    /// A message with no Via at all has no branch, and finding that out
+    /// allocates nothing either.
+    #[test]
+    fn a_message_without_via_has_no_branch_and_allocates_nothing() -> Result<(), TestError> {
+        let msg = msg_with_vias(&[])?;
+        let (allocations, branch) = crate::test_alloc::allocations_during(|| msg.top_via_branch());
+        assert_eq!(branch, None, "no Via, no branch");
+        assert_eq!(allocations, 0, "a missing Via must not allocate");
+        Ok(())
+    }
+
+    /// The top branch comes from the first Via row even when other headers
+    /// sit between Via rows, and the compact form `v:` counts as a Via row.
+    #[test]
+    fn the_top_via_branch_reads_the_first_via_row_in_message_order() -> Result<(), TestError> {
+        let msg = parse_msg(
+            "OPTIONS sip:b@example.com SIP/2.0",
+            &[
+                "From: <sip:a@example.com>;tag=1",
+                "v: SIP/2.0/UDP a.example.com;branch=z9hG4bKcompact",
+                "To: <sip:b@example.com>",
+                "Via: SIP/2.0/UDP b.example.com;branch=z9hG4bKlater",
+                "Call-ID: via-order@test",
+                "CSeq: 1 OPTIONS",
+                "Content-Length: 0",
+            ],
+            b"",
+        )?;
+        assert_eq!(
+            msg.top_via_branch(),
+            msg.via_headers().first().and_then(|row| {
+                row.split(',')
+                    .next()?
+                    .split(';')
+                    .skip(1)
+                    .filter_map(|p| p.trim().split_once('='))
+                    .find(|(n, _)| n.trim_end().eq_ignore_ascii_case("branch"))
+                    .map(|(_, v)| v.trim())
+                    .filter(|v| !v.is_empty())
+            }),
+            "the branch is the one the first of all Via rows names"
+        );
+        assert_eq!(
+            msg.top_via_branch(),
+            Some("z9hG4bKcompact"),
+            "the compact row is first"
+        );
+        Ok(())
+    }
+
     /// A single Via with a branch param yields that branch.
     #[test]
     fn top_via_branch_basic() -> Result<(), TestError> {
@@ -1754,7 +1884,10 @@ mod tests {
             (1, true),
             (MAX_MULTIPART_DEPTH + 1, true),
             (MAX_MULTIPART_DEPTH + 2, false),
-            (2_000, false),
+            // Far past the bound, and inside the parser's message cap
+            // (`max_message_len`, 64 KiB by default): 2,000 levels made a
+            // 139 KB message no input path delivers.
+            (800, false),
         ] {
             let (ct, body) = nested(depth, "application/sdp", SDP_BODY);
             let m = invite_with(Some(&ct), &body)?;

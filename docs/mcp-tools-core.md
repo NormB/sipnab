@@ -15,9 +15,9 @@ the other bundles and finds any tool by name.
 |---|---|---|
 | [`capture_status`](#capture_status) | -- | What this server captures: live or file, uptime, and whether stopping loses unsaved packets |
 | [`get_capture_report`](#get_capture_report) | `format?` | Whole-capture analysis: findings, orphaned media, STUN/ICMP evidence, what the caps shed |
-| [`list_dialogs`](#list_dialogs) | `filter?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialog summaries, with the total behind it |
-| [`aggregate_dialogs`](#aggregate_dialogs) | `group_by`, `filter?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
-| [`find_problems`](#find_problems) | `kinds?`, `filter?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialogs matching one or more diagnostic alias names |
+| [`list_dialogs`](#list_dialogs) | `filter?`, `named?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialog summaries, with the total behind it |
+| [`aggregate_dialogs`](#aggregate_dialogs) | `group_by`, `filter?`, `named?`, `top_n?` | Counts dialogs grouped by ONE field, in the store rather than in the model |
+| [`find_problems`](#find_problems) | `kinds?`, `filter?`, `named?`, `limit?`, `cursor?`, `fields?`, `max_response_bytes?` | A page of dialogs matching one or more diagnostic alias names |
 | [`search_messages`](#search_messages) | `query`, `regex?`, `limit?`, `cursor?`, `max_response_bytes?` | A page of the messages that hold a substring or match a regular expression, with the total behind it |
 | [`triage_call`](#triage_call) | `call_id` | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
 | [`get_dialog`](#get_dialog) | `call_id`, `max_messages?`, `cursor?`, `max_response_bytes?` | Paginated dialog with full SIP messages |
@@ -380,6 +380,7 @@ Returns one page of dialog summaries from the live capture store.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `filter?` | string? | A diagnostic alias name — `problems`, `slow-setup`, `short-calls`, `one-way`, `nat-issues`, `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` — **or** a raw [filter DSL](filter-dsl.md) expression, which may use a [named filter](filter-dsl.md#named-filters) as `@name`. A value may be bare or quoted: `method == INVITE` and `method == 'INVITE'` are the same filter. Anything else fails with `invalid_params` naming the position it stopped parsing at, or, for an undefined `@name`, listing the names the run defines. | Every dialog in the store matches. |
+| `named?` | string? | The name of one [`[filters]` entry](filter-dsl.md#named-filters) or diagnostic alias, in place of `filter`: `"sales"` selects what `filter: "@sales"` selects, with or without a leading `@`. [`list_named_filters`](mcp-tools-signaling.md#list_named_filters) lists the entries. With `filter` it fails with `conflicting_params`; a name nothing defines fails with `invalid_choice`, the accepted names in `valid_values`. | `filter` decides. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 unless the operator changed it). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor?` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339 created_at>\|<Call-ID>`). A malformed timestamp half fails with `invalid_params`. | Starts at the oldest dialog. |
 | `fields?` | string[]? | Field names to keep on each row, plus `call_id`, which survives whether or not you list it. An unknown name fails with `invalid_params` naming both the typo and the fields a row carries. See [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
@@ -540,6 +541,7 @@ fetching pages and counting rows.
 |---|---|---|---|
 | `group_by` | string | One of `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip`, `rtp.codec`. Anything else fails with `invalid_params` naming the legal set. | Required. |
 | `filter?` | string? | Alias or DSL, applied before grouping. | No filter — the whole store. |
+| `named?` | string? | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](#list_dialogs) takes it. | `filter` decides. |
 | `top_n?` | integer? | Bounded by `--mcp-max-rows`, the same setting that bounds dialog rows. `other_count` counts the groups past it. | The same default as any row limit. |
 
 **Returns** `group_by` (echoed), `buckets` (each `{ value, count }`, largest
@@ -595,6 +597,7 @@ the optional `filter`.
 |---|---|---|---|
 | `kinds?` | string[]? | One or more of the ten diagnostic aliases listed under [`list_dialogs`](#list_dialogs), OR-ed together. An unknown name fails with `invalid_params`. An empty array behaves as omitted. | `["problems"]`. |
 | `filter?` | string? | An alias name or a raw [DSL](filter-dsl.md) expression, **ANDed** with the alias match. | The alias match alone decides the page. |
+| `named?` | string? | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](#list_dialogs) takes it. | `filter` decides. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `cursor?` | string? | The previous response's `next_cursor`, verbatim. | Starts at the oldest match. |
 | `fields?` | string[]? | Field names to keep on each row, plus `call_id`. Same rules as [`list_dialogs`](#list_dialogs) — see [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
@@ -764,12 +767,13 @@ is the how-to.
 - **The page is the same.** `limit`, `cursor`, `max_response_bytes`,
   `total_matched` and the order of the hits do not change.
 
-Three limits bound a pattern. Each refusal is `invalid_params` (-32602) with
+Four limits bound a pattern. Each refusal is `invalid_params` (-32602) with
 `data.param` `query`:
 
 | Limit | Value | Message | `data.reason` |
 |---|---|---|---|
 | Pattern length | 1024 bytes | `query is <n> bytes; with regex true a query is at most 1024 bytes` | `limit_exceeded` |
+| Character classes (each `[`, `\p` or `\P`) | 16 | `query has <n> character classes; with regex true a query has at most 16 character classes (each [, \p or \P)` | `limit_exceeded` |
 | Compiled size | 1000000 bytes | `query compiles to more than 1000000 bytes; use fewer or smaller repetitions` | `limit_exceeded` |
 | Scan time for one call | 5 s | `the regex search passed its 5 s limit after <n> messages; use a simpler pattern` | `limit_exceeded` |
 

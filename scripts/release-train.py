@@ -11,7 +11,7 @@ with its pull request open. The train then drives what follows, and every run
 starts by reading where the release is from GitHub and git, so a re-run after
 a crash continues from there:
 
-    ci-wait       post the CLA status for the head, wait for the checks
+    ci-wait       wait for the checks
     land          land the pull request (land-queue, required-checks)
     tag           move this checkout to the merge commit, wait for GitHub's
                   proof of it, make the signed tag, push it in the lane
@@ -35,6 +35,17 @@ hook's length before a local step. The rule is `window_wanted`:
   runner longer than `queued_grace_s` (`stuck_queued`): it has not started, so
   nothing says when it ends;
 - closed for the release workflow and the post checks, which use no main slot.
+
+A JOB NO RUNNER TOOK (RELEASE-TRAIN-STOPS-ON-NOT-ACQUIRED). GitHub cancels a
+job no hosted runner takes, and .github/workflows/rerun-not-acquired.yml
+re-runs it when its run completes. The 0.5.262 and 0.5.263 trains read that
+cancel as a failure and stopped at ci-failed, and a person restarted them. A
+canceled check is now read through the re-run script's own rule
+(`rerun_coming` in scripts/rerun-not-acquired.py): a job it will re-run is
+pending, and keeps the window closed as a check that waits for a runner, while
+its run is in progress and for `rerun_grace_s` after the run completed. A job
+the script will not re-run, or one whose re-run did not come within the grace,
+is a failure.
 
 Measured: on 0.5.239 there was no window, and the tag push waited 769 s behind
 an ordinary job that had started 7 s before it. On 0.5.240 the window was
@@ -78,9 +89,10 @@ re-run resumes); 2 usage; 3 the post checks withdrew the release; 4 the
 withdrawal did not complete. After a 3 or a 4 the post checks do not run again
 without --retry-post.
 
-The state file holds two values GitHub cannot be asked for, the post checks'
-exit status and the head the CLA status was posted for, and the usual times
-with the time of their last read.
+The state file holds one value GitHub cannot be asked for, the post checks'
+exit status, and the usual times with the time of their last read. The train
+posts no license/cla status: the repository requires DCO instead since
+2026-11-20, and the tool that posted it is retired.
 
 Tested by scripts/tests/test_release_train.py, on a fake clock.
 """
@@ -107,6 +119,13 @@ sys.modules[_spec.name] = _post
 _spec.loader.exec_module(_post)
 Result = _post.Result
 subprocess_runner = _post.subprocess_runner
+
+# The re-run workflow's rule: which canceled job it re-runs. Read, not copied.
+_rerun_spec = importlib.util.spec_from_file_location("rerun_not_acquired_for_train",
+                                                     SCRIPTS / "rerun-not-acquired.py")
+_rerun = importlib.util.module_from_spec(_rerun_spec)
+sys.modules[_rerun_spec.name] = _rerun
+_rerun_spec.loader.exec_module(_rerun)
 
 # GitHub's own conclusion values, compared in lowercase.
 BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
@@ -139,6 +158,7 @@ class Facts:
     post_rc: int | None
     stuck: int = 0
     long_remaining: float | None = None
+    rerunning: tuple = ()
 
 
 @dataclasses.dataclass
@@ -155,6 +175,7 @@ class Config:
     proof_poll_s: float = 10.0
     queued_grace_s: int = 120
     usual_retry_s: int = 300
+    rerun_grace_s: int = 600
     window_minutes: int = 60
     bin_dir: str = ""
     retry_post: bool = False
@@ -260,11 +281,15 @@ def check_state(c) -> str:
     return "passed" if conclusion in GOOD_CONCLUSIONS else "pending"
 
 
-def read_rollup(items) -> tuple:
-    """(pending, failed names, earliest start) of a statusCheckRollup."""
+def read_rollup(items, rerunning=frozenset()) -> tuple:
+    """(pending, failed names, earliest start) of a statusCheckRollup.
+    A failed check whose `detailsUrl` is in `rerunning` (`read_reruns`) is
+    pending: the re-run workflow runs it again."""
     pending, failed, started = 0, [], []
     for c in items:
         state = check_state(c)
+        if state == "failed" and c.get("detailsUrl") in rerunning:
+            state = "pending"
         if state == "failed":
             failed.append(c.get("name") or c.get("context") or "?")
         elif state == "pending":
@@ -273,6 +298,44 @@ def read_rollup(items) -> tuple:
         if t is not None:
             started.append(t)
     return pending, tuple(failed), min(started) if started else None
+
+
+# A check run's link to its Actions job: .../actions/runs/<run id>/job/<job id>.
+JOB_LINK = re.compile(r"/actions/runs/([0-9]+)/job/([0-9]+)(?:[/?#]|$)")
+
+
+def job_ids(c) -> tuple | None:
+    """(run id, job id) from a rollup item's `detailsUrl`, or None when the
+    link is not an Actions job."""
+    url = c.get("detailsUrl")
+    if not isinstance(url, str):
+        return None
+    m = JOB_LINK.search(url)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def rerun_candidate(c) -> bool:
+    """Whether a rollup item is a canceled Actions job of a workflow the
+    re-run workflow watches: the only checks worth the job and annotation
+    reads. A check still running has no conclusion yet, and a commit status
+    (a `state`, no `conclusion`), a failure and a timeout never are."""
+    return ((c.get("conclusion") or "").lower() == "cancelled"
+            and c.get("workflowName") in _rerun.WORKFLOWS and job_ids(c) is not None)
+
+
+def awaits_rerun(c, run_, job, annotations, now: float | None, grace_s: float) -> bool:
+    """Whether the canceled check `c` will be run again by
+    rerun-not-acquired.yml: the re-run script's own rule (`rerun_coming`),
+    and the run either still in progress or completed at most `grace_s`
+    seconds before `now`. A completion time ahead of `now` is within the
+    grace (GitHub's clock and this one differ by seconds); without `now` or a
+    completion time a completed run cannot be judged and is not waited for."""
+    if not _rerun.rerun_coming(c.get("workflowName"), run_, job, annotations):
+        return False
+    if run_.get("status") != "completed":
+        return True
+    done = _epoch(run_.get("updated_at"))
+    return now is not None and done is not None and now - done <= grace_s
 
 
 def pending_names(items) -> list:
@@ -404,6 +467,25 @@ def usual_for(cfg: Config, run, names, now: float) -> dict:
     return usual
 
 
+def read_reruns(cfg: Config, run, items, now: float | None) -> tuple:
+    """The (detailsUrl, name) of each canceled check that rerun-not-acquired.yml
+    will run again (`awaits_rerun`). Reads the run, the job and its
+    annotations of each candidate (`rerun_candidate`) only; a read that fails
+    is a ReadError, never a guess."""
+    found, runs = [], {}
+    for c in items:
+        if not rerun_candidate(c):
+            continue
+        run_id, job_id = job_ids(c)
+        if run_id not in runs:
+            runs[run_id] = _read_json(run, ["gh", "api", f"repos/{cfg.repo}/actions/runs/{run_id}"])
+        job = _read_json(run, ["gh", "api", f"repos/{cfg.repo}/actions/jobs/{job_id}"])
+        notes = _read_json(run, ["gh", "api", f"repos/{cfg.repo}/check-runs/{job_id}/annotations?per_page=100"])
+        if awaits_rerun(c, runs[run_id], job, notes, now, cfg.rerun_grace_s):
+            found.append((c["detailsUrl"], c.get("name") or "?"))
+    return tuple(found)
+
+
 def read_facts(cfg: Config, run, now: float | None = None) -> Facts:
     """The release's facts. With `now`, the checks that wait for a runner are
     counted (`stuck_queued`) and the longest pending check is estimated
@@ -412,14 +494,16 @@ def read_facts(cfg: Config, run, now: float | None = None) -> Facts:
                            "--state", "all", "--json", "number,state,headRefOid,mergeCommit", "--limit", "1"])
     pr = prs[0] if prs else {}
     state = pr.get("state", "")
-    pending, failed, first, stuck, long_remaining = 0, (), None, 0, None
+    pending, failed, first, stuck, long_remaining, reruns = 0, (), None, 0, None, ()
     if state == "OPEN":
         rollup = _read_json(run, ["gh", "pr", "view", str(pr["number"]), "--repo", cfg.repo,
                                   "--json", "statusCheckRollup"])
         items = rollup.get("statusCheckRollup") or []
-        pending, failed, first = read_rollup(items)
+        reruns = read_reruns(cfg, run, items, now)
+        pending, failed, first = read_rollup(items, {url for url, _ in reruns})
         if now is not None:
-            stuck = stuck_queued(items, now, cfg.queued_grace_s)
+            # A job that awaits a re-run waits for a runner, as a queued one does.
+            stuck = stuck_queued(items, now, cfg.queued_grace_s) + len(reruns)
             long_remaining = longest_remaining(items, usual_for(cfg, run, pending_names(items), now), now)
     tag = run(["git", "-C", str(REPO), "ls-remote", "--tags", "origin", f"refs/tags/v{cfg.version}"], 60)
     if tag.rc != 0:
@@ -437,7 +521,8 @@ def read_facts(cfg: Config, run, now: float | None = None) -> Facts:
     return Facts(pr_state=state, pr_number=pr.get("number"), head=pr.get("headRefOid", ""),
                  merge_sha=(pr.get("mergeCommit") or {}).get("oid", ""), pending=pending, failed=failed,
                  first_started=first, tag_exists=bool(tag.out.strip()), run_status=status,
-                 run_conclusion=conclusion, post_rc=post_rc, stuck=stuck, long_remaining=long_remaining)
+                 run_conclusion=conclusion, post_rc=post_rc, stuck=stuck, long_remaining=long_remaining,
+                 rerunning=tuple(name for _, name in reruns))
 
 
 def sync_window(cfg: Config, run, want: bool, now: float) -> str:
@@ -460,15 +545,6 @@ def sync_window(cfg: Config, run, want: bool, now: float) -> str:
 # ---------------------------------------------------------------------------
 # The local steps
 # ---------------------------------------------------------------------------
-
-
-def post_cla(cfg: Config, run, f: Facts) -> None:
-    if load_state(cfg).get("cla_head") == f.head:
-        return
-    r = run([tool(cfg, "cla-owner-exempt"), cfg.repo, f.head], 400)
-    if r.rc != 0:
-        raise Stopped(f"the CLA status for {f.head} was not posted: {r.out.strip()}")
-    save_state(cfg, cla_head=f.head)
 
 
 def land(cfg: Config, run, f: Facts) -> None:
@@ -598,10 +674,14 @@ def tick(cfg: Config, run, clock, sleep=time.sleep, announce=None) -> str:
     stage = stage_of(f)
     if announce is not None:
         announce(stage)
+    said = load_state(cfg).get("rerunning_said") or []
+    if list(f.rerunning) != said:
+        if f.rerunning:
+            print(f"no hosted runner took a job; rerun-not-acquired.yml runs it again; "
+                  f"awaits a re-run: {', '.join(f.rerunning)}")
+        save_state(cfg, rerunning_said=list(f.rerunning))
     sync_window(cfg, run, window_wanted(stage, f.pending, ci_remaining(f, cfg, now), cfg, f.stuck,
                                         f.long_remaining), now)
-    if stage in ("ci-wait", "land"):
-        post_cla(cfg, run, f)
     if stage == "land":
         land(cfg, run, f)
     elif stage == "tag":

@@ -181,6 +181,34 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
         Span::raw(format!(
             "{L1_GAP}Dialogs: {displayed_count} shown of {total_count}"
         )),
+        // The order of the rows, always named: `<`, `>`, `Z` and `L` change
+        // it, and a list sorted by some other column than the number reads
+        // as dialogs jumping around.
+        Span::raw(format!(
+            "{L1_GAP}Sort: {} {}",
+            app.call_list.sort_column().label(),
+            if app.call_list.sort_ascending() {
+                "\u{25b2}"
+            } else {
+                "\u{25bc}"
+            }
+        )),
+        // Named only while it hides something, to keep line 1 short.
+        Span::raw(if app.call_list.only_open {
+            format!("{L1_GAP}Showing: not over")
+        } else {
+            String::new()
+        }),
+        // Named only when a method filter dropped something at ingest:
+        // those messages are in no dialog and in no other count.
+        Span::raw(if app.cached_dropped_by_method > 0 {
+            format!(
+                "{L1_GAP}Dropped by method: {}",
+                app.cached_dropped_by_method
+            )
+        } else {
+            String::new()
+        }),
         Span::raw(format!(
             "{L1_GAP}Autoscroll: {}",
             if app.call_list.autoscroll {
@@ -357,7 +385,9 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         } else {
             ""
         };
-        let detail = if app.flow.raw_preview {
+        let detail = if app.flow.raw_preview && app.theme.sngrep {
+            format!("{} cols", app.flow.sngrep_raw_drawn.0)
+        } else if app.flow.raw_preview {
             format!("{}%", app.flow.raw_preview_pct)
         } else {
             "off".to_string()
@@ -522,11 +552,12 @@ pub(in crate::tui) fn fkey_bar_items(
 ) -> Vec<(&'static str, &'static str)> {
     if let Some(p) = popup {
         match p {
-            Popup::QuitConfirm => vec![("Y", "Quit"), ("N/Esc", "Cancel")],
+            Popup::QuitConfirm => vec![("Y/Enter", "Quit"), ("N/Esc", "Cancel")],
             Popup::ClearConfirm(_) => vec![("Y", "Discard"), ("N/Esc/Enter", "Keep")],
             Popup::G729Install => vec![("Y", "Download"), ("N/Esc", "Not now")],
             Popup::NoteEditor => vec![("Enter", "Keep"), ("Esc", "Cancel")],
             Popup::UnsavedNotes => vec![("Y", "Open"), ("N/Esc", "Keep")],
+            Popup::CommandLine(_) => vec![("Esc/Enter", "Close")],
             Popup::ArchivePassword => vec![
                 ("Enter", "Try"),
                 ("Esc", "Skip"),
@@ -541,6 +572,8 @@ pub(in crate::tui) fn fkey_bar_items(
                     ("Enter", "Apply"),
                     ("Esc", "Cancel"),
                     ("F9", "Clear"),
+                    ("F1", "Fields"),
+                    ("F2", "Save as"),
                 ]
             }
             Popup::SettingsDialog => {
@@ -865,7 +898,11 @@ pub(in crate::tui) fn render_fkey_bar(
 
     // Full item sets per view; items near the end are lower priority.
     // Popup-specific bars take precedence.
-    let items = fkey_bar_items(view, popup, width, file_open_manual);
+    let items = match (theme.sngrep, popup) {
+        (true, None) => crate::tui::sngrep_mode::fkey_bar(view, theme.sngrep_alt_hints),
+        _ => None,
+    }
+    .unwrap_or_else(|| fkey_bar_items(view, popup, width, file_open_manual));
 
     let mut spans: Vec<Span> = Vec::new();
     for (i, (key, label)) in items.iter().enumerate() {
@@ -2072,6 +2109,17 @@ mod tests {
         }
         assert!(row.contains("Format"));
         Ok(())
+    }
+
+    /// The filter dialog's bar names F2, which saves the dialog's filter
+    /// under a name.
+    #[test]
+    fn the_filter_dialog_bar_names_f2() {
+        let items = fkey_bar_items(&View::CallList, &Some(Popup::FilterDialog), 120, false);
+        assert!(
+            items.contains(&("F2", "Save as")),
+            "the bar lists F2: {items:?}"
+        );
     }
 
     /// The file-open dialog's bar names the keys of the mode it is in. It

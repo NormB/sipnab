@@ -244,6 +244,8 @@ pub struct TopTalkersParams {
     /// second one.
     #[serde(default)]
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Leading digits of the dialed number that make one `prefix` bucket.
     /// Default 4. Ignored for every other `by`.
     ///
@@ -521,7 +523,7 @@ impl SipnabMcp {
             }
         })?;
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        let filter = self.compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
 
         let (tally, total_matched, capture_identity) = {
             // Capture, dialogs, streams -- the order `CaptureState` documents.
@@ -532,9 +534,10 @@ impl SipnabMcp {
             let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
             let capture_media = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
 
-            // Streams grouped by Call-ID once. `streams_for` scans the whole
-            // stream store per dialog, and this tool visits every dialog, so
-            // the per-dialog scan would be quadratic in the capture's size.
+            // Streams grouped by Call-ID once: one pass over the store for
+            // every dialog this tool visits. (`streams_for` once scanned the
+            // whole store per dialog, which was quadratic here; it now reads a
+            // per-call index.)
             let mut by_call: std::collections::HashMap<&str, Vec<&crate::rtp::stream::RtpStream>> =
                 std::collections::HashMap::new();
             for s in ss.iter() {
@@ -1486,6 +1489,7 @@ mod tests {
                 by: by.to_string(),
                 limit: None,
                 filter: None,
+                named: None,
                 prefix_digits: None,
             }))
             .await
@@ -1657,6 +1661,7 @@ mod tests {
                 by: "ip".to_string(),
                 limit: Some(1),
                 filter: None,
+                named: None,
                 prefix_digits: None,
             }))
             .await
@@ -1680,6 +1685,7 @@ mod tests {
                 by: "ip".to_string(),
                 limit: None,
                 filter: Some("response_code == 403".to_string()),
+                named: None,
                 prefix_digits: None,
             }))
             .await
@@ -1709,6 +1715,7 @@ mod tests {
                 by: "codec".to_string(),
                 limit: None,
                 filter: None,
+                named: None,
                 prefix_digits: None,
             }))
             .await
@@ -1731,6 +1738,7 @@ mod tests {
                 by: "prefix".to_string(),
                 limit: None,
                 filter: None,
+                named: None,
                 prefix_digits: Some(0),
             }))
             .await
@@ -1760,6 +1768,7 @@ mod tests {
             by: by.to_string(),
             limit: None,
             filter: None,
+            named: None,
             prefix_digits,
         };
 

@@ -764,13 +764,29 @@ fn the_worker_starts_before_anything_that_could_stop_an_exec() -> Result<(), Tes
         "launch no longer runs its post-open steps through \
          confine_after_capture_start; repoint this test"
     );
-    let body = fn_body("fn confine_after_capture_start(")?;
     // Code only: a comment naming a step is not a call to it.
-    let code: String = body
-        .lines()
-        .map(|l| l.split("//").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let code_of = |body: String| -> String {
+        body.lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // The steps run in two halves, the privileged one first
+    // (CAPTURE-RESOLVE-AS-ROOT: a file run starts its reader between them).
+    let whole = code_of(fn_body("fn confine_after_capture_start(")?);
+    let first = whole.find("confine_privileged(").ok_or(
+        "confine_after_capture_start no longer runs confine_privileged; repoint this test",
+    )?;
+    let second = whole.find("confine_unprivileged(").ok_or(
+        "confine_after_capture_start no longer runs confine_unprivileged; repoint this test",
+    )?;
+    assert!(
+        first < second,
+        "the privileged half must run before the rest"
+    );
+    let code = code_of(fn_body("fn confine_privileged(")?)
+        + "\n"
+        + &code_of(fn_body("fn confine_unprivileged(")?);
     let at = |call: &str| {
         code.find(call)
             .ok_or_else(|| format!("launch no longer calls {call}; repoint this test"))
@@ -850,6 +866,176 @@ fn stderr_lines(child: &mut Child) -> Result<crossbeam_channel::Receiver<String>
     Ok(rx)
 }
 
+/// The run the end-to-end tests start: headless, a HEP listener on a port
+/// the kernel chooses, `-K 127.0.0.1` answered through the ephemeral socket,
+/// logging at `info`, stderr piped to the test.
+#[cfg(feature = "hep")]
+fn hep_kill_run<'a>(command: &'a mut Command, home: &std::path::Path) -> &'a mut Command {
+    command
+        .args([
+            "-N",
+            // Port 0: the kernel chooses, and the port is the run's from the
+            // moment it exists. A port picked here and released before the
+            // run bound it could be taken by a parallel test in between
+            // ("Address already in use", PORT-RACE-HEP).
+            "--hep-listen",
+            "127.0.0.1:0",
+            "--hep-parse",
+            "--hep-allow-kill",
+            "-K",
+            "127.0.0.1",
+            "--kill-spoof",
+            "ephemeral",
+        ])
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .env("NO_COLOR", "1")
+        .env("SIPNAB_LOG", "info")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+}
+
+/// Deliver, over HEP to the listener at `bind`, an OPTIONS request from the
+/// `-K` target 127.0.0.1 whose Via names `scanner_port`: the run answers it
+/// there. `n` makes its branch, tag and Call-ID (`pi2-<n>@127.0.0.1`) unique.
+#[cfg(feature = "hep")]
+fn hep_options(bind: std::net::SocketAddr, scanner_port: u16, n: u32) -> Result<(), TestError> {
+    use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
+    let sip = format!(
+        "OPTIONS sip:probe@127.0.0.1 SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 127.0.0.1:{scanner_port};branch=z9hG4bKpi2{n}\r\n\
+         Max-Forwards: 70\r\n\
+         From: <sip:probe@127.0.0.1>;tag=pi2{n}\r\n\
+         To: <sip:probe@127.0.0.1>\r\n\
+         Call-ID: pi2-{n}@127.0.0.1\r\n\
+         CSeq: 1 OPTIONS\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    let endpoint = HepEndpoint {
+        src_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        dst_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        src_port: scanner_port,
+        dst_port: 5060,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    let hep = build_hep_v3(
+        &endpoint,
+        chrono::Utc::now(),
+        HepProtocol::Sip,
+        0,
+        None,
+        sip.as_bytes(),
+    );
+    UdpSocket::bind("127.0.0.1:0")?.send_to(&hep, bind)?;
+    Ok(())
+}
+
+/// Read `child`'s stderr on a thread, forwarding each line, until every one
+/// of `wanted` has matched a line; then close the read end, so every later
+/// write the run or its worker makes to stderr fails with `EPIPE`.
+///
+/// The thread closes the pipe itself, at a known line, so the test does not
+/// race a reader against the writes it is about.
+#[cfg(feature = "hep")]
+fn stderr_until_then_close(
+    child: &mut Child,
+    wanted: Vec<fn(&str) -> bool>,
+) -> Result<crossbeam_channel::Receiver<String>, TestError> {
+    let stderr = child.stderr.take().ok_or("stderr piped")?;
+    let (tx, rx) = crossbeam_channel::unbounded();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut open: Vec<fn(&str) -> bool> = wanted;
+        let mut reader = std::io::BufReader::new(stderr);
+        let mut line = String::new();
+        while !open.is_empty() {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let text = line.trim_end().to_string();
+            open.retain(|matches| !matches(&text));
+            if tx.send(text).is_err() {
+                break;
+            }
+        }
+        // `reader` (the pipe's only read end) is dropped here.
+    });
+    Ok(rx)
+}
+
+/// End to end, through the real run, the case a user meets: the run's stderr
+/// loses its reader (`sipnab ... 2>&1 | head`, a log collector that
+/// restarted) after startup. The run and its worker keep answering scanners,
+/// and the run still exits cleanly. Before the fix the worker panicked at its
+/// first log line after that, and no scanner was answered from then on.
+#[cfg(feature = "hep")]
+#[test]
+fn a_real_run_keeps_answering_scanners_after_its_stderr_reader_goes() -> Result<(), TestError> {
+    let (listener, scanner_port) = scanner()?;
+    let home = tempfile::tempdir()?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+    let mut run = Reaped(
+        hep_kill_run(&mut command, home.path())
+            .tied_to_test()
+            .spawn()?,
+    );
+    let lines = stderr_until_then_close(
+        &mut run.0,
+        vec![
+            |l| l.contains("scanner-kill worker process") && l.contains("ready"),
+            |l| hep_listener_addr(l).is_some(),
+        ],
+    )?;
+    let mut seen = Vec::new();
+    // The thread ends, and the channel disconnects, once both lines were read
+    // and the pipe is closed.
+    let until = Instant::now() + test_timeout(30);
+    loop {
+        match lines.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(line) => seen.push(line),
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                return Err(format!(
+                    "stderr never showed the ready and listener lines:\n{}",
+                    seen.join("\n")
+                )
+                .into());
+            }
+        }
+    }
+    let bind = seen
+        .iter()
+        .find_map(|l| hep_listener_addr(l))
+        .ok_or_else(|| format!("no listener line in:\n{}", seen.join("\n")))?;
+
+    let mut buf = [0u8; 2048];
+    for n in 1..=3 {
+        hep_options(bind, scanner_port, n)?;
+        let (got, _) = listener
+            .recv_from(&mut buf)
+            .map_err(|e| format!("request {n} after stderr lost its reader got no answer: {e}"))?;
+        let answer = String::from_utf8_lossy(&buf[..got]);
+        assert!(
+            answer.contains(&format!("pi2-{n}@127.0.0.1")),
+            "the answer to request {n}: {answer}"
+        );
+    }
+    assert!(
+        run.0.try_wait()?.is_none(),
+        "the run must keep running after its stderr reader goes"
+    );
+    let status = terminate(&mut run.0)?;
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the run ends as it would with a readable stderr: {status:?}"
+    );
+    Ok(())
+}
+
 /// End to end, through the real run: `bootstrap::launch` starts the worker,
 /// the parent holds none of its descriptors, a HEP-carried request from a
 /// `-K` target is answered through the worker, and when the worker is killed
@@ -862,8 +1048,6 @@ fn stderr_lines(child: &mut Child) -> Result<crossbeam_channel::Receiver<String>
 #[cfg(feature = "hep")]
 #[test]
 fn a_real_run_answers_through_its_worker_and_survives_losing_it() -> Result<(), TestError> {
-    use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
-
     let (listener, scanner_port) = scanner()?;
     let home = tempfile::tempdir()?;
     let mut command = Command::new(env!("CARGO_BIN_EXE_sipnab"));
@@ -891,32 +1075,10 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() -> Result<(), 
         }
     }
     let mut run = Reaped(
-        command
-            .args([
-                "-N",
-                // Port 0: the kernel chooses, and the port is the run's from the
-                // moment it exists. A port picked here and released before the
-                // run bound it could be taken by a parallel test in between
-                // ("Address already in use", PORT-RACE-HEP).
-                "--hep-listen",
-                "127.0.0.1:0",
-                "--hep-parse",
-                "--hep-allow-kill",
-                "-K",
-                "127.0.0.1",
-                "--kill-spoof",
-                "ephemeral",
-            ])
-            .env("HOME", home.path())
-            .env("XDG_CONFIG_HOME", home.path())
+        hep_kill_run(&mut command, home.path())
             // Stands in for a bearer token or signing key the run was given
             // through its environment. The worker must not inherit it.
             .env("SIPNAB_PI2_CANARY", "1")
-            .env("NO_COLOR", "1")
-            .env("SIPNAB_LOG", "info")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
             .tied_to_test()
             .spawn()?,
     );
@@ -1046,35 +1208,7 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() -> Result<(), 
         hep_listener_addr(l).is_some()
     })?;
     let bind = hep_listener_addr(&started).ok_or("the line just matched")?;
-    let send_options = |n: u32| -> Result<(), TestError> {
-        let sip = format!(
-            "OPTIONS sip:probe@127.0.0.1 SIP/2.0\r\n\
-             Via: SIP/2.0/UDP 127.0.0.1:{scanner_port};branch=z9hG4bKpi2{n}\r\n\
-             Max-Forwards: 70\r\n\
-             From: <sip:probe@127.0.0.1>;tag=pi2{n}\r\n\
-             To: <sip:probe@127.0.0.1>\r\n\
-             Call-ID: pi2-{n}@127.0.0.1\r\n\
-             CSeq: 1 OPTIONS\r\n\
-             Content-Length: 0\r\n\r\n"
-        );
-        let endpoint = HepEndpoint {
-            src_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            dst_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            src_port: scanner_port,
-            dst_port: 5060,
-            transport: sipnab::net::TransportProto::Udp,
-        };
-        let hep = build_hep_v3(
-            &endpoint,
-            chrono::Utc::now(),
-            HepProtocol::Sip,
-            0,
-            None,
-            sip.as_bytes(),
-        );
-        UdpSocket::bind("127.0.0.1:0")?.send_to(&hep, bind)?;
-        Ok(())
-    };
+    let send_options = |n: u32| hep_options(bind, scanner_port, n);
     send_options(1)?;
     let mut buf = [0u8; 2048];
     let (n, _) = listener.recv_from(&mut buf)?;
@@ -1135,6 +1269,317 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() -> Result<(), 
         sent + lost,
         1,
         "the request the worker took must be booked once, as sent or lost: {totals}"
+    );
+    Ok(())
+}
+
+// ── A worker whose stderr cannot be written ─────────────────────────────
+//
+// The worker shares the run's stderr. When that stderr is a pipe whose reader
+// has gone (`sipnab ... 2>&1 | head`, a log collector that restarted), every
+// log line the worker writes fails. tracing-subscriber's `fmt()` builder then
+// reported the failure with `eprintln!` to the same stderr, and that panics
+// when its own write fails: the worker exited 101 at its first log line, and
+// `--kill-scanner` answered no scanner from then on. These tests start the
+// worker with such a stderr and hold that it does its job and ends the way
+// it would with a readable one.
+
+/// Where a directly started worker's stderr goes.
+#[derive(Clone, Copy, Debug)]
+enum Stderr {
+    /// A pipe whose read end is closed before the worker starts: every write
+    /// fails with `EPIPE`.
+    ReaderGone,
+    /// `/dev/full`: every write fails with `ENOSPC`.
+    Full,
+    /// `/dev/null`: every write succeeds, the case the tests compare with.
+    Null,
+}
+
+impl Stderr {
+    fn stdio(self) -> Result<Stdio, TestError> {
+        Ok(match self {
+            Self::ReaderGone => {
+                let (reader, writer) = std::io::pipe()?;
+                drop(reader);
+                Stdio::from(writer)
+            }
+            Self::Full => Stdio::from(std::fs::OpenOptions::new().write(true).open("/dev/full")?),
+            Self::Null => Stdio::null(),
+        })
+    }
+}
+
+/// Start the worker entry point with `args`, `SIPNAB_LOG` set to `log`, and
+/// stderr as `stderr` says. stdin and stdout are pipes the test holds.
+fn worker_with_stderr(args: &[&str], log: &str, stderr: Stderr) -> Result<Reaped, TestError> {
+    Ok(Reaped(
+        Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .arg(KILL_WORKER_ARG)
+            .args(args)
+            .env("SIPNAB_LOG", log)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(stderr.stdio()?)
+            .tied_to_test()
+            .spawn()?,
+    ))
+}
+
+/// The arguments of a worker that holds no send descriptor, logging at
+/// `level` unless `SIPNAB_LOG` says otherwise.
+fn no_descriptor_args(level: &str) -> [&str; 8] {
+    [
+        "--rate-limit",
+        "10",
+        "--send-fds",
+        "none",
+        "--run-as",
+        "nobody",
+        "--log-level",
+        level,
+    ]
+}
+
+/// Send `requests` kill requests and read one answer for each; then close
+/// stdin and return how the worker ended.
+///
+/// # Errors
+///
+/// When the worker closes stdout before it has answered every request, or
+/// does not end within the test timeout after its stdin is closed.
+fn answer_then_end(
+    worker: &mut Reaped,
+    requests: usize,
+) -> Result<(Vec<KillResponse>, std::process::ExitStatus), TestError> {
+    let mut to_worker = worker.0.stdin.take().ok_or("stdin piped")?;
+    let mut from_worker = worker.0.stdout.take().ok_or("stdout piped")?;
+    let mut answers = Vec::new();
+    for n in 0..requests {
+        // Port 9 (discard) on 127.0.0.1: a worker with no descriptor sends
+        // nothing, so nothing reaches it either way.
+        wire::write_frame(&mut to_worker, &kill_to(9, b"SIP/2.0 200 OK\r\n\r\n"))
+            .map_err(|e| format!("request {n} could not be written: {e}"))?;
+        let reply: KillResponse = wire::read_frame(&mut from_worker)?.ok_or_else(|| {
+            format!("the worker closed its answers after {n} of {requests} requests")
+        })?;
+        answers.push(reply);
+    }
+    drop(to_worker);
+    let status = within(test_timeout(10), || worker.0.try_wait().ok().flatten())
+        .ok_or("end of stdin is the worker's shutdown")?;
+    Ok((answers, status))
+}
+
+/// A worker whose stderr reader is gone answers every request and exits 0 at
+/// the end of stdin, as it does with a readable stderr. Its ready line is
+/// logged at `info`, so the first write to the dead pipe is at startup.
+#[test]
+fn a_worker_whose_stderr_reader_is_gone_answers_and_exits_cleanly() -> Result<(), TestError> {
+    let mut worker = worker_with_stderr(&no_descriptor_args("info"), "info", Stderr::ReaderGone)?;
+    let (answers, status) = answer_then_end(&mut worker, 3)?;
+    assert_eq!(answers.len(), 3, "one answer per request: {answers:?}");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "an orderly end exits 0 whatever stderr is; 101 is a panic: {status:?}"
+    );
+    Ok(())
+}
+
+/// Start a worker with no descriptor, answer `requests`, and return its exit
+/// code, asserting it answered every one.
+fn served_exit_code(
+    level: &str,
+    log: &str,
+    stderr: Stderr,
+    requests: usize,
+) -> Result<Option<i32>, TestError> {
+    let mut worker = worker_with_stderr(&no_descriptor_args(level), log, stderr)?;
+    let (answers, status) = answer_then_end(&mut worker, requests)?;
+    assert_eq!(
+        answers.len(),
+        requests,
+        "one answer per request with stderr {stderr:?}: {answers:?}"
+    );
+    Ok(status.code())
+}
+
+/// Start a worker with no descriptor, hand it a request frame that is no
+/// request, and return its exit code.
+fn corrupt_stream_exit_code(log: &str, stderr: Stderr) -> Result<Option<i32>, TestError> {
+    use std::io::Write;
+    let mut worker = worker_with_stderr(&no_descriptor_args("info"), log, stderr)?;
+    let mut to_worker = worker.0.stdin.take().ok_or("stdin piped")?;
+    to_worker.write_all(&[0, 0, 0, 3, b'z', b'z', b'z'])?;
+    drop(to_worker);
+    let status = within(test_timeout(10), || worker.0.try_wait().ok().flatten())
+        .ok_or("a worker reading a corrupt request must exit")?;
+    Ok(status.code())
+}
+
+/// Start the worker with `args` and return its exit code once it ends by
+/// itself (stdin stays open, so only a refusal to start ends it).
+fn startup_exit_code(args: &[&str], stderr: Stderr) -> Result<Option<i32>, TestError> {
+    let mut worker = worker_with_stderr(args, "info", stderr)?;
+    let status = within(test_timeout(10), || worker.0.try_wait().ok().flatten())
+        .ok_or("the worker must refuse to start, not wait for requests")?;
+    Ok(status.code())
+}
+
+// Success: the worker does its job whatever its stderr does.
+
+/// `/dev/full` fails every write with `ENOSPC` rather than `EPIPE`: a full
+/// disk under a redirected stderr. The worker serves and exits 0.
+#[test]
+fn a_worker_whose_stderr_is_full_answers_and_exits_cleanly() -> Result<(), TestError> {
+    let code = served_exit_code("info", "info", Stderr::Full, 3)?;
+    assert_eq!(code, Some(0), "an orderly end exits 0; 101 is a panic");
+    Ok(())
+}
+
+/// At `debug` the worker also logs the close of its response pipe at the
+/// end, a write after the requests: that one must not panic either.
+#[test]
+fn a_worker_logging_at_debug_into_a_dead_stderr_exits_cleanly() -> Result<(), TestError> {
+    let code = served_exit_code("debug", "debug", Stderr::ReaderGone, 2)?;
+    assert_eq!(code, Some(0), "an orderly end exits 0; 101 is a panic");
+    Ok(())
+}
+
+/// The most lines the worker can write: every one fails, none panics.
+#[test]
+fn a_worker_logging_at_trace_into_a_dead_stderr_exits_cleanly() -> Result<(), TestError> {
+    let code = served_exit_code("trace", "trace", Stderr::ReaderGone, 2)?;
+    assert_eq!(code, Some(0), "an orderly end exits 0; 101 is a panic");
+    Ok(())
+}
+
+/// `SIPNAB_LOG` comes before the level the run passes: a worker told
+/// `--log-level error` still logs its ready line at `info` when the
+/// variable says so, and that line into a dead stderr must not end it.
+#[test]
+fn sipnab_log_raising_the_level_into_a_dead_stderr_still_exits_cleanly() -> Result<(), TestError> {
+    let code = served_exit_code("error", "info", Stderr::ReaderGone, 2)?;
+    assert_eq!(code, Some(0), "an orderly end exits 0; 101 is a panic");
+    Ok(())
+}
+
+/// The worker also serves many requests after its stderr is gone, not only
+/// the first few: each one is a log line at `info` that fails.
+#[test]
+fn a_worker_with_a_dead_stderr_answers_a_long_run_of_requests() -> Result<(), TestError> {
+    let code = served_exit_code("info", "info", Stderr::ReaderGone, 50)?;
+    assert_eq!(code, Some(0), "an orderly end exits 0; 101 is a panic");
+    Ok(())
+}
+
+// Failure: a worker that must stop still stops with its own exit code, not
+// with the 101 of a panic.
+
+/// A corrupt request stream ends the worker with 5, also when the error line
+/// it logs about it cannot be written.
+#[test]
+fn a_corrupt_stream_with_a_dead_stderr_still_exits_five() -> Result<(), TestError> {
+    let code = corrupt_stream_exit_code("info", Stderr::ReaderGone)?;
+    assert_eq!(code, Some(5), "a corrupt request is exit 5, not a panic");
+    Ok(())
+}
+
+/// The same with `ENOSPC` in place of `EPIPE`.
+#[test]
+fn a_corrupt_stream_with_a_full_stderr_still_exits_five() -> Result<(), TestError> {
+    let code = corrupt_stream_exit_code("info", Stderr::Full)?;
+    assert_eq!(code, Some(5), "a corrupt request is exit 5, not a panic");
+    Ok(())
+}
+
+/// At `error` the ready line is filtered out, so the first write to stderr
+/// is the error about the corrupt request itself.
+#[test]
+fn the_error_line_about_a_corrupt_stream_into_a_dead_stderr_exits_five() -> Result<(), TestError> {
+    let code = corrupt_stream_exit_code("error", Stderr::ReaderGone)?;
+    assert_eq!(code, Some(5), "a corrupt request is exit 5, not a panic");
+    Ok(())
+}
+
+/// Arguments the worker cannot parse are exit 2 whatever stderr is.
+#[test]
+fn unparsable_arguments_with_a_dead_stderr_still_exit_two() -> Result<(), TestError> {
+    let code = startup_exit_code(&["--rate-limit", "many"], Stderr::ReaderGone)?;
+    assert_eq!(code, Some(2), "unparsable arguments are exit 2");
+    Ok(())
+}
+
+/// A promised descriptor that is not there is exit 3 whatever stderr is.
+#[test]
+fn a_missing_descriptor_with_a_dead_stderr_still_exits_three() -> Result<(), TestError> {
+    let code = startup_exit_code(
+        &[
+            "--rate-limit",
+            "10",
+            "--send-fds",
+            "udp4",
+            "--run-as",
+            "nobody",
+            "--log-level",
+            "info",
+        ],
+        Stderr::ReaderGone,
+    )?;
+    assert_eq!(code, Some(3), "a descriptor not adopted is exit 3");
+    Ok(())
+}
+
+// Edge: the quiet and the readable cases end the same way.
+
+/// Without `SIPNAB_LOG` in its environment the worker logs at the level the
+/// run passed, here `info`, and its ready line into a dead stderr must not
+/// end it.
+#[test]
+fn a_worker_without_sipnab_log_and_a_dead_stderr_exits_cleanly() -> Result<(), TestError> {
+    let mut worker = Reaped(
+        Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .arg(KILL_WORKER_ARG)
+            .args(no_descriptor_args("info"))
+            .env_remove("SIPNAB_LOG")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stderr::ReaderGone.stdio()?)
+            .tied_to_test()
+            .spawn()?,
+    );
+    let (answers, status) = answer_then_end(&mut worker, 2)?;
+    assert_eq!(answers.len(), 2, "one answer per request: {answers:?}");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "an orderly end exits 0; 101 is a panic"
+    );
+    Ok(())
+}
+
+/// A worker whose stdin closes before any request writes only its ready line
+/// to the dead stderr, then ends in order.
+#[test]
+fn a_worker_given_no_request_and_a_dead_stderr_exits_cleanly() -> Result<(), TestError> {
+    let code = served_exit_code("info", "info", Stderr::ReaderGone, 0)?;
+    assert_eq!(code, Some(0), "an orderly end exits 0; 101 is a panic");
+    Ok(())
+}
+
+/// A dead stderr changes nothing the run reads: the refusals over stdout
+/// are the same, word for word, as with a readable one.
+#[test]
+fn a_dead_stderr_does_not_change_the_answers() -> Result<(), TestError> {
+    let mut gone = worker_with_stderr(&no_descriptor_args("info"), "info", Stderr::ReaderGone)?;
+    let mut readable = worker_with_stderr(&no_descriptor_args("info"), "info", Stderr::Null)?;
+    let (from_gone, _) = answer_then_end(&mut gone, 2)?;
+    let (from_readable, _) = answer_then_end(&mut readable, 2)?;
+    assert_eq!(
+        format!("{from_gone:?}"),
+        format!("{from_readable:?}"),
+        "the answers must not depend on stderr"
     );
     Ok(())
 }

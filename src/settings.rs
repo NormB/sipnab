@@ -225,6 +225,10 @@ pub const FLAGS: &[(&str, Link)] = &[
         "dns-cache-entries",
         Link::Key("names", "dns_cache_entries", Merge::Override),
     ),
+    (
+        "drop-method",
+        Link::Key("capture", "drop_methods", Merge::Union),
+    ),
     ("dtls-keylog", Link::Pending),
     ("dtmf-cleartext", Link::PerRun),
     ("dump-config", Link::Action),
@@ -617,6 +621,10 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     ("no-rotate", Link::Pending),
     ("no-rtp", Link::Key("capture", "no_rtp", Merge::Override)),
+    (
+        "no-sngrep-mode",
+        Link::Key("display", "sngrep_mode", Merge::Off),
+    ),
     ("no-tui", Link::PerRun),
     (
         "node-name",
@@ -624,6 +632,10 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     ("notes", Link::Input),
     ("on-dialog-exec", Link::Pending),
+    (
+        "only-method",
+        Link::Key("capture", "only_methods", Merge::Union),
+    ),
     ("on-quality-exec", Link::Pending),
     ("one-way", Link::PerRun),
     (
@@ -769,6 +781,10 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("single-line", Link::PerRun),
     ("slow-setup", Link::PerRun),
     ("snaplen", Link::Key("capture", "snaplen", Merge::Override)),
+    (
+        "sngrep-mode",
+        Link::Key("display", "sngrep_mode", Merge::Override),
+    ),
     ("split", Link::Pending),
     ("split-keep", Link::Pending),
     ("srtp-keys", Link::Pending),
@@ -1007,6 +1023,11 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("display", "visible_columns", FileOnly::Tui),
     ("display", "mouse_capture", FileOnly::Tui),
     ("display", "view_filter_detail", FileOnly::Tui),
+    ("display", "fold", FileOnly::Tui),
+    ("display", "autoscroll", FileOnly::Tui),
+    ("display", "sdp_display", FileOnly::Tui),
+    ("display", "color_mode", FileOnly::Tui),
+    ("display", "extended_flow", FileOnly::Tui),
     ("sip", "xcid_headers", FileOnly::Tuning),
     ("sip", "th_callid_secret_file", FileOnly::Tuning),
     ("sip", "th_callid_secret", FileOnly::Tuning),
@@ -1923,6 +1944,7 @@ mod tests {
             ("no-hep-parse", ("capture", "hep_parse")),
             ("rtp", ("capture", "no_rtp")),
             ("no-delta-time", ("display", "delta_time")),
+            ("no-sngrep-mode", ("display", "sngrep_mode")),
             ("priv-drop", ("privilege", "no_priv_drop")),
             ("no-fraud-detect", ("security", "fraud_detect")),
             ("no-kill-scanner", ("security", "kill_scanner")),

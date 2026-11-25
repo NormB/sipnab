@@ -187,6 +187,7 @@ fn the_gate_the_pre_push_prompt_names_exists() -> Result<(), TestError> {
     if !hook.contains(named) {
         // The prompt may legitimately be reworded; what must not happen is it
         // naming something that does not exist. Nothing to check here.
+        // not a prerequisite: a reworded prompt names no gate to look for
         return Ok(());
     }
     let completeness = read(&repo().join("tests/release_completeness_test.rs"));

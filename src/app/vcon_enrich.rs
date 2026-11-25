@@ -682,23 +682,31 @@ fn post(
         service.timeout,
         service.tls.as_ref(),
         &bytes,
-        |reader| {
-            let head = crate::app::vcon_forward::read_head(reader, 64 * 1024, "[[vcon.enrich]]")?;
-            let status = crate::app::vcon_forward::status_of(&head)?;
-            let (body, truncated) =
-                crate::app::vcon_forward::read_body(reader, &head, MAX_ANSWER_BYTES);
-            if !(200..300).contains(&status) {
-                let text = String::from_utf8_lossy(&body);
-                let excerpt: String = text.chars().take(200).collect();
-                return Err(format!("answered HTTP {status}: {excerpt}"));
-            }
-            if truncated {
-                return Err(format!("answered with more than {MAX_ANSWER_BYTES} bytes"));
-            }
-            Ok(body)
-        },
+        read_service_answer,
     )
     .map_err(|e| (Outcome::Failed, scrub(e)))
+}
+
+/// An enrichment service's answer body, read from `reader`.
+///
+/// # Errors
+///
+/// A status other than `2xx` (with the start of its body quoted), a body over
+/// [`MAX_ANSWER_BYTES`], or a body that did not arrive whole.
+fn read_service_answer(reader: &mut dyn std::io::BufRead) -> Result<Vec<u8>, String> {
+    let head = crate::app::vcon_forward::read_head(reader, 64 * 1024, "[[vcon.enrich]]")?;
+    let status = crate::app::vcon_forward::status_of(&head)?;
+    if !(200..300).contains(&status) {
+        let (body, _) = crate::app::vcon_forward::read_quoted_body(reader, &head, MAX_ANSWER_BYTES);
+        let text = String::from_utf8_lossy(&body);
+        let excerpt: String = text.chars().take(200).collect();
+        return Err(format!("answered HTTP {status}: {excerpt}"));
+    }
+    let (body, truncated) = crate::app::vcon_forward::read_body(reader, &head, MAX_ANSWER_BYTES)?;
+    if truncated {
+        return Err(format!("answered with more than {MAX_ANSWER_BYTES} bytes"));
+    }
+    Ok(body)
 }
 
 /// Run `path`, write `request` to its stdin, and return its stdout.
@@ -1380,6 +1388,33 @@ mod tests {
     use super::*;
 
     type TestError = Box<dyn std::error::Error>;
+
+    fn service_answer_of(wire: &[u8]) -> Result<Vec<u8>, String> {
+        read_service_answer(&mut std::io::BufReader::new(wire))
+    }
+
+    #[test]
+    fn a_whole_service_answer_is_its_body() {
+        let got = service_answer_of(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
+        assert_eq!(got, Ok(b"[]".to_vec()), "a whole body is the answer");
+    }
+
+    #[test]
+    fn a_service_answer_cut_short_is_refused_as_short() {
+        let got = service_answer_of(b"HTTP/1.1 200 OK\r\nContent-Length: 30\r\n\r\n[{\"type\":");
+        let e = got.expect_err("an analysis cut short is not used");
+        assert!(e.contains("9 of its 30 bytes"), "names the short read: {e}");
+    }
+
+    #[test]
+    fn a_service_refusal_cut_short_quotes_what_came() {
+        let got = service_answer_of(b"HTTP/1.1 503 Busy\r\nContent-Length: 90\r\n\r\ntry later");
+        assert_eq!(
+            got,
+            Err("answered HTTP 503: try later".to_owned()),
+            "a refusal quotes the text that came, short or not"
+        );
+    }
 
     /// The Analysis Objects in an answer, each checked.
     ///

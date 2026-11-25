@@ -28,6 +28,9 @@
 #![cfg(feature = "full")]
 
 use clap::CommandFactory;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -529,10 +532,11 @@ fn an_unknown_documented_flag_is_reported_as_a_typo_when_it_is_one() -> Result<(
 /// run 32 commands against an 8.8 GB corpus that is not in the repository.
 #[test]
 fn every_flag_in_the_real_world_captures_page_exists() -> Result<(), TestError> {
-    let path = repo().join("docs/real-world-captures.md");
-    if !path.exists() {
-        return Ok(()); // page not present in this checkout
-    }
+    // A tracked page: its absence is a defect of the checkout, not a skip.
+    let path = test_prereq::required(
+        "tracked-file",
+        test_prereq::path_exists(&repo().join("docs/real-world-captures.md")),
+    )?;
     let text = std::fs::read_to_string(&path)?;
     let have = clap_long_flags();
     let named = flags_in(&text);

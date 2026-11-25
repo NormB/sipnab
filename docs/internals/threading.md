@@ -140,6 +140,11 @@ The reason is where the thread starts.
   - The chroot.
   - The privilege drop.
 - The reason: the capture source must be open while the process still holds `CAP_NET_RAW`.
+- A file run (`-I`) without `--chroot` is the exception: it drops privileges
+  first and starts the thread after, so the process reads no byte of an
+  input as root. The run opened its files when it planned, and the thread
+  reads them through those descriptors. A failure in the privileged steps of such a run
+  has no thread to stop.
 - Every failure from that point on happens with a capture thread already
   running and holding its source. Such failures include:
   - An unopenable source.
@@ -177,6 +182,10 @@ One consequence applies to callers that cannot reach the handle.
 - So its four fatal paths return a `PlanError` instead of exiting.
 - `batch::run` holds both the handle and the receiver. It does the teardown.
 - A function that cannot clean up must hand the failure to one that can.
+- The teardown drops everything the run owns except its dialog and stream stores.
+  - `batch::run` returns those as `RunStores`, and `main` passes them to `RunStores::release_run_and_exit`.
+  - That function keeps them in a static until the process exits, so they are never freed one record at a time.
+  - Neither store owns a file, socket, thread or other value whose drop writes or removes something.
 
 **How a gate holds this.**
 
@@ -202,8 +211,8 @@ The privilege drop signals every other thread of the process.
 
 Four calls make a drop.
 
-- `confine_after_capture_start` in [`app/bootstrap.rs`](../../src/app/bootstrap.rs), for a run that starts a capture thread.
-- `prepare_cores_inputs` in the same file, for `--cores`.
+- `confine_privileged` in [`app/bootstrap.rs`](../../src/app/bootstrap.rs), for a run that starts a capture thread: after the thread starts, or before it for a file run without `--chroot`.
+- `prepare_cores_inputs` in the same file, for `--cores`, before it judges the set.
 - `harden` in [`process_isolation/worker_process.rs`](../../src/process_isolation/worker_process.rs), for the scanner-kill worker process.
 - `confine` in [`early_exit.rs`](../../src/early_exit.rs), for the commands that end before the capture launch.
   - [Commands that end before the launch](#commands-that-end-before-the-launch) lists them.

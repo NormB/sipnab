@@ -24,19 +24,32 @@ use std::process::Command;
 // tests/private_identity_test.rs, which mounts the same file.
 #[path = "support/ai_attribution.rs"]
 mod ai_attribution;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 use ai_attribution::{is_ai_attribution_line, message_attributes_an_ai};
 
 /// Recent commit messages, newest first, null-separated so a body's blank
 /// lines cannot split one message into two.
 fn recent_commit_messages(limit: usize) -> Option<Vec<String>> {
-    let out = Command::new("git")
+    let probe = Command::new("git")
         .args(["log", "-z", &format!("-n{limit}"), "--format=%B"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
+        .map_err(|e| format!("`git log` did not start: {e}"))
+        .and_then(|out| {
+            if out.status.success() {
+                Ok(out)
+            } else {
+                Err(format!("`git log` exited with {}", out.status))
+            }
+        });
+    let out = test_prereq::decide(
+        "git-checkout",
+        test_prereq::Need::Optional(
+            "a source tarball has no git history; CI and every clone have it.",
+        ),
+        probe,
+    )?;
     let text = String::from_utf8_lossy(&out.stdout);
     Some(
         text.split('\0')
@@ -113,7 +126,6 @@ fn people_bots_and_mcp_prose_pass() {
 #[test]
 fn no_recent_commit_attributes_an_ai() {
     let Some(messages) = recent_commit_messages(60) else {
-        eprintln!("git log unavailable (a shallow or non-git checkout); nothing to police");
         return;
     };
     assert!(
@@ -140,7 +152,6 @@ fn no_recent_commit_attributes_an_ai() {
 #[test]
 fn the_scan_reads_real_commit_messages() {
     let Some(messages) = recent_commit_messages(60) else {
-        eprintln!("git log unavailable; cannot assert the scan read anything");
         return;
     };
     assert!(

@@ -82,15 +82,10 @@ const LANDINGS: &[Landing] = &[
     ),
     (
         "@/docs/mcp-tools.md",
-        "79 MCP tools",
+        "80 MCP tools",
         &["tool", "lint", "evidence", "correlat"],
     ),
     // Trust.
-    (
-        "@/cla.md",
-        "📝 Contributor License Agreement",
-        &["Contributor License Agreement"],
-    ),
     (
         "@/docs/install.md#verify-a-download-is-genuine",
         "🔏 Signed build provenance",

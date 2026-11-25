@@ -19,6 +19,46 @@ use super::stream::{RetainedFrame, RtpStream, StreamKey};
 use crate::capture::ParsedPacket;
 use crate::sip::sdp::SdpMedia;
 
+// Per-thread count of `StreamStore::streams_for` calls, test-only: pins that
+// a pass over every dialog groups the streams once rather than scanning the
+// store per dialog (thread-local so parallel tests cannot cross-talk).
+#[cfg(test)]
+thread_local! {
+    /// Test-only per-thread count of [`StreamStore::streams_for`] calls.
+    pub(crate) static STREAMS_FOR_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    /// Test-only per-thread count of the streams [`StreamStore::streams_for`]
+    /// examined to answer: what one call's question costs.
+    pub(crate) static STREAMS_FOR_VISITED: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Every linked stream of a [`StreamStore`], grouped by the Call-ID it is
+/// linked to, from one pass over the store ([`StreamStore::by_call`]).
+///
+/// For each call, [`Self::of`] gives the streams [`StreamStore::streams_for`]
+/// gives, in the same order, without a pass over the store per call.
+#[derive(Debug, Default)]
+pub struct StreamsByCall<'a> {
+    /// Each linked Call-ID's streams, in store order.
+    groups: std::collections::HashMap<&'a str, Vec<&'a RtpStream>>,
+}
+
+impl<'a> StreamsByCall<'a> {
+    /// The streams linked to `call_id`, in store order; empty for a call
+    /// that owns none.
+    #[must_use]
+    pub fn of(&self, call_id: &str) -> &[&'a RtpStream] {
+        self.groups.get(call_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// How many calls own at least one stream.
+    #[must_use]
+    pub fn calls(&self) -> usize {
+        self.groups.len()
+    }
+}
+
 /// How an ICMP error's quoted datagram was tied to tracked media.
 ///
 /// Ordered by how much the tie proves, strongest first. The variant is carried
@@ -871,6 +911,13 @@ pub struct StreamStore {
     /// O(calls²) overall (SNB-0015). Kept consistent on insert/evict/clear, just
     /// like `ssrc_index`.
     endpoint_index: std::collections::HashMap<(IpAddr, u16), Vec<StreamKey>, ahash::RandomState>,
+    /// Call-ID → keys of the streams linked to that call. Without it,
+    /// [`Self::streams_for`] scanned the whole store for each call, and a
+    /// batch `--filter` reading a stream field asked once per SIP message:
+    /// O(streams) per message. A stream's `associated_dialog` is set only
+    /// while it is unset, so a key joins one call's list, once; the list is
+    /// kept on insert, link, evict, merge and clear, like `ssrc_index`.
+    call_index: std::collections::HashMap<Box<str>, Vec<StreamKey>, ahash::RandomState>,
     /// Provenance side-table: what the far end asserted about a stream, and
     /// whether its jitter estimator was restarted. Separate from `streams` so
     /// a remote assertion can never be mistaken for a local measurement by a
@@ -888,6 +935,10 @@ pub struct StreamStore {
     /// O(streams) per packet → O(calls²). Batched eviction amortizes it to O(1)
     /// per insertion. A value near evictions×max_streams means the regression is back.
     evict_shift_work: u64,
+    /// Streams discarded at `max_streams`, for the life of the store; a
+    /// merge adds its workers'. Read by
+    /// [`StreamStore::total_capacity_streams_evicted`].
+    capacity_streams_evicted: u64,
     /// Structural-change counter for cache invalidation — see
     /// `Self::generation`.
     generation: u64,
@@ -964,9 +1015,11 @@ impl StreamStore {
             new_orphan_sockets: Vec::new(),
             orphan_sockets_dropped: 0,
             endpoint_index: std::collections::HashMap::default(),
+            call_index: std::collections::HashMap::default(),
             provenance: std::collections::HashMap::default(),
             link_scan_iters: 0,
             evict_shift_work: 0,
+            capacity_streams_evicted: 0,
             generation: 0,
             relay_control: crate::relay_vocab::ControlChannels::default_capacity(),
             live_sessions: std::collections::HashMap::default(),
@@ -1109,6 +1162,13 @@ impl StreamStore {
     /// signals the O(n)-per-eviction regression returned.
     pub fn evict_shift_work(&self) -> u64 {
         self.evict_shift_work
+    }
+
+    /// Streams discarded at `--max-streams` over the store's life, a merge's
+    /// workers included: each is media that left every report.
+    #[must_use]
+    pub fn total_capacity_streams_evicted(&self) -> u64 {
+        self.capacity_streams_evicted
     }
 
     /// Enable or disable audio payload buffering (see the field docs).
@@ -1442,6 +1502,10 @@ impl StreamStore {
                 .or_default()
                 .push(key.clone());
             self.index_endpoints(&key);
+            // Linked at creation when SDP for this endpoint came first.
+            if let Some(call_id) = stream.associated_dialog.as_deref() {
+                self.index_call(&key, call_id);
+            }
             let (index, _) = self.streams.insert_full(key, stream);
             self.generation += 1;
             let audio_slice = rtp.payload(&parsed.payload);
@@ -1760,12 +1824,82 @@ impl StreamStore {
         }
     }
 
+    /// Every linked stream grouped by its Call-ID, from one pass over the
+    /// store: for each call, the streams [`Self::streams_for`] gives, in the
+    /// same order. For a caller that reads the streams of every dialog.
+    #[must_use]
+    pub fn by_call(&self) -> StreamsByCall<'_> {
+        let mut groups: std::collections::HashMap<&str, Vec<&RtpStream>> =
+            std::collections::HashMap::new();
+        for stream in self.iter() {
+            if let Some(call_id) = stream.associated_dialog.as_deref() {
+                groups.entry(call_id).or_default().push(stream);
+            }
+        }
+        StreamsByCall { groups }
+    }
+
     /// All streams linked (via SDP or heuristics) to the given dialog's
     /// Call-ID. The one sanctioned way to answer "which streams belong to
     /// this call" — callers used to hand-roll this filter at ten sites.
+    ///
+    /// Each call costs the call's own streams, through the per-call index,
+    /// not a pass over the store; the streams come in store order. A caller
+    /// that asks for every dialog's streams can still group them in one pass
+    /// with [`Self::by_call`].
     pub fn streams_for<'a>(&'a self, call_id: &'a str) -> impl Iterator<Item = &'a RtpStream> {
-        self.iter()
-            .filter(move |s| s.associated_dialog.as_deref() == Some(call_id))
+        #[cfg(test)]
+        STREAMS_FOR_CALLS.with(|c| c.set(c.get() + 1));
+        let mut positions: Vec<usize> = self
+            .call_index
+            .get(call_id)
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(|key| self.streams.get_index_of(key))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Store order, which a re-sort or a merge may have changed since the
+        // keys were indexed.
+        positions.sort_unstable();
+        #[cfg(test)]
+        STREAMS_FOR_VISITED.with(|c| c.set(c.get() + positions.len()));
+        // Debug builds hold the index to the pass it replaces, on every call.
+        debug_assert!(
+            positions.iter().copied().eq(self
+                .streams
+                .values()
+                .enumerate()
+                .filter(|(_, s)| s.associated_dialog.as_deref() == Some(call_id))
+                .map(|(i, _)| i)),
+            "the per-call index for {call_id:?} disagrees with the store"
+        );
+        positions
+            .into_iter()
+            .filter_map(|i| self.streams.get_index(i).map(|(_, stream)| stream))
+    }
+
+    /// Record that the stream `key` is linked to `call_id`. Each caller is a
+    /// stream's one link (its `associated_dialog` going from unset to set) or
+    /// the insert of a key the map does not hold, so a key is never pushed
+    /// twice.
+    fn index_call(&mut self, key: &StreamKey, call_id: &str) {
+        match self.call_index.get_mut(call_id) {
+            Some(keys) => keys.push(key.clone()),
+            None => {
+                self.call_index.insert(call_id.into(), vec![key.clone()]);
+            }
+        }
+    }
+
+    /// Forget that the stream `key` is linked to `call_id`.
+    fn unindex_call(&mut self, key: &StreamKey, call_id: &str) {
+        if let Some(keys) = self.call_index.get_mut(call_id) {
+            keys.retain(|k| k != key);
+            if keys.is_empty() {
+                self.call_index.remove(call_id);
+            }
+        }
     }
 
     /// The RTP packets sipnab measured for one call: the sum of `packet_count`
@@ -1808,6 +1942,7 @@ impl StreamStore {
             {
                 stream.associated_dialog = Some(call_id.to_string());
                 self.generation += 1;
+                self.index_call(key, call_id);
             }
         }
     }
@@ -2055,7 +2190,8 @@ impl StreamStore {
             let Some(stream) = self.streams.get_mut(key) else {
                 continue;
             };
-            if stream.associated_dialog.is_none() {
+            let linked = stream.associated_dialog.is_none();
+            if linked {
                 stream.associated_dialog = Some(call_id.to_string());
                 // The RTP-before-SDP direction of the same binding
                 // `resolve_from_sdp` makes, so it records the same fact. Both
@@ -2101,6 +2237,9 @@ impl StreamStore {
                         .or_default()
                         .jitter_restart_at = Some(at);
                 }
+            }
+            if linked {
+                self.index_call(key, call_id);
             }
         }
     }
@@ -2501,6 +2640,9 @@ impl StreamStore {
             .entry(s.key.ssrc)
             .or_default()
             .push(s.key.clone());
+        if let Some(call_id) = s.associated_dialog.as_deref() {
+            self.index_call(&s.key, call_id);
+        }
         self.streams.insert(s.key.clone(), s);
         self.generation += 1;
     }
@@ -2538,6 +2680,7 @@ impl StreamStore {
         self.audio_release_cursor = 0;
         self.ssrc_index.clear();
         self.endpoint_index.clear();
+        self.call_index.clear();
         self.sdp_endpoints.clear();
         self.rtcp_ports.clear();
         self.endpoints_learned = LearnedColumn::default();
@@ -2704,6 +2847,7 @@ impl StreamStore {
         take(self, &mut streams);
         self.ssrc_index.clear();
         self.endpoint_index.clear();
+        self.call_index.clear();
         self.audio_bytes_retained = 0;
         self.audio_release_cursor = 0;
         for mut other in others {
@@ -2715,6 +2859,9 @@ impl StreamStore {
             self.binding_seq = self.binding_seq.max(other.binding_seq);
             self.link_scan_iters += other.link_scan_iters;
             self.evict_shift_work += other.evict_shift_work;
+            self.capacity_streams_evicted = self
+                .capacity_streams_evicted
+                .saturating_add(other.capacity_streams_evicted);
             self.relay_control.merge(other.relay_control);
         }
         // Stable: equal positions keep the order the stores were given in.
@@ -2729,6 +2876,9 @@ impl StreamStore {
                 .or_default()
                 .push(key.clone());
             self.index_endpoints(&key);
+            if let Some(call_id) = stream.associated_dialog.as_deref() {
+                self.index_call(&key, call_id);
+            }
             // Carry the stream's provenance across with it: dropping it
             // would silently turn "the far end claimed X" into "nobody
             // reported anything" on every multi-core run.
@@ -2834,16 +2984,35 @@ impl StreamStore {
             let batch = (self.max_streams / 10).max(1).min(self.streams.len());
             self.evict_shift_work += self.streams.len().saturating_sub(batch) as u64;
             let mut freed = 0usize;
+            let mut evicted_links: Vec<(StreamKey, String)> = Vec::new();
             let evicted: Vec<StreamKey> = self
                 .streams
                 .drain(0..batch)
                 .map(|(k, stream)| {
                     freed = freed.saturating_add(buffer_charge(&stream.payload_buffer));
+                    if let Some(call_id) = stream.associated_dialog {
+                        evicted_links.push((k.clone(), call_id));
+                    }
                     k
                 })
                 .collect();
+            for (key, call_id) in &evicted_links {
+                self.unindex_call(key, call_id);
+            }
             self.audio_bytes_retained = self.audio_bytes_retained.saturating_sub(freed);
             self.audio_release_cursor = self.audio_release_cursor.saturating_sub(batch);
+            // Counted and said HERE, on the one path that discards, so every
+            // caller (a packet, a merge) is covered by construction. It
+            // logged nothing before: the oldest streams left every report
+            // and no line said so.
+            let before = self.capacity_streams_evicted;
+            self.capacity_streams_evicted = before.saturating_add(batch as u64);
+            if crate::capture::count_warning_due(before, self.capacity_streams_evicted) {
+                tracing::warn!(
+                    "{}",
+                    stream_eviction_warning(self.max_streams, batch, self.capacity_streams_evicted)
+                );
+            }
             for key in &evicted {
                 if let Some(keys) = self.ssrc_index.get_mut(&key.ssrc) {
                     keys.retain(|k| k != key);
@@ -2866,6 +3035,16 @@ impl StreamStore {
             }
         }
     }
+}
+
+/// The WARN line for an eviction: the cap, this batch, the lifetime total
+/// and both ways to raise the cap.
+fn stream_eviction_warning(cap: usize, batch: usize, total: u64) -> String {
+    format!(
+        "the RTP stream store reached its cap of {cap} streams and discarded the {batch} \
+         oldest to make room ({total} stream(s) discarded so far): their media is in no \
+         report or output. Raise --max-streams or [limits] max_streams to keep more."
+    )
 }
 
 /// One remembered entry of a worker's table, by its key, with where the
@@ -3382,6 +3561,338 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(linked[0].key.ssrc, 0x1111);
         assert!(store.streams_for("call-b").next().is_none());
         Ok(())
+    }
+
+    /// A store of six streams, ports 20000.., linked in turn to three calls
+    /// (`call-a`, `call-b`, `call-a`, `call-c`, `call-a`, none), so one call
+    /// holds streams that are not next to each other in store order.
+    fn interleaved_store() -> StreamStore {
+        let mut store = StreamStore::new(16);
+        let at = DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
+        let calls = [
+            Some("call-a"),
+            Some("call-b"),
+            Some("call-a"),
+            Some("call-c"),
+            Some("call-a"),
+            None,
+        ];
+        for (i, call) in calls.iter().enumerate() {
+            let port = 20000 + 2 * i as u16;
+            store.process_rtp(
+                &make_parsed(port, 30000 + 2 * i as u16, 160),
+                &make_rtp_header(0x1000 + i as u32, 1),
+                at,
+            );
+            if let Some(call) = call {
+                store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), port, call);
+            }
+        }
+        store
+    }
+
+    /// The SSRCs of `streams`, in order.
+    fn ssrcs_of(streams: &[&RtpStream]) -> Vec<u32> {
+        streams.iter().map(|s| s.key.ssrc).collect()
+    }
+
+    /// `by_call` gives each call the streams `streams_for` gives it, in the
+    /// same order, for a call whose streams are spread through the store.
+    #[test]
+    fn by_call_agrees_with_streams_for_for_every_call() {
+        let store = interleaved_store();
+        let by_call = store.by_call();
+        for call in ["call-a", "call-b", "call-c"] {
+            let one_pass = ssrcs_of(by_call.of(call));
+            let per_call: Vec<u32> = store.streams_for(call).map(|s| s.key.ssrc).collect();
+            assert_eq!(one_pass, per_call, "{call}: by_call must equal streams_for");
+        }
+    }
+
+    /// The streams of a call keep store order, the order `streams_for` has.
+    #[test]
+    fn by_call_keeps_store_order_within_a_call() {
+        let store = interleaved_store();
+        assert_eq!(
+            ssrcs_of(store.by_call().of("call-a")),
+            vec![0x1000, 0x1002, 0x1004],
+            "call-a holds the first, third and fifth stream, in that order"
+        );
+    }
+
+    /// A call that owns no stream gets an empty slice, not a missing entry.
+    #[test]
+    fn by_call_answers_an_unknown_call_with_no_streams() {
+        let store = interleaved_store();
+        assert!(
+            store.by_call().of("no-such-call").is_empty(),
+            "a call with no linked stream has none"
+        );
+    }
+
+    /// A stream linked to no call is in no group.
+    #[test]
+    fn by_call_leaves_out_an_unlinked_stream() {
+        let store = interleaved_store();
+        let by_call = store.by_call();
+        let grouped: usize = ["call-a", "call-b", "call-c"]
+            .iter()
+            .map(|c| by_call.of(c).len())
+            .sum();
+        assert_eq!(grouped, 5, "five of the six streams are linked");
+        assert_eq!(store.len(), 6, "the sixth stream is still in the store");
+        assert_eq!(by_call.calls(), 3, "three calls own streams");
+    }
+
+    /// An empty store groups nothing.
+    #[test]
+    fn by_call_of_an_empty_store_is_empty() {
+        let store = StreamStore::new(16);
+        let by_call = store.by_call();
+        assert_eq!(by_call.calls(), 0, "no call owns a stream");
+        assert!(by_call.of("call-a").is_empty(), "no streams for any call");
+    }
+
+    /// The empty Call-ID is a key like any other: it matches only a stream
+    /// linked to the empty Call-ID, as `streams_for("")` does.
+    #[test]
+    fn by_call_treats_the_empty_call_id_as_streams_for_does() {
+        let store = interleaved_store();
+        assert_eq!(
+            store.by_call().of("").len(),
+            store.streams_for("").count(),
+            "no stream is linked to the empty Call-ID"
+        );
+    }
+
+    /// Building the groups reads the store once; it never asks
+    /// `streams_for`, whose every call is a pass over the whole store.
+    #[test]
+    fn by_call_does_not_call_streams_for() {
+        let store = interleaved_store();
+        STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let by_call = store.by_call();
+        let _ = by_call.of("call-a");
+        assert_eq!(
+            STREAMS_FOR_CALLS.with(std::cell::Cell::get),
+            0,
+            "by_call must not scan the store once per call"
+        );
+    }
+
+    // ── streams_for by the per-call index ──────────────────────────
+
+    /// A store of `calls` calls with two streams each, plus `orphans`
+    /// streams linked to no call, interleaved in store order.
+    fn many_call_store(calls: u16, orphans: u16) -> StreamStore {
+        let mut store = StreamStore::new(4 * usize::from(calls + orphans) + 16);
+        let at = DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
+        let caller = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        for i in 0..calls + orphans {
+            for leg in 0..2u16 {
+                let port = 20000 + 4 * i + 2 * leg;
+                store.process_rtp(
+                    &make_parsed(port, 40000 + 4 * i + 2 * leg, 160),
+                    &make_rtp_header(0x10_0000 + u32::from(4 * i + leg), 1),
+                    at,
+                );
+                if i < calls {
+                    store.link_to_dialog(caller, port, &format!("call-{i}"));
+                }
+            }
+        }
+        store
+    }
+
+    /// Asking for one call's streams examines that call's streams, not the
+    /// store's: on a store of 1,000 streams the question for a two-stream
+    /// call examines two. Each per-message `--filter 'rtp.packets > 0'`
+    /// examined every stream, which made a 100,000-call batch run 15 times
+    /// slower than the same run with no filter.
+    #[test]
+    fn streams_for_examines_only_the_calls_own_streams() {
+        let store = many_call_store(450, 50);
+        assert_eq!(store.len(), 1000, "fixture size");
+        for (call, want) in [
+            ("call-0", 2),
+            ("call-449", 2),
+            ("call-200", 2),
+            ("no-such-call", 0),
+        ] {
+            STREAMS_FOR_VISITED.with(|c| c.set(0));
+            let found = store.streams_for(call).count();
+            let visited = STREAMS_FOR_VISITED.with(std::cell::Cell::get);
+            assert_eq!(found, want, "{call}: streams found");
+            assert!(
+                visited <= want,
+                "{call}: examined {visited} streams for {want}"
+            );
+        }
+    }
+
+    /// The streams of `call_id` by a pass over the whole store: the answer
+    /// `streams_for` must give, in the same order.
+    fn scanned(store: &StreamStore, call_id: &str) -> Vec<u32> {
+        store
+            .iter()
+            .filter(|s| s.associated_dialog.as_deref() == Some(call_id))
+            .map(|s| s.key.ssrc)
+            .collect()
+    }
+
+    /// Every Call-ID linked in `store`, plus one no stream is linked to.
+    fn every_call(store: &StreamStore) -> Vec<String> {
+        let mut calls: Vec<String> = store
+            .iter()
+            .filter_map(|s| s.associated_dialog.clone())
+            .collect();
+        calls.sort();
+        calls.dedup();
+        calls.push("no-such-call".to_string());
+        calls
+    }
+
+    /// `streams_for` gives each call exactly the streams a pass over the
+    /// store gives, in store order, and the per-call index holds one entry
+    /// per linked stream: none left behind by a stream that left, none twice.
+    fn assert_streams_for_matches_a_scan(store: &StreamStore, step: &str) {
+        for call in every_call(store) {
+            let got: Vec<u32> = store.streams_for(&call).map(|s| s.key.ssrc).collect();
+            assert_eq!(got, scanned(store, &call), "{step}: {call}");
+        }
+        let indexed: usize = store.call_index.values().map(Vec::len).sum();
+        let linked = store
+            .iter()
+            .filter(|s| s.associated_dialog.is_some())
+            .count();
+        assert_eq!(
+            indexed, linked,
+            "{step}: index entries for {linked} linked streams"
+        );
+    }
+
+    /// After each change a store goes through (links, a stream linked at
+    /// creation from SDP seen first, eviction at the cap, a re-sort, a merge
+    /// of worker stores, a re-association, a clear) `streams_for` answers as
+    /// a pass over the store does.
+    #[test]
+    fn streams_for_matches_a_scan_after_every_change() {
+        let at = DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
+        let caller = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let mut store = interleaved_store();
+        assert_streams_for_matches_a_scan(&store, "links after RTP");
+
+        // SDP first: the stream is linked when it is created.
+        store.link_endpoint(caller, 21000, "call-sdp-first", &[]);
+        store.process_rtp(
+            &make_parsed(21000, 31000, 160),
+            &make_rtp_header(0x2000, 1),
+            at,
+        );
+        assert_eq!(
+            scanned(&store, "call-sdp-first").len(),
+            1,
+            "linked at creation"
+        );
+        assert_streams_for_matches_a_scan(&store, "linked at creation");
+
+        // RTP first, then the SDP naming its endpoint links it.
+        store.process_rtp(
+            &make_parsed(21002, 31002, 160),
+            &make_rtp_header(0x2001, 1),
+            at,
+        );
+        store.link_endpoint(caller, 21002, "call-rtp-first", &[]);
+        assert_eq!(
+            scanned(&store, "call-rtp-first").len(),
+            1,
+            "linked by the SDP"
+        );
+        assert_streams_for_matches_a_scan(&store, "linked by SDP after RTP");
+
+        // A second link of a linked endpoint keeps the first call.
+        store.link_to_dialog(caller, 20000, "call-z");
+        assert_streams_for_matches_a_scan(&store, "relink refused");
+
+        // Eviction at the cap (16): the oldest streams leave with their links.
+        for i in 0..20u16 {
+            let port = 22000 + 2 * i;
+            store.process_rtp(
+                &make_parsed(port, 32000 + 2 * i, 160),
+                &make_rtp_header(0x3000 + u32::from(i), 1),
+                at,
+            );
+            store.link_to_dialog(caller, port, &format!("call-e{}", i % 3));
+        }
+        assert!(
+            store.capacity_streams_evicted > 0,
+            "the cap evicted streams"
+        );
+        assert_streams_for_matches_a_scan(&store, "after eviction");
+
+        // A re-sort changes store order; the answer follows it.
+        store.sort_streams_by_key(|s| std::cmp::Reverse(s.key.ssrc));
+        assert_streams_for_matches_a_scan(&store, "after a re-sort");
+
+        // A merge of a worker store, linked and unlinked streams both.
+        let mut other = StreamStore::new(16);
+        other.process_rtp(
+            &make_parsed(23000, 33000, 160),
+            &make_rtp_header(0x4000, 1),
+            at,
+        );
+        other.link_to_dialog(caller, 23000, "call-e1");
+        other.process_rtp(
+            &make_parsed(23002, 33002, 160),
+            &make_rtp_header(0x4001, 1),
+            at,
+        );
+        other.link_endpoint(caller, 23002, "call-merged", &[]);
+        store.merge(other);
+        assert_streams_for_matches_a_scan(&store, "after a merge");
+        store.reassociate_all();
+        assert_streams_for_matches_a_scan(&store, "after re-association");
+
+        store.clear();
+        assert_streams_for_matches_a_scan(&store, "after a clear");
+        store.process_rtp(
+            &make_parsed(24000, 34000, 160),
+            &make_rtp_header(0x5000, 1),
+            at,
+        );
+        store.link_to_dialog(caller, 24000, "call-a");
+        assert_eq!(
+            scanned(&store, "call-a").len(),
+            1,
+            "a new link after the clear"
+        );
+        assert_streams_for_matches_a_scan(&store, "a link after a clear");
+    }
+
+    /// Streams evicted at the cap leave no trace in a call's answer, and a
+    /// call whose streams were all evicted has none.
+    #[test]
+    fn streams_for_forgets_evicted_streams() {
+        let mut store = many_call_store(8, 0);
+        let at = DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000);
+        // Cap is 4 * 8 + 16 = 48; 40 more streams evict the oldest batches.
+        for i in 0..40u16 {
+            store.process_rtp(
+                &make_parsed(26000 + 2 * i, 36000 + 2 * i, 160),
+                &make_rtp_header(0x6000 + u32::from(i), 1),
+                at,
+            );
+        }
+        assert!(
+            store.capacity_streams_evicted > 0,
+            "the cap evicted streams"
+        );
+        assert_eq!(
+            store.streams_for("call-0").count(),
+            0,
+            "call-0's streams were the oldest"
+        );
+        assert_streams_for_matches_a_scan(&store, "after eviction");
     }
 
     /// Build a PT 0 (PCMU) RtpHeader with a 160-ticks-per-packet timestamp.
@@ -7057,5 +7568,449 @@ a=rtpmap:96 H264/90000\r\n";
         let flow = merged.iter().next().ok_or("a stream")?.key.flow();
         assert_eq!(merged.get_live(&flow).map(|s| s.key.session), Some(1));
         Ok(())
+    }
+
+    /// Streams discarded at `--max-streams` are counted and said (backlog
+    /// IMPORT-V6 "50,001st triggers rotation, WARN logged"): before, the store
+    /// discarded the oldest streams and logged nothing, so their media left
+    /// every report with no line saying so.
+    mod capacity_eviction {
+        use super::*;
+
+        /// Create `n` distinct streams, one packet each, in order.
+        fn create_streams(store: &mut StreamStore, n: u16) {
+            for i in 0..n {
+                let p = make_parsed(20_000 + i, 40_000 + i, 160);
+                let r = make_rtp_header(0x1000_0000 + u32::from(i), 1);
+                store.process_rtp(&p, &r, ts(i64::from(i)));
+            }
+        }
+
+        /// STREAM-EVICTION-NOT-IN-ANALYSIS: the retention counts `--analyze`
+        /// and the vCon completeness read carry the streams this store
+        /// discarded at `max_streams`, beside the dialog store's counts.
+        #[test]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+        fn retention_counts_carry_the_streams_discarded_at_the_cap() {
+            let mut store = StreamStore::new(2);
+            create_streams(&mut store, 5);
+            let dialogs = crate::sip::dialog_store::DialogStore::new(64, true);
+            let counts = crate::analysis::RetentionCounts::of_stores(&dialogs, &store);
+            assert_eq!(
+                counts.streams_rotated, 3,
+                "five streams over a cap of two: {counts:?}"
+            );
+            assert_eq!(counts.dialogs_rotated, 0, "no dialog was shed: {counts:?}");
+        }
+
+        /// Edge: exactly at the cap nothing is discarded, so nothing is
+        /// counted.
+        #[test]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+        fn retention_counts_hold_no_stream_loss_exactly_at_the_cap() {
+            let mut store = StreamStore::new(3);
+            create_streams(&mut store, 3);
+            let dialogs = crate::sip::dialog_store::DialogStore::new(64, true);
+            let counts = crate::analysis::RetentionCounts::of_stores(&dialogs, &store);
+            assert_eq!(
+                counts,
+                crate::analysis::RetentionCounts::default(),
+                "{counts:?}"
+            );
+        }
+
+        /// Every stream created is either still held or counted as evicted.
+        fn assert_every_stream_accounted(store: &StreamStore, created: u16) {
+            assert_eq!(
+                store.total_capacity_streams_evicted() + store.len() as u64,
+                u64::from(created),
+                "held {} + evicted {} must equal the {created} streams created",
+                store.len(),
+                store.total_capacity_streams_evicted()
+            );
+        }
+
+        macro_rules! evicted_case {
+            ($name:ident,cap = $cap:expr,created = $n:expr,evicted = $want:expr) => {
+                #[test]
+                fn $name() -> Result<(), TestError> {
+                    let mut store = StreamStore::new($cap);
+                    create_streams(&mut store, $n);
+                    assert_eq!(
+                        store.total_capacity_streams_evicted(),
+                        $want,
+                        "cap {} with {} streams created",
+                        $cap,
+                        $n
+                    );
+                    assert_every_stream_accounted(&store, $n);
+                    Ok(())
+                }
+            };
+        }
+
+        // Success: the store evicted, and the count says how many.
+        evicted_case!(
+            cap_1_three_streams_evicts_two,
+            cap = 1,
+            created = 3,
+            evicted = 2
+        );
+        evicted_case!(
+            cap_1_ten_streams_evicts_nine,
+            cap = 1,
+            created = 10,
+            evicted = 9
+        );
+        evicted_case!(
+            cap_2_three_streams_evicts_one,
+            cap = 2,
+            created = 3,
+            evicted = 1
+        );
+        evicted_case!(
+            cap_2_seven_streams_evicts_five,
+            cap = 2,
+            created = 7,
+            evicted = 5
+        );
+        evicted_case!(
+            cap_10_eleven_streams_evicts_one,
+            cap = 10,
+            created = 11,
+            evicted = 1
+        );
+        evicted_case!(
+            cap_10_fifteen_streams_evicts_five,
+            cap = 10,
+            created = 15,
+            evicted = 5
+        );
+        evicted_case!(
+            cap_20_one_past_evicts_a_batch_of_two,
+            cap = 20,
+            created = 21,
+            evicted = 2
+        );
+        evicted_case!(
+            cap_20_two_past_is_still_one_batch,
+            cap = 20,
+            created = 22,
+            evicted = 2
+        );
+        evicted_case!(
+            cap_20_three_past_evicts_two_batches,
+            cap = 20,
+            created = 23,
+            evicted = 4
+        );
+        evicted_case!(
+            cap_100_one_past_evicts_ten,
+            cap = 100,
+            created = 101,
+            evicted = 10
+        );
+        evicted_case!(
+            cap_100_eleven_past_evicts_twenty,
+            cap = 100,
+            created = 111,
+            evicted = 20
+        );
+        evicted_case!(
+            cap_50_fifty_one_evicts_five,
+            cap = 50,
+            created = 51,
+            evicted = 5
+        );
+        evicted_case!(
+            cap_3_hundred_streams_evicts_ninety_seven,
+            cap = 3,
+            created = 100,
+            evicted = 97
+        );
+
+        // Failure: nothing was evicted, and nothing is counted.
+        evicted_case!(
+            empty_store_counts_nothing,
+            cap = 10,
+            created = 0,
+            evicted = 0
+        );
+        evicted_case!(
+            below_the_cap_counts_nothing,
+            cap = 10,
+            created = 9,
+            evicted = 0
+        );
+        evicted_case!(
+            exactly_the_cap_counts_nothing,
+            cap = 10,
+            created = 10,
+            evicted = 0
+        );
+        evicted_case!(
+            cap_1_one_stream_counts_nothing,
+            cap = 1,
+            created = 1,
+            evicted = 0
+        );
+        evicted_case!(
+            default_sized_cap_counts_nothing,
+            cap = 50_000,
+            created = 200,
+            evicted = 0
+        );
+
+        /// More packets of a stream already held never evict.
+        #[test]
+        fn packets_of_a_held_stream_never_evict() -> Result<(), TestError> {
+            let mut store = StreamStore::new(1);
+            let p = make_parsed(20_000, 40_000, 160);
+            for seq in 1..=50u16 {
+                store.process_rtp(&p, &make_rtp_header(0x2222, seq), ts(i64::from(seq)));
+            }
+            assert_eq!(store.len(), 1, "one stream, fifty packets");
+            assert_eq!(
+                store.total_capacity_streams_evicted(),
+                0,
+                "a stream's own packets are not new streams"
+            );
+            Ok(())
+        }
+
+        /// The count is a lifetime total: it does not fall when the store
+        /// refills after an eviction.
+        #[test]
+        fn the_count_only_grows() -> Result<(), TestError> {
+            let mut store = StreamStore::new(2);
+            let mut last = 0;
+            for i in 0..30u16 {
+                let p = make_parsed(21_000 + i, 41_000 + i, 160);
+                store.process_rtp(&p, &make_rtp_header(0x3000 + u32::from(i), 1), ts(0));
+                let now = store.total_capacity_streams_evicted();
+                assert!(now >= last, "fell from {last} to {now} at stream {i}");
+                last = now;
+            }
+            assert_eq!(last, 28, "30 streams through a cap of 2");
+            Ok(())
+        }
+
+        /// A multi-core merge carries each worker's evictions.
+        #[test]
+        fn a_merge_adds_the_workers_evictions() -> Result<(), TestError> {
+            let mut a = StreamStore::new(2);
+            create_streams(&mut a, 5);
+            let mut b = StreamStore::new(1);
+            for i in 0..3u16 {
+                let p = make_parsed(25_000 + i, 45_000 + i, 160);
+                b.process_rtp(&p, &make_rtp_header(0x5000 + u32::from(i), 1), ts(0));
+            }
+            assert_eq!(a.total_capacity_streams_evicted(), 3, "worker a");
+            assert_eq!(b.total_capacity_streams_evicted(), 2, "worker b");
+            let mut merged = StreamStore::new(100);
+            merged.merge_in_read_order([a, b], |_| 0u8);
+            assert_eq!(
+                merged.total_capacity_streams_evicted(),
+                5,
+                "the merged store reports what the workers discarded"
+            );
+            assert_eq!(merged.len(), 3, "two from a and one from b survive");
+            Ok(())
+        }
+
+        /// A merge into a smaller cap counts what the merge itself evicts.
+        #[test]
+        fn a_merge_counts_its_own_evictions() -> Result<(), TestError> {
+            let mut a = StreamStore::new(100);
+            create_streams(&mut a, 6);
+            let mut merged = StreamStore::new(4);
+            merged.merge(a);
+            assert_eq!(merged.len(), 4, "the merged cap holds");
+            assert_eq!(
+                merged.total_capacity_streams_evicted(),
+                2,
+                "six streams into a cap of four"
+            );
+            Ok(())
+        }
+
+        /// A merge of workers that evicted nothing reports nothing.
+        #[test]
+        fn a_merge_of_clean_workers_counts_nothing() -> Result<(), TestError> {
+            let mut a = StreamStore::new(100);
+            create_streams(&mut a, 6);
+            let mut merged = StreamStore::new(100);
+            merged.merge(a);
+            assert_eq!(
+                merged.total_capacity_streams_evicted(),
+                0,
+                "no eviction anywhere"
+            );
+            Ok(())
+        }
+
+        macro_rules! due_case {
+            ($name:ident, $before:expr, $after:expr, $want:expr) => {
+                #[test]
+                fn $name() -> Result<(), TestError> {
+                    let (before, after): (u64, u64) = ($before, $after);
+                    assert_eq!(
+                        crate::capture::count_warning_due(before, after),
+                        $want,
+                        "from {before} to {after} evicted"
+                    );
+                    Ok(())
+                }
+            };
+        }
+
+        // Success: a warning is due at the first eviction and at each power
+        // of ten the lifetime count reaches.
+        due_case!(due_at_the_first_eviction, 0, 1, true);
+        due_case!(due_at_a_first_batch, 0, 5000, true);
+        due_case!(due_on_reaching_ten, 9, 10, true);
+        due_case!(due_on_passing_ten_in_one_batch, 5, 15, true);
+        due_case!(due_on_reaching_a_hundred, 99, 100, true);
+        due_case!(due_on_reaching_a_million, 999_990, 1_000_000, true);
+        due_case!(due_on_crossing_two_powers_at_once, 9, 1000, true);
+
+        // Failure: no warning between powers of ten, or when nothing moved.
+        due_case!(not_due_when_nothing_was_evicted, 0, 0, false);
+        due_case!(not_due_between_one_and_ten, 1, 9, false);
+        due_case!(not_due_just_past_ten, 10, 11, false);
+        due_case!(not_due_between_ten_and_a_hundred, 11, 99, false);
+        due_case!(not_due_when_the_count_did_not_move, 10, 10, false);
+        due_case!(not_due_between_a_hundred_and_a_thousand, 100, 999, false);
+
+        // Edge: the top of the counter.
+        due_case!(
+            due_on_reaching_ten_to_the_nineteenth,
+            9_999_999_999_999_999_999,
+            10_000_000_000_000_000_000,
+            true
+        );
+        due_case!(
+            not_due_past_the_last_power_of_ten,
+            10_000_000_000_000_000_000,
+            u64::MAX,
+            false
+        );
+        due_case!(due_across_the_whole_range, 0, u64::MAX, true);
+
+        /// The warning names the cap, the counts and both ways to raise it.
+        #[test]
+        fn the_warning_names_the_cap_counts_and_remedy() -> Result<(), TestError> {
+            let text = stream_eviction_warning(50_000, 5_000, 5_000);
+            for needle in [
+                "50000",
+                "5000 oldest",
+                "--max-streams",
+                "[limits] max_streams",
+            ] {
+                assert!(text.contains(needle), "missing {needle:?} in {text:?}");
+            }
+            Ok(())
+        }
+
+        /// The warning gives the lifetime total apart from this batch.
+        #[test]
+        fn the_warning_gives_the_total_apart_from_the_batch() -> Result<(), TestError> {
+            let text = stream_eviction_warning(20, 2, 10);
+            assert!(text.contains("2 oldest"), "the batch: {text:?}");
+            assert!(
+                text.contains("10 stream(s) discarded so far"),
+                "the total: {text:?}"
+            );
+            Ok(())
+        }
+
+        /// Captured log lines of `f` at WARN, for the eviction tests.
+        #[cfg(feature = "native")]
+        fn warnings_of(f: impl FnOnce()) -> Vec<String> {
+            crate::test_utils::capture_logs(tracing::Level::WARN, f)
+                .lines()
+                .filter(|l| l.contains("--max-streams"))
+                .map(str::to_owned)
+                .collect()
+        }
+
+        /// The first eviction is said at WARN: the defect.
+        #[cfg(feature = "native")]
+        #[test]
+        fn the_first_eviction_is_warned() -> Result<(), TestError> {
+            let lines = warnings_of(|| {
+                let mut store = StreamStore::new(2);
+                create_streams(&mut store, 3);
+            });
+            assert_eq!(lines.len(), 1, "one eviction, one warning: {lines:?}");
+            assert!(lines[0].contains("WARN"), "at WARN: {lines:?}");
+            Ok(())
+        }
+
+        /// A store below its cap says nothing.
+        #[cfg(feature = "native")]
+        #[test]
+        fn no_eviction_no_warning() -> Result<(), TestError> {
+            let lines = warnings_of(|| {
+                let mut store = StreamStore::new(10);
+                create_streams(&mut store, 10);
+            });
+            assert!(lines.is_empty(), "nothing was evicted: {lines:?}");
+            Ok(())
+        }
+
+        /// Sustained pressure warns at 1 and at 10, not on every eviction.
+        #[cfg(feature = "native")]
+        #[test]
+        fn sustained_pressure_warns_at_powers_of_ten() -> Result<(), TestError> {
+            let lines = warnings_of(|| {
+                let mut store = StreamStore::new(1);
+                // 1 + 99 evicted: warnings at 1, 10 and 100.
+                create_streams(&mut store, 101);
+            });
+            assert_eq!(
+                lines.len(),
+                3,
+                "warnings at 1, 10 and 100 evicted: {lines:?}"
+            );
+            Ok(())
+        }
+
+        /// Each warning carries the total reached so far.
+        #[cfg(feature = "native")]
+        #[test]
+        fn each_warning_carries_its_total() -> Result<(), TestError> {
+            let lines = warnings_of(|| {
+                let mut store = StreamStore::new(1);
+                create_streams(&mut store, 11);
+            });
+            assert_eq!(lines.len(), 2, "at 1 and at 10: {lines:?}");
+            assert!(
+                lines[0].contains("1 stream(s) discarded so far"),
+                "{lines:?}"
+            );
+            assert!(
+                lines[1].contains("10 stream(s) discarded so far"),
+                "{lines:?}"
+            );
+            Ok(())
+        }
+
+        /// A merge into a smaller cap warns for what it evicts.
+        #[cfg(feature = "native")]
+        #[test]
+        fn a_merge_that_evicts_warns() -> Result<(), TestError> {
+            let mut a = StreamStore::new(100);
+            create_streams(&mut a, 6);
+            let lines = warnings_of(|| {
+                let mut merged = StreamStore::new(4);
+                merged.merge(a);
+            });
+            assert!(
+                !lines.is_empty(),
+                "the merge evicted two streams: {lines:?}"
+            );
+            Ok(())
+        }
     }
 }

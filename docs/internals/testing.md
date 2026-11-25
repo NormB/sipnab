@@ -28,7 +28,7 @@ What follows is the map:
 | Tier | Files | Asserts |
 |---|---|---|
 | **CLI surface** | [`cli_test`](../../tests/cli_test.rs), [`cli_options_test`](../../tests/cli_options_test.rs), [`cli_help_test`](../../tests/cli_help_test.rs), [`cli_defaults_test`](../../tests/cli_defaults_test.rs), [`cli_flag_behavior_test`](../../tests/cli_flag_behavior_test.rs) | Parsing, the default value of every parameter, `--help` grouping across ~160 flags, and behavior for flags that were once untested. |
-| **CLI golden** | [`cli_goldens`](../../tests/cli_goldens.rs) | `trycmd` goldens under [`tests/cli/`](../../tests/cli) — exact stdout/stderr for a command line. [`tests/cli/cookbook/`](../../tests/cli/cookbook) pins the output of every cookbook command [`check-cookbook.py`](../../scripts/check-cookbook.py) executes, one case per distinct command, run in a scratch directory because recipes write files. |
+| **CLI golden** | [`cli_goldens`](../../tests/cli_goldens.rs) | `.trycmd` goldens under [`tests/cli/`](../../tests/cli) — exact stdout/stderr for a command line, run by [`tests/support/golden_cases.rs`](../../tests/support/golden_cases.rs) (the `trycmd` crate's format, without the crate). [`tests/cli/cookbook/`](../../tests/cli/cookbook) pins the output of every cookbook command [`check-cookbook.py`](../../scripts/check-cookbook.py) executes, one case per distinct command, run in a scratch directory because recipes write files. |
 | **Integration** | [`integration_test`](../../tests/integration_test.rs), [`capture_test`](../../tests/capture_test.rs), [`rtp_integration_test`](../../tests/rtp_integration_test.rs), [`pipeline_test`](../../tests/pipeline_test.rs), [`parse_path_test`](../../tests/parse_path_test.rs), [`bootstrap_test`](../../tests/bootstrap_test.rs), [`app_servers_test`](../../tests/app_servers_test.rs), [`config_test`](../../tests/config_test.rs) | Capture-to-output pipeline, and the library facades WS2 extracted from `main.rs` — bootstrap planning is a pure `Cli + Config → RunPlan` function precisely so these tests can reach it. `config_test` covers the step before planning: config discovery (`-f`, `SIPNAB_CONFIG`, `--no-config`, unknown-key warnings, the missing-file error) driven through the real binary's `--dump-config`. |
 | **TUI** | [`tui_snapshot_test`](../../tests/tui_snapshot_test.rs), [`tui_state_test`](../../tests/tui_state_test.rs), [`tui_e2e_test`](../../tests/tui_e2e_test.rs) | Rendered buffers via ratatui's `TestBackend` + `insta`; state-machine transitions; and end-to-end drives of the real binary inside `tmux`. See [TUI testing](tui-testing.md). |
 | **Servers** | [`api_test`](../../tests/api_test.rs), [`api_token_test`](../../tests/api_token_test.rs), [`mcp_stdio_test`](../../tests/mcp_stdio_test.rs), [`mcp_http_test`](../../tests/mcp_http_test.rs), [`mcp_token_test`](../../tests/mcp_token_test.rs), [`mcp_token_rotation_test`](../../tests/mcp_token_rotation_test.rs), [`metrics_test`](../../tests/metrics_test.rs), [`hep_test`](../../tests/hep_test.rs) | REST, MCP (stdio and HTTP), signed-token auth and rotation, Prometheus scrapes, HEP ingestion — all end to end against a spawned process. |
@@ -172,7 +172,7 @@ Every command below ran against the current tree and left it unchanged.
 |---|---|
 | [`tests/fixtures/`](../../tests/fixtures) — capture fixtures | Every capture in the directory comes from [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs), and so do the two SIPp media files in `harness/sipp/scenarios/` and the two fuzz seeds in `fuzz/corpus/pcap_reader/` named `truncated-sip` and `empty-classic`: seventeen in all. `cargo run --features native --bin gen_fixture` writes them, relative to the `CARGO_MANIFEST_DIR` Cargo sets (the current directory when run outside Cargo), and `synthetic_captures_test` fails when a committed byte differs from what the generator builds. The directory's other fixtures, the JSON goldens, `ng` replies and TLS keys, stay as checked in. [`tests/PROVENANCE.md`](../../tests/PROVENANCE.md) records where every capture outside `tests/pcap-samples/` came from, and `every_committed_capture_is_public_or_synthetic` refuses one with no entry, finding captures by their leading bytes rather than their names. |
 | [`tests/snapshots/`](../../tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
-| [`tests/cli/`](../../tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
+| [`tests/cli/`](../../tests/cli) — `.trycmd` goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` (rewrites only the cases that do not match) |
 | [`tests/cli/cookbook/`](../../tests/cli/cookbook) — cookbook output goldens | `python3 scripts/check-cookbook.py --bless` writes a command-only case for each executed cookbook command that has none and deletes each case no command produces; then `TRYCMD=overwrite cargo test --features full --test cli_goldens` records the output. A case's file name is a hash of its command, and it is also the directory the command's output files go to. |
 | [`.config/implies-no-tui.txt`](../../.config/implies-no-tui.txt) — flags that imply `-N` | `SIPNAB_BLESS_IMPLIES_NO_TUI=1 cargo test --features full --lib -- the_implies_no_tui_file`. Generated from `Cli::implying_no_tui`, the table `Cli::normalize` reads; [`check-cookbook.py`](../../scripts/check-cookbook.py) reads it to tell a command that raises the TUI (exit-only, no golden) from a headless one such as `--count-by` without `-N` (pinned by a golden). |
 | [`tests/schemas/`](../../tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |
@@ -443,6 +443,45 @@ A new page, script or workflow moves those counts, and the tests that hold them 
 The script runs the tests the way the hook does: the same nextest profile, feature set and environment, so it builds no binary the hook does not build.
 It names each binary to cargo with `--test`. A nextest filter alone would build every test target first.
 [`scripts/tests/test_pin_gates.py`](../../scripts/tests/test_pin_gates.py) holds the list to the tree: a test under `tests/` that declares a count constant (a `usize` whose name begins `EXPECTED_`), or reads the list of tracked files, must appear in the list, as a binary to run or as an exclusion with a reason.
+
+**The pre-check, before the hook.** `python3 scripts/pin-gates.py --hook` runs the pre-commit hook itself with `SIPNAB_GATE_PRECHECK=1`.
+In that mode the hook runs each of its own steps (formatting, vale, codespell, clippy, the Python gates, the script tests) except one: the full suite.
+In place of the suite it runs `scripts/pin-gates.py --source-gates`: the pin gates, and every source gate.
+The script tests run by the hook's own rule, `script_tests_needed` in [`scripts/gate-cache.py`](../../scripts/gate-cache.py): when the staged change reaches a path they read.
+A measured run on 2026-11-23 opened every tracked file, Rust sources included, so today every change runs them.
+The pre-check starts them beside its other steps, in a session of their own, so the two overlap.
+On 2026-11-23 the pre-check alone took 412 seconds and the script tests 370 seconds.
+Started together at a load average near 15, the pre-check had not ended after 595 seconds.
+`python3 scripts/gate-cache.py script-tests` prints the rule's answer for the staged change.
+A source gate is a test binary that reads the tree and neither runs nor links sipnab: no `CARGO_BIN_EXE`, `sipnab::`, `use sipnab` or `extern crate sipnab` in its source or in a file it includes as a module.
+The steps are the hook's, so a step added to the hook is in the pre-check with no second list.
+
+- Purpose: meet the gates that most often failed hook runs (clippy, the policy-doc, wasm-reach, crypto-literal and assert-message gates) in one short run, before the 25-minute hook.
+- Prerequisites: those of the pin gates above, and the change staged.
+- Steps: `git add <paths>`, then `python3 scripts/pin-gates.py --hook --message <file>`, where `<file>` is the message file for `git commit -F`.
+  `--message` runs [`.githooks/commit-msg`](../../.githooks/commit-msg) on that file before every other step: git runs it only after the pre-commit hook, so a refused message would otherwise cost a whole hook run. On the shared build host, run it through `heavy-run` in the main slot: it runs clippy and builds the source gates.
+- Verify: the run ends with `Pre-check passed.` and exit status 0. Then commit: the hook reuses the pre-check's clippy, `sipnab-bpf-types` and script-tests pass stamps and runs the full suite.
+- Troubleshoot: a failed step prints what the hook would print. Exit status 2 from the Tests step with `untracked` names files to `git add`.
+  The pre-check refuses a line in [`.config/precheck-skip.txt`](../../.config/precheck-skip.txt) that names no source gate; that file names the slow source gates the pre-check leaves to the hook, one `!name reason` a line.
+  `SIPNAB_GATE_PRECHECK=1` left set under `git commit` makes the hook refuse the commit: unset it.
+
+The pre-check never writes the suite's or the hook's pass stamp, so a commit after it still runs the full suite.
+Its step times go to `sipnab-precheck-steps.log` in the git directory, apart from the hook's own log.
+[`scripts/tests/test_precheck_hook.py`](../../scripts/tests/test_precheck_hook.py) runs the real hook in this mode against a sandbox tree.
+
+**The script tests in shards.** One quick-slot job (600 seconds) cannot hold the whole script-test run under load: on 2026-11-23 it took 370 to 539 seconds alone, and at a load average near 15 a 598-second limit ended it at 90%.
+`python3 scripts/pin-gates.py --script-tests --shard I/N` runs shard I of N with the hook's own command, as a job of its own.
+The split is by test file and the same in every job: the longest file first, each file to the shard with the least time so far, by the seconds in [`.config/script-test-durations.txt`](../../.config/script-test-durations.txt).
+Each shard that passes writes a pass record on the hook's script-tests key.
+The shard that completes the set writes the hook's script-tests stamp, so the pre-check and the commit skip the Script tests step.
+A shard that passed on another tree has another key, and the stamp waits for it to pass on this one.
+Measured on 2026-11-23 at load averages from 15 to 22: 4,770 tests in 513 seconds, so N is 3, about 170 seconds a shard.
+
+- Purpose: pass the script tests in the quick slot before the commit, so the hook run in the main slot does not spend 6 to 9 minutes on them.
+- Prerequisites: the change staged, and `pytest` installed.
+- Steps: run `python3 scripts/pin-gates.py --script-tests --shard 1/3`, then `--shard 2/3` and `--shard 3/3`, each as its own `heavy-run --quick` job, in any order.
+- Verify: the last shard prints `all 3 shards passed on this tree` and the stamp's key. A commit or a pre-check on the same tree then reports the Script tests step as `CACHED`.
+- Troubleshoot: a shard that fails prints the output of its failed tests and writes no record; fix the test and run that shard again on the new tree, then the others, since a changed tree has a new key. A shard that runs past `--budget` (570 seconds by default) ends with status 124, its whole session ended. After the test files change a lot, rewrite the durations from the shards' JUnit reports: `python3 scripts/gate-cache.py script-test-durations <git dir>/sipnab-script-tests-shard-*-of-3.xml`.
 
 **Where a hook run spent its time.** The pre-commit hook appends one line per step to `sipnab-pre-commit-steps.log` in the checkout's git directory: the run, the step under the name its heading prints, whole seconds and the exit status, separated by tabs.
 The last line of a run is the step `total`, counted from the start of the hook.

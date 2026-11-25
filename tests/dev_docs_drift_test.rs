@@ -1065,7 +1065,36 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // The text of a release: build-ci-release.md links
     // scripts/release-notes.py, ops/release/platform-table.sh and
     // scripts/tests/test_release_notes.py.
-    const EXPECTED_CODE_LINKS: usize = 888;
+    // The pr-closed.yml row links scripts/tests/test_ci_cancel_on_close.py.
+    // 889 -> 891 (tag proof, +2): the tag gate's head-proof bullet links
+    // .github/workflows/pr-closed.yml and
+    // scripts/tests/test_tag_proof_skipped_by_design.py.
+    // 891 -> 892 (macOS suite in shards, +1): build-ci-release.md's
+    // `test-macos` bullet links tests/support/macos_suite.rs.
+    // 892 -> 894 (release apt rule, +2): build-ci-release.md's glibc-floor
+    // section links scripts/release-apt.sh and scripts/tests/test_release_apt.py.
+    // 894 -> 895 (feature rows a push picks, +1): build-ci-release.md's
+    // PREPUSH-LINTS-3-OF-22-FEATURE-ROWS bullet links scripts/check-feature-matrix.py.
+    // 895 -> 898 (Sanitizers path filter, +3): build-ci-release.md's
+    // ThreadSanitizer section links src/main.rs, tests/hep_test.rs and
+    // tests/sanitizers_paths_test.rs.
+    // 898 -> 899 (goldens without trycmd, +1): testing.md's CLI golden row
+    // links tests/support/golden_cases.rs.
+    // 899 -> 904 (fetch before the suite, +5): build-ci-release.md's "Every
+    // platform's crates before the suite" links tests/release_pipeline_gate_test.rs,
+    // scripts/check-suite-fetch.py, scripts/tests/test_check_suite_fetch.py,
+    // scripts/parallel-tests.py and scripts/check-feature-matrix.py.
+    // 904 -> 907 (binary size on pull requests, +3): operator-guide-notes.md's
+    // "The published binary size ceiling" links scripts/check-binary-size.sh
+    // and .github/workflows/binary-size.yml, and build-ci-release.md's
+    // workflow table row for binary-size.yml links scripts/check-binary-size.sh.
+    // 907 -> 910 (VACUOUS-PREREQ-SKIPS, +3): build-ci-release.md's "Tests
+    // that need something from the host" links src/test_prereq.rs,
+    // scripts/parallel-tests.py and tests/prereq_skip_gate_test.rs.
+    // 910 -> 912 (PRECHECK-MISSES-HOOK-GATES, +2): testing.md's "The
+    // pre-check, before the hook" links .config/precheck-skip.txt and
+    // scripts/tests/test_precheck_hook.py.
+    const EXPECTED_CODE_LINKS: usize = 915;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1928,7 +1957,7 @@ fn every_site_operator_page_is_in_the_docs_nav_list() -> Result<(), TestError> {
 /// half until `scorecard.yml` became the ninth.
 #[test]
 fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
-    const WORDS: [&str; 21] = [
+    const WORDS: [&str; 22] = [
         "zero",
         "one",
         "two",
@@ -1950,6 +1979,7 @@ fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
         "eighteen",
         "nineteen",
         "twenty",
+        "twenty-one",
     ];
     let dir = repo().join(".github/workflows");
     let mut names: Vec<String> = std::fs::read_dir(&dir)?

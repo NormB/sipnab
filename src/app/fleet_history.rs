@@ -1254,22 +1254,18 @@ pub fn decode<R: Row>(bytes: Vec<u8>, query: &Query) -> Result<Decoded<R>, Strin
     decode_by(bytes, query, group_answers::<R>)
 }
 
-/// What gives the rows of one row group that answer a question: the row
-/// group, the rows it holds, the question and the place of the class's
-/// filter column.
-type GroupRows<R> = fn(
-    &dyn parquet::file::reader::RowGroupReader,
-    usize,
-    &Query,
-    Option<usize>,
-) -> Result<Vec<R>, String>;
-
 /// [`decode`], with the rows of each row group that is read from
-/// `group_rows`.
+/// `group_rows`, which is given the row group, the rows it holds, the
+/// question and the place of the class's filter column.
 fn decode_by<R: Row>(
     bytes: Vec<u8>,
     query: &Query,
-    group_rows: GroupRows<R>,
+    mut group_rows: impl FnMut(
+        &dyn parquet::file::reader::RowGroupReader,
+        usize,
+        &Query,
+        Option<usize>,
+    ) -> Result<Vec<R>, String>,
 ) -> Result<Decoded<R>, String> {
     use parquet::file::properties::ReaderProperties;
     use parquet::file::reader::FileReader as _;
@@ -1431,6 +1427,19 @@ fn group_answers<R: Row>(
     query: &Query,
     filter: Option<usize>,
 ) -> Result<Vec<R>, String> {
+    group_answers_where(group, rows, query, filter, &|_, _| true)
+}
+
+/// [`group_answers`], with only the rows that `keep` also selects built:
+/// `keep` is given each row's receive time in nanoseconds since 1970 and
+/// its member, from the selecting columns.
+fn group_answers_where<R: Row>(
+    group: &dyn parquet::file::reader::RowGroupReader,
+    rows: usize,
+    query: &Query,
+    filter: Option<usize>,
+    keep: &dyn Fn(i64, &[u8]) -> bool,
+) -> Result<Vec<R>, String> {
     let columns = (0..group.num_columns())
         .map(|column| read_column(group, column, rows))
         .collect::<Result<Vec<GroupColumn>, String>>()?;
@@ -1452,12 +1461,8 @@ fn group_answers<R: Row>(
             Some(column) => Some(bytes_at(column, row)?),
             None => None,
         };
-        if selects(
-            query,
-            long_at(received, row)?,
-            bytes_at(members, row)?,
-            call_id,
-        ) {
+        let (received_ns, member) = (long_at(received, row)?, bytes_at(members, row)?);
+        if selects(query, received_ns, member, call_id) && keep(received_ns, member) {
             picked.push(row);
         }
     }
@@ -2149,13 +2154,23 @@ impl History {
 
     /// [`History::read`], with a file that is absent told apart.
     pub(crate) fn read_io<R: Row>(&self, rel: &str, query: &Query) -> std::io::Result<Decoded<R>> {
+        self.read_io_by(rel, |parquet| decode(parquet, query))
+    }
+
+    /// [`History::read_io`], with the unsealed Parquet bytes decoded by
+    /// `decode_with`.
+    fn read_io_by<R: Row>(
+        &self,
+        rel: &str,
+        decode_with: impl FnOnce(Vec<u8>) -> Result<Decoded<R>, String>,
+    ) -> std::io::Result<Decoded<R>> {
         let bytes = match read_history_file(&self.dir.join(rel)) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(e),
             Err(e) => return Err(std::io::Error::other(format!("{rel}: {e}"))),
         };
         let parquet = unseal(rel, &bytes, &self.keys, R::KIND).map_err(std::io::Error::other)?;
-        decode(parquet, query).map_err(|e| std::io::Error::other(format!("{rel}: {e}")))
+        decode_with(parquet).map_err(|e| std::io::Error::other(format!("{rel}: {e}")))
     }
 
     /// Remove the days of the class `class` past a retention of `days` days
@@ -2325,6 +2340,24 @@ impl History {
         known: &BTreeMap<String, DateTime<Utc>>,
         max_files: usize,
     ) -> Result<Restored, String> {
+        self.newest_heartbeats_until(oldest, known, max_files, &|| false)
+    }
+
+    /// [`Self::newest_heartbeats`], asking `stopped` before each file
+    /// whether a stop was asked for. When it answers yes, reading ends,
+    /// [`Restored::stopped`] is set and no member is restored: a rebuild
+    /// stopped part way restores nothing.
+    ///
+    /// # Errors
+    ///
+    /// A directory of the store cannot be read.
+    pub fn newest_heartbeats_until(
+        &self,
+        oldest: NaiveDate,
+        known: &BTreeMap<String, DateTime<Utc>>,
+        max_files: usize,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Restored, String> {
         let query = Query {
             from: oldest.and_hms_opt(0, 0, 0).map(|at| at.and_utc()),
             ..Query::all()
@@ -2350,9 +2383,27 @@ impl History {
                 out.files_not_read = files.len() - index;
                 break;
             }
-            match self.read_io::<MemberRecord>(&file.rel, &Query::all()) {
+            if stopped() {
+                out.stopped = true;
+                return Ok(out);
+            }
+            let read = self.read_io_by::<MemberRecord>(&file.rel, |parquet| {
+                let held = |member: &[u8]| {
+                    std::str::from_utf8(member)
+                        .ok()
+                        .and_then(|member| newest.get(member))
+                        .and_then(|row| row.received_at.timestamp_nanos_opt())
+                };
+                decode_by(parquet, &Query::all(), |group, rows, query, filter| {
+                    group_answers_where(group, rows, query, filter, &|received_ns, member| {
+                        builds_row(held(member), received_ns)
+                    })
+                })
+            });
+            match read {
                 Ok(decoded) => {
                     out.files_read += 1;
+                    out.rows_built += decoded.rows.len();
                     for row in decoded.rows {
                         let is_newer = newest.get(&row.member).is_none_or(|held| {
                             (row.received_at, row.heartbeats) > (held.received_at, held.heartbeats)
@@ -2393,6 +2444,22 @@ impl History {
         since: &BTreeMap<String, DateTime<Utc>>,
         max_files: usize,
     ) -> Result<CallsAfter, String> {
+        self.calls_after_until(since, max_files, &|| false)
+    }
+
+    /// [`Self::calls_after`], asking `stopped` before each file whether a
+    /// stop was asked for. When it answers yes, reading ends,
+    /// [`CallsAfter::stopped`] is set and no call record is kept.
+    ///
+    /// # Errors
+    ///
+    /// A directory of the store cannot be read.
+    pub fn calls_after_until(
+        &self,
+        since: &BTreeMap<String, DateTime<Utc>>,
+        max_files: usize,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<CallsAfter, String> {
         let mut out = CallsAfter::default();
         let Some(earliest) = since.values().min().copied() else {
             return Ok(out);
@@ -2416,6 +2483,11 @@ impl History {
             if out.files_read + out.refused.len() >= max_files {
                 out.files_not_read = files.len() - index;
                 break;
+            }
+            if stopped() {
+                out.stopped = true;
+                out.rows.clear();
+                return Ok(out);
             }
             match self.read_io::<IntakeRecord>(&file.rel, &query) {
                 Ok(decoded) => {
@@ -2452,6 +2524,9 @@ pub struct CallsAfter {
     pub files_read: usize,
     /// The files left unread because more than the bound could hold rows.
     pub files_not_read: usize,
+    /// Whether a stop ended the reading before its end; it then holds no
+    /// call record.
+    pub stopped: bool,
 }
 
 /// The files that could not be read, each with the reason.
@@ -2478,6 +2553,22 @@ pub struct Restored {
     /// The files left unread because the bound on the files of one
     /// rebuild was reached before the rebuild had what it looked for.
     pub files_not_read: usize,
+    /// The rows built from the files that were opened: a row is built
+    /// only when [`builds_row`] says so.
+    pub rows_built: usize,
+    /// Whether a stop ended the rebuild before its end; it then restores
+    /// no member.
+    pub stopped: bool,
+}
+
+/// Whether the rebuild at start builds a heartbeat row received at
+/// `received_ns` nanoseconds since 1970, for a member whose newest row so
+/// far was received at `held_ns` (`None`: no row held, or a receive time
+/// with no nanosecond value). A row of the held row's instant is built, so
+/// the heartbeat count decides between the two.
+#[must_use]
+pub fn builds_row(held_ns: Option<i64>, received_ns: i64) -> bool {
+    held_ns.is_none_or(|held| received_ns >= held)
 }
 
 #[cfg(test)]
@@ -7514,15 +7605,15 @@ mod wanted_tests {
     }
 
     #[test]
-    fn failure_the_rebuild_refuses_a_file_with_one_row_that_does_not_parse() -> TestResult {
+    fn failure_the_rebuild_refuses_a_file_whose_row_it_builds_does_not_parse() -> TestResult {
         let (_dir, history) = store_of_damaged_beats()?;
-        history.file(&beats_at(86_400_000, 8))?;
         let restored =
             history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), usize::MAX)?;
         assert_eq!(
             (restored.files_read, restored.refused.len()),
-            (1, 1),
-            "failure the rebuild reads the whole file and refuses the damaged one"
+            (0, 1),
+            "failure the rebuild builds the damaged row, the newest of its member, and refuses \
+             the file"
         );
         assert!(
             restored.refused[0]
@@ -7532,13 +7623,31 @@ mod wanted_tests {
             restored.refused
         );
         assert!(
-            restored.members.iter().all(|row| row.heartbeats == 8),
+            restored.members.is_empty(),
             "failure no member is restored from the refused file"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_rebuild_does_not_build_a_damaged_row_older_than_the_one_held() -> TestResult {
+        let (_dir, history) = store_of_damaged_beats()?;
+        history.file(&beats_at(86_400_000, 8))?;
+        let restored =
+            history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), usize::MAX)?;
         assert_eq!(
-            restored.members.len(),
-            300,
-            "failure the next day's file restores all"
+            (
+                restored.files_read,
+                restored.refused.len(),
+                restored.rows_built
+            ),
+            (2, 0, 300),
+            "edge the next day's file is read first; every row of the damaged file is older, \
+             so none is built and the file is not refused (`sipnab fleet verify` reads it)"
+        );
+        assert!(
+            restored.members.len() == 300 && restored.members.iter().all(|row| row.heartbeats == 8),
+            "edge the next day's file restores all"
         );
         Ok(())
     }
@@ -9298,7 +9407,8 @@ mod layout_tests {
         let listed = history.list(CLASS_CALLS, &query);
         let all = history.list(CLASS_CALLS, &Query::all());
         std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700))?;
-        if can_read_anyway {
+        // Root reads a mode-0000 directory, so the case cannot be built as root.
+        if !crate::test_prereq::not_root(can_read_anyway) {
             return Ok(());
         }
         assert!(
@@ -9539,6 +9649,833 @@ mod layout_tests {
             (read.rows.len(), read.groups, read.groups_read),
             (0, 1, 0),
             "edge a window after the file's rows rules its group out by the receive times"
+        );
+        Ok(())
+    }
+}
+
+/// The rebuild at start builds a row only when its member has no row yet
+/// or the row is not older than the one held ([`builds_row`]), and counts
+/// the rows it built ([`Restored::rows_built`]); what it restores is what
+/// building every row restored.
+#[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+    use crate::app::fleet_calls::CallCounts;
+    use crate::app::fleet_center::Cursor;
+    use crate::app::fleet_seal::MasterKey;
+
+    /// What a test returns.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A key whose every byte is `b`, alone.
+    fn keys(b: u8) -> Arc<Keys> {
+        Arc::new(Keys::new(MasterKey::from_bytes([b; 32]), Vec::new()))
+    }
+
+    /// 2026-11-11T00:00:00Z plus `ms` milliseconds.
+    fn at_ms(ms: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::UNIX_EPOCH + chrono::TimeDelta::milliseconds(1_794_355_200_000 + ms)
+    }
+
+    /// One day in milliseconds.
+    const DAY: i64 = 86_400_000;
+
+    /// Heartbeat `count` of `member`, received `ms` milliseconds into
+    /// 2026-11-11.
+    fn beat(member: &str, ms: i64, count: u64) -> MemberRecord {
+        MemberRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            peer: "192.0.2.10".to_string(),
+            heartbeats: count,
+            cursor: Cursor {
+                stream: "s".to_string(),
+                seq: count,
+                sent_at: at_ms(ms - 250),
+            },
+            heartbeat_secs: 30,
+            inventory: serde_json::json!({"host": "edge.example.com", "count": count}),
+            call_records: count,
+            calls: Some(CallCounts {
+                selected: count,
+                dropped_by_cap: 0,
+                left_out: 0,
+                spooled: 0,
+            }),
+        }
+    }
+
+    /// A history store in a new directory, under key 1.
+    fn store() -> Result<(tempfile::TempDir, History), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let history = History::open(&dir.path().join("center.store"), keys(1))?;
+        Ok((dir, history))
+    }
+
+    /// The rebuild of a lost store file: from the first day on, every
+    /// member unknown, at most 4,096 files.
+    fn rebuild(history: &History) -> Result<Restored, String> {
+        history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 4096)
+    }
+
+    /// What the rebuild restores when every row of every file it opens is
+    /// built, as releases 0.5.251 to 0.5.258 did it: the newest heartbeat of
+    /// each member by receive time, then heartbeat count, sorted by member.
+    fn by_every_row(history: &History) -> Result<Vec<MemberRecord>, Box<dyn std::error::Error>> {
+        let mut newest: BTreeMap<String, MemberRecord> = BTreeMap::new();
+        for file in history.list(CLASS_MEMBERS, &Query::all())? {
+            let Ok(sealed) = std::fs::read(history.dir().join(&file.rel)) else {
+                continue;
+            };
+            let Ok(parquet) = unseal(&file.rel, &sealed, &history.keys, MemberRecord::KIND) else {
+                continue;
+            };
+            let Ok(decoded) =
+                decode_by::<MemberRecord>(parquet, &Query::all(), group_every_row::<MemberRecord>)
+            else {
+                continue;
+            };
+            for row in decoded.rows {
+                let is_newer = newest.get(&row.member).is_none_or(|held| {
+                    (row.received_at, row.heartbeats) > (held.received_at, held.heartbeats)
+                });
+                if is_newer {
+                    newest.insert(row.member.clone(), row);
+                }
+            }
+        }
+        Ok(newest.into_values().collect())
+    }
+
+    /// `found`'s members, sorted by member.
+    fn members_of(found: &Restored) -> Vec<MemberRecord> {
+        let mut members = found.members.clone();
+        members.sort_by(|a, b| a.member.cmp(&b.member));
+        members
+    }
+
+    /// One bit of the file at `rel` flipped in the middle.
+    fn change(history: &History, rel: &str) -> std::io::Result<()> {
+        let path = history.dir().join(rel);
+        let mut bytes = std::fs::read(&path)?;
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x01;
+        std::fs::write(&path, bytes)
+    }
+
+    // ── SUCCESS ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn success_a_row_newer_than_the_one_held_is_built() {
+        assert!(
+            builds_row(Some(1_000), 2_000),
+            "success a row received after the held one is built"
+        );
+    }
+
+    #[test]
+    fn success_one_file_builds_each_of_its_rows() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[
+            beat("edge-a", 1000, 1),
+            beat("edge-b", 1000, 1),
+            beat("edge-c", 1000, 1),
+        ])?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.rows_built, found.members.len()),
+            (3, 3),
+            "success the one file's three rows are built and restored"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_older_filings_of_the_same_members_build_no_row() -> TestResult {
+        let (_dir, history) = store()?;
+        for (ms, count) in [(1000, 1), (2000, 2), (3000, 3)] {
+            history.file(&[beat("edge-a", ms, count), beat("edge-b", ms, count)])?;
+        }
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.files_read, found.rows_built),
+            (3, 2),
+            "success three files are read and only the newest file's two rows are built"
+        );
+        assert_eq!(
+            members_of(&found)
+                .iter()
+                .map(|r| r.heartbeats)
+                .collect::<Vec<u64>>(),
+            [3, 3],
+            "success with the newest heartbeat of each"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_member_only_an_older_file_holds_is_built_once() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1), beat("edge-b", 1000, 1)])?;
+        history.file(&[beat("edge-a", 2000, 2)])?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            found.rows_built, 2,
+            "success the newest file's row and the older file's row of the member it alone \
+             holds are built"
+        );
+        assert_eq!(
+            members_of(&found),
+            vec![beat("edge-a", 2000, 2), beat("edge-b", 1000, 1)],
+            "success both members, each with its newest heartbeat"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_newer_row_in_a_file_read_later_is_built_and_taken() -> TestResult {
+        let (_dir, history) = store()?;
+        // The first file ends later, so it is read first; the second holds
+        // a newer heartbeat of edge-a than the first does.
+        history.file(&[beat("edge-a", 1000, 1), beat("edge-b", 5000, 1)])?;
+        history.file(&[beat("edge-a", 3000, 2)])?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            found.rows_built, 3,
+            "success the later file's newer row is built"
+        );
+        assert_eq!(
+            members_of(&found)[0],
+            beat("edge-a", 3000, 2),
+            "success and the newer heartbeat is the one restored"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_rebuild_restores_what_building_every_row_restored() -> TestResult {
+        let (_dir, history) = store()?;
+        for filing in 0..6_i64 {
+            let rows: Vec<MemberRecord> = (0..8_i64)
+                .filter(|m| (m + filing) % 3 != 0)
+                .map(|m| beat(&format!("edge-{m}"), filing * 60_000 + m, filing as u64 + 1))
+                .collect();
+            history.file(&rows)?;
+        }
+        let found = rebuild(&history)?;
+        assert_eq!(
+            members_of(&found),
+            by_every_row(&history)?,
+            "success the same members with the same heartbeats as building every row"
+        );
+        assert!(
+            found.rows_built < 6 * 8,
+            "success with fewer rows built than the files hold: {}",
+            found.rows_built
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_two_heartbeats_of_one_member_in_one_file_are_both_built() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1), beat("edge-a", 2000, 2)])?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.rows_built, members_of(&found)),
+            (2, vec![beat("edge-a", 2000, 2)]),
+            "success both rows of the one file are built and the newer is restored"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_count_is_of_the_rows_built_not_of_the_rows_read() -> TestResult {
+        let (_dir, history) = store()?;
+        for (ms, count) in [(1000, 1), (2000, 2)] {
+            history.file(&[
+                beat("edge-a", ms, count),
+                beat("edge-b", ms, count),
+                beat("edge-c", ms, count),
+            ])?;
+        }
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.files_read, found.rows_built),
+            (2, 3),
+            "success two files of three rows each are read and three rows are built"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_fleet_of_many_filings_builds_one_row_per_member() -> TestResult {
+        let (_dir, history) = store()?;
+        for filing in 0..20_i64 {
+            let rows: Vec<MemberRecord> = (0..50_i64)
+                .map(|m| {
+                    beat(
+                        &format!("edge-{m:02}"),
+                        filing * 60_000 + m,
+                        filing as u64 + 1,
+                    )
+                })
+                .collect();
+            history.file(&rows)?;
+        }
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.files_read, found.rows_built, found.members.len()),
+            (20, 50, 50),
+            "success twenty files are read and one row of each of the fifty members is built"
+        );
+        assert!(
+            found.members.iter().all(|r| r.heartbeats == 20),
+            "success each with its newest heartbeat"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_member_named_in_utf_8_is_built_once() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-\u{e9}t\u{e9}", 1000, 1)])?;
+        history.file(&[beat("edge-\u{e9}t\u{e9}", 2000, 2)])?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.rows_built, found.members.len()),
+            (1, 1),
+            "success the older row of a member named outside ASCII is not built"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_default_restored_built_no_row() {
+        assert_eq!(
+            Restored::default().rows_built,
+            0,
+            "success nothing restored, no row built"
+        );
+    }
+
+    #[test]
+    fn success_the_rebuild_keeps_the_rows_the_retention_window_holds() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1)])?;
+        history.file(&[beat("edge-b", 2 * DAY, 1)])?;
+        let found = history.newest_heartbeats(at_ms(DAY).date_naive(), &BTreeMap::new(), 100)?;
+        assert_eq!(
+            (found.rows_built, members_of(&found)),
+            (1, vec![beat("edge-b", 2 * DAY, 1)]),
+            "success the day before the oldest kept day is not read, so its row is not built"
+        );
+        Ok(())
+    }
+
+    // ── FAILURE ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn failure_a_row_older_than_the_one_held_is_not_built() {
+        assert!(
+            !builds_row(Some(2_000), 1_000),
+            "failure a row received before the held one is not built"
+        );
+    }
+
+    #[test]
+    fn failure_a_file_that_does_not_open_builds_no_row() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1)])?;
+        history.file(&[beat("edge-b", 2000, 1), beat("edge-c", 2000, 1)])?;
+        let newest = history.list(CLASS_MEMBERS, &Query::all())?[0].rel.clone();
+        change(&history, &newest)?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.rows_built, found.refused.len(), members_of(&found)),
+            (1, 1, vec![beat("edge-a", 1000, 1)]),
+            "failure the changed file builds nothing and is reported; the other is built"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_under_another_key_builds_no_row() -> TestResult {
+        let (dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1)])?;
+        let other = History::reader(&dir.path().join("center.store"), keys(2));
+        let found = rebuild(&other)?;
+        assert_eq!(
+            (found.rows_built, found.refused.len(), found.members.len()),
+            (0, 1, 0),
+            "failure a file whose key is not loaded builds no row and restores nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_truncated_file_builds_no_row_and_the_others_are_built() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1), beat("edge-b", 1000, 1)])?;
+        history.file(&[beat("edge-c", 2000, 1)])?;
+        let oldest = history.list(CLASS_MEMBERS, &Query::all())?[1].rel.clone();
+        let path = history.dir().join(&oldest);
+        let bytes = std::fs::read(&path)?;
+        std::fs::write(&path, &bytes[..bytes.len() / 2])?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.rows_built, found.refused.len(), members_of(&found)),
+            (1, 1, vec![beat("edge-c", 2000, 1)]),
+            "failure the cut file builds nothing; the whole one is built"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_store_without_files_builds_no_row() -> TestResult {
+        let (_dir, history) = store()?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.rows_built, found.files_read, found.members.len()),
+            (0, 0, 0),
+            "failure no file, no row, no member"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_bound_of_no_file_builds_no_row() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1)])?;
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 0)?;
+        assert_eq!(
+            (found.rows_built, found.files_read, found.files_not_read),
+            (0, 0, 1),
+            "failure no file may be opened, so no row is built and the file is counted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_rows_a_refused_file_holds_are_restored_from_no_other_file() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1), beat("edge-b", 1000, 1)])?;
+        history.file(&[beat("edge-a", 2000, 2), beat("edge-b", 2000, 2)])?;
+        history.file(&[beat("edge-a", 3000, 3)])?;
+        let middle = history.list(CLASS_MEMBERS, &Query::all())?[1].rel.clone();
+        change(&history, &middle)?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            members_of(&found),
+            by_every_row(&history)?,
+            "failure with a refused file, the rebuild restores what building every row of the \
+             other files restored"
+        );
+        assert_eq!(
+            members_of(&found),
+            vec![beat("edge-a", 3000, 3), beat("edge-b", 1000, 1)],
+            "failure edge-b comes from the oldest file, since the middle one is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_row_whose_receive_time_does_not_fit_is_built() {
+        assert!(
+            builds_row(None, 1_000),
+            "failure a held row whose receive time has no nanosecond value does not rule a row \
+             out: it is built and compared in full"
+        );
+    }
+
+    #[test]
+    fn failure_the_store_file_newer_than_every_file_builds_no_row() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1)])?;
+        let known = BTreeMap::from([("edge-a".to_string(), at_ms(5000))]);
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &known, 100)?;
+        assert_eq!(
+            (found.rows_built, found.files_read),
+            (0, 0),
+            "failure the store file is newer: no file is opened and no row built"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_row_no_newer_than_the_store_files_is_built_but_not_restored() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1), beat("edge-b", 1000, 1)])?;
+        let known = BTreeMap::from([("edge-a".to_string(), at_ms(1000))]);
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &known, 100)?;
+        assert_eq!(
+            (found.rows_built, members_of(&found)),
+            (2, vec![beat("edge-b", 1000, 1)]),
+            "failure both rows are built; the one the store file already holds restores nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_held_row_received_later_rules_out_a_row_of_the_same_instant_minus_one() {
+        assert!(
+            !builds_row(Some(i64::MIN + 1), i64::MIN),
+            "failure the least receive time is older than the one after it"
+        );
+    }
+
+    // ── EDGE ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn edge_a_member_with_no_row_held_is_built() {
+        assert!(builds_row(None, 0), "edge no row held: the row is built");
+    }
+
+    #[test]
+    fn edge_a_row_of_the_same_instant_is_built() {
+        assert!(
+            builds_row(Some(1_000), 1_000),
+            "edge a row received at the held row's instant is built: the heartbeat count \
+             decides"
+        );
+    }
+
+    #[test]
+    fn edge_the_extreme_receive_times_compare() {
+        assert!(
+            builds_row(Some(i64::MIN), i64::MAX) && !builds_row(Some(i64::MAX), i64::MIN),
+            "edge the least and the greatest receive times compare as numbers"
+        );
+    }
+
+    #[test]
+    fn edge_a_tie_with_a_higher_count_in_a_later_read_file_wins() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 5)])?;
+        history.file(&[beat("edge-a", 1000, 4), beat("edge-b", 9000, 1)])?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            found.rows_built, 3,
+            "edge the row of the same instant in the file read later is built"
+        );
+        assert_eq!(
+            members_of(&found)[0].heartbeats,
+            5,
+            "edge and the higher heartbeat count is restored"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_tie_with_a_lower_count_is_built_and_not_taken() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 3), beat("edge-b", 9000, 1)])?;
+        history.file(&[beat("edge-a", 1000, 4)])?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.rows_built, members_of(&found)[0].heartbeats),
+            (3, 4),
+            "edge the tie is built and the higher count is kept"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_rebuild_that_stops_at_every_named_member_builds_one_file() -> TestResult {
+        let (_dir, history) = store()?;
+        for (ms, count) in [(1000, 1), (2000, 2), (3000, 3)] {
+            history.file(&[beat("edge-a", ms, count), beat("edge-b", ms, count)])?;
+        }
+        let known = BTreeMap::from([
+            ("edge-a".to_string(), at_ms(500)),
+            ("edge-b".to_string(), at_ms(500)),
+        ]);
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &known, 100)?;
+        assert_eq!(
+            (found.files_read, found.rows_built),
+            (1, 2),
+            "edge the newest file holds both named members: its two rows only are built"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_bound_stops_the_building_with_the_files_it_opened() -> TestResult {
+        let (_dir, history) = store()?;
+        for n in 0..10_i64 {
+            history.file(&[beat(&format!("edge-{n}"), n * 60_000, 1)])?;
+        }
+        let found = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 3)?;
+        assert_eq!(
+            (found.files_read, found.rows_built, found.files_not_read),
+            (3, 3, 7),
+            "edge three files are opened, their three rows built, seven not read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_members_that_alternate_between_files_are_each_built_once() -> TestResult {
+        let (_dir, history) = store()?;
+        history.file(&[beat("edge-a", 1000, 1)])?;
+        history.file(&[beat("edge-b", 2000, 1)])?;
+        history.file(&[beat("edge-a", 3000, 2)])?;
+        history.file(&[beat("edge-b", 4000, 2)])?;
+        let found = rebuild(&history)?;
+        assert_eq!(
+            (found.files_read, found.rows_built),
+            (4, 2),
+            "edge four files are read; the newest row of each member is the only one built"
+        );
+        assert_eq!(
+            members_of(&found),
+            by_every_row(&history)?,
+            "edge and the result is what building every row gave"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_row_one_nanosecond_older_is_not_built() {
+        assert!(
+            !builds_row(Some(1_000_000_001), 1_000_000_000),
+            "edge one nanosecond older rules the row out"
+        );
+    }
+
+    #[test]
+    fn edge_a_row_one_nanosecond_newer_is_built() {
+        assert!(
+            builds_row(Some(1_000_000_000), 1_000_000_001),
+            "edge one nanosecond newer is built"
+        );
+    }
+}
+
+/// The stop a center's start can be asked for while it rebuilds its member
+/// registry: [`History::newest_heartbeats_until`] and
+/// [`History::calls_after_until`] ask before each file whether to go on.
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+    use crate::app::fleet_calls::CallCounts;
+    use crate::app::fleet_center::Cursor;
+    use crate::app::fleet_seal::MasterKey;
+    use std::cell::Cell;
+
+    /// What a test returns.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// 2026-11-11T00:00:00Z plus `ms` milliseconds.
+    fn at_ms(ms: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::UNIX_EPOCH + chrono::TimeDelta::milliseconds(1_794_355_200_000 + ms)
+    }
+
+    /// Heartbeat `count` of `member`, received `ms` milliseconds into
+    /// 2026-11-11.
+    fn beat(member: &str, ms: i64, count: u64) -> MemberRecord {
+        MemberRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            peer: "192.0.2.10".to_string(),
+            heartbeats: count,
+            cursor: Cursor {
+                stream: "s".to_string(),
+                seq: count,
+                sent_at: at_ms(ms - 250),
+            },
+            heartbeat_secs: 30,
+            inventory: serde_json::json!({"host": "edge.example.com"}),
+            call_records: count,
+            calls: Some(CallCounts {
+                selected: count,
+                dropped_by_cap: 0,
+                left_out: 0,
+                spooled: 0,
+            }),
+        }
+    }
+
+    /// The call record at `seq` of `member`, received `ms` milliseconds
+    /// into 2026-11-11.
+    fn call(member: &str, ms: i64, seq: u64) -> IntakeRecord {
+        IntakeRecord {
+            member: member.to_string(),
+            received_at: at_ms(ms),
+            stream: "s".to_string(),
+            seq,
+            sent_at: at_ms(ms - 250),
+            selected_by: "failed".to_string(),
+            call: serde_json::json!({"call_id": format!("call-{seq}@example.com")}),
+        }
+    }
+
+    /// A history store in a new directory with `files` files of heartbeats
+    /// of the members edge-0 to edge-4, one filing a minute, and as many
+    /// files of call records of edge-0.
+    fn store(files: i64) -> Result<(tempfile::TempDir, History), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let keys = Arc::new(Keys::new(MasterKey::from_bytes([7; 32]), Vec::new()));
+        let history = History::open(&dir.path().join("center.store"), keys)?;
+        for filing in 0..files {
+            let count = u64::try_from(filing)? + 1;
+            let rows: Vec<MemberRecord> = (0..5_i64)
+                .map(|m| beat(&format!("edge-{m}"), filing * 60_000 + m, count))
+                .collect();
+            history.file(&rows)?;
+            history.file(&[call("edge-0", filing * 60_000 + 10, count)])?;
+        }
+        Ok((dir, history))
+    }
+
+    /// From the first day on, every member unknown, at most 4,096 files,
+    /// asking `stopped` before each file.
+    fn rebuild(history: &History, stopped: &dyn Fn() -> bool) -> Result<Restored, String> {
+        history.newest_heartbeats_until(at_ms(0).date_naive(), &BTreeMap::new(), 4096, stopped)
+    }
+
+    /// The call records of edge-0 from the first instant on, asking
+    /// `stopped` before each file.
+    fn calls(history: &History, stopped: &dyn Fn() -> bool) -> Result<CallsAfter, String> {
+        let since = BTreeMap::from([("edge-0".to_string(), at_ms(0))]);
+        history.calls_after_until(&since, 4096, stopped)
+    }
+
+    /// A stop that answers no `go_on` times, then yes, counting the asks.
+    fn after(go_on: usize, asked: &Cell<usize>) -> impl Fn() -> bool + '_ {
+        move || {
+            asked.set(asked.get() + 1);
+            asked.get() > go_on
+        }
+    }
+
+    // ── SUCCESS ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn success_a_rebuild_never_stopped_is_the_rebuild_without_a_stop() -> TestResult {
+        let (_dir, history) = store(4)?;
+        let plain = history.newest_heartbeats(at_ms(0).date_naive(), &BTreeMap::new(), 4096)?;
+        let until = rebuild(&history, &|| false)?;
+        assert_eq!(until, plain, "success the same answer, field by field");
+        assert!(!until.stopped, "success and not stopped");
+        assert_eq!(
+            (until.files_read, until.members.len()),
+            (4, 5),
+            "success every file read and every member restored"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_stop_is_asked_once_before_each_file() -> TestResult {
+        let (_dir, history) = store(4)?;
+        let asked = Cell::new(0);
+        let found = rebuild(&history, &after(usize::MAX, &asked))?;
+        assert_eq!(
+            (asked.get(), found.files_read),
+            (4, 4),
+            "success four files, four asks"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_the_call_records_never_stopped_are_those_without_a_stop() -> TestResult {
+        let (_dir, history) = store(3)?;
+        let since = BTreeMap::from([("edge-0".to_string(), at_ms(0))]);
+        let plain = history.calls_after(&since, 4096)?;
+        let until = calls(&history, &|| false)?;
+        assert_eq!(until, plain, "success the same call records");
+        assert_eq!(until.rows.len(), 3, "success one in each file");
+        assert!(!until.stopped, "success and not stopped");
+        Ok(())
+    }
+
+    // ── FAILURE ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn failure_a_stop_before_the_first_file_reads_none_and_restores_none() -> TestResult {
+        let (_dir, history) = store(3)?;
+        let found = rebuild(&history, &|| true)?;
+        assert!(found.stopped, "failure the rebuild says it was stopped");
+        assert_eq!(
+            (found.files_read, found.rows_built, found.members.len()),
+            (0, 0, 0),
+            "failure no file read, no row built, no member restored"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_stop_after_two_files_restores_no_member_of_them() -> TestResult {
+        let (_dir, history) = store(4)?;
+        let asked = Cell::new(0);
+        let found = rebuild(&history, &after(2, &asked))?;
+        assert!(found.stopped, "failure stopped at the third ask");
+        assert_eq!(
+            (found.files_read, asked.get()),
+            (2, 3),
+            "failure two files read, then the stop"
+        );
+        assert!(
+            found.members.is_empty(),
+            "failure a stopped rebuild restores no member, not the members of a part: {:?}",
+            found.members
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_call_records_stopped_before_the_first_file_are_none() -> TestResult {
+        let (_dir, history) = store(3)?;
+        let found = calls(&history, &|| true)?;
+        assert!(found.stopped, "failure the reading says it was stopped");
+        assert_eq!(
+            (found.files_read, found.rows.len()),
+            (0, 0),
+            "failure no file read, no call record"
+        );
+        Ok(())
+    }
+
+    // ── EDGE ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn edge_a_store_without_files_is_not_stopped_by_a_stop() -> TestResult {
+        let (_dir, history) = store(0)?;
+        let asked = Cell::new(0);
+        let found = rebuild(&history, &after(0, &asked))?;
+        assert_eq!(
+            (found.stopped, asked.get()),
+            (false, 0),
+            "edge with no file to read there is nothing to stop and nothing is asked"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_stop_at_the_last_file_leaves_it_unread() -> TestResult {
+        let (_dir, history) = store(3)?;
+        let asked = Cell::new(0);
+        let found = rebuild(&history, &after(2, &asked))?;
+        assert_eq!(
+            (found.stopped, found.files_read),
+            (true, 2),
+            "edge the last of three files is not read once the stop is asked"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_call_records_stopped_after_one_file_hold_none() -> TestResult {
+        let (_dir, history) = store(3)?;
+        let asked = Cell::new(0);
+        let found = calls(&history, &after(1, &asked))?;
+        assert_eq!(
+            (found.stopped, found.files_read, found.rows.len()),
+            (true, 1, 0),
+            "edge one file read, then the stop: no call record is kept"
         );
         Ok(())
     }

@@ -631,6 +631,78 @@ def test_the_workflow_watches_ci_and_release_by_the_names_they_carry():
     assert watched == [_workflow_name("ci.yml"), _workflow_name("release.yml")]
 
 
+def test_the_workflow_watches_exactly_the_workflows_the_script_names():
+    # scripts/release-train.py reads WORKFLOWS to judge whether a canceled
+    # job will be re-run (RELEASE-TRAIN-STOPS-ON-NOT-ACQUIRED); a second
+    # list in the workflow file would drift from it.
+    names = re.search(r"^    workflows: \[(.*)\]$", _code(_workflow()), re.M)
+    assert names, "no `workflows:` list under workflow_run"
+    watched = tuple(n.strip().strip("'\"") for n in names.group(1).split(","))
+    assert watched == rerun.WORKFLOWS, f"workflow {watched} and script {rerun.WORKFLOWS} differ"
+
+
+# ---------------------------------------------------------------------------
+# rerun_coming: the same rule, for one job, read by the release train.
+# ---------------------------------------------------------------------------
+
+
+def job_of(attempt=1, steps=0, conclusion="cancelled", status="completed"):
+    j = job(7, conclusion=conclusion, steps=steps, status=status)
+    j["run_attempt"] = attempt
+    return j
+
+
+@pytest.mark.parametrize("attempt", [1, 2])
+def test_attempts_left_below_the_limit(attempt):
+    assert rerun.attempts_left(attempt) is True, f"attempt {attempt} of {rerun.MAX_ATTEMPTS} is re-run"
+
+
+@pytest.mark.parametrize("attempt", [3, 4, 0, -1, True, 1.0, "1", None])
+def test_attempts_left_refuses_the_limit_and_what_is_not_a_count(attempt):
+    assert rerun.attempts_left(attempt) is False, f"{attempt!r} must not be re-run"
+
+
+@pytest.mark.parametrize("workflow", ["CI", "Release"])
+def test_rerun_coming_for_a_job_no_runner_took(workflow):
+    assert rerun.rerun_coming(workflow, run("failure", 1, "in_progress"), job_of(), [annotation()]) is True
+
+
+def test_rerun_coming_on_the_second_attempt():
+    assert rerun.rerun_coming("CI", run("failure", 2), job_of(attempt=2), [annotation()]) is True
+
+
+RERUN_NOT_COMING = [
+    ("a workflow it does not watch", "CodeQL", run(), job_of(), [annotation()]),
+    ("the third attempt", "CI", run(attempt=3), job_of(attempt=3), [annotation()]),
+    ("a job of an earlier attempt", "CI", run(attempt=2), job_of(attempt=1), [annotation()]),
+    ("a job that ran a step", "CI", run(), job_of(steps=1), [annotation()]),
+    ("a cancel with no such message", "CI", run(), job_of(), [annotation(NOTICE, "notice")]),
+    ("a failed job", "CI", run(), job_of(conclusion="failure"), [annotation()]),
+    ("a job still running", "CI", run(), job_of(status="in_progress"), [annotation()]),
+    ("a run that passed", "CI", run("success"), job_of(), [annotation()]),
+    ("a run that is not a dict", "CI", None, job_of(), [annotation()]),
+    ("a job with no attempt number", "CI", run(), {**job_of(), "run_attempt": None}, [annotation()]),
+    ("no workflow name", None, run(), job_of(), [annotation()]),
+    ("a self-hosted runner's message", "CI", run(), job_of(),
+     [annotation("The job was not acquired by Runner of type self-hosted even after multiple attempts")]),
+]
+
+
+@pytest.mark.parametrize("kind,workflow,run_,job_,notes", RERUN_NOT_COMING,
+                         ids=[r[0] for r in RERUN_NOT_COMING])
+def test_rerun_not_coming(kind, workflow, run_, job_, notes):
+    assert rerun.rerun_coming(workflow, run_, job_, notes) is False, kind
+
+
+def test_rerun_coming_and_decide_agree_on_the_captured_release_run():
+    jobs = fixture("release_run_attempt_1_jobs.json")["jobs"]
+    never = next(j for j in jobs if j["conclusion"] == "cancelled")
+    notes = fixture("not_acquired_annotations.json")
+    run_ = fixture("release_run_attempt_1.json")
+    assert rerun.decide(run_, jobs, {never["id"]: notes})[0] == "rerun"
+    assert rerun.rerun_coming(run_["name"], run_, never, notes) is True, "the two readings disagree"
+
+
 def test_the_workflow_runs_when_a_watched_run_completes():
     code = _code(_workflow())
     assert re.search(r"^  workflow_run:\n    workflows: .*\n    types: \[completed\]$", code, re.M)

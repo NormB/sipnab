@@ -416,8 +416,21 @@ pub(in crate::tui) fn render_quit_confirm_popup(frame: &mut ratatui::Frame, area
             Style::default().fg(app.theme.header),
         )),
         Line::from(""),
+        // "Yes" is the preselected answer, drawn as the selected button:
+        // Enter takes it, so the operator who asked to quit confirms with
+        // the key every dialog default answers to.
         Line::from(vec![
-            Span::styled("  Y", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  "),
+            Span::styled(
+                "[ Yes ]",
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            ),
+            Span::raw("   "),
+            Span::styled("[ No ]", Style::default().fg(app.theme.muted)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Enter/Y", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(" quit", Style::default().fg(app.theme.muted)),
             Span::styled("    N/Esc", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(" cancel", Style::default().fg(app.theme.muted)),
@@ -588,6 +601,56 @@ pub(in crate::tui) fn render_g729_install_popup(frame: &mut ratatui::Frame, area
         .borders(Borders::ALL)
         .title(title)
         .style(Style::default().bg(app.theme.background));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The command line `Y` copied, wrapped to the popup's width, with the keys
+/// that close it.
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup); no state is
+/// mutated.
+pub(in crate::tui) fn render_command_line_popup(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    command: &str,
+    theme: &Theme,
+) {
+    // As wide as an 80-column terminal allows, so a typical command fits on
+    // one or two rows; one column of margin inside each border.
+    let popup_width = area.width.saturating_sub(4).clamp(1, 76);
+    let text_width = usize::from(popup_width.saturating_sub(4)).max(1);
+    // Wrapped at a fixed width, not at spaces: every character is drawn,
+    // spaces at a row's end included, so the rows read back as the command.
+    let chars: Vec<char> = command.chars().collect();
+    let mut lines: Vec<Line<'_>> = chars
+        .chunks(text_width)
+        .map(|chunk| {
+            Line::from(Span::styled(
+                format!(" {}", chunk.iter().collect::<String>()),
+                Style::default().fg(theme.foreground),
+            ))
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" Esc/Enter", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " close \u{b7} the status line reports the copy",
+            Style::default().fg(theme.muted),
+        ),
+    ]));
+    let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let popup_height = rows.saturating_add(2).min(area.height);
+    let popup_area = centered_popup(area, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Command line ")
+        .style(Style::default().bg(theme.background));
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
     frame.render_widget(Paragraph::new(lines), inner);
@@ -1052,6 +1115,15 @@ pub(in crate::tui) fn render_filter_text_field(
     let field_width = field.field_width;
     let focused = field.focused;
     let cursor_pos = field.cursor_pos;
+    // Scrolled so the cursor cell stays inside the brackets while the text
+    // runs past them; an unfocused field shows its start.
+    let inner_width = field_width.saturating_sub(2) as usize; // subtract brackets
+    let (value, cursor_pos) = if focused {
+        let start = field_scroll_start(value, cursor_pos, inner_width);
+        (&value[start..], cursor_pos.saturating_sub(start))
+    } else {
+        (value, cursor_pos)
+    };
     let label_style = Style::default().fg(theme.header);
     let bracket_style = if focused {
         Style::default().fg(theme.foreground)
@@ -1071,9 +1143,8 @@ pub(in crate::tui) fn render_filter_text_field(
     // char boundaries so no slice can split a multibyte UTF-8 sequence.
     let content_x = field_x + 1;
     // On a very narrow field the bracket pair alone can exceed the width;
-    // saturating keeps `inner_width` at 0 instead of underflowing (which
-    // panics in debug builds and wraps to a huge value in release).
-    let inner_width = field_width.saturating_sub(2) as usize; // subtract brackets
+    // saturating keeps `inner_width` (above) at 0 instead of underflowing
+    // (which panics in debug builds and wraps to a huge value in release).
     let cursor = crate::text::floor_char_boundary(value, cursor_pos);
     // End of the display window, backed up to a boundary.
     let visible_end = crate::text::floor_char_boundary(value, inner_width);
@@ -1189,41 +1260,73 @@ pub(in crate::tui) fn render_filter_text_field(
     );
 }
 
+/// The byte offset a focused text field's window starts at, so the cursor
+/// cell is the last cell inside the brackets at most.
+///
+/// The field paints one byte per column, so the window is measured in bytes
+/// and moved forward to a char boundary.
+///
+/// # Arguments
+/// * `value` - The field's text.
+/// * `cursor` - The cursor's byte offset in `value`.
+/// * `inner_width` - Columns between the brackets.
+///
+/// # Returns
+/// `0` while the cursor fits; otherwise the first byte that keeps it in view.
+fn field_scroll_start(value: &str, cursor: usize, inner_width: usize) -> usize {
+    let cursor = crate::text::floor_char_boundary(value, cursor);
+    if inner_width == 0 || cursor < inner_width {
+        return 0;
+    }
+    let mut start = cursor + 1 - inner_width;
+    // `cursor` is itself a boundary, so this stops at or before it.
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
+    start
+}
+
 /// Render the filter dialog as a centered popup overlay.
 ///
-/// Layout, drawn to scale at the fixed 56-column by 20-row popup size set
+/// Layout, drawn to scale at the fixed 76-column by 23-row popup size set
 /// below, so every column stop in the figure is the one the code paints:
 ///
 /// ```text
-/// + Filter ----------------------------------------------+
-/// |                                                      |
-/// |  SIP From:    [                                   ]  |
-/// |  SIP To:      [                                   ]  |
-/// |  Source:      [                                   ]  |
-/// |  Destination: [                                   ]  |
-/// |  Payload:     [                                   ]  |
-/// |  ──────────────────────────────────────────────────  |
-/// |  All       [ ]                                       |
-/// |  REGISTER  [*]             OPTIONS   [ ]             |
-/// |  INVITE    [*]             PUBLISH   [ ]             |
-/// |  SUBSCRIBE [ ]             MESSAGE   [ ]             |
-/// |  NOTIFY    [ ]             REFER     [ ]             |
-/// |  INFO      [ ]             UPDATE    [ ]             |
-/// |                                                      |
-/// |     [ Filter ]                 [ Cancel ]            |
-/// |  (inline parse error appears here)                   |
-/// |                                                      |
-/// |                                                      |
-/// +------------------------------------------------------+
+/// +- Filter -----------------------------------------------------------------+
+/// |  From user:       [                                                   ]  |
+/// |  To user:         [                                                   ]  |
+/// |  Source IP:       [                                                   ]  |
+/// |  Destination IP:  [                                                   ]  |
+/// |  Text in message: [                                                   ]  |
+/// |  Header:          [Name: text                                         ]  |
+/// |  After:           [2026-07-07T08:00:00Z                               ]  |
+/// |  Before:          [2026-07-07T09:00:00Z                               ]  |
+/// |  Named filter:    [none in [filters]                                  ]  |
+/// |  Expression:      [any --filter expression                            ]  |
+/// |  ──────────────────────────────────────────────────────────────────────  |
+/// |  All       [ ]                                                           |
+/// |  REGISTER  [*]                       OPTIONS   [ ]                       |
+/// |  INVITE    [*]                       PUBLISH   [ ]                       |
+/// |  SUBSCRIBE [ ]                       MESSAGE   [ ]                       |
+/// |  NOTIFY    [ ]                       REFER     [ ]                       |
+/// |  INFO      [ ]                       UPDATE    [ ]                       |
+/// |     [ Filter ]                           [ Cancel ]                      |
+/// |  (the headline of a refusal appears here)                                |
+/// |  Tab move · Enter apply · Esc cancel                                     |
+/// |  (the parser's hint line, when it has one, appears here)                 |
+/// +--------------------------------------------------------------------------+
 /// ```
 ///
 /// The method grid is filled a row at a time, left cell then right, in
 /// `FILTER_METHODS` order. The `All` master checkbox sits above the grid it
 /// governs and shows checked only while every method is checked, so the
 /// mixed selection drawn here leaves it clear; by default every method is
-/// checked and every marker reads `[*]`. The last painted row appears only
-/// when Enter fails to parse the typed values, and the live version is
-/// prefixed with a warning sign.
+/// checked and every marker reads `[*]`. The two refusal rows appear only
+/// when Enter refuses the typed values; the headline is prefixed with a
+/// warning sign. A saved notice or a headline wider than the dialog wraps:
+/// the key line moves down into the hint row, and rows beyond that come
+/// from the buttons' row and then the method grid, never from the
+/// separator or the fields.
 ///
 /// # Arguments
 /// * `frame` - Frame to draw into.
@@ -1241,11 +1344,14 @@ pub(in crate::tui) fn render_filter_popup(
     state: &FilterDialogState,
     theme: &Theme,
 ) {
-    let popup_width: u16 = 56;
+    // 76 columns, inside an 80-column terminal: the Expression field holds a
+    // whole Filter DSL expression, so its brackets get 51 columns.
+    let popup_width: u16 = 76;
     // Three rows taller than the five-field original: `Header` is text field
-    // six, the `After`/`Before` time bounds are seven and eight and `Named
-    // filter` is nine. The fourth field row took the blank row that used to
-    // sit above the first field rather than a row of height, so the popup
+    // six, the `After`/`Before` time bounds are seven and eight, `Named
+    // filter` is nine and `Expression` ten. The fourth field row took the
+    // blank row that used to sit above the first field, and the fifth the
+    // blank row above the buttons, rather than rows of height, so the popup
     // still leaves the key-hint line visible on an 80x24 terminal.
     let popup_height: u16 = 23;
     let popup_area = centered_popup(area, popup_width, popup_height);
@@ -1283,6 +1389,7 @@ pub(in crate::tui) fn render_filter_popup(
         "  After:           ",
         "  Before:          ",
         "  Named filter:    ",
+        "  Expression:      ",
     ];
     // While empty, the Named field lists what the run's [filters] defines.
     let named_hint = if state.known_names.is_empty() {
@@ -1300,6 +1407,7 @@ pub(in crate::tui) fn render_filter_popup(
         "2026-07-07T08:00:00Z",
         "2026-07-07T09:00:00Z",
         named_hint.as_str(),
+        "any --filter expression",
     ];
     let field_width = iw.saturating_sub(labels[0].len() as u16 + 2); // +2 for margin
 
@@ -1336,8 +1444,83 @@ pub(in crate::tui) fn render_filter_popup(
         Style::default().fg(theme.muted),
     );
 
+    // ── Field help (F1) in place of the boxes, buttons and hints ──
+    // The dialog has no free row, so the help takes the rows below the
+    // fields while it is shown; the fields stay visible and editable.
+    if state.show_help {
+        let muted = Style::default().fg(theme.muted);
+        let room = usize::from(iw.saturating_sub(4));
+        let heading: String = "Filter DSL \u{b7} F1 or Esc closes this help"
+            .chars()
+            .take(room)
+            .collect();
+        set_string_clipped(buf, inner, ix + 2, sep_y + 1, &heading, muted);
+        let style = Style::default().fg(theme.foreground);
+        for (row, line) in
+            (sep_y + 2..inner.y + inner.height).zip(crate::tui::filter_help::field_help_lines(room))
+        {
+            set_string_clipped(buf, inner, ix + 2, row, &line, style);
+        }
+        return;
+    }
+
+    // ── Session-only note (F2 could not write a file), in the same rows ──
+    if let Some(note) = &state.session_note {
+        let room = iw.saturating_sub(4);
+        let heading: String = "F3 copies the entry \u{b7} Esc closes this note"
+            .chars()
+            .take(usize::from(room))
+            .collect();
+        set_string_clipped(
+            buf,
+            inner,
+            ix + 2,
+            sep_y + 1,
+            &heading,
+            Style::default().fg(theme.muted),
+        );
+        let rows = note
+            .lines
+            .iter()
+            .flat_map(|line| crate::tui::render::wrap_to_width(line, room));
+        let style = Style::default().fg(theme.warning);
+        for (row, line) in (sep_y + 2..inner.y + inner.height).zip(rows) {
+            set_string_clipped(buf, inner, ix + 2, row, &line, style);
+        }
+        return;
+    }
+
     // ── "All" master checkbox — ABOVE the method grid it governs ──
     let all_y = sep_y + 1;
+    let cb_y = all_y + 1;
+    let btn_y = cb_y + 5;
+    // The message (a saved notice, or a refusal's headline), the key line
+    // and a refusal's hint, laid out first: a message longer than its row
+    // takes the rows above it, which the grid and buttons then leave.
+    let room = iw.saturating_sub(4);
+    let message = match (&state.notice, &state.error) {
+        (_, Some(err)) => Some(format!(
+            "\u{26a0} {}",
+            err.lines().next().unwrap_or_default()
+        )),
+        (Some(notice), None) => Some(notice.clone()),
+        (None, None) => None,
+    };
+    let hint = state
+        .error
+        .as_deref()
+        .and_then(|err| err.lines().find(|l| l.starts_with("hint:")));
+    let keys = filter_key_line(state.save_name.as_deref(), room);
+    let rows = filter_bottom_rows(
+        message.as_deref(),
+        hint,
+        &keys,
+        room,
+        all_y,
+        btn_y + 1,
+        inner.y + inner.height,
+    );
+    let free = |y: u16| y < rows.top;
     let col1_x = ix + 2;
     let col2_x = ix + (iw / 2) + 1;
     let all_focused = state.focused_field == ALL_METHODS_IDX;
@@ -1353,20 +1536,20 @@ pub(in crate::tui) fn render_filter_popup(
     } else {
         Style::default().fg(theme.foreground)
     };
-    set_string_clipped(
-        buf,
-        inner,
-        col1_x,
-        all_y,
-        format!("{:<10}", "All"),
-        all_style,
-    );
-    set_string_clipped(buf, inner, col1_x + 10, all_y, all_marker, all_style);
+    if free(all_y) {
+        set_string_clipped(
+            buf,
+            inner,
+            col1_x,
+            all_y,
+            format!("{:<10}", "All"),
+            all_style,
+        );
+        set_string_clipped(buf, inner, col1_x + 10, all_y, all_marker, all_style);
+    }
 
     // ── Method checkboxes (two columns, 5 rows) ───────────────────
-    let cb_y = all_y + 1;
-
-    for row in 0..5u16 {
+    for row in (0..5u16).filter(|row| free(cb_y + row)) {
         let left_idx = (row * 2) as usize;
         let right_idx = left_idx + 1;
 
@@ -1408,7 +1591,6 @@ pub(in crate::tui) fn render_filter_popup(
     }
 
     // ── Buttons ────────────────────────────────────────────────────
-    let btn_y = cb_y + 6;
     let filter_focused = state.focused_field == FILTER_BUTTON_IDX;
     let cancel_focused = state.focused_field == CANCEL_BUTTON_IDX;
 
@@ -1427,39 +1609,231 @@ pub(in crate::tui) fn render_filter_popup(
 
     let btn_col1 = ix + 5;
     let btn_col2 = ix + iw / 2 + 5;
-    set_string_clipped(buf, inner, btn_col1, btn_y, "[ Filter ]", filter_style);
-    set_string_clipped(buf, inner, btn_col2, btn_y, "[ Cancel ]", cancel_style);
+    if free(btn_y) {
+        set_string_clipped(buf, inner, btn_col1, btn_y, "[ Filter ]", filter_style);
+        set_string_clipped(buf, inner, btn_col2, btn_y, "[ Cancel ]", cancel_style);
+    }
+
+    // ── The message: a saved notice, or a refusal's headline ───────
+    // A parser message spans several lines (headline, echo, caret, hint,
+    // operator list). The headline goes above the key hint and the parser's
+    // `hint:` line, when it has one, below it; the cursor in the field marks
+    // the place, so the echo and caret are not repeated here. A message
+    // wider than the dialog wraps, so the saved path and the whole advice
+    // can be read.
+    let message_style = if state.error.is_some() {
+        Style::default().fg(theme.warning)
+    } else {
+        Style::default().fg(theme.good)
+    };
+    for (y, line) in (rows.top..).zip(&rows.message) {
+        set_string_clipped(buf, inner, ix + 2, y, line, message_style);
+    }
     // A button a user can SEE is not a key they can PRESS. `Esc` has always
     // canceled this dialog and it was never written down, so the only way to
     // learn it was to guess -- the same defect as a hint truncated off the
     // right edge, and indistinguishable from one at the keyboard.
-    let footer_hint = "Tab move \u{b7} Enter apply \u{b7} Esc cancel";
-    if btn_y + 2 < inner.y + inner.height {
-        set_string_clipped(
-            buf,
-            inner,
-            ix + 2,
-            btn_y + 2,
-            footer_hint,
-            Style::default().fg(theme.muted),
-        );
-    }
+    // While the F2 prompt is open its line takes the key line's place: the
+    // dialog's other keys wait for it, so their hints would misdescribe them.
+    // On a narrow dialog the line wraps between keys (`key_rows`), so every
+    // key stays readable.
+    let key_style = Style::default().fg(if state.save_name.is_some() {
+        theme.foreground
+    } else {
+        theme.muted
+    });
+    draw_filter_key_rows(buf, inner, ix + 2, &rows, key_style, theme);
+}
 
-    // ── Inline parse error (dialog stays open on failure) ─────────
-    if let Some(err) = &state.error {
-        let msg: String = format!("\u{26a0} {err}")
-            .chars()
-            .take((iw as usize).saturating_sub(4))
-            .collect();
+/// Draw the filter dialog's key rows from `rows.key_y()`, then the hint
+/// below them, at column `x`.
+fn draw_filter_key_rows(
+    buf: &mut ratatui::buffer::Buffer,
+    inner: Rect,
+    x: u16,
+    rows: &FilterBottomRows,
+    key_style: Style,
+    theme: &Theme,
+) {
+    for (y, line) in (rows.key_y()..).zip(&rows.keys) {
+        set_string_clipped(buf, inner, x, y, line, key_style);
+    }
+    if let Some(hint) = &rows.hint {
         set_string_clipped(
             buf,
             inner,
-            ix + 2,
-            btn_y + 1,
-            &msg,
+            x,
+            rows.hint_y(),
+            hint,
             Style::default().fg(theme.warning),
         );
     }
+}
+
+/// The filter dialog's key line, `room` columns wide: the "Save as"
+/// prompt while it is open, else the dialog's keys.
+fn filter_key_line(save_name: Option<&str>, room: u16) -> String {
+    match save_name {
+        Some(name) => format!(
+            "{}{HINT_SEPARATOR}Enter save{HINT_SEPARATOR}Esc back",
+            save_field(name, room)
+        ),
+        None => "Tab move \u{b7} Enter apply \u{b7} Esc cancel \u{b7} F1 fields \u{b7} F2 save"
+            .to_owned(),
+    }
+}
+
+/// The separator between the keys of the filter dialog's key line.
+const HINT_SEPARATOR: &str = " \u{b7} ";
+
+/// The filter dialog's key line laid out in rows `room` columns wide. The
+/// line breaks only between keys, so no key is cut in two; a key wider than
+/// a whole row is cut with an ellipsis. Always at least one row. Pure.
+fn key_rows(keys: &str, room: u16) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr as _;
+    let room = usize::from(room);
+    let mut rows: Vec<String> = Vec::new();
+    for key in keys.split(HINT_SEPARATOR) {
+        let key = if key.width() > room {
+            with_ellipsis(key, room)
+        } else {
+            key.to_owned()
+        };
+        match rows.last_mut() {
+            Some(row) if row.width() + HINT_SEPARATOR.width() + key.width() <= room => {
+                row.push_str(HINT_SEPARATOR);
+                row.push_str(&key);
+            }
+            _ => rows.push(key),
+        }
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows
+}
+
+/// The "Save as" field for `name`, at most `room` columns wide. A name too
+/// long for the row keeps its end, where the cursor is, and an ellipsis
+/// takes the place of its start. Pure.
+fn save_field(name: &str, room: u16) -> String {
+    use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
+    const PREFIX: &str = "Save as: @";
+    const CURSOR: &str = "\u{2581}";
+    let whole = format!("{PREFIX}{name}{CURSOR}");
+    let room = usize::from(room);
+    if whole.width() <= room {
+        return whole;
+    }
+    let mut left = room.saturating_sub(PREFIX.width() + 1 + CURSOR.width());
+    let mut tail: Vec<char> = Vec::new();
+    for ch in name.chars().rev() {
+        let w = ch.width().unwrap_or(0);
+        if w > left {
+            break;
+        }
+        left -= w;
+        tail.push(ch);
+    }
+    let tail: String = tail.into_iter().rev().collect();
+    format!("{PREFIX}\u{2026}{tail}{CURSOR}")
+}
+
+/// Where the filter dialog's bottom rows go: the message rows from `top`,
+/// then the key line, then the hint.
+#[derive(Debug, PartialEq, Eq)]
+struct FilterBottomRows {
+    /// The first row: the message's, or the empty row above the key line.
+    top: u16,
+    /// The message, one entry per row; empty when there is none.
+    message: Vec<String>,
+    /// A refusal's `hint:` line, cut to the row.
+    hint: Option<String>,
+    /// The key line (or the "Save as" prompt), one entry per row.
+    keys: Vec<String>,
+}
+
+impl FilterBottomRows {
+    /// The key line's first row: below the message, or below its empty row.
+    fn key_y(&self) -> u16 {
+        let rows = u16::try_from(self.message.len().max(1)).unwrap_or(u16::MAX);
+        self.top.saturating_add(rows)
+    }
+
+    /// The hint's row: below the key line's last row.
+    fn hint_y(&self) -> u16 {
+        let rows = u16::try_from(self.keys.len()).unwrap_or(u16::MAX);
+        self.key_y().saturating_add(rows)
+    }
+}
+
+/// Lay out the filter dialog's message, key line `keys` and hint in rows
+/// `first..bottom` (`first` the row below the separator), `room` columns
+/// wide. The key line wraps between keys (`key_rows`). The message wraps;
+/// with the key rows and the hint it keeps the rows from `natural`, below
+/// the buttons, when they fit there, and else takes the rows above as it
+/// needs, never above `first`; when even those are too few, the hint is
+/// left out and the last message row ends with an ellipsis. The key line is
+/// always placed. Pure.
+fn filter_bottom_rows(
+    message: Option<&str>,
+    hint: Option<&str>,
+    keys: &str,
+    room: u16,
+    first: u16,
+    natural: u16,
+    bottom: u16,
+) -> FilterBottomRows {
+    let cut = |line: &str| -> String { line.chars().take(usize::from(room)).collect() };
+    let mut lines: Vec<String> = message
+        .map_or_else(Vec::new, |m| crate::tui::render::wrap_to_width(m, room))
+        .iter()
+        .map(|line| cut(line))
+        .collect();
+    let mut hint = hint.map(cut);
+    let span = usize::from(bottom.saturating_sub(first));
+    let mut keys = key_rows(keys, room);
+    keys.truncate(span.saturating_sub(1).max(1));
+    // Rows the message (or its empty row), the key rows and the hint take.
+    let height = |lines: usize, hint: bool| lines.max(1) + keys.len() + usize::from(hint);
+    if height(lines.len(), hint.is_some()) > span {
+        hint = None;
+    }
+    let keep = span.saturating_sub(keys.len()).max(1);
+    if lines.len() > keep {
+        lines.truncate(keep);
+        if let Some(last) = lines.last_mut() {
+            *last = with_ellipsis(last, usize::from(room));
+        }
+    }
+    let needed = height(lines.len(), hint.is_some());
+    let top = usize::from(natural)
+        .min(usize::from(bottom).saturating_sub(needed))
+        .max(usize::from(first));
+    FilterBottomRows {
+        top: u16::try_from(top).unwrap_or(natural),
+        message: lines,
+        hint,
+        keys,
+    }
+}
+
+/// `line` cut so that it and a closing ellipsis fit `room` columns, the
+/// ellipsis added. Pure.
+fn with_ellipsis(line: &str, room: usize) -> String {
+    use unicode_width::UnicodeWidthChar as _;
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in line.chars() {
+        let width = ch.width().unwrap_or(0);
+        if used + width + 1 > room {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out.push('\u{2026}');
+    out
 }
 
 /// Render the settings popup as a centered overlay: one row per setting
@@ -1579,6 +1953,42 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         terminal.draw(|frame| render_name_popup(frame, frame.area(), &app))?;
         Ok(terminal.backend().buffer().content().to_vec())
+    }
+
+    /// The quit popup shows its preselected answer: a `[ Yes ]` button in
+    /// reverse video beside `[ No ]`, and Enter named with Y.
+    #[test]
+    fn the_quit_popup_shows_yes_preselected() -> Result<(), TestError> {
+        let app = App::new_test();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        terminal.draw(|frame| render_quit_confirm_popup(frame, frame.area(), &app))?;
+        let buf = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+                    .collect()
+            })
+            .collect();
+        let (y, row) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.contains("[ Yes ]"))
+            .ok_or("no [ Yes ] button")?;
+        assert!(row.contains("[ No ]"), "the No button beside Yes: {row:?}");
+        let x = row.find("[ Yes ]").ok_or("Yes column")?;
+        let cell = buf
+            .cell((u16::try_from(row[..x].chars().count())?, u16::try_from(y)?))
+            .ok_or("the Yes cell")?;
+        assert!(
+            cell.modifier.contains(Modifier::REVERSED),
+            "Yes is drawn selected (reverse video)"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("Enter/Y")),
+            "Enter is named as the key that quits"
+        );
+        Ok(())
     }
 
     /// Failure: under NO_COLOR the Name Address popup paints no color. Its
@@ -2125,6 +2535,16 @@ mod tests {
             }),
             ("unsaved_notes", |f, a, app| {
                 render_unsaved_notes_popup(f, a, app);
+                Ok(())
+            }),
+            // Drawn after `Y` copied a filter, so rendered with a command
+            // long enough to wrap.
+            ("command_line", |f, a, app| {
+                let command = format!(
+                    "sipnab -I /srv/evidence/trunk-b/call.pcap --filter 'payload =~ '\\''{}'\\'''",
+                    "X-Foo".repeat(20)
+                );
+                render_command_line_popup(f, a, &command, &app.theme);
                 Ok(())
             }),
             // Drawn only while a load waits on a password, so rendered with
@@ -3266,6 +3686,712 @@ mod tests {
                 let area = frame.area();
                 render_filter_popup(frame, area, &state, &theme);
             })?;
+        }
+        Ok(())
+    }
+
+    // ── The filter popup's one-line notice and refusal ────────────────
+
+    /// The dialog's key line while no prompt is open.
+    const KEY_LINE: &str =
+        "  Tab move \u{b7} Enter apply \u{b7} Esc cancel \u{b7} F1 fields \u{b7} F2 save";
+
+    /// The buttons row of the 76-column dialog: `[ Filter ]` at column 5,
+    /// `[ Cancel ]` at column 42.
+    fn buttons_76() -> String {
+        format!("{}[ Filter ]{}[ Cancel ]", " ".repeat(5), " ".repeat(27))
+    }
+
+    /// The refusal of a name `[filters]` already holds.
+    const DUPLICATE: &str = "[filters] already defines 'bigcalls'; choose another name, \
+                             or edit that entry in the config file";
+
+    /// A path of 62 characters: it fits a 70-column row alone, not after
+    /// "Saved @bigcalls to".
+    const PATH_62: &str = "/srv/example/voice-operations/shared/sipnab/site-a/sipnab.toml";
+
+    /// The filter popup drawn alone at `w` x `h`: each inner row (inside
+    /// the border), trimmed at the end, and whether the border is whole.
+    fn filter_inner_rows(
+        state: &FilterDialogState,
+        w: u16,
+        h: u16,
+    ) -> Result<(Vec<String>, bool), TestError> {
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(w, h))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_filter_popup(frame, area, state, &theme);
+        })?;
+        let popup = centered_popup(Rect::new(0, 0, w, h), 76, 23);
+        let inner = Block::default().borders(Borders::ALL).inner(popup);
+        let buf = terminal.backend().buffer();
+        let symbol = |x: u16, y: u16| buf.cell((x, y)).map_or(" ", |c| c.symbol()).to_owned();
+        let mut rows = Vec::new();
+        let mut border_whole = true;
+        for y in inner.y..inner.y + inner.height {
+            let row: String = (inner.x..inner.x + inner.width)
+                .map(|x| symbol(x, y))
+                .collect();
+            rows.push(row.trim_end().to_owned());
+            border_whole &= symbol(popup.x, y) == "\u{2502}"
+                && symbol(popup.x + popup.width - 1, y) == "\u{2502}";
+        }
+        Ok((rows, border_whole))
+    }
+
+    /// `text` without its white space, to find a wrapped message whole.
+    fn squash(text: &str) -> String {
+        text.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    /// A state with `notice` shown.
+    fn with_notice(notice: &str) -> FilterDialogState {
+        FilterDialogState {
+            notice: Some(notice.to_owned()),
+            ..FilterDialogState::default()
+        }
+    }
+
+    /// A state with the "Save as" prompt open at `name` and `error` shown.
+    fn with_refusal(name: &str, error: &str) -> FilterDialogState {
+        FilterDialogState {
+            save_name: Some(name.to_owned()),
+            error: Some(error.to_owned()),
+            ..FilterDialogState::default()
+        }
+    }
+
+    // success
+
+    /// Snapshot, 76 columns: a notice that fits stays on its one row,
+    /// between the buttons and the key line.
+    #[test]
+    fn a_short_notice_keeps_its_row_at_76_columns() -> Result<(), TestError> {
+        let state = with_notice("Saved @big to ~/.config/sipnab/sipnab.toml");
+        let (rows, border) = filter_inner_rows(&state, 80, 24)?;
+        assert_eq!(
+            rows[17..],
+            [
+                buttons_76().as_str(),
+                "  Saved @big to ~/.config/sipnab/sipnab.toml",
+                KEY_LINE,
+                "",
+            ],
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Snapshot, 76 columns: a notice longer than the row wraps onto the
+    /// next, and the key line moves down one row.
+    #[test]
+    fn a_long_notice_wraps_at_76_columns() -> Result<(), TestError> {
+        let state = with_notice(&format!("Saved @bigcalls to {PATH_62}"));
+        let (rows, border) = filter_inner_rows(&state, 80, 24)?;
+        assert_eq!(
+            rows[17..],
+            [
+                buttons_76(),
+                "  Saved @bigcalls to".to_owned(),
+                format!("  {PATH_62}"),
+                KEY_LINE.to_owned(),
+            ],
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Snapshot, 76 columns: the duplicate-name refusal wraps whole, and
+    /// the prompt stays below it.
+    #[test]
+    fn the_duplicate_refusal_wraps_at_76_columns() -> Result<(), TestError> {
+        let state = with_refusal("bigcalls", DUPLICATE);
+        let (rows, border) = filter_inner_rows(&state, 80, 24)?;
+        assert_eq!(
+            rows[17..],
+            [
+                buttons_76().as_str(),
+                "  \u{26a0} [filters] already defines 'bigcalls'; choose another name, or edit",
+                "  that entry in the config file",
+                "  Save as: @bigcalls\u{2581} \u{b7} Enter save \u{b7} Esc back",
+            ],
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Snapshot, at the dialog's minimum size (the TUI's 40-column
+    /// minimum, 24 rows): the refusal takes the rows above the prompt it
+    /// needs, the buttons' and the last method row's, and is whole.
+    #[test]
+    fn the_duplicate_refusal_is_whole_at_the_minimum_size() -> Result<(), TestError> {
+        let state = with_refusal("bigcalls", DUPLICATE);
+        let (rows, border) = filter_inner_rows(&state, 40, 24)?;
+        assert_eq!(
+            rows[14..],
+            [
+                "  SUBSCRIBE [*]     MESSAGE   [*]",
+                "  \u{26a0} [filters] already defines",
+                "  'bigcalls'; choose another name,",
+                "  or edit that entry in the config",
+                "  file",
+                "  Save as: @bigcalls\u{2581} \u{b7} Enter save",
+                "  Esc back",
+            ],
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Snapshot, at the minimum size: a saved notice with a long path is
+    /// whole, the path on rows of its own.
+    #[test]
+    fn a_long_notice_is_whole_at_the_minimum_size() -> Result<(), TestError> {
+        let state = with_notice(&format!("Saved @bigcalls to {PATH_62}"));
+        let (rows, border) = filter_inner_rows(&state, 40, 24)?;
+        assert_eq!(
+            rows[15..],
+            [
+                "  NOTIFY    [*]     REFER     [*]",
+                "  Saved @bigcalls to",
+                "  /srv/example/voice-operations/shar",
+                "  ed/sipnab/site-a/sipnab.toml",
+                "  Tab move \u{b7} Enter apply",
+                "  Esc cancel \u{b7} F1 fields \u{b7} F2 save",
+            ]
+            .map(str::to_owned),
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Snapshot, at the minimum size: the key line wraps between its keys,
+    /// so `F1 fields` and `F2 save` are on the screen (they were cut at the
+    /// edge).
+    #[test]
+    fn the_key_line_is_whole_at_the_minimum_size() -> Result<(), TestError> {
+        let (rows, border) = filter_inner_rows(&FilterDialogState::default(), 40, 24)?;
+        assert_eq!(
+            rows[19..],
+            [
+                "  Tab move \u{b7} Enter apply",
+                "  Esc cancel \u{b7} F1 fields \u{b7} F2 save",
+            ],
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Snapshot, at the minimum size: the "Save as" prompt wraps between
+    /// its parts, so `Esc back` is on the screen.
+    #[test]
+    fn the_save_prompt_is_whole_at_the_minimum_size() -> Result<(), TestError> {
+        let state = FilterDialogState {
+            save_name: Some("bigcalls".to_owned()),
+            ..FilterDialogState::default()
+        };
+        let (rows, border) = filter_inner_rows(&state, 40, 24)?;
+        assert_eq!(
+            rows[19..],
+            [
+                "  Save as: @bigcalls\u{2581} \u{b7} Enter save",
+                "  Esc back",
+            ],
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Failure side, at the minimum size: a name too long for its row keeps
+    /// its end and the cursor, with an ellipsis where its start was cut, and
+    /// no row leaves the dialog.
+    #[test]
+    fn a_long_save_name_keeps_its_end_and_cursor_at_the_minimum_size() -> Result<(), TestError> {
+        use unicode_width::UnicodeWidthStr as _;
+        let name = format!("{}END", "a".repeat(40));
+        let state = FilterDialogState {
+            save_name: Some(name),
+            ..FilterDialogState::default()
+        };
+        let (rows, border) = filter_inner_rows(&state, 40, 24)?;
+        let field = rows
+            .iter()
+            .find(|r| r.starts_with("  Save as: @"))
+            .ok_or_else(|| format!("no prompt row:\n{}", rows.join("\n")))?;
+        assert!(
+            field.starts_with("  Save as: @\u{2026}") && field.ends_with("END\u{2581}"),
+            "the end and the cursor stay: {field:?}"
+        );
+        let inner = usize::from(
+            Block::default()
+                .borders(Borders::ALL)
+                .inner(Rect::new(0, 0, 40, 24))
+                .width,
+        );
+        for row in &rows {
+            assert!(
+                row.width() <= inner - 2,
+                "a row wider than the text area: {row:?}"
+            );
+        }
+        assert!(
+            rows.iter().any(|r| r == "  Enter save \u{b7} Esc back"),
+            "{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Edge, pure: keys that fit one row stay on it, exactly at the width
+    /// too; past it they wrap between keys; a key wider than the row is cut
+    /// with an ellipsis.
+    #[test]
+    fn key_rows_wrap_between_keys_only() {
+        let line = "ab \u{b7} cd \u{b7} ef";
+        assert_eq!(key_rows(line, 12), vec![line.to_owned()], "exactly fits");
+        assert_eq!(
+            key_rows(line, 11),
+            vec!["ab \u{b7} cd".to_owned(), "ef".to_owned()],
+            "one short"
+        );
+        assert_eq!(
+            key_rows("abcdefgh \u{b7} cd", 5),
+            vec!["abcd\u{2026}".to_owned(), "cd".to_owned()],
+            "a key wider than the row"
+        );
+        assert_eq!(
+            key_rows("", 5),
+            vec![String::new()],
+            "no keys, one empty row"
+        );
+    }
+
+    /// Edge, pure: the field shows the whole name when it fits, and the
+    /// name's end when it does not.
+    #[test]
+    fn save_field_keeps_the_end_of_a_long_name() {
+        assert_eq!(save_field("big", 20), "Save as: @big\u{2581}", "fits");
+        assert_eq!(
+            save_field("abcdefgh", 15),
+            "Save as: @\u{2026}fgh\u{2581}",
+            "cut at the start"
+        );
+        assert_eq!(
+            save_field("abcde", 16),
+            "Save as: @abcde\u{2581}",
+            "exactly fits"
+        );
+    }
+
+    /// The live test's terminal, 160 x 45: the refusal is whole.
+    #[test]
+    fn the_duplicate_refusal_is_whole_at_160_columns() -> Result<(), TestError> {
+        let state = with_refusal("bigcalls", DUPLICATE);
+        let (rows, border) = filter_inner_rows(&state, 160, 45)?;
+        assert!(
+            squash(&rows.join(" ")).contains(&squash(DUPLICATE)),
+            "the whole refusal:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// A path wider than the row is broken across rows and every
+    /// character of it is drawn.
+    #[test]
+    fn a_path_wider_than_the_row_is_drawn_whole() -> Result<(), TestError> {
+        let path = format!("/srv/{}/sipnab.toml", "d".repeat(120));
+        let notice = format!("Saved @x to {path}");
+        let (rows, border) = filter_inner_rows(&with_notice(&notice), 80, 24)?;
+        assert!(
+            squash(&rows.join("")).contains(&squash(&notice)),
+            "the whole notice:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            rows.iter().any(|r| r == KEY_LINE),
+            "the key line is drawn:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    // failure
+
+    /// A message longer than every row the dialog can give it is cut at
+    /// the last of them with an ellipsis, and the key line is still drawn.
+    #[test]
+    fn a_message_too_long_for_the_dialog_ends_in_an_ellipsis() -> Result<(), TestError> {
+        let notice = format!("Saved @x to /{}", "p".repeat(2_000));
+        let (rows, border) = filter_inner_rows(&with_notice(&notice), 80, 24)?;
+        let key = rows
+            .iter()
+            .position(|r| r == KEY_LINE)
+            .ok_or_else(|| format!("no key line:\n{}", rows.join("\n")))?;
+        assert!(
+            rows[key - 1].ends_with('\u{2026}'),
+            "the last message row ends in an ellipsis:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            rows[10].starts_with("  \u{2500}"),
+            "the separator is not drawn over:\n{}",
+            rows.join("\n")
+        );
+        assert_eq!(
+            rows[11],
+            "  Saved @x to",
+            "the All row holds the message alone:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Snapshot, 76 columns: a parser refusal with a hint keeps its
+    /// layout, headline above the key line, hint below.
+    #[test]
+    fn a_parse_refusal_with_a_hint_keeps_its_rows() -> Result<(), TestError> {
+        let state = FilterDialogState {
+            error: Some(
+                "unexpected input at position 34: '='\n  echo\n  ^\nhint: use == to compare"
+                    .to_owned(),
+            ),
+            ..FilterDialogState::default()
+        };
+        let (rows, _) = filter_inner_rows(&state, 80, 24)?;
+        assert_eq!(
+            rows[17..],
+            [
+                buttons_76().as_str(),
+                "  \u{26a0} unexpected input at position 34: '='",
+                KEY_LINE,
+                "  hint: use == to compare",
+            ],
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    /// At the minimum size, a refusal that wraps keeps its hint: the
+    /// headline, the key line and the hint are all drawn.
+    #[test]
+    fn a_wrapped_refusal_keeps_its_hint() -> Result<(), TestError> {
+        let headline = "unknown field 'msg_cnt' in the expression; did you mean msg_count";
+        let state = FilterDialogState {
+            error: Some(format!("{headline}\nhint: see F1 for the fields")),
+            ..FilterDialogState::default()
+        };
+        let (rows, _) = filter_inner_rows(&state, 40, 24)?;
+        let joined = rows.join(" ");
+        assert!(
+            squash(&joined).contains(&squash(headline)),
+            "{}",
+            rows.join("\n")
+        );
+        assert_eq!(
+            rows[20],
+            "  hint: see F1 for the fields",
+            "{}",
+            rows.join("\n")
+        );
+        assert!(rows[18].starts_with("  Tab move"), "{}", rows.join("\n"));
+        assert_eq!(
+            rows[19],
+            "  Esc cancel \u{b7} F1 fields \u{b7} F2 save",
+            "{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    /// A row a message takes shows no part of the buttons or methods it
+    /// replaced.
+    #[test]
+    fn a_message_row_holds_nothing_it_replaced() -> Result<(), TestError> {
+        let state = with_refusal("bigcalls", DUPLICATE);
+        let (rows, _) = filter_inner_rows(&state, 40, 24)?;
+        for row in &rows[16..20] {
+            assert!(
+                !row.contains('[') || row.contains("[filters]"),
+                "a replaced row shows a button or a box: {row:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// While a refusal is shown the notice is not: they share the rows.
+    #[test]
+    fn a_refusal_hides_the_notice() -> Result<(), TestError> {
+        let state = FilterDialogState {
+            notice: Some("Saved @big to /srv/sipnab.toml".to_owned()),
+            error: Some("Nothing to save: every field is empty".to_owned()),
+            ..FilterDialogState::default()
+        };
+        let (rows, _) = filter_inner_rows(&state, 80, 24)?;
+        assert!(
+            !rows.iter().any(|r| r.contains("Saved @big")),
+            "{}",
+            rows.join("\n")
+        );
+        assert_eq!(
+            rows[18],
+            "  \u{26a0} Nothing to save: every field is empty",
+            "{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    // edge
+
+    /// A notice exactly as wide as the row stays on one row.
+    #[test]
+    fn a_notice_exactly_the_rows_width_is_one_row() -> Result<(), TestError> {
+        let notice = format!("Saved @x to /{}", "a".repeat(70 - 13));
+        assert_eq!(notice.chars().count(), 70, "the fixture is 70 wide");
+        let (rows, _) = filter_inner_rows(&with_notice(&notice), 80, 24)?;
+        assert_eq!(rows[18], format!("  {notice}"), "{}", rows.join("\n"));
+        assert_eq!(rows[19], KEY_LINE, "{}", rows.join("\n"));
+        Ok(())
+    }
+
+    /// One column more than the row wraps to two.
+    #[test]
+    fn a_notice_one_wider_than_the_row_is_two_rows() -> Result<(), TestError> {
+        let notice = format!("Saved @x to /{}", "a".repeat(71 - 13));
+        let (rows, _) = filter_inner_rows(&with_notice(&notice), 80, 24)?;
+        assert_eq!(rows[20], KEY_LINE, "{}", rows.join("\n"));
+        assert!(
+            squash(&rows[18..20].join("")).contains(&squash(&notice)),
+            "{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    /// Wide characters are measured in columns: no message row is wider
+    /// than the dialog's text area, and the border is whole.
+    #[test]
+    fn wide_characters_wrap_by_columns() -> Result<(), TestError> {
+        let notice = format!("Saved @x to /srv/{}/sipnab.toml", "\u{8a2d}".repeat(50));
+        let (rows, border) = filter_inner_rows(&with_notice(&notice), 80, 24)?;
+        assert!(
+            squash(&rows.join("")).contains(&squash(&notice)),
+            "{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole:\n{}", rows.join("\n"));
+        Ok(())
+    }
+
+    /// On the TUI's smallest terminal (40 x 6) a long message neither
+    /// panics nor leaves the popup.
+    #[test]
+    fn the_smallest_terminal_draws_without_panic() -> Result<(), TestError> {
+        let state = with_refusal("bigcalls", DUPLICATE);
+        let (rows, border) = filter_inner_rows(&state, 40, 6)?;
+        assert_eq!(rows.len(), 4, "four inner rows");
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// On a short terminal (80 x 16) the message stays below the
+    /// separator and inside the popup.
+    #[test]
+    fn a_short_terminal_keeps_the_message_below_the_separator() -> Result<(), TestError> {
+        let state = with_notice(&format!("Saved @bigcalls to {PATH_62}"));
+        let (rows, border) = filter_inner_rows(&state, 80, 16)?;
+        assert_eq!(rows.len(), 14, "fourteen inner rows");
+        assert!(
+            rows[10].starts_with("  \u{2500}"),
+            "the separator is kept:\n{}",
+            rows.join("\n")
+        );
+        assert_eq!(
+            rows[11..],
+            [
+                "  Saved @bigcalls to".to_owned(),
+                format!("  {PATH_62}"),
+                KEY_LINE.to_owned(),
+            ],
+            "bottom rows:\n{}",
+            rows.join("\n")
+        );
+        assert!(border, "the border is whole");
+        Ok(())
+    }
+
+    /// Popups narrower than the margins draw a long message without
+    /// underflow.
+    #[test]
+    fn a_long_message_on_a_sliver_does_not_panic() -> Result<(), TestError> {
+        let state = with_refusal("bigcalls", DUPLICATE);
+        for w in [1u16, 3, 5, 6, 7] {
+            filter_inner_rows(&state, w, 24)?;
+        }
+        Ok(())
+    }
+
+    /// The layout itself: a one-row message keeps its natural row, with the
+    /// key line below it and the hint below that.
+    #[test]
+    fn the_layout_keeps_a_one_row_message_on_its_row() -> Result<(), TestError> {
+        let rows = filter_bottom_rows(Some("short"), Some("hint: h"), "k", 70, 12, 19, 22);
+        assert_eq!(
+            rows,
+            FilterBottomRows {
+                top: 19,
+                message: vec!["short".to_owned()],
+                hint: Some("hint: h".to_owned()),
+                keys: vec!["k".to_owned()],
+            },
+            "the natural rows"
+        );
+        assert_eq!(rows.key_y(), 20, "the key line below");
+        assert_eq!(rows.hint_y(), 21, "the hint below the key line");
+        Ok(())
+    }
+
+    /// The layout leaves out a hint there is no row for, rather than
+    /// returning one that cannot be drawn.
+    #[test]
+    fn the_layout_drops_a_hint_without_a_row() -> Result<(), TestError> {
+        let long = "word ".repeat(200);
+        let rows = filter_bottom_rows(Some(&long), Some("hint: h"), "k", 20, 12, 19, 22);
+        assert_eq!(rows.hint, None, "no row for the hint");
+        assert_eq!(rows.top, 12, "from the first row");
+        assert_eq!(rows.message.len(), 9, "every row but the key line's");
+        assert_eq!(rows.key_y(), 21, "the key line on the last row");
+        Ok(())
+    }
+
+    /// The layout never starts above `first`, and no row is wider than
+    /// `room`.
+    #[test]
+    fn the_layout_stays_below_first_and_within_room() -> Result<(), TestError> {
+        use unicode_width::UnicodeWidthStr as _;
+        for bottom in 13..=30u16 {
+            let rows = filter_bottom_rows(
+                Some(&"ab ".repeat(90)),
+                None,
+                "Tab move \u{b7} Enter apply \u{b7} Esc cancel",
+                12,
+                12,
+                19,
+                bottom,
+            );
+            assert!(rows.top >= 12, "bottom {bottom}: top {}", rows.top);
+            for line in rows.message.iter().chain(&rows.keys) {
+                assert!(line.width() <= 12, "bottom {bottom}: {line:?}");
+            }
+        }
+        Ok(())
+    }
+
+    // ── The command-line popup (`Y`) ───────────────────────────────
+
+    /// The rows of `command`'s popup drawn alone at `w` x `h`.
+    fn command_popup_rows(command: &str, w: u16, h: u16) -> Result<Vec<String>, TestError> {
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(w, h))?;
+        terminal.draw(|frame| render_command_line_popup(frame, frame.area(), command, &theme))?;
+        let buf = terminal.backend().buffer();
+        let mut rows = Vec::new();
+        for y in 0..buf.area.height {
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                row.push_str(buf.cell((x, y)).map_or(" ", |c| c.symbol()));
+            }
+            rows.push(row);
+        }
+        Ok(rows)
+    }
+
+    /// The text inside the popup's border, row by row, the margin removed.
+    fn inside(rows: &[String]) -> Vec<String> {
+        rows.iter()
+            .filter_map(|r| {
+                let start = r.find('\u{2502}')?;
+                let end = r.rfind('\u{2502}')?;
+                (end > start).then(|| r[start + '\u{2502}'.len_utf8()..end].to_string())
+            })
+            .collect()
+    }
+
+    /// A command wider than the popup is wrapped, and every character of it
+    /// is drawn, in order.
+    #[test]
+    fn the_command_popup_draws_every_character_wrapped() -> Result<(), TestError> {
+        let command = format!(
+            "sipnab -I /cases/a.pcap --filter 'payload =~ '\\''{}'\\'' AND msg_count > 5'",
+            "X-Foo".repeat(30)
+        );
+        let rows = command_popup_rows(&command, 80, 24)?;
+        let body: Vec<String> = inside(&rows);
+        // Each row is one margin column, the text, and one margin column; a
+        // full row's text is exactly that wide, spaces at its end included.
+        let joined: String = body
+            .iter()
+            .map(|r| {
+                let width = r.chars().count().saturating_sub(2);
+                r.chars().skip(1).take(width).collect::<String>()
+            })
+            .collect();
+        assert!(
+            joined.contains(&command),
+            "the command is drawn whole:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            body.iter().filter(|r| r.contains("X-Foo")).count() > 1,
+            "it wraps onto several rows:\n{}",
+            rows.join("\n")
+        );
+        Ok(())
+    }
+
+    /// The popup has a title and names the keys that close it.
+    #[test]
+    fn the_command_popup_names_its_title_and_keys() -> Result<(), TestError> {
+        let rows = command_popup_rows("sipnab --filter 'msg_count > 5'", 80, 24)?;
+        let text = rows.join("\n");
+        assert!(text.contains(" Command line "), "the title:\n{text}");
+        assert!(text.contains("Esc"), "the closing key:\n{text}");
+        assert!(
+            text.contains("sipnab --filter 'msg_count > 5'"),
+            "the command:\n{text}"
+        );
+        Ok(())
+    }
+
+    /// A tiny terminal draws without a panic, and a short one keeps the
+    /// popup inside the screen.
+    #[test]
+    fn the_command_popup_survives_tiny_terminals() -> Result<(), TestError> {
+        let command = "sipnab --filter 'msg_count > 5'".repeat(20);
+        for (w, h) in [(1u16, 1u16), (3, 3), (10, 4), (20, 6), (200, 3)] {
+            let rows = command_popup_rows(&command, w, h)?;
+            assert_eq!(rows.len(), usize::from(h), "{w}x{h} drew inside the screen");
         }
         Ok(())
     }

@@ -177,6 +177,9 @@ pub enum FindingKind {
     /// Records a store shed at a cap — dialogs, messages, STUN transactions,
     /// ICMP evidence.
     RetentionLoss,
+    /// SIP messages dropped at ingest on purpose, by `--drop-method` /
+    /// `--only-method`.
+    DroppedByMethod,
 
     // ── Critical: nobody could hear ──────────────────────────────────
     /// An answered call negotiated media that was expected to flow, and none
@@ -244,12 +247,13 @@ impl FindingKind {
     /// [`Self::ordinal`] is an exhaustive `match`, a new variant does not
     /// compile until it has an arm there, and the assertion below this `impl`
     /// fails the build unless every entry here sits at its own ordinal.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::RebuiltFromVcon,
         Self::UndecodableFrames,
         Self::SipDiscardedByPortRange,
         Self::SipDiscardedByWebSocketPorts,
         Self::RetentionLoss,
+        Self::DroppedByMethod,
         Self::NoMedia,
         Self::OneWayAudio,
         Self::StunSdpMismatch,
@@ -289,29 +293,30 @@ impl FindingKind {
             Self::SipDiscardedByPortRange => 2,
             Self::SipDiscardedByWebSocketPorts => 3,
             Self::RetentionLoss => 4,
-            Self::NoMedia => 5,
-            Self::OneWayAudio => 6,
-            Self::StunSdpMismatch => 7,
-            Self::IcmpUnreachableSignaling => 8,
-            Self::IcmpUnreachableMedia => 9,
-            Self::NatMismatch => 10,
-            Self::ServerFailure => 11,
-            Self::AuthLoop => 12,
-            Self::Retransmissions => 13,
-            Self::AckMissing => 14,
-            Self::RegistrationFailure => 15,
-            Self::UnansweredStunProbe => 16,
-            Self::TurnAllocationLapsed => 17,
-            Self::IceRoleConflict => 18,
-            Self::IcmpUnreachableEndpoint => 19,
-            Self::RequestFailure => 20,
-            Self::Abandoned => 21,
-            Self::PostDialDelay => 22,
-            Self::LateMedia => 23,
-            Self::CodecAsymmetry => 24,
-            Self::PtimeAsymmetry => 25,
-            Self::PayloadTypeAsymmetry => 26,
-            Self::DurationAsymmetry => 27,
+            Self::DroppedByMethod => 5,
+            Self::NoMedia => 6,
+            Self::OneWayAudio => 7,
+            Self::StunSdpMismatch => 8,
+            Self::IcmpUnreachableSignaling => 9,
+            Self::IcmpUnreachableMedia => 10,
+            Self::NatMismatch => 11,
+            Self::ServerFailure => 12,
+            Self::AuthLoop => 13,
+            Self::Retransmissions => 14,
+            Self::AckMissing => 15,
+            Self::RegistrationFailure => 16,
+            Self::UnansweredStunProbe => 17,
+            Self::TurnAllocationLapsed => 18,
+            Self::IceRoleConflict => 19,
+            Self::IcmpUnreachableEndpoint => 20,
+            Self::RequestFailure => 21,
+            Self::Abandoned => 22,
+            Self::PostDialDelay => 23,
+            Self::LateMedia => 24,
+            Self::CodecAsymmetry => 25,
+            Self::PtimeAsymmetry => 26,
+            Self::PayloadTypeAsymmetry => 27,
+            Self::DurationAsymmetry => 28,
         }
     }
 
@@ -381,6 +386,16 @@ impl FindingKind {
                 "sipnab read these and then dropped them to stay inside a size limit, so the \
                  counts in this report are what it KEPT rather than what it read. Raise \
                  --limit or --max-streams and run it again.",
+            ),
+            Self::DroppedByMethod => m(
+                "dropped_by_method",
+                Severity::Blind,
+                "SIP dropped by method on purpose",
+                "message",
+                "sipnab dropped these at ingest because --drop-method or --only-method (or \
+                 [capture] drop_methods / only_methods) asked it to: every message of a dialog \
+                 started by a refused method. They are in no dialog and no other count. Run \
+                 without those settings to analyze every dialog.",
             ),
             Self::NoMedia => m(
                 "no_media",
@@ -1163,16 +1178,23 @@ pub struct RetentionCounts {
     pub dialogs_refused: u64,
     /// Oldest dialogs discarded at capacity by rotation.
     pub dialogs_rotated: u64,
+    /// Messages dropped at ingest by method (`--drop-method`,
+    /// `--only-method`): never a dialog, on purpose.
+    pub messages_dropped_by_method: u64,
+    /// Oldest RTP streams discarded at capacity (`--max-streams`).
+    pub streams_rotated: u64,
 }
 
 impl RetentionCounts {
-    /// Read the counters off a dialog store.
+    /// Read the counters off the dialog store and the stream store.
     #[must_use]
-    pub fn of_store(dialogs: &DialogStore) -> Self {
+    pub fn of_stores(dialogs: &DialogStore, streams: &StreamStore) -> Self {
         Self {
             messages_evicted: dialogs.total_idle_messages_evicted(),
             dialogs_refused: dialogs.total_capacity_dialogs_dropped(),
             dialogs_rotated: dialogs.total_capacity_dialogs_evicted(),
+            messages_dropped_by_method: dialogs.total_messages_dropped_by_method(),
+            streams_rotated: streams.total_capacity_streams_evicted(),
         }
     }
 }
@@ -1251,7 +1273,7 @@ impl CaptureFacts {
             stun: crate::stun::report(),
             icmp: crate::pipeline::icmp_evidence_report(),
             icmp_media: crate::pipeline::icmp_media_report(stream_store),
-            retention: RetentionCounts::of_store(dialog_store),
+            retention: RetentionCounts::of_stores(dialog_store, stream_store),
             // Neither is observable from the stores: both are decisions this
             // process made, and the caller that made them sets them.
             gate_closed_during_run: false,
@@ -1292,6 +1314,16 @@ pub fn analyze(
     analyze_with(dialog_store, stream_store, filter, &facts)
 }
 
+// Per-thread count of `analyze_with` runs, test-only: pins that a vCon export
+// reads its blind spots without the pass over every dialog (thread-local so
+// parallel tests cannot cross-talk).
+#[cfg(test)]
+thread_local! {
+    /// Test-only per-thread count of [`analyze_with`] runs.
+    pub(crate) static ANALYZE_WITH_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// [`analyze`] against facts supplied by the caller.
 ///
 /// The pure form: everything the verdict depends on arrives as an argument, so
@@ -1303,6 +1335,8 @@ pub fn analyze_with(
     filter: Option<&FilterExpr>,
     facts: &CaptureFacts,
 ) -> CaptureAnalysis {
+    #[cfg(test)]
+    ANALYZE_WITH_CALLS.with(|c| c.set(c.get() + 1));
     let mut acc = Accumulator::default();
 
     let selection = crate::sip::dsl::select_dialogs(filter, dialog_store, stream_store);
@@ -1312,7 +1346,10 @@ pub fn analyze_with(
 
     for (dialog, dialog_streams) in &selection.dialogs {
         streams_examined += dialog_streams.len();
-        let media = MediaContext::for_dialog(dialog, capture);
+        // Each message's CSeq, parsed once for the final status and the
+        // signaling detectors, which would otherwise each parse it again.
+        let cseqs = crate::sip::message::cseqs(&dialog.messages);
+        let media = MediaContext::for_dialog_parsed(dialog, &cseqs, capture);
         let mut diag = crate::rtp::diagnosis::diagnose_media(dialog_streams, &media);
         crate::rtp::diagnosis::diagnose_asymmetry(
             &mut diag,
@@ -1321,7 +1358,7 @@ pub fn analyze_with(
             &thresholds,
         );
         collect_media(&mut acc, dialog, dialog_streams, &diag);
-        collect_signaling(&mut acc, dialog);
+        collect_signaling(&mut acc, dialog, &cseqs);
     }
 
     collect_capture_level(&mut acc, facts);
@@ -1331,13 +1368,45 @@ pub fn analyze_with(
     // separate flag is a second place to forget, and the failure mode of
     // forgetting is a capture that did not decode reporting as a clean one —
     // which is the exact defect this module is written to be incapable of.
-    let complete = !findings.iter().any(|f| f.severity == Severity::Blind);
+    let complete = read_completely(&findings);
     CaptureAnalysis {
         schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
         filter: filter.map(|f| f.source().to_string()),
         frames_read: facts.frames_read,
         dialogs_examined: selection.dialogs.len(),
         streams_examined,
+        complete,
+        findings,
+    }
+}
+
+/// Whether sipnab read all of its input: no finding is [`Severity::Blind`].
+/// The one rule [`CaptureAnalysis::complete`] is derived by.
+fn read_completely(findings: &[Finding]) -> bool {
+    !findings.iter().any(|f| f.severity == Severity::Blind)
+}
+
+/// The [`Severity::Blind`] findings [`analyze_with`] ranks for `facts`,
+/// without its pass over every dialog.
+///
+/// Every Blind kind comes from the capture's facts alone (the incompleteness
+/// collector), so these findings, their order and `complete` are the ones the
+/// full analysis gives. A vCon export reads nothing else of the analysis, and
+/// the full one reads every dialog and stream of the capture for each export.
+/// `dialogs_examined` and `streams_examined` are 0 because no dialog was read;
+/// a caller that reports those counts runs [`analyze_with`].
+#[must_use]
+pub fn analyze_blind_spots(facts: &CaptureFacts) -> CaptureAnalysis {
+    let mut acc = Accumulator::default();
+    collect_incompleteness(&mut acc, facts);
+    let findings = acc.into_findings();
+    let complete = read_completely(&findings);
+    CaptureAnalysis {
+        schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
+        filter: None,
+        frames_read: facts.frames_read,
+        dialogs_examined: 0,
+        streams_examined: 0,
         complete,
         findings,
     }
@@ -1468,9 +1537,10 @@ fn collect_media(
     }
 }
 
-/// Fold one dialog's signaling diagnosis into the accumulator.
-fn collect_signaling(acc: &mut Accumulator, dialog: &SipDialog) {
-    let diag = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
+/// Fold one dialog's signaling diagnosis into the accumulator. `cseqs` is
+/// the dialog's messages' CSeqs, parsed once for every reader in the pass.
+fn collect_signaling(acc: &mut Accumulator, dialog: &SipDialog, cseqs: &[Option<(u32, &str)>]) {
+    let diag = crate::sip::diagnosis::diagnose_signaling_parsed(&dialog.messages, cseqs);
     fold_signaling(acc, dialog, &diag);
 }
 
@@ -1859,6 +1929,26 @@ fn collect_incompleteness(acc: &mut Accumulator, facts: &CaptureFacts) {
             Evidence::default()
                 .count(CountLabel::Dialogs, rotated)
                 .note("oldest dialogs discarded at capacity by rotation (--limit)"),
+        );
+    }
+    let streams_rotated = facts.retention.streams_rotated;
+    if streams_rotated > 0 {
+        acc.bump(
+            FindingKind::RetentionLoss,
+            streams_rotated,
+            Evidence::default()
+                .count(CountLabel::Streams, streams_rotated)
+                .note("oldest RTP streams discarded at capacity (--max-streams)"),
+        );
+    }
+    let by_method = facts.retention.messages_dropped_by_method;
+    if by_method > 0 {
+        acc.bump(
+            FindingKind::DroppedByMethod,
+            by_method,
+            Evidence::default()
+                .count(CountLabel::Messages, by_method)
+                .note("messages dropped at ingest by method (--drop-method / --only-method)"),
         );
     }
     if facts.stun.dropped > 0 {
@@ -2426,6 +2516,7 @@ mod tests {
                 messages_evicted: 30,
                 dialogs_refused: 2,
                 dialogs_rotated: 5,
+                ..RetentionCounts::default()
             },
             ..CaptureFacts::default()
         };
@@ -2438,6 +2529,164 @@ mod tests {
         assert_eq!(found.occurrences, 37);
         assert_eq!(found.evidence.len(), 3);
         assert!(!analysis.complete);
+        Ok(())
+    }
+
+    /// STREAM-EVICTION-NOT-IN-ANALYSIS: RTP streams discarded at
+    /// `--max-streams` are records a cap threw away, so they are a retention
+    /// loss that names its own flag, counted in streams.
+    #[test]
+    fn streams_discarded_at_max_streams_are_a_retention_loss() -> Result<(), TestError> {
+        let (dialogs, streams) = stores();
+        let facts = CaptureFacts {
+            frames_read: 1_000,
+            retention: RetentionCounts {
+                streams_rotated: 4,
+                ..RetentionCounts::default()
+            },
+            ..CaptureFacts::default()
+        };
+        let analysis = analyze_with(&dialogs, &streams, None, &facts);
+        let found = only(&analysis.findings, FindingKind::RetentionLoss)?;
+        assert_eq!(found.occurrences, 4, "the four streams: {found:?}");
+        assert_eq!(
+            found.evidence[0].counts.get("streams"),
+            Some(&4),
+            "counted as streams: {:?}",
+            found.evidence[0]
+        );
+        let note = found.evidence[0].note.as_deref().unwrap_or_default();
+        assert!(note.contains("--max-streams"), "names the flag: {note}");
+        assert!(
+            !analysis.complete,
+            "a discarded stream is a gap in the read"
+        );
+        Ok(())
+    }
+
+    /// Failure side: a run whose caps shed only dialogs reports no stream
+    /// evidence, so a reader is not sent to raise `--max-streams`.
+    #[test]
+    fn a_dialog_only_loss_names_no_stream_cap() -> Result<(), TestError> {
+        let (dialogs, streams) = stores();
+        let facts = CaptureFacts {
+            frames_read: 1_000,
+            retention: RetentionCounts {
+                dialogs_rotated: 2,
+                ..RetentionCounts::default()
+            },
+            ..CaptureFacts::default()
+        };
+        let analysis = analyze_with(&dialogs, &streams, None, &facts);
+        let found = only(&analysis.findings, FindingKind::RetentionLoss)?;
+        assert!(
+            found
+                .evidence
+                .iter()
+                .all(|e| !e.counts.contains_key("streams")
+                    && !e
+                        .note
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("--max-streams")),
+            "no stream evidence: {:?}",
+            found.evidence
+        );
+        Ok(())
+    }
+
+    /// Edge: the stream loss folds into the one retention finding with the
+    /// dialog store's, and the count is the exact sum.
+    #[test]
+    fn a_stream_loss_and_the_dialog_losses_sum_in_one_finding() -> Result<(), TestError> {
+        let (dialogs, streams) = stores();
+        let facts = CaptureFacts {
+            frames_read: 1_000,
+            retention: RetentionCounts {
+                messages_evicted: 30,
+                dialogs_refused: 2,
+                dialogs_rotated: 5,
+                streams_rotated: 3,
+                ..RetentionCounts::default()
+            },
+            ..CaptureFacts::default()
+        };
+        let analysis = analyze_with(&dialogs, &streams, None, &facts);
+        let found = only(&analysis.findings, FindingKind::RetentionLoss)?;
+        assert_eq!(found.occurrences, 40, "30 + 2 + 5 + 3: {found:?}");
+        assert_eq!(
+            found.evidence.len(),
+            4,
+            "one row per channel: {:?}",
+            found.evidence
+        );
+        Ok(())
+    }
+
+    /// Messages dropped on purpose by `--drop-method` / `--only-method` are
+    /// their own finding, with its own count and remedy, not a retention
+    /// loss whose remedy says to raise `--limit`.
+    #[test]
+    fn messages_dropped_by_method_are_their_own_finding() -> Result<(), TestError> {
+        let (dialogs, streams) = stores();
+        let facts = CaptureFacts {
+            frames_read: 1_000,
+            retention: RetentionCounts {
+                messages_dropped_by_method: 12,
+                ..RetentionCounts::default()
+            },
+            ..CaptureFacts::default()
+        };
+        let analysis = analyze_with(&dialogs, &streams, None, &facts);
+        assert!(
+            !analysis
+                .findings
+                .iter()
+                .any(|f| f.kind == FindingKind::RetentionLoss),
+            "an intentional drop is not a retention loss"
+        );
+        let found = analysis
+            .findings
+            .iter()
+            .find(|f| f.kind.meta().id == "dropped_by_method")
+            .ok_or("the drop has a finding of its own")?;
+        assert_eq!(
+            found.occurrences, 12,
+            "the finding counts the dropped messages"
+        );
+        let detail = found.kind.meta().detail;
+        assert!(!detail.contains("--limit"), "no --limit remedy: {detail}");
+        assert!(
+            detail.contains("--drop-method"),
+            "names the flags: {detail}"
+        );
+        Ok(())
+    }
+
+    /// Edge: with a cap that bit as well, the retention finding counts only
+    /// the records lost at the cap, and the method drop stays separate.
+    #[test]
+    fn a_cap_and_a_method_drop_are_counted_apart() -> Result<(), TestError> {
+        let (dialogs, streams) = stores();
+        let facts = CaptureFacts {
+            frames_read: 1_000,
+            retention: RetentionCounts {
+                messages_evicted: 30,
+                messages_dropped_by_method: 4,
+                ..RetentionCounts::default()
+            },
+            ..CaptureFacts::default()
+        };
+        let analysis = analyze_with(&dialogs, &streams, None, &facts);
+        let count = |id: &str| {
+            analysis
+                .findings
+                .iter()
+                .find(|f| f.kind.meta().id == id)
+                .map(|f| f.occurrences)
+        };
+        assert_eq!(count("retention_loss"), Some(30), "only the cap's records");
+        assert_eq!(count("dropped_by_method"), Some(4), "only the method drop");
         Ok(())
     }
 
@@ -3189,6 +3438,26 @@ mod tests {
         ])
     }
 
+    /// One analysis over the stores parses each message's CSeq and SDP at
+    /// most once: every pass over a dialog reads the same parse.
+    #[test]
+    fn one_analysis_parses_each_message_once() -> Result<(), TestError> {
+        let (mut dialogs, streams) = stores();
+        for n in 0..3 {
+            for msg in crate::test_utils::sdp_call(&format!("once-{n}@example.com"))? {
+                dialogs.process_message(msg);
+            }
+        }
+        crate::test_utils::clear_parses();
+        let analysis = analyze_with(&dialogs, &streams, None, &CaptureFacts::default());
+        assert_eq!(analysis.dialogs_examined, 3, "the three calls were read");
+        let (cseq, sdp, read) = crate::test_utils::worst_parses();
+        assert_eq!(read, 21, "the analysis read all 21 messages");
+        assert!(cseq <= 1, "one message's CSeq was parsed {cseq} times");
+        assert!(sdp <= 1, "one message's SDP was parsed {sdp} times");
+        Ok(())
+    }
+
     /// The whole path, end to end: a dialog in the store that ended on a 503
     /// comes out of `analyze_with` as a ranked server failure, counted against
     /// the dialogs it examined.
@@ -3249,6 +3518,254 @@ mod tests {
     fn facts_findings(facts: &CaptureFacts) -> CaptureAnalysis {
         let (dialogs, streams) = stores();
         analyze_with(&dialogs, &streams, None, facts)
+    }
+
+    /// `n` skipped ports, busiest first, `messages` each.
+    fn skipped_ports(n: u16, messages: u64) -> Vec<crate::pipeline::SkippedPort> {
+        (0..n)
+            .map(|i| crate::pipeline::SkippedPort {
+                port: 5060 + i,
+                messages,
+            })
+            .collect()
+    }
+
+    /// Facts that raise every Blind kind `collect_incompleteness` knows, the
+    /// port gates past the evidence cap, and two capture-level findings that
+    /// are NOT Blind (ICMP naming no call, a TURN allocation that lapsed).
+    fn every_blind_fact() -> Result<CaptureFacts, TestError> {
+        let ports = u16::try_from(EVIDENCE_CAP + 3).map_err(|e| format!("cap fits u16: {e}"))?;
+        Ok(CaptureFacts {
+            frames_read: 5_000,
+            undecodable: crate::capture::UndecodableReport {
+                frames: 9,
+                reasons: vec![crate::capture::UndecodableTally {
+                    reason: crate::capture::UndecodableReason::NotIp(Some(0x8847)),
+                    frames: 9,
+                }],
+                reasons_dropped: 2,
+            },
+            portrange: crate::pipeline::PortrangeSkipReport {
+                messages: u64::from(ports) * 4,
+                ports: skipped_ports(ports, 4),
+            },
+            websocket: crate::pipeline::WsPortSkipReport {
+                messages: 6,
+                ports: skipped_ports(2, 3),
+            },
+            stun: crate::stun::StunReport {
+                dropped: 11,
+                allocations: vec![allocation(600, 1_200)?],
+                ..crate::stun::StunReport::default()
+            },
+            icmp: crate::pipeline::IcmpEvidenceReport {
+                errors: 12,
+                unattributed: 5,
+                untracked_dialogs: 7,
+                ..crate::pipeline::IcmpEvidenceReport::default()
+            },
+            retention: RetentionCounts {
+                messages_evicted: 13,
+                dialogs_refused: 14,
+                dialogs_rotated: 15,
+                messages_dropped_by_method: 16,
+                streams_rotated: 17,
+            },
+            vcon_inputs: vec![crate::capture::vcon_input::VconProvenance {
+                source: "stored.vcon.json".to_string(),
+                uuid: Some("00000000-0000-4000-8000-000000000001".to_string()),
+                messages: 3,
+                ..crate::capture::vcon_input::VconProvenance::default()
+            }],
+            ..CaptureFacts::default()
+        })
+    }
+
+    /// The Blind findings of a full analysis, in its order.
+    fn blind_of(analysis: &CaptureAnalysis) -> Vec<Finding> {
+        analysis.at(Severity::Blind).cloned().collect()
+    }
+
+    /// The export's reduced analysis answers exactly the Blind findings the
+    /// full analysis ranks -- same kinds, counts, evidence, omitted rows and
+    /// order -- over stores holding a failed call, and the same `complete`.
+    #[test]
+    fn blind_spots_equal_the_blind_findings_of_the_full_analysis() -> Result<(), TestError> {
+        let (mut dialogs, streams) = stores();
+        for msg in invite_answered("failed@example.invalid", "503 Service Unavailable")? {
+            dialogs.process_message(msg);
+        }
+        let facts = every_blind_fact()?;
+        let full = analyze_with(&dialogs, &streams, None, &facts);
+        let blind = analyze_blind_spots(&facts);
+        assert_eq!(
+            blind.findings,
+            blind_of(&full),
+            "the Blind findings, row for row"
+        );
+        assert_eq!(blind.complete, full.complete, "one completeness verdict");
+        assert!(
+            !blind.complete,
+            "every Blind fact makes the read incomplete"
+        );
+        assert_eq!(
+            blind.findings.len(),
+            6,
+            "all six Blind kinds: {:?}",
+            blind.findings
+        );
+        Ok(())
+    }
+
+    /// The reduced analysis holds nothing that is not Blind, though the facts
+    /// and the stores raise findings at other severities.
+    #[test]
+    fn blind_spots_hold_no_finding_below_blind() -> Result<(), TestError> {
+        let (mut dialogs, streams) = stores();
+        for msg in invite_answered("failed@example.invalid", "503 Service Unavailable")? {
+            dialogs.process_message(msg);
+        }
+        let facts = every_blind_fact()?;
+        let full = analyze_with(&dialogs, &streams, None, &facts);
+        for kind in [
+            FindingKind::ServerFailure,
+            FindingKind::IcmpUnreachableEndpoint,
+            FindingKind::TurnAllocationLapsed,
+        ] {
+            assert!(
+                full.findings.iter().any(|f| f.kind == kind),
+                "the fixture raises {kind:?} in the full analysis: {:?}",
+                full.findings
+            );
+        }
+        let blind = analyze_blind_spots(&facts);
+        assert!(
+            blind.findings.iter().all(|f| f.severity == Severity::Blind),
+            "only Blind findings: {:?}",
+            blind.findings
+        );
+        Ok(())
+    }
+
+    /// The port gate past the evidence cap keeps the same rows and counts the
+    /// same omitted ones in both forms.
+    #[test]
+    fn blind_spots_cap_the_evidence_as_the_full_analysis_does() -> Result<(), TestError> {
+        let facts = every_blind_fact()?;
+        let blind = analyze_blind_spots(&facts);
+        let gate = only(&blind.findings, FindingKind::SipDiscardedByPortRange)?;
+        assert_eq!(gate.evidence.len(), EVIDENCE_CAP, "rows at the cap");
+        assert_eq!(gate.evidence_omitted, 3, "the rows past the cap, counted");
+        assert_eq!(
+            gate.occurrences,
+            (EVIDENCE_CAP as u64 + 3) * 4,
+            "every port's messages"
+        );
+        Ok(())
+    }
+
+    /// A capture that read cleanly has no blind spot and is complete, though a
+    /// non-Blind capture-level finding is present.
+    #[test]
+    fn blind_spots_of_a_clean_read_are_empty_and_complete() -> Result<(), TestError> {
+        let facts = CaptureFacts {
+            frames_read: 40,
+            icmp: crate::pipeline::IcmpEvidenceReport {
+                errors: 2,
+                unattributed: 2,
+                ..crate::pipeline::IcmpEvidenceReport::default()
+            },
+            ..CaptureFacts::default()
+        };
+        assert!(
+            !facts_findings(&facts).findings.is_empty(),
+            "the full analysis ranks the ICMP"
+        );
+        let blind = analyze_blind_spots(&facts);
+        assert!(blind.findings.is_empty(), "{:?}", blind.findings);
+        assert!(blind.complete, "nothing unread");
+        Ok(())
+    }
+
+    /// The reduced analysis states that it examined no dialog and no stream,
+    /// carries no filter, and keeps the denominator.
+    #[test]
+    fn blind_spots_examine_no_dialog_and_keep_the_denominator() -> Result<(), TestError> {
+        let blind = analyze_blind_spots(&every_blind_fact()?);
+        assert_eq!(blind.dialogs_examined, 0, "no dialog read");
+        assert_eq!(blind.streams_examined, 0, "no stream read");
+        assert_eq!(blind.filter, None, "no filter");
+        assert_eq!(blind.frames_read, 5_000, "the facts' denominator");
+        assert_eq!(
+            blind.schema_version, CAPTURE_ANALYSIS_SCHEMA_VERSION,
+            "the analysis schema"
+        );
+        Ok(())
+    }
+
+    /// The reduced analysis does not run the full one; the counter the export
+    /// doors' tests read does count a full run.
+    #[test]
+    fn blind_spots_do_not_run_the_full_analysis() -> Result<(), TestError> {
+        let facts = every_blind_fact()?;
+        ANALYZE_WITH_CALLS.with(|c| c.set(0));
+        let _ = analyze_blind_spots(&facts);
+        assert_eq!(
+            ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            0,
+            "no pass over the dialogs"
+        );
+        let _ = facts_findings(&facts);
+        assert_eq!(
+            ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            1,
+            "a full analysis is counted"
+        );
+        Ok(())
+    }
+
+    /// Each Blind fact on its own gives the same single finding in both forms.
+    #[test]
+    fn blind_spots_match_the_full_analysis_one_fact_at_a_time() -> Result<(), TestError> {
+        let all = every_blind_fact()?;
+        let singles = [
+            CaptureFacts {
+                undecodable: all.undecodable.clone(),
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                portrange: all.portrange.clone(),
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                websocket: all.websocket.clone(),
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                retention: all.retention,
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                vcon_inputs: all.vcon_inputs.clone(),
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                stun: all.stun.clone(),
+                ..CaptureFacts::default()
+            },
+            CaptureFacts {
+                icmp: all.icmp.clone(),
+                ..CaptureFacts::default()
+            },
+        ];
+        for facts in &singles {
+            let blind = analyze_blind_spots(facts);
+            let full = facts_findings(facts);
+            assert_eq!(blind.findings, blind_of(&full), "facts {facts:?}");
+            assert_eq!(blind.complete, full.complete, "facts {facts:?}");
+            assert!(!blind.findings.is_empty(), "each fact is Blind: {facts:?}");
+        }
+        Ok(())
     }
 
     /// A lapsed allocation names the relay, the lifetime it outlived, and the
@@ -3746,7 +4263,7 @@ mod tests {
                 let [invite, _] = invite_answered(id, "200 OK")?;
                 ds.process_message(invite);
             }
-            Ok(RetentionCounts::of_store(&ds))
+            Ok(RetentionCounts::of_stores(&ds, &StreamStore::new(64)))
         };
 
         let rotated = fill(true)?;

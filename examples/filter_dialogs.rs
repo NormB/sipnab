@@ -50,7 +50,7 @@
 //! bad filter expression "method ==": unexpected input at position 9
 //!   method ==
 //!            ^
-//! valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+//! valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 //! see docs/filter-dsl.md for fields, values, and diagnostic aliases
 //! ```
 //!

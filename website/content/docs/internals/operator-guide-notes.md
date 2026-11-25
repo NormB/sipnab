@@ -692,10 +692,15 @@ audio playback. [`tests/site_journey_test.rs`](https://github.com/NormB/sipnab/b
 
 ### The published binary size ceiling
 
-The "Enforce published binary size (musl targets)" step in `release.yml` reads
+The "Enforce published binary size (musl targets)" step in `release.yml` runs
+[`scripts/check-binary-size.sh`](https://github.com/NormB/sipnab/blob/main/scripts/check-binary-size.sh), which reads
 `binary_size_ceiling_mb` from
 [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml) and fails the release when a
-musl binary exceeds it. The install page, the build page and the homepage all
+musl binary exceeds it.
+[`binary-size.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/binary-size.yml) runs the same script on an
+x86_64 musl build of each pull request that changes the manifests, the lockfile,
+the build scripts or the ceiling, and weekly, so a change that grows the binary
+fails before the tag. The install page, the build page and the homepage all
 quote the same value, and [`tests/site_journey_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs) holds each quote to the
 config key.
 

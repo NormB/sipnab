@@ -307,6 +307,17 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "JSON, and pcap/pcapng.",
     ),
     (
+        "docs/stability.md",
+        "stability.md",
+        "Check what a release keeps compatible",
+        "Check what a release keeps compatible",
+        # A weight no other page uses (see the tuning-capture entry).
+        96,
+        "Which changes to the REST API and the JSON report schemas break a "
+        "program, and how to compare two releases with "
+        "scripts/contract-diff.py.",
+    ),
+    (
         "docs/config-reference.md",
         "config.md",
         "Config reference",
@@ -509,8 +520,8 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         # explicit path lists in the nav_group macros, not from this number.
         26,
         "Size the kernel capture ring, read the kernel and interface drop "
-        "counters, tell the two apart, and decide between the any device "
-        "and a named interface.",
+        "counters, tell the two apart, decide between the any device "
+        "and a named interface, and drop whole dialogs by method at ingest.",
     ),
     # The least-privilege how-to (2026-11-03). Weight 85: it took 68 on its
     # branch while docs/relay-statistics.md took 68 on main; they met in the

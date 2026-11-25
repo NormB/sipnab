@@ -79,6 +79,8 @@ pub struct GroupDialogsParams {
     /// Values may be bare or quoted.
     #[serde(default)]
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Groups to return, largest first. Bounded by `--mcp-max-rows` and
     /// defaulted the same way `aggregate_dialogs` defaults `top_n`.
     ///
@@ -359,7 +361,7 @@ impl SipnabMcp {
         })?;
 
         let top_n = resolve_limit_with_cap(params.top_n, self.row_cap);
-        let filter = self.compile_filter(params.filter.as_deref())?;
+        let filter = self.compile_selected(params.filter.as_deref(), params.named.as_deref())?;
 
         let (tally, total_matched, capture_identity) = {
             // Capture, dialogs, streams -- the order `CaptureState` documents.
@@ -371,9 +373,9 @@ impl SipnabMcp {
             let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
 
             // Streams grouped by Call-ID once, the way `dialog_page` does it.
-            // `streams_for` scans the whole stream store per dialog, and this
-            // tool must visit every dialog to compute a rate, so the per-dialog
-            // scan would be quadratic in the size of the capture.
+            // One pass over the store for every dialog this tool visits to
+            // compute a rate. (`streams_for` once scanned the whole store per
+            // dialog, which was quadratic here; it now reads a per-call index.)
             let mut by_call: std::collections::HashMap<&str, Vec<&crate::rtp::stream::RtpStream>> =
                 std::collections::HashMap::new();
             for s in ss.iter() {

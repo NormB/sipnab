@@ -48,6 +48,46 @@ pub enum SipMethod {
     Custom(Box<str>),
 }
 
+/// The methods sipnab knows by name, as `--drop-method` / `--only-method`
+/// list them first in a refusal: every variant of [`SipMethod`] but
+/// `Custom`. [`EXTENSION_METHOD_NAMES`] follows them there.
+pub const KNOWN_METHOD_NAMES: &str = "INVITE, ACK, BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO, REFER, MESSAGE, UPDATE";
+
+/// The extension methods (outside the IANA registry, so they parse as
+/// [`SipMethod::Custom`]) that `--drop-method`, `--only-method` and
+/// `[capture] drop_methods` / `only_methods` accept beside
+/// [`KNOWN_METHOD_NAMES`], in upper case. To accept another, add its name
+/// here: the check, the refusal text and the tests read this list.
+pub const EXTENSION_METHOD_NAMES: &[&str] = &[
+    // Kamailio's DMQ module: replication between the nodes of a cluster.
+    "KDMQ",
+];
+
+/// Whether `name` (any case) is a method the method filters accept: one
+/// sipnab knows by a variant, or one of [`EXTENSION_METHOD_NAMES`].
+/// The one rule `--drop-method`, `--only-method` and `[capture]
+/// drop_methods` / `only_methods` check a name against.
+#[must_use]
+pub fn is_known_method(name: &str) -> bool {
+    !matches!(
+        SipMethod::parse(&name.to_ascii_uppercase()),
+        SipMethod::Custom(_)
+    ) || EXTENSION_METHOD_NAMES
+        .iter()
+        .any(|ext| ext.eq_ignore_ascii_case(name))
+}
+
+/// The names [`is_known_method`] accepts, as a refusal lists them:
+/// [`KNOWN_METHOD_NAMES`], then [`EXTENSION_METHOD_NAMES`]. Built at
+/// startup for an error message only, never per packet.
+#[must_use]
+pub fn accepted_method_names() -> String {
+    std::iter::once(KNOWN_METHOD_NAMES)
+        .chain(EXTENSION_METHOD_NAMES.iter().copied())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 impl SipMethod {
     /// Return the canonical uppercase string representation.
     ///
@@ -251,6 +291,76 @@ mod tests {
     fn ordering() {
         assert!(SipMethod::Ack < SipMethod::Invite);
         assert!(SipMethod::Bye < SipMethod::Cancel);
+    }
+
+    /// Success: KDMQ, Kamailio's DMQ replication method, is a name the
+    /// method filters accept, in any letter case, as the standard names are.
+    #[test]
+    fn kdmq_is_an_accepted_method_name_in_any_case() {
+        for name in ["KDMQ", "kdmq", "KdMq", "kDMQ"] {
+            assert!(is_known_method(name), "{name} is accepted");
+        }
+    }
+
+    /// Failure: a misspelled or partial extension name is still refused,
+    /// as is an unknown method that sipnab parses as `Custom`.
+    #[test]
+    fn a_kdmq_typo_is_refused() {
+        for name in [
+            "KDQM", "KDM", "KDMQX", "XKDMQ", "K DMQ", "KDMQ ", "", "XYZZY",
+        ] {
+            assert!(!is_known_method(name), "{name:?} is refused");
+        }
+    }
+
+    /// Edge: accepting KDMQ leaves every standard name accepted, in any case.
+    #[test]
+    fn the_standard_names_stay_accepted_beside_kdmq() {
+        for name in KNOWN_METHOD_NAMES.split(", ") {
+            assert!(is_known_method(name), "{name} is accepted");
+            assert!(
+                is_known_method(&name.to_ascii_lowercase()),
+                "{name} in lower case is accepted"
+            );
+        }
+    }
+
+    /// Edge: every extension name is upper case, is not a standard method
+    /// (it parses as `Custom`, so a capture names it as written), and is
+    /// accepted; the refusal text lists the standard names, then each one.
+    #[test]
+    fn every_extension_method_name_is_a_custom_method_and_is_listed() {
+        assert!(
+            EXTENSION_METHOD_NAMES.contains(&"KDMQ"),
+            "KDMQ is an extension method name"
+        );
+        let listed = accepted_method_names();
+        assert!(
+            listed.starts_with(KNOWN_METHOD_NAMES),
+            "the standard names come first: {listed}"
+        );
+        for name in EXTENSION_METHOD_NAMES {
+            assert_eq!(
+                name.to_ascii_uppercase(),
+                *name,
+                "{name} is written in upper case"
+            );
+            assert_eq!(
+                SipMethod::parse(name),
+                SipMethod::Custom((*name).into()),
+                "{name} is not a standard method"
+            );
+            assert!(is_known_method(name), "{name} is accepted");
+            assert!(
+                listed.contains(&format!(", {name}")),
+                "{name} is listed: {listed}"
+            );
+        }
+        assert_eq!(
+            listed.matches(", ").count() + 1,
+            KNOWN_METHOD_NAMES.split(", ").count() + EXTENSION_METHOD_NAMES.len(),
+            "each accepted name is listed once: {listed}"
+        );
     }
 
     /// `SipMethod == str` compares against the canonical string form.

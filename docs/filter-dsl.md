@@ -10,8 +10,8 @@
 
 A filter needs no build feature, no privilege beyond what the capture itself
 needs, and no change on any other system. The same expression works on the
-command line, in the terminal interface (through a named filter), over REST
-and over MCP, where the
+command line, in the terminal interface (the `F7` dialog's Expression field),
+over REST and over MCP, where the
 [`validate_filter`](mcp-tools-signaling.md#validate_filter) tool checks one
 without running it.
 
@@ -594,6 +594,17 @@ Authentication challenges follow the same rule as `final_status_code` in
 > - Pair `no_media` with the knowledge of where your tap sits. If media does not
 >   traverse it, the question is unanswerable, and sipnab declines to answer it.
 >
+> **`no_media` is false for a call read from a vCon.**
+>
+> - A vCon carries a call's signaling and none of its packets. So the RTP that
+>   other inputs of the same run carry says nothing about that call.
+> - Example: in `sipnab -N -I call.vcon.json -I other.pcap --filter "no_media == true"`,
+>   the vCon's call is not selected, whatever RTP `other.pcap` holds.
+> - sipnab judges a call that any packet input of the run also carried as that
+>   input's call.
+> - Before 0.5.264, such a run reported the vCon's answered call as
+>   `no_media`, and `--analyze` ranked it "No media on an answered call".
+>
 > **`rtp.orphaned` is a parse error, not a field.**
 >
 > - It would ask whether a stream *belonging to this dialog* belongs to no
@@ -667,6 +678,11 @@ sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'I
 - sipnab refuses a filter given at run time that names something undefined.
   - This applies on the command line or through REST or MCP.
   - sipnab lists the defined names.
+- REST and MCP list the table and take a name on its own:
+  [`GET /v1/filters`](rest-api.md#get-v1filters) and the MCP tool
+  [`list_named_filters`](mcp-tools-signaling.md#list_named_filters) list it,
+  and a `named` parameter selects one entry in place of `filter`. See
+  [Select dialogs with a named filter](rest-api.md#select-dialogs-with-a-named-filter).
 
 For example, with this `sipnab.toml`:
 
@@ -940,6 +956,9 @@ takes a filter.
 | Parenthesis nesting | 50 levels | `expression exceeds maximum nesting depth of 50` |
 | `header.<name>` name length | 256 bytes | `header name longer than 256 bytes` |
 | Regex pattern size | 1,000,000 bytes | `the regex does not compile or is larger than 1000000 bytes` |
+| Regex comparisons | 8 per expression | `too many regexes: one expression holds at most 8 regex comparisons (=~)` |
+| Regex text | 1024 bytes per expression | `regex too long: the regexes of one expression hold at most 1024 bytes together` |
+| Regex character classes | 16 per expression | `too many regex classes: the regexes of one expression hold at most 16 character classes (each [, \p or \P) together` |
 | Empty expression | not allowed | `filter expression is empty` |
 
 Each comparison, `AND`, `OR` and `NOT` counts toward the node limit. A chain
@@ -948,6 +967,16 @@ filter](#named-filters) expands in place, so its nodes count too. To stay under
 the limit, replace a chain of `OR` comparisons on one field with one regex,
 such as `from.user =~ '^(1001|1002|1003)$'`, or split the question across
 several runs.
+
+The three regex limits count all `=~` values of one expression together,
+named filters included, and sipnab checks them on the pattern text before it
+compiles any regex. A character class is each `[` and each `\p` or `\P`. An
+escaped `\[` is a literal and does not count. The limits exist because the
+regex engine compiles a class under `(?i)` by case-folding every character it
+covers: 1 KiB of `(?i)[\D]` takes about 0.4 s of CPU to compile, and sipnab
+compiles every regex of a filter when it reads the filter. To stay under the limits, join
+alternatives into one regex, write a literal in place of a one-character
+class (`a` for `[a]`), or use `\d` and `\w`, which do not count.
 
 Errors that point into the expression print its text with a caret under the
 position, a 0-based character column:
@@ -960,7 +989,7 @@ sipnab -N -I capture.pcap --filter 'method == INVITE extra'
 Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
   method == INVITE extra
             ^
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 
@@ -976,7 +1005,7 @@ Invalid --filter expression: unexpected input at position 0: 'nosuch'
   ^
 hint: unknown field 'nosuch'
 valid fields: from.user, to.user, from.host, to.host, from.uri, to.uri, ruri, pai.user, method, ua, call_id, payload, src.ip, dst.ip, src.port, dst.port, state, duration, msg_count, response_code, final_status_code, response_class, pdd, setup_time, retransmits, rtp.mos, rtp.jitter, rtp.loss, rtp.packets, rtp.codec, rtp.codecs, rtp.ssrc, side, endpoint, one_way, nat_mismatch, no_media, codec_asymmetry, ptime_asymmetry, payload_asymmetry, duration_asymmetry, late_media, time, header.<name>
-valid operators: ==, !=, <, <=, >, >=, =~ (regex)
+valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)
 see docs/filter-dsl.md for fields, values, and diagnostic aliases
 ```
 

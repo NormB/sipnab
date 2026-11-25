@@ -55,6 +55,7 @@ use sipnab::security::ScannerDetector;
 
 #[path = "support/corpus.rs"]
 mod corpus_support;
+use corpus_support::test_prereq;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -473,18 +474,27 @@ mod tests {
 ///
 /// Absent is the ordinary case. TFPS is optional software; a machine may have
 /// it, or several other peers, or none at all.
-fn labels_path() -> Option<PathBuf> {
-    let p = PathBuf::from(std::env::var("TFPS_LABELS").ok()?);
-    if !p.is_file() {
-        eprintln!("TFPS_LABELS is set but is not a readable file — skipping");
-        return None;
-    }
-    Some(p)
+fn labels_path() -> Result<Option<PathBuf>, TestError> {
+    let Some(p) = test_prereq::check(
+        "tfps-labels",
+        test_prereq::Need::Optional(
+            "the TFPS ban-log labels are private; set TFPS_LABELS to a labels file to score against them.",
+        ),
+        test_prereq::env("TFPS_LABELS").map(PathBuf::from),
+    )?
+    else {
+        return Ok(None);
+    };
+    // Set but not a file is a mistake in the run, not a missing prerequisite.
+    Ok(Some(test_prereq::required(
+        "tfps-labels",
+        test_prereq::path_exists(&p),
+    )?))
 }
 
 #[test]
 fn scanner_detect_is_scored_against_the_ban_log() -> Result<(), TestError> {
-    let (Some(labels_file), Some(root)) = (labels_path(), corpus_support::root()) else {
+    let (Some(labels_file), Some(root)) = (labels_path()?, corpus_support::root()) else {
         return Ok(());
     };
     let raw = std::fs::read_to_string(&labels_file)?;
@@ -621,7 +631,7 @@ fn nothing_configured_is_a_skip_and_not_a_failure() -> Result<(), TestError> {
     // variable unset this is the ordinary path, and in CI it always is.
     if std::env::var("TFPS_LABELS").is_err() {
         assert!(
-            labels_path().is_none(),
+            labels_path()?.is_none(),
             "with TFPS_LABELS unset there must be no label source, and the suite skips"
         );
     }

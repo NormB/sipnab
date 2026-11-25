@@ -25,7 +25,7 @@ import datetime
 import json
 
 import pytest
-from conftest import load
+from conftest import SCRIPTS, load
 
 rt = load("release-train")
 
@@ -356,7 +356,7 @@ def test_edge_no_check_started_yet_means_the_whole_estimate(cfg):
 def test_success_a_clean_release_runs_end_to_end(cfg):
     w = World()
     assert drive(cfg, w) == 0
-    assert w.names() == ["cla", "land", "checkout", "tag", "tag-push", "post"]
+    assert w.names() == ["land", "checkout", "tag", "tag-push", "post"]
 
 
 def test_success_no_remote_wait_holds_the_window(cfg):
@@ -509,11 +509,15 @@ def test_failure_a_failed_landing_stops_the_train(cfg):
     assert drive(cfg, w) == 1
 
 
-def test_failure_a_cla_status_that_cannot_be_posted_stops_the_train(cfg):
+def test_failure_a_cla_tool_that_refuses_cannot_stop_the_train(cfg):
+    # WC1-WAIT-ON-UNREQUIRED-PENDING: license/cla is not a required check
+    # since 2026-11-20 (DCO is) and cla-owner-exempt is retired, so the train
+    # never runs it; a refusal it would print can no longer stop a release.
     w = World()
     w.overrides.append(("cla-owner-exempt", (1, "does not qualify\n")))
-    assert drive(cfg, w) == 1
-    assert "land" not in w.names()
+    assert drive(cfg, w) == 0
+    assert "land" in w.names(), w.names()
+    assert "cla" not in w.names(), w.names()
 
 
 def test_failure_a_failed_tag_push_stops_the_train(cfg):
@@ -629,18 +633,33 @@ def test_edge_a_failed_post_is_retried_on_resume(cfg):
     assert drive(cfg, w) == 0
 
 
-def test_edge_the_cla_status_is_posted_once_per_head(cfg):
+def test_success_a_whole_release_never_runs_cla_owner_exempt(cfg):
     w = World()
-    drive(cfg, w)
-    assert w.names().count("cla") == 1
+    assert drive(cfg, w) == 0
+    assert "cla" not in w.names(), w.names()
 
 
-def test_edge_a_new_head_gets_its_own_cla_status(cfg):
+def test_edge_a_new_head_during_ci_gets_no_cla_status(cfg):
     w = World(ci_minutes=2)
     rt.tick(cfg, w, w.clock)
     w.pr["headRefOid"] = "d" * 40
     rt.tick(cfg, w, w.clock)
-    assert w.names().count("cla") == 2
+    assert "cla" not in w.names(), w.names()
+
+
+def test_edge_the_prerequisites_name_exactly_the_tools_the_train_runs():
+    # One rule: the tools docs/internals/build-ci-release.md lists for the
+    # train are the ones the script runs through `tool(cfg, ...)`, so a tool
+    # removed from the script cannot stay a prerequisite in the page.
+    import re
+    source = (SCRIPTS / "release-train.py").read_text(encoding="utf-8")
+    ran = set(re.findall(r"""tool\(cfg, ["']([a-z-]+)["']\)""", source))
+    page = (SCRIPTS.parent / "docs/internals/build-ci-release.md").read_text(encoding="utf-8")
+    line = next(l for l in page.splitlines()
+                if "are on `PATH`, or in the directory `--bin` names" in l)
+    listed = set(re.findall(r"`([a-z-]+)`", line.split(" are on ")[0]))
+    assert ran, "no tool(cfg, ...) call found in scripts/release-train.py"
+    assert listed == ran, f"page lists {sorted(listed)}, script runs {sorted(ran)}"
 
 
 def test_edge_the_cla_status_is_not_posted_for_a_merged_pr(cfg):
@@ -762,7 +781,7 @@ def test_edge_the_state_file_holds_only_the_post_result(cfg):
     # is empty and the last read is some time inside the 36 min of CI.
     state = json.loads(cfg.state_file.read_text())
     assert T0 <= state.pop("usual_read_at") <= T0 + 36 * MIN
-    assert state == {"post_rc": 0, "cla_head": HEAD, "usual_s": {}}
+    assert state == {"post_rc": 0, "usual_s": {}}, state
 
 
 # ---------------------------------------------------------------------------

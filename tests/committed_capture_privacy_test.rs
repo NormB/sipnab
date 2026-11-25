@@ -433,6 +433,7 @@ fn the_corpus_holds_what_this_gate_refuses() -> Result<(), TestError> {
             // Reading the rest of an 8.8 GB corpus to count more would make
             // this the most expensive test in the suite and prove nothing
             // further.
+            // not a prerequisite: one capture with identifiers is the whole claim, and it was found
             return Ok(());
         }
     }

@@ -28,6 +28,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "support/tracked.rs"]
 mod tracked;
 
@@ -118,6 +120,27 @@ fn assert_step_fails_on_bad_input(
     subs: &[(&str, &str)],
     setup: &dyn Fn(&std::path::Path) -> Result<(), TestError>,
 ) -> Result<(), TestError> {
+    let out = run_step_script(workflow, step_name, subs, setup)?;
+    assert!(
+        !out.status.success(),
+        "{workflow} step {step_name:?} exited 0 on input its check should reject. \
+         It runs, it may even annotate the problem, and the build stays green — \
+         which is the state this gate exists to prevent.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}
+
+/// The `run:` block of a workflow step, executed by bash in a scratch
+/// directory that `setup` prepares; its output. See
+/// [`assert_step_fails_on_bad_input`] for how the block is read.
+fn run_step_script(
+    workflow: &str,
+    step_name: &str,
+    subs: &[(&str, &str)],
+    setup: &dyn Fn(&std::path::Path) -> Result<(), TestError>,
+) -> Result<std::process::Output, TestError> {
     let body = workflow_step_body(workflow, step_name)?;
     // Take the run: block only, stopping at the next YAML key at run:'s own
     // indent. Reading to the end of the step handed bash whatever followed —
@@ -178,16 +201,7 @@ fn assert_step_fails_on_bad_input(
         .output()
         .map_err(|e| format!("run step script: {e}"))?;
     let _ = std::fs::remove_dir_all(&dir);
-
-    assert!(
-        !out.status.success(),
-        "{workflow} step {step_name:?} exited 0 on input its check should reject. \
-         It runs, it may even annotate the problem, and the build stays green — \
-         which is the state this gate exists to prevent.\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Ok(())
+    Ok(out)
 }
 
 /// A named workflow step still fails the build when its check fails.
@@ -218,6 +232,20 @@ fn assert_step_enforces(
     workflow: &str,
     step_name: &str,
     guard: Option<&str>,
+) -> Result<(), TestError> {
+    assert_step_shape(workflow, step_name, guard, "exit 1")
+}
+
+/// [`assert_step_enforces`] for a step whose verdict is `verdict` in its body:
+/// `exit 1` for a step that holds its own check, or the command of the script
+/// that holds it. A step that delegates has no `exit 1` of its own to find;
+/// its caller also runs the step on good and bad input
+/// ([`run_step_script`]), which is what shows the script's exit reaches it.
+fn assert_step_shape(
+    workflow: &str,
+    step_name: &str,
+    guard: Option<&str>,
+    verdict: &str,
 ) -> Result<(), TestError> {
     let body = workflow_step_body(workflow, step_name)?;
     let step: Vec<&str> = body.lines().collect();
@@ -291,8 +319,8 @@ fn assert_step_enforces(
         );
     }
     assert!(
-        body.contains("exit 1"),
-        "{workflow} step {step_name:?} no longer exits non-zero on failure"
+        body.contains(verdict),
+        "{workflow} step {step_name:?} no longer exits non-zero on failure: its body has no `{verdict}`"
     );
 
     let actual_guard = step
@@ -383,12 +411,19 @@ fn demo_tape_fonts_are_installed_monospace() -> Result<(), TestError> {
     // demos`), so the "font must be installed" contract only makes sense
     // there. On macOS/Windows CI the render never happens and fontconfig
     // reports a different family set (Menlo, Courier New, ...) — skip.
-    if !cfg!(target_os = "linux") {
-        eprintln!("demos render on Linux only; skipping installed-font check on this platform");
-        return Ok(());
-    }
-    let Some(installed) = installed_mono_families() else {
-        eprintln!("fc-list unavailable; skipping installed-font verification");
+    let probe = if cfg!(target_os = "linux") {
+        installed_mono_families().ok_or_else(|| "`fc-list :spacing=mono family` failed".to_owned())
+    } else {
+        Err("the demos render on Linux only".to_owned())
+    };
+    let Some(installed) = test_prereq::check(
+        "fc-list",
+        test_prereq::Need::Optional(
+            "the demos render on a Linux host with fontconfig; other hosts list other fonts.",
+        ),
+        probe,
+    )?
+    else {
         return Ok(());
     };
     let missing: Vec<_> = fonts
@@ -1724,37 +1759,58 @@ fn published_binary_size_matches_the_enforced_ceiling() -> Result<(), TestError>
     // Same reasoning as the test-count gate: the identifying string sits in
     // the step body, so its presence says nothing about whether the step still
     // fails the build.
-    assert_step_enforces(
+    assert_step_shape(
         ".github/workflows/release.yml",
         "Enforce published binary size (musl targets)",
         Some("contains(matrix.target, '-linux-musl')"),
+        "bash scripts/check-binary-size.sh ",
     )?;
-    // And prove it: a 1 MB ceiling against a 2 MB binary must fail.
-    assert_step_fails_on_bad_input(
-        ".github/workflows/release.yml",
-        "Enforce published binary size (musl targets)",
-        &[("${{ matrix.target }}", "x86_64-unknown-linux-musl")],
-        &|dir| {
-            std::fs::write(dir.join("website/config.toml"), "")
-                .or_else(|_| {
-                    std::fs::create_dir_all(dir)
-                        .and_then(|()| std::fs::write(dir.join("website/config.toml"), ""))
-                })
-                .ok();
+    // And prove it: the step, run with the repository's own
+    // scripts/check-binary-size.sh, passes a 2 MB binary under a 3 MB ceiling
+    // and fails it, with the check's own exit 1, under a 1 MB ceiling. The
+    // pass is what makes the failure mean something: a step that cannot find
+    // its script exits 127, which "exited non-zero" alone would accept.
+    let step = "Enforce published binary size (musl targets)";
+    let subs = [("${{ matrix.target }}", "x86_64-unknown-linux-musl")];
+    let seeded = |ceiling_mb: u32| {
+        move |dir: &std::path::Path| -> Result<(), TestError> {
             std::fs::create_dir_all(dir.join("website"))
                 .map_err(|e| format!("mkdir website: {e}"))?;
             std::fs::write(
                 dir.join("website/config.toml"),
-                "binary_size_ceiling_mb = \"1\"\n",
+                format!("binary_size_ceiling_mb = \"{ceiling_mb}\"\n"),
             )
             .map_err(|e| format!("write config: {e}"))?;
+            std::fs::create_dir_all(dir.join("scripts"))
+                .map_err(|e| format!("mkdir scripts: {e}"))?;
+            std::fs::write(
+                dir.join("scripts/check-binary-size.sh"),
+                read("scripts/check-binary-size.sh")?,
+            )
+            .map_err(|e| format!("copy the size script: {e}"))?;
             let bin = dir.join("target/x86_64-unknown-linux-musl/release");
             std::fs::create_dir_all(&bin).map_err(|e| format!("mkdir target: {e}"))?;
             std::fs::write(bin.join("sipnab"), vec![0u8; 2 * 1024 * 1024])
                 .map_err(|e| format!("write binary: {e}"))?;
             Ok(())
-        },
-    )?;
+        }
+    };
+    let good = run_step_script(".github/workflows/release.yml", step, &subs, &seeded(3))?;
+    assert!(
+        good.status.success() && String::from_utf8_lossy(&good.stdout).contains("bytes under"),
+        "the size step must pass a 2 MB binary under a 3 MB ceiling:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&good.stdout),
+        String::from_utf8_lossy(&good.stderr)
+    );
+    let bad = run_step_script(".github/workflows/release.yml", step, &subs, &seeded(1))?;
+    assert_eq!(
+        bad.status.code(),
+        Some(1),
+        "the size step must fail a 2 MB binary over a 1 MB ceiling with the check's own \
+         exit 1:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&bad.stdout),
+        String::from_utf8_lossy(&bad.stderr)
+    );
     Ok(())
 }
 
@@ -5022,9 +5078,11 @@ fn inline_script_edits_require_csp_hash_refresh() -> Result<(), TestError> {
             // layout-shift budget. This one is the detection block. Re-pinned
             // the same day when it stopped deriving a CPU from the user agent
             // (frozen to x86_64/Intel by Chromium) and began marking tiles from
-            // the client hint instead.
+            // the client hint instead. Re-pinned 2026-11-18 when a Windows
+            // visitor stopped being sent to the Source tab: the banner now
+            // shows the Linux-and-macOS focus line and marks no choice.
             "download.html",
-            "sha256-0811gxPZE6mwpSjalocobPzF4V6TTo2Rvjoo7jh8hVQ=",
+            "sha256-7sOT+DQ6ya9uw+nOxwDoT+vxEWM2CZ+PieTJ13iwcx4=",
         ),
         (
             // The tab, table-of-contents and copy-button script, which now
@@ -5992,7 +6050,8 @@ fn macos_only_jobs(yaml: &str) -> Result<BTreeSet<String>, TestError> {
 /// so on main a macOS failure fails the CI run, and the pre-push hook's tag
 /// gate refuses to tag a commit whose CI run is not green. And each macOS job
 /// runs the very steps of a Linux job, through a YAML alias, so it checks
-/// what the Linux job checks; check-macos adds the whole suite.
+/// what the Linux job checks; test-macos runs the whole suite in shards, as
+/// the Linux `test` job does (`macos_suite_problems` is that rule).
 ///
 /// No job may have a macOS leg beside a Linux one: `needs` takes a matrix job
 /// whole, so such a job is either required, and blocks pull requests on
@@ -6016,13 +6075,13 @@ fn the_macos_leg_blocks_main_and_no_pull_request() -> Result<(), TestError> {
         "ci.yml job(s) {mixed:?} run on macOS beside another OS; give the macOS leg \
          its own job, through a YAML alias of the steps, that CI success does not need"
     );
-    let want: BTreeSet<String> = ["check-macos", "symbol-split-macos"]
+    let want: BTreeSet<String> = ["check-macos", "symbol-split-macos", "test-macos"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     assert_eq!(
         macos, want,
-        "the macOS-only jobs of ci.yml must be the macOS legs of Check and Symbol split"
+        "the macOS-only jobs of ci.yml must be the macOS legs of Check, Symbol split and Test"
     );
 
     // Not needed by CI success, directly or through any job it needs.
@@ -6078,10 +6137,12 @@ fn the_macos_leg_blocks_main_and_no_pull_request() -> Result<(), TestError> {
         assert_eq!(job_runners(body), vec!["macos-26".to_string()], "{id}");
     }
 
-    // The same steps as a gated Linux job, and on macOS Check runs the suite.
+    // The same steps as a gated Linux job, and on macOS the suite runs in
+    // shards through the Linux suite's own steps.
     for (linux, mac, anchor) in [
         ("check", "check-macos", "check-steps"),
         ("symbol-split", "symbol-split-macos", "symbol-split-steps"),
+        ("test", "test-macos", "test-steps"),
     ] {
         let linux_body = jobs
             .get(linux)
@@ -6099,17 +6160,180 @@ fn the_macos_leg_blocks_main_and_no_pull_request() -> Result<(), TestError> {
             "CI success must still need {linux}, the Linux half of {mac}"
         );
     }
-    let suite = workflow_step_body(".github/workflows/ci.yml", "Test (macOS, every target)")?;
-    for needle in [
-        "if: runner.os == 'macOS'",
-        "python3 scripts/parallel-tests.py -- --all-features",
-    ] {
+    let problems = macos_suite_problems(&yaml);
+    assert!(
+        problems.is_empty(),
+        "ci.yml does not run the whole suite on macOS in shards:\n{}",
+        problems.join("\n")
+    );
+    Ok(())
+}
+
+include!("support/macos_suite.rs");
+
+/// A ci.yml that holds the macOS suite rule; each case below changes one
+/// part of it.
+const MACOS_SUITE_BASE: &str = "name: CI
+jobs:
+  check:
+    timeout-minutes: 45
+    steps: &check-steps
+      - name: Build
+        run: cargo build --all-features --bins --examples
+      - name: Clippy
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+
+  check-macos:
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        os: [macos-26]
+    steps: *check-steps
+
+  test:
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        shard: [1, 2]
+    steps: &test-steps
+      - name: Install cargo-nextest
+        uses: ./.github/actions/nextest
+      - name: Test
+        run: |
+          set -eu
+          python3 scripts/parallel-tests.py --shard-index ${{ strategy.job-index }} --shard-count ${{ strategy.job-total }} \\
+            --manifest \"$RUNNER_TEMP/test-shard/shard.json\" -- --all-features 2>&1 \\
+            | tee \"$RUNNER_TEMP/test-shard/test-output.txt\"
+      - name: Test the sipnab-bpf-types crate
+        run: cargo test -p sipnab-bpf-types --no-fail-fast
+
+  test-macos:
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26]
+        shard: [1, 2]
+    steps: *test-steps
+";
+
+/// Applies one case's change to the base: `from` must occur in it exactly
+/// once (a change that does not apply fails the case rather than testing the
+/// base), or be empty, which replaces the whole text with `to`.
+fn macos_suite_case(from: &str, to: &str) -> Result<String, TestError> {
+    if from.is_empty() {
+        return Ok(to.to_string());
+    }
+    let n = MACOS_SUITE_BASE.matches(from).count();
+    if n != 1 {
+        return Err(
+            format!("the case's text {from:?} occurs {n} times in the base, not once").into(),
+        );
+    }
+    Ok(MACOS_SUITE_BASE.replacen(from, to, 1))
+}
+
+/// One case: the problems of the changed base must be none (`want` empty) or
+/// include one that contains `want`.
+fn macos_suite_expect(from: &str, to: &str, want: &str) -> Result<(), TestError> {
+    let ci = macos_suite_case(from, to)?;
+    let problems = macos_suite_problems(&ci);
+    if want.is_empty() {
         assert!(
-            suite.contains(needle),
-            "the macOS leg's suite step lacks {needle:?}:\n{suite}"
+            problems.is_empty(),
+            "expected no problem, got:\n{}\nfor:\n{ci}",
+            problems.join("\n")
+        );
+    } else {
+        assert!(
+            problems.iter().any(|p| p.contains(want)),
+            "expected a problem containing {want:?}, got {problems:?} for:\n{ci}"
         );
     }
     Ok(())
+}
+
+macro_rules! macos_suite_cases {
+    ($($name:ident: $from:expr => $to:expr, $want:expr;)*) => {$(
+        #[test]
+        fn $name() -> Result<(), TestError> {
+            macos_suite_expect($from, $to, $want)
+        }
+    )*};
+}
+
+const MACOS_SHARDS: &str = "        shard: [1, 2]\n    steps: *test-steps";
+const MACOS_OS: &str = "        os: [macos-26]\n        shard";
+const MACOS_TIMEOUT: &str = "  test-macos:\n    timeout-minutes: 45\n";
+const SUITE_RUN: &str = "--shard-count ${{ strategy.job-total }}";
+
+// Success: the layout holds, in the shapes ci.yml may take.
+macos_suite_cases! {
+    macos_suite_ok_base: "name: CI" => "name: CI", "";
+    macos_suite_ok_three_shards: MACOS_SHARDS => "        shard: [1, 2, 3]\n    steps: *test-steps", "";
+    macos_suite_ok_four_shards: MACOS_SHARDS => "        shard: [1, 2, 3, 4]\n    steps: *test-steps", "";
+    macos_suite_ok_list_without_spaces: MACOS_SHARDS => "        shard: [1,2]\n    steps: *test-steps", "";
+    macos_suite_ok_shorter_timeout: MACOS_TIMEOUT => "  test-macos:\n    timeout-minutes: 30\n", "";
+    macos_suite_ok_another_job_after: "    steps: *test-steps\n" => "    steps: *test-steps\n\n  test-results:\n    needs: [test]\n    steps:\n      - run: true\n", "";
+    macos_suite_ok_comment_in_the_job: MACOS_TIMEOUT => "  test-macos:\n    # The macOS leg of the suite.\n    timeout-minutes: 45\n", "";
+    macos_suite_ok_env_on_the_test_step: "      - name: Test\n        run: |" => "      - name: Test\n        env:\n          SIPNAB_YANG_EXPORT_DIR: ''\n        run: |", "";
+    macos_suite_ok_linux_three_shards: "        os: [ubuntu-24.04]\n        shard: [1, 2]" => "        os: [ubuntu-24.04]\n        shard: [1, 2, 3]", "";
+    macos_suite_ok_without_check_macos: "  check-macos:\n" => "  check-other:\n", "";
+    macos_suite_ok_without_fail_fast: "      fail-fast: false\n      matrix:\n        os: [macos-26]" => "      matrix:\n        os: [macos-26]", "";
+    macos_suite_ok_step_after_test: "      - name: Test the sipnab-bpf-types crate\n" => "      - name: Prune\n        run: true\n      - name: Test the sipnab-bpf-types crate\n", "";
+    macos_suite_ok_job_order_test_macos_first: "" => &MACOS_SUITE_BASE.replace("\n  test-macos:", "\n  zz-moved:").replacen("jobs:\n", "jobs:\n  test-macos:\n    timeout-minutes: 45\n    strategy:\n      matrix:\n        os: [macos-26]\n        shard: [1, 2]\n    steps: *test-steps\n\n", 1).replace("  zz-moved:\n    timeout-minutes: 45\n    strategy:\n      fail-fast: false\n      matrix:\n        os: [macos-26]\n        shard: [1, 2]\n    steps: *test-steps\n", ""), "";
+    macos_suite_ok_timeout_one_minute: MACOS_TIMEOUT => "  test-macos:\n    timeout-minutes: 1\n", "";
+    macos_suite_ok_quoted_os: MACOS_OS => "        os: ['macos-26']\n        shard", "";
+    macos_suite_ok_extra_matrix_key: MACOS_SHARDS => "        shard: [1, 2]\n        include:\n          - shard: 1\n    steps: *test-steps", "";
+}
+
+// Failure: each part of the rule, broken on its own.
+macos_suite_cases! {
+    macos_suite_fails_without_the_job: "  test-macos:\n" => "  test-mac:\n", "no job `test-macos`";
+    macos_suite_fails_on_other_steps: "    steps: *test-steps\n" => "    steps: *check-steps\n", "through *test-steps";
+    macos_suite_fails_without_the_anchor: "    steps: &test-steps\n" => "    steps:\n", "anchor &test-steps";
+    macos_suite_fails_on_a_floating_image: MACOS_OS => "        os: [macos-latest]\n        shard", "macos-26 alone";
+    macos_suite_fails_on_linux: MACOS_OS => "        os: [ubuntu-24.04]\n        shard", "macos-26 alone";
+    macos_suite_fails_on_one_shard: MACOS_SHARDS => "        shard: [1]\n    steps: *test-steps", "at least two shards";
+    macos_suite_fails_without_shards: MACOS_SHARDS => "    steps: *test-steps", "no shard list";
+    macos_suite_fails_on_a_gap: MACOS_SHARDS => "        shard: [1, 3]\n    steps: *test-steps", "1 to N, each once";
+    macos_suite_fails_from_zero: MACOS_SHARDS => "        shard: [0, 1]\n    steps: *test-steps", "1 to N, each once";
+    macos_suite_fails_without_the_index: "--shard-index ${{ strategy.job-index }} " => "", "--shard-index";
+    macos_suite_fails_without_the_count: SUITE_RUN => "--shard-count 2", "--shard-count";
+    macos_suite_fails_without_every_feature: "-- --all-features 2>&1" => "-- --features full 2>&1", "-- --all-features";
+    macos_suite_fails_on_a_skip: "-- --all-features 2>&1" => "-- --all-features --skip tui 2>&1", "--skip";
+    macos_suite_fails_on_a_filter: "--manifest" => "-E 'not test(slow)' --manifest", "-E";
+    macos_suite_fails_on_a_step_condition: "      - name: Test\n" => "      - name: Test\n        if: runner.os == 'Linux'\n", "Test step has an `if:`";
+    macos_suite_fails_when_check_runs_the_suite: "      - name: Clippy\n" => "      - name: Test (macOS, every target)\n        run: python3 scripts/parallel-tests.py -- --all-features\n      - name: Clippy\n", "twice";
+    macos_suite_fails_without_a_timeout: MACOS_TIMEOUT => "  test-macos:\n", "no timeout-minutes";
+    macos_suite_fails_on_a_raised_cap: MACOS_TIMEOUT => "  test-macos:\n    timeout-minutes: 60\n", "45-minute cap";
+    macos_suite_fails_on_a_job_condition: MACOS_TIMEOUT => "  test-macos:\n    if: github.event_name == 'push'\n    timeout-minutes: 45\n", "job-level `if:`";
+    macos_suite_fails_on_continue_on_error: MACOS_TIMEOUT => "  test-macos:\n    continue-on-error: true\n    timeout-minutes: 45\n", "job-level `continue-on-error:`";
+    macos_suite_fails_without_a_test_step: "      - name: Test\n" => "      - name: Run the suite\n", "no step named Test";
+}
+
+// Edge: inputs at the border of what the rule reads.
+macos_suite_cases! {
+    macos_suite_edge_crlf_lines: "" => &MACOS_SUITE_BASE.replace('\n', "\r\n"), "";
+    macos_suite_edge_empty_text: "" => "", "no job `test`";
+    macos_suite_edge_shard_twice: MACOS_SHARDS => "        shard: [1, 1, 2]\n    steps: *test-steps", "each once";
+    macos_suite_edge_trailing_comma: MACOS_SHARDS => "        shard: [1, 2,]\n    steps: *test-steps", "not a list of numbers";
+    macos_suite_edge_shard_names: MACOS_SHARDS => "        shard: [a, b]\n    steps: *test-steps", "not a list of numbers";
+    macos_suite_edge_job_named_in_a_comment: "  test-macos:\n" => "  # test-macos:\n  other:\n", "no job `test-macos`";
+    macos_suite_edge_longer_job_name: "  test-macos:\n" => "  test-macos-extra:\n", "no job `test-macos`";
+    macos_suite_edge_test_is_a_prefix: "      - name: Test\n" => "      - name: Tests\n", "no step named Test";
+    macos_suite_edge_alias_in_a_comment: "    steps: *test-steps\n" => "    # steps: *test-steps\n    steps: *check-steps\n", "through *test-steps";
+    macos_suite_edge_suite_named_in_a_check_comment: "      - name: Clippy\n" => "      # The suite (scripts/parallel-tests.py) runs in `test`.\n      - name: Clippy\n", "";
+    macos_suite_edge_eight_shards: MACOS_SHARDS => "        shard: [1, 2, 3, 4, 5, 6, 7, 8]\n    steps: *test-steps", "";
+    macos_suite_edge_two_images: MACOS_OS => "        os: [macos-26, ubuntu-24.04]\n        shard", "macos-26 alone";
+    macos_suite_edge_timeout_not_a_number: MACOS_TIMEOUT => "  test-macos:\n    timeout-minutes: abc\n", "no timeout-minutes";
+    macos_suite_edge_no_jobs_key: "jobs:\n" => "workflows:\n", "no job `test`";
+    macos_suite_edge_one_line_run: "        run: |\n          set -eu\n          python3" => "        run: python3", "";
+    macos_suite_edge_shards_out_of_order: MACOS_SHARDS => "        shard: [2, 1]\n    steps: *test-steps", "";
+    macos_suite_edge_timeout_at_the_cap: MACOS_TIMEOUT => "  test-macos:\n    timeout-minutes: 45\n", "";
+    macos_suite_edge_next_step_condition_is_its_own: "      - name: Test the sipnab-bpf-types crate\n" => "      - name: Test the sipnab-bpf-types crate\n        if: runner.os == 'Linux'\n", "";
 }
 
 // ---------------------------------------------------------------------------
@@ -6696,7 +6920,48 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // the base has it" names `scripts/check-changelog-merge.py`.
     // Measurement: the scan read 289 on main 45087124b and 290 with that
     // step staged.
-    const EXPECTED_REFERENCES: usize = 292;
+    // 294 -> 295 (macOS terminal-loss measurements): ci.yml's comment on the
+    // step "TUI terminal-loss measurements (macOS)" names
+    // `tests/tui_terminal_loss_test.rs`. Measurement: the scan read 294 on
+    // fdc3e8ebe and 295 with that step staged.
+    // 295 -> 297 (release apt rule): release.yml's step "Install build deps
+    // (bookworm container)" sources `scripts/release-apt.sh` and its comment
+    // names `scripts/tests/test_release_apt.py`. Measurement: the scan read
+    // 295 on main 665b7f791 and 297 with that step staged.
+    // 297 -> 298 (tag proof picker): ci.yml's step "Shellcheck (sh, tag
+    // proof picker)" names `scripts/pick-tag-proof.sh`. Measurement: the scan
+    // read 297 on main e15844760 and 298 with that step staged.
+    // 298 -> 315 (Sanitizers path filter): sanitizers.yml's push filter and
+    // its comment name the tests/ files its run step compiles. Measurement:
+    // the scan read 298 on main 5458dea3d and 315 with that file staged.
+    // 315 -> 316 (macOS shard balance): ci.yml's comment on `test-macos`
+    // names `scripts/parallel-tests.py`. Measurement: the scan read 315 on
+    // main 6172f6fdd and 316 on this branch merged with it.
+    // 315 -> 319 (fetch before the suite): the comments of the four
+    // "Fetch every platform's crates" steps (ci.yml twice, quality.yml twice)
+    // name scripts/check-suite-fetch.py. Measurement: the scan read 315 on main
+    // b8700e3f2 and 319 with those steps staged.
+    // 319 -> 320 (both): the macOS shard balance branch merged with main
+    // 2062140b1. Measurement: the scan read 320 on that merge.
+    // 320 -> 321 (OSV config copies): the comment of osv-scanner.yml's step
+    // "Scan every lockfile" names tests/osv_config_copies_test.rs.
+    // Measurement: the scan read 321 on main c2f0ce6a0 merged with it.
+    // 321 -> 334 (binary size on pull requests): binary-size.yml is new and
+    // names 14 paths (its paths filter and its steps; the two globs are not
+    // counted), and release.yml's size step, now a call of
+    // scripts/check-binary-size.sh, names one fewer. Measurement: the scan
+    // read 334 with the change staged on e7986d1a7.
+    // 334 -> 335 (cross pinned): release.yml's comment on "Install cross
+    // (Linux)" names scripts/check-binary-size.sh. Measurement: the scan read
+    // 335 with it staged.
+    // 335 -> 337 (DCO): pr-text.yml's `dco` job names
+    // `scripts/check-dco.py` in its comment and in its command (+2).
+    // 337 -> 338 (CLA retired): the `dco` job's comment in pr-text.yml names
+    // `tests/branch_protection_drift_test.rs`.
+    // 338 -> 340 (CodeQL bundle pinned): codeql.yml names
+    // `scripts/codeql-full-analysis.py` in its comment and in its command
+    // (+2). Measurement: the scan read 340 with the change staged.
+    const EXPECTED_REFERENCES: usize = 340;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -8535,84 +8800,9 @@ fn cla_page_reproduces_the_agreement() -> Result<(), TestError> {
     Ok(())
 }
 
-/// Every route to the signing flow names THIS repository, and the sentence that
-/// signs the agreement stays verbatim.
-///
-/// Two failures hide here, and neither one announces itself.
-///
-/// CLA Assistant keys signatures on `<owner>/<repo>` in the URL. A fork, a
-/// rename, or a copied badge line leaves a link that loads a perfectly normal
-/// signing page for a DIFFERENT project — the contributor signs, sees success,
-/// and this repository records nothing. So the owner and repository come from
-/// `Cargo.toml`'s `repository` field rather than a literal here: one identity,
-/// declared once.
-///
-/// The second is the sign-off sentence. The bot matches the whole string, so
-/// house-style editing — dropping "Document", lowercasing "CLA", trimming "I
-/// hereby" — turns a signature into an ordinary comment. Nothing rejects it and
-/// nothing tells the contributor, who has done the one thing asked of them and
-/// is still blocked.
-#[test]
-fn the_signing_route_names_this_repository_and_quotes_the_bot_verbatim() -> Result<(), TestError> {
-    // The exact string CLA Assistant accepts as a signature. Editing this line
-    // does not change what the bot matches; it only stops the docs from saying
-    // so.
-    const SIGN_OFF: &str = "I have read the CLA Document and I hereby sign the CLA";
-
-    let contributing = read("CONTRIBUTING.md")?;
-    assert!(
-        contributing.contains(SIGN_OFF),
-        "CONTRIBUTING.md no longer quotes the sentence CLA Assistant accepts:\n  \
-         {SIGN_OFF:?}\n\
-         The bot matches it whole, so a contributor who posts a reworded \
-         version signs nothing and is told nothing."
-    );
-
-    let slug = regex::Regex::new(r"https://github\.com/([\w.-]+)/([\w.-]+)")?
-        .captures(&read("Cargo.toml")?)
-        .map(|c| format!("{}/{}", &c[1], &c[2]))
-        .ok_or("Cargo.toml has no github.com `repository` URL to take the slug from")?;
-
-    // Both shapes the service uses: the signing page `cla-assistant.io/o/r` and
-    // the README badge `cla-assistant.io/readme/badge/o/r`.
-    let link = regex::Regex::new(r"cla-assistant\.io/(?:readme/badge/)?([\w.-]+)/([\w.-]+)")?;
-
-    let mut wrong = Vec::new();
-    let mut seen = 0usize;
-    for file in [
-        "README.md",
-        "CONTRIBUTING.md",
-        "MAINTAINERS.md",
-        "website/content/cla.md",
-    ] {
-        for (i, line) in read(file)?.lines().enumerate() {
-            for c in link.captures_iter(line) {
-                seen += 1;
-                let found = format!("{}/{}", &c[1], &c[2]);
-                if found != slug {
-                    wrong.push(format!("{file}:{}: names {found}", i + 1));
-                }
-            }
-        }
-    }
-
-    // A regex that matches nothing reports every link correct.
-    assert!(
-        seen >= 4,
-        "only {seen} cla-assistant.io repository links found across README, \
-         CONTRIBUTING, MAINTAINERS and the site page — the links were removed \
-         or reshaped, and this gate is checking almost nothing"
-    );
-    assert!(
-        wrong.is_empty(),
-        "these links send a contributor to the signing page for a repository \
-         other than {slug}:\n  {}\n\
-         The signature lands against whatever project the URL names, so this \
-         one records none of it.",
-        wrong.join("\n  ")
-    );
-    Ok(())
-}
+// The signing-route test retired with the CLA: no page sends a contributor to
+// CLA Assistant now. tests/security_policy_doc_test.rs (`mod agreement`)
+// refuses a page that does.
 
 /// `website/README.md` describes the deploy that actually happens.
 ///
@@ -9687,7 +9877,8 @@ fn the_twitter_card_relies_on_the_open_graph_fallback() -> Result<(), TestError>
     let has_tw_title = base.contains(r#"<meta name="twitter:title""#);
     let has_tw_desc = base.contains(r#"<meta name="twitter:description""#);
     if !(has_tw_title || has_tw_desc) {
-        return Ok(()); // the documented state: fallback only, nothing to keep in step
+        // not a prerequisite: the documented state, fallback only, has nothing to keep in step
+        return Ok(());
     }
     let mut unpaired = Vec::new();
     for (name, text) in &overriders {
@@ -11569,6 +11760,7 @@ fn every_dimmed_paragraph_on_the_homepage_marks_its_links_without_color() -> Res
     let scss = read("website/sass/style.scss")?;
     let ratio = wcag_contrast(&scss_color(&scss, "link")?, &scss_color(&scss, "text-dim")?)?;
     if ratio >= 3.0 {
+        // not a prerequisite: at 3:1 or more the underline is optional, so the rule holds
         return Ok(());
     }
     // Compiled once, not once per paragraph: clippy's `regex_creation_in_loops`.

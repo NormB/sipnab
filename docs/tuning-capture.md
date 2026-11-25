@@ -584,6 +584,62 @@ If any SIP endpoint answers on `127.0.0.1` or a container bridge, add `lo` or
   capture unless you are consuming it.
   - Formatting and writing every message is real work on the capture path.
 
+### Drop whole dialogs by method
+
+A trunk's OPTIONS keepalives or a registrar's REGISTER traffic can fill the
+dialog store and hide the calls you came for. `--drop-method` drops every
+dialog started by a method at ingest, and `--only-method` keeps only the dialogs
+started by the methods you name. A dropped dialog takes no memory and no
+dialog number.
+
+- What you need: nothing on another system; the flags act on what sipnab
+  reads. Names are the SIP methods sipnab knows, in any case: INVITE, ACK,
+  BYE, CANCEL, REGISTER, OPTIONS, PRACK, SUBSCRIBE, NOTIFY, PUBLISH, INFO,
+  REFER, MESSAGE, UPDATE, and the extension method KDMQ (Kamailio's DMQ
+  replication between cluster nodes).
+- Steps: name the methods on the command line, or in `[capture]` of the
+  configuration file. On a live capture, drop the keepalives and
+  registrations:
+
+```sh
+sipnab -d eth0 --drop-method OPTIONS,REGISTER
+```
+
+- On a file, keep only the calls:
+
+```sh
+sipnab -N -I capture.pcap --only-method INVITE --report
+```
+
+- In the configuration file:
+
+```toml
+[capture]
+drop_methods = ["OPTIONS"]
+```
+
+- A kept dialog keeps every message, whatever its method: a call keeps its
+  ACK, BYE, re-INVITE and in-dialog OPTIONS.
+- With `--cores N` the workers keep every message and the decision happens
+  when their results merge, so the result equals `--cores 1`.
+- Check it: TUI status line 1 shows `Dropped by method: N`, and the capture
+  analysis (`--json-analyze`) holds a `dropped_by_method` finding with the
+  same count.
+- On a Kamailio cluster node, leave out the DMQ replication between the
+  nodes:
+
+```sh
+sipnab -d eth0 --drop-method KDMQ
+```
+
+- When sipnab refuses to start with `unknown SIP method`, correct the name.
+  The flags take no other extension method than the ones the list names.
+- When a call you expect is missing under `--only-method INVITE`, check that
+  the capture holds its INVITE: sipnab decides a message whose dialog start
+  it never saw by the message's own method.
+- sipnab remembers the most recent 65,536 refused dialogs. It decides a later
+  message of an older one again by its own method.
+
 ---
 
 ## Interface and driver drops
@@ -864,6 +920,9 @@ a network interface.
 | A warning that starts `'eth0': the kernel refused a` | The kernel had no memory for the buffer `-B` asked for, and sipnab took a smaller one | Free memory or ask for less, as [It degrades rather than failing](#it-degrades-rather-than-failing) says |
 | The last line still counts drops by the kernel buffer | sipnab read slower than packets arrived | Work down the list in [A worked starting point](#a-worked-starting-point) |
 | The last line counts drops by the interface | The interface or its driver dropped them before libpcap saw them. A larger `-B` does not change this count | [Interface and driver drops](#interface-and-driver-drops) |
+| A warning that starts `a SIP/TCP message from`, or the `capture quality:` line counts `SIP/TCP message(s) longer than the reassembly ceiling` | A SIP over TCP message passed `--max-tcp-buffer` (64 KiB by default), for example one with an ISUP body. sipnab dropped it, and reading resumed at the next message | Raise `--max-tcp-buffer` or `[limits] max_tcp_buffer` above the largest message, then run again. Check: the warning no longer appears and the call has its messages |
+| A warning that starts `a WebSocket frame declaring`, or the `capture quality:` line counts `WebSocket frame(s) longer than the 65536-byte frame limit` | A SIP over WebSocket frame was longer than 64 KiB, the frame limit. sipnab dropped the frame and did not analyze the SIP in it | No setting changes this limit. Capture the call on its SIP over UDP or TCP leg if the network has one |
+| A warning that starts `the RTP stream store reached its cap`, or the `retention:` line counts `oldest RTP stream(s) discarded at capacity` | More RTP streams than `--max-streams` (50000 by default) were open at once, and sipnab discarded the oldest | Raise `--max-streams` or `[limits] max_streams`, then run again. Check: the warning no longer appears |
 
 ---
 

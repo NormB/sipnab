@@ -51,8 +51,9 @@ use std::process::Command;
 /// `$XDG_CONFIG_HOME/sipnab/sipnab.toml` (or `$HOME/.config/...` when it is
 /// unset), then `$HOME/.sipnabrc`. Each one is pinned inside `home`, and
 /// `SIPNAB_CONFIG` names a file there that is never created, so all three
-/// miss. Pinning by value rather than removing keeps the list usable by
-/// `trycmd`, which can set a variable but not remove one.
+/// miss. Pinning by value rather than removing keeps the list usable by the
+/// golden runner (`support/golden_cases.rs`), which sets variables and
+/// removes none.
 ///
 /// The last place it looks, `/etc/sipnab/sipnab.toml`, takes no variable and
 /// cannot be pinned from here; a host that has one fails these tests the

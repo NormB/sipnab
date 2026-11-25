@@ -1,8 +1,9 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 2073
 expression: output
 ---
- Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
+ Live capture: any    Dialogs: 3 shown of 3    Sort: # ▲    Autoscroll: on
  Capture filter (BPF): none
  Mark set
              10.0.0.1:5060                    10.0.0.2:5060 ┌ [2/4] 180 Ringing ───────────────────┐

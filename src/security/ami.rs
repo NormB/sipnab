@@ -309,7 +309,9 @@ fn findings_from(map: &SightingCounts) -> Vec<AmiFinding> {
             count: *count,
         })
         .collect();
-    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.src.cmp(&b.src)));
+    crate::sort::sort_by_dyn(&mut out, &mut |a, b| {
+        b.count.cmp(&a.count).then_with(|| a.src.cmp(&b.src))
+    });
     out
 }
 

@@ -36,6 +36,9 @@
 #![cfg(feature = "full")]
 
 use clap::CommandFactory as _;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -548,6 +551,10 @@ const TEST_ONLY_ENV: &[(&str, &str)] = &[
         "SIPNAB_SETTINGS_APPLY",
         "the settings table fixer, run as a test",
     ),
+    (
+        "SIPNAB_GOLDEN_APPLY",
+        "rewrites the capture writer's goldens, run as a test",
+    ),
 ];
 
 /// Every `SIPNAB_*` environment variable `src/` reads, found by its reading
@@ -731,16 +738,20 @@ fn the_run_together_check_catches_the_scrubbed_name() {
 #[test]
 fn the_page_formats_without_warnings() -> Result<(), TestError> {
     let page = repo().join("man/sipnab.1");
-    let out = match std::process::Command::new("groff")
-        .args(["-man", "-ww", "-z"])
-        .arg(Path::new(&page))
-        .output()
-    {
-        Ok(out) => out,
-        Err(e) => {
-            eprintln!("man page formatting... NOT CHECKED (groff not runnable: {e})");
-            return Ok(());
-        }
+    let Some(out) = test_prereq::check(
+        "groff",
+        test_prereq::Need::Optional(
+            "groff is not on every host (macOS formats man pages with mandoc); \
+             CI's Linux runners have it.",
+        ),
+        std::process::Command::new("groff")
+            .args(["-man", "-ww", "-z"])
+            .arg(Path::new(&page))
+            .output()
+            .map_err(|e| format!("groff did not start: {e}")),
+    )?
+    else {
+        return Ok(());
     };
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(

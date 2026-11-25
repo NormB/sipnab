@@ -2196,6 +2196,25 @@ mod tests {
         )
     }
 
+    /// A raw kill socket, or `None` for a skip decided by
+    /// `src/test_prereq.rs`: opening one needs `CAP_NET_RAW`, which an
+    /// unprivileged run (CI's) does not have. Run under sudo to exercise it.
+    ///
+    /// # Errors
+    /// When no permit is granted, or `SIPNAB_REQUIRE_PREREQS` names
+    /// `cap-net-raw` and the socket cannot be opened.
+    fn raw_socket_or_skip() -> Result<Option<RawKillSocket>, TestError> {
+        Ok(crate::test_prereq::check(
+            "cap-net-raw",
+            crate::test_prereq::Need::Optional(
+                "a raw socket needs CAP_NET_RAW, which an unprivileged run, CI's included, \
+                 does not have; run under sudo to exercise it.",
+            ),
+            RawKillSocket::open(&live_permit()?)
+                .map_err(|e| format!("raw socket unavailable: {e}")),
+        )?)
+    }
+
     /// A worker reading a capture file cannot be spawned: the permit its
     /// constructor requires does not exist for a file source, and neither do
     /// the send descriptors it would inherit. This is the compile-time half of
@@ -2768,8 +2787,12 @@ mod tests {
     fn a_permitted_send_sweeps_stale_per_destination_buckets() -> Result<(), TestError> {
         use std::time::Duration;
         let (mut worker, _tx, _rx) = socketless_worker(None, 10);
-        let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(300)) else {
-            stderr_line!("skipping: the monotonic clock is younger than 300s");
+        let Some(long_ago) = crate::test_prereq::check(
+            "monotonic-uptime",
+            crate::test_prereq::MONOTONIC_UPTIME,
+            crate::test_prereq::instant_ago(Duration::from_secs(300)),
+        )?
+        else {
             return Ok(());
         };
         let stale: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 77));
@@ -2923,12 +2946,8 @@ mod tests {
     #[test]
     fn raw_sockets_are_opened_close_on_exec() -> Result<(), TestError> {
         use std::os::fd::AsRawFd;
-        let raw = match RawKillSocket::open(&live_permit()?) {
-            Ok(s) => s,
-            Err(e) => {
-                stderr_line!("skipping close-on-exec test: raw socket unavailable ({e})");
-                return Ok(());
-            }
+        let Some(raw) = raw_socket_or_skip()? else {
+            return Ok(());
         };
         let (v4, v6) = raw.into_fds();
         let opened: Vec<_> = v4.into_iter().chain(v6).collect();
@@ -2958,12 +2977,8 @@ mod tests {
     /// so unprivileged CI stays green. Run under sudo to exercise it.
     #[test]
     fn spoofed_send_forges_source_ip_and_port() -> Result<(), TestError> {
-        let raw = match RawKillSocket::open(&live_permit()?) {
-            Ok(s) => s,
-            Err(e) => {
-                stderr_line!("skipping spoof test: raw socket unavailable ({e})");
-                return Ok(());
-            }
+        let Some(raw) = raw_socket_or_skip()? else {
+            return Ok(());
         };
         let (listener, port) = loopback_listener()?;
 
@@ -3010,20 +3025,20 @@ mod tests {
     /// random port). Requires `CAP_NET_RAW`; skipped when unprivileged.
     #[test]
     fn spoofed_send_forges_source_over_ipv6() -> Result<(), TestError> {
-        let raw = match RawKillSocket::open(&live_permit()?) {
-            Ok(s) => s,
-            Err(e) => {
-                stderr_line!("skipping v6 spoof test: raw socket unavailable ({e})");
-                return Ok(());
-            }
+        let Some(raw) = raw_socket_or_skip()? else {
+            return Ok(());
         };
 
-        let listener = match std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)) {
-            Ok(s) => s,
-            Err(e) => {
-                stderr_line!("skipping v6 spoof test: no IPv6 loopback ({e})");
-                return Ok(());
-            }
+        let Some(listener) = crate::test_prereq::check(
+            "ipv6-loopback",
+            crate::test_prereq::Need::Optional(
+                "a host or container without IPv6 has no ::1 to listen on.",
+            ),
+            std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0))
+                .map_err(|e| format!("bind [::1]:0: {e}")),
+        )?
+        else {
+            return Ok(());
         };
         listener
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -3055,14 +3070,19 @@ mod tests {
         );
 
         let mut buf = [0u8; 2048];
-        let (n, from) = match retrying(|| listener.recv_from(&mut buf)) {
-            Ok(v) => v,
-            Err(e) => {
-                // Some environments block raw v6 loopback injection; treat as a
-                // skip rather than a hard failure (the builder is unit-tested).
-                stderr_line!("skipping v6 spoof test: no packet received ({e})");
-                return Ok(());
-            }
+        // Some environments block raw v6 loopback injection; the builder is
+        // unit-tested either way.
+        let Some((n, from)) = crate::test_prereq::check(
+            "raw-ipv6-loopback",
+            crate::test_prereq::Need::Optional(
+                "some hosts block raw IPv6 injection on loopback; the packet builder is \
+                 unit-tested either way.",
+            ),
+            retrying(|| listener.recv_from(&mut buf))
+                .map_err(|e| format!("no packet received: {e}")),
+        )?
+        else {
+            return Ok(());
         };
         assert_eq!(&buf[..n], &payload[..], "payload delivered verbatim");
         assert_eq!(from.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST), "source is ::1");

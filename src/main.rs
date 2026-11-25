@@ -139,15 +139,12 @@ fn main() {
 
     // 7. Decide everything up front: source, capture config, portrange,
     //    filters, policy, run mode.
-    let plan = match bootstrap::plan(&cli, &loaded.config) {
+    let mut plan = match bootstrap::plan(&cli, &loaded.config) {
         Ok(plan) => plan,
         Err(e) => e.exit(),
     };
     // The capture-source table's size, before any capture can name a source.
     sipnab::capture::packet::set_max_capture_sources(plan.max_capture_sources);
-    // `-I` is resolved: from here on nothing waits on the terminal for an
-    // archive password.
-    bootstrap::end_archive_prompts();
 
     // 7b. --relay-holdings: ask the relay what it holds and exit, before any
     //     capture opens. The permit is decided from the planned source.
@@ -155,7 +152,11 @@ fn main() {
         sipnab::capture::archive::release_run_and_exit(code);
     }
     // 7c. --relay-sessions: the same, for the sessions snapshot.
-    if let Some(code) = bootstrap::run_relay_sessions(&cli, &loaded.config, plan.source.as_ref()) {
+    // 7d. --relay-stats, --relay-stats-interval, --relay-compare: a question
+    //     this run cannot ask is refused here, exit 2, before a file is read.
+    if let Some(code) = bootstrap::run_relay_sessions(&cli, &loaded.config, plan.source.as_ref())
+        .or_else(|| bootstrap::refuse_unaskable_relay_questions(&cli, plan.source.as_ref()))
+    {
         sipnab::capture::archive::release_run_and_exit(code);
     }
 
@@ -164,15 +165,15 @@ fn main() {
     // 8. Multi-core offline reconstruction bypasses the capture thread.
     //
     //    It still needs the file set, and the set is already on the plan:
-    //    `plan()` ran `input_set::resolve`, so `plan.source` holds the
-    //    resolved, timestamp-ordered `Vec<PathBuf>`. Dispatching here — before
-    //    `launch` — used to discard it and let `run_cores_file` re-derive the
-    //    input from `cli.primary_input()`, i.e. the first `-I` *argument*. For
-    //    `-I <directory>`, `-I '<glob>'` or repeated `-I` that argument is not
-    //    a file, so the pcap opener was handed a directory and the run reported
-    //    nothing while exiting 0.
+    //    `plan()` named it, so `plan.inputs` holds every file `-I` names,
+    //    judged into the timestamp-ordered set before the read. Dispatching
+    //    here — before `launch` — used to discard it and let `run_cores_file`
+    //    re-derive the input from `cli.primary_input()`, i.e. the first `-I`
+    //    *argument*. For `-I <directory>`, `-I '<glob>'` or repeated `-I` that
+    //    argument is not a file, so the pcap opener was handed a directory and
+    //    the run reported nothing while exiting 0.
     if matches!(plan.mode, RunMode::CoresFile) {
-        run_cores_file(&cli, &loaded, &plan);
+        run_cores_file(&cli, &loaded, &mut plan);
         // Returning from `main` runs no destructor for a static, so the
         // members `-I` extracted are released explicitly on this way out too,
         // and the exit status is the one `release_run_and_exit` would give:
@@ -181,12 +182,13 @@ fn main() {
     }
 
     // 9-10. Launch the capture and hand it to the selected mode.
-    launch_and_dispatch(cli, loaded, plan);
+    let stores = launch_and_dispatch(cli, loaded, plan);
 
     // A run that ends here, rather than through an earlier
     // `release_run_and_exit`, releases what `-I` extracted and exits 0, or 129
-    // when SIGHUP stopped it (OPS-5).
-    sipnab::capture::archive::release_run_and_exit(0);
+    // when SIGHUP stopped it (OPS-5). A batch run's stores are kept until the
+    // exit rather than freed just before it (see `batch::RunStores`).
+    batch::RunStores::release_run_and_exit(stores, 0);
 }
 
 /// Step 0c of [`main`]: `sipnab fleet ...`, with `sipnab fleet` as the
@@ -403,21 +405,14 @@ fn run_config_steps(cli: &Cli, loaded: &sipnab::config::LoadedConfig) {
 }
 
 /// Step 8 of [`main`]: multi-core offline reconstruction over the file set
-/// the plan resolved.
-fn run_cores_file(cli: &Cli, loaded: &sipnab::config::LoadedConfig, plan: &bootstrap::RunPlan) {
-    let paths: &[std::path::PathBuf] = match &plan.source {
-        Some(sipnab::capture::CaptureSource::File { paths }) => paths,
-        // `CoresFile` is only chosen when `-I` was given, so the source is
-        // always `File`. An empty slice makes `run_cores_file` fail loudly
-        // rather than silently analyzing nothing if that ever changes.
-        _ => &[],
-    };
+/// the plan named.
+fn run_cores_file(cli: &Cli, loaded: &sipnab::config::LoadedConfig, plan: &mut bootstrap::RunPlan) {
     batch::run_cores_file(
         cli,
         &loaded.config,
         &plan.capture_config,
         plan.portrange,
-        paths,
+        plan.inputs.take(),
         plan.filter_expr.as_ref(),
         &plan.vcon_rules,
     );
@@ -437,16 +432,22 @@ fn say_when_headless_only_by_the_build(cli: &Cli) {
 }
 
 /// Steps 9 and 10 of [`main`]: launch the capture, then run the TUI or the
-/// batch runner over it.
-fn launch_and_dispatch(cli: Cli, loaded: sipnab::config::LoadedConfig, plan: bootstrap::RunPlan) {
+/// batch runner over it. Returns a batch run's stores; `None` after the TUI.
+fn launch_and_dispatch(
+    cli: Cli,
+    loaded: sipnab::config::LoadedConfig,
+    plan: bootstrap::RunPlan,
+) -> Option<batch::RunStores> {
     // 9. Launch the capture: channel, capture thread, readiness handshake,
     //    chroot, privilege drop, runtime hardening.
     let launched = bootstrap::launch(
         &cli,
         &loaded.config,
         plan.source,
+        plan.inputs,
         &plan.capture_config,
         &plan.mode,
+        &plan.vcon_rules,
     );
 
     // 10. Dispatch to the selected mode.
@@ -469,31 +470,30 @@ fn launch_and_dispatch(cli: Cli, loaded: sipnab::config::LoadedConfig, plan: boo
                 #[cfg(feature = "metrics")]
                 plan.metrics_bind,
             );
+            None
         }
-        RunMode::Batch => {
-            batch::run(
-                cli,
-                &loaded.config,
-                plan.capture_config,
-                batch::CaptureFeed {
-                    handle: launched.handle,
-                    rx: launched.rx,
-                    kill_worker: launched.kill_worker,
-                },
-                BatchProcessing {
-                    matcher: plan.matcher,
-                    filter_expr: plan.filter_expr,
-                    vcon_rules: plan.vcon_rules,
-                    output_opts: plan.output_opts,
-                    event_exec: plan.event_exec,
-                    input_files: plan.input_files,
-                    relay: launched.relay,
-                    #[cfg(feature = "tls")]
-                    keylog_source: launched.keylog_source,
-                },
-                plan.policy,
-            );
-        }
+        RunMode::Batch => Some(batch::run(
+            cli,
+            &loaded.config,
+            plan.capture_config,
+            batch::CaptureFeed {
+                handle: launched.handle,
+                rx: launched.rx,
+                kill_worker: launched.kill_worker,
+            },
+            BatchProcessing {
+                matcher: plan.matcher,
+                filter_expr: plan.filter_expr,
+                vcon_rules: plan.vcon_rules,
+                output_opts: plan.output_opts,
+                event_exec: plan.event_exec,
+                input_files: launched.input_files,
+                relay: launched.relay,
+                #[cfg(feature = "tls")]
+                keylog_source: launched.keylog_source,
+            },
+            plan.policy,
+        )),
         // gate: unreachable because step 8 in `main` returns for CoresFile
         // before this function is called, so this match never sees it.
         RunMode::CoresFile => unreachable!("handled before launch"),

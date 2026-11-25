@@ -497,22 +497,37 @@ fn ask(
          Accept: application/json\r\nConnection: close\r\n\r\n",
         base.host_header()
     );
-    super::https_client::exchange(base, timeout, tls.as_ref(), request.as_bytes(), |reader| {
-        let head = super::https_client::read_head(reader, MAX_HEAD_BYTES, "the answer's headers")?;
-        let status = super::https_client::status_of(&head)?;
-        if status != 200 {
-            return Ok(Answer::Refused(status));
-        }
-        let (body, more) = super::https_client::read_body(reader, &head, MAX_ANSWER_BYTES);
-        if more {
-            return Err(format!(
-                "the answer is larger than {MAX_ANSWER_BYTES} bytes"
-            ));
-        }
-        serde_json::from_slice(&body)
-            .map(Answer::Inventory)
-            .map_err(|e| format!("the answer is not JSON: {e}"))
-    })
+    super::https_client::exchange(
+        base,
+        timeout,
+        tls.as_ref(),
+        request.as_bytes(),
+        read_inventory,
+    )
+}
+
+/// An instance's answer to `GET /v1/inventory`, read from `reader`.
+///
+/// # Errors
+///
+/// The answer is not HTTP, its headers or body are over their limits, its
+/// body did not arrive whole (a timeout or a close in the middle, named as
+/// such), or the body is not JSON.
+fn read_inventory(reader: &mut dyn std::io::BufRead) -> Result<Answer, String> {
+    let head = super::https_client::read_head(reader, MAX_HEAD_BYTES, "the answer's headers")?;
+    let status = super::https_client::status_of(&head)?;
+    if status != 200 {
+        return Ok(Answer::Refused(status));
+    }
+    let (body, more) = super::https_client::read_body(reader, &head, MAX_ANSWER_BYTES)?;
+    if more {
+        return Err(format!(
+            "the answer is larger than {MAX_ANSWER_BYTES} bytes"
+        ));
+    }
+    serde_json::from_slice(&body)
+        .map(Answer::Inventory)
+        .map_err(|e| format!("the answer is not JSON: {e}"))
 }
 
 /// `sipnab fleet verify` in a build that links the history store: the
@@ -724,6 +739,51 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An inventory answer read from `wire`, as `ask` reads one.
+    fn inventory_of(wire: &[u8]) -> Result<Answer, String> {
+        read_inventory(&mut std::io::BufReader::new(wire))
+    }
+
+    #[test]
+    fn a_whole_inventory_answer_is_the_inventory() {
+        let got = inventory_of(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"calls\":3}");
+        assert_eq!(
+            got,
+            Ok(Answer::Inventory(serde_json::json!({"calls": 3}))),
+            "a whole JSON body is the inventory"
+        );
+    }
+
+    #[test]
+    fn an_inventory_answer_cut_short_says_so_and_not_that_it_is_not_json() {
+        let got = inventory_of(b"HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n{\"calls\":");
+        let e = got.expect_err("a body cut short is not an inventory");
+        assert!(e.contains("9 of its 40 bytes"), "names the short read: {e}");
+        assert!(
+            !e.contains("not JSON"),
+            "a short body is not reported as bad JSON: {e}"
+        );
+    }
+
+    #[test]
+    fn a_chunked_inventory_answer_without_its_last_chunk_is_refused() {
+        let got = inventory_of(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n9\r\n{\"calls\":\r\n",
+        );
+        let e = got.expect_err("a chunked body without its last chunk is not an inventory");
+        assert!(
+            e.contains("before its last chunk"),
+            "names what is missing: {e}"
+        );
+    }
+
+    #[test]
+    fn a_whole_inventory_answer_that_is_not_json_says_so() {
+        let got = inventory_of(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc");
+        let e = got.expect_err("a whole body that is not JSON is refused");
+        assert!(e.contains("not JSON"), "names the parse failure: {e}");
+    }
 
     type TestError = Box<dyn std::error::Error>;
 

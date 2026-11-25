@@ -40,7 +40,7 @@ fn exported_secrets_require_an_explicit_mode() -> Result<(), TestError> {
         let mut reader = pcap_file::pcapng::PcapNgReader::new(&bytes[..])?;
         let mut secrets = 0;
         while let Some(block) = reader.next_block() {
-            if let pcap_file::pcapng::Block::Unknown(block) = block?
+            if let (pcap_file::pcapng::Block::Unknown(block), _) = block?
                 && block.type_ == 0x0000000a
             {
                 secrets += 1;
@@ -106,7 +106,7 @@ fn plaintext_export_runs_and_embeds_no_keys() -> Result<(), TestError> {
     let raw = std::fs::read(&output)?;
     let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..])?;
     while let Some(block) = reader.next_block() {
-        if let pcap_file::pcapng::Block::Unknown(block) = block? {
+        if let (pcap_file::pcapng::Block::Unknown(block), _) = block? {
             assert_ne!(block.type_, 0x0000_000a, "a decrypted export holds a DSB");
         }
     }
@@ -300,23 +300,35 @@ fn token_file_beats_environment_but_explicit_token_beats_file() -> Result<(), Te
     std::fs::write(&file, " file-token\n")?;
     for scenario in ["file", "explicit", "environment"] {
         let out = std::process::Command::new(std::env::current_exe()?)
-            .args(["--exact", "token_precedence_child", "--nocapture"])
+            .args([
+                "--exact",
+                "token_precedence_child",
+                "--ignored",
+                "--nocapture",
+            ])
             .env("SIPNAB_REVIEW_TOKEN_CASE", scenario)
             .env("SIPNAB_REVIEW_TOKEN_FILE", &file)
             .env("SIPNAB_MCP_TOKEN", "environment-token")
             .output()?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{scenario}: {stdout}");
+        // libtest exits 0 when `--exact` matches no test, so the exit status
+        // alone cannot tell a passing child from one that never ran.
         assert!(
-            out.status.success(),
-            "{scenario}: {}",
-            String::from_utf8_lossy(&out.stdout)
+            stdout.contains("test result: ok. 1 passed"),
+            "{scenario}: the child role ran no test: {stdout}"
         );
     }
     Ok(())
 }
 
 /// Child entry point for the isolated token-precedence scenarios above.
+///
+/// `#[ignore]`d: run on its own, with no case set, it would have nothing to
+/// do and report a pass; only the parent runs it, with `--ignored`.
 #[cfg(feature = "mcp-http")]
 #[test]
+#[ignore = "child role: run by token_file_beats_environment_but_explicit_token_beats_file"]
 fn token_precedence_child() -> Result<(), TestError> {
     let Ok(case) = std::env::var("SIPNAB_REVIEW_TOKEN_CASE") else {
         return Ok(());

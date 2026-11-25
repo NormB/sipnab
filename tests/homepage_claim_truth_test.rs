@@ -860,11 +860,12 @@ fn homepage_filter_field_count_matches_the_parser() -> Result<(), TestError> {
 #[test]
 fn filter_doc_documents_every_operator_the_parser_accepts() -> Result<(), TestError> {
     let src = read("src/sip/dsl.rs")?;
-    let spellings: BTreeSet<String> =
-        regex::Regex::new(r#"tag\("([^"]+)"\),\s*\|_\|\s*Operator::"#)?
-            .captures_iter(&src)
-            .map(|c| c[1].to_string())
-            .collect();
+    // The rows of `OPERATOR_TABLE`, the one table `parse_operator` matches:
+    // `("==", Operator::Eq),`.
+    let spellings: BTreeSet<String> = regex::Regex::new(r#"\("([^"]+)",\s*Operator::"#)?
+        .captures_iter(&src)
+        .map(|c| c[1].to_string())
+        .collect();
     assert!(
         spellings.len() >= 4,
         "only {} operator spelling(s) extracted from the parser: {spellings:?}",
@@ -949,13 +950,7 @@ fn every_tui_key_the_homepage_names_is_bound() -> Result<(), TestError> {
         if label.starts_with('-') {
             continue; // a CLI flag, checked separately
         }
-        let bound = if label.chars().count() == 1 {
-            let c = label.chars().next().ok_or("one char")?;
-            tui.contains(&format!("Char('{c}')"))
-        } else {
-            tui.contains(&format!("KeyCode::{label}"))
-        };
-        if !bound {
+        if !tui_binds(&tui, &label) {
             unbound.push(label);
         }
     }
@@ -967,25 +962,41 @@ fn every_tui_key_the_homepage_names_is_bound() -> Result<(), TestError> {
     Ok(())
 }
 
+/// Whether the TUI sources `tui` bind the key `label`: a one-character label
+/// as `Char('c')`, exactly as typed, any other as `KeyCode::<label>`. The one
+/// rule both the homepage scan and its case test use.
+fn tui_binds(tui: &str, label: &str) -> bool {
+    let mut chars = label.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => tui.contains(&format!("Char('{c}')")),
+        _ => tui.contains(&format!("KeyCode::{label}")),
+    }
+}
+
 /// The key scan is case-sensitive, which is the whole point of it.
 ///
 /// It once mattered live: the page said `o` opens a capture while the binding
-/// was `O`, and a scan that folded case would have certified that. Lowercase
-/// `o` is a binding of its own now (the SDP timeline), so this proves
-/// case-sensitivity against `j` (bound, the scroll-down key) versus `J` (not) —
-/// a pair that still differs.
+/// was `O`, and a scan that folded case would have certified that. The tree
+/// can no longer hold the proof: with sngrep mode (#884) src/tui binds every
+/// letter in both cases, so the scan rule is checked on a fixture that binds
+/// only one of each pair.
 #[test]
 fn the_tui_key_scan_distinguishes_case() -> Result<(), TestError> {
-    let tui = tui_sources();
+    let fixture = "KeyCode::Char('j') => down, KeyCode::Char('O') => open, KeyCode::F(7)";
+    for (label, want) in [("j", true), ("J", false), ("O", true), ("o", false)] {
+        assert_eq!(
+            tui_binds(fixture, label),
+            want,
+            "{label:?}: the scan must match the case exactly"
+        );
+    }
     assert!(
-        tui.contains("Char('j')"),
-        "src/tui no longer binds `j`; this gate's fixture is gone"
+        tui_binds(fixture, "F(7)"),
+        "a key name is matched as KeyCode::<name>"
     );
     assert!(
-        !tui.contains("Char('J')"),
-        "src/tui now binds uppercase `J` as well — this gate proved case \
-         mattered by relying on exactly one of the pair existing, so rewrite it \
-         against a pair that still differs rather than deleting it"
+        tui_binds(&tui_sources(), "j"),
+        "the scan reads the real sources: src/tui binds `j`"
     );
     Ok(())
 }
@@ -1209,7 +1220,8 @@ fn homepage_does_not_claim_memory_safety_the_build_does_not_enforce() -> Result<
 fn the_soundness_argument_claim_is_actually_enforced() -> Result<(), TestError> {
     let page = homepage()?;
     if !page.contains("soundness argument") {
-        return Ok(()); // The page no longer makes the claim; nothing to hold it to.
+        // not a prerequisite: the page no longer makes the claim, so there is nothing to hold it to
+        return Ok(());
     }
     // The ASSIGNMENT, not the substring. Renaming the lint to
     // `undocumented_unsafe_blocks_x` left this gate green, because the real

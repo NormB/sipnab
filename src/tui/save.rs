@@ -330,7 +330,7 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
                     for leg in &correlated {
                         all.extend(leg.messages.iter());
                     }
-                    all.sort_by_key(|m| m.timestamp);
+                    crate::sort::sort_by_dyn(&mut all, &mut |a, b| a.timestamp.cmp(&b.timestamp));
                     all.into_iter().cloned().collect()
                 } else {
                     Vec::new()
@@ -363,6 +363,7 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
         resolver: app.resolver.as_ref(),
         name_mode: app.name_mode,
         rtp_streams: &[],
+        fold: app.flow.fold,
     };
     let (participants, msgs) = call_flow::prepare_messages(
         &messages,
@@ -1233,11 +1234,11 @@ mod tests {
         let bytes = std::fs::read(path)?;
         let mut reader = PcapNgReader::new(&bytes[..])?;
         let mut names = Vec::new();
-        while let Some(Ok(block)) = reader.next_block() {
+        while let Some(Ok((block, _))) = reader.next_block() {
             if let Some(nrb) = block.into_name_resolution() {
                 for rec in &nrb.records {
                     if let Record::Ipv4(r) = rec
-                        && r.ip_addr.as_ref() == ip
+                        && r.ip_addr.octets() == ip
                     {
                         names = r.names.iter().map(|n| n.to_string()).collect();
                     }
@@ -1398,7 +1399,9 @@ mod tests {
             .options
             .iter()
             .filter_map(|o| match o {
-                SectionHeaderOption::Comment(c) => Some(c.to_string()),
+                SectionHeaderOption::Common(
+                    pcap_file::pcapng::blocks::opt_common::CommonOption::Comment(c),
+                ) => Some(c.to_string()),
                 _ => None,
             })
             .collect())
@@ -1481,10 +1484,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_save_that_could_not_be_flushed_is_not_reported_as_saved() -> Result<(), TestError> {
-        if !std::path::Path::new("/dev/full").exists() {
-            stderr_line!("skipped: no /dev/full on this host");
-            return Ok(());
-        }
+        // Linux always has /dev/full, so on Linux its absence is a broken host.
+        crate::test_prereq::required("dev-full", crate::test_prereq::dev_full())?;
         let app = app_with_dialogs()?;
         for pcapng in [false, true] {
             let msg = save_to_pcap_path(&app, "/dev/full", pcapng);
@@ -1693,6 +1694,32 @@ mod tests {
         assert!(
             content.contains("<pre id=\"src\">"),
             "missing embedded Mermaid source block"
+        );
+        Ok(())
+    }
+
+    /// `[display] fold = false` reaches the Mermaid export too: a
+    /// retransmission is its own arrow in the file, as on the screen. With
+    /// folding on it folds under its original.
+    #[test]
+    fn mermaid_export_follows_the_fold_setting() -> Result<(), TestError> {
+        use crate::tui::controllers::test_support::{base_ts, make_invite};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("fold-export@test", "1001", "1002", base_ts())?,
+            make_invite("fold-export@test", "1001", "1002", base_ts())?,
+        ]);
+        let p = tmp_path("fold.html")?;
+        let path = p.to_str().ok_or("to_str() returned None")?;
+        let folded = save_to_mermaid_path(&app, path);
+        assert!(
+            folded.contains("(1 messages)"),
+            "fold on: the retx folds: {folded}"
+        );
+        app.flow.fold = false;
+        let unfolded = save_to_mermaid_path(&app, path);
+        assert!(
+            unfolded.contains("(2 messages)"),
+            "fold off: every message is an arrow: {unfolded}"
         );
         Ok(())
     }

@@ -99,7 +99,32 @@ pub struct ResolveOptions {
     /// Matched against the file name alone, so it behaves the same at every
     /// depth when [`Self::recursive`] is set.
     pub name_glob: Option<String>,
+    /// This run cannot unwrap an archive or a compressed capture: the set is
+    /// refused with [`UnwrapRefused`] at the first one, before anything is
+    /// unpacked.
+    pub refuse_unwrap: bool,
 }
+
+/// Why a set was refused at an archive or a compressed capture: the run
+/// cannot unpack ([`ResolveOptions::refuse_unwrap`]). A type of its own, so
+/// the caller that set the option can say why in its own words.
+#[derive(Debug)]
+pub struct UnwrapRefused {
+    /// The file that needed unpacking.
+    pub path: PathBuf,
+}
+
+impl std::fmt::Display for UnwrapRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cannot unpack '{}': this run cannot unpack an archive or a compressed capture",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for UnwrapRefused {}
 
 /// One resolved capture file and the timestamp it starts at.
 #[derive(Debug, Clone)]
@@ -421,7 +446,7 @@ pub(crate) fn resolve_set_opened(path: &Path, file: std::fs::File) -> Result<Res
         tally: ResolveTally::default(),
         name_pat: None,
     };
-    let (resolved, tally, _) = judge(named, Some(vec![Ok(file)]))?;
+    let (resolved, tally, _) = judge(named, Some(vec![Ok(file)]), false)?;
     report_resolved(&resolved, &tally, false);
     Ok(resolved)
 }
@@ -438,7 +463,7 @@ fn resolve_counting(
     specs: &[String],
     opts: &ResolveOptions,
 ) -> Result<(ResolvedSet, ResolveTally)> {
-    let (set, tally, _) = judge(name_candidates(specs, opts)?, None)?;
+    let (set, tally, _) = judge(name_candidates(specs, opts)?, None, opts.refuse_unwrap)?;
     Ok((set, tally))
 }
 
@@ -531,22 +556,130 @@ impl OpenedSet {
 /// As [`resolve`]: logs what was dropped, and holds what it extracted for
 /// the life of the run.
 pub fn resolve_opened(opened: OpenedCandidates, opts: &ResolveOptions) -> Result<OpenedSet> {
-    let OpenedCandidates { named, files } = opened;
-    let (set, tally, handles) = judge(named, Some(files))?;
-    report_resolved(&set, &tally, opts.recursive);
-    let ResolvedSet {
-        inputs,
-        extractions,
-        incomplete,
-        ..
-    } = set;
-    if incomplete {
-        crate::output::run_integrity::record_archives_cut_short();
+    NamedSet::Opened(opened).resolve(opts)
+}
+
+/// A `-I` set named and not yet judged: what `app::bootstrap::plan` leaves
+/// for the run to judge once it has confined itself.
+///
+/// Opened up front when the run judges it after a privilege drop or a
+/// chroot, so every file the operator named is still reached; named only
+/// otherwise, so a set of any size stays within the open-file limit.
+#[derive(Debug)]
+pub enum NamedSet {
+    /// Judged by path.
+    ByPath(Candidates),
+    /// Opened up front, and judged through those descriptors.
+    Opened(OpenedCandidates),
+}
+
+impl NamedSet {
+    /// The set `named`, opened now when `open_now`.
+    #[must_use]
+    pub fn new(named: Candidates, open_now: bool) -> Self {
+        if open_now {
+            Self::Opened(named.open_up_front())
+        } else {
+            Self::ByPath(named)
+        }
     }
-    for kept in extractions {
-        crate::capture::archive::keep_for_run(kept);
+
+    /// The names, before any file is judged.
+    fn candidates(&self) -> &Candidates {
+        match self {
+            Self::ByPath(named) => named,
+            Self::Opened(opened) => &opened.named,
+        }
     }
-    Ok(OpenedSet { inputs, handles })
+
+    /// How many files the set names.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.candidates().len()
+    }
+
+    /// Whether the set names no file.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.candidates().is_empty()
+    }
+
+    /// Whether the set was opened up front.
+    #[must_use]
+    pub fn is_opened(&self) -> bool {
+        matches!(self, Self::Opened(_))
+    }
+
+    /// The named files, in the order they are judged.
+    #[must_use]
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.candidates().paths().map(Path::to_path_buf).collect()
+    }
+
+    /// Judge the set: sniff, unwrap and probe each file, by path or through
+    /// its descriptor, and order the captures by first packet.
+    ///
+    /// # Errors
+    ///
+    /// As [`resolve`]. A named file that did not open fails the set with the
+    /// error its open gave.
+    ///
+    /// # Side effects
+    ///
+    /// As [`resolve`]: logs what was dropped, and holds what it extracted for
+    /// the life of the run.
+    pub fn resolve(self, opts: &ResolveOptions) -> Result<OpenedSet> {
+        let refusal = opts.refuse_unwrap;
+        let (set, tally, handles) = match self {
+            Self::ByPath(named) => judge(named, None, refusal)?,
+            Self::Opened(OpenedCandidates { named, files }) => judge(named, Some(files), refusal)?,
+        };
+        report_resolved(&set, &tally, opts.recursive);
+        let ResolvedSet {
+            inputs,
+            extractions,
+            incomplete,
+            ..
+        } = set;
+        if incomplete {
+            crate::output::run_integrity::record_archives_cut_short();
+        }
+        for kept in extractions {
+            crate::capture::archive::keep_for_run(kept);
+        }
+        Ok(OpenedSet { inputs, handles })
+    }
+}
+
+impl OpenedSet {
+    /// The paths to read, in read order.
+    #[must_use]
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.inputs.iter().map(|r| r.path.clone()).collect()
+    }
+
+    /// The set as its reader takes it: the paths in read order and, for a
+    /// set read after a drop or a chroot (`up_front`), one open result per
+    /// path. A named file gets the descriptor it was judged through; a member
+    /// the judge wrote out is opened now, by the process that wrote it.
+    #[must_use]
+    pub fn into_reading(
+        mut self,
+        up_front: bool,
+    ) -> (Vec<PathBuf>, Option<Vec<std::io::Result<std::fs::File>>>) {
+        let paths = self.paths();
+        if !up_front {
+            return (paths, None);
+        }
+        let files = paths
+            .iter()
+            .map(|path| match self.take_handle(path) {
+                Some(file) => Ok(file),
+                None => super::file::open_up_front(path),
+            })
+            .collect();
+        (paths, Some(files))
+    }
 }
 
 /// Name the files `specs` hold: the first half of [`resolve`].
@@ -663,6 +796,7 @@ fn reach(
 fn judge(
     named: Candidates,
     opened: Option<Vec<std::io::Result<std::fs::File>>>,
+    refuse_unwrap: bool,
 ) -> Result<(ResolvedSet, ResolveTally, Handles)> {
     let Candidates {
         specs,
@@ -693,6 +827,12 @@ fn judge(
         };
         match format {
             Ok(Some(f)) if crate::capture::archive::unwraps(f) => {
+                // Refused before the walker reads past the magic bytes or
+                // creates its directory: an archive found in a directory as
+                // well, which would otherwise be skipped with a warning.
+                if refuse_unwrap {
+                    return Err(UnwrapRefused { path }.into());
+                }
                 expand_archive(
                     member,
                     explicit,
@@ -1702,6 +1842,364 @@ mod tests {
             key(&by_path),
             key(&opened.inputs),
             "one judge, two ways to reach a file"
+        );
+        Ok(())
+    }
+
+    // ---- a set named at plan time and judged later (NamedSet) ----
+
+    /// Name `specs` as `plan` does, opened up front when `open_now`.
+    fn named_set(specs: &[String], open_now: bool) -> Result<NamedSet, TestError> {
+        let named =
+            name_candidates(specs, &ResolveOptions::default()).map_err(|e| format!("{e:#}"))?;
+        Ok(NamedSet::new(named, open_now))
+    }
+
+    /// Remove every file in `paths`.
+    fn remove_all(paths: &[PathBuf]) -> Result<(), TestError> {
+        for path in paths {
+            std::fs::remove_file(path).map_err(|e| format!("remove: {e:?}"))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_set_named_to_be_opened_is_judged_through_its_descriptors() -> Result<(), TestError>
+    {
+        let (_root, paths) = written(&[
+            ("later.pcap", pcap_at(2_000, b"b")),
+            ("earlier.pcap", pcap_at(1_000, b"a")),
+        ])?;
+        let named = named_set(&[spec(&paths[0]), spec(&paths[1])], true)?;
+        remove_all(&paths)?;
+        let set = named
+            .resolve(&ResolveOptions::default())
+            .map_err(|e| format!("a set opened at plan time must judge after removal: {e:#}"))?;
+        assert_eq!(
+            set.paths(),
+            [paths[1].clone(), paths[0].clone()],
+            "judged through the descriptors, ordered by first packet"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_set_named_by_path_is_judged_by_path() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        let named = named_set(&[spec(&paths[0])], false)?;
+        assert!(!named.is_opened(), "a set named by path is not opened");
+        let mut set = named
+            .resolve(&ResolveOptions::default())
+            .map_err(|e| format!("{e:#}"))?;
+        assert_eq!(set.paths(), [paths[0].clone()], "the one file");
+        assert!(
+            set.take_handle(&paths[0]).is_none(),
+            "a set judged by path holds no descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_set_named_to_be_opened_says_so() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        assert!(
+            named_set(&[spec(&paths[0])], true)?.is_opened(),
+            "a set opened at plan time says so"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_named_set_lists_its_candidates_before_judging() -> Result<(), TestError> {
+        let (root, paths) = written(&[
+            ("b.pcap", pcap_at(1_000, b"b")),
+            ("a.pcap", b"not judged yet".to_vec()),
+        ])?;
+        for open_now in [false, true] {
+            let named = named_set(&[spec(&paths[0]), spec(&paths[1])], open_now)?;
+            assert_eq!(
+                named.paths(),
+                paths,
+                "the names, in naming order, open_now={open_now}"
+            );
+            assert_eq!(named.len(), 2, "two names, open_now={open_now}");
+            assert!(!named.is_empty(), "not empty, open_now={open_now}");
+        }
+        drop(root);
+        Ok(())
+    }
+
+    #[test]
+    fn success_reading_an_opened_set_hands_each_named_file_its_descriptor() -> Result<(), TestError>
+    {
+        use std::io::Read as _;
+        let bytes = pcap_at(1_000, b"payload");
+        let (_root, paths) = written(&[("a.pcap", bytes.clone())])?;
+        let set = named_set(&[spec(&paths[0])], true)?
+            .resolve(&ResolveOptions::default())
+            .map_err(|e| format!("{e:#}"))?;
+        remove_all(&paths)?;
+        let (order, files) = set.into_reading(true);
+        assert_eq!(order, paths, "the one path");
+        let files = files.ok_or("a set read up front hands its open results")?;
+        assert_eq!(files.len(), 1, "one open result per path");
+        let mut read = Vec::new();
+        let file = files
+            .into_iter()
+            .next()
+            .ok_or("no result")?
+            .map_err(|e| format!("the named file's descriptor: {e:?}"))?;
+        crate::capture::file::rewound(&file)
+            .and_then(|mut f| f.read_to_end(&mut read))
+            .map_err(|e| format!("read: {e:?}"))?;
+        assert_eq!(read, bytes, "the descriptor reads the removed file");
+        Ok(())
+    }
+
+    #[test]
+    fn success_reading_an_opened_set_opens_an_inflated_member_by_path() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap.gz", gzip(&pcap_at(1_500, b"z"))?)])?;
+        let set = named_set(&[spec(&paths[0])], true)?
+            .resolve(&ResolveOptions::default())
+            .map_err(|e| format!("{e:#}"))?;
+        let (order, files) = set.into_reading(true);
+        assert_eq!(order.len(), 1, "one capture");
+        assert_ne!(order[0], paths[0], "the capture read is the inflated copy");
+        let files = files.ok_or("a set read up front hands its open results")?;
+        assert!(
+            files.first().is_some_and(Result::is_ok),
+            "the inflated member was opened by the process that wrote it: {files:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_reading_a_set_by_path_hands_no_descriptors() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        let set = named_set(&[spec(&paths[0])], false)?
+            .resolve(&ResolveOptions::default())
+            .map_err(|e| format!("{e:#}"))?;
+        let (order, files) = set.into_reading(false);
+        assert_eq!(order, paths, "the one path");
+        assert!(files.is_none(), "each file is opened when its turn comes");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_set_named_by_path_fails_when_a_named_file_goes_before_judging()
+    -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        let named = named_set(&[spec(&paths[0])], false)?;
+        remove_all(&paths)?;
+        let refused = named.resolve(&ResolveOptions::default());
+        let why = format!("{:#}", refused.err().ok_or("a removed file resolved")?);
+        assert!(
+            why.contains("named with -I"),
+            "the file the operator named is reported: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_set_opened_after_a_file_went_reports_the_opens_error() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        let named = name_candidates(&[spec(&paths[0])], &ResolveOptions::default())
+            .map_err(|e| format!("{e:#}"))?;
+        remove_all(&paths)?;
+        let refused = NamedSet::new(named, true).resolve(&ResolveOptions::default());
+        let why = format!("{:#}", refused.err().ok_or("resolved")?);
+        assert!(
+            why.contains("cannot read capture") && why.contains("No such file"),
+            "the open's own error is reported: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_named_set_of_no_capture_names_the_specs_either_way() -> Result<(), TestError> {
+        let (root, _paths) = written(&[("junk.pcap", b"junk".to_vec())])?;
+        for open_now in [false, true] {
+            let refused =
+                named_set(&[spec(root.path())], open_now)?.resolve(&ResolveOptions::default());
+            let why = format!("{:#}", refused.err().ok_or("junk resolved")?);
+            assert!(
+                why.contains("no readable capture files") && why.contains(&spec(root.path())),
+                "open_now={open_now}: the refusal names what was asked for: {why}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_named_file_that_is_no_capture_fails_either_way() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("notes.pcap", b"this is not a capture".to_vec())])?;
+        for open_now in [false, true] {
+            let refused =
+                named_set(&[spec(&paths[0])], open_now)?.resolve(&ResolveOptions::default());
+            let why = format!("{:#}", refused.err().ok_or("a text file resolved")?);
+            assert!(
+                why.contains("cannot read capture") && why.contains("named with -I"),
+                "open_now={open_now}: the refusal names the file: {why}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failure_reading_keeps_the_error_of_a_member_gone_before_its_open() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap.gz", gzip(&pcap_at(1_500, b"z"))?)])?;
+        let set = named_set(&[spec(&paths[0])], true)?
+            .resolve(&ResolveOptions::default())
+            .map_err(|e| format!("{e:#}"))?;
+        remove_all(&set.paths())?;
+        let (_order, files) = set.into_reading(true);
+        let files = files.ok_or("a set read up front hands its open results")?;
+        assert!(
+            files.first().is_some_and(Result::is_err),
+            "a member that went before its open keeps its error for the reader: {files:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_file_named_twice_is_one_name_and_one_descriptor() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        let named = named_set(&[spec(&paths[0]), spec(&paths[0])], true)?;
+        assert_eq!(named.len(), 1, "the duplicate is dropped at naming");
+        let (order, files) = named
+            .resolve(&ResolveOptions::default())
+            .map_err(|e| format!("{e:#}"))?
+            .into_reading(true);
+        assert_eq!(order.len(), 1, "read once");
+        assert_eq!(
+            files.map(|f| f.len()),
+            Some(1),
+            "one descriptor for the one file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_found_file_that_will_not_open_is_skipped_in_a_set_opened_up_front()
+    -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (root, paths) = written(&[
+            ("a.pcap", pcap_at(1_000, b"a")),
+            ("b.pcap", pcap_at(2_000, b"b")),
+        ])?;
+        std::fs::set_permissions(&paths[1], std::fs::Permissions::from_mode(0o000))
+            .map_err(|e| format!("chmod: {e:?}"))?;
+        // Root opens a 0000 file; the skip is what an ordinary user sees.
+        if !crate::test_prereq::not_root(std::fs::File::open(&paths[1]).is_ok()) {
+            return Ok(());
+        }
+        let set = named_set(&[spec(root.path())], true)?
+            .resolve(&ResolveOptions::default())
+            .map_err(|e| format!("a found file that will not open must not fail the set: {e:#}"))?;
+        assert_eq!(set.paths(), [paths[0].clone()], "the readable file stays");
+        Ok(())
+    }
+
+    /// Options that refuse every unwrap.
+    fn refusing() -> ResolveOptions {
+        ResolveOptions {
+            refuse_unwrap: true,
+            ..ResolveOptions::default()
+        }
+    }
+
+    /// The file a refused unwrap names, from `refused`.
+    fn refused_at(refused: anyhow::Result<OpenedSet>) -> Result<PathBuf, TestError> {
+        let e = refused.err().ok_or("a refused unwrap resolved")?;
+        let why = format!("{e:#}");
+        Ok(e.downcast::<UnwrapRefused>()
+            .map_err(|_| format!("not an UnwrapRefused: {why}"))?
+            .path)
+    }
+
+    #[test]
+    fn failure_an_unwrap_refusal_refuses_a_compressed_capture_naming_it() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap.gz", gzip(&pcap_at(1_500, b"z"))?)])?;
+        let refused = named_set(&[spec(&paths[0])], true)?.resolve(&refusing());
+        assert_eq!(
+            refused_at(refused)?,
+            paths[0],
+            "the refusal names the file that needed unpacking"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_unwrap_refusal_refuses_before_anything_is_unpacked() -> Result<(), TestError> {
+        // gzip's magic, then no stream: unpacking it would fail on its own.
+        let mut broken = gzip(&pcap_at(1_500, b"z"))?;
+        broken.truncate(12);
+        let (_root, paths) = written(&[("broken.pcap.gz", broken)])?;
+        let refused = named_set(&[spec(&paths[0])], true)?.resolve(&refusing());
+        assert_eq!(
+            refused_at(refused)?,
+            paths[0],
+            "the refusal comes before the stream is read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_unwrap_refusal_refuses_a_found_archive_too() -> Result<(), TestError> {
+        let (root, _paths) = written(&[
+            ("a.pcap", pcap_at(1_000, b"a")),
+            ("b.pcap.gz", gzip(&pcap_at(2_000, b"b"))?),
+        ])?;
+        let refused = named_set(&[spec(root.path())], true)?.resolve(&refusing());
+        assert_eq!(
+            refused_at(refused)?.file_name(),
+            Some(std::ffi::OsStr::new("b.pcap.gz")),
+            "a found archive the run cannot unwrap is refused, not skipped in silence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_unwrap_refusal_leaves_a_plain_capture_alone() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap", pcap_at(1_000, b"a"))])?;
+        let set = named_set(&[spec(&paths[0])], true)?
+            .resolve(&refusing())
+            .map_err(|e| format!("a capture needs no unwrap: {e:#}"))?;
+        assert_eq!(set.paths(), paths, "read as it is");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_unwrap_refusal_applies_to_a_set_read_by_path() -> Result<(), TestError> {
+        let (_root, paths) = written(&[("a.pcap.gz", gzip(&pcap_at(1_500, b"z"))?)])?;
+        let refused = resolve(&[spec(&paths[0])], &refusing());
+        let why = format!("{:#}", refused.err().ok_or("resolved")?);
+        assert!(
+            why.starts_with(&format!("cannot unpack '{}'", paths[0].display())),
+            "one rule for both: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_opened_archive_hands_each_member_an_open_result() -> Result<(), TestError> {
+        let tar = tar_of(&[
+            ("set/later.pcap", &pcap_at(2_000, b"b")),
+            ("set/earlier.pcap", &pcap_at(1_000, b"a")),
+        ]);
+        let (_root, paths) = written(&[("set.tgz", gzip(&tar)?)])?;
+        let named = named_set(&[spec(&paths[0])], true)?;
+        remove_all(&paths)?;
+        let (order, files) = named
+            .resolve(&ResolveOptions::default())
+            .map_err(|e| format!("{e:#}"))?
+            .into_reading(true);
+        let files = files.ok_or("a set read up front hands its open results")?;
+        assert_eq!(order.len(), 2, "two members");
+        assert_eq!(files.len(), order.len(), "one open result per member");
+        assert!(
+            files.iter().all(Result::is_ok),
+            "each member written out was opened: {files:?}"
         );
         Ok(())
     }

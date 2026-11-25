@@ -96,7 +96,9 @@ pub fn accused(findings: &[&Finding]) -> Vec<AccusedSource> {
     // survives as the tie-break without being restated here, and `Reverse`
     // gets the descending order without a comparator clippy reads as a
     // hand-rolled key sort.
-    out.sort_by_key(|a| std::cmp::Reverse(a.findings));
+    crate::sort::sort_by_dyn(&mut out, &mut |a, b| {
+        std::cmp::Reverse(a.findings).cmp(&std::cmp::Reverse(b.findings))
+    });
     out
 }
 

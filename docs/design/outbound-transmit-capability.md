@@ -50,7 +50,7 @@ it is not the same guarantee:
    `KillUdpSocket::bind` ([`:335`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L335)<!-- "fn bind(_permit:" -->) take it by
    reference, and `spawn_scanner_kill_worker`
    ([`:1640`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1640)<!-- "pub fn spawn_scanner_kill_worker(" -->) and `BatchRunner::new`
-   ([`batch.rs:3973`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3973)<!-- "fn new( cli: Cli, config: &Config, mut batch: BatchProcessing," -->) by value. The sends themselves
+   ([`batch.rs:4096`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4096)<!-- "fn new( cli: Cli, config: &Config, mut batch: BatchProcessing," -->) by value. The sends themselves
    take none, and that is the design rather than a gap: they happen in the
    scanner-kill worker, a process of its own, and a proof token cannot cross a
    pipe. The worker's capability is the descriptors it inherited — all of
@@ -60,14 +60,14 @@ it is not the same guarantee:
 3. **A refusal the operator can read.** `offline_refusal`
    ([`:154`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L154)<!-- "pub fn offline_refusal(feature:" -->) names the flag, says what
    happens instead and says how to get what was asked for. It fires from
-   `bootstrap::plan` ([`bootstrap.rs:1392-1397`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1392-L1397)<!-- "let kill_requested = kill_worker_wanted(cli, config);" -->),
+   `bootstrap::plan` ([`bootstrap.rs:1701-1706`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1701-L1706)<!-- "let kill_requested = kill_worker_wanted(cli, config);" -->),
    which runs for every mode. The doc comment at `:31-36` is explicit that the
    pair is deliberate: a type-only guard leaves someone believing their defense
    is armed, and a message-only guard is one forgetful call site away from being
    no guard at all.
 
 The permit is derived once, from the source the capture thread actually opened
-rather than from the flags ([`batch.rs:3052-3053`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3052-L3053)<!-- "let transmit_permit" -->), with
+rather than from the flags ([`batch.rs:3094-3095`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3094-L3095)<!-- "let transmit_permit" -->), with
 the reasoning recorded above it — `-I` beating `-d`, device auto-detection and
 `--hep-listen` are already resolved into `handle.source`, so re-deriving it from
 `cli` would be a second copy of that precedence to get wrong.

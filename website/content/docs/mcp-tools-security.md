@@ -22,7 +22,7 @@ the other bundles and finds any tool by name.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`top_talkers`](#top-talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
+| [`top_talkers`](#top-talkers) | `by`, `limit?`, `filter?`, `named?`, `prefix_digits?` | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
 | [`describe_endpoint`](#describe-endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
 | [`diagnose_registration`](#diagnose-registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | [`evaluate_expectations`](#evaluate-expectations) | `rules?`, `rules_toml?`, `suppression_file?` | A pass/fail verdict per rule plus an exit code for a build. A rule whose population is empty fails rather than passing quietly |
@@ -47,6 +47,7 @@ credits both ends of a dialog.
 | `by` | string | `ip`, `ua` or `prefix`. Anything else fails with `invalid_params`, `reason: invalid_choice`, and the legal set in `valid_values`. | Required. |
 | `limit?` | integer? | Bounded by `--mcp-max-rows`. | The usual row default. |
 | `filter?` | string? | Alias or DSL, the same vocabulary every other tool takes. | The whole store. |
+| `named?` | string? | A `[filters]` name or alias, in place of `filter`, as [`list_dialogs`](@/docs/mcp-tools-core.md#list-dialogs) takes it. | `filter` decides. |
 | `prefix_digits?` | integer? | How many leading digits make a prefix bucket. `0` fails with `reason: invalid_value`, `param: prefix_digits`. | 4. |
 
 **Returns:**

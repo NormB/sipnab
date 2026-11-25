@@ -248,15 +248,19 @@ fn worker_stream_store(cfg: &ParallelConfig) -> StreamStore {
 ///   rtpproxy's reply names the port the relay opened for a call, and that
 ///   port's media runs between other hosts;
 /// * a pre-parsed packet that is SIP;
+/// * a packet inside a tunnel (GRE, IP-in-IP, VXLAN, GTP-U and every other
+///   one the full parse opens) whose inner packet one of these rules copies:
+///   the peek reads the outer header only, so the tunnel's host pair decides
+///   the owner, and media outside the tunnel lands on another worker
+///   (DEF28-TUNNEL). The dispatcher reads the inner packet with the full
+///   parse ([`crate::capture::parse::parse_packet`]), only for a packet whose
+///   transport the peek does not read or a datagram the UDP tunnel rule
+///   claims;
 /// * and none of these under `--no-rtp` (no stream to split) or `--no-dialog`
 ///   (no SDP is linked).
 ///
-/// # What is not copied
-///
-/// SIP inside a tunnel the peek does not open (GRE, VXLAN, IP-in-IP): the
-/// peek reads the outer header only, and the outer host pair is the tunnel's.
-/// The merge then keeps, for an endpoint the workers learned differently,
-/// the entry read last (`StreamStore::merge_in_read_order`).
+/// For an endpoint the workers learned differently, the merge keeps the
+/// entry read last (`StreamStore::merge_in_read_order`).
 #[derive(Debug, Clone, Copy)]
 struct Fanout {
     /// Whether a copy could change any worker's answer.
@@ -314,7 +318,6 @@ impl Fanout {
         transport: Option<crate::capture::parse::TransportPeek<'_>>,
     ) -> Option<CopyRead> {
         use crate::capture::parse::TransportPeek;
-        use crate::pipeline::port_in_range;
         use crate::sip::parser::starts_sip_message;
         if !self.enabled {
             return None;
@@ -322,8 +325,65 @@ impl Fanout {
         if packet.pre_parsed.is_some() {
             return starts_sip_message(&packet.data).then_some(CopyRead::Shared);
         }
+        let may_tunnel = match transport {
+            // An IP packet whose transport the peek does not read: GRE,
+            // IP-in-IP, ICMP, a header cut short.
+            None => hosts.is_some(),
+            // The one rule the full parse claims a UDP tunnel by.
+            Some(TransportPeek::Udp {
+                dst_port, payload, ..
+            }) => crate::capture::tunnel::udp::decap(payload, 0, dst_port).is_some(),
+            Some(_) => false,
+        };
+        // The outer rule still applies to a datagram on a tunnel port whose
+        // inside is not copied: a relay control socket may sit on one.
+        if may_tunnel && let Some(copy) = self.tunneled_copy(packet) {
+            return Some(copy);
+        }
+        self.transport_copy(hosts, transport?)
+    }
+
+    /// [`Self::copy_read`] for a packet in a tunnel the peek does not open:
+    /// the copy rule applied to the packet inside it, read by the full parse
+    /// that every worker runs, so the dispatcher and the workers decode a
+    /// tunnel by one rule. Only packets the peek finds a tunnel or an
+    /// unread transport in reach this, so ordinary media pays nothing.
+    fn tunneled_copy(&self, packet: &crate::capture::packet::Packet) -> Option<CopyRead> {
+        use crate::capture::parse::TransportPeek;
+        use crate::net::TransportProto;
+        let inner = crate::capture::parse::parse_packet(packet).ok()?;
+        if inner.more_fragments || inner.fragment_offset.is_some_and(|at| at != 0) {
+            return Some(CopyRead::Reassembled);
+        }
+        let (src_port, dst_port, payload) = (inner.src_port, inner.dst_port, &inner.payload[..]);
+        let transport = match inner.transport {
+            TransportProto::Udp => TransportPeek::Udp {
+                src_port,
+                dst_port,
+                payload,
+            },
+            TransportProto::Tcp => TransportPeek::Tcp {
+                src_port,
+                dst_port,
+                payload,
+            },
+            _ => return None,
+        };
+        self.transport_copy(Some((inner.src_addr, inner.dst_addr)), transport)
+    }
+
+    /// The copy rule for a whole UDP datagram, a TCP segment or a fragment
+    /// between `hosts`. See [`Fanout`].
+    fn transport_copy(
+        &self,
+        hosts: Option<(IpAddr, IpAddr)>,
+        transport: crate::capture::parse::TransportPeek<'_>,
+    ) -> Option<CopyRead> {
+        use crate::capture::parse::TransportPeek;
+        use crate::pipeline::port_in_range;
+        use crate::sip::parser::starts_sip_message;
         let is_hep = |payload: &[u8]| self.hep_parse && payload.starts_with(b"HEP3");
-        match transport? {
+        match transport {
             TransportPeek::Fragment => Some(CopyRead::Reassembled),
             TransportPeek::Tcp {
                 src_port,
@@ -674,7 +734,7 @@ fn reconstruct(
     sip: &mut u64,
     rtp: &mut u64,
 ) {
-    use crate::pipeline::{MediaDecrypt, PacketAction, classify_packet};
+    use crate::pipeline::{ClassifiedPacket, MediaDecrypt, PacketAction, classify_packet_read};
     let opts = pipeline_options(cfg);
     // `--hep-parse`, by the rule `--cores 1` applies. The packet was sharded
     // by its outer addresses, which for a HEP copy are the same for every
@@ -684,14 +744,16 @@ fn reconstruct(
     };
     let pp: &ParsedPacket = &pp;
     let mut decrypt = MediaDecrypt::default();
-    match classify_packet(pp, heuristic, &opts, &mut decrypt) {
+    let ClassifiedPacket { action, sdp } = classify_packet_read(pp, heuristic, &opts, &mut decrypt);
+    match action {
         PacketAction::None => {}
         PacketAction::Sip { msg, sdp_links } => {
             *sip += 1;
             if !cfg.no_dialog {
                 // The store takes the message by move — cloning a SipMessage
-                // deep-copies every header String.
-                ds.process_message(*msg);
+                // deep-copies every header String — and the SDP the links
+                // were read from, so the body is parsed once.
+                ds.process_message_read(*msg, &sdp);
                 learn_links(ss, pp, &sdp_links);
             }
         }
@@ -844,6 +906,12 @@ impl Worker {
         let ds = {
             let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
             ds.set_tracking(cfg.dialog_tracking);
+            // A worker sees only its host pairs, so it cannot tell which
+            // method started a dialog whose other messages crossed another
+            // worker: it keeps every message, and the merged store decides
+            // `--drop-method` / `--only-method` in read order, as `--cores 1`.
+            ds.set_drop_methods(Vec::new());
+            ds.set_only_methods(Vec::new());
             ds
         }
         .with_xcid_headers(cfg.xcid_headers.clone())
@@ -1589,6 +1657,44 @@ pub fn pre_open_set(paths: &[std::path::PathBuf], may_map: bool) -> PreOpenedSet
     PreOpenedSet { members }
 }
 
+/// [`pre_open_set`] from the open results a run judged its set with
+/// (`files`, one per path of `paths`, in order), as the user it dropped to:
+/// each capture is opened, and mapped when `may_map`, from its descriptor,
+/// never by its path. An open that failed is kept as its error.
+pub fn pre_open_opened(
+    paths: &[std::path::PathBuf],
+    files: crate::capture::file::OpenResults,
+    may_map: bool,
+) -> PreOpenedSet {
+    let members = paths
+        .iter()
+        .zip(files)
+        .map(|(path, file)| {
+            let opened = file
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to open '{}': {e}",
+                        crate::capture::archive::source_name(path)
+                    )
+                })
+                .and_then(|file| {
+                    crate::capture::file::open_offline_opened(path, &file).map(|member| PreOpened {
+                        member,
+                        mapped: if may_map {
+                            crate::capture::mapped::MappedPcap::from_file(&file)
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        },
+                    })
+                });
+            std::sync::Mutex::new(Some(opened))
+        })
+        .collect();
+    PreOpenedSet { members }
+}
+
 /// Where the readers get each file of a set.
 pub enum Inputs<'a> {
     /// Open each file by its path when its turn comes.
@@ -1771,14 +1877,7 @@ fn tally_member_read(
             return std::ops::ControlFlow::Break(());
         }
         None => tally.complete += 1,
-        Some(e) => {
-            tally.stopped_early += 1;
-            tally.lost = true;
-            tracing::error!(
-                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                crate::capture::archive::source_name(path)
-            );
-        }
+        Some(e) => tally.stopped_early_by(path, &e),
     }
     std::ops::ControlFlow::Continue(())
 }
@@ -2417,14 +2516,7 @@ fn dispatch_in_file_order(
                         // the newest member is still being written when the
                         // capture stops. Whatever was read before the break
                         // has already been released above.
-                        Some(e) => {
-                            tally.stopped_early += 1;
-                            tally.lost = true;
-                            tracing::error!(
-                                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                                crate::capture::archive::source_name(path)
-                            );
-                        }
+                        Some(e) => tally.stopped_early_by(path, &e),
                     }
                     break;
                 }
@@ -3381,6 +3473,133 @@ mod tests {
         Ok(())
     }
 
+    /// Two fixture captures copied into `dir`, with their paths.
+    fn two_fixtures(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, TestError> {
+        let fixtures = env!("CARGO_MANIFEST_DIR");
+        let mut paths = Vec::new();
+        for name in ["sip_call.pcap", "opensips-proxy-signaling.pcap"] {
+            let path = dir.join(name);
+            std::fs::copy(format!("{fixtures}/tests/fixtures/{name}"), &path)?;
+            paths.push(path);
+        }
+        Ok(paths)
+    }
+
+    /// The set opened from the descriptors a run judged its inputs with reads
+    /// in full once the paths lead nowhere: what a privilege drop does to a
+    /// root-only capture.
+    #[test]
+    fn success_a_set_opened_from_descriptors_reads_without_its_paths() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_fixtures(dir.path())?;
+        let files = crate::capture::file::open_set_up_front(&paths);
+        for path in &paths {
+            std::fs::remove_file(path)?;
+        }
+        let set = pre_open_opened(&paths, files, true);
+        let cc = crate::capture::CaptureConfig::default();
+        let r = run_offline_parallel_set(&paths, &Inputs::PreOpened(&set), &cc, pcfg(4))
+            .map_err(|e| format!("the descriptors read: {e:?}"))?;
+        assert_eq!(r.dialog_store.len(), 2, "both files' calls were read");
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_set_opened_from_descriptors_maps_when_it_may() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_fixtures(dir.path())?;
+        let set = pre_open_opened(
+            &paths,
+            crate::capture::file::open_set_up_front(&paths),
+            true,
+        );
+        let mapped = set
+            .members
+            .iter()
+            .filter(|m| {
+                m.lock().ok().is_some_and(|m| {
+                    m.as_ref()
+                        .is_some_and(|r| r.as_ref().is_ok_and(|p| p.mapped.is_some()))
+                })
+            })
+            .count();
+        assert_eq!(mapped, 2, "each classic pcap is mapped from its descriptor");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_set_opened_from_descriptors_does_not_map_under_a_filter() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_fixtures(dir.path())?;
+        let set = pre_open_opened(
+            &paths,
+            crate::capture::file::open_set_up_front(&paths),
+            false,
+        );
+        let mapped = set
+            .members
+            .iter()
+            .filter(|m| {
+                m.lock().ok().is_some_and(|m| {
+                    m.as_ref()
+                        .is_some_and(|r| r.as_ref().is_ok_and(|p| p.mapped.is_some()))
+                })
+            })
+            .count();
+        assert_eq!(
+            mapped, 0,
+            "a BPF filter is libpcap's job: nothing is mapped"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_open_that_failed_is_kept_for_its_reader() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_fixtures(dir.path())?;
+        let files = vec![
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            crate::capture::file::open_up_front(&paths[1]),
+        ];
+        let set = pre_open_opened(&paths, files, true);
+        let first = set.members[0]
+            .lock()
+            .map_err(|_| "poisoned")?
+            .take()
+            .ok_or("the first slot is filled")?;
+        let why = format!("{:#}", first.err().ok_or("a failed open became a capture")?);
+        assert!(
+            why.contains("sip_call.pcap") && why.contains("permission denied"),
+            "the open's own error, naming the file: {why}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_descriptor_that_is_no_capture_is_refused_for_its_reader() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let junk = dir.path().join("junk.pcap");
+        std::fs::write(&junk, b"not a capture")?;
+        let paths = vec![junk.clone()];
+        let set = pre_open_opened(
+            &paths,
+            crate::capture::file::open_set_up_front(&paths),
+            true,
+        );
+        let only = set.members[0]
+            .lock()
+            .map_err(|_| "poisoned")?
+            .take()
+            .ok_or("the slot is filled")?;
+        let why = format!("{:#}", only.err().ok_or("a text file opened as a capture")?);
+        assert!(
+            why.contains("junk.pcap"),
+            "libpcap refuses it, and the reader reports that, naming the file: {why}"
+        );
+        Ok(())
+    }
+
     /// A `--cores` worker records a captured offer's engine on its dialog
     /// store, which the merge carries to the run's store.
     #[cfg(feature = "native")]
@@ -3409,6 +3628,57 @@ mod tests {
             ds.engine_sightings("e1@example.invalid").len(),
             1,
             "a worker records the engine a captured offer reached"
+        );
+        Ok(())
+    }
+
+    /// A `--cores` worker parses an owned offer's SDP once: classification
+    /// hands the SDP it read for the media links to the dialog store, which
+    /// used to parse the body again for the SDP timeline.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_worker_parses_an_offers_sdp_once() -> Result<(), Box<dyn std::error::Error>> {
+        let cfg = pcfg(2);
+        let body = "v=0\r\no=- 1 1 IN IP4 192.0.2.30\r\ns=-\r\nc=IN IP4 192.0.2.30\r\n\
+                    t=0 0\r\nm=audio 40000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
+        let invite = format!(
+            "INVITE sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 192.0.2.30:5060;branch=z9hG4bK-w1\r\n\
+             From: <sip:alice@example.com>;tag=a\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: worker-sdp@example.invalid\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Type: application/sdp\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let pp = crate::test_utils::udp_parsed(
+            "192.0.2.30:5060".parse()?,
+            "192.0.2.6:5060".parse()?,
+            invite.as_bytes(),
+        );
+        let (mut ds, mut ss) = (DialogStore::new(16, false), StreamStore::new(16));
+        let (mut sip, mut rtp) = (0, 0);
+        let (parses, ()) = crate::sip::sdp::sdp_parses_during(|| {
+            reconstruct(
+                &pp,
+                &mut ds,
+                &mut ss,
+                &mut crate::rtp::heuristic::RtpHeuristic::new(),
+                &cfg,
+                &mut sip,
+                &mut rtp,
+            );
+        });
+        assert_eq!(sip, 1, "the INVITE is counted");
+        assert_eq!(parses, 1, "its SDP is parsed once");
+        let dialog = ds
+            .get("worker-sdp@example.invalid")
+            .ok_or("the INVITE opens a dialog")?;
+        assert_eq!(
+            dialog.sdp_timeline.len(),
+            1,
+            "the offer is on the SDP timeline"
         );
         Ok(())
     }
@@ -4532,6 +4802,65 @@ mod tests {
         /// One connection from an ephemeral port to 5060, every message a
         /// pushed segment of it.
         Tcp,
+        /// One datagram per message, 5060 to 5060, inside a tunnel between
+        /// [`TUNNEL_HOSTS`]: the dispatcher's peek reads only the tunnel's
+        /// host pair, so the SIP shards by it.
+        Tunneled(Tunnel),
+    }
+
+    /// The tunnels a DEF28 fixture can carry its SIP through.
+    #[cfg(feature = "native")]
+    #[derive(Clone, Copy, Debug)]
+    enum Tunnel {
+        /// GRE ([RFC 2784](https://www.rfc-editor.org/rfc/rfc2784.html)), IP protocol 47, carrying IPv4.
+        Gre,
+        /// IPv4 in IPv4 ([RFC 2003](https://www.rfc-editor.org/rfc/rfc2003.html)), IP protocol 4.
+        IpInIp,
+        /// VXLAN ([RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html)), UDP port 4789, carrying an Ethernet frame.
+        Vxlan,
+    }
+
+    /// The tunnel endpoints of [`Signaling::Tunneled`] (RFC 5737).
+    #[cfg(feature = "native")]
+    const TUNNEL_HOSTS: ([u8; 4], [u8; 4]) = ([192, 0, 2, 1], [192, 0, 2, 2]);
+
+    /// An Ethernet frame holding an IPv4 header from `src` to `dst` with
+    /// protocol `proto`, then `payload`.
+    #[cfg(feature = "native")]
+    fn eth_ipv4_around(src: [u8; 4], dst: [u8; 4], proto: u8, payload: &[u8]) -> Vec<u8> {
+        // Ethernet (14) and IPv4 (20) of a UDP frame, re-labeled.
+        let mut frame = eth_udp_between(src, dst, 0, 0, &[])[..34].to_vec();
+        let total = u16::try_from(20 + payload.len()).unwrap_or(u16::MAX);
+        frame[16..18].copy_from_slice(&total.to_be_bytes());
+        frame[23] = proto;
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// The Ethernet frame `inner` (an Ethernet/IPv4 frame) carried through
+    /// `tunnel` between `outer`.
+    #[cfg(feature = "native")]
+    fn tunneled(tunnel: Tunnel, outer: ([u8; 4], [u8; 4]), inner: &[u8]) -> Vec<u8> {
+        let (a, b) = outer;
+        match tunnel {
+            Tunnel::Gre => {
+                // No flags, version 0, protocol IPv4.
+                let mut gre = vec![0x00, 0x00, 0x08, 0x00];
+                gre.extend_from_slice(&inner[14..]);
+                eth_ipv4_around(a, b, 47, &gre)
+            }
+            Tunnel::IpInIp => eth_ipv4_around(a, b, 4, &inner[14..]),
+            Tunnel::Vxlan => {
+                // I flag set, VNI 0x001234, every reserved field zero.
+                let mut vx = vec![0x08, 0, 0, 0, 0x00, 0x12, 0x34, 0x00];
+                vx.extend_from_slice(inner);
+                // A unicast, locally administered source MAC: the fixture's
+                // 0xBB has the group bit set, which no station sends and the
+                // VXLAN decoder refuses (IEEE 802.3 clause 3.2.3).
+                vx[8 + 6..8 + 12].copy_from_slice(&[0x02, 0, 0, 0, 0, 0x01]);
+                eth_udp_between(a, b, 49_152, 4789, &vx)
+            }
+        }
     }
 
     /// Two calls, one after the other, whose SDP negotiates the SAME two
@@ -4565,6 +4894,13 @@ mod tests {
                     uac_seq += offer.len() as u32;
                     frames.push(eth_tcp_between(uas, uac, uas_seq, 0x18, &answer));
                     uas_seq += answer.len() as u32;
+                }
+                Signaling::Tunneled(tunnel) => {
+                    let (out, back) = (TUNNEL_HOSTS, (TUNNEL_HOSTS.1, TUNNEL_HOSTS.0));
+                    let offer = eth_udp_between(uac.0, uas.0, 5060, 5060, &offer);
+                    let answer = eth_udp_between(uas.0, uac.0, 5060, 5060, &answer);
+                    frames.push(tunneled(tunnel, out, &offer));
+                    frames.push(tunneled(tunnel, back, &answer));
                 }
             }
             for seq in 0..5u16 {
@@ -4703,6 +5039,184 @@ mod tests {
         assert_one_stream_per_call(&r, "file, SIP and RTP on different workers");
         assert_counted_once(&r, frames.len(), "file, SIP and RTP on different workers");
         Ok(())
+    }
+
+    /// DEF28-TUNNEL: SIP inside a tunnel shards by the tunnel's host pair,
+    /// and its media, outside the tunnel, by its own. The worker that reads
+    /// the media must still read the SDP, so the tunneled SIP is copied to
+    /// it, and counted once.
+    #[cfg(feature = "native")]
+    fn tunneled_calls_stay_two_streams(tunnel: Tunnel) -> Result<(), TestError> {
+        use crate::capture::CaptureConfig;
+        let case = format!("SIP in {tunnel:?}, RTP outside it on another worker");
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        // Control: media between the tunnel's own hosts lands on the SIP's
+        // worker, so the fixture alone yields one stream per call.
+        let together = two_calls_on_one_flow(SIP_HOSTS, TUNNEL_HOSTS, Signaling::Tunneled(tunnel));
+        let path = write_eth_pcap(dir.path(), "tunnel-together.pcap", &together)?;
+        let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(2))?;
+        assert_one_stream_per_call(
+            &r,
+            &format!("control: SIP in {tunnel:?}, RTP on its worker"),
+        );
+        let rtp_hosts = hosts_on_the_other_worker(TUNNEL_HOSTS)?;
+        let frames = two_calls_on_one_flow(SIP_HOSTS, rtp_hosts, Signaling::Tunneled(tunnel));
+        let path = write_eth_pcap(dir.path(), "tunnel-split.pcap", &frames)?;
+        let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(2))?;
+        assert_one_stream_per_call(&r, &case);
+        assert_counted_once(&r, frames.len(), &case);
+        Ok(())
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn sip_in_gre_reaches_the_worker_that_reads_its_media() -> Result<(), TestError> {
+        tunneled_calls_stay_two_streams(Tunnel::Gre)
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn sip_in_ip_in_ip_reaches_the_worker_that_reads_its_media() -> Result<(), TestError> {
+        tunneled_calls_stay_two_streams(Tunnel::IpInIp)
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn sip_in_vxlan_reaches_the_worker_that_reads_its_media() -> Result<(), TestError> {
+        tunneled_calls_stay_two_streams(Tunnel::Vxlan)
+    }
+
+    /// The SDP-bearing INVITE of the DEF28 fixture as an Ethernet frame.
+    #[cfg(feature = "native")]
+    fn offer_frame(sport: u16, dport: u16) -> Vec<u8> {
+        let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", "t", ([10, 2, 0, 1], 20000));
+        let (a, b) = SIP_HOSTS;
+        eth_udp_between(a, b, sport, dport, &offer)
+    }
+
+    /// Inside every tunnel, the copy rule is the one outside it: SIP that
+    /// names SDP is read by every worker, as one shared read.
+    #[cfg(feature = "native")]
+    #[test]
+    fn tunneled_sdp_is_copied_as_a_shared_read() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        for tunnel in [Tunnel::Gre, Tunnel::IpInIp, Tunnel::Vxlan] {
+            let pkt = eth_packet(tunneled(tunnel, TUNNEL_HOSTS, &offer_frame(5060, 5060)));
+            assert_eq!(
+                fanout.copy_of(&pkt),
+                Some(CopyRead::Shared),
+                "{tunnel:?}: SIP with SDP inside the tunnel is copied"
+            );
+        }
+    }
+
+    /// What the rule leaves to the owner outside a tunnel it leaves to the
+    /// owner inside one: media, SIP with no SDP, SIP outside `--portrange`.
+    #[cfg(feature = "native")]
+    #[test]
+    fn tunneled_media_and_sip_without_sdp_stay_with_their_owner() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        let (a, b) = SIP_HOSTS;
+        let options = b"OPTIONS sip:b@x SIP/2.0\r\nCall-ID: o\r\nContent-Length: 0\r\n\r\n";
+        let inner = [
+            ("RTP", rtp_frame(0x1122_3344, 1)),
+            ("OPTIONS", eth_udp_between(a, b, 5060, 5060, options)),
+            ("SDP off --portrange", offer_frame(7060, 7060)),
+        ];
+        for tunnel in [Tunnel::Gre, Tunnel::IpInIp, Tunnel::Vxlan] {
+            for (what, frame) in &inner {
+                let pkt = eth_packet(tunneled(tunnel, TUNNEL_HOSTS, frame));
+                assert_eq!(
+                    fanout.copy_of(&pkt),
+                    None,
+                    "{tunnel:?}: {what} inside the tunnel stays with its owner"
+                );
+            }
+        }
+    }
+
+    /// A tunnel that does not decode copies nothing, and does not panic: a
+    /// GRE header cut short, a GRE payload type sipnab does not read, a
+    /// datagram to the VXLAN port whose header is not VXLAN's, and ICMP.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_tunnel_that_does_not_decode_copies_nothing() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        let (ta, tb) = TUNNEL_HOSTS;
+        let inner = offer_frame(5060, 5060);
+        let mut unknown_type = vec![0x00, 0x00, 0x88, 0xbe];
+        unknown_type.extend_from_slice(&inner[14..]);
+        let mut not_vxlan = vec![0xff, 0, 0, 0, 0x00, 0x12, 0x34, 0x00];
+        not_vxlan.extend_from_slice(&inner);
+        let mut icmp = vec![3, 3, 0, 0, 0, 0, 0, 0];
+        icmp.extend_from_slice(&inner[14..]);
+        let cases = [
+            ("GRE cut short", eth_ipv4_around(ta, tb, 47, &[0x00, 0x00])),
+            (
+                "GRE type 0x88be",
+                eth_ipv4_around(ta, tb, 47, &unknown_type),
+            ),
+            (
+                "not VXLAN",
+                eth_udp_between(ta, tb, 49_152, 4789, &not_vxlan),
+            ),
+            ("ICMP quoting SIP", eth_ipv4_around(ta, tb, 1, &icmp)),
+            (
+                "IP-in-IP cut short",
+                eth_ipv4_around(ta, tb, 4, &inner[14..30]),
+            ),
+        ];
+        for (what, frame) in cases {
+            assert_eq!(
+                fanout.copy_of(&eth_packet(frame)),
+                None,
+                "{what}: nothing is copied"
+            );
+        }
+    }
+
+    /// Inside a tunnel, a TCP segment on a SIP port, an IP fragment and a GRE
+    /// header with its optional key and sequence number are read as outside:
+    /// the segment and the fragment through each worker's own reassembly.
+    #[cfg(feature = "native")]
+    #[test]
+    fn tunneled_segments_fragments_and_gre_options_follow_the_rule() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        let (a, b) = SIP_HOSTS;
+        let segment = eth_tcp_between((a, 40_001), (b, 5060), 7, 0x18, b"a=rtpmap:0 PCMU/8000\r\n");
+        let mut fragment = eth_udp_between(a, b, 40_000, 40_002, b"anything");
+        fragment[20..22].copy_from_slice(&[0x00, 0xb9]); // last fragment, offset 185
+        for (what, frame) in [("TCP to 5060", &segment), ("fragment", &fragment)] {
+            let pkt = eth_packet(tunneled(Tunnel::Gre, TUNNEL_HOSTS, frame));
+            assert_eq!(
+                fanout.copy_of(&pkt),
+                Some(CopyRead::Reassembled),
+                "{what} inside GRE is read through each worker's reassembly"
+            );
+        }
+        // K and S set: four bytes of key, then four of sequence number.
+        let mut gre = vec![0x30, 0x00, 0x08, 0x00, 0, 0, 0, 7, 0, 0, 0, 1];
+        gre.extend_from_slice(&offer_frame(5060, 5060)[14..]);
+        let (ta, tb) = TUNNEL_HOSTS;
+        assert_eq!(
+            fanout.copy_of(&eth_packet(eth_ipv4_around(ta, tb, 47, &gre))),
+            Some(CopyRead::Shared),
+            "GRE with a key and a sequence number"
+        );
+        let off = ParallelConfig {
+            no_rtp: true,
+            ..pcfg_default_range()
+        };
+        let pkt = eth_packet(tunneled(
+            Tunnel::Gre,
+            TUNNEL_HOSTS,
+            &offer_frame(5060, 5060),
+        ));
+        assert_eq!(
+            Fanout::of(&off).copy_of(&pkt),
+            None,
+            "--no-rtp copies nothing"
+        );
     }
 
     /// A `ParallelConfig` with `--portrange`'s default, 5060-5061.

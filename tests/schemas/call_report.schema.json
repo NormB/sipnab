@@ -57,6 +57,12 @@
     "final_status_reason": {
       "type": "string"
     },
+    "forked_answers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "The To tag of each later leg that answered a forked INVITE 2xx, in arrival order (RFC 3261 section 13.2.2.4). Absent, never empty, on a call one leg answered."
+    },
     "method": {
       "type": "string"
     },
@@ -111,6 +117,23 @@
         "vcon"
       ],
       "description": "Which capture source delivered the message that OPENED this dialog. First, never latest: one process can capture from an interface and a HEP mirror at once, and with no BPF filter excluding the mirrored signaling ports the same message arrives from both, so a field reassigned per message would report whichever spoke last. Absent rather than null when the opening message came from no captured packet."
+    },
+    "seen_by": {
+      "type": "object",
+      "propertyNames": {
+        "enum": [
+          "wire",
+          "hep",
+          "uprobe",
+          "vcon"
+        ]
+      },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "minProperties": 2,
+      "description": "How many of the dialog's messages each capture source delivered, by origin name. A message the wire and a HEP feed both delivered is stored once, counted once in msg_count and once under each source here. Absent when one source, or none, delivered every message."
     },
     "termination": {
       "type": "object",
@@ -710,6 +733,16 @@
         "mos_wideband_unavailable": {
           "type": "string",
           "enum": ["unpublished_mode", "loss_not_computable"]
+        },
+        "round_trip_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Round trip in milliseconds that an endpoint reported in RTCP XR or sipnab derived from an RTCP receiver report's sender-report echo. Omitted, never null or 0, when nothing measured one."
+        },
+        "round_trip_source": {
+          "type": "string",
+          "enum": ["xr_voip_metrics", "sender_report_echo"],
+          "description": "Where round_trip_ms came from: the far end's XR VoIP Metrics block, or the SR echo, which is a lower bound unless the capture sits with the SR sender."
         },
         "orphaned": {
           "type": "boolean"

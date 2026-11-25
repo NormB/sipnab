@@ -666,10 +666,10 @@ sipnab -N -I capture.pcap --relay-stats --rtpengine-control 127.0.0.1:22222
 ```
 
 ```text
-ERROR sipnab::app::bootstrap: --relay-stats will not ask a relay on a run that reads a file: asking transmits, and a file's addresses are historical and belong to third parties. Ask from a live capture (-d <device>).
+--relay-stats will not ask a relay on a run that reads a file: asking transmits, and a file's addresses are historical and belong to third parties. Ask from a live capture (-d <device>).
 ```
 
-The rest of the analysis still runs and exits 0.
+sipnab prints this on stderr and exits 2 before it reads the file.
 
 ## Let an agent ask the relay
 

@@ -55,6 +55,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::output;
+use crate::output::api_body::{BodyRefusal, ClosedBody, ClosedObject, Field, Kind};
 use crate::output::prometheus::{self, PrometheusMetrics};
 use crate::rtp::diagnosis::{
     AsymmetryThresholds, CaptureMedia, MediaContext, diagnose_asymmetry, diagnose_media,
@@ -227,6 +228,10 @@ pub struct RelayRestConfig {
     /// ask covers when the request names no `max_calls`. See
     /// [`crate::relay::scan_cap::scan_cap`].
     pub holdings_max: Option<u32>,
+    /// The previous sample of each relay socket, shared by every caller, so
+    /// a sessions ask reports the rate since the previous ask. Bounded per
+    /// tier ([`crate::relay::rate::RATE_MEMORY_SOCKETS`]).
+    pub rates: std::sync::Arc<parking_lot::Mutex<crate::relay::rate::RateMemories>>,
 }
 
 /// Shared state passed to every axum handler via `State(...)`.
@@ -750,6 +755,12 @@ pub struct DialogListParams {
     /// query was rejected rather than receiving every row. ANDed with
     /// `state`/`from`.
     pub filter: Option<String>,
+    /// The name of one `[filters]` entry or diagnostic alias, in place of
+    /// `filter`: `named=sales` selects what `filter=@sales` selects. A
+    /// leading `@` is accepted. `GET /v1/filters` lists the entries. Give
+    /// `filter` or `named`, not both: both is a 400, and so is a name nothing
+    /// defines, whose detail lists the names that are defined.
+    pub named: Option<String>,
     /// Only dialogs whose first message is at or after this RFC 3339 instant
     /// (e.g. `2026-09-15T12:00:00Z`). A timestamp that does not parse is a 400.
     pub after: Option<String>,
@@ -786,6 +797,9 @@ pub struct AggregateParams {
     /// counted, what `/v1/dialogs?filter=` accepts. A value that is neither an
     /// alias nor an expression that parses is a 400.
     pub filter: Option<String>,
+    /// The name of one `[filters]` entry or diagnostic alias, in place of
+    /// `filter`, what `/v1/dialogs?named=` accepts. Both is a 400.
+    pub named: Option<String>,
     /// Keep the largest N buckets; the rest fold into `other_count`. Clamped to
     /// the server's row cap.
     pub top_n: Option<usize>,
@@ -854,6 +868,9 @@ pub struct RatesParams {
     /// grouped, what `/v1/dialogs?filter=` accepts. A value that is neither an
     /// alias nor an expression that parses is a 400.
     pub filter: Option<String>,
+    /// The name of one `[filters]` entry or diagnostic alias, in place of
+    /// `filter`, what `/v1/dialogs?named=` accepts. Both is a 400.
+    pub named: Option<String>,
     /// Keep the largest N groups by dialog count; the rest fold into
     /// `other_count`. Clamped to the server's row cap.
     pub top_n: Option<usize>,
@@ -870,6 +887,9 @@ pub struct TalkersParams {
     /// what `/v1/dialogs?filter=` accepts. A value that is neither an alias nor
     /// an expression that parses is a 400.
     pub filter: Option<String>,
+    /// The name of one `[filters]` entry or diagnostic alias, in place of
+    /// `filter`, what `/v1/dialogs?named=` accepts. Both is a 400.
+    pub named: Option<String>,
     /// Maximum rows to return, clamped to the server's row cap. `distinct_talkers`
     /// still counts every talker, so a page is never mistaken for the whole rank.
     pub limit: Option<usize>,
@@ -1182,6 +1202,8 @@ fn router_for(state: ApiState, with_console: bool) -> Router {
         .route("/v1/endpoints", get(get_endpoints))
         .route("/v1/security/findings", get(get_security_findings))
         .route("/v1/captures/compare", get(get_captures_compare))
+        .route("/v1/filters", get(get_named_filters))
+        .route("/v1/filters/validate", get(get_filter_validation))
         // Relay statistics (ST5). Each transmits once, behind
         // --api-allow-relay-query; the /call/ segment keeps C2 from colliding
         // with the static /names path. Polling (C5) is not offered here.
@@ -2211,7 +2233,11 @@ async fn get_aggregate(
         .map_err(|why| Problem::detailed(StatusCode::BAD_REQUEST, why))?;
 
     // Same DSL and 400-on-parse-failure as `/v1/dialogs?filter=`.
-    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
+    let dsl = compile_query_filter(
+        &state.alias_thresholds,
+        params.filter.as_deref(),
+        params.named.as_deref(),
+    )?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
 
     // Capture lock, then dialogs, then streams -- the order `CaptureState`
@@ -2534,7 +2560,11 @@ async fn get_rates(
     )
     .map_err(|why| Problem::detailed(StatusCode::BAD_REQUEST, why))?;
 
-    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
+    let dsl = compile_query_filter(
+        &state.alias_thresholds,
+        params.filter.as_deref(),
+        params.named.as_deref(),
+    )?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
 
     // Capture lock, then dialogs, then streams -- the order `CaptureState`
@@ -2617,7 +2647,11 @@ async fn get_talkers(
     )
     .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
 
-    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
+    let dsl = compile_query_filter(
+        &state.alias_thresholds,
+        params.filter.as_deref(),
+        params.named.as_deref(),
+    )?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
 
     // Capture lock, then dialogs, then streams -- the order `CaptureState`
@@ -3822,12 +3856,11 @@ async fn get_lint(
 async fn post_vcon_validate(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    guard(&state, &headers, addr.ip())?;
+    guard(&state, request.headers(), addr.ip())?;
 
-    let bytes = vcon_body(&headers, body)?;
+    let bytes = vcon_body(request).await?;
     // A signed or encrypted container is validated by the unsigned vCon
     // inside, opened by the readers' one step. The shared validator the MCP
     // tool also runs; it needs the vendored schema, which is part of the
@@ -3887,13 +3920,12 @@ async fn post_vcon_validate(
 async fn post_vcon_analyze(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Query(params): Query<VconAnalyzeParams>,
-    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    guard(&state, &headers, addr.ip())?;
+    guard(&state, request.headers(), addr.ip())?;
 
-    let bytes = vcon_body(&headers, body)?;
+    let bytes = vcon_body(request).await?;
     let limit = resolve_page_limit(params.limit, state.max_rows);
     let analysis = crate::output::vcon_analysis::analyze_bytes(&bytes, limit)
         .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -3915,23 +3947,13 @@ pub const VCON_BODY_TYPES: [&str; 4] = [
 /// The body of a vCon route, in any form the readers open: refused with
 /// 413 over the body limit, and with 400 when its `Content-Type` is not one
 /// of [`VCON_BODY_TYPES`] (parameters such as `charset` are ignored).
+///
+/// Called after the route's guard, which is when the body is read
+/// ([`request_body`]).
 #[cfg(feature = "vcon")]
-fn vcon_body(
-    headers: &HeaderMap,
-    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
-) -> Result<axum::body::Bytes, Problem> {
-    let bytes = match body {
-        Ok(bytes) => bytes,
-        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
-            return Err(Problem::new(StatusCode::PAYLOAD_TOO_LARGE));
-        }
-        Err(_) => {
-            return Err(Problem::detailed(
-                StatusCode::BAD_REQUEST,
-                "the body must be a JSON vCon container",
-            ));
-        }
-    };
+async fn vcon_body(request: axum::extract::Request) -> Result<axum::body::Bytes, Problem> {
+    let headers = request.headers().clone();
+    let bytes = request_body(request, "the body must be a JSON vCon container").await?;
     let media_type = headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -4160,7 +4182,11 @@ async fn list_dialogs(
     // expression is a 400 with a reason rather than a silent unfiltered page.
     // Deliberately stricter than the `from` regex above, which is best-effort:
     // a structured query a client got wrong is a client error it must see.
-    let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
+    let dsl = compile_query_filter(
+        &state.alias_thresholds,
+        params.filter.as_deref(),
+        params.named.as_deref(),
+    )?;
 
     // Parse the time window up front, so a malformed timestamp is a 400 rather
     // than a silently ignored window a client would read as the answer to its
@@ -4508,7 +4534,7 @@ async fn get_dialog_report(
 ///
 /// Holds the dialog- then stream-store read locks (in that order, the one
 /// `/v1/report` takes, so the two can never deadlock against each other)
-/// while reading the facts and running the analysis; mutates the rate limiter.
+/// while reading the facts and the blind spots; mutates the rate limiter.
 #[cfg(feature = "vcon")]
 #[utoipa::path(
     get,
@@ -4560,7 +4586,7 @@ async fn get_dialog_vcon(
     // every other number in the run is read against.
     let facts =
         crate::analysis::CaptureFacts::observed(&ds, &ss, crate::capture::captured_packets());
-    let analysis = crate::analysis::analyze_with(&ds, &ss, None, &facts);
+    let analysis = crate::analysis::analyze_blind_spots(&facts);
     // The SAME builder the CLI and MCP doors call, with the SAME per-dialog
     // capture id. This door called the signaling-only entry point with a
     // constant id until 0.5.125, so one run answered two ways: an agent asking
@@ -4603,16 +4629,31 @@ async fn get_dialog_vcon(
 
 /// The body `POST /v1/persistence` accepts.
 ///
-/// `deny_unknown_fields` so a caller who misspells the key is told, rather
-/// than getting a 200 that moved nothing. The field is required and typed:
-/// serde refuses a string, a number, and a missing key alike, and every one of
-/// those refusals leaves the gate where it was.
-#[derive(Deserialize, utoipa::ToSchema)]
+/// Unknown keys are refused, so a caller who misspells the key is told,
+/// rather than getting a 200 that moved nothing. The field is required and
+/// typed: a string, a number, `null` and a missing key are all refused, and
+/// every one of those refusals leaves the gate where it was.
+// `serde(deny_unknown_fields)` is read by `ToSchema` alone, which writes
+// `additionalProperties: false` into the published schema; the body is read
+// by `crate::output::api_body`, against `FIELDS`.
+#[derive(utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct PersistenceRequest {
     /// What the caller wants the gate to be, narrowed by the command line and
     /// config file.
     enabled: bool,
+}
+
+impl ClosedBody for PersistenceRequest {
+    const FIELDS: &'static [Field] = &[Field::required("enabled", Kind::Bool)];
+
+    fn from_object(object: ClosedObject) -> Result<Self, BodyRefusal> {
+        Ok(Self {
+            enabled: object
+                .bool("enabled")
+                .ok_or(BodyRefusal::Missing("enabled"))?,
+        })
+    }
 }
 
 /// The shape both doors of `/v1/persistence` answer with.
@@ -4685,29 +4726,16 @@ async fn get_persistence(
 async fn set_persistence(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    guard(&state, &headers, addr.ip())?;
-    // The body is extracted fallibly and AFTER the guard, in that order and
-    // for two reasons. Taken infallibly, axum would answer a malformed body
-    // itself, before the guard ran, telling an unauthenticated caller whether
-    // its JSON parsed. And a rejection has to stay a rejection: the dangerous
-    // reading of "I could not understand this request" is `enabled: true`.
-    let raw = json_body(body, None)?;
-    // A JSON object, and nothing else. Extracting straight into the struct
-    // looks equivalent and is not: a derived `Deserialize` also accepts a
-    // SEQUENCE, filling the fields in declaration order, so the body `[true]`
-    // parsed as `enabled: true` and reopened a closed gate. `deny_unknown_
-    // fields` does not catch it -- a sequence has no field names to be
-    // unknown. Nothing but this check stands between a stray array and an
-    // operator's close being undone.
-    if !raw.is_object() {
-        return Err(Problem::new(StatusCode::BAD_REQUEST));
-    }
-    let Ok(req) = serde_json::from_value::<PersistenceRequest>(raw) else {
-        return Err(Problem::new(StatusCode::BAD_REQUEST));
-    };
+    guard(&state, request.headers(), addr.ip())?;
+    // The body is read only now, after the guard, and any refusal stays a
+    // refusal: the dangerous reading of "I could not understand this
+    // request" is `enabled: true`. `json_object` refuses a JSON array, so
+    // `[true]` never reads as `enabled: true`, and a repeated key, so
+    // `{"enabled": false, "enabled": true}` never opens a gate a proxy in
+    // front of sipnab read as closed.
+    let req: PersistenceRequest = json_object(request).await?;
     state.persistence_gate.set(req.enabled);
     Ok(persistence_body(&state.persistence_gate))
 }
@@ -4724,10 +4752,11 @@ async fn set_persistence(
 
 /// The body `POST /v1/tfps/ban` accepts.
 ///
-/// `deny_unknown_fields` for the reason `PersistenceRequest` gives: a caller
-/// who misspells `ttl_secs` is told, rather than getting a ban of the wrong
-/// duration.
-#[derive(Deserialize, utoipa::ToSchema)]
+/// Unknown keys are refused for the reason `PersistenceRequest` gives: a
+/// caller who misspells `ttl_secs` is told, rather than getting a ban of the
+/// wrong duration.
+// `serde(deny_unknown_fields)` is for `ToSchema`, as on `PersistenceRequest`.
+#[derive(utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct TfpsBanRequest {
     /// The source to condemn, an IPv4 address (TFPS's block map is IPv4).
@@ -4739,16 +4768,42 @@ struct TfpsBanRequest {
     ttl_secs: Option<u64>,
 }
 
+impl ClosedBody for TfpsBanRequest {
+    const FIELDS: &'static [Field] = &[
+        Field::required("ip", Kind::String),
+        Field::optional("ttl_secs", Kind::WholeNumber),
+    ];
+
+    fn from_object(mut object: ClosedObject) -> Result<Self, BodyRefusal> {
+        Ok(Self {
+            ip: object.take_string("ip").ok_or(BodyRefusal::Missing("ip"))?,
+            ttl_secs: object.whole_number("ttl_secs"),
+        })
+    }
+}
+
 /// The body `POST /v1/tfps/unban` accepts.
-#[derive(Deserialize, utoipa::ToSchema)]
+// `serde(deny_unknown_fields)` is for `ToSchema`, as on `PersistenceRequest`.
+#[derive(utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct TfpsUnbanRequest {
     /// The source to release.
     ip: String,
 }
 
+impl ClosedBody for TfpsUnbanRequest {
+    const FIELDS: &'static [Field] = &[Field::required("ip", Kind::String)];
+
+    fn from_object(mut object: ClosedObject) -> Result<Self, BodyRefusal> {
+        Ok(Self {
+            ip: object.take_string("ip").ok_or(BodyRefusal::Missing("ip"))?,
+        })
+    }
+}
+
 /// The body `POST /v1/actions/revert` accepts: one action id, or `all`.
-#[derive(Deserialize, utoipa::ToSchema)]
+// `serde(deny_unknown_fields)` is for `ToSchema`, as on `PersistenceRequest`.
+#[derive(utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct ActionsRevertRequest {
     /// The id of the action to back out, as a ban's answer or
@@ -4757,6 +4812,20 @@ struct ActionsRevertRequest {
     /// `true` to back out every ban sipnab placed that is still in force,
     /// newest first.
     all: Option<bool>,
+}
+
+impl ClosedBody for ActionsRevertRequest {
+    const FIELDS: &'static [Field] = &[
+        Field::optional("id", Kind::String),
+        Field::optional("all", Kind::Bool),
+    ];
+
+    fn from_object(mut object: ClosedObject) -> Result<Self, BodyRefusal> {
+        Ok(Self {
+            id: object.take_string("id"),
+            all: object.bool("all"),
+        })
+    }
 }
 
 /// What a revert request asks for, or `400`: exactly one of a non-empty `id`
@@ -4813,66 +4882,206 @@ where
         .map_err(tfps_problem)
 }
 
-/// Read a request body as a JSON OBJECT of type `T`, or answer `400`.
+/// Read a request's body as the JSON object `T`, or the problem that refuses
+/// it. Every route that takes a JSON object reads it here, after its guard.
 ///
-/// The same three steps `set_persistence` spells out inline, for the same
-/// reason: a derived `Deserialize` also reads a SEQUENCE, so the body has to
-/// be extracted as a `Value`, checked to be an object, and only then typed.
-fn object_body<T: serde::de::DeserializeOwned>(
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
-) -> Result<T, Problem> {
-    let raw = json_body(body, None)?;
-    if !raw.is_object() {
-        return Err(Problem::new(StatusCode::BAD_REQUEST));
+/// A `Content-Type` other than JSON is a `400` before the body is read. A
+/// body past [`MAX_REQUEST_BODY_BYTES`] is a `413`. Then
+/// [`crate::output::api_body`] reads it against `T`'s fields, and a body it
+/// refuses is a `400` whose `detail` says why.
+async fn json_object<T: ClosedBody>(request: axum::extract::Request) -> Result<T, Problem> {
+    if !is_json_media_type(request.headers()) {
+        return Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "the body must be JSON, sent with Content-Type application/json",
+        ));
     }
-    serde_json::from_value(raw).map_err(|_| Problem::new(StatusCode::BAD_REQUEST))
+    let bytes = request_body(request, "the request body could not be read").await?;
+    crate::output::api_body::read_body(&bytes)
+        .map_err(|refusal| Problem::detailed(StatusCode::BAD_REQUEST, refusal.to_string()))
 }
 
-/// Compile a `filter` query parameter: a diagnostic alias name or a DSL
-/// expression, the way `--filter` and every MCP tool's `filter` accept one.
-///
-/// The one place a REST handler turns that parameter into a [`FilterExpr`].
-/// `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates` and `/v1/talkers` all
-/// call it, so no route can accept a spelling another refuses.
-///
-/// # Errors
-///
-/// A `400` whose detail is `filter: ` followed by the parse error, which names
-/// the text and the position where it stopped parsing.
-pub(crate) fn compile_query_filter(
-    thresholds: &crate::sip::dsl::AliasThresholds,
-    filter: Option<&str>,
-) -> Result<Option<crate::sip::dsl::FilterExpr>, Problem> {
-    filter
-        .map(|expr| {
-            crate::sip::dsl::parse_filter(expr, thresholds)
-                .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("filter: {e}")))
+/// Whether `Content-Type` names JSON: `application/json`, or an
+/// `application/` type with the `+json` suffix (RFC 6839). Parameters such as
+/// `charset` are ignored. The rule axum's `Json` extractor applies.
+fn is_json_media_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .is_some_and(|t| {
+            t == "application/json"
+                || t.strip_prefix("application/")
+                    .is_some_and(|sub| sub.len() > "+json".len() && sub.ends_with("+json"))
         })
-        .transpose()
 }
 
-/// A JSON request body, or the problem that refuses it.
+/// A request's body, read only when this is called: so after the guard of
+/// every route that calls it.
 ///
-/// One rule for every route that reads a body. Each takes its body fallibly,
-/// so that the guard runs first and a rejection stays a rejection, and that
-/// used to turn the body limit's own 413 into a 400: a client whose JSON was
-/// only too long was told it was malformed. A body past
-/// [`MAX_REQUEST_BODY_BYTES`] is a 413 here, and any other rejection is a 400
-/// carrying `detail` when the route has one.
-fn json_body(
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
-    detail: Option<&str>,
-) -> Result<Value, Problem> {
-    match body {
-        Ok(Json(raw)) => Ok(raw),
+/// A route that names its body in its signature has it read, and for JSON
+/// parsed, before the handler runs, so before the guard: a caller with no
+/// credential, or over the rate limit, still had the server take and parse up
+/// to [`MAX_REQUEST_BODY_BYTES`]. A body past that limit is a `413`; any other
+/// failure to read one is a `400` carrying `unreadable`.
+async fn request_body(
+    request: axum::extract::Request,
+    unreadable: &'static str,
+) -> Result<axum::body::Bytes, Problem> {
+    use axum::extract::FromRequest as _;
+    match axum::body::Bytes::from_request(request, &()).await {
+        Ok(bytes) => Ok(bytes),
         Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
             Err(Problem::new(StatusCode::PAYLOAD_TOO_LARGE))
         }
-        Err(_) => Err(match detail {
-            Some(detail) => Problem::detailed(StatusCode::BAD_REQUEST, detail),
-            None => Problem::new(StatusCode::BAD_REQUEST),
-        }),
+        Err(_) => Err(Problem::detailed(StatusCode::BAD_REQUEST, unreadable)),
     }
+}
+
+/// Compile the `filter` and `named` query parameters: a diagnostic alias name
+/// or a DSL expression in `filter`, the way `--filter` and every MCP tool's
+/// `filter` accept one, or the name of one `[filters]` entry or built-in
+/// alias in `named`.
+///
+/// The one place a REST handler turns those parameters into a
+/// [`FilterExpr`]. `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates` and
+/// `/v1/talkers` all call it, so no route can accept a spelling another
+/// refuses. The rule is [`crate::sip::filter_request::compile_request`],
+/// which the MCP tools apply too, over the `[filters]` table the run
+/// installed at startup.
+///
+/// # Errors
+///
+/// A `400`. Its detail is the conflict message when both are given, and
+/// otherwise the parameter's name, `: `, and the reason: the parse error,
+/// which names the text and the position where it stopped parsing, or the
+/// names that are defined when `named` names none of them.
+pub(crate) fn compile_query_filter(
+    thresholds: &crate::sip::dsl::AliasThresholds,
+    filter: Option<&str>,
+    named: Option<&str>,
+) -> Result<Option<crate::sip::dsl::FilterExpr>, Problem> {
+    crate::sip::filter_request::compile_request(
+        filter,
+        named,
+        &crate::sip::named_filters::installed(),
+        thresholds,
+    )
+    .map_err(|e| {
+        let detail = match e.param() {
+            Some(param) => format!("{}: {e}", param.name()),
+            None => e.to_string(),
+        };
+        Problem::detailed(StatusCode::BAD_REQUEST, detail)
+    })
+}
+
+/// Query parameters for the `GET /v1/filters/validate` endpoint.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct FilterValidateParams {
+    /// The expression to compile: a DSL expression or a diagnostic alias
+    /// name, with `@name` references, what a `filter` parameter accepts.
+    /// Percent-encode it. Required; an absent `expr` is a 400.
+    pub expr: Option<String>,
+}
+
+/// `GET /v1/filters` — the `[filters]` table this run started with.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+///
+/// # Returns
+///
+/// 200 with every entry's name and definition as written; 401/503 from the
+/// guard.
+///
+/// # Side effects
+///
+/// Mutates the rate limiter. Reads no store.
+#[utoipa::path(
+    get,
+    path = "/v1/filters",
+    tag = "filters",
+    summary = "List the named filters",
+    description = "The `[filters]` table of this run: each entry's name, which the `named` parameter takes and `@name` refers to, and its definition as the config file writes it. The table is resolved at startup; a name saved with F2 in the terminal UI of the same run joins it at once, written to the config file or kept for the session only.\n\nThe MCP `list_named_filters` tool returns the same answer.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Every entry, in name order; an empty list when the config defines none.", body = crate::output::query::named_filters::NamedFilterList),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_named_filters(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    Ok(Json(
+        crate::output::query::named_filters::named_filter_list(
+            &crate::sip::named_filters::installed(),
+        ),
+    ))
+}
+
+/// `GET /v1/filters/validate` — whether an expression compiles, and where it
+/// stopped when it did not.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — `expr`, the expression to compile.
+///
+/// # Returns
+///
+/// 200 with `valid` and, when it is false, the parser's message and
+/// position; 400 when `expr` is absent; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Mutates the rate limiter. Reads no store.
+#[utoipa::path(
+    get,
+    path = "/v1/filters/validate",
+    tag = "filters",
+    summary = "Validate a filter expression",
+    description = "Compiles an expression the way every `filter` parameter is compiled, with the same aliases, `@name` references and thresholds, and reports whether it compiled. An expression that does not compile is a `200` with `valid: false`, the parser's message in `error` (the text a `filter` parameter's `400` carries after `filter: `) and, when the parser stopped at a place in the text as sent, that place in `position`.\n\nThe MCP `validate_filter` tool reports the same `error` and `position`.",
+    params(FilterValidateParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Whether it compiled; the message and position when it did not.", body = crate::output::query::named_filters::FilterValidation),
+        (status = 400, description = "No `expr` parameter.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_filter_validation(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<FilterValidateParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let expr = params.expr.ok_or_else(|| {
+        Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "expr: give the expression to validate, percent-encoded",
+        )
+    })?;
+    Ok(Json(
+        crate::output::query::named_filters::filter_validation(
+            &expr,
+            &crate::sip::named_filters::installed(),
+            &state.alias_thresholds,
+        ),
+    ))
 }
 
 /// Parse an address out of a request, refusing anything TFPS cannot hold.
@@ -5023,11 +5232,10 @@ async fn get_tfps_labels(
 async fn post_tfps_ban(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    let caller = action_guard(&state, &headers, addr.ip())?.name;
-    let req: TfpsBanRequest = object_body(body)?;
+    let caller = action_guard(&state, request.headers(), addr.ip())?.name;
+    let req: TfpsBanRequest = json_object(request).await?;
     let ip = tfps_ip(&req.ip)?;
     let ttl = req.ttl_secs;
     run_action(&state, move |service, now_unix, now| {
@@ -5067,11 +5275,10 @@ async fn post_tfps_ban(
 async fn post_tfps_unban(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    let caller = action_guard(&state, &headers, addr.ip())?;
-    let req: TfpsUnbanRequest = object_body(body)?;
+    let caller = action_guard(&state, request.headers(), addr.ip())?;
+    let req: TfpsUnbanRequest = json_object(request).await?;
     let ip = tfps_ip(&req.ip)?;
     run_action(&state, move |service, now_unix, now| {
         service.unban(
@@ -5109,11 +5316,10 @@ async fn post_tfps_unban(
 async fn post_actions_revert(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+    request: axum::extract::Request,
 ) -> Result<impl IntoResponse, Problem> {
-    let caller = action_guard(&state, &headers, addr.ip())?;
-    let req: ActionsRevertRequest = object_body(body)?;
+    let caller = action_guard(&state, request.headers(), addr.ip())?;
+    let req: ActionsRevertRequest = json_object(request).await?;
     let target = revert_target(req)?;
     run_action(&state, move |service, now_unix, now| {
         service.revert(
@@ -5382,7 +5588,7 @@ async fn get_stream(
     params(CaptureReportParams),
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-11-08.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
+        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-11-20.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
             (schema::CaptureReport = "application/json"),
             ("application/yang-data+json"),
         )),
@@ -6303,15 +6509,22 @@ fn relay_rest_answer_with(
                 routing,
                 sdp_of: &sdp_of,
             });
-            relay_sessions_routed(
+            let mut snapshot = relay_sessions_routed(
                 relay.as_ref(),
                 routed.as_ref(),
                 &permit,
                 &ask,
                 &ended,
                 &chrono::Utc::now,
-            )
-            .body()
+            );
+            let ss = stream_store.read();
+            let counts = crate::output::query::relay_capture::counts_in(&ss);
+            snapshot.attach_rates(
+                &mut rq.rates.lock(),
+                Some(&counts),
+                crate::relay::rate::monotonic_now(),
+            );
+            snapshot.body()
         }
         // The answer `--relay-holdings` prints too.
         RelayAsk::Holdings { cap } => crate::output::query::relay_holdings::ask_engines(
@@ -6838,10 +7051,10 @@ fn stream_summary(
     s: &crate::rtp::stream::RtpStream,
     store: &crate::rtp::stream_store::StreamStore,
 ) -> Value {
-    serde_json::to_value(
-        crate::output::model::StreamSummary::of(s, quality::MosDelay::from_capture(store))
-            .with_round_trip(store.round_trip_for(s)),
-    )
+    serde_json::to_value(crate::output::model::StreamSummary::of(
+        s,
+        quality::MosDelay::from_capture(store),
+    ))
     .unwrap_or_else(|e| json!({"error": format!("serialization failed: {e}")}))
 }
 
@@ -8178,6 +8391,8 @@ impl utoipa::Modify for BearerAuth {
         get_endpoints,
         get_security_findings,
         get_captures_compare,
+        get_named_filters,
+        get_filter_validation,
         get_dialog_audio,
         get_lint,
         get_persistence,
@@ -8254,6 +8469,9 @@ impl utoipa::Modify for BearerAuth {
         schema::BucketDeltaView,
         schema::DimensionDiffView,
         schema::CaptureComparisonView,
+        crate::output::query::named_filters::NamedFilterList,
+        crate::output::query::named_filters::NamedFilterRow,
+        crate::output::query::named_filters::FilterValidation,
         schema::RelayStatsResponse,
         schema::RelaySessionsResponse,
         crate::output::relay_polled::PolledAnswer,
@@ -8300,6 +8518,7 @@ impl utoipa::Modify for BearerAuth {
         (name = "dialogs", description = "SIP dialogs the capture is tracking"),
         (name = "streams", description = "RTP streams the capture is tracking"),
         (name = "capture", description = "The capture as a whole"),
+        (name = "filters", description = "The `[filters]` table this run started with, and filter expression validation"),
         (name = "operations", description = "Liveness, metrics, and the persistence gate"),
         (name = "tfps", description = "The toll-fraud prevention peer on this host, when one is installed: what it condemns, what it dropped, its verdict log, and an operator's ban or release relayed to it"),
         (name = "security", description = "sipnab's own armed detectors: the findings the scanner, fraud, digest and reg-flood rules recorded")
@@ -10632,6 +10851,7 @@ mod tests {
     #[test]
     fn relay_rest_no_permit_is_not_permitted() -> Result<(), TestError> {
         let rq = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(StubRelay)),
             permit: None,
             polled: None,
@@ -10665,6 +10885,7 @@ mod tests {
             c: &str,
         ) -> anyhow::Result<ControlReply> {
             Ok(ControlReply::Call(crate::relay::types::CallView {
+                incarnation: None,
                 call_id: c.to_string(),
                 tags: vec![crate::relay::types::RelayTag {
                     tag: "from-tag".into(),
@@ -10699,6 +10920,7 @@ mod tests {
     #[test]
     fn relay_rest_holdings_lists_the_call_ids() -> Result<(), TestError> {
         let rq = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(HoldsRelay)),
             permit: Some(live_permit()?),
             polled: None,
@@ -10724,6 +10946,7 @@ mod tests {
     #[test]
     fn relay_rest_holding_shows_one_calls_tags() -> Result<(), TestError> {
         let rq = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(HoldsRelay)),
             permit: Some(live_permit()?),
             polled: None,
@@ -10883,6 +11106,7 @@ mod tests {
     /// A relay config that WILL transmit: a scripted relay behind a live permit.
     fn transmitting(wide: Scripted, per_call: Scripted) -> Result<RelayRestConfig, TestError> {
         Ok(RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(ScriptedRelay { wide, per_call })),
             permit: Some(live_permit()?),
             polled: None,
@@ -11279,6 +11503,7 @@ mod tests {
         ) -> anyhow::Result<ControlReply> {
             if self.2.contains(&c) {
                 Ok(ControlReply::Call(crate::relay::types::CallView {
+                    incarnation: None,
                     call_id: c.to_owned(),
                     tags: Vec::new(),
                 }))
@@ -11322,6 +11547,7 @@ mod tests {
             ))
         });
         Ok(RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(NamedEngine(
                 "engine-a",
                 Scripted::Timeout,
@@ -11390,6 +11616,7 @@ mod tests {
             ))
         });
         let rq = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(NamedEngine(
                 "engine-a",
                 Scripted::Timeout,
@@ -11461,6 +11688,7 @@ mod tests {
             }
         });
         let mut rq = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(Arc::new(NamedEngine(
                 "engine-a",
                 Scripted::Stats(vec![("sessions", "1")]),
@@ -11517,6 +11745,7 @@ mod tests {
             |fakes: &[FakeEngine]| -> Result<(serde_json::Value, std::time::Duration), TestError> {
                 let r = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
                 let rq = RelayRestConfig {
+                    rates: Default::default(),
                     relay: Some(client(r.default_engine(), TIMEOUT)),
                     permit: Some(live_permit()?),
                     polled: None,
@@ -12404,11 +12633,62 @@ mod tests {
         Ok(())
     }
 
+    /// How long a test client waits for the server to close a connection it
+    /// never speaks on. Only a hang reaches it: the timeouts under test are
+    /// 300 ms, or an hour where the test needs one that never passes.
+    const CLOSE_CEILING: Duration = Duration::from_secs(60);
+
+    /// Whether a read by a client that never spoke shows the server closed
+    /// the connection: end of file, or a reset. Bytes, or a read that timed
+    /// out at [`CLOSE_CEILING`], are not a close.
+    fn server_closed(outcome: &std::io::Result<usize>) -> bool {
+        match outcome {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(e) => e.kind() == std::io::ErrorKind::ConnectionReset,
+        }
+    }
+
+    /// Connect to `addr`, say nothing, and read once, up to
+    /// [`CLOSE_CEILING`].
+    ///
+    /// # Returns
+    ///
+    /// The read's outcome, and how long the connection was open.
+    async fn silent_client(
+        addr: SocketAddr,
+    ) -> Result<(std::io::Result<usize>, Duration), TestError> {
+        Ok(tokio::task::spawn_blocking(move || -> Result<_, String> {
+            use std::io::Read;
+            let mut sock =
+                std::net::TcpStream::connect(addr).map_err(|e| format!("connect: {e:?}"))?;
+            let started = std::time::Instant::now();
+            sock.set_read_timeout(Some(CLOSE_CEILING)).ok();
+            // A signal meant for another test in this binary interrupts the
+            // read without saying anything about the connection: retry it.
+            let outcome = loop {
+                match sock.read(&mut [0u8; 16]) {
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    other => break other,
+                }
+            };
+            Ok((outcome, started.elapsed()))
+        })
+        .await
+        .map_err(|e| format!("client task: {e:?}"))??)
+    }
+
     /// A client that never finishes its handshake is dropped once the
     /// handshake timeout passes, rather than holding its task forever.
+    ///
+    /// The close is the event asserted; the time only from below (not before
+    /// the 300 ms). A server that kept the connection is caught at
+    /// [`CLOSE_CEILING`], not by the "under 3 s" this test once asserted,
+    /// which a stalled host could break.
     #[tokio::test(flavor = "multi_thread")]
     async fn api_tls_a_silent_client_is_dropped_after_the_handshake_timeout()
     -> Result<(), TestError> {
+        const HANDSHAKE: Duration = Duration::from_millis(300);
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let (listener, _ca) = tls_listener_for_test(dir.path())?;
         let addr = listener.local_addr().map_err(|e| format!("bound: {e:?}"))?;
@@ -12418,46 +12698,33 @@ mod tests {
             "API TLS",
             tcp,
             tls.ok_or("TLS configured")?,
-            Duration::from_millis(300),
+            HANDSHAKE,
             API_TLS_MAX_HANDSHAKES,
         )
         .map_err(|e| format!("listener: {e:?}"))?;
-        let started = std::time::Instant::now();
-        let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
-            use std::io::Read;
-            let mut sock =
-                std::net::TcpStream::connect(addr).map_err(|e| format!("connect: {e:?}"))?;
-            sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            // A signal meant for another test in this binary interrupts the
-            // read without saying anything about the connection: retry it.
-            Ok(loop {
-                match sock.read(&mut [0u8; 16]) {
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    other => break other,
-                }
-            })
-        })
-        .await
-        .map_err(|e| format!("client task: {e:?}"))??;
-        let closed = match &outcome {
-            Ok(0) => true,
-            Ok(_) => false,
-            Err(e) => e.kind() == std::io::ErrorKind::ConnectionReset,
-        };
+        let (outcome, open_for) = silent_client(addr).await?;
         assert!(
-            closed,
-            "the server must close a silent connection: {outcome:?}"
+            server_closed(&outcome),
+            "the server must close a silent connection: {outcome:?} after {open_for:?}"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "closed after {:?}, not at the 300 ms timeout",
-            started.elapsed()
+            open_for >= HANDSHAKE,
+            "closed after {open_for:?}, before the {HANDSHAKE:?} handshake timeout"
         );
         Ok(())
     }
 
     /// Past the handshake cap a new connection is closed at once, while the
-    /// connection holding the slot is still waiting out its (long) timeout.
+    /// connection holding the slot is still waiting out its (hour-long)
+    /// timeout.
+    ///
+    /// No clock is read: the second connection can only be closed by the
+    /// shedding, because its own handshake timeout is an hour, so a
+    /// listener that did not shed is caught at [`CLOSE_CEILING`]. The holder
+    /// takes the one slot first because the accept loop takes connections
+    /// in the order the kernel completed them and takes a slot as it
+    /// accepts; the 200 ms sleep this test had before the second connect is
+    /// not needed for that.
     #[tokio::test(flavor = "multi_thread")]
     async fn api_tls_sheds_connections_past_the_handshake_cap() -> Result<(), TestError> {
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
@@ -12469,42 +12736,51 @@ mod tests {
             "API TLS",
             tcp,
             tls.ok_or("TLS configured")?,
-            Duration::from_secs(30),
+            Duration::from_secs(3600),
             1,
         )
         .map_err(|e| format!("listener: {e:?}"))?;
         let holder =
             std::net::TcpStream::connect(addr).map_err(|e| format!("holder connect: {e:?}"))?;
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        let started = std::time::Instant::now();
-        let outcome = tokio::task::spawn_blocking(move || -> Result<_, String> {
-            use std::io::Read;
-            let mut sock =
-                std::net::TcpStream::connect(addr).map_err(|e| format!("connect: {e:?}"))?;
-            sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
-            // A signal meant for another test in this binary interrupts the
-            // read without saying anything about the connection: retry it.
-            Ok(loop {
-                match sock.read(&mut [0u8; 16]) {
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    other => break other,
-                }
-            })
-        })
-        .await
-        .map_err(|e| format!("client task: {e:?}"))??;
-        let closed = match &outcome {
-            Ok(0) => true,
-            Ok(_) => false,
-            Err(e) => e.kind() == std::io::ErrorKind::ConnectionReset,
-        };
+        let (outcome, open_for) = silent_client(addr).await?;
         assert!(
-            closed,
-            "a connection past the cap must be closed: {outcome:?}"
+            server_closed(&outcome),
+            "a connection past the cap must be closed: {outcome:?} after {open_for:?}"
         );
-        assert!(started.elapsed() < Duration::from_secs(3));
         drop(holder);
         Ok(())
+    }
+
+    /// End of file from a client that never spoke is the server's close.
+    #[test]
+    fn a_read_of_nothing_is_the_servers_close() {
+        assert!(server_closed(&Ok(0)), "end of file is a close");
+    }
+
+    /// A reset is the server's close too.
+    #[test]
+    fn a_reset_is_the_servers_close() {
+        assert!(
+            server_closed(&Err(std::io::ErrorKind::ConnectionReset.into())),
+            "a reset is a close"
+        );
+    }
+
+    /// Bytes are not a close: the server answered.
+    #[test]
+    fn bytes_are_not_the_servers_close() {
+        assert!(!server_closed(&Ok(7)), "bytes are an answer, not a close");
+    }
+
+    /// A read that timed out is not a close: the server kept the connection.
+    #[test]
+    fn a_timed_out_read_is_not_the_servers_close() {
+        for kind in [std::io::ErrorKind::WouldBlock, std::io::ErrorKind::TimedOut] {
+            assert!(
+                !server_closed(&Err(kind.into())),
+                "{kind:?} means the connection was kept"
+            );
+        }
     }
 
     /// A matching pair starts: the listener binds and reports its address.
@@ -14281,6 +14557,38 @@ mod tests {
         Ok(())
     }
 
+    /// `GET /v1/dialogs/{id}/vcon` reads its blind spots from the capture's
+    /// facts, without analyzing every dialog of the capture, and the container
+    /// still carries the (empty) list that says somebody looked.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn dialog_vcon_reads_its_blind_spots_without_analyzing_every_dialog()
+    -> Result<(), TestError> {
+        let state = make_state();
+        populate_dialogs(&state)?;
+        let app = build_router(state);
+
+        crate::analysis::ANALYZE_WITH_CALLS.with(|c| c.set(0));
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/call-1@test/vcon")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK, "the container is served");
+        assert_eq!(
+            crate::analysis::ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            0,
+            "no full capture analysis per request"
+        );
+        // Process-global facts (stored vCons other tests read) may put rows in
+        // the list; what this pins is that the list is there, not `null`.
+        let body = body_to_string(resp.into_body()).await?;
+        assert!(
+            body.contains("\"blind_spots\":[") && !body.contains("\"blind_spots\":null"),
+            "the container carries the list: {body}"
+        );
+        Ok(())
+    }
+
     /// A dialog the run's `--content-deny-header` names is not handed out as a
     /// vCon through REST either.
     ///
@@ -15828,6 +16136,397 @@ mod tests {
         Ok(())
     }
 
+    // ── named filters: `named`, GET /v1/filters, GET /v1/filters/validate ──
+    //
+    // The lib tests run with the installed `[filters]` table empty, so these
+    // drive `named` with the built-in aliases and unknown names; the pure
+    // rule is driven with any table in `crate::sip::filter_request`, and
+    // `tests/named_filters_api_test.rs` drives these routes with a table
+    // installed.
+
+    /// The four routes that take a `filter`, with the parameters each also
+    /// needs, ready for `filter=` or `named=` to be appended.
+    const FILTER_ROUTES: [&str; 4] = [
+        "/v1/dialogs?",
+        "/v1/aggregate?by=state&",
+        "/v1/dialogs/rates?by=method&",
+        "/v1/talkers?by=ip&",
+    ];
+
+    /// The `detail` of a `400` from `uri`.
+    async fn detail_of_400(state: &ApiState, uri: &str) -> Result<String, TestError> {
+        let (status, body) = get_json(state, uri).await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        Ok(body["detail"]
+            .as_str()
+            .ok_or_else(|| format!("{uri}: a 400 carries detail: {body}"))?
+            .to_owned())
+    }
+
+    /// `named=<alias>` answers what `filter=<alias>` answers, on each route.
+    async fn assert_named_alias_is_filter_alias(route: &str) -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        for alias in crate::sip::dsl::DIAGNOSTIC_ALIASES {
+            let (named_status, by_name) =
+                get_json(&state, &format!("{route}named={alias}")).await?;
+            let (filter_status, by_filter) =
+                get_json(&state, &format!("{route}filter={alias}")).await?;
+            assert_eq!(
+                named_status,
+                StatusCode::OK,
+                "{route}named={alias}: {by_name}"
+            );
+            assert_eq!(filter_status, StatusCode::OK, "{route}filter={alias}");
+            assert_eq!(by_name, by_filter, "{route}named={alias} is filter={alias}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_dialogs_named_alias_is_the_filter_alias() -> Result<(), TestError> {
+        assert_named_alias_is_filter_alias(FILTER_ROUTES[0]).await
+    }
+
+    #[tokio::test]
+    async fn aggregate_named_alias_is_the_filter_alias() -> Result<(), TestError> {
+        assert_named_alias_is_filter_alias(FILTER_ROUTES[1]).await
+    }
+
+    #[tokio::test]
+    async fn rates_named_alias_is_the_filter_alias() -> Result<(), TestError> {
+        assert_named_alias_is_filter_alias(FILTER_ROUTES[2]).await
+    }
+
+    #[tokio::test]
+    async fn talkers_named_alias_is_the_filter_alias() -> Result<(), TestError> {
+        assert_named_alias_is_filter_alias(FILTER_ROUTES[3]).await
+    }
+
+    /// `named=problems` narrows: the fixture's 486 is the one problem call.
+    #[tokio::test]
+    async fn named_problems_narrows_the_dialog_list() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let (status, body) = get_json(&state, "/v1/dialogs?named=problems").await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["total"], 1, "the one problem call: {body}");
+        assert_eq!(body["dialogs"][0]["call_id"], "call-2@test", "{body}");
+        Ok(())
+    }
+
+    /// A leading `@` in `named` is accepted: `named=@problems` is
+    /// `named=problems`.
+    #[tokio::test]
+    async fn named_accepts_a_leading_at_sign() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let (status, with_at) = get_json(&state, "/v1/dialogs?named=%40problems").await?;
+        assert_eq!(status, StatusCode::OK, "{with_at}");
+        assert_eq!(with_at["total"], 1, "narrowed, not every row: {with_at}");
+        let (_, bare) = get_json(&state, "/v1/dialogs?named=problems").await?;
+        assert_eq!(with_at, bare, "the @ is optional");
+        Ok(())
+    }
+
+    /// `filter` and `named` together are a `400` on every route, with the
+    /// one conflict message.
+    #[tokio::test]
+    async fn filter_and_named_together_are_a_400_on_every_route() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        for route in FILTER_ROUTES {
+            let detail =
+                detail_of_400(&state, &format!("{route}filter=problems&named=one-way")).await?;
+            assert_eq!(
+                detail,
+                crate::sip::filter_request::CONFLICT_MESSAGE,
+                "{route}: the conflict message"
+            );
+        }
+        Ok(())
+    }
+
+    /// An unknown name is a `400` on every route, naming it and the names
+    /// that are defined.
+    #[tokio::test]
+    async fn an_unknown_named_filter_is_a_400_on_every_route() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let want = format!(
+            "named: {}",
+            crate::sip::named_filters::unknown_reference_message(
+                "support",
+                &crate::sip::named_filters::installed()
+            )
+        );
+        for route in FILTER_ROUTES {
+            let detail = detail_of_400(&state, &format!("{route}named=support")).await?;
+            assert_eq!(detail, want, "{route}: the reason");
+        }
+        Ok(())
+    }
+
+    /// An empty `named` is a `400`, not an unfiltered answer.
+    #[tokio::test]
+    async fn an_empty_named_is_a_400_on_every_route() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        for route in FILTER_ROUTES {
+            let detail = detail_of_400(&state, &format!("{route}named=")).await?;
+            assert_eq!(
+                detail,
+                format!("named: {}", crate::sip::filter_request::EMPTY_NAME_MESSAGE),
+                "{route}"
+            );
+        }
+        Ok(())
+    }
+
+    /// An expression in `named` is refused as a name, not run as a filter.
+    #[tokio::test]
+    async fn an_expression_in_named_is_a_400() -> Result<(), TestError> {
+        let state = make_state();
+        populate_alias_fixture(&state)?;
+        let detail = detail_of_400(
+            &state,
+            &format!("/v1/dialogs?named={}", query_encode("method == INVITE")),
+        )
+        .await?;
+        assert!(
+            detail.starts_with("named: '@method == INVITE' is not a defined filter"),
+            "{detail}"
+        );
+        Ok(())
+    }
+
+    /// The `filter` refusal is unchanged by `named`: `filter: ` and the
+    /// parser's message.
+    #[tokio::test]
+    async fn an_invalid_filter_keeps_its_detail() -> Result<(), TestError> {
+        let state = make_state();
+        let expr = "state == InCall )";
+        let detail = detail_of_400(
+            &state,
+            &format!("/v1/dialogs?filter={}", query_encode(expr)),
+        )
+        .await?;
+        let parser = match crate::sip::dsl::parse_filter(expr, &state.alias_thresholds) {
+            Ok(_) => return Err("the parser accepted it".into()),
+            Err(e) => e.to_string(),
+        };
+        assert_eq!(detail, format!("filter: {parser}"), "unchanged");
+        Ok(())
+    }
+
+    /// `GET /v1/filters` lists the installed table: empty here.
+    #[tokio::test]
+    async fn the_filter_list_is_empty_with_no_table() -> Result<(), TestError> {
+        let state = make_state();
+        let (status, body) = get_json(&state, "/v1/filters").await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body,
+            serde_json::json!({"schema_version": 1, "filters": []}),
+            "no entries"
+        );
+        Ok(())
+    }
+
+    /// `GET /v1/filters` is behind the bearer guard like every `/v1` route.
+    #[tokio::test]
+    async fn the_filter_list_needs_a_credential() -> Result<(), TestError> {
+        let state = make_state_with_key("named-filters-key");
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/filters")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "no credential");
+        Ok(())
+    }
+
+    /// `GET /v1/filters` with the credential answers.
+    #[tokio::test]
+    async fn the_filter_list_answers_with_a_credential() -> Result<(), TestError> {
+        let state = make_state_with_key("named-filters-key");
+        let resp = build_router(state)
+            .oneshot(test_request_with_header(
+                "/v1/filters",
+                "authorization",
+                "Bearer named-filters-key",
+            )?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK, "credential accepted");
+        Ok(())
+    }
+
+    /// `GET /v1/filters` takes no write: a POST is refused.
+    #[tokio::test]
+    async fn the_filter_list_is_read_only() -> Result<(), TestError> {
+        let state = make_state();
+        let mut req = test_request("/v1/filters")?;
+        *req.method_mut() = axum::http::Method::POST;
+        let resp = build_router(state)
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED, "no write");
+        Ok(())
+    }
+
+    /// The validation answer for `expr`, which must be a `200`.
+    async fn validation(state: &ApiState, expr: &str) -> Result<Value, TestError> {
+        let uri = format!("/v1/filters/validate?expr={}", query_encode(expr));
+        let (status, body) = get_json(state, &uri).await?;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        Ok(body)
+    }
+
+    #[tokio::test]
+    async fn a_valid_expression_validates_over_rest() -> Result<(), TestError> {
+        let body = validation(&make_state(), "method == INVITE").await?;
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "schema_version": 1,
+                "expr": "method == INVITE",
+                "valid": true,
+                "error": null,
+                "position": null
+            }),
+            "valid"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_alias_validates_over_rest() -> Result<(), TestError> {
+        let body = validation(&make_state(), "problems").await?;
+        assert_eq!(body["valid"], true, "{body}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_at_alias_validates_over_rest() -> Result<(), TestError> {
+        let body = validation(&make_state(), "@one-way AND method == INVITE").await?;
+        assert_eq!(body["valid"], true, "{body}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_invalid_expression_reports_position_over_rest() -> Result<(), TestError> {
+        let body = validation(&make_state(), "state == InCall )").await?;
+        assert_eq!(body["valid"], false, "{body}");
+        assert_eq!(body["position"], 16, "{body}");
+        let error = body["error"].as_str().ok_or("an error")?;
+        assert!(error.contains(" at position 16: ')'"), "{error}");
+        Ok(())
+    }
+
+    /// The validation's `error` is the text the same expression's `filter`
+    /// `400` carries after `filter: `, on every route.
+    #[tokio::test]
+    async fn the_validation_error_is_the_filter_400_text() -> Result<(), TestError> {
+        let state = make_state();
+        for expr in ["state == InCall )", "method ==", "@nope", "staet == InCall"] {
+            let body = validation(&state, expr).await?;
+            let error = body["error"].as_str().ok_or("an error")?.to_owned();
+            for route in FILTER_ROUTES {
+                let detail =
+                    detail_of_400(&state, &format!("{route}filter={}", query_encode(expr))).await?;
+                assert_eq!(detail, format!("filter: {error}"), "{route} for '{expr}'");
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_validation_position_counts_characters() -> Result<(), TestError> {
+        let body = validation(&make_state(), "from.user == 'é' )").await?;
+        assert_eq!(body["position"], 17, "{body}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_undefined_name_validates_false_without_a_position() -> Result<(), TestError> {
+        let body = validation(&make_state(), "@nope").await?;
+        assert_eq!(body["valid"], false, "{body}");
+        assert_eq!(body["position"], Value::Null, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.starts_with("'@nope' is not a defined filter")),
+            "{body}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_empty_expression_validates_false() -> Result<(), TestError> {
+        let body = validation(&make_state(), "").await?;
+        assert_eq!(body["valid"], false, "{body}");
+        assert_eq!(body["error"], "filter expression is empty", "{body}");
+        assert_eq!(body["position"], Value::Null, "{body}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_validated_expression_is_echoed_verbatim() -> Result<(), TestError> {
+        let body = validation(&make_state(), "  method ==  INVITE ").await?;
+        assert_eq!(body["expr"], "  method ==  INVITE ", "{body}");
+        assert_eq!(body["valid"], true, "{body}");
+        Ok(())
+    }
+
+    /// No `expr` is a `400` naming the parameter, not a validation of
+    /// nothing.
+    #[tokio::test]
+    async fn validation_without_expr_is_a_400() -> Result<(), TestError> {
+        let detail = detail_of_400(&make_state(), "/v1/filters/validate").await?;
+        assert!(detail.starts_with("expr"), "{detail}");
+        Ok(())
+    }
+
+    /// `GET /v1/filters/validate` is behind the bearer guard.
+    #[tokio::test]
+    async fn validation_needs_a_credential() -> Result<(), TestError> {
+        let state = make_state_with_key("named-filters-key");
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/filters/validate?expr=problems")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "no credential");
+        Ok(())
+    }
+
+    /// The validation reads no dialog: it answers the same on an empty store
+    /// and a populated one.
+    #[tokio::test]
+    async fn validation_does_not_depend_on_the_store() -> Result<(), TestError> {
+        let empty = make_state();
+        let full = make_state();
+        populate_alias_fixture(&full)?;
+        for expr in ["problems", "state == InCall )", "@nope"] {
+            assert_eq!(
+                validation(&empty, expr).await?,
+                validation(&full, expr).await?,
+                "'{expr}'"
+            );
+        }
+        Ok(())
+    }
+
+    /// Two characters the URL must encode, `&` and `#`, reach the parser as
+    /// written.
+    #[tokio::test]
+    async fn validation_reads_an_encoded_expression_as_written() -> Result<(), TestError> {
+        let body = validation(&make_state(), "from.user == 'a&b#c'").await?;
+        assert_eq!(body["expr"], "from.user == 'a&b#c'", "{body}");
+        assert_eq!(body["valid"], true, "{body}");
+        Ok(())
+    }
+
     // ── list_dialogs time window (PAR3: search_by_time) ───────────────
 
     /// `after` excludes dialogs that opened before it. The fixture's three
@@ -16219,9 +16918,10 @@ mod tests {
     /// Behavioral on purpose. The parity gate in `tests/surface_parity_test.rs`
     /// scans source text, and once its REST scope had to include
     /// `src/output/model.rs` — which is where the field is DECLARED — it could
-    /// no longer tell a populated field from a declared one. Deleting
-    /// `.with_round_trip(...)` from `stream_summary` left that gate green, which
-    /// a mutation run caught and is the only reason this test exists.
+    /// no longer tell a populated field from a declared one. Deleting the
+    /// round-trip fill (then `.with_round_trip(...)` in `stream_summary`, now
+    /// the store lookup in `StreamSummary::of`) left that gate green, which a
+    /// mutation run caught and is the only reason this test exists.
     ///
     /// A text scan cannot express "the handler fills this in". This can.
     #[test]
@@ -17091,6 +17791,279 @@ mod tests {
         Ok(())
     }
 
+    /// A key given twice never moves the gate.
+    ///
+    /// [RFC 8259 section 4](https://www.rfc-editor.org/rfc/rfc8259.html#section-4) leaves a repeated name's meaning to each parser.
+    /// Read into a `serde_json::Value`, the last copy won, so a body a proxy
+    /// in front of sipnab reads as "close" opened the gate here.
+    #[tokio::test]
+    async fn a_repeated_key_never_moves_the_gate() -> Result<(), TestError> {
+        for body in [
+            "{\"enabled\":false,\"enabled\":true}",
+            "{\"enabled\":false,\"en\\u0061bled\":true}",
+        ] {
+            let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+            gate.set(false);
+            let app = build_router(make_state_with_gate(&gate));
+
+            let resp = app
+                .oneshot(test_post_with_key("/v1/persistence", body, GATE_KEY)?)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "body {body:?} was accepted"
+            );
+            assert!(
+                !gate.writes_permitted(),
+                "body {body:?} reopened a closed gate"
+            );
+            let v = json_of(resp).await?;
+            assert_eq!(
+                v.to_string(),
+                "{\"detail\":\"the key `enabled` appears more than once\",\"status\":400,\
+                 \"title\":\"Bad Request\",\"type\":\"https://sipnab.com/problems/bad-request\"}",
+                "the answer docs/rest-api.md shows, body {body:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A body whose Content-Type is not JSON is refused, and told why.
+    #[tokio::test]
+    async fn a_body_that_is_not_labeled_json_is_refused_with_the_reason() -> Result<(), TestError> {
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+        gate.set(false);
+        let app = build_router(make_state_with_gate(&gate));
+        let mut req = test_post_with_key("/v1/persistence", r#"{"enabled":true}"#, GATE_KEY)?;
+        req.headers_mut().insert(
+            "content-type",
+            "text/plain"
+                .parse()
+                .map_err(|e| format!("header value: {e:?}"))?,
+        );
+
+        let resp = app
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "a text/plain body was read"
+        );
+        assert!(!gate.writes_permitted(), "a text/plain body moved the gate");
+        let v = json_of(resp).await?;
+        assert_eq!(
+            v["detail"], "the body must be JSON, sent with Content-Type application/json",
+            "the refusal names the header"
+        );
+        Ok(())
+    }
+
+    /// A request body that never finishes arriving.
+    struct BodyThatNeverEnds;
+
+    impl futures_core::Stream for BodyThatNeverEnds {
+        type Item = Result<axum::body::Bytes, std::io::Error>;
+
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// The routes that take a request body.
+    fn body_routes() -> Vec<&'static str> {
+        let routes = vec![
+            "/v1/persistence",
+            "/v1/tfps/ban",
+            "/v1/tfps/unban",
+            "/v1/actions/revert",
+        ];
+        #[cfg(feature = "vcon")]
+        let routes = {
+            let mut routes = routes;
+            routes.extend(["/v1/vcon/validate", "/v1/vcon/analyze"]);
+            routes
+        };
+        routes
+    }
+
+    /// Each JSON body's fields are the ones its published schema lists.
+    ///
+    /// The reader takes `FIELDS`; the OpenAPI document is generated from the
+    /// struct. Two lists of one body drift unless something compares them:
+    /// same keys, same required keys, same types, and no other key allowed.
+    #[test]
+    fn each_json_body_reads_the_fields_its_schema_publishes() -> Result<(), TestError> {
+        let doc: Value = serde_json::from_str(&openapi_json())?;
+        let bodies: [(&str, &[Field]); 4] = [
+            ("PersistenceRequest", PersistenceRequest::FIELDS),
+            ("TfpsBanRequest", TfpsBanRequest::FIELDS),
+            ("TfpsUnbanRequest", TfpsUnbanRequest::FIELDS),
+            ("ActionsRevertRequest", ActionsRevertRequest::FIELDS),
+        ];
+        for (name, fields) in bodies {
+            let schema = &doc["components"]["schemas"][name];
+            assert_eq!(
+                schema["additionalProperties"],
+                Value::Bool(false),
+                "{name}: the schema allows no other key"
+            );
+            let props = schema["properties"]
+                .as_object()
+                .ok_or_else(|| format!("{name}: no properties"))?;
+            let mut published: Vec<&str> = props.keys().map(String::as_str).collect();
+            published.sort_unstable();
+            let mut read: Vec<&str> = fields.iter().map(|f| f.name).collect();
+            read.sort_unstable();
+            assert_eq!(published, read, "{name}: keys");
+            let mut required: Vec<&str> = schema["required"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            required.sort_unstable();
+            let mut read_required: Vec<&str> = fields
+                .iter()
+                .filter(|f| f.required)
+                .map(|f| f.name)
+                .collect();
+            read_required.sort_unstable();
+            assert_eq!(required, read_required, "{name}: required keys");
+            for field in fields {
+                let want = match field.kind {
+                    Kind::Bool => "boolean",
+                    Kind::String => "string",
+                    Kind::WholeNumber => "integer",
+                };
+                let ty = &props[field.name]["type"];
+                let names = ty.as_str().map(|s| vec![s]).unwrap_or_else(|| {
+                    ty.as_array()
+                        .map(|a| a.iter().filter_map(Value::as_str).collect())
+                        .unwrap_or_default()
+                });
+                assert!(
+                    names.contains(&want),
+                    "{name}.{}: published type {ty} lacks {want}",
+                    field.name
+                );
+                assert_eq!(
+                    names.contains(&"null"),
+                    !field.required,
+                    "{name}.{}: null is allowed exactly when the key is optional",
+                    field.name
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// A ban body that names the address twice is refused before TFPS is asked.
+    #[tokio::test]
+    async fn a_ban_that_names_its_address_twice_is_refused() -> Result<(), TestError> {
+        // No TFPS here: a body that reached the peer would answer `502`.
+        let empty = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let app = build_router(state_without_tfps(&empty)?);
+        let resp = app
+            .oneshot(test_post_with_key(
+                "/v1/tfps/ban",
+                r#"{"ip":"192.0.2.1","ip":"192.0.2.2"}"#,
+                &tfps_action_token(),
+            )?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "a repeated ip was accepted"
+        );
+        let v = json_of(resp).await?;
+        assert_eq!(
+            v["detail"], "the key `ip` appears more than once",
+            "the refusal names the repeated key"
+        );
+        Ok(())
+    }
+
+    /// The `+json` suffix and a `charset` parameter still name JSON.
+    #[tokio::test]
+    async fn a_json_suffix_and_a_charset_still_name_json() -> Result<(), TestError> {
+        for content_type in [
+            "application/json; charset=utf-8",
+            "Application/JSON",
+            "application/merge-patch+json",
+        ] {
+            let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+            gate.set(false);
+            let app = build_router(make_state_with_gate(&gate));
+            let mut req = test_post_with_key("/v1/persistence", r#"{"enabled":true}"#, GATE_KEY)?;
+            req.headers_mut().insert(
+                "content-type",
+                content_type
+                    .parse()
+                    .map_err(|e| format!("header value: {e:?}"))?,
+            );
+            let resp = app
+                .oneshot(req)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "Content-Type {content_type} was refused"
+            );
+            assert!(
+                gate.writes_permitted(),
+                "Content-Type {content_type}: the gate did not open"
+            );
+        }
+        Ok(())
+    }
+
+    /// The guard answers before a body is read.
+    ///
+    /// A route that extracts its body in its signature has it read, and for
+    /// JSON parsed, before the handler runs, so before the guard: a caller
+    /// without a credential, or over the rate limit, still had the server
+    /// take and parse up to 1 MiB. A body that never ends shows the order: a
+    /// guard that runs first answers `401` at once, a route that reads first
+    /// waits for the body until the 30 s request timeout.
+    #[tokio::test]
+    async fn the_guard_answers_before_any_body_is_read() -> Result<(), TestError> {
+        for uri in body_routes() {
+            let app = build_router(make_state_with_key(GATE_KEY));
+            let mut req = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from_stream(BodyThatNeverEnds))
+                .map_err(|e| format!("build request: {e:?}"))?;
+            req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+                IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                12345,
+            )));
+
+            let resp = tokio::time::timeout(Duration::from_secs(10), app.oneshot(req))
+                .await
+                .map_err(|_| {
+                    format!(
+                        "{uri}: no answer in 10 s; the route waited for the body before the guard"
+                    )
+                })?
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "{uri}: a caller without a credential is refused first"
+            );
+        }
+        Ok(())
+    }
+
     /// Exactly one body shape moves the gate.
     ///
     /// Stated as a sweep rather than as cases so a body shape nobody thought
@@ -17336,6 +18309,7 @@ mod tests {
     ) -> Result<axum::Router, TestError> {
         let mut state = make_state();
         state.relay_query = RelayRestConfig {
+            rates: Default::default(),
             relay: Some(
                 Arc::clone(relay) as Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>
             ),
@@ -17386,6 +18360,120 @@ mod tests {
             relay.lists_and_queries()?,
             (vec!["list 32".to_string()], 32),
             "Without the flag or `max_calls`, a REST scan takes 32"
+        );
+        Ok(())
+    }
+
+    /// A relay holding c-1, whose one RTP socket always reports the same
+    /// counters.
+    struct OneCallRelay;
+
+    impl crate::relay::reconcile::ReadOnlyRelay for OneCallRelay {
+        fn list(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+            _: u32,
+        ) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Calls(crate::relay::types::Enumeration {
+                call_ids: vec!["c-1@example.invalid".to_string()],
+                truncated: false,
+            }))
+        }
+        fn query(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+            call_id: &str,
+        ) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Call(
+                crate::output::query::relay_sessions::one_rtp_socket_call(call_id, 1000, 172_000),
+            ))
+        }
+        fn statistics(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("never asked")
+        }
+        fn describe(&self) -> String {
+            "one-call relay at 192.0.2.10:22222".to_string()
+        }
+    }
+
+    fn one_call_router() -> Result<axum::Router, TestError> {
+        let mut state = make_state();
+        state.relay_query = RelayRestConfig {
+            relay: Some(Arc::new(OneCallRelay)
+                as Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>),
+            permit: Some(live_permit()?),
+            ..RelayRestConfig::default()
+        };
+        Ok(build_router(state))
+    }
+
+    /// The second sessions request reports the rate since the first, from
+    /// one memory every request shares.
+    #[tokio::test]
+    async fn success_rest_a_second_sessions_ask_reports_the_rate() -> Result<(), TestError> {
+        let app = one_call_router()?;
+        let uri = "/v1/relay/sessions?call_id=c-1@example.invalid";
+        let (_, first) = cap_get(app.clone(), uri).await?;
+        let socket = &first["calls"][0]["tags"][0]["sockets"][0];
+        assert_eq!(socket["ingress_rate"]["state"], "no_rate_yet", "{first}");
+        let (status, second) = cap_get(app, uri).await?;
+        assert_eq!(status, StatusCode::OK, "{second}");
+        let socket = &second["calls"][0]["tags"][0]["sockets"][0];
+        assert_eq!(socket["ingress_rate"]["state"], "rate", "{second}");
+        assert_eq!(
+            socket["ingress_rate"]["kbps"], 0.0,
+            "no new bytes: {second}"
+        );
+        assert_eq!(
+            socket["captured_rate"]["state"], "not_captured",
+            "the server's capture holds no stream: {second}"
+        );
+        Ok(())
+    }
+
+    /// A server whose capture holds the call's stream to the socket samples
+    /// the capture tier too: its first answer reads `no_rate_yet`, not
+    /// `not_captured`.
+    #[tokio::test]
+    async fn success_rest_the_capture_tier_reads_the_servers_stream_store() -> Result<(), TestError>
+    {
+        let mut state = make_state();
+        crate::output::query::relay_capture::add_stream_to_relay_socket(
+            &mut state.stream_store.write(),
+            7,
+            "198.51.100.5:4000",
+            "c-1@example.invalid",
+        )?;
+        state.relay_query = RelayRestConfig {
+            relay: Some(Arc::new(OneCallRelay)
+                as Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>),
+            permit: Some(live_permit()?),
+            ..RelayRestConfig::default()
+        };
+        let (_, v) = cap_get(
+            build_router(state),
+            "/v1/relay/sessions?call_id=c-1@example.invalid",
+        )
+        .await?;
+        assert_eq!(
+            v["calls"][0]["tags"][0]["sockets"][0]["captured_rate"]["state"], "no_rate_yet",
+            "the capture holds the stream: {v}"
+        );
+        Ok(())
+    }
+
+    /// Each router built from its own state has its own memory.
+    #[tokio::test]
+    async fn edge_rest_a_new_server_starts_with_no_rate_yet() -> Result<(), TestError> {
+        let uri = "/v1/relay/sessions?call_id=c-1@example.invalid";
+        cap_get(one_call_router()?, uri).await?;
+        let (_, v) = cap_get(one_call_router()?, uri).await?;
+        assert_eq!(
+            v["calls"][0]["tags"][0]["sockets"][0]["ingress_rate"]["state"], "no_rate_yet",
+            "{v}"
         );
         Ok(())
     }
@@ -17765,6 +18853,8 @@ mod archive_password_tests {
             .with_writer(move || LogSink(sink.clone()))
             .with_max_level(tracing::Level::TRACE)
             .with_ansi(false)
+            // The rule for every fmt builder in src (tests/closed_stderr_test.rs).
+            .log_internal_errors(false)
             .finish();
         let _guard = tracing::subscriber::set_default(subscriber);
 

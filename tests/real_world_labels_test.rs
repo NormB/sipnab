@@ -18,6 +18,9 @@
 //! says so and checks nothing.
 #![cfg(feature = "native")]
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -123,11 +126,15 @@ fn labels(capture: &Path) -> Result<LabelsByKey, TestError> {
 
 #[test]
 fn real_world_page_labels_are_the_ones_sipnab_prints() -> Result<(), TestError> {
-    let Some(dir) = std::env::var_os("SIPNAB_REAL_WORLD_CAPTURES").map(PathBuf::from) else {
-        eprintln!(
-            "SKIPPED: SIPNAB_REAL_WORLD_CAPTURES is unset, so the labels in \
-             docs/real-world-captures.md were not compared to a run"
-        );
+    let Some(dir) = test_prereq::check(
+        "real-world-captures",
+        test_prereq::Need::Optional(
+            "the real-world captures are private traffic; set SIPNAB_REAL_WORLD_CAPTURES to \
+             compare the labels in docs/real-world-captures.md to a run.",
+        ),
+        test_prereq::env("SIPNAB_REAL_WORLD_CAPTURES").map(PathBuf::from),
+    )?
+    else {
         return Ok(());
     };
     let page = std::fs::read_to_string(concat!(

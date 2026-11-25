@@ -668,11 +668,88 @@ def test_no_link_of_any_release_text_is_relative():
 
 
 def test_the_links_of_the_newest_release_name_its_tag():
+    # The newest section's links point into the repository at its own tag.
+    # This held `blob/v<newest>/docs/` in the text until 0.5.262, whose one
+    # link is SECURITY.md at the repository's root: a correct text failed,
+    # because the test held a property of whichever section was newest.
     changelog = real_changelog()
     newest = rn.versions(changelog)[0]
     text = rn.notes(changelog, newest, "NormB/sipnab")
     assert text.startswith("### "), text[:80]
-    assert f"](https://github.com/NormB/sipnab/blob/v{newest}/docs/" in text, "its docs links are at its tag"
+    assert tag_link_faults(text, "NormB/sipnab", newest) == [], "its repository links are at its tag"
+
+
+def test_a_link_to_a_file_at_the_root_at_the_tag_is_no_fault():
+    text = "- Docs: [SECURITY.md](https://github.com/NormB/sipnab/blob/v0.5.262/SECURITY.md)\n"
+    assert tag_link_faults(text, "NormB/sipnab", "0.5.262") == []
+
+
+def test_a_link_under_docs_at_the_tag_is_no_fault():
+    text = "- Docs: [Fleet](https://github.com/NormB/sipnab/blob/v0.5.262/docs/fleet.md#x)\n"
+    assert tag_link_faults(text, "NormB/sipnab", "0.5.262") == []
+
+
+def test_an_image_at_the_tag_is_no_fault():
+    text = "![Map](https://github.com/NormB/sipnab/raw/v0.5.262/docs/map.png)\n"
+    assert tag_link_faults(text, "NormB/sipnab", "0.5.262") == []
+
+
+def test_a_link_at_an_older_tag_is_a_fault():
+    text = "- Docs: [Fleet](https://github.com/NormB/sipnab/blob/v0.5.261/docs/fleet.md)\n"
+    faults = tag_link_faults(text, "NormB/sipnab", "0.5.262")
+    assert len(faults) == 1 and "v0.5.261" in faults[0], faults
+
+
+def test_a_link_to_main_is_a_fault():
+    text = "- Docs: [Fleet](https://github.com/NormB/sipnab/blob/main/docs/fleet.md)\n"
+    faults = tag_link_faults(text, "NormB/sipnab", "0.5.262")
+    assert len(faults) == 1 and "main" in faults[0], faults
+
+
+def test_an_older_image_beside_a_good_link_is_a_fault():
+    text = ("[A](https://github.com/NormB/sipnab/blob/v0.5.262/SECURITY.md) "
+            "![B](https://github.com/NormB/sipnab/raw/v0.5.260/docs/b.png)\n")
+    faults = tag_link_faults(text, "NormB/sipnab", "0.5.262")
+    assert len(faults) == 1 and "v0.5.260" in faults[0], faults
+
+
+def test_a_link_to_another_repository_is_ignored():
+    text = ("[A](https://github.com/NormB/sipnab/blob/v0.5.262/SECURITY.md) "
+            "[B](https://github.com/other/fork/blob/v0.1.0/docs/b.md)\n")
+    assert tag_link_faults(text, "NormB/sipnab", "0.5.262") == []
+
+
+def test_a_repository_whose_name_starts_the_same_is_another_repository():
+    text = ("[A](https://github.com/NormB/sipnab/blob/v0.5.262/SECURITY.md) "
+            "[B](https://github.com/NormB/sipnab-extra/blob/v0.1.0/b.md)\n")
+    assert tag_link_faults(text, "NormB/sipnab", "0.5.262") == []
+
+
+def test_a_text_whose_only_link_is_another_repository_is_a_fault():
+    text = "[B](https://github.com/other/fork/blob/v0.1.0/docs/b.md)\n"
+    faults = tag_link_faults(text, "NormB/sipnab", "0.5.262")
+    assert faults == ["no link into NormB/sipnab"], faults
+
+
+def test_a_text_with_no_link_at_all_is_a_fault():
+    faults = tag_link_faults("### Fixed\n\n- **A fix.**\n  - Was: it broke.\n", "NormB/sipnab", "0.5.262")
+    assert faults == ["no link into NormB/sipnab"], faults
+
+
+def test_a_longer_version_that_starts_with_the_tag_is_a_fault():
+    text = "[A](https://github.com/NormB/sipnab/blob/v0.5.2620/SECURITY.md)\n"
+    faults = tag_link_faults(text, "NormB/sipnab", "0.5.262")
+    assert len(faults) == 1 and "v0.5.2620" in faults[0], faults
+
+
+def tag_link_faults(text, repo, version):
+    """What is wrong with the links of `text` into github.com/`repo`: each
+    blob or raw link at another ref than `v<version>`, or, when there is no
+    such link at all, that. Links to other repositories are not judged."""
+    refs = re.findall(rf"https://github\.com/{re.escape(repo)}/(?:blob|raw)/([^/\s)]+)/", text)
+    if not refs:
+        return [f"no link into {repo}"]
+    return [f"a link at {ref}, not v{version}" for ref in refs if ref != f"v{version}"]
 
 
 def test_the_command_makes_the_text_of_the_newest_release_from_the_repository(tmp_path):

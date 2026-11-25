@@ -252,6 +252,14 @@
         ],
         "type": "object"
       },
+      "ByteBasis": {
+        "description": "What a kbit/s figure counts per packet.",
+        "enum": [
+          "udp_payload",
+          "rtp_payload"
+        ],
+        "type": "string"
+      },
       "CallEngine": {
         "description": "Which engine a call was asked of, and why, when engine selection is on.",
         "properties": {
@@ -357,6 +365,14 @@
           "final_status_reason": {
             "type": "string"
           },
+          "forked_answers": {
+            "description": "The To tag of each later leg that answered a forked INVITE 2xx, in arrival order (RFC 3261 section 13.2.2.4). Absent, never empty, on a call one leg answered.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
           "frame": {
             "description": "Pointer to the frame this dialog opened in, as `<source>#<ordinal>@<digest>`. Follow it with `sipnab --show-frame`, which checks the digest and refuses when the capture changed since the pointer was made. Optional, and absent rather than null when the dialog has no frame (live capture): absent means unknown, and a value that is present is always a real pointer.",
             "pattern": "^.+#[0-9]+(@[0-9a-f]{16})?$",
@@ -396,6 +412,23 @@
               "$ref": "#/components/schemas/CallReport_sdp_exchange"
             },
             "type": "array"
+          },
+          "seen_by": {
+            "additionalProperties": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "description": "How many of the dialog's messages each capture source delivered, by origin name. A message the wire and a HEP feed both delivered is stored once, counted once in msg_count and once under each source here. Absent when one source, or none, delivered every message.",
+            "minProperties": 2,
+            "propertyNames": {
+              "enum": [
+                "wire",
+                "hep",
+                "uprobe",
+                "vcon"
+              ]
+            },
+            "type": "object"
           },
           "signaling_diagnosis": {
             "$ref": "#/components/schemas/CallReport_signaling_diagnosis"
@@ -1444,6 +1477,19 @@
           "r_factor": {
             "type": "number"
           },
+          "round_trip_ms": {
+            "description": "Round trip in milliseconds that an endpoint reported in RTCP XR or sipnab derived from an RTCP receiver report's sender-report echo. Omitted, never null or 0, when nothing measured one.",
+            "minimum": 0,
+            "type": "number"
+          },
+          "round_trip_source": {
+            "description": "Where round_trip_ms came from: the far end's XR VoIP Metrics block, or the SR echo, which is a lower bound unless the capture sits with the SR sender.",
+            "enum": [
+              "xr_voip_metrics",
+              "sender_report_echo"
+            ],
+            "type": "string"
+          },
           "schema_version": {
             "const": 1
           },
@@ -2170,6 +2216,7 @@
               "sip_discarded_by_portrange",
               "sip_discarded_by_websocket_ports",
               "retention_loss",
+              "dropped_by_method",
               "no_media",
               "one_way_audio",
               "stun_sdp_mismatch",
@@ -3387,6 +3434,47 @@
         ],
         "type": "object"
       },
+      "FilterValidation": {
+        "description": "Whether a filter expression compiles, and where it stopped when it did\nnot.",
+        "properties": {
+          "error": {
+            "description": "The parser's message when it did not; the text a `filter` parameter's\n`400` carries after `filter: `. Null when it compiled.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expr": {
+            "description": "The expression as submitted, echoed verbatim.",
+            "type": "string"
+          },
+          "position": {
+            "description": "Where the parser stopped: the 0-based character column in the\nexpression with its leading and trailing whitespace removed, the number\n`error` prints after `at position`. Null when it compiled, when the\nparser names no place (an empty expression, an undefined `@name`, a\ndepth or size limit), and when the error is inside the expansion of an\nalias or an `@name`.",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "valid": {
+            "description": "Whether the expression compiled.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_version",
+          "expr",
+          "valid"
+        ],
+        "type": "object"
+      },
       "HepListenerInfo": {
         "description": "The HEP listener's senders, by address only.",
         "properties": {
@@ -4243,6 +4331,48 @@
         ],
         "type": "object"
       },
+      "NamedFilterList": {
+        "description": "The `[filters]` table this run started with.",
+        "properties": {
+          "filters": {
+            "description": "Every entry, in name order. Empty when the config defines none.",
+            "items": {
+              "$ref": "#/components/schemas/NamedFilterRow"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "filters"
+        ],
+        "type": "object"
+      },
+      "NamedFilterRow": {
+        "description": "One `[filters]` entry.",
+        "properties": {
+          "definition": {
+            "description": "The definition as the config file writes it, `@name` references\nincluded.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The entry's name: what `named` takes and what `@name` refers to.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "definition"
+        ],
+        "type": "object"
+      },
       "NotQueried": {
         "description": "A call the relay listed and this snapshot did not query.",
         "properties": {
@@ -4274,7 +4404,7 @@
       },
       "PersistenceRequest": {
         "additionalProperties": false,
-        "description": "The body `POST /v1/persistence` accepts.\n\n`deny_unknown_fields` so a caller who misspells the key is told, rather\nthan getting a 200 that moved nothing. The field is required and typed:\nserde refuses a string, a number, and a missing key alike, and every one of\nthose refusals leaves the gate where it was.",
+        "description": "The body `POST /v1/persistence` accepts.\n\nUnknown keys are refused, so a caller who misspells the key is told,\nrather than getting a 200 that moved nothing. The field is required and\ntyped: a string, a number, `null` and a missing key are all refused, and\nevery one of those refusals leaves the gate where it was.",
         "properties": {
           "enabled": {
             "description": "What the caller wants the gate to be, narrowed by the command line and\nconfig file.",
@@ -4757,6 +4887,145 @@
         ],
         "type": "object"
       },
+      "RateView": {
+        "description": "A rate as every surface shows it: the state, and for a rate its numbers.",
+        "oneOf": [
+          {
+            "description": "A rate over the measured gap.",
+            "properties": {
+              "byte_basis": {
+                "$ref": "#/components/schemas/ByteBasis",
+                "description": "What a byte of `kbps` counts."
+              },
+              "kbps": {
+                "description": "kbit/s (1000 bits per second) on `byte_basis`.",
+                "format": "double",
+                "type": "number"
+              },
+              "over_ms": {
+                "description": "The measured gap between the two samples, in milliseconds.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "packets_per_s": {
+                "description": "Packets per second.",
+                "format": "double",
+                "type": "number"
+              },
+              "state": {
+                "enum": [
+                  "rate"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "packets_per_s",
+              "kbps",
+              "byte_basis",
+              "over_ms",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Only one sample so far: ask again for a rate.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "no_rate_yet"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The counters restarted between the samples.",
+            "properties": {
+              "reason": {
+                "$ref": "#/components/schemas/ResetReason",
+                "description": "Why."
+              },
+              "state": {
+                "enum": [
+                  "reset"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The source did not report the counters.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "not_reported"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The clock did not advance between the samples.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "no_interval"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An RTCP socket: only RTP is rated.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "rtcp_not_counted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The capture holds no stream on this socket for this call.",
+            "properties": {
+              "state": {
+                "enum": [
+                  "not_captured"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Rates": {
         "description": "Carrier metrics per group over the dialog store, one dimension.",
         "properties": {
@@ -5084,6 +5353,15 @@
         ],
         "type": "object"
       },
+      "ResetReason": {
+        "description": "Why two samples gave no rate although both carried counters.",
+        "enum": [
+          "incarnation_changed",
+          "counter_backwards",
+          "out_of_range"
+        ],
+        "type": "string"
+      },
       "RevertFailure": {
         "description": "One revert that did not happen.",
         "properties": {
@@ -5317,6 +5595,17 @@
           },
           "r_factor": {
             "type": "number"
+          },
+          "round_trip_ms": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "round_trip_source": {
+            "enum": [
+              "xr_voip_metrics",
+              "sender_report_echo"
+            ],
+            "type": "string"
           },
           "schema_version": {
             "const": 1
@@ -6175,6 +6464,17 @@
       "SessionSocket": {
         "description": "One relay socket, as the relay counted it. Never judged on its own.",
         "properties": {
+          "captured_rate": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RateView",
+                "description": "The rate this capture saw sent to this socket for this call since the\nprevious answer, `rtp_payload` basis; `not_captured` when the capture\nholds no such stream. Absent until rates are attached."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "egress": {
             "$ref": "#/components/schemas/Counters",
             "description": "What the relay sent out of it."
@@ -6189,6 +6489,17 @@
           "ingress": {
             "$ref": "#/components/schemas/Counters",
             "description": "What arrived at this socket."
+          },
+          "ingress_rate": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RateView",
+                "description": "The rate the relay received at this socket since the previous answer\nabout it, `udp_payload` basis. Absent until rates are attached."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "kernel": {
             "$ref": "#/components/schemas/KernelVerdict",
@@ -7171,7 +7482,7 @@
       },
       "TfpsBanRequest": {
         "additionalProperties": false,
-        "description": "The body `POST /v1/tfps/ban` accepts.\n\n`deny_unknown_fields` for the reason `PersistenceRequest` gives: a caller\nwho misspells `ttl_secs` is told, rather than getting a ban of the wrong\nduration.",
+        "description": "The body `POST /v1/tfps/ban` accepts.\n\nUnknown keys are refused for the reason `PersistenceRequest` gives: a\ncaller who misspells `ttl_secs` is told, rather than getting a ban of the\nwrong duration.",
         "properties": {
           "ip": {
             "description": "The source to condemn, an IPv4 address (TFPS's block map is IPv4).",
@@ -8608,6 +8919,15 @@
             }
           },
           {
+            "description": "The name of one `[filters]` entry or diagnostic alias, in place of\n`filter`, what `/v1/dialogs?named=` accepts. Both is a 400.",
+            "in": "query",
+            "name": "named",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "Keep the largest N buckets; the rest fold into `other_count`. Clamped to\nthe server's row cap.",
             "in": "query",
             "name": "top_n",
@@ -9090,6 +9410,15 @@
             }
           },
           {
+            "description": "The name of one `[filters]` entry or diagnostic alias, in place of\n`filter`: `named=sales` selects what `filter=@sales` selects. A\nleading `@` is accepted. `GET /v1/filters` lists the entries. Give\n`filter` or `named`, not both: both is a 400, and so is a name nothing\ndefines, whose detail lists the names that are defined.",
+            "in": "query",
+            "name": "named",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "Only dialogs whose first message is at or after this RFC 3339 instant\n(e.g. `2026-09-15T12:00:00Z`). A timestamp that does not parse is a 400.",
             "in": "query",
             "name": "after",
@@ -9265,6 +9594,15 @@
             "description": "A DSL expression or diagnostic alias name narrowing which dialogs are\ngrouped, what `/v1/dialogs?filter=` accepts. A value that is neither an\nalias nor an expression that parses is a 400.",
             "in": "query",
             "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The name of one `[filters]` entry or diagnostic alias, in place of\n`filter`, what `/v1/dialogs?named=` accepts. Both is a 400.",
+            "in": "query",
+            "name": "named",
             "required": false,
             "schema": {
               "type": "string"
@@ -10020,6 +10358,121 @@
         ]
       }
     },
+    "/v1/filters": {
+      "get": {
+        "description": "The `[filters]` table of this run: each entry's name, which the `named` parameter takes and `@name` refers to, and its definition as the config file writes it. The table is resolved at startup; a name saved with F2 in the terminal UI of the same run joins it at once, written to the config file or kept for the session only.\n\nThe MCP `list_named_filters` tool returns the same answer.",
+        "operationId": "get_named_filters",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamedFilterList"
+                }
+              }
+            },
+            "description": "Every entry, in name order; an empty list when the config defines none."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List the named filters",
+        "tags": [
+          "filters"
+        ]
+      }
+    },
+    "/v1/filters/validate": {
+      "get": {
+        "description": "Compiles an expression the way every `filter` parameter is compiled, with the same aliases, `@name` references and thresholds, and reports whether it compiled. An expression that does not compile is a `200` with `valid: false`, the parser's message in `error` (the text a `filter` parameter's `400` carries after `filter: `) and, when the parser stopped at a place in the text as sent, that place in `position`.\n\nThe MCP `validate_filter` tool reports the same `error` and `position`.",
+        "operationId": "get_filter_validation",
+        "parameters": [
+          {
+            "description": "The expression to compile: a DSL expression or a diagnostic alias\nname, with `@name` references, what a `filter` parameter accepts.\nPercent-encode it. Required; an absent `expr` is a 400.",
+            "in": "query",
+            "name": "expr",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilterValidation"
+                }
+              }
+            },
+            "description": "Whether it compiled; the message and position when it did not."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No `expr` parameter."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Validate a filter expression",
+        "tags": [
+          "filters"
+        ]
+      }
+    },
     "/v1/hep/senders": {
       "get": {
         "description": "The HEP listener's sender roster: each sender keyed by the capture id it claims and the address it sent from, with its admitted packet count, when it was first and last heard, its idle seconds and whether it has been silent for the `--hep-silence-warn` threshold; the addresses the listener refused, with counts by reason; and refusal totals by reason that nothing evicts.\n\nThe capture id is the sender's claim, never proven, and every row says so in `identity`. A run with no HEP listener answers 200 with `listening: false` and a note, never an empty roster that would read as \"nobody is sending\".\n\nRequires a full-scope token: sender addresses describe the estate.",
@@ -10747,7 +11200,7 @@
               },
               "application/yang-data+json": {}
             },
-            "description": "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-11-08.yang, or `sipnab --print-yang-module`); the module is its schema."
+            "description": "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-11-20.yang, or `sipnab --print-yang-module`); the module is its schema."
           },
           "400": {
             "content": {
@@ -11194,6 +11647,15 @@
             "description": "A DSL expression or diagnostic alias name narrowing which dialogs count,\nwhat `/v1/dialogs?filter=` accepts. A value that is neither an alias nor\nan expression that parses is a 400.",
             "in": "query",
             "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The name of one `[filters]` entry or diagnostic alias, in place of\n`filter`, what `/v1/dialogs?named=` accepts. Both is a 400.",
+            "in": "query",
+            "name": "named",
             "required": false,
             "schema": {
               "type": "string"
@@ -12281,6 +12743,10 @@
     {
       "description": "The capture as a whole",
       "name": "capture"
+    },
+    {
+      "description": "The `[filters]` table this run started with, and filter expression validation",
+      "name": "filters"
     },
     {
       "description": "Liveness, metrics, and the persistence gate",

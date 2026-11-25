@@ -13,7 +13,8 @@ use indexmap::IndexMap;
 use super::SipMessage;
 use super::dialog::{DialogState, SipDialog, update_state};
 use super::method::SipMethod;
-use super::sdp_timeline::{track_sdp, track_transfer};
+use super::sdp::SdpRead;
+use super::sdp_timeline::{track_sdp_read, track_transfer};
 use super::timing::update_timing;
 
 /// Default maximum messages stored per dialog (D17 defense-in-depth).
@@ -36,6 +37,80 @@ static MAX_MESSAGES_PER_DIALOG: std::sync::atomic::AtomicUsize =
 /// the next message onward.
 pub fn set_max_messages_per_dialog(limit: usize) {
     MAX_MESSAGES_PER_DIALOG.store(limit, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many dialog keys refused by method are remembered (see
+/// `DialogStore::method_refused`).
+const METHOD_REFUSED_CAP: usize = 65_536;
+
+/// The most recent `cap` keys remembered, oldest forgotten first, one at a
+/// time: remembering one more key at the cap forgets exactly the oldest.
+/// Both operations are O(1).
+#[derive(Debug, Default)]
+struct RecentKeys {
+    /// The keys, oldest first.
+    order: std::collections::VecDeque<std::sync::Arc<str>>,
+    /// The same keys, for lookup.
+    set: std::collections::HashSet<std::sync::Arc<str>, ahash::RandomState>,
+}
+
+impl RecentKeys {
+    /// Whether `key` is among the remembered keys.
+    fn contains(&self, key: &str) -> bool {
+        self.set.contains(key)
+    }
+
+    /// Remember `key` (a key already remembered is left in place), keeping
+    /// at most `cap` keys (at least one).
+    fn remember(&mut self, key: &str, cap: usize) {
+        if self.set.contains(key) {
+            return;
+        }
+        while self.order.len() >= cap.max(1) {
+            match self.order.pop_front() {
+                Some(old) => {
+                    self.set.remove(&old);
+                }
+                None => break,
+            }
+        }
+        let key: std::sync::Arc<str> = std::sync::Arc::from(key);
+        self.set.insert(key.clone());
+        self.order.push_back(key);
+    }
+}
+
+/// The method lists applied at ingest by every [`DialogStore`] built after
+/// [`set_method_filter`]: `(drop, only)`; see [`DialogStore::set_drop_methods`]
+/// and [`DialogStore::set_only_methods`].
+static METHOD_FILTER: std::sync::OnceLock<(Vec<String>, Vec<String>)> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only per-thread count of [`DialogStore::capture_now`] calls (a
+    /// scan of every dialog), asserted by the call list's per-frame tests.
+    pub(crate) static CAPTURE_NOW_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Filter SIP messages by method at ingest, in every [`DialogStore`] built
+/// after this call: `drop` (`--drop-method`, `[capture] drop_methods`) and
+/// `only` (`--only-method`, `[capture] only_methods`). Call once at startup;
+/// a second call is ignored. Methods compare case-insensitively.
+pub fn set_method_filter(drop: Vec<String>, only: Vec<String>) {
+    let _ = METHOD_FILTER.set((normalize_methods(drop), normalize_methods(only)));
+}
+
+/// Upper-case, trimmed, empty entries removed, each method once.
+fn normalize_methods(methods: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for m in methods {
+        let m = m.trim().to_ascii_uppercase();
+        if !m.is_empty() && !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    out
 }
 
 /// Reason a dialog was correlated to another.
@@ -285,6 +360,36 @@ pub struct CorrelationResult<'a> {
     pub reason: CorrelationReason,
 }
 
+/// What [`DialogStore::find_correlated_scored`] reads off one source dialog
+/// before it compares the source with the candidates: read once per source,
+/// not once per candidate.
+struct CorrelationSource<'a> {
+    /// The Call-ID asked for.
+    call_id: &'a str,
+    /// The source dialog.
+    dialog: &'a SipDialog,
+    /// Correlation-header values the source carried, every configured name.
+    x_call_ids: std::collections::HashSet<&'a str>,
+    /// Every RFC 7989 `Session-ID` the source carried.
+    src_session_ids: Vec<crate::sip::session_id::SessionId>,
+    /// Every RFC 7315 `icid-value` the source carried.
+    src_icids: std::collections::HashSet<std::borrow::Cow<'a, str>>,
+    /// Every RFC 7315 `related-icid` the source carried.
+    src_related_icids: std::collections::HashSet<std::borrow::Cow<'a, str>>,
+    /// Via branches of the source's INVITE messages.
+    src_branches: std::collections::HashSet<&'a str>,
+    /// The source's two endpoint addresses.
+    src_ips: [std::net::IpAddr; 2],
+    /// Whether the source is an INVITE dialog.
+    is_invite: bool,
+    /// The topology-hiding decoder and the source decoded by it.
+    #[cfg(feature = "tls")]
+    src_th: Option<(
+        &'a crate::sip::th_callid::ThCallid,
+        crate::sip::th_callid::Decode,
+    )>,
+}
+
 impl CorrelationResult<'_> {
     /// The strategy's name, whether it compared identifiers, and -- for a
     /// timing guess only -- the observed creation gap against `source_created`
@@ -483,6 +588,23 @@ pub struct DialogStore {
     /// record of the latest. An operator reading "5000 dialogs lost to
     /// capacity" needs to know which end of the capture is missing.
     capacity_dialogs_evicted: u64,
+    /// Methods dropped at ingest: a request with one of these methods, and
+    /// every reply whose CSeq names one, never reaches a dialog. Upper case.
+    drop_methods: Vec<String>,
+    /// When not empty, the only methods kept at ingest (requests by their
+    /// method, replies by their CSeq method). Upper case.
+    only_methods: Vec<String>,
+    /// Lifetime count of messages dropped by [`Self::drop_methods`] and
+    /// [`Self::only_methods`].
+    messages_dropped_by_method: u64,
+    /// Dialog keys (Call-IDs) refused by method, so every later message of
+    /// such a dialog is dropped too. Bounded: the most recent
+    /// [`METHOD_REFUSED_CAP`] are remembered; one more forgets the oldest,
+    /// whose later messages are then decided again by their own method.
+    method_refused: RecentKeys,
+    /// How many keys `method_refused` remembers: [`METHOD_REFUSED_CAP`]
+    /// (tests set a smaller one).
+    method_refused_cap: usize,
     /// Mutation counter for cache invalidation — see [`Self::generation`].
     generation: u64,
     /// The change sequence: the number of the last change stamped on a
@@ -490,6 +612,10 @@ pub struct DialogStore {
     /// too, so a tail cursor from before a clear still names a point before
     /// every later change.
     changes: u64,
+    /// The number of the last dialog opened (see [`SipDialog::number`]). Only
+    /// rises, across `clear` and eviction too, so no two dialogs this store
+    /// ever held share a number.
+    numbered: u64,
     /// Header names used for B2BUA leg correlation (`sip.xcid`). A
     /// candidate dialog whose message carries one of these headers pointing at
     /// another dialog's Call-ID (or vice versa) is correlated at score 100.
@@ -1014,8 +1140,14 @@ impl DialogStore {
             capacity_dialogs_dropped: 0,
             refused: indexmap::IndexSet::default(),
             capacity_dialogs_evicted: 0,
+            drop_methods: METHOD_FILTER.get().map(|f| f.0.clone()).unwrap_or_default(),
+            only_methods: METHOD_FILTER.get().map(|f| f.1.clone()).unwrap_or_default(),
+            messages_dropped_by_method: 0,
+            method_refused: RecentKeys::default(),
+            method_refused_cap: METHOD_REFUSED_CAP,
             generation: 0,
             changes: 0,
+            numbered: 0,
             xcid_headers: Vec::new(),
             #[cfg(feature = "native")]
             admission: None,
@@ -1437,6 +1569,68 @@ impl DialogStore {
         self.capacity_dialogs_evicted
     }
 
+    /// Drop these methods at ingest (replaces the list the store was built
+    /// with): a request whose method is listed, and every reply whose CSeq
+    /// method is listed, opens no dialog, takes no dialog number and joins no
+    /// dialog; it only bumps [`Self::total_messages_dropped_by_method`].
+    pub fn set_drop_methods(&mut self, methods: Vec<String>) {
+        self.drop_methods = normalize_methods(methods);
+    }
+
+    /// Keep ONLY these methods at ingest (replaces the list the store was
+    /// built with): a request is kept when its method is listed, a reply when
+    /// its CSeq method is listed; everything else is dropped as
+    /// [`Self::set_drop_methods`] drops. Empty = keep every method.
+    pub fn set_only_methods(&mut self, methods: Vec<String>) {
+        self.only_methods = normalize_methods(methods);
+    }
+
+    /// Remember at most `cap` dialogs refused by method (tests only).
+    #[cfg(test)]
+    pub(crate) fn set_method_refused_cap(&mut self, cap: usize) {
+        self.method_refused_cap = cap.max(1);
+    }
+
+    /// The methods dropped at ingest, upper case; empty when none.
+    pub fn drop_methods(&self) -> &[String] {
+        &self.drop_methods
+    }
+
+    /// The only methods kept at ingest, upper case; empty = all.
+    pub fn only_methods(&self) -> &[String] {
+        &self.only_methods
+    }
+
+    /// Lifetime count of messages dropped at ingest by method.
+    pub fn total_messages_dropped_by_method(&self) -> u64 {
+        self.messages_dropped_by_method
+    }
+
+    /// Whether a drop or an only list is set (both empty: every message
+    /// is kept and the filter costs nothing).
+    fn method_filter_on(&self) -> bool {
+        !(self.drop_methods.is_empty() && self.only_methods.is_empty())
+    }
+
+    /// Whether `msg`, opening a dialog, is dropped by [`Self::drop_methods`] /
+    /// [`Self::only_methods`]: kept only when its method (a reply's CSeq
+    /// method, for a dialog whose start was never seen) is in `only` (or
+    /// `only` is empty) AND not in `drop`.
+    fn dropped_by_method(&self, msg: &SipMessage) -> bool {
+        if !self.method_filter_on() {
+            return false;
+        }
+        let method: Option<&str> = if msg.is_request {
+            msg.method.as_ref().map(|m| m.as_str())
+        } else {
+            msg.cseq().map(|(_, m)| m)
+        };
+        let listed = |list: &[String]| {
+            method.is_some_and(|m| list.iter().any(|d| d.eq_ignore_ascii_case(m)))
+        };
+        listed(&self.drop_methods) || (!self.only_methods.is_empty() && !listed(&self.only_methods))
+    }
+
     /// Process an incoming SIP message.
     ///
     /// This is the main entry point. It:
@@ -1466,6 +1660,13 @@ impl DialogStore {
     /// unknown Call-IDs are dropped (bumping the capacity-drop counter);
     /// updates to existing dialogs still land.
     pub fn process_message(&mut self, msg: SipMessage) {
+        self.process_message_read(msg, &SdpRead::Unread);
+    }
+
+    /// [`Self::process_message`] for a message whose SDP the caller already
+    /// parsed (the packet pipeline does, to link media to streams), so the
+    /// dialog's SDP timeline does not parse the body a second time.
+    pub(crate) fn process_message_read(&mut self, msg: SipMessage, sdp: &SdpRead) {
         self.generation += 1;
         self.sweep_th_mappings(msg.timestamp);
         // Look up by the borrowed Call-ID (str is Equivalent<String> for
@@ -1486,6 +1687,22 @@ impl DialogStore {
             (None, None) => return,
         };
         let dialog_idx = self.dialogs.get_index_of(lookup);
+        // The method filter decides ONCE per dialog, on the message that
+        // would open it: a message of a dialog already kept is always kept
+        // (ACK, BYE, re-INVITE, in-dialog OPTIONS, ... and their replies);
+        // a message of a dialog refused by method is always dropped.
+        if dialog_idx.is_none() && self.method_filter_on() {
+            if self.method_refused.contains(lookup) {
+                self.messages_dropped_by_method += 1;
+                return;
+            }
+            if self.dropped_by_method(&msg) {
+                self.messages_dropped_by_method += 1;
+                self.method_refused
+                    .remember(lookup, self.method_refused_cap);
+                return;
+            }
+        }
         #[cfg(feature = "native")]
         if dialog_idx.is_none() && self.admission.as_ref().is_some_and(|m| !m.matches(&msg)) {
             return;
@@ -1495,10 +1712,11 @@ impl DialogStore {
             let Some((_, dialog)) = self.dialogs.get_index_mut(idx) else {
                 return; // unreachable: idx came from get_index_of
             };
-            advance_dialog(
+            advance_dialog_read(
                 dialog,
                 msg,
                 MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed),
+                sdp,
             );
             self.changes += 1;
             dialog.change_seq = self.changes;
@@ -1506,7 +1724,7 @@ impl DialogStore {
             // A message that cannot open a dialog changes nothing, and in
             // particular neither evicts a dialog nor counts a refusal: there
             // was no new dialog to make room for.
-            let Some(dialog) = open_dialog(&msg) else {
+            let Some(dialog) = open_dialog_read(&msg, sdp) else {
                 return;
             };
             // Insert under the SAME key the lookup used, or the next
@@ -1540,6 +1758,8 @@ impl DialogStore {
             let mut dialog = dialog;
             self.changes += 1;
             dialog.change_seq = self.changes;
+            self.numbered += 1;
+            dialog.number = self.numbered;
             self.dialogs.insert(key, dialog);
         }
     }
@@ -1757,6 +1977,8 @@ impl DialogStore {
         for (key, dialog) in std::mem::take(&mut self.dialogs) {
             fragments.entry(key).or_default().push(dialog);
         }
+        // Every dialog is numbered again below, in the merged order, from 1.
+        self.numbered = 0;
         for other in others {
             for (key, dialog) in other.dialogs {
                 fragments.entry(key).or_default().push(dialog);
@@ -1772,11 +1994,15 @@ impl DialogStore {
             self.idle_messages_evicted += other.idle_messages_evicted;
             self.capacity_dialogs_dropped += other.capacity_dialogs_dropped;
             self.capacity_dialogs_evicted += other.capacity_dialogs_evicted;
+            self.messages_dropped_by_method += other.messages_dropped_by_method;
             sightings.push(other.engine_sightings);
         }
         self.engine_sightings
             .merge(sightings, |s| read_position(s.frame.as_ref(), s.at));
-        if fragments.len() > self.max_dialogs {
+        // A method filter decides once per dialog on the message read first,
+        // and the workers kept every message (see `crate::parallel`): only a
+        // replay in read order makes the decision `--cores 1` makes.
+        if fragments.len() > self.max_dialogs || self.method_filter_on() {
             self.replay_every_message(fragments, &message_position, sweeps);
             return;
         }
@@ -1844,6 +2070,8 @@ impl DialogStore {
             let mut dialog = dialog;
             self.changes += 1;
             dialog.change_seq = self.changes;
+            self.numbered += 1;
+            dialog.number = self.numbered;
             self.dialogs.insert(key, dialog);
         }
     }
@@ -2017,7 +2245,9 @@ impl DialogStore {
     /// anchoring to the wall clock ages every offline dialog out at once. On a
     /// live capture the newest message IS approximately now, so one rule serves
     /// both without a mode flag.
-    fn capture_now(&self) -> chrono::DateTime<chrono::Utc> {
+    pub fn capture_now(&self) -> chrono::DateTime<chrono::Utc> {
+        #[cfg(test)]
+        CAPTURE_NOW_CALLS.with(|c| c.set(c.get() + 1));
         self.dialogs
             .values()
             .map(|d| d.latest_message_at)
@@ -2109,11 +2339,56 @@ impl DialogStore {
     /// Borrowed correlation results, one per matching dialog; empty when
     /// the Call-ID is unknown or nothing correlates.
     pub fn find_correlated_scored(&self, call_id: &str) -> Vec<CorrelationResult<'_>> {
-        let dialog = match self.get(call_id) {
-            Some(d) => d,
-            None => return Vec::new(),
-        };
+        self.find_correlated_scored_many(&[call_id])
+            .pop()
+            .unwrap_or_default()
+    }
 
+    /// [`Self::find_correlated_scored`] for each of `call_ids`, in one pass
+    /// over the store.
+    ///
+    /// Answer `i` is the one `find_correlated_scored(call_ids[i])` gives: the
+    /// same legs, scores, reasons and order, and empty for an unknown
+    /// Call-ID. What one pass saves is the candidate side: each dialog's SDP
+    /// origins are read once for all of `call_ids`, not once per Call-ID, so
+    /// a page of N containers no longer reads every SDP body N times.
+    pub fn find_correlated_scored_many(
+        &self,
+        call_ids: &[&str],
+    ) -> Vec<Vec<CorrelationResult<'_>>> {
+        let sources: Vec<Option<&SipDialog>> = call_ids.iter().map(|id| self.get(id)).collect();
+        let origin_joined = self.sdp_origin_joins_many(&sources);
+        let probes: Vec<Option<CorrelationSource<'_>>> = call_ids
+            .iter()
+            .zip(&sources)
+            .map(|(id, source)| source.map(|d| self.correlation_source(id, d)))
+            .collect();
+        let mut results: Vec<Vec<CorrelationResult<'_>>> = vec![Vec::new(); call_ids.len()];
+        for candidate in self.dialogs.values() {
+            for ((probe, joined), found) in probes.iter().zip(&origin_joined).zip(&mut results) {
+                if let Some(probe) = probe
+                    && let Some(r) = self.correlate_one(probe, joined, candidate)
+                {
+                    found.push(r);
+                }
+            }
+        }
+        // Sort by score descending
+        for found in &mut results {
+            crate::sort::sort_by_dyn(found, &mut |a, b| {
+                std::cmp::Reverse(a.score).cmp(&std::cmp::Reverse(b.score))
+            });
+        }
+        results
+    }
+
+    /// What `find_correlated_scored` reads off the source dialog once, before
+    /// it compares the source with every candidate.
+    fn correlation_source<'a>(
+        &'a self,
+        call_id: &'a str,
+        dialog: &'a SipDialog,
+    ) -> CorrelationSource<'a> {
         // Strategy 1 data: correlation-header values from the source dialog,
         // across every configured xcid header name. A set gives O(1)
         // membership per candidate instead of a linear scan.
@@ -2155,11 +2430,10 @@ impl DialogStore {
             .flat_map(crate::sip::charging_vector::message_related_icids)
             .collect();
 
-        // Strategy 1.5 data: the candidates a shared RFC 8866 origin tuple ties
-        // to the source, by the rule in `crate::sip::sdp_origin`. Worked out
-        // before the loop because the rule reads every dialog that carries
-        // the tuple, not only the pair being compared.
-        let origin_joined = self.sdp_origin_joins(dialog);
+        // Strategy 1.5 data, the candidates a shared RFC 8866 origin tuple
+        // ties to the source, is `sdp_origin_joins_many`'s: worked out before
+        // the pass because the rule reads every dialog that carries the tuple,
+        // not only the pair being compared.
 
         // Strategy 2 data: Via branches from INVITE messages in the source dialog
         let src_branches: std::collections::HashSet<&str> = dialog
@@ -2174,212 +2448,233 @@ impl DialogStore {
         let src_ips = [dialog.src_addr, dialog.dst_addr];
         let is_invite = dialog.method == SipMethod::Invite;
 
-        let mut results: Vec<CorrelationResult<'_>> = Vec::new();
-
         // Strategy 0.5 data: the source decoded once, when it is a hidden leg.
         #[cfg(feature = "tls")]
         let src_th = self.th_callid.as_deref().map(|th| (th, th.decode(call_id)));
 
-        for candidate in self.dialogs.values() {
-            if candidate.call_id == call_id {
-                continue;
-            }
-
-            // Strategy 0: RFC 7989 Session-ID (score=100). Checked first
-            // because it is the only strategy that survives a B2BUA, so where
-            // it applies it is the answer and the rest are noise.
-            //
-            // `same_session_as` is set intersection, NOT string equality: the
-            // two halves swap perspective across the SBC, so the header VALUES
-            // differ on either side of it while describing one call.
-            if !src_session_ids.is_empty() {
-                let session_match = candidate
-                    .messages
-                    .iter()
-                    .filter_map(|m| m.header("Session-ID"))
-                    .filter_map(crate::sip::session_id::SessionId::parse)
-                    .any(|cand| src_session_ids.iter().any(|src| src.same_session_as(&cand)));
-                if session_match {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 100,
-                        reason: CorrelationReason::SessionId,
-                    });
-                    continue;
-                }
-            }
-
-            // Strategy 0.4: OpenSIPS named the pair in an E_SIPNAB_TH_MAP event
-            // (score=100). Checked before the decode, because it is what
-            // OpenSIPS stated rather than what sipnab worked out.
-            if self.th_mappings.links(call_id, &candidate.call_id) {
-                results.push(CorrelationResult {
-                    dialog: candidate,
-                    score: 100,
-                    reason: CorrelationReason::TopologyHidingMapping,
-                });
-                continue;
-            }
-
-            // Strategy 0.5: OpenSIPS topology-hiding Call-ID (score=100). Either
-            // the source or the candidate is the hidden leg; the other must be
-            // exactly the decoded Call-ID with the same From tag.
+        CorrelationSource {
+            call_id,
+            dialog,
+            x_call_ids,
+            src_session_ids,
+            src_icids,
+            src_related_icids,
+            src_branches,
+            src_ips,
+            is_invite,
             #[cfg(feature = "tls")]
-            if let Some((th, src_decoded)) = &src_th {
-                use crate::sip::th_callid::Decode;
-                let joined = match src_decoded {
-                    Decode::NotHidden => {
-                        let cand = th.decode(&candidate.call_id);
-                        Self::th_joins(&cand, candidate, dialog)
-                    }
-                    decoded => Self::th_joins(decoded, dialog, candidate),
-                };
-                if joined {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 100,
-                        reason: CorrelationReason::TopologyHidingCallid,
-                    });
-                    continue;
-                }
-            }
+            src_th,
+        }
+    }
 
-            // Strategy 1: correlation-header match (score=100)
-            let xcid_match = x_call_ids.contains(candidate.call_id.as_str())
-                || candidate.messages.iter().any(|m| {
-                    self.xcid_headers
-                        .iter()
-                        .any(|h| m.header(h).is_some_and(|v| v == call_id))
-                });
+    /// The strongest strategy that ties `candidate` to the source `src`, first
+    /// match wins in descending score order; `None` when none does or the
+    /// candidate is the source. `origin_joined` is the source's
+    /// [`Self::sdp_origin_joins_many`] answer.
+    fn correlate_one<'a>(
+        &self,
+        src: &CorrelationSource<'_>,
+        origin_joined: &std::collections::HashSet<&str>,
+        candidate: &'a SipDialog,
+    ) -> Option<CorrelationResult<'a>> {
+        let call_id: &str = src.call_id;
+        let dialog: &SipDialog = src.dialog;
+        let x_call_ids = &src.x_call_ids;
+        let src_session_ids = &src.src_session_ids;
+        let src_icids = &src.src_icids;
+        let src_related_icids = &src.src_related_icids;
+        let src_branches = &src.src_branches;
+        let src_ips = src.src_ips;
+        let is_invite = src.is_invite;
+        #[cfg(feature = "tls")]
+        let src_th = &src.src_th;
+        if candidate.call_id == call_id {
+            return None;
+        }
 
-            if xcid_match {
-                results.push(CorrelationResult {
+        // Strategy 0: RFC 7989 Session-ID (score=100). Checked first
+        // because it is the only strategy that survives a B2BUA, so where
+        // it applies it is the answer and the rest are noise.
+        //
+        // `same_session_as` is set intersection, NOT string equality: the
+        // two halves swap perspective across the SBC, so the header VALUES
+        // differ on either side of it while describing one call.
+        if !src_session_ids.is_empty() {
+            let session_match = candidate
+                .messages
+                .iter()
+                .filter_map(|m| m.header("Session-ID"))
+                .filter_map(crate::sip::session_id::SessionId::parse)
+                .any(|cand| src_session_ids.iter().any(|src| src.same_session_as(&cand)));
+            if session_match {
+                return Some(CorrelationResult {
                     dialog: candidate,
                     score: 100,
-                    reason: CorrelationReason::XCallId,
+                    reason: CorrelationReason::SessionId,
                 });
-                continue;
-            }
-
-            // Strategy 1.2: RFC 7315 `related-icid` (score=95). Matched in BOTH
-            // directions — this dialog's `related-icid` against the candidate's
-            // `icid-value`, and the reverse — because the pointer the RFC
-            // describes is one-way (the new leg names the old one) and the
-            // caller may ask from either end. What that costs is the record of
-            // which leg came first, which nothing downstream reads today.
-            //
-            // Placed ABOVE the SDP origin tuple, which is a DIVERGENCE from
-            // docs/design/icid-correlation.md §4: that section says both new
-            // checks sit between `sdp_origin` and `via_branch`, and also that
-            // "order of evaluation follows score". Those disagree at 95 > 90.
-            // The principle wins: this loop is first-match-wins and the results
-            // are then sorted by score, so a 95 check running after a 90 check
-            // would report a leg that matched both as the weaker strategy at
-            // the weaker score.
-            if !src_related_icids.is_empty() || !src_icids.is_empty() {
-                let related_match = candidate.messages.iter().any(|m| {
-                    crate::sip::charging_vector::message_icids(m)
-                        .iter()
-                        .any(|icid| src_related_icids.contains(icid.as_ref()))
-                        || crate::sip::charging_vector::message_related_icids(m)
-                            .iter()
-                            .any(|rel| src_icids.contains(rel.as_ref()))
-                });
-                if related_match {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 95,
-                        reason: CorrelationReason::ChargingVectorRelatedIcid,
-                    });
-                    continue;
-                }
-            }
-
-            // Strategy 1.5: SDP origin tuple (score=90). Between the
-            // correlation headers and the Via branch: it is a real identifier
-            // that the RFC defines as globally unique, but it names the media
-            // session rather than the dialog, and an SBC that re-originates SDP
-            // replaces it.
-            //
-            // A shared tuple counts only when the two legs were open at one
-            // time and the tuple is not shown reused anywhere in the store:
-            // endpoints and SIPp reuse it, so the tuple alone is not the
-            // identifier RFC 8866 section 5.2 says it is. A pair the rule
-            // refuses falls through to the weaker strategies below.
-            if origin_joined.contains(candidate.call_id.as_str()) {
-                results.push(CorrelationResult {
-                    dialog: candidate,
-                    score: 90,
-                    reason: CorrelationReason::SdpOrigin,
-                });
-                continue;
-            }
-
-            // Strategy 1.7: plain RFC 7315 `icid-value` equality (score=85),
-            // between the SDP origin tuple and the Via branch. Reached only
-            // when `related-icid` did not match, so the two reasons stay
-            // distinguishable: this one is "an intermediary carried a
-            // per-dialog identifier onto a second dialog", which no RFC grants.
-            if !src_icids.is_empty() {
-                let icid_match = candidate
-                    .messages
-                    .iter()
-                    .flat_map(crate::sip::charging_vector::message_icids)
-                    .any(|icid| src_icids.contains(icid.as_ref()));
-                if icid_match {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 85,
-                        reason: CorrelationReason::ChargingVectorIcid,
-                    });
-                    continue;
-                }
-            }
-
-            // Strategy 2: Via branch overlap (score=80). Scan the candidate's
-            // INVITE branches directly, short-circuiting on the first hit —
-            // no per-candidate Vec allocation.
-            if !src_branches.is_empty() {
-                let branch_overlap = candidate
-                    .messages
-                    .iter()
-                    .filter(|m| m.is_request && m.method.as_ref() == Some(&SipMethod::Invite))
-                    .flat_map(|m| m.via_headers())
-                    .filter_map(|v| extract_via_branch(v))
-                    .any(|b| src_branches.contains(b));
-
-                if branch_overlap {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 80,
-                        reason: CorrelationReason::ViaBranch,
-                    });
-                    continue;
-                }
-            }
-
-            // Strategy 3: Timing heuristic (score=50)
-            if is_invite && candidate.method == SipMethod::Invite {
-                let candidate_ips = [candidate.src_addr, candidate.dst_addr];
-                let ip_overlap = src_ips.iter().any(|ip| candidate_ips.contains(ip));
-                if ip_overlap {
-                    let time_diff = (dialog.created_at - candidate.created_at)
-                        .num_milliseconds()
-                        .unsigned_abs();
-                    if time_diff <= self.leg_correlation_window_ms {
-                        results.push(CorrelationResult {
-                            dialog: candidate,
-                            score: 50,
-                            reason: CorrelationReason::TimingHeuristic,
-                        });
-                    }
-                }
             }
         }
 
-        // Sort by score descending
-        results.sort_by_key(|r| std::cmp::Reverse(r.score));
-        results
+        // Strategy 0.4: OpenSIPS named the pair in an E_SIPNAB_TH_MAP event
+        // (score=100). Checked before the decode, because it is what
+        // OpenSIPS stated rather than what sipnab worked out.
+        if self.th_mappings.links(call_id, &candidate.call_id) {
+            return Some(CorrelationResult {
+                dialog: candidate,
+                score: 100,
+                reason: CorrelationReason::TopologyHidingMapping,
+            });
+        }
+
+        // Strategy 0.5: OpenSIPS topology-hiding Call-ID (score=100). Either
+        // the source or the candidate is the hidden leg; the other must be
+        // exactly the decoded Call-ID with the same From tag.
+        #[cfg(feature = "tls")]
+        if let Some((th, src_decoded)) = &src_th {
+            use crate::sip::th_callid::Decode;
+            let joined = match src_decoded {
+                Decode::NotHidden => {
+                    let cand = th.decode(&candidate.call_id);
+                    Self::th_joins(&cand, candidate, dialog)
+                }
+                decoded => Self::th_joins(decoded, dialog, candidate),
+            };
+            if joined {
+                return Some(CorrelationResult {
+                    dialog: candidate,
+                    score: 100,
+                    reason: CorrelationReason::TopologyHidingCallid,
+                });
+            }
+        }
+
+        // Strategy 1: correlation-header match (score=100)
+        let xcid_match = x_call_ids.contains(candidate.call_id.as_str())
+            || candidate.messages.iter().any(|m| {
+                self.xcid_headers
+                    .iter()
+                    .any(|h| m.header(h).is_some_and(|v| v == call_id))
+            });
+
+        if xcid_match {
+            return Some(CorrelationResult {
+                dialog: candidate,
+                score: 100,
+                reason: CorrelationReason::XCallId,
+            });
+        }
+
+        // Strategy 1.2: RFC 7315 `related-icid` (score=95). Matched in BOTH
+        // directions — this dialog's `related-icid` against the candidate's
+        // `icid-value`, and the reverse — because the pointer the RFC
+        // describes is one-way (the new leg names the old one) and the
+        // caller may ask from either end. What that costs is the record of
+        // which leg came first, which nothing downstream reads today.
+        //
+        // Placed ABOVE the SDP origin tuple, which is a DIVERGENCE from
+        // docs/design/icid-correlation.md §4: that section says both new
+        // checks sit between `sdp_origin` and `via_branch`, and also that
+        // "order of evaluation follows score". Those disagree at 95 > 90.
+        // The principle wins: this loop is first-match-wins and the results
+        // are then sorted by score, so a 95 check running after a 90 check
+        // would report a leg that matched both as the weaker strategy at
+        // the weaker score.
+        if !src_related_icids.is_empty() || !src_icids.is_empty() {
+            let related_match = candidate.messages.iter().any(|m| {
+                crate::sip::charging_vector::message_icids(m)
+                    .iter()
+                    .any(|icid| src_related_icids.contains(icid.as_ref()))
+                    || crate::sip::charging_vector::message_related_icids(m)
+                        .iter()
+                        .any(|rel| src_icids.contains(rel.as_ref()))
+            });
+            if related_match {
+                return Some(CorrelationResult {
+                    dialog: candidate,
+                    score: 95,
+                    reason: CorrelationReason::ChargingVectorRelatedIcid,
+                });
+            }
+        }
+
+        // Strategy 1.5: SDP origin tuple (score=90). Between the
+        // correlation headers and the Via branch: it is a real identifier
+        // that the RFC defines as globally unique, but it names the media
+        // session rather than the dialog, and an SBC that re-originates SDP
+        // replaces it.
+        //
+        // A shared tuple counts only when the two legs were open at one
+        // time and the tuple is not shown reused anywhere in the store:
+        // endpoints and SIPp reuse it, so the tuple alone is not the
+        // identifier RFC 8866 section 5.2 says it is. A pair the rule
+        // refuses falls through to the weaker strategies below.
+        if origin_joined.contains(candidate.call_id.as_str()) {
+            return Some(CorrelationResult {
+                dialog: candidate,
+                score: 90,
+                reason: CorrelationReason::SdpOrigin,
+            });
+        }
+
+        // Strategy 1.7: plain RFC 7315 `icid-value` equality (score=85),
+        // between the SDP origin tuple and the Via branch. Reached only
+        // when `related-icid` did not match, so the two reasons stay
+        // distinguishable: this one is "an intermediary carried a
+        // per-dialog identifier onto a second dialog", which no RFC grants.
+        if !src_icids.is_empty() {
+            let icid_match = candidate
+                .messages
+                .iter()
+                .flat_map(crate::sip::charging_vector::message_icids)
+                .any(|icid| src_icids.contains(icid.as_ref()));
+            if icid_match {
+                return Some(CorrelationResult {
+                    dialog: candidate,
+                    score: 85,
+                    reason: CorrelationReason::ChargingVectorIcid,
+                });
+            }
+        }
+
+        // Strategy 2: Via branch overlap (score=80). Scan the candidate's
+        // INVITE branches directly, short-circuiting on the first hit —
+        // no per-candidate Vec allocation.
+        if !src_branches.is_empty() {
+            let branch_overlap = candidate
+                .messages
+                .iter()
+                .filter(|m| m.is_request && m.method.as_ref() == Some(&SipMethod::Invite))
+                .flat_map(|m| m.via_headers())
+                .filter_map(|v| extract_via_branch(v))
+                .any(|b| src_branches.contains(b));
+
+            if branch_overlap {
+                return Some(CorrelationResult {
+                    dialog: candidate,
+                    score: 80,
+                    reason: CorrelationReason::ViaBranch,
+                });
+            }
+        }
+
+        // Strategy 3: Timing heuristic (score=50)
+        if is_invite && candidate.method == SipMethod::Invite {
+            let candidate_ips = [candidate.src_addr, candidate.dst_addr];
+            let ip_overlap = src_ips.iter().any(|ip| candidate_ips.contains(ip));
+            if ip_overlap {
+                let time_diff = (dialog.created_at - candidate.created_at)
+                    .num_milliseconds()
+                    .unsigned_abs();
+                if time_diff <= self.leg_correlation_window_ms {
+                    return Some(CorrelationResult {
+                        dialog: candidate,
+                        score: 50,
+                        reason: CorrelationReason::TimingHeuristic,
+                    });
+                }
+            }
+        }
+        None
     }
 
     /// The Call-IDs of the dialogs that `source` is one media session with by
@@ -2387,38 +2682,72 @@ impl DialogStore {
     /// [`crate::sip::sdp_origin`]: the two were open at one time, and no two
     /// dialogs in the store carrying that tuple were open at one time on one
     /// hop.
-    fn sdp_origin_joins<'a>(&'a self, source: &SipDialog) -> std::collections::HashSet<&'a str> {
+    ///
+    /// One answer per entry of `sources` (empty for `None`), from one pass
+    /// over the store that reads each dialog's SDP origins once: a source's
+    /// own origins are read before the pass and reused as a candidate's, and
+    /// no other dialog's are read when no source carries one.
+    fn sdp_origin_joins_many<'a>(
+        &'a self,
+        sources: &[Option<&SipDialog>],
+    ) -> Vec<std::collections::HashSet<&'a str>> {
         use crate::sip::sdp_origin::{OriginCarrier, joins, origin_reused};
-        let mut joined = std::collections::HashSet::new();
-        let src_keys = dialog_origin_keys(source);
-        if src_keys.is_empty() {
+        type Carriers<'k, 'a> = std::collections::HashMap<
+            &'k crate::sip::sdp::SdpOriginKey,
+            Vec<(&'a str, OriginCarrier)>,
+        >;
+        let src_keys: Vec<std::collections::HashSet<crate::sip::sdp::SdpOriginKey>> = sources
+            .iter()
+            .map(|s| s.map(dialog_origin_keys).unwrap_or_default())
+            .collect();
+        let mut joined = vec![std::collections::HashSet::new(); sources.len()];
+        if src_keys.iter().all(std::collections::HashSet::is_empty) {
             return joined;
         }
-        let src = OriginCarrier::of(source);
-        // Per source tuple: every other dialog that carries it.
-        let mut carriers: std::collections::HashMap<
-            &crate::sip::sdp::SdpOriginKey,
-            Vec<(&'a str, OriginCarrier)>,
-        > = std::collections::HashMap::new();
-        for candidate in self.dialogs.values() {
-            if candidate.call_id == source.call_id {
-                continue;
-            }
-            let keys = dialog_origin_keys(candidate);
-            for k in src_keys.iter().filter(|k| keys.contains(*k)) {
-                carriers
-                    .entry(k)
-                    .or_default()
-                    .push((candidate.call_id.as_str(), OriginCarrier::of(candidate)));
+        // A source's keys, by its Call-ID, to reuse when the pass reaches it.
+        let mut own: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (i, s) in sources.iter().enumerate() {
+            if let Some(s) = s {
+                own.entry(s.call_id.as_str()).or_insert(i);
             }
         }
-        for list in carriers.values() {
-            let mut all: Vec<OriginCarrier> = list.iter().map(|(_, c)| *c).collect();
-            all.push(src);
-            let reused = origin_reused(&all);
-            for (call_id, c) in list {
-                if joins(&src, c, reused) {
-                    joined.insert(*call_id);
+        // Per source, per source tuple: every other dialog that carries it.
+        let mut carriers: Vec<Carriers<'_, 'a>> = vec![Carriers::new(); sources.len()];
+        for candidate in self.dialogs.values() {
+            let read;
+            let keys = match own.get(candidate.call_id.as_str()) {
+                Some(&i) => &src_keys[i],
+                None => {
+                    read = dialog_origin_keys(candidate);
+                    &read
+                }
+            };
+            for ((source, keys_of_source), by_key) in
+                sources.iter().zip(&src_keys).zip(&mut carriers)
+            {
+                let Some(source) = source else { continue };
+                if candidate.call_id == source.call_id {
+                    continue;
+                }
+                for k in keys_of_source.iter().filter(|k| keys.contains(*k)) {
+                    by_key
+                        .entry(k)
+                        .or_default()
+                        .push((candidate.call_id.as_str(), OriginCarrier::of(candidate)));
+                }
+            }
+        }
+        for ((source, by_key), out) in sources.iter().zip(&carriers).zip(&mut joined) {
+            let Some(source) = source else { continue };
+            let src = OriginCarrier::of(source);
+            for list in by_key.values() {
+                let mut all: Vec<OriginCarrier> = list.iter().map(|(_, c)| *c).collect();
+                all.push(src);
+                let reused = origin_reused(&all);
+                for (call_id, c) in list {
+                    if joins(&src, c, reused) {
+                        out.insert(*call_id);
+                    }
                 }
             }
         }
@@ -2470,7 +2799,7 @@ impl DialogStore {
             // store order and two runs can emit legs in different orders. A tree
             // a caller diffs across polls must be stable, so the Call-ID breaks
             // the tie.
-            found.sort_by(|a, b| {
+            crate::sort::sort_by_dyn(&mut found, &mut |a, b| {
                 b.score
                     .cmp(&a.score)
                     .then_with(|| a.dialog.call_id.cmp(&b.dialog.call_id))
@@ -2521,7 +2850,7 @@ impl DialogStore {
             leg.followed = walked.contains(&leg.call_id);
             leg.th_callid = self.th_callid_status(&leg.call_id);
         }
-        legs.sort_by(|a, b| {
+        crate::sort::sort_by_dyn(&mut legs, &mut |a, b| {
             let a_created = self.get(&a.call_id).map(|d| d.created_at);
             let b_created = self.get(&b.call_id).map(|d| d.created_at);
             a.depth
@@ -2662,6 +2991,31 @@ impl DialogStore {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread asked [`quiet_past_idle_window`]. Tests read
+    /// it to check which dialogs a sweep asks; per thread, so parallel tests
+    /// do not count each other's sweeps.
+    static IDLE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The value of [`IDLE_CHECKS`] on this thread.
+#[cfg(test)]
+fn idle_checks_on_this_thread() -> usize {
+    IDLE_CHECKS.with(std::cell::Cell::get)
+}
+
+/// Whether `dialog` has been quiet longer than [`idle_compact_after`] at
+/// `now`.
+///
+/// From the newest message, not the last one read: an older-stamped message
+/// read late does not make a dialog that is still talking idle.
+fn quiet_past_idle_window(dialog: &SipDialog, now: chrono::DateTime<chrono::Utc>) -> bool {
+    #[cfg(test)]
+    IDLE_CHECKS.with(|n| n.set(n.get() + 1));
+    now - dialog.latest_message_at > idle_compact_after()
+}
+
 /// Compact one dialog as [`DialogStore::compact_idle`] does at `now`: when it
 /// has been idle longer than [`idle_compact_after`], down to the messages
 /// [`retained_indices`] keeps. Returns how many messages it dropped.
@@ -2670,16 +3024,14 @@ impl DialogStore {
 /// replays the sweeps of `--cores 1` between a dialog's messages
 /// ([`DialogStore::merge_replaying`]).
 fn compact_dialog(dialog: &mut SipDialog, now: chrono::DateTime<chrono::Utc>) -> usize {
-    // From the newest message, not the last one read: an older-stamped
-    // message read late does not make a dialog that is still talking idle.
-    if now - dialog.latest_message_at <= idle_compact_after() {
+    let budget = keep_messages_per_idle_dialog();
+    // Length first: a dialog within the budget has nothing to remove
+    // (`retained_indices` answers `None` for it), and nearly every dialog is
+    // one, so the sweep skips the date arithmetic of the idle test for it.
+    if dialog.messages.len() <= budget || !quiet_past_idle_window(dialog, now) {
         return 0;
     }
-    let Some(keep) = retained_indices(
-        &dialog.messages,
-        &dialog.method,
-        keep_messages_per_idle_dialog(),
-    ) else {
+    let Some(keep) = retained_indices(&dialog.messages, &dialog.method, budget) else {
         return 0;
     };
     let before = dialog.messages.len();
@@ -2707,6 +3059,11 @@ fn compact_dialog(dialog: &mut SipDialog, now: chrono::DateTime<chrono::Utc>) ->
 /// `None` when the message cannot open one (no Call-ID, or a response with no
 /// CSeq to take the method from); see [`SipDialog::new`].
 fn open_dialog(msg: &SipMessage) -> Option<SipDialog> {
+    open_dialog_read(msg, &SdpRead::Unread)
+}
+
+/// [`open_dialog`] with the message's SDP as the caller already parsed it.
+fn open_dialog_read(msg: &SipMessage, sdp: &SdpRead) -> Option<SipDialog> {
     let mut dialog = SipDialog::new(msg)?;
     // Apply the creating message's own state transition. Dropping it is
     // invisible in timestamp order -- the first message is the INVITE, whose
@@ -2722,8 +3079,62 @@ fn open_dialog(msg: &SipMessage) -> Option<SipDialog> {
     // The creating message's own derived state. A SIPREC INVITE carries its
     // metadata here and nowhere else, so an arm that only tracked SDP dropped
     // it for the whole dialog.
-    apply_message_derived(&mut dialog, msg);
+    apply_message_derived(&mut dialog, msg, sdp);
     Some(dialog)
+}
+
+/// How far apart in time two sources' copies of one message may be. A HEP
+/// sender stamps a message with its own clock and the capture with another;
+/// two seconds covers clocks that NTP keeps in step and a HEP batch delay,
+/// and stays under the 4 s a UDP request takes to be retransmitted for the
+/// third time (RFC 3261 timer A: T1, 2·T1, 4·T1).
+pub(crate) const COPY_WINDOW: chrono::TimeDelta = chrono::TimeDelta::seconds(2);
+
+/// How many of a dialog's newest stored messages are searched for the one a
+/// copy copies. Two sources deliver a message close together, so the
+/// original is among the last few; the bound keeps a long dialog's search
+/// from growing with it.
+pub(crate) const COPY_LOOKBACK: usize = 64;
+
+/// The index of the stored message `msg` is a copy of, if it is one.
+///
+/// A copy is the same message delivered by another source: its bytes are
+/// identical (so it is also the same message of the same transaction: the
+/// status, method, CSeq and top-Via branch are read from those bytes), it
+/// came within
+/// [`COPY_WINDOW`] of the original, and no source that delivered `msg`
+/// already delivered the original. The last rule is what keeps a
+/// retransmission one: the wire's second INVITE finds only messages the wire
+/// already gave. Of several candidates, the nearest in time is the original.
+/// A message that names no source is never a copy, and never copied.
+///
+/// # Arguments
+///
+/// * `stored` — the dialog's stored messages, oldest first.
+/// * `msg` — the message arriving.
+///
+/// # Returns
+///
+/// The index in `stored` of the message `msg` copies, or `None`.
+pub(crate) fn copy_of(stored: &[SipMessage], msg: &SipMessage) -> Option<usize> {
+    let sources = msg.sources();
+    if sources == 0 {
+        return None;
+    }
+    let start = stored.len().saturating_sub(COPY_LOOKBACK);
+    stored
+        .iter()
+        .enumerate()
+        .skip(start)
+        .filter(|(_, m)| {
+            let theirs = m.sources();
+            theirs != 0
+                && theirs & sources == 0
+                && m.raw == msg.raw
+                && (m.timestamp - msg.timestamp).abs() <= COPY_WINDOW
+        })
+        .min_by_key(|(_, m)| (m.timestamp - msg.timestamp).abs())
+        .map(|(i, _)| i)
 }
 
 /// Fold one more message into a dialog the store already holds: the rule both
@@ -2741,7 +3152,28 @@ fn open_dialog(msg: &SipMessage) -> Option<SipDialog> {
 ///
 /// `cap` is the most messages the dialog stores, `MAX_MESSAGES_PER_DIALOG`
 /// for every caller but a test.
-fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
+fn advance_dialog(dialog: &mut SipDialog, msg: SipMessage, cap: usize) {
+    advance_dialog_read(dialog, msg, cap, &SdpRead::Unread);
+}
+
+/// [`advance_dialog`] with the message's SDP as the caller already parsed it.
+fn advance_dialog_read(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize, sdp: &SdpRead) {
+    // A copy of a stored message from another source (DEDUP-1): the wire and
+    // a HEP feed of one proxy deliver every message twice. It changes nothing
+    // but the sources of the message it copies and the two times; above all
+    // it is not a retransmission, which is what the CSeq probe below would
+    // call it.
+    if let Some(i) = copy_of(&dialog.messages, &msg) {
+        let ts = msg.timestamp;
+        if let Some(original) = dialog.messages.get_mut(i) {
+            original.also_seen_by |= msg.sources();
+        }
+        dialog.updated_at = ts;
+        dialog.latest_message_at = dialog.latest_message_at.max(ts);
+        dialog.earliest_message_at = dialog.earliest_message_at.min(ts);
+        return;
+    }
+
     // Retransmission detection: same CSeq identity already seen. O(1) set
     // probe that survives message capping and compaction (the old
     // stored-message scan went amnesiac past the cap). First sighting is
@@ -2783,7 +3215,7 @@ fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
     update_timing(&mut dialog.timing, &msg, &dialog.method);
 
     // SDP, REFER and SIPREC, in the one place all three arms use.
-    apply_message_derived(dialog, &msg);
+    apply_message_derived(dialog, &msg, sdp);
 
     // Record the message (move instead of clone, capped per D17)
     let ts = msg.timestamp;
@@ -2807,8 +3239,8 @@ fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
 /// `update_state` and `update_timing` are deliberately NOT here: the creating
 /// arm runs them against a dialog `SipDialog::new` has already partly
 /// initialized, and folding them in would change that order.
-fn apply_message_derived(dialog: &mut SipDialog, msg: &SipMessage) {
-    track_sdp(&mut dialog.sdp_timeline, msg);
+fn apply_message_derived(dialog: &mut SipDialog, msg: &SipMessage, sdp: &SdpRead) {
+    track_sdp_read(&mut dialog.sdp_timeline, msg, sdp);
 
     if msg.is_request && msg.method.as_ref() == Some(&SipMethod::Refer) {
         if let Some(refer_to) = msg.header("Refer-To") {
@@ -3101,12 +3533,24 @@ impl UnkeptTail {
     }
 }
 
+// Per-thread count of `dialog_origin_keys` calls, test-only: pins that a
+// correlation over many sources reads each dialog's SDP origins once rather
+// than once per source (thread-local so parallel tests cannot cross-talk).
+#[cfg(test)]
+thread_local! {
+    /// Test-only per-thread count of `dialog_origin_keys` calls.
+    pub(crate) static ORIGIN_KEY_READS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// Every RFC 8866 origin tuple `dialog` carried, read from each message's SDP
 /// by `SipMessage::sdp`, so a multipart body's SDP part counts and a body of
 /// another type does not. A malformed origin line contributes nothing.
 fn dialog_origin_keys(
     dialog: &SipDialog,
 ) -> std::collections::HashSet<crate::sip::sdp::SdpOriginKey> {
+    #[cfg(test)]
+    ORIGIN_KEY_READS.with(|c| c.set(c.get() + 1));
     dialog
         .messages
         .iter()
@@ -3162,7 +3606,7 @@ impl std::error::Error for TimelineTooWide {}
 ///
 /// Retransmission *detection* itself is keyed on `seen_cseq_key` in the
 /// dialog module, which additionally includes the direction, status code,
-/// and top-Via branch.
+/// top-Via branch and, for a response, the `To` tag.
 ///
 /// # Returns
 ///
@@ -3234,6 +3678,8 @@ pub fn bucket_by_start(
         .collect())
 }
 
+#[cfg(test)]
+mod compact_walk_tests;
 #[cfg(test)]
 mod sdp_origin_tests;
 
@@ -5514,6 +5960,199 @@ mod tests {
         Ok(())
     }
 
+    /// A dropped method's request AND its reply (matched by the CSeq method)
+    /// open no dialog, take no dialog number and count only as dropped.
+    #[test]
+    fn a_dropped_method_request_and_reply_open_no_dialog_and_take_no_number()
+    -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.set_drop_methods(vec![" options".into()]);
+        let t0 = base_ts()?;
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_invite_msg("call-1@test", t0)?);
+        store.process_message(make_options_with_branch("opt-1@test", 1, "z9hG4bK-o1", t0)?);
+        store.process_message(make_options_200_with_branch(
+            "opt-1@test",
+            1,
+            "z9hG4bK-o1",
+            t1,
+        )?);
+        store.process_message(make_invite_msg("call-2@test", t1)?);
+        store.process_message(make_200_ok("call-2@test", t1)?);
+        // An OPTIONS inside the call (same Call-ID) belongs to an accepted
+        // dialog: kept, with its reply.
+        store.process_message(make_options_with_branch(
+            "call-2@test",
+            5,
+            "z9hG4bK-o2",
+            t1,
+        )?);
+        store.process_message(make_options_200_with_branch(
+            "call-2@test",
+            5,
+            "z9hG4bK-o2",
+            t1,
+        )?);
+
+        assert!(store.get("opt-1@test").is_none(), "no OPTIONS dialog");
+        assert_eq!(store.len(), 2, "the two INVITE dialogs are kept");
+        assert_eq!(
+            store.total_messages_dropped_by_method(),
+            2,
+            "request + reply"
+        );
+        let n1 = store.get("call-1@test").ok_or("call-1")?.number;
+        let n2 = store.get("call-2@test").ok_or("call-2")?.number;
+        assert_eq!(n2, n1 + 1, "numbers stay consecutive across the drop");
+        assert_eq!(
+            store.get("call-2@test").ok_or("call-2")?.messages.len(),
+            4,
+            "the in-dialog OPTIONS and its 200 are kept"
+        );
+
+        // Without the list the old behavior: the OPTIONS is a dialog.
+        let mut plain = DialogStore::new(100, false);
+        plain.process_message(make_options_with_branch("opt-1@test", 1, "z9hG4bK-o1", t0)?);
+        plain.process_message(make_options_200_with_branch(
+            "opt-1@test",
+            1,
+            "z9hG4bK-o1",
+            t1,
+        )?);
+        assert_eq!(
+            plain.len(),
+            1,
+            "without a drop list the OPTIONS is a dialog"
+        );
+        assert_eq!(
+            plain.total_messages_dropped_by_method(),
+            0,
+            "without a drop list nothing is dropped"
+        );
+        Ok(())
+    }
+
+    /// `only = INVITE`: the INVITE dialog keeps EVERY message (its BYE and
+    /// in-dialog OPTIONS too); the stand-alone OPTIONS dialog is dropped
+    /// whole, even a later INVITE on its Call-ID. With `drop = INVITE` as
+    /// well, nothing is kept.
+    #[test]
+    fn only_methods_decide_per_dialog_on_the_starting_request() -> Result<(), TestError> {
+        only_methods_decide_per_dialog_body()
+    }
+
+    /// The memory of refused dialogs is a window of the most recent ones:
+    /// at the cap, refusing one more forgets only the OLDEST. A later
+    /// message of a forgotten dialog is decided again by its own method;
+    /// one of a remembered dialog is still dropped.
+    #[test]
+    fn refused_dialogs_are_forgotten_oldest_first_one_at_a_time() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.set_drop_methods(vec!["INVITE".into()]);
+        store.set_method_refused_cap(4);
+        let t0 = base_ts()?;
+        for cid in ["r1@test", "r2@test", "r3@test", "r4@test", "r5@test"] {
+            store.process_message(make_invite_msg(cid, t0)?);
+        }
+        assert_eq!(store.len(), 0, "every INVITE dialog is refused");
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_bye_msg("r2@test", t1)?);
+        assert!(
+            store.get("r2@test").is_none(),
+            "the second refusal is still remembered: its BYE is dropped"
+        );
+        store.process_message(make_bye_msg("r1@test", t1)?);
+        assert!(
+            store.get("r1@test").is_some(),
+            "the oldest refusal is forgotten: its BYE is decided by its own method"
+        );
+        Ok(())
+    }
+
+    /// Edge: a cap of one remembers only the newest refusal.
+    #[test]
+    fn a_refused_cap_of_one_remembers_the_newest_refusal() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.set_drop_methods(vec!["INVITE".into()]);
+        store.set_method_refused_cap(1);
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg("s1@test", t0)?);
+        store.process_message(make_invite_msg("s2@test", t0)?);
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_bye_msg("s2@test", t1)?);
+        assert!(
+            store.get("s2@test").is_none(),
+            "the newest refusal is remembered"
+        );
+        store.process_message(make_bye_msg("s1@test", t1)?);
+        assert!(
+            store.get("s1@test").is_some(),
+            "the older refusal is forgotten"
+        );
+        Ok(())
+    }
+
+    /// `only_methods_decide_per_dialog_on_the_starting_request`'s body.
+    fn only_methods_decide_per_dialog_body() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.set_only_methods(vec!["invite".into()]);
+        let t0 = base_ts()?;
+        let t1 = t0 + TimeDelta::seconds(1);
+        store.process_message(make_options_with_branch("opt-1@test", 1, "z9hG4bK-o1", t0)?);
+        store.process_message(make_options_200_with_branch(
+            "opt-1@test",
+            1,
+            "z9hG4bK-o1",
+            t1,
+        )?);
+        store.process_message(make_invite_msg("call-1@test", t0)?);
+        store.process_message(make_200_ok("call-1@test", t1)?);
+        store.process_message(make_options_with_branch(
+            "call-1@test",
+            3,
+            "z9hG4bK-o3",
+            t1,
+        )?);
+        store.process_message(make_bye_msg("call-1@test", t1)?);
+        // A message of the refused OPTIONS dialog, whatever its method.
+        store.process_message(make_invite_msg("opt-1@test", t1)?);
+        store.process_message(make_invite_msg("call-2@test", t1)?);
+        assert!(store.get("opt-1@test").is_none(), "no OPTIONS dialog");
+        assert_eq!(store.len(), 2, "only the INVITE dialogs are kept");
+        assert_eq!(
+            store.get("call-1@test").ok_or("call-1")?.messages.len(),
+            4,
+            "INVITE, 200, in-dialog OPTIONS, BYE"
+        );
+        assert_eq!(
+            store.get("call-1@test").ok_or("call-1")?.number,
+            1,
+            "the first kept dialog is number 1"
+        );
+        assert_eq!(
+            store.get("call-2@test").ok_or("call-2")?.number,
+            2,
+            "a dropped dialog takes no number"
+        );
+        assert_eq!(
+            store.total_messages_dropped_by_method(),
+            3,
+            "OPTIONS, its 200, INVITE on it"
+        );
+
+        let mut both = DialogStore::new(100, false);
+        both.set_only_methods(vec!["INVITE".into()]);
+        both.set_drop_methods(vec!["Invite".into()]);
+        both.process_message(make_invite_msg("call-1@test", t0)?);
+        assert_eq!(both.len(), 0, "drop wins over only: nothing is kept");
+        assert_eq!(
+            both.total_messages_dropped_by_method(),
+            1,
+            "the one INVITE is counted as dropped"
+        );
+        Ok(())
+    }
+
     /// INVITE followed by 200 OK yields one dialog in the InCall state
     /// with both messages stored.
     #[test]
@@ -5875,6 +6514,150 @@ mod tests {
         // Should have 3 messages now (original INVITE + 200 OK + retransmitted INVITE)
         assert_eq!(dialog.messages.len(), 3);
         assert!(dialog.messages[2].is_retransmission);
+        Ok(())
+    }
+
+    /// A response to `call_id`'s INVITE, `status` from the fork tagged
+    /// `to_tag`, on one Via branch, at `ts`.
+    fn fork_response(
+        call_id: &str,
+        status: &str,
+        to_tag: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
+        let raw = build_sip(
+            &format!("SIP/2.0 {status}"),
+            &[
+                "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-one",
+                "From: <sip:alice@example.com>;tag=t1",
+                &format!("To: <sip:bob@example.com>;tag={to_tag}"),
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        Ok(parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("should parse {status}: {e:?}"))?)
+    }
+
+    /// The `retransmit_counts` total of `call_id` in `store`.
+    fn retransmits(store: &DialogStore, call_id: &str) -> Result<u32, TestError> {
+        let d = store.get(call_id).ok_or("dialog should exist")?;
+        Ok(d.timing.retransmit_counts.values().sum())
+    }
+
+    /// A 2xx from a second fork of the INVITE's transaction is another
+    /// fork's answer, not a retransmission of the first (RFC 3261 section
+    /// 13.2.2.4): the store passes it to the state machine, which records it.
+    #[test]
+    fn a_second_forks_2xx_is_not_a_retransmission() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts()?;
+        let call = "fork-store@test";
+        store.process_message(make_invite_msg(call, t0)?);
+        store.process_message(fork_response(
+            call,
+            "200 OK",
+            "fork-b",
+            t0 + TimeDelta::seconds(1),
+        )?);
+        store.process_message(fork_response(
+            call,
+            "200 OK",
+            "fork-a",
+            t0 + TimeDelta::seconds(2),
+        )?);
+        let d = store.get(call).ok_or("dialog should exist")?;
+        assert_eq!(
+            d.forked_answers(),
+            ["fork-a"],
+            "the second fork's answer is recorded"
+        );
+        assert!(
+            !d.messages[2].is_retransmission,
+            "and not marked a retransmission"
+        );
+        assert_eq!(retransmits(&store, call)?, 0, "nothing was retransmitted");
+        Ok(())
+    }
+
+    /// The same fork's 2xx sent again is a retransmission, counted once, and
+    /// records no fork.
+    #[test]
+    fn the_same_forks_2xx_again_is_a_retransmission() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts()?;
+        let call = "fork-retx@test";
+        store.process_message(make_invite_msg(call, t0)?);
+        store.process_message(fork_response(
+            call,
+            "200 OK",
+            "fork-b",
+            t0 + TimeDelta::seconds(1),
+        )?);
+        store.process_message(fork_response(
+            call,
+            "200 OK",
+            "fork-b",
+            t0 + TimeDelta::seconds(2),
+        )?);
+        let d = store.get(call).ok_or("dialog should exist")?;
+        assert!(d.forked_answers().is_empty(), "{:?}", d.forked_answers());
+        assert!(
+            d.messages[2].is_retransmission,
+            "the repeat is a retransmission"
+        );
+        assert_eq!(retransmits(&store, call)?, 1, "counted once");
+        Ok(())
+    }
+
+    /// Provisional responses from two forks are two responses, not one sent
+    /// twice; a `100 Trying` carries no `To` tag, and its repeat is still a
+    /// retransmission.
+    #[test]
+    fn ringing_from_two_forks_is_not_a_retransmission() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts()?;
+        let call = "fork-ring@test";
+        store.process_message(make_invite_msg(call, t0)?);
+        store.process_message(fork_response(call, "180 Ringing", "fork-a", t0)?);
+        store.process_message(fork_response(call, "180 Ringing", "fork-b", t0)?);
+        assert_eq!(retransmits(&store, call)?, 0, "two forks ringing");
+        let raw = build_sip(
+            "SIP/2.0 100 Trying",
+            &[
+                "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-one",
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        for _ in 0..2 {
+            let trying = parse_sip(
+                &raw,
+                t0,
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .map_err(|e| format!("should parse 100: {e:?}"))?;
+            store.process_message(trying);
+        }
+        assert_eq!(retransmits(&store, call)?, 1, "the repeated 100 Trying");
         Ok(())
     }
 
@@ -9448,5 +10231,401 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             "the unkept message at 1 s is the oldest; the kept ones start at 5 s"
         );
         Ok(())
+    }
+}
+
+/// DEDUP-1: which arriving message is a copy of a stored one, and what a
+/// copy does to its dialog.
+#[cfg(test)]
+mod copy_tests {
+    use super::*;
+    use crate::capture::parse::InputOrigin;
+    use crate::net::TransportProto;
+    use crate::sip::message::origin_bit;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A message of call `c@example.com`: `first_line`, CSeq `cseq`, top-Via
+    /// branch `branch`, `extra` appended to the headers.
+    fn msg(
+        first_line: &str,
+        cseq: &str,
+        branch: &str,
+        extra: &str,
+        origin: Option<InputOrigin>,
+        ms: i64,
+    ) -> Result<SipMessage, TestError> {
+        let raw = format!(
+            "{first_line}\r\nVia: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK{branch}\r\n\
+             From: <sip:a@example.com>;tag=f\r\nTo: <sip:b@example.com>\r\n\
+             Call-ID: c@example.com\r\nCSeq: {cseq}\r\n{extra}Content-Length: 0\r\n\r\n"
+        );
+        let ts = chrono::DateTime::from_timestamp_millis(1_700_000_000_000 + ms).ok_or("ts")?;
+        let ip = std::net::IpAddr::from([192, 0, 2, 1]);
+        let mut m = crate::sip::parser::parse_sip(
+            raw.as_bytes(),
+            ts,
+            ip,
+            ip,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("parse: {e:?}"))?;
+        m.input_origin = origin;
+        Ok(m)
+    }
+
+    /// The INVITE of these tests from `origin` at `ms`.
+    fn invite(origin: Option<InputOrigin>, ms: i64) -> Result<SipMessage, TestError> {
+        msg(
+            "INVITE sip:b@example.com SIP/2.0",
+            "1 INVITE",
+            "x1",
+            "",
+            origin,
+            ms,
+        )
+    }
+
+    /// Its 200 OK.
+    fn ok(origin: Option<InputOrigin>, ms: i64) -> Result<SipMessage, TestError> {
+        msg("SIP/2.0 200 OK", "1 INVITE", "x1", "", origin, ms)
+    }
+
+    const W: Option<InputOrigin> = Some(InputOrigin::Wire);
+    const H: Option<InputOrigin> = Some(InputOrigin::Hep);
+
+    /// A dialog opened by `first`, with `rest` advanced into it in order.
+    fn dialog(first: SipMessage, rest: Vec<SipMessage>) -> Result<SipDialog, TestError> {
+        let mut d = open_dialog(&first).ok_or("opens")?;
+        for m in rest {
+            advance_dialog(&mut d, m, DEFAULT_MAX_MESSAGES_PER_DIALOG);
+        }
+        Ok(d)
+    }
+
+    // SUCCESS
+
+    #[test]
+    fn a_hep_report_of_a_wire_message_is_a_copy() -> Result<(), TestError> {
+        assert_eq!(copy_of(&[invite(W, 0)?], &invite(H, 1)?), Some(0), "copy");
+        Ok(())
+    }
+
+    #[test]
+    fn a_wire_capture_of_a_hep_report_is_a_copy() -> Result<(), TestError> {
+        assert_eq!(copy_of(&[invite(H, 0)?], &invite(W, 1)?), Some(0), "copy");
+        Ok(())
+    }
+
+    #[test]
+    fn a_response_copy_is_found() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(W, 0)?, ok(W, 50)?], &ok(H, 51)?),
+            Some(1),
+            "the 200"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_nearest_original_in_time_is_chosen() -> Result<(), TestError> {
+        let stored = [invite(W, 0)?, invite(W, 500)?];
+        assert_eq!(
+            copy_of(&stored, &invite(H, 480)?),
+            Some(1),
+            "the nearer one"
+        );
+        assert_eq!(copy_of(&stored, &invite(H, 20)?), Some(0), "the nearer one");
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_adds_its_source_to_the_original() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![invite(H, 1)?])?;
+        assert_eq!(d.messages.len(), 1, "one message stored");
+        assert_eq!(
+            d.messages[0].sources(),
+            origin_bit(InputOrigin::Wire) | origin_bit(InputOrigin::Hep),
+            "both sources"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_is_not_a_retransmission() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![invite(H, 1)?])?;
+        assert_eq!(d.timing.total_retransmits(), 0, "no retransmission");
+        assert!(!d.messages[0].is_retransmission, "not marked");
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_moves_the_dialogs_times() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![invite(H, 700)?])?;
+        assert_eq!(
+            d.latest_message_at,
+            d.messages[0].timestamp + chrono::TimeDelta::milliseconds(700),
+            "latest"
+        );
+        assert_eq!(d.updated_at, d.latest_message_at, "activity");
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_that_came_first_moves_the_earliest_time() -> Result<(), TestError> {
+        let d = dialog(invite(W, 500)?, vec![invite(H, 100)?])?;
+        assert_eq!(
+            d.earliest_message_at,
+            d.messages[0].timestamp - chrono::TimeDelta::milliseconds(400),
+            "earliest"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_copy_of_the_answer_does_not_answer_twice() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![ok(W, 50)?, ok(H, 51)?])?;
+        assert_eq!(d.messages.len(), 2, "INVITE and one 200");
+        assert_eq!(d.final_status_code(), Some(200), "answered");
+        Ok(())
+    }
+
+    // FAILURE: not copies
+
+    #[test]
+    fn the_same_source_twice_is_not_a_copy() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(W, 0)?], &invite(W, 500)?),
+            None,
+            "a retransmission"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_same_source_twice_stays_a_retransmission() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![invite(W, 500)?])?;
+        assert_eq!(d.messages.len(), 2, "both stored");
+        assert_eq!(d.timing.total_retransmits(), 1, "one retransmission");
+        Ok(())
+    }
+
+    #[test]
+    fn different_bytes_are_not_a_copy() -> Result<(), TestError> {
+        let changed = msg(
+            "INVITE sip:b@example.com SIP/2.0",
+            "1 INVITE",
+            "x1",
+            "Max-Forwards: 69\r\n",
+            H,
+            1,
+        )?;
+        assert_eq!(copy_of(&[invite(W, 0)?], &changed), None, "a rewrite");
+        Ok(())
+    }
+
+    #[test]
+    fn another_branch_is_not_a_copy() -> Result<(), TestError> {
+        let other = msg(
+            "INVITE sip:b@example.com SIP/2.0",
+            "1 INVITE",
+            "x2",
+            "",
+            H,
+            1,
+        )?;
+        assert_eq!(
+            copy_of(&[invite(W, 0)?], &other),
+            None,
+            "another transaction"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn another_cseq_is_not_a_copy() -> Result<(), TestError> {
+        let other = msg(
+            "INVITE sip:b@example.com SIP/2.0",
+            "2 INVITE",
+            "x1",
+            "",
+            H,
+            1,
+        )?;
+        assert_eq!(copy_of(&[invite(W, 0)?], &other), None, "another request");
+        Ok(())
+    }
+
+    #[test]
+    fn another_status_is_not_a_copy() -> Result<(), TestError> {
+        let ringing = msg("SIP/2.0 180 Ringing", "1 INVITE", "x1", "", H, 51)?;
+        assert_eq!(copy_of(&[ok(W, 50)?], &ringing), None, "another response");
+        Ok(())
+    }
+
+    #[test]
+    fn a_report_outside_the_window_is_not_a_copy() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(W, 0)?], &invite(H, 2_001)?),
+            None,
+            "too late"
+        );
+        assert_eq!(
+            copy_of(&[invite(W, 2_001)?], &invite(H, 0)?),
+            None,
+            "too early"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_message_without_an_origin_is_never_a_copy() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(W, 0)?], &invite(None, 1)?),
+            None,
+            "unknown source"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stored_message_without_an_origin_is_never_copied() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(None, 0)?], &invite(H, 1)?),
+            None,
+            "unknown original"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_original_both_sources_gave_takes_no_third_copy() -> Result<(), TestError> {
+        let d = dialog(invite(W, 0)?, vec![invite(H, 1)?, invite(H, 2)?])?;
+        assert_eq!(d.messages.len(), 2, "the third is HEP's retransmission");
+        assert_eq!(d.timing.total_retransmits(), 1, "one retransmission");
+        Ok(())
+    }
+
+    // EDGE
+
+    #[test]
+    fn exactly_at_the_window_is_a_copy() -> Result<(), TestError> {
+        assert_eq!(
+            copy_of(&[invite(W, 0)?], &invite(H, 2_000)?),
+            Some(0),
+            "at 2 s"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_same_instant_is_a_copy() -> Result<(), TestError> {
+        assert_eq!(copy_of(&[invite(W, 0)?], &invite(H, 0)?), Some(0), "at 0 s");
+        Ok(())
+    }
+
+    #[test]
+    fn each_copy_of_a_retransmission_finds_its_own_original() -> Result<(), TestError> {
+        let d = dialog(
+            invite(W, 0)?,
+            vec![invite(H, 1)?, invite(W, 500)?, invite(H, 501)?],
+        )?;
+        assert_eq!(d.messages.len(), 2, "two INVITEs, each with both sources");
+        assert_eq!(d.timing.total_retransmits(), 1, "one retransmission");
+        let both = origin_bit(InputOrigin::Wire) | origin_bit(InputOrigin::Hep);
+        assert!(
+            d.messages.iter().all(|m| m.sources() == both),
+            "both sources each"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_merged_message_is_not_copied_by_a_source_it_holds() -> Result<(), TestError> {
+        let mut merged = invite(W, 0)?;
+        merged.also_seen_by = origin_bit(InputOrigin::Hep);
+        assert_eq!(
+            copy_of(&[merged.clone()], &invite(H, 1)?),
+            None,
+            "HEP already gave it"
+        );
+        assert_eq!(
+            copy_of(&[merged], &invite(W, 1)?),
+            None,
+            "the wire already gave it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_replayed_merged_message_merges_all_its_sources() -> Result<(), TestError> {
+        // The parallel merge replays a fragment's stored messages; one that
+        // already holds a copy brings both of its sources.
+        let mut replayed = invite(H, 1)?;
+        replayed.also_seen_by = origin_bit(InputOrigin::Uprobe);
+        let d = dialog(invite(W, 0)?, vec![replayed])?;
+        assert_eq!(d.messages.len(), 1, "merged");
+        assert_eq!(
+            d.messages[0].sources(),
+            origin_bit(InputOrigin::Wire)
+                | origin_bit(InputOrigin::Hep)
+                | origin_bit(InputOrigin::Uprobe),
+            "every source"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_original_beyond_the_lookback_is_not_found() -> Result<(), TestError> {
+        let mut stored = vec![invite(W, 0)?];
+        for i in 0..COPY_LOOKBACK {
+            stored.push(msg(
+                "SIP/2.0 100 Trying",
+                "1 INVITE",
+                &format!("y{i}"),
+                "",
+                W,
+                1,
+            )?);
+        }
+        assert_eq!(copy_of(&stored, &invite(H, 2)?), None, "too far back");
+        stored.remove(1);
+        assert_eq!(copy_of(&stored, &invite(H, 2)?), Some(0), "just inside");
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_dialog_has_nothing_to_copy() -> Result<(), TestError> {
+        assert_eq!(copy_of(&[], &invite(H, 0)?), None, "nothing stored");
+        Ok(())
+    }
+
+    #[test]
+    fn sources_names_its_own_origin_and_its_copies() -> Result<(), TestError> {
+        let mut m = invite(W, 0)?;
+        assert_eq!(m.sources(), origin_bit(InputOrigin::Wire), "own origin");
+        m.also_seen_by = origin_bit(InputOrigin::Hep);
+        assert_eq!(
+            m.sources(),
+            origin_bit(InputOrigin::Wire) | origin_bit(InputOrigin::Hep),
+            "and a copy"
+        );
+        m.input_origin = None;
+        m.also_seen_by = 0;
+        assert_eq!(m.sources(), 0, "none");
+        Ok(())
+    }
+
+    #[test]
+    fn every_origin_has_its_own_bit() {
+        let bits: Vec<u8> = InputOrigin::ALL.iter().map(|&o| origin_bit(o)).collect();
+        let union = bits.iter().fold(0u8, |acc, b| acc | b);
+        assert_eq!(
+            union.count_ones() as usize,
+            InputOrigin::ALL.len(),
+            "distinct bits: {bits:?}"
+        );
     }
 }

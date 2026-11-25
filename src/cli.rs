@@ -740,6 +740,19 @@ fn parse_password_encoding(s: &str) -> Result<String, String> {
     }
 }
 
+/// Parse one `--drop-method` / `--only-method` name, refusing a method
+/// sipnab does not know (any case is accepted and kept as typed).
+fn parse_method_name(s: &str) -> Result<String, String> {
+    if crate::sip::method::is_known_method(s) {
+        Ok(s.to_string())
+    } else {
+        Err(format!(
+            "unknown SIP method '{s}'; use one of {}",
+            crate::sip::method::accepted_method_names()
+        ))
+    }
+}
+
 /// `Capture` flags.
 ///
 /// Split out of [`Cli`] so clap's generated parser builds this group in its
@@ -797,6 +810,54 @@ pub struct CaptureArgs {
         action = clap::ArgAction::Append
     )]
     pub input: Vec<String>,
+
+    /// Drop SIP dialogs started by this method at ingest (repeatable, or a
+    /// comma list; a standard SIP method or the extension method KDMQ,
+    /// case-insensitive; another name is refused at startup). The decision
+    /// is made ONCE
+    /// per dialog (Call-ID), on the request that starts it: a dialog started
+    /// by a listed method opens no dialog, takes no dialog number and every
+    /// message of it (requests and replies) only counts in "dropped by
+    /// method" (TUI status line, capture report). A dialog started by
+    /// another method keeps EVERY message, whatever its method (ACK, BYE,
+    /// re-INVITE or an in-dialog OPTIONS, for example). A message whose dialog start
+    /// was never seen (capture began mid-call) is decided by its own method
+    /// (a reply by its CSeq method). Unlike `--filter`, which hides, a
+    /// dropped message is never kept in memory. Live capture, HEP and `-I`
+    /// files alike. The most recent 65,536 refused dialogs are remembered;
+    /// with `--cores N` the decision is made at the merge, as `--cores 1`
+    /// makes it. Example: `--drop-method OPTIONS`, or `--drop-method KDMQ`
+    /// on a Kamailio cluster node.
+    #[arg(
+        help_heading = "Capture",
+        long = "drop-method",
+        value_name = "METHOD",
+        value_delimiter = ',',
+        value_parser = parse_method_name,
+        action = clap::ArgAction::Append
+    )]
+    pub drop_method: Vec<String>,
+
+    /// Keep at ingest ONLY the SIP dialogs started by this method
+    /// (repeatable, or a comma list; names as for `--drop-method`),
+    /// decided once per
+    /// dialog on its starting request exactly as `--drop-method` decides:
+    /// with `--only-method INVITE` a call keeps every message (ACK, BYE,
+    /// CANCEL, re-INVITE, UPDATE, INFO, in-dialog OPTIONS and every other
+    /// in-dialog request, and all the replies), while dialogs started by any
+    /// other method (REGISTER, OPTIONS, SUBSCRIBE, MESSAGE and the rest) are
+    /// dropped whole (no dialog, no number, counted as dropped). With both
+    /// flags a dialog is kept only when its starting method is in
+    /// `--only-method` AND not in `--drop-method`.
+    #[arg(
+        help_heading = "Capture",
+        long = "only-method",
+        value_name = "METHOD",
+        value_delimiter = ',',
+        value_parser = parse_method_name,
+        action = clap::ArgAction::Append
+    )]
+    pub only_method: Vec<String>,
 
     /// Descend into subdirectories when `-I` names a directory.
     ///
@@ -1057,6 +1118,9 @@ pub struct CaptureArgs {
     /// 100 MiB. Both `filesize` conditions counted decimal megabytes before
     /// and stopped 4.9 % early; a capture that stopped short looks exactly
     /// like one that stopped when asked, so nothing reported the difference.
+    ///
+    /// With `--split`, `filesize` counts the output of every split file
+    /// together, the files `--split-keep` deleted included.
     #[arg(help_heading = "Capture", long, value_name = "CONDITION")]
     pub autostop: Option<String>,
 
@@ -1427,6 +1491,21 @@ pub struct DiagnosticAliasArgs {
 /// 2 MiB libtest thread stack.
 #[derive(clap::Args, Debug, Clone)]
 pub struct OutputArgs {
+    /// sngrep mode: the TUI takes sngrep's keys and colors.
+    ///
+    /// On the call list, call flow, raw message and message compare screens
+    /// every sngrep key does what it does in sngrep; the sipnab commands whose
+    /// keys sngrep uses move to free keys, listed at the top of the F1 help
+    /// with the sngrep keys sipnab has no equivalent for. Off, the TUI is
+    /// unchanged. Also `[display] sngrep_mode = true`.
+    #[arg(help_heading = "Output", long, overrides_with = "no_sngrep_mode")]
+    pub sngrep_mode: bool,
+
+    /// sipnab's own keys and colors even when `[display] sngrep_mode = true`.
+    /// The last of `--sngrep-mode` / `--no-sngrep-mode` typed wins.
+    #[arg(help_heading = "Output", long, overrides_with = "sngrep_mode")]
+    pub no_sngrep_mode: bool,
+
     /// Output NDJSON: one JSON object per SIP message, pipeable to jq.
     /// Schema in docs/output-formats.md.
     #[arg(help_heading = "Output", long)]
@@ -1886,6 +1965,10 @@ pub struct OutputArgs {
     /// Suppress the per-message stream (reports still print). Combine
     /// with --report or --call-report for summary-only output:
     /// `sipnab -N -I file.pcap --report --no-cli-print`.
+    ///
+    /// Implied by `--json-dialogs`, `--json-stun`, `--json-analyze` and
+    /// `--yang-analyze`, so their output reaches `jq` alone, unless `--json`,
+    /// `--json-pretty`, `-T` or `--fail2ban` is also given.
     #[arg(help_heading = "Output", long = "no-cli-print")]
     pub no_cli_print: bool,
 
@@ -2021,6 +2104,22 @@ pub struct OutputArgs {
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub max_grouped_messages: Option<u64>,
+}
+
+impl OutputArgs {
+    /// Whether a JSON document or stream written after the capture ends is
+    /// asked for: `--json-dialogs`, `--json-stun`, `--json-analyze` or
+    /// `--yang-analyze`.
+    fn writes_post_capture_json(&self) -> bool {
+        self.json_dialogs || self.json_stun || self.json_analyze || self.yang_analyze
+    }
+
+    /// Whether the operator chose a per-message format, rather than leaving
+    /// the default text line in place: `--json`, `--json-pretty`, `-T` or
+    /// `--fail2ban`.
+    fn chose_per_message_format(&self) -> bool {
+        self.json || self.json_pretty || self.text_dump || self.fail2ban
+    }
 }
 
 /// `Dialog` flags.
@@ -2273,8 +2372,10 @@ pub struct RtpArgs {
     /// The counters the relay keeps about ITSELF -- packets relayed, sessions,
     /// its own loss and jitter. They are `relay_reported`: a claim from the
     /// box, not a measurement sipnab made, and the output says so. Needs the
-    /// same live source `--rtpengine-control` does, because asking transmits;
-    /// a file-backed run prints why it will not ask rather than asking.
+    /// same live source `--rtpengine-control` does, because asking transmits.
+    /// On a capture file, with no `--rtpengine-control`, or with an address
+    /// that is not `IP:port`, the run exits 2 before it reads anything, with
+    /// the reason on stderr.
     #[arg(help_heading = "RTP", long = "relay-stats")]
     pub relay_stats: bool,
 
@@ -2333,7 +2434,8 @@ pub struct RtpArgs {
     /// starts one does not own the host it keeps transmitting from. The newest
     /// reading is readable over REST `GET /v1/relay/stats/polled` and the MCP
     /// tool `relay_stats_polled`, which send nothing. Same live-source gate as
-    /// `--relay-stats`.
+    /// `--relay-stats`. With `--relay-sessions` it is instead the gap between
+    /// that answer's two asks, for each socket's rate, and the run then exits.
     #[arg(
         help_heading = "RTP",
         long = "relay-stats-interval",
@@ -4979,8 +5081,8 @@ pub struct LimitsArgs {
     /// TCP imposes no such ceiling and neither does RFC 3261: on a carrier
     /// trunk a message carrying ISUP encapsulation, a long `Record-Route` set
     /// or a fat SDP offer passes 64 KiB legitimately, and when it does the
-    /// buffer is flushed mid-message so both halves parse as malformed. The
-    /// peer that sent a perfectly good message is the one reported broken.
+    /// message is dropped, counted and warned: it is in no dialog and no
+    /// output, and the stream resumes at the message after it.
     ///
     /// Raising it to N lets one TCP direction hold N bytes, so it is the
     /// operator's statement about the trunk they are watching. The floor is
@@ -6890,6 +6992,19 @@ impl Cli {
         )
     }
 
+    /// The ingest method filter, `(drop, only)`: `[capture] drop_methods`
+    /// and `only_methods` with `--drop-method` / `--only-method` added (the
+    /// settings table's `Merge::Union`). Both empty: nothing is dropped.
+    #[must_use]
+    pub fn method_filter(&self, config: &crate::config::Config) -> (Vec<String>, Vec<String>) {
+        let cap = &config.capture;
+        let mut drop = cap.drop_methods.clone().unwrap_or_default();
+        drop.extend(self.capture_args.drop_method.iter().cloned());
+        let mut only = cap.only_methods.clone().unwrap_or_default();
+        only.extend(self.capture_args.only_method.iter().cloned());
+        (drop, only)
+    }
+
     /// Whether times show as deltas: `--delta-time` / `--no-delta-time`, else
     /// `[display] delta_time`, else absolute.
     #[must_use]
@@ -6898,6 +7013,18 @@ impl Cli {
             self.output_args.delta_time,
             self.output_args.no_delta_time,
             config.display.delta_time,
+            false,
+        )
+    }
+
+    /// Whether the TUI runs in sngrep mode: `--sngrep-mode` /
+    /// `--no-sngrep-mode`, else `[display] sngrep_mode`, else off.
+    #[must_use]
+    pub fn sngrep_mode(&self, config: &crate::config::Config) -> bool {
+        switch(
+            self.output_args.sngrep_mode,
+            self.output_args.no_sngrep_mode,
+            config.display.sngrep_mode,
             false,
         )
     }
@@ -8620,6 +8747,7 @@ impl Cli {
         crate::capture::input_set::ResolveOptions {
             recursive: self.capture_args.recursive,
             name_glob: self.capture_args.input_name.clone(),
+            refuse_unwrap: false,
         }
     }
 
@@ -8706,6 +8834,17 @@ impl Cli {
         // promises can be redirected straight into a file `sha256sum -c`
         // reads, so no message line may share the stream.
         if self.output_args.vcon_digest {
+            self.output_args.no_cli_print = true;
+        }
+        // The post-capture JSON outputs are documented as pipeable to `jq`,
+        // and the default per-message text line printed ahead of them made
+        // the stream unparseable unless `--no-cli-print` was also typed
+        // (#823). Only that default line goes: a per-message format the
+        // operator chose stays on, since `--json` beside them is still
+        // NDJSON and the others were asked for by name.
+        if self.output_args.writes_post_capture_json()
+            && !self.output_args.chose_per_message_format()
+        {
             self.output_args.no_cli_print = true;
         }
     }
@@ -9816,6 +9955,153 @@ mod tests {
     use super::*;
 
     type TestError = Box<dyn std::error::Error>;
+
+    // ── --drop-method / --only-method: the ingest method filter ─────────
+
+    /// The flags add to the keys (`Merge::Union`): config first, then the
+    /// flags, a comma list split into its methods.
+    #[test]
+    fn method_filter_flags_add_to_the_keys() -> Result<(), TestError> {
+        let config: crate::config::Config = toml::from_str(
+            "[capture]\ndrop_methods = [\"SUBSCRIBE\"]\nonly_methods = [\"INVITE\"]\n",
+        )?;
+        let cli = Cli::try_parse_from([
+            "sipnab",
+            "--drop-method",
+            "OPTIONS",
+            "--only-method",
+            "register,message",
+        ])?;
+        let (drop, only) = cli.method_filter(&config);
+        assert_eq!(drop, ["SUBSCRIBE", "OPTIONS"], "the key, then the flag");
+        assert_eq!(
+            only,
+            ["INVITE", "register", "message"],
+            "the comma list is split"
+        );
+        Ok(())
+    }
+
+    /// Failure side: with no flag and no key nothing is dropped, so the
+    /// filter stays off.
+    #[test]
+    fn method_filter_without_flags_or_keys_is_empty() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab"])?;
+        let (drop, only) = cli.method_filter(&crate::config::Config::default());
+        assert!(
+            drop.is_empty() && only.is_empty(),
+            "no list: the filter is off"
+        );
+        Ok(())
+    }
+
+    /// Edge: a flag given twice and a key alone each keep every entry.
+    #[test]
+    fn method_filter_repeated_flag_and_key_alone() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from([
+            "sipnab",
+            "--drop-method",
+            "OPTIONS",
+            "--drop-method",
+            "NOTIFY",
+        ])?;
+        let (drop, only) = cli.method_filter(&crate::config::Config::default());
+        assert_eq!(drop, ["OPTIONS", "NOTIFY"], "a repeated flag appends");
+        assert!(only.is_empty(), "no only list");
+        let keyed: crate::config::Config =
+            toml::from_str("[capture]\nonly_methods = [\"INVITE\"]\n")?;
+        let (drop, only) = Cli::try_parse_from(["sipnab"])?.method_filter(&keyed);
+        assert!(drop.is_empty(), "no drop list");
+        assert_eq!(only, ["INVITE"], "the key alone");
+        Ok(())
+    }
+
+    /// Failure: a misspelled method is refused at startup, naming the value
+    /// and the methods sipnab knows. Before, `--only-method INVTE` started
+    /// and dropped every dialog.
+    #[test]
+    fn method_filter_refuses_an_unknown_method_name() -> Result<(), TestError> {
+        for flag in ["--only-method", "--drop-method"] {
+            let Err(e) = Cli::try_parse_from(["sipnab", flag, "INVTE"]) else {
+                return Err(format!("{flag} INVTE was accepted").into());
+            };
+            let text = e.to_string();
+            assert!(text.contains("INVTE"), "{flag}: the value is named: {text}");
+            assert!(
+                text.contains("INVITE, ACK"),
+                "{flag}: the known methods are listed: {text}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Success: KDMQ, in mixed case, is accepted by both flags, kept as
+    /// typed, and joins the filter beside a key's names.
+    #[test]
+    fn method_filter_accepts_kdmq_in_either_flag_and_any_case() -> Result<(), TestError> {
+        let cli =
+            Cli::try_parse_from(["sipnab", "--drop-method", "KdMq", "--only-method", "kdmq"])?;
+        assert_eq!(
+            cli.capture_args.drop_method,
+            ["KdMq"],
+            "--drop-method KdMq is kept as typed"
+        );
+        assert_eq!(
+            cli.capture_args.only_method,
+            ["kdmq"],
+            "--only-method kdmq is kept as typed"
+        );
+        let keyed: crate::config::Config =
+            toml::from_str("[capture]\ndrop_methods = [\"OPTIONS\"]\n")?;
+        let (drop, only) =
+            Cli::try_parse_from(["sipnab", "--drop-method", "KDMQ"])?.method_filter(&keyed);
+        assert_eq!(drop, ["OPTIONS", "KDMQ"], "the flag adds KDMQ to the key");
+        assert!(only.is_empty(), "no only list");
+        Ok(())
+    }
+
+    /// Failure: a typo of KDMQ is refused by both flags, and the refusal
+    /// lists KDMQ among the accepted names.
+    #[test]
+    fn method_filter_refuses_a_kdmq_typo_and_lists_kdmq() -> Result<(), TestError> {
+        for flag in ["--only-method", "--drop-method"] {
+            for typo in ["KDQM", "kdm", "KDMQS"] {
+                let Err(e) = Cli::try_parse_from(["sipnab", flag, typo]) else {
+                    return Err(format!("{flag} {typo} was accepted").into());
+                };
+                let text = e.to_string();
+                assert!(text.contains(typo), "{flag}: the value is named: {text}");
+                assert!(
+                    text.contains("UPDATE, KDMQ"),
+                    "{flag}: KDMQ is listed after the standard names: {text}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Edge: one bad name in a comma list refuses the whole flag; a known
+    /// name in any case is accepted, and the extension method KDMQ is one.
+    #[test]
+    fn method_filter_checks_every_name_of_a_comma_list() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab", "--drop-method", "OPTIONS,KDMQ"])?;
+        assert_eq!(
+            cli.capture_args.drop_method,
+            ["OPTIONS", "KDMQ"],
+            "the extension method KDMQ in a comma list is accepted"
+        );
+        assert!(
+            Cli::try_parse_from(["sipnab", "--drop-method", "OPTIONS,KDQM"]).is_err(),
+            "a typo of KDMQ (KDQM) in a comma list is refused"
+        );
+        let cli = Cli::try_parse_from(["sipnab", "--drop-method", "options,Notify"])?;
+        assert_eq!(
+            cli.capture_args.drop_method,
+            ["options", "Notify"],
+            "known names in any case are kept as typed"
+        );
+        Ok(())
+    }
 
     // ── --g729-tables: where the G.729 codebook tables are ──────────────
 
@@ -13432,6 +13718,37 @@ mod tests {
         Ok(())
     }
 
+    /// The post-capture JSON outputs own stdout unless a per-message format
+    /// was chosen (#823).
+    ///
+    /// Each of them used to arrive behind the default per-message text line,
+    /// so `sipnab -N -I x.pcap --json-dialogs | jq` failed on the first line.
+    #[test]
+    fn post_capture_json_suppresses_only_the_default_message_line() -> Result<(), TestError> {
+        for flag in [
+            "--json-dialogs",
+            "--json-stun",
+            "--json-analyze",
+            "--yang-analyze",
+        ] {
+            let cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", flag]);
+            assert!(
+                cli.output_args.no_cli_print,
+                "{flag} alone left the text line on stdout ahead of its JSON"
+            );
+
+            for format in ["--json", "--json-pretty", "-T", "--fail2ban"] {
+                let cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", flag, format]);
+                assert!(
+                    !cli.output_args.no_cli_print,
+                    "{flag} with {format} discarded the per-message output the \
+                     operator asked for"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// A build carrying the exporter accepts `--export-vcon`.
     ///
     /// Paired with the refusal below. Both arms compile in every build and
@@ -15654,6 +15971,12 @@ mod tests {
                 |cli, c| cli.delta_time(c),
             ),
             (
+                "--sngrep-mode",
+                "--no-sngrep-mode",
+                |c| c.display.sngrep_mode = Some(true),
+                |cli, c| cli.sngrep_mode(c),
+            ),
+            (
                 "--no-priv-drop",
                 "--priv-drop",
                 |c| c.privilege.no_priv_drop = Some(true),
@@ -15952,6 +16275,7 @@ mod one_shot_plumbing_tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".config/implies-no-tui.txt");
         if std::env::var_os(BLESS_IMPLIES).is_some() {
             std::fs::write(&path, &want).map_err(|e| format!("write: {e}"))?;
+            // not a prerequisite: the bless mode writes the listing instead of checking it
             return Ok(());
         }
         let have = std::fs::read_to_string(&path).map_err(|e| format!("read: {e}"))?;

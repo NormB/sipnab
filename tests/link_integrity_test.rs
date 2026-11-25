@@ -1888,7 +1888,60 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // errors.md); docs/errors.md 3 (two to that how-to, one to its own "Fleet
     // center"); docs/cli-reference.md 1 and docs/least-privilege.md 1, both
     // to the how-to.
-    const EXPECTED_WIKI_LINKS: usize = 2697;
+    // 2697 -> 2698 (CAPTURE-RESOLVE-AS-ROOT): docs/errors.md's entry for the
+    // TMPDIR refusal links to "Read capture files only root can read" in
+    // least-privilege.md.
+    // 2698 -> 2700 (CAPTURE-RESOLVE-AS-ROOT, --chroot): docs/errors.md's entry
+    // for the --chroot refusal links "Confine it to a directory", and
+    // least-privilege.md's archive bullet links the same section.
+    // 2700 -> 2706 (a center answers 503 while it starts, +6): docs/fleet.md
+    // 4 (three to its new "What the center answers while it starts", one
+    // from it to "The files of the history store"); docs/errors.md 2 (one
+    // to its own "A `503` while the center starts", one to that section of
+    // fleet.md).
+    // 2706 -> 2707 (HTTPS-BODY-SHORT-READ-ACCEPTED): docs/errors.md's entry
+    // for a --vcon-fetch answer cut short links the list of its forms.
+    // 2707 -> 2709 (G729-INSTALL-DOWNLOADS-AS-ROOT): docs/cli-reference.md's
+    // `--user` of `sipnab g729 install` and docs/errors.md's entry for a failed
+    // download link "Install as root" in g729.md; least-privilege.md's link to
+    // g729.md became a link to that section (no change).
+    // 2709 -> 2716 (TUI-FILTER-EXPRESSION, #841, +7): docs/tui-walkthrough.md
+    // 6 (its "Filter with an expression" links filter-dsl.md, the `[filters]`
+    // and `[filter]` sections of config-reference.md, and its own "Before you
+    // start", "Open a capture" and, from "Search and filter", the new
+    // section); docs/keybindings.md 1 (the Expression bullet links that
+    // section; its filter-dsl.md link moved from the tip to the bullet, no
+    // change).
+    // 2716 -> 2720 (TUI-FILTER-FOLLOWUPS, +4): docs/tui-walkthrough.md 3
+    // ("Look up the fields and operators" links filter-dsl.md twice, "Run the
+    // same filter from a shell" links the "Copying text" section of
+    // keybindings.md); docs/keybindings.md 1 (the call list's `Y` row links
+    // "Run the same filter from a shell").
+    // 2720 -> 2722 (TUI-FILTER-FOLLOWUPS, F2 save, +2): docs/keybindings.md 1
+    // (the filter popup's `F2` row links "Save the dialog's filter under a
+    // name"); docs/errors.md 1 (the `[filters] already defines` entry links
+    // that section).
+    // 2722 -> 2755 (named filters over REST and MCP, +33): docs/rest-api.md
+    // 8 (the `named` row, the two route sections and two how-tos; its sample
+    // capture link is not intra-docs); docs/mcp-tools-signaling.md 14 (the
+    // `list_named_filters` section and row, `validate_filter`'s position
+    // paragraph; its sample capture link is not intra-docs);
+    // docs/mcp-tools-core.md 4, docs/filter-dsl.md 3, docs/mcp-tools.md 2,
+    // docs/mcp-tools-security.md 1 and docs/mcp-tools-vcon.md 1 (the `named`
+    // rows and the index row).
+    // 2755 -> 2756 (F2-SAVE-UNWRITABLE, +1): docs/keybindings.md 1 (the
+    // filter dialog's F2/F3 paragraph links "Save the dialog's filter under
+    // a name").
+    // 2756 -> 2758 (WC2a stability page, +2): docs/README.md 1 (its index
+    // line for docs/stability.md) and docs/stability.md 1 (the changelog).
+    // 2758 -> 2760 (contributed TUI keys, +2): docs/tui-walkthrough.md 2,
+    // "Set how the TUI starts" (config-reference.md and errors.md).
+    // 2760 -> 2763 (sngrep mode, #884, +3): docs/keybindings.md 1 (its sngrep
+    // mode section links the how-to) and docs/tui-walkthrough.md 2, "Use
+    // sngrep's keys and colors" (config-reference.md and keybindings.md).
+    // 2763 -> 2764 (relay rates, +1): docs/cli-reference.md's
+    // `--relay-sessions` row links "Read the rate media arrives at".
+    const EXPECTED_WIKI_LINKS: usize = 2764;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2047,7 +2100,22 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // links docs/fleet.md#keep-call-history-at-the-center.
     // 150 -> 151 (changelog outline format): CONTRIBUTING.md's changelog
     // item links docs/internals/build-ci-release.md#the-format-of-an-entry.
-    const EXPECTED_COMMUNITY_LINKS: usize = 151;
+    // 151 -> 152 (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS): the count
+    // the test gave after CONTRIBUTING.md's "Updating code adapted from other projects" was added.
+    // 152 -> 172 (governance): GOVERNANCE.md joins ROOT_FILES with 15
+    // relative .md links; README.md, MAINTAINERS.md and SUPPORT.md each link
+    // it (+3); CONTRIBUTING.md links it and its own "Pull request process"
+    // section from "Your first change" (+2).
+    // 172 -> 175 (DCO): README.md and MAINTAINERS.md each link
+    // CONTRIBUTING.md#signing-off-commits, and that section links
+    // MAINTAINERS.md#the-contributor-agreement (+3).
+    // 175 -> 173 (CLA retired): README.md's and MAINTAINERS.md's links to
+    // CONTRIBUTING.md#contributor-license-agreement are gone (-2); the
+    // section's own links now point at CLA.md, #signing-off-commits and
+    // MAINTAINERS.md, as before in number.
+    // 173 -> 174 (WC2a stability page): README.md's docs table links
+    // docs/stability.md.
+    const EXPECTED_COMMUNITY_LINKS: usize = 174;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -2056,6 +2124,7 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
         "SECURITY.md",
         "CODE_OF_CONDUCT.md",
         "ROADMAP.md",
+        "GOVERNANCE.md",
     ];
     let mut problems = Vec::new();
     let mut seen = 0;
@@ -3172,7 +3241,8 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // docs/expectations.md.
     // 110 -> 111 (#664): docs/relay-engines.md, reached from docs/README.md.
     // 111 -> 112 (TOP3-MTLS): docs/mtls.md, reached from docs/README.md.
-    const EXPECTED_DOCS_PAGES: usize = 112;
+    // 112 -> 113 (WC2a): docs/stability.md, reached from docs/README.md.
+    const EXPECTED_DOCS_PAGES: usize = 113;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

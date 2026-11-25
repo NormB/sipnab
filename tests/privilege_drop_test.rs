@@ -42,6 +42,8 @@ mod pcap_build;
 mod root_run;
 #[path = "support/tar_build.rs"]
 mod tar_build;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "../src/test_scratch.rs"]
 mod test_scratch;
 
@@ -89,10 +91,35 @@ fn announce_skip(test: &str, reason: &str) {
 /// # Side effects
 /// Spawns `sudo -n true` as a probe.
 fn sudo_available() -> bool {
-    root_run::sudo()
-        .and_then(|mut sudo| sudo.arg("true").status())
-        .map(|s| s.success())
-        .unwrap_or(false)
+    root_run::sudo_probe().is_ok()
+}
+
+/// Whether the running test may use passwordless sudo, decided by
+/// `src/test_prereq.rs`: missing, the test is skipped with a counted notice,
+/// or fails where `SIPNAB_REQUIRE_PREREQS` names `sudo` (CI).
+fn sudo_or_skip() -> bool {
+    test_prereq::present(
+        "sudo",
+        test_prereq::Need::Optional(root_run::SUDO_REASON),
+        root_run::sudo_probe(),
+    )
+}
+
+/// Whether the running test runs unprivileged, as the cases about the
+/// unprivileged no-op path need, decided by `src/test_prereq.rs`.
+fn not_root_or_skip() -> bool {
+    let probe = if credentials().2 == 0 {
+        Err("this test process runs as root".to_owned())
+    } else {
+        Ok(())
+    };
+    test_prereq::present(
+        "non-root",
+        test_prereq::Need::Optional(
+            "a run as root cannot reach the unprivileged path; CI runs the suite as an ordinary user.",
+        ),
+        probe,
+    )
 }
 
 /// Copy the fixture somewhere a dropped-privilege process can read it
@@ -228,12 +255,25 @@ fn root_child_passes(
     role: &str,
     env: &[(&str, &std::ffi::OsStr)],
 ) -> Result<bool, TestError> {
-    let mut cmd = match root_child_command(role, env) {
-        Ok(c) => c,
-        Err(reason) => {
-            announce_skip(parent, &reason);
-            return Ok(false);
-        }
+    let _ = parent;
+    // As root the child needs the initial user namespace; otherwise it needs
+    // passwordless sudo. Either missing is decided by src/test_prereq.rs, so
+    // the parent's `Ok` is never a silent pass.
+    let (prereq, reason) = if credentials().2 == 0 {
+        (
+            "user-namespace",
+            "a root runner inside a user namespace has no account to drop to; CI's runners are not in one.",
+        )
+    } else {
+        ("sudo", root_run::SUDO_REASON)
+    };
+    let Some(mut cmd) = test_prereq::check(
+        prereq,
+        test_prereq::Need::Optional(reason),
+        root_child_command(role, env),
+    )?
+    else {
+        return Ok(false);
     };
     let out: Output = cmd.output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -286,11 +326,7 @@ fn account_ids(name: &str) -> Result<(u32, u32), TestError> {
 /// with "Failed to drop privileges" — never continues capturing as root.
 #[test]
 fn failed_privilege_drop_aborts_instead_of_running_as_root() -> Result<(), TestError> {
-    if !sudo_available() {
-        announce_skip(
-            "failed_privilege_drop_aborts_instead_of_running_as_root",
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let (_fixture_dir, fixture) = world_readable_fixture("drop-fail")?;
@@ -319,11 +355,7 @@ fn failed_privilege_drop_aborts_instead_of_running_as_root() -> Result<(), TestE
 /// Root dropping to `nobody` still reads and processes the fixture, exiting 0.
 #[test]
 fn successful_privilege_drop_still_processes_capture() -> Result<(), TestError> {
-    if !sudo_available() {
-        announce_skip(
-            "successful_privilege_drop_still_processes_capture",
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let (_fixture_dir, fixture) = world_readable_fixture("drop-success")?;
@@ -467,12 +499,7 @@ fn disable_core_dumps_actually_clears_the_dumpable_flag() -> Result<(), TestErro
 /// depends on.
 #[test]
 fn drop_privileges_touches_no_credential_when_the_process_is_not_root() -> Result<(), TestError> {
-    if credentials().2 == 0 {
-        announce_skip(
-            "drop_privileges_touches_no_credential_when_the_process_is_not_root",
-            "this runner IS root, so the call would really drop; this gate asserts \
-             the unprivileged no-op path",
-        );
+    if !not_root_or_skip() {
         return Ok(());
     }
     let before = credentials();
@@ -499,13 +526,7 @@ fn drop_privileges_touches_no_credential_when_the_process_is_not_root() -> Resul
 #[test]
 #[cfg(target_os = "linux")]
 fn no_new_privs_is_set_even_when_there_is_nothing_to_drop() -> Result<(), TestError> {
-    if credentials().2 == 0 {
-        announce_skip(
-            "no_new_privs_is_set_even_when_there_is_nothing_to_drop",
-            "this runner IS root, and the child would inherit that; the case this \
-             gate is about is the unprivileged process that has nothing to drop. \
-             The end-to-end gate on the shipped binary still covers both",
-        );
+    if !not_root_or_skip() {
         return Ok(());
     }
     let exe = std::env::current_exe()?;
@@ -893,11 +914,7 @@ const KEYLOG: &str = "CLIENT_TRAFFIC_SECRET_0 \
 #[cfg(feature = "tls")]
 #[test]
 fn a_keylog_only_root_can_read_is_loaded_before_the_drop() -> Result<(), TestError> {
-    if !sudo_available() {
-        announce_skip(
-            "a_keylog_only_root_can_read_is_loaded_before_the_drop",
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let (_fixture_dir, fixture) = world_readable_fixture("keylog-before-drop")?;
@@ -1047,12 +1064,7 @@ fn arg(p: &std::path::Path) -> Result<&str, TestError> {
 #[cfg(all(feature = "hep", feature = "tls"))]
 #[test]
 fn a_root_run_reads_its_root_only_hep_and_key_files_before_the_drop() -> Result<(), TestError> {
-    let test = "a_root_run_reads_its_root_only_hep_and_key_files_before_the_drop";
-    if !sudo_available() {
-        announce_skip(
-            test,
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let dir = tempfile::tempdir()?;
@@ -1137,12 +1149,7 @@ fn wait_or_stop(
 #[cfg(all(feature = "api", feature = "mcp-http", feature = "metrics"))]
 #[test]
 fn a_root_run_reads_its_root_only_server_credentials_before_the_drop() -> Result<(), TestError> {
-    let test = "a_root_run_reads_its_root_only_server_credentials_before_the_drop";
-    if !sudo_available() {
-        announce_skip(
-            test,
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let dir = tempfile::tempdir()?;
@@ -1283,12 +1290,7 @@ fn serve_vcon_fetch_door(
 #[cfg(all(feature = "api", feature = "vcon"))]
 #[test]
 fn a_root_run_reads_its_root_only_vcon_fetch_files_before_the_drop() -> Result<(), TestError> {
-    let test = "a_root_run_reads_its_root_only_vcon_fetch_files_before_the_drop";
-    if !sudo_available() {
-        announce_skip(
-            test,
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let jose = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
@@ -1332,12 +1334,7 @@ fn a_root_run_reads_its_root_only_vcon_fetch_files_before_the_drop() -> Result<(
 #[test]
 fn a_root_run_still_refuses_a_vcon_fetch_credential_its_drop_user_lets_others_read()
 -> Result<(), TestError> {
-    let test = "a_root_run_still_refuses_a_vcon_fetch_credential_its_drop_user_lets_others_read";
-    if !sudo_available() {
-        announce_skip(
-            test,
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let jose = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
@@ -1425,11 +1422,7 @@ fn refused_with_2(early: Option<std::process::ExitStatus>, out: &Output) -> Stri
 #[cfg(all(feature = "api", feature = "vcon"))]
 #[test]
 fn a_root_run_names_a_missing_vcon_fetch_credential() -> Result<(), TestError> {
-    if !sudo_available() {
-        announce_skip(
-            "a_root_run_names_a_missing_vcon_fetch_credential",
-            "no passwordless sudo",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let dir = tempfile::tempdir()?;
@@ -1453,11 +1446,7 @@ fn a_root_run_names_a_missing_vcon_fetch_credential() -> Result<(), TestError> {
 #[cfg(all(feature = "api", feature = "vcon"))]
 #[test]
 fn a_root_run_refuses_a_world_readable_decryption_key() -> Result<(), TestError> {
-    if !sudo_available() {
-        announce_skip(
-            "a_root_run_refuses_a_world_readable_decryption_key",
-            "no passwordless sudo",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let dir = tempfile::tempdir()?;
@@ -1492,11 +1481,7 @@ fn a_root_run_refuses_a_world_readable_decryption_key() -> Result<(), TestError>
 #[cfg(all(feature = "api", feature = "vcon"))]
 #[test]
 fn a_root_run_reads_a_root_only_credential_through_a_symlink() -> Result<(), TestError> {
-    if !sudo_available() {
-        announce_skip(
-            "a_root_run_reads_a_root_only_credential_through_a_symlink",
-            "no passwordless sudo",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let dir = tempfile::tempdir()?;
@@ -1516,11 +1501,7 @@ fn a_root_run_reads_a_root_only_credential_through_a_symlink() -> Result<(), Tes
 #[cfg(all(feature = "api", feature = "vcon", feature = "mcp-http"))]
 #[test]
 fn a_root_run_serves_both_fetch_doors_from_root_only_files() -> Result<(), TestError> {
-    if !sudo_available() {
-        announce_skip(
-            "a_root_run_serves_both_fetch_doors_from_root_only_files",
-            "no passwordless sudo",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let dir = tempfile::tempdir()?;
@@ -1547,11 +1528,7 @@ fn a_root_run_serves_both_fetch_doors_from_root_only_files() -> Result<(), TestE
 /// user is looked up before the chroot.
 #[test]
 fn a_root_run_with_a_missing_drop_user_stops_naming_it() -> Result<(), TestError> {
-    if !sudo_available() {
-        announce_skip(
-            "a_root_run_with_a_missing_drop_user_stops_naming_it",
-            "no passwordless sudo",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let (_fixture_dir, fixture) = world_readable_fixture("missing-drop-user")?;
@@ -1574,11 +1551,7 @@ fn a_root_run_with_a_missing_drop_user_stops_naming_it() -> Result<(), TestError
 /// so the message names the missing user, not a missing password database.
 #[test]
 fn a_chroot_run_with_a_missing_drop_user_stops_naming_it() -> Result<(), TestError> {
-    if !sudo_available() {
-        announce_skip(
-            "a_chroot_run_with_a_missing_drop_user_stops_naming_it",
-            "no passwordless sudo",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let jail = tempfile::tempdir()?;
@@ -1608,12 +1581,7 @@ fn a_chroot_run_with_a_missing_drop_user_stops_naming_it() -> Result<(), TestErr
 #[cfg(feature = "api")]
 #[test]
 fn a_root_only_revocation_list_stops_a_root_run_after_the_drop() -> Result<(), TestError> {
-    let test = "a_root_only_revocation_list_stops_a_root_run_after_the_drop";
-    if !sudo_available() {
-        announce_skip(
-            test,
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let dir = tempfile::tempdir()?;
@@ -1658,12 +1626,7 @@ fn a_root_only_revocation_list_stops_a_root_run_after_the_drop() -> Result<(), T
 /// `Failed to drop privileges: User 'nobody' not found` and exit 1.
 #[test]
 fn a_root_run_with_chroot_resolves_the_drop_user_first() -> Result<(), TestError> {
-    let test = "a_root_run_with_chroot_resolves_the_drop_user_first";
-    if !sudo_available() {
-        announce_skip(
-            test,
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let jail = tempfile::tempdir()?;
@@ -1706,11 +1669,19 @@ const HOST_BUNDLES: [&str; 4] = [
 /// when the host has no CA bundle to find.
 #[cfg(feature = "hep")]
 fn chroot_tls_sender(test: &str, extra: &[&str]) -> Result<Option<Output>, TestError> {
-    if !HOST_BUNDLES
+    let bundle = HOST_BUNDLES
         .iter()
-        .any(|b| std::path::Path::new(b).is_file())
+        .find(|b| std::path::Path::new(b).is_file())
+        .ok_or_else(|| format!("none of {HOST_BUNDLES:?} is a file"));
+    if test_prereq::check(
+        "ca-bundle",
+        test_prereq::Need::Optional(
+            "a host without a system CA bundle has none for sipnab to find; CI's runners have one.",
+        ),
+        bundle,
+    )?
+    .is_none()
     {
-        announce_skip(test, "this host has no system CA bundle to find");
         return Ok(None);
     }
     let jail = tempfile::tempdir()?;
@@ -1747,11 +1718,7 @@ fn chroot_tls_sender(test: &str, extra: &[&str]) -> Result<Option<Output>, TestE
 #[test]
 fn a_chroot_run_trusts_the_host_bundle_it_found_before_the_chroot() -> Result<(), TestError> {
     let test = "a_chroot_run_trusts_the_host_bundle_it_found_before_the_chroot";
-    if !sudo_available() {
-        announce_skip(
-            test,
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let Some(out) = chroot_tls_sender(test, &[])? else {
@@ -1775,11 +1742,7 @@ fn a_chroot_run_trusts_the_host_bundle_it_found_before_the_chroot() -> Result<()
 #[test]
 fn a_chroot_run_with_an_extra_ca_still_joins_the_host_bundle() -> Result<(), TestError> {
     let test = "a_chroot_run_with_an_extra_ca_still_joins_the_host_bundle";
-    if !sudo_available() {
-        announce_skip(
-            test,
-            "passwordless sudo is not available, so sipnab cannot be run as root here",
-        );
+    if !sudo_or_skip() {
         return Ok(());
     }
     let extra = concat!(
@@ -1905,9 +1868,16 @@ impl Drop for RootRemoves {
 /// A directory every user may create entries in, as `/tmp` is (mode 1777),
 /// given to a root run as its `TMPDIR`, so what the run leaves there can be
 /// listed.
+///
+/// Made under `/tmp`, not under this process's own temporary directory: on
+/// macOS that one is a per-user folder under `/var/folders` (mode 0700),
+/// which the user a root run drops to cannot reach, and since
+/// CAPTURE-RESOLVE-AS-ROOT that user unpacks the run's archives.
 fn scratch_tmpdir() -> Result<(tempfile::TempDir, RootRemoves), TestError> {
     use std::os::unix::fs::PermissionsExt as _;
-    let dir = tempfile::tempdir()?;
+    let dir = tempfile::Builder::new()
+        .prefix("sipnab-scratch-tmpdir-")
+        .tempdir_in("/tmp")?;
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o1777))?;
     let cleanup = RootRemoves(dir.path().to_path_buf());
     Ok((dir, cleanup))
@@ -1955,15 +1925,10 @@ fn entries(dir: &std::path::Path) -> Result<Vec<String>, TestError> {
 }
 
 /// Skip a root gate when this runner cannot reach root, announcing it.
-fn root_unavailable(test: &str) -> bool {
-    if sudo_available() {
-        return false;
-    }
-    announce_skip(
-        test,
-        "passwordless sudo is not available, so sipnab cannot be run as root here",
-    );
-    true
+fn root_unavailable(_test: &str) -> bool {
+    // The helper names the test by its thread; `_test` keeps the call
+    // sites readable.
+    !sudo_or_skip()
 }
 
 /// **A root run reads a root-only member it reaches after the drop.**
@@ -2260,10 +2225,13 @@ fn a_root_run_reads_a_root_only_compressed_member_after_the_drop() -> Result<(),
 }
 
 /// A root run whose `TMPDIR` sits inside a directory the drop user cannot
-/// enter removes its extraction before the drop: `nobody` could not reach
-/// the directory to remove it at exit. macOS gives root such a `TMPDIR`
-/// (its per-user directory under `/var/folders`, mode 0700), and the macOS runner's
-/// tests found the extraction left there.
+/// enter stops with exit 1 and leaves nothing there. Since
+/// CAPTURE-RESOLVE-AS-ROOT the archive is unwrapped after the drop, by the
+/// drop user, which cannot reach that directory. macOS gives root such a
+/// `TMPDIR` (its per-user directory under `/var/folders`, mode 0700); before,
+/// the run unwrapped there as root and removed the extraction before the
+/// drop, and the macOS runner's tests found the extraction left there when
+/// it did not.
 #[test]
 fn a_root_run_whose_tmpdir_the_drop_user_cannot_reach_leaves_nothing() -> Result<(), TestError> {
     if root_unavailable("a_root_run_whose_tmpdir_the_drop_user_cannot_reach_leaves_nothing") {
@@ -2291,11 +2259,24 @@ fn a_root_run_whose_tmpdir_the_drop_user_cannot_reach_leaves_nothing() -> Result
         ],
     )?;
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_read_in_full(&out, 2);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the drop user cannot unwrap where it cannot reach:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("-I/--input: cannot unpack")
+            && stderr.contains(&format!(
+                "user 'nobody' cannot create files in the temporary directory '{}'",
+                tmp.display()
+            ))
+            && stderr.contains("Set TMPDIR to a directory that user can write (TMPDIR=/tmp)"),
+        "the refusal names the input, the directory, the user and the fix:\n{stderr}"
+    );
     assert_eq!(
         entries(&tmp)?,
         Vec::<String>::new(),
-        "an extraction the drop user cannot reach must be gone when the run ends:\n{stderr}"
+        "nothing is left in a temporary directory the drop user cannot reach:\n{stderr}"
     );
     Ok(())
 }
@@ -2380,7 +2361,9 @@ fn a_root_run_refuses_a_truncated_root_only_archive_and_leaves_nothing() -> Resu
 
 /// A root run whose later root-only member is not a capture is refused at
 /// startup, naming that member and its format, not a permission the drop
-/// took away: the set is checked as root, before the drop.
+/// took away: the set is opened as root, and judged through those
+/// descriptors after the drop (CAPTURE-RESOLVE-AS-ROOT), before any packet
+/// is read.
 #[test]
 fn a_root_run_refuses_a_later_root_only_member_that_is_not_a_capture() -> Result<(), TestError> {
     if root_unavailable("a_root_run_refuses_a_later_root_only_member_that_is_not_a_capture") {
@@ -2419,15 +2402,21 @@ fn a_root_run_refuses_a_later_root_only_member_that_is_not_a_capture() -> Result
         "the refusal names the member and its format:\n{stderr}"
     );
     assert!(!stderr.contains("Permission denied"), "{stderr}");
+    let dropped = stderr.find("Dropped privileges");
+    let refused = stderr.find("unknown file format");
     assert!(
-        !stderr.contains("Dropped privileges"),
-        "refused before the drop:\n{stderr}"
+        matches!((dropped, refused), (Some(d), Some(r)) if d < r),
+        "judged as the drop user, through the descriptor opened as root:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Reading from"),
+        "refused before any file is read:\n{stderr}"
     );
     Ok(())
 }
 
 /// A `--chroot` run reads every member of an archive and removes the
-/// extraction too: after the chroot its path does not resolve.
+/// extraction too: it unpacks inside the new root and removes it there.
 #[test]
 fn a_chrooted_root_run_reads_an_archive_and_removes_its_extraction() -> Result<(), TestError> {
     if root_unavailable("a_chrooted_root_run_reads_an_archive_and_removes_its_extraction") {
@@ -2436,9 +2425,11 @@ fn a_chrooted_root_run_reads_an_archive_and_removes_its_extraction() -> Result<(
     let dir = tempfile::tempdir()?;
     let archive = root_only_archive(dir.path())?;
     let jail = dir_nobody_can_write()?;
-    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    // Since CAPTURE-RESOLVE-AS-ROOT the archive unpacks inside the new root,
+    // as the drop user, so the jail holds a temporary directory it can write.
+    let jail_tmp = jail_tmp(jail.path())?;
     let out = root_sipnab(
-        tmpdir.path(),
+        std::path::Path::new("/tmp"),
         &[
             "-N".as_ref(),
             "--replay".as_ref(),
@@ -2452,11 +2443,20 @@ fn a_chrooted_root_run_reads_an_archive_and_removes_its_extraction() -> Result<(
     )?;
     assert_read_in_full(&out, 2);
     assert_eq!(
-        entries(tmpdir.path())?,
+        entries(&jail_tmp)?,
         Vec::<String>::new(),
-        "the extraction must be gone"
+        "the extraction inside the jail must be gone"
     );
     Ok(())
+}
+
+/// `jail/tmp`, mode 1777, removed as root when the test ends.
+fn jail_tmp(jail: &std::path::Path) -> Result<std::path::PathBuf, TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let tmp = jail.join("tmp");
+    std::fs::create_dir(&tmp)?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o1777))?;
+    Ok(tmp)
 }
 
 /// A `--cores` run, which drops on its own path, removes its extraction too.
@@ -2621,9 +2621,9 @@ fn a_chrooted_root_run_loads_tls_secrets_embedded_in_an_archive_member() -> Resu
     )]))?;
     let files = root_only_files(dir.path(), &[("set.tar.gz", &archive)])?;
     let jail = dir_nobody_can_write()?;
-    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let _jail_tmp = jail_tmp(jail.path())?;
     let out = root_sipnab(
-        tmpdir.path(),
+        std::path::Path::new("/tmp"),
         &[
             "-N".as_ref(),
             "-I".as_ref(),

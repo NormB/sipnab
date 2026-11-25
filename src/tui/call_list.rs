@@ -57,6 +57,23 @@ pub enum SortColumn {
     Pdd,
     /// Sort by dialog duration (first to last message).
     Duration,
+    /// Sort by the time of the dialog's last message: the dialog updated
+    /// last at the bottom (ascending). Not a column of the table, so `<` and
+    /// `>` never land on it; `L` toggles it against the number order.
+    LastUpdate,
+}
+
+impl SortColumn {
+    /// The name the status line gives the sort: the column's header label,
+    /// or "Last update" for the order that has no column.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match ALL_COLUMNS.iter().position(|c| *c == self) {
+            Some(0) => "#",
+            Some(i) => COLUMN_LABELS[i],
+            None => "Last update",
+        }
+    }
 }
 
 /// All columns in display order, used for cycling with `<` and `>`.
@@ -107,8 +124,15 @@ pub struct CallListState {
     pub column_selector_open: bool,
     /// Currently highlighted row in the column selector popup.
     pub column_selector_cursor: usize,
+    /// Column draw order (indices into `ALL_COLUMNS`); the column
+    /// selector's `-` / `+` (sngrep mode) move a column within it.
+    pub column_order: [usize; 11],
     /// Whether autoscroll is enabled (new dialogs scroll to bottom).
     pub autoscroll: bool,
+    /// `d`: show only the dialogs not over (a call up, a registration
+    /// valid, a transaction not completed: a state that is not final; a
+    /// REGISTER is judged by `SipDialog::state_at` the capture's clock).
+    pub only_open: bool,
 }
 
 impl CallListState {
@@ -124,7 +148,9 @@ impl CallListState {
             visible_columns: [true; 11],
             column_selector_open: false,
             column_selector_cursor: 0,
+            column_order: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             autoscroll: true,
+            only_open: false,
         }
     }
 
@@ -227,6 +253,18 @@ impl CallListState {
         }
     }
 
+    /// `L`: order by the time of each dialog's last message, the dialog
+    /// updated last at the bottom; pressed again, back to the number order
+    /// (first seen first).
+    pub fn toggle_last_update_order(&mut self) {
+        self.sort_column = if self.sort_column == SortColumn::LastUpdate {
+            SortColumn::Index
+        } else {
+            SortColumn::LastUpdate
+        };
+        self.sort_ascending = true;
+    }
+
     /// Reverse the current sort direction.
     pub fn reverse_sort(&mut self) {
         self.sort_ascending = !self.sort_ascending;
@@ -268,9 +306,20 @@ impl CallListState {
 
     /// Toggle visibility of the column at the column selector cursor.
     pub fn toggle_column_visibility(&mut self) {
-        if self.column_selector_cursor < self.visible_columns.len() {
-            self.visible_columns[self.column_selector_cursor] =
-                !self.visible_columns[self.column_selector_cursor];
+        if let Some(&col) = self.column_order.get(self.column_selector_cursor) {
+            self.visible_columns[col] = !self.visible_columns[col];
+        }
+    }
+
+    /// Move the column under the selector cursor one place up (`down` =
+    /// false) or down in the draw order, the cursor following it (sngrep
+    /// `-` / `+` in the column selector). At either end it stays put.
+    pub fn move_column(&mut self, down: bool) {
+        let at = self.column_selector_cursor;
+        let to = if down { at + 1 } else { at.wrapping_sub(1) };
+        if at < self.column_order.len() && to < self.column_order.len() {
+            self.column_order.swap(at, to);
+            self.column_selector_cursor = to;
         }
     }
 
@@ -362,6 +411,9 @@ pub struct CallListDisplay<'a> {
     /// A file load is in progress. Selects the empty-state hint: an empty
     /// list during a load is not a file without SIP.
     pub loading: bool,
+    /// The capture's clock read with `rows` (`DialogStore::capture_now`),
+    /// for the State cell and row color (`SipDialog::state_at`).
+    pub capture_now: chrono::DateTime<chrono::Utc>,
 }
 
 /// What the call list says while it has no rows, by case: every dialog is
@@ -572,8 +624,70 @@ pub fn displayed_dialogs<'a>(
     sort_column: SortColumn,
     sort_ascending: bool,
 ) -> Vec<&'a crate::sip::dialog::SipDialog> {
+    displayed_dialogs_open(
+        store,
+        &DisplayQuery {
+            filter,
+            after,
+            before,
+            search_query,
+            sort_column,
+            sort_ascending,
+            only_open: false,
+            capture_now: None,
+        },
+    )
+}
+
+/// What the call list shows: the inputs of [`displayed_dialogs_open`].
+#[derive(Debug, Clone, Copy)]
+pub struct DisplayQuery<'q> {
+    /// Optional display-filter expression; `None` keeps all.
+    pub filter: Option<&'q FilterExpr>,
+    /// Lower bound of the half-open time window on `created_at`.
+    pub after: Option<chrono::DateTime<chrono::Utc>>,
+    /// Upper bound of the half-open time window on `created_at`.
+    pub before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Full-text search narrowing; empty means no narrowing.
+    pub search_query: &'q str,
+    /// Column driving the final ordering.
+    pub sort_column: SortColumn,
+    /// Sort direction.
+    pub sort_ascending: bool,
+    /// The call list's `d`: keep only the dialogs whose state is not final.
+    pub only_open: bool,
+    /// The capture's clock when the caller already read it
+    /// ([`DialogStore::capture_now`], a scan of every dialog); `None` reads
+    /// it here, and only when `only_open` needs it.
+    pub capture_now: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// [`displayed_dialogs`] for a whole [`DisplayQuery`], `only_open` (the call
+/// list's `d`) included.
+pub fn displayed_dialogs_open<'a>(
+    store: &'a DialogStore,
+    q: &DisplayQuery<'_>,
+) -> Vec<&'a crate::sip::dialog::SipDialog> {
     #[cfg(test)]
     DISPLAYED_DIALOGS_CALLS.with(|c| c.set(c.get() + 1));
+    let DisplayQuery {
+        filter,
+        after,
+        before,
+        search_query,
+        sort_column,
+        sort_ascending,
+        only_open,
+        capture_now,
+    } = *q;
+    // The capture's clock, read at most once and only for `d`: a REGISTER
+    // whose interval ran out or whose challenge was never answered is over
+    // (`SipDialog::state_at`).
+    let now = if only_open {
+        capture_now.unwrap_or_else(|| store.capture_now())
+    } else {
+        chrono::DateTime::<chrono::Utc>::MIN_UTC
+    };
     let mut dialogs: Vec<_> = store
         .iter()
         // Half-open `[after, before)` through the one shared rule, so the TUI's
@@ -581,6 +695,7 @@ pub fn displayed_dialogs<'a>(
         // MCP `search_by_time` tool. An open bound admits everything on that
         // side.
         .filter(|d| crate::cursor::in_time_window(d.created_at, after, before))
+        .filter(|d| !only_open || !d.state_at(now).is_final())
         // This list is built from dialogs alone; with no stream data it cannot
         // testify that a call carried no media, so `rtp.*` compares as unknown
         // and no delay evidence could change an answer.
@@ -753,7 +868,10 @@ pub fn render_call_list(
     // width's. Note this deliberately does not touch `state.visible_columns`
     // — the user's choice is persisted to their sipnabrc, and a column
     // dropped because the terminal is narrow must come back when it grows.
-    let vis_indices: Vec<usize> = (0..COLUMN_LABELS.len())
+    let vis_indices: Vec<usize> = state
+        .column_order
+        .iter()
+        .copied()
         .filter(|&i| state.visible_columns[i] && all_widths[i].is_some())
         .collect();
 
@@ -779,7 +897,7 @@ pub fn render_call_list(
     let header_cells: Vec<Cell> = vis_indices
         .iter()
         .map(|&i| {
-            if i == sort_col_idx {
+            if i == sort_col_idx && ALL_COLUMNS.get(i) == Some(&state.sort_column()) {
                 Cell::from(format!("{}{}", base_labels[i].trim(), sort_indicator))
             } else {
                 Cell::from(base_labels[i])
@@ -809,6 +927,7 @@ pub fn render_call_list(
             .highlight_symbol("> ")
             .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
         frame.render_stateful_widget(empty_table, table_area, &mut state.table_state);
+        mark_autoscroll(frame, table_area, state, theme, header_style);
 
         // Render help message below the header row
         if table_area.height > 1 {
@@ -852,6 +971,9 @@ pub fn render_call_list(
     let visible_end = (scroll_offset + visible_rows).min(total);
     // Resolve only the visible window (a cached id can miss if the dialog
     // was evicted since the tick's sync — the row simply skips one frame).
+    // The capture's clock for the State cell (`SipDialog::state_at`), read
+    // with the rows, not per frame.
+    let capture_now = display.capture_now;
     let visible_dialogs: Vec<&crate::sip::dialog::SipDialog> = row_ids[scroll_offset..visible_end]
         .iter()
         .filter_map(|id| store.get(id))
@@ -863,12 +985,14 @@ pub fn render_call_list(
         .and_then(|id| store.get(id))
         .map(|d| d.created_at);
 
+    let index_width = match all_widths[0] {
+        Some(Constraint::Length(n)) => usize::from(n),
+        _ => usize::MAX,
+    };
     let rows: Vec<Row> = visible_dialogs
         .iter()
         .enumerate()
         .map(|(vis_idx, dialog)| {
-            let idx = scroll_offset + vis_idx; // original index in full list
-
             // Selection checkbox: [*] when checked, [ ] otherwise.
             // The checkbox marks which dialogs an action (e.g. save) applies to.
             let checkbox = if state.selected_rows.contains(dialog.call_id.as_str()) {
@@ -878,12 +1002,19 @@ pub fn render_call_list(
             };
 
             // Method cell colors
-            let method_style = match dialog.method.as_str() {
-                "INVITE" => Style::default().fg(theme.good),
-                "BYE" => Style::default().fg(theme.bad),
-                "CANCEL" => Style::default().fg(theme.warning),
-                "REGISTER" => Style::default().fg(theme.header),
-                _ => Style::default(),
+            let method_style = if theme.sngrep {
+                super::sngrep_mode::tone(
+                    theme,
+                    super::sngrep_mode::method_style(dialog.method.as_str()),
+                )
+            } else {
+                match dialog.method.as_str() {
+                    "INVITE" => Style::default().fg(theme.good),
+                    "BYE" => Style::default().fg(theme.bad),
+                    "CANCEL" => Style::default().fg(theme.warning),
+                    "REGISTER" => Style::default().fg(theme.header),
+                    _ => Style::default(),
+                }
             };
 
             // Date column formatting based on timestamp mode. Deferred into a
@@ -927,7 +1058,19 @@ pub fn render_call_list(
                 .map(|&i| match i {
                     // A space between the box and the number: `[ ]1` read as
                     // one token.
-                    0 => Cell::from(Span::raw(format!("{checkbox} {}", idx + 1))),
+                    // The number is the dialog's own (it only rises), so on a
+                    // long capture it outgrows the box: then the checkbox
+                    // shrinks to one cell (`*` checked) rather than the cell
+                    // cutting the number short and naming another dialog.
+                    0 => {
+                        let number = dialog.number.to_string();
+                        if checkbox.len() + 1 + number.len() <= index_width {
+                            Cell::from(Span::raw(format!("{checkbox} {number}")))
+                        } else {
+                            let mark = if checkbox == "[*]" { '*' } else { ' ' };
+                            Cell::from(Span::raw(format!("{mark}{number}")))
+                        }
+                    }
                     1 => Cell::from(Span::styled(dialog.method.as_str(), method_style)),
                     2 => Cell::from(Span::raw(format_from_to(
                         display.from_to_mode,
@@ -979,7 +1122,7 @@ pub fn render_call_list(
                     // Accepted over widening every layout for a case that needs a
                     // transfer in flight and a failed transaction at once.
                     6 => {
-                        let state = dialog.state();
+                        let state = &dialog.state_at(capture_now);
                         let mut spans = vec![Span::styled(
                             state_display_str(state),
                             state_style(state, theme),
@@ -1015,7 +1158,7 @@ pub fn render_call_list(
             let row = Row::new(visible_cells);
 
             // Row style based on state
-            let row_style = match dialog.state() {
+            let row_style = match dialog.state_at(capture_now) {
                 DialogState::Failed => Style::default().fg(theme.bad),
                 DialogState::InCall | DialogState::Active => Style::default().fg(theme.good),
                 DialogState::Canceled => Style::default().fg(theme.warning),
@@ -1042,14 +1185,41 @@ pub fn render_call_list(
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .row_highlight_style(if theme.sngrep {
+            super::sngrep_mode::tone(theme, super::sngrep_mode::list_highlight())
+        } else {
+            Style::default().add_modifier(Modifier::REVERSED)
+        })
         .highlight_symbol("> ");
 
     frame.render_stateful_widget(table, table_area, &mut state.table_state);
+    mark_autoscroll(frame, table_area, state, theme, header_style);
 
     // Restore absolute selected index so the rest of the app works correctly
     state.table_state.select(Some(selected));
     *state.table_state.offset_mut() = scroll_offset;
+}
+
+/// sngrep mode: an `A` in the first cell of the column header while
+/// autoscroll is on, where sngrep prints its autoscroll indicator.
+fn mark_autoscroll(
+    frame: &mut Frame,
+    table_area: Rect,
+    state: &CallListState,
+    theme: &super::Theme,
+    header_style: Style,
+) {
+    if theme.sngrep && state.autoscroll && table_area.width > 0 && table_area.height > 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("A", header_style)),
+            Rect {
+                x: table_area.x,
+                y: table_area.y,
+                width: 1,
+                height: 1,
+            },
+        );
+    }
 }
 
 // ── Column width calculation ───────────────────────────────────────
@@ -1348,6 +1518,10 @@ fn sort_dialogs(
                 .unwrap_or(i64::MAX)
                 .cmp(&b.timing.pdd_ms().unwrap_or(i64::MAX)),
             SortColumn::Duration => a.duration().cmp(&b.duration()),
+            SortColumn::LastUpdate => a
+                .latest_message_at
+                .cmp(&b.latest_message_at)
+                .then(a.number.cmp(&b.number)),
         };
         if ascending { ord } else { ord.reverse() }
     });
@@ -1375,8 +1549,9 @@ pub fn render_column_selector(
     theme: &super::Theme,
 ) {
     let mut lines: Vec<ratatui::text::Line<'_>> = Vec::new();
-    for (i, label) in COLUMN_LABELS.iter().enumerate() {
-        let check = if state.visible_columns[i] { "x" } else { " " };
+    for (i, &col) in state.column_order.iter().enumerate() {
+        let label = &COLUMN_LABELS[col];
+        let check = if state.visible_columns[col] { "x" } else { " " };
         let prefix = if i == state.column_selector_cursor {
             "> "
         } else {
@@ -1448,6 +1623,9 @@ fn format_delta(delta: chrono::TimeDelta) -> String {
 
 /// Return a style for a dialog state label.
 fn state_style(state: &DialogState, theme: &super::Theme) -> Style {
+    if theme.sngrep {
+        return super::sngrep_mode::tone(theme, super::sngrep_mode::state_style(state));
+    }
     match state {
         DialogState::Failed => Style::default().fg(theme.bad).add_modifier(Modifier::BOLD),
         DialogState::InCall | DialogState::Active => Style::default().fg(theme.good),
@@ -2449,6 +2627,70 @@ mod tests {
         Ok(store)
     }
 
+    /// A dialog's number is given once, when it is first seen: an update does
+    /// not change it, eviction of older dialogs does not shift it, and after a
+    /// clear the next dialog takes the next number, never one already shown.
+    #[test]
+    fn a_dialog_keeps_its_number_through_updates_eviction_and_clear() -> Result<(), TestError> {
+        let mut store = DialogStore::new(2, true);
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, 0)
+            .single()
+            .ok_or("the timestamp is a single valid UTC instant")?;
+        let send = |store: &mut DialogStore, cid: &str, cseq: u32| -> Result<(), TestError> {
+            let raw = crate::test_utils::build_sip_message(
+                "REGISTER sip:example.com SIP/2.0",
+                &[
+                    "From: <sip:9004@example.com>;tag=t",
+                    "To: <sip:9004@example.com>",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} REGISTER"),
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = crate::sip::parser::parse_sip(
+                &raw,
+                ts + chrono::TimeDelta::seconds(cseq.into()),
+                "192.0.2.10".parse()?,
+                "198.51.100.20".parse()?,
+                5060,
+                5060,
+                crate::net::TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse: {e:?}"))?;
+            store.process_message(msg);
+            Ok(())
+        };
+        let numbers = |store: &DialogStore| -> Vec<(String, u64)> {
+            store
+                .iter()
+                .map(|d| (d.call_id.clone(), d.number))
+                .collect()
+        };
+        send(&mut store, "a@h", 1)?;
+        send(&mut store, "b@h", 2)?;
+        send(&mut store, "a@h", 3)?; // a re-REGISTER
+        assert_eq!(
+            numbers(&store),
+            [("a@h".into(), 1), ("b@h".into(), 2)],
+            "an update keeps the dialog's number"
+        );
+        send(&mut store, "c@h", 4)?; // evicts a@h
+        assert_eq!(
+            numbers(&store),
+            [("b@h".into(), 2), ("c@h".into(), 3)],
+            "eviction renumbers nothing; the new dialog takes the next number"
+        );
+        store.clear();
+        send(&mut store, "d@h", 5)?;
+        assert_eq!(
+            numbers(&store),
+            [("d@h".into(), 4)],
+            "clear does not restart the numbering"
+        );
+        Ok(())
+    }
+
     /// Filter and search narrow independently and intersect: filter-only,
     /// search-only, both, and disjoint combinations all yield the expected
     /// row counts.
@@ -2965,6 +3207,77 @@ mod latest_message_tests {
             ["short@example.com", "spanned@example.com"],
             "1.5 s sorts before 2.505 s; by last message read, 0.905 s would sort first"
         );
+        Ok(())
+    }
+
+    /// `L`: the dialog updated last sorts last, whatever its number; `L`
+    /// again is the number order, and the status line names each.
+    #[test]
+    fn l_orders_by_the_last_message_and_back() -> Result<(), TestError> {
+        let t0 = chrono::DateTime::from_timestamp(crate::test_utils::OUT_OF_ORDER_T0, 0)
+            .ok_or("the fixture's epoch")?;
+        let dialog =
+            |cid: &str, last_ms: i64| -> Result<crate::sip::dialog::SipDialog, TestError> {
+                let raw = crate::test_utils::build_sip_message(
+                    "OPTIONS sip:pbx@example.com SIP/2.0",
+                    &[
+                        "Via: SIP/2.0/UDP 198.51.100.7:5060;branch=z9hG4bK-l",
+                        "From: <sip:a@example.com>;tag=a",
+                        "To: <sip:pbx@example.com>",
+                        &format!("Call-ID: {cid}"),
+                        "CSeq: 1 OPTIONS",
+                        "Content-Length: 0",
+                    ],
+                    b"",
+                );
+                let mut d = crate::sip::dialog::SipDialog::new(
+                    &crate::sip::parser::parse_sip(
+                        &raw,
+                        t0,
+                        [198, 51, 100, 7].into(),
+                        [192, 0, 2, 2].into(),
+                        5060,
+                        5060,
+                        crate::net::TransportProto::Udp,
+                    )
+                    .map_err(|e| format!("parse: {e:?}"))?,
+                )
+                .ok_or("a dialog")?;
+                d.latest_message_at = t0 + chrono::TimeDelta::milliseconds(last_ms);
+                d.updated_at = d.latest_message_at;
+                Ok(d)
+            };
+        let first = dialog("first@example.com", 5000)?;
+        let second = dialog("second@example.com", 1000)?;
+        let mut rows = vec![&first, &second];
+        sort_dialogs(&mut rows, SortColumn::LastUpdate, true);
+        let order: Vec<&str> = rows.iter().map(|d| d.call_id.as_str()).collect();
+        assert_eq!(
+            order,
+            ["second@example.com", "first@example.com"],
+            "ascending last update: the one updated last is at the bottom"
+        );
+
+        let mut state = CallListState::new();
+        state.toggle_last_update_order();
+        assert_eq!(
+            state.sort_column(),
+            SortColumn::LastUpdate,
+            "L sorts by last update"
+        );
+        assert!(state.sort_ascending(), "L sorts ascending");
+        assert_eq!(
+            state.sort_column().label(),
+            "Last update",
+            "the status line label"
+        );
+        state.toggle_last_update_order();
+        assert_eq!(
+            state.sort_column(),
+            SortColumn::Index,
+            "L again goes back to #"
+        );
+        assert_eq!(state.sort_column().label(), "#", "the # label");
         Ok(())
     }
 }

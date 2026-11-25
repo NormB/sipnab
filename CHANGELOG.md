@@ -12,6 +12,412 @@ entry that carries them.
 
 ### Added
 
+- **The relay sessions answer gives each RTP socket's rate, from the relay and the capture.**
+  - Effect: Each socket shows packets per second and kbps, and names the byte basis: UDP payload for the relay, RTP payload for the capture.
+  - Do: Ask twice over REST, MCP or the TUI, or add `--relay-stats-interval N` to `--relay-sessions`.
+  - Limit: A socket the capture holds no stream for reads `not_captured`, never 0.
+  - Docs: [Read the rate media arrives at](docs/relay-statistics.md#read-the-rate-media-arrives-at)
+  - Credit: Inspired by irontec/sngrep#581.
+
+### Changed
+
+- **A batch run exits without first freeing its stored calls and streams.**
+  - Effect: The operating system takes the memory back at exit; the output, the output files and the exit status stay the same.
+  - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 1.90% fewer instructions, and one with RTP 1.75% fewer.
+  - Limit: callgrind counted the instructions; there is no wall-time figure, because the host stayed busy.
+- **Changelog sections 0.5.214 down to 0.5.190 are outlines too.**
+  - Effect: each entry says what changed, what to do and where the detail is; entries about hooks, CI and tests are removed.
+  - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
+
+## [0.5.271] - 2026-11-24
+
+### Changed
+
+- **Reading a capture file runs fewer instructions per SIP message.**
+  - Effect: The periodic idle-dialog sweep skips its time check for dialogs too short to compact; the output stays the same.
+  - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 0.58% fewer instructions.
+  - Effect: Measured the same way, the 0.5.270 per-message changes run 12.8% fewer instructions on 150,000 packets with RTP.
+  - Limit: callgrind counted the instructions, a count host load does not change; there is no wall-time figure, because the host stayed busy.
+
+### Fixed
+
+- **`--split` and `--autostop filesize:` count name and TLS key blocks in pcapng output.**
+  - Was: They left out the name-resolution and key-log blocks, so files and runs grew past the limit.
+  - Effect: Both limits count every byte of the file on disk.
+  - Docs: [Bound, split, and multi-interface captures](docs/cli-reference.md#bound-split-and-multi-interface-captures)
+- **A batch run with `--filter` no longer reads every RTP stream for each SIP message.**
+  - Was: At 100,000 calls, `--filter 'method == INVITE'` ran 31 times the CPU instructions of the same run with no filter.
+  - Effect: A filter on SIP fields reads no streams; a filter on `rtp.*` or a media diagnosis field reads only that call's streams.
+  - Docs: [Filter DSL reference](docs/filter-dsl.md)
+- **A vCon export no longer re-reads every call in the capture for each container.**
+  - Was: Each container ran the whole capture analysis again, and each container of an `export_vcon` page or `--export-vcon-when` run read every call's SDP again.
+  - Effect: At 100,000 calls an `export_vcon` page of 50 containers runs about 10 times faster; the containers are unchanged.
+  - Docs: [vCon export](docs/vcon.md)
+
+### Security
+
+- **etherparse goes from 0.21.0 to 0.21.1 (RUSTSEC-2026-0596).**
+  - Was: etherparse 0.21.0 could read past a packet when it walked the IPv6 extension headers of a packet parsed in its lax mode.
+  - Effect: A scan of `Cargo.lock` no longer reports the advisory.
+  - Limit: sipnab parses IPv6 in etherparse's strict mode, which refuses a broken extension chain, so released binaries did not reach the faulty code.
+
+## [0.5.270] - 2026-11-24
+
+### Changed
+
+- **Breaking: a relay question a run cannot ask exits 2 before it reads anything.**
+  - Was: The run logged the reason, read the capture, and exited 0.
+  - Effect: `--relay-stats`, `--relay-stats-call`, `--relay-stats-list`, `--relay-stats-interval` and `--relay-compare` refuse this way.
+  - Effect: They refuse with no `--rtpengine-control`, on a capture file, or for an address that is not `IP:port`, with the reason on stderr.
+  - Do: Ask the relay from a live capture (`-d <device>`), and drop these flags from scripts that read files.
+  - Docs: [Ask a media relay about itself](docs/relay-statistics.md)
+- **MCP queries and `/metrics` over every call no longer take 18 seconds on large captures.**
+  - Effect: At 100,000 dialogs, MCP `aggregate_dialogs` takes 33 ms (was 18,013 ms); filtered `search_by_time` takes 28 ms (was 20,095 ms).
+  - Effect: At 100,000 dialogs, filtered MCP `export_vcon` takes 1,287 ms (was 19,745 ms); `GET /metrics` takes 266 ms (was 18,632 ms).
+  - Effect: In the TUI, `i` and `I` (clear dialogs) and `m` (carrier metrics) no longer read every stream once per call.
+  - Limit: The times were measured on one 14-core host at a 1-minute load of 12 to 30.
+- **Reading a capture file takes less CPU per SIP message.**
+  - Effect: Printing and tracking a SIP message do less work, and sipnab parses each SDP body once instead of twice.
+  - Effect: sipnab no longer reads a classic pcap file whole a second time to look for pcapng metadata; the output stays the same.
+  - Limit: Measured for the printing change only: a one-core `-N --report` run on a SIP-only capture used 0.90 of the CPU time, at host load 5.5-52.5.
+
+### Fixed
+
+- **A pcapng with interfaces of different link types now gets the right frame times.**
+  - Was: Microsecond timestamps were read as nanoseconds (dates in January 1970), and `if_tsoffset` was not added.
+  - Was: A simple packet kept the block's padding bytes, and the second section's interfaces were numbered after the first section's.
+  - Effect: Each frame uses its own interface's resolution and offset, and each section numbers its interfaces from zero.
+  - Docs: [Link types](docs/encapsulations.md#link-types)
+- **The F7 key line and the "Save as" prompt are whole at 40 columns.**
+  - Was: Both ended at the dialog's edge, so `F1 fields`, `F2 save` and `Esc back` did not show.
+  - Effect: Each wraps between keys onto the next row; a long name shows its end and the cursor behind an ellipsis mark.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+- **`--analyze` and vCon exports now count RTP streams discarded at `--max-streams`.**
+  - Was: Only the end-of-run `retention:` line counted them; the analysis and the vCon carrier did not count them.
+  - Effect: The retention finding has a streams row, and the vCon completeness carrier has `streams_rotated` and an `INCOMPLETE` clause.
+  - Docs: [`--max-streams`](docs/cli-reference.md)
+- **`--cores N` links media to calls whose SIP runs inside a tunnel.**
+  - Was: Media outside a GRE, IP-in-IP or VXLAN tunnel that carried the SIP could lose its call, and two calls could merge into one stream.
+  - Effect: Every worker reads the SDP of tunneled SIP, as it does for SIP outside a tunnel.
+  - Docs: [Offline: `--cores`](docs/tuning-capture.md#offline---cores)
+- **A forked call answered by more than one leg says so.**
+  - Was: sipnab kept the first `2xx` as the dialog, and every later leg's answer was not recorded anywhere.
+  - Effect: `--json-dialogs` and the REST dialog document list each later leg's `To` tag in `forked_answers`.
+  - Effect: A response from another leg no longer counts in `timing.retransmits`.
+  - Docs: [Output formats](docs/output-formats.md#one-object-per-dialog)
+- **`--json-dialogs` streams carry the round trip the far end reported in RTCP.**
+  - Was: Only `GET /v1/streams` carried `round_trip_ms`; `--json-dialogs`, the call report and vCon media quality left it out.
+  - Effect: Each stream with a measured round trip carries `round_trip_ms` and `round_trip_source`.
+  - Docs: [MOS and codecs](docs/mos-and-codecs.md)
+- **A capture file cut short says why on stderr when the run exits 1.**
+  - Was: With `SIPNAB_LOG=off` the run exited 1 and printed nothing.
+  - Effect: stderr names each file that stopped early, its cause, and what the run is missing.
+  - Docs: [Error messages](docs/errors.md)
+- **Plugins run on `wasmi` 2.0.2.**
+  - Was: The binaries linked `wasmi` 2.0.0, which crates.io lists as yanked.
+  - Effect: `wasmi`, `wasmi_core`, `wasmi_ir` and `wasmi_collections` go to 2.0.2.
+
+### Security
+
+- **`url` goes from 2.5.8 to 2.5.9 in `Cargo.lock` (RUSTSEC-2026-0592).**
+  - Was: Its `Url::origin()` overflowed the stack on a URL of nested `blob:` prefixes.
+  - Effect: A scan of `Cargo.lock` no longer reports the advisory; `form_urlencoded`, which the binaries link, goes to 1.2.3.
+  - Limit: `url` is a test-only dependency, so no released binary contained it.
+- **`parquet` goes from 60.1.0 to 60.2.0 (RUSTSEC-2026-0595).**
+  - Was: `parquet` wrote Bloom filters in plaintext inside a file with Parquet modular encryption.
+  - Effect: The affected version leaves the build; `sipnab fleet serve` writes its history files with it.
+  - Limit: sipnab never wrote modular encryption: `--store-encryption modular` and `both` exit 2, and `sealed` encrypts each whole file.
+
+## [0.5.269] - 2026-11-21
+
+### Added
+
+- **A stability page and a script that compare two releases' REST API and JSON schemas.**
+  - Effect: `scripts/contract-diff.py` labels each change `breaking` or `additive` and exits 1 on a breaking one.
+  - Limit: Until 1.0 a release may still change any surface; the command line, config keys, MCP tools and metrics are not compared yet.
+  - Docs: [Compare the REST API of two releases](docs/stability.md#compare-the-rest-api-of-two-releases)
+- **`--drop-method` and `--only-method` drop whole SIP dialogs by their starting method.**
+  - Effect: A dropped dialog is never stored; status line 1 and the capture report count it under its own finding.
+  - Limit: sipnab accepts the 14 standard SIP methods and Kamailio's `KDMQ`, and refuses another name at startup.
+  - Docs: [Drop whole dialogs by method](docs/tuning-capture.md#drop-whole-dialogs-by-method)
+- **`d` in the call list shows only the dialogs that are not over.**
+  - Effect: A REGISTER with an unanswered challenge or an expired registration counts as over.
+  - Docs: [Find the dialogs that are not over](docs/tui-walkthrough.md#find-the-dialogs-that-are-not-over)
+- **`L` in the call list sorts by each dialog's last message.**
+  - Effect: Status line 1 now always names the sort, for example `Sort: Last update ▲`.
+  - Docs: [Watch the dialogs updated last](docs/tui-walkthrough.md#watch-the-dialogs-updated-last)
+- **New `[display]` keys set the TUI's starting fold, autoscroll, SDP form, colors and flow.**
+  - Effect: `fold`, `autoscroll`, `sdp_display`, `color_mode` and `extended_flow`; the Mermaid exports follow `fold`.
+  - Docs: [Set how the TUI starts](docs/tui-walkthrough.md#set-how-the-tui-starts)
+- **`--sngrep-mode` gives the TUI sngrep's keys, colors and bottom key bar.**
+  - Effect: On the call list, call flow, raw message and compare screens, each sngrep key does what it does in sngrep.
+  - Do: Start with `--sngrep-mode`, or set `[display] sngrep_mode = true`; `--no-sngrep-mode` turns it off for one run.
+  - Limit: sipnab commands whose keys sngrep uses move to other keys, listed in the F1 help.
+  - Docs: [Use sngrep's keys and colors](docs/tui-walkthrough.md#use-sngreps-keys-and-colors)
+
+### Changed
+
+- **The message compare view colors only the characters that changed.**
+  - Effect: A changed line sits beside its new form instead of on two half-empty rows.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **The call list's `#` is the dialog's own number and never changes.**
+  - Effect: Filters, searches, sorts, eviction and clearing keep each dialog's number.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **The quit prompt shows that Enter quits, with Yes preselected.**
+  - Effect: The popup and the key bar both say `Y/Enter` quits.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **`Space` on the selected message in the call flow clears the selection.**
+  - Effect: Its `Selected: message N` hint goes too.
+  - Docs: [Keybindings](docs/keybindings.md)
+
+### Fixed
+
+- **REST routes read a request body only after the credential check.**
+  - Was: A caller without a credential still had the server read and parse up to 1 MiB of JSON.
+  - Was: `{"enabled": false, "enabled": true}` opened the persistence gate; the last copy of a key won.
+  - Effect: A key given twice, or an object or array as a value, is a `400` whose `detail` names the rule.
+  - Docs: [Bind address & connection limits](docs/rest-api.md#bind-address--connection-limits)
+- **A filter's regexes have a budget, so one filter cannot take seconds to read.**
+  - Was: A filter compiled every `=~` regex on reading; `(?i)` classes such as `[\D]` cost about 0.4 s per KiB, with no total.
+  - Effect: One expression holds at most 8 regexes, 1024 bytes of regex text and 16 classes, checked before compiling.
+  - Effect: MCP `search_messages` with `regex: true` also refuses a pattern of more than 16 classes.
+  - Do: Join alternatives into one regex, or write `\d` and `\w`, which do not count, in place of classes.
+  - Docs: [Parser constraints](docs/filter-dsl.md#parser-constraints), [Search messages with a regular expression](docs/mcp.md#search-messages-with-a-regular-expression)
+- **sipnab drops a SIP/TCP message over `--max-tcp-buffer` whole and says so.**
+  - Was: Its first 64 KiB came out as a malformed message, and sipnab read the rest of its body as the next message.
+  - Effect: A warning names the peers, and the `capture quality:` line gives the total.
+  - Effect: Reading resumes at the message after it, so sipnab keeps the rest of the connection.
+  - Do: Raise `--max-tcp-buffer` for trunks whose messages carry large bodies.
+  - Docs: [Tuning capture](docs/tuning-capture.md)
+- **sipnab counts and warns about WebSocket frames over 64 KiB.**
+  - Was: SIP in such a frame vanished from every count and output with no line saying so.
+  - Effect: A warning names the frame's size, and the `capture quality:` line gives the total.
+  - Docs: [Tuning capture](docs/tuning-capture.md)
+- **sipnab warns about and counts RTP streams it discards at `--max-streams`.**
+  - Was: At the cap the oldest streams left every report, and no line said so.
+  - Effect: A warning names the cap and the count, and the end-of-run `retention:` line gives the total.
+  - Docs: [Command-line reference](docs/cli-reference.md)
+- **An arrow key split by ssh or tmux no longer acts as Esc.**
+  - Was: The arrow became Esc and then the keys `[` and `B`.
+  - Effect: A lone Esc acts after 25 ms.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **A mouse wheel report split by ssh or tmux is no longer typed as keys.**
+  - Was: Its bytes reached the view as `[`, `<`, digits and `M`, which could trigger key actions.
+  - Limit: The Esc key still acts before the wheel event.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **Quitting the TUI leaves a clean screen and the prompt at column 0.**
+  - Was: Mouse reports reached the shell as typed text, and the prompt could start mid-line.
+  - Limit: sipnab discards keys you type in the first 50 ms after quitting.
+- **The message compare view keeps both messages' lines side by side.**
+  - Was: A header that wrapped on one side shifted every later line.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **The call flow folds a retransmission under its own message only.**
+  - Was: It folded under another leg's arrow, or replaced an auth retry fold's label.
+  - Docs: [Keybindings](docs/keybindings.md)
+- **The call flow's compare hint goes away with its selection.**
+  - Was: `Selected: message N` stayed on the call list after Esc, with nothing selected.
+  - Docs: [Keybindings](docs/keybindings.md)
+
+## [0.5.268] - 2026-11-20
+
+### Fixed
+
+- **A TUI save keeps the mode of the config file it updates.**
+  - Was: Saving a named filter (`F2`), the column layout (`F10`) or name edits made a `0664` or `0640` config `0600`.
+  - Effect: The file keeps its mode, and its group when you belong to that group; a new file is still `0600`.
+  - Effect: TUI exports that replace an existing file keep its mode too; a notes file is always `0600`.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+- **The filter dialog shows a long save notice or refusal whole.**
+  - Was: `Saved @name to <path>` and the duplicate-name refusal stopped at the dialog's right edge.
+  - Effect: The message continues on the next rows, and a path in your home directory starts with `~`.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+
+## [0.5.267] - 2026-11-19
+
+### Added
+
+- **REST and MCP list the named filters and select dialogs by name.**
+  - Effect: `GET /v1/filters` and the MCP `list_named_filters` tool list each `[filters]` name and its definition as written.
+  - Effect: `named=<name>` selects a named filter on `/v1/dialogs`, `/v1/aggregate`, `/v1/dialogs/rates`, `/v1/talkers` and every MCP tool that takes `filter`.
+  - Limit: `filter` and `named` together are refused, and so is a name nothing defines; the refusal lists the defined names.
+  - Docs: [Select dialogs with a named filter](docs/rest-api.md#select-dialogs-with-a-named-filter)
+- **A filter expression can be checked before use, with the position of an error.**
+  - Effect: `GET /v1/filters/validate?expr=` answers `valid`, the parser's message and the character position where it stopped.
+  - Effect: The MCP `validate_filter` tool reports the same `position`.
+  - Docs: [Check a filter expression before using it](docs/rest-api.md#check-a-filter-expression-before-using-it)
+- **The TUI filter dialog saves its filter as a named filter.**
+  - Effect: `F2` in the dialog asks for a name and adds the filter to `[filters]` in your config file, keeping its comments.
+  - Effect: The name is listed beside Named filter at once; a duplicate or invalid name is refused with the reason.
+  - Effect: The REST API and MCP server of the same session resolve the new `@name` at once.
+  - Effect: With no config file sipnab may write, sipnab keeps the name for the session and shows the `[filters]` line to add; `F3` copies it.
+  - Docs: [Save the dialog's filter under a name](docs/tui-walkthrough.md#save-the-dialogs-filter-under-a-name)
+
+### Fixed
+
+- **A TUI save no longer replaces a config file you may not write.**
+  - Was: Saving the column layout or name edits replaced a read-only file, or another user's, when its folder was writable.
+  - Effect: sipnab leaves the file unchanged, and the message names the file, the cause, and `--config <writable file>` or `$SIPNAB_CONFIG`.
+  - Docs: [Error reference](docs/errors.md), entry `cannot {action} {path}: {source}. {advice}`
+
+- **A filter parse error lists `in_subnet` among the valid operators.**
+  - Was: The `valid operators:` line of every filter error omitted `in_subnet`, which the parser accepts.
+  - Effect: The line lists every operator the parser accepts, in the order it tries them.
+  - Docs: [Filter DSL](docs/filter-dsl.md)
+
+## [0.5.266] - 2026-11-19
+
+### Added
+
+- **The TUI filter dialog recalls expressions, lists the DSL, and copies the filter.**
+  - Effect: `Up` and `Down` in the Expression field recall the expressions applied this session, newest first, each once.
+  - Effect: `F1` in the dialog lists every Filter DSL field name, operator and combining word.
+  - Effect: `Y` in the call list copies the filter in force as a quoted `sipnab --filter` command line and shows it.
+  - Limit: The history keeps the newest 50; the command carries the capture source, not other run options.
+  - Docs: [Use an earlier expression again](docs/tui-walkthrough.md#use-an-earlier-expression-again)
+
+### Fixed
+
+- **The `F7` dialog lists the named filters when opened from any view.**
+  - Was: Opened first from the call flow or RTP streams, Named filter said `none in [filters]` though the config defined names.
+  - Effect: Every view opens the dialog the same way, with the configured names beside Named filter.
+  - Docs: [Keybindings](docs/keybindings.md#filter-popup)
+
+## [0.5.265] - 2026-11-19
+
+### Added
+
+- **The TUI filter dialog takes a typed Filter DSL expression.**
+  - Effect: The `F7` dialog's Expression field accepts any `--filter` expression and applies it with the other fields, on whole dialogs.
+  - Effect: For a refused expression the dialog shows the parser's message and position, and the filter in force stays.
+  - Effect: A session started with `--filter` or `[filter] expression` opens with it in the field and applied.
+  - Docs: [Filter with an expression](docs/tui-walkthrough.md#filter-with-an-expression)
+
+### Changed
+
+- **The installer and download page no longer suggest WSL or a source build on Windows.**
+  - Effect: Both say sipnab currently focuses on Linux and macOS, and that pull requests adding Windows support are welcome.
+  - Effect: The download page marks no install choice for a Windows visitor.
+  - Docs: [Contributing](CONTRIBUTING.md)
+
+## [0.5.264] - 2026-11-18
+
+### Fixed
+
+- **`--autostop filesize` stops a run that also uses `--split`.**
+  - Was: With a `--split` size below the limit, the run never stopped and wrote its whole input.
+  - Effect: The limit counts all split files together, the files `--split-keep` deleted included.
+  - Docs: [Command-line reference](docs/cli-reference.md)
+- **A call read from a vCon is not reported `no_media` beside a pcap's RTP.**
+  - Was: `-I call.vcon.json -I other.pcap` flagged the vCon's answered call, and `--analyze` ranked it critical.
+  - Effect: A vCon holds no packets, so the run's RTP from other inputs is not judged against its call.
+  - Docs: [Filter DSL](docs/filter-dsl.md)
+- **A message both the wire and a HEP feed delivered counts once.**
+  - Was: A run reading both sources counted each message twice, the second copy as a retransmission.
+  - Effect: `msg_count` and retransmissions count each message once; the new `seen_by` field counts per source.
+  - Limit: Copies merge only when their bytes are identical and they arrive within 2 seconds.
+  - Docs: [Messages two sources delivered](docs/output-formats.md#messages-two-sources-delivered-seen_by)
+
+## [0.5.263] - 2026-11-17
+
+### Fixed
+
+- **`--kill-scanner` and `-K` keep answering scanners when stderr can no longer be written.**
+  - Was: A run whose stderr lost its reader (`2>&1 | head`) or hit a full disk stopped answering scanners, with no visible warning.
+  - Effect: The scanner-kill worker drops a log line it cannot write, and keeps answering for the whole run.
+  - Docs: [The run stops answering scanners when stderr goes away](docs/troubleshooting.md#the-run-stops-answering-scanners-when-stderr-goes-away).
+
+## [0.5.262] - 2026-11-17
+
+### Security
+
+- **The VEX document lists chrono's unmaintained advisory as not affecting sipnab.**
+  - Effect: `vex/sipnab.openvex.json` states RUSTSEC-2026-0543 as `not_affected`; `cargo deny` accepts it with that reason.
+  - Limit: chrono stays in the dependency tree, because rmcp and arrow/parquet require it.
+  - Docs: [SECURITY.md](SECURITY.md)
+
+## [0.5.261] - 2026-11-16
+
+### Changed
+
+- **A datagram that cannot be HEP is turned away without building an error.**
+  - Effect: Testing an RTP packet for HEP no longer costs sipnab an allocation and a backtrace.
+  - Effect: Building that error was 1.13% of CPU samples on a capture with RTP; it is now none.
+  - Limit: The run time of `-N --report -I` did not change beyond the spread between measurement rounds.
+
+### Fixed
+
+- **A TUI no longer keeps running at full CPU after its terminal closes.**
+  - Was: On macOS and Linux, a terminal lost while sipnab read a key, such as a killed tmux session, could leave it spinning until killed.
+  - Effect: sipnab reads its terminal itself and stops when a read finds it gone, exiting 129 as on `SIGHUP`.
+  - Effect: The TUI no longer asks the terminal for the cursor position at startup.
+  - Docs: [A terminal interface that outlives its terminal](docs/troubleshooting.md#a-terminal-interface-that-outlives-its-terminal).
+
+### Security
+
+- **`sipnab g729 install` started as root downloads the package as another user.**
+  - Was: The download, its TLS client and the unzip of the ITU-T package ran as root.
+  - Effect: They run as `--user`, else `[privilege] user`, else `nobody`; root only checks the table file and installs it.
+  - Do: Give that user a writable `TMPDIR` and a readable CA bundle and sipnab binary, or pass `--no-priv-drop` to download as root.
+  - Docs: [Install as root](docs/g729.md#install-as-root).
+
+## [0.5.260] - 2026-11-16
+
+### Fixed
+
+- **The post-capture JSON flags print JSON only, without the per-message lines.**
+  - Was: `--json-dialogs`, `--json-stun`, `--json-analyze` and `--yang-analyze` printed the per-message lines first, so `jq` failed without `--no-cli-print`.
+  - Effect: Each implies `--no-cli-print`; `--json`, `--json-pretty`, `-T` or `--fail2ban` beside it still prints the per-message stream.
+  - Docs: [Output formats](docs/output-formats.md).
+- **sipnab refuses an HTTPS answer cut short instead of using it.**
+  - Was: A body that stopped early, on a timeout, a reset or a close, counted as the whole answer.
+  - Effect: `sipnab fleet`, `--vcon-fetch`, `--vcon-audio-fetch`, `[[vcon.enrich]]` services, SCITT receipts and x5u chains refuse it, naming the bytes read.
+  - Effect: A `sipnab fleet` row reads `the answer ended after 9 of its 40 bytes` where it read `the answer is not JSON`.
+  - Docs: [Errors: so the file is not whole](docs/errors.md#url-problem-so-the-file-is-not-whole).
+- **A signal no longer drops a live RTP datagram or an rtpengine request.**
+  - Was: A signal such as `SIGHUP` during a send counted the datagram as unsent, or failed the relay request with `sending <command> to <relay>`.
+  - Effect: sipnab sends again within the same wait: 20 ms for live RTP, the control timeout for rtpengine.
+- **A paused TCP or TLS HEP listener keeps waiting senders at a `--duration` stop.**
+  - Was: A listener paused over a second as it reached the deadline could close waiting connections unread, or give up a TLS handshake.
+  - Effect: The listener takes its backlog and finishes handshakes for 1 second after it sees the stop, however long the pause.
+  - Docs: [What a TCP or TLS listener keeps when the run stops](docs/hep.md#what-a-tcp-or-tls-listener-keeps-when-the-run-stops).
+- **`demos/mcp-stdio.sh` asks a loading capture at most `MCP_MAX_POLLS` times.**
+  - Was: The helper sent one `capture_status` request more than `MCP_MAX_POLLS` before it gave up.
+  - Effect: `MCP_MAX_POLLS=N` now means N requests; the default stays 400.
+  - Docs: [See it work](docs/mcp.md#see-it-work).
+
+## [0.5.259] - 2026-11-16
+
+### Changed
+
+- **A fleet center without its store file rebuilds its member list faster at start.**
+  - Effect: The center builds only the heartbeat rows newer than the one it holds of each member, and starts serving sooner.
+  - Limit: A damaged row older than every row the center holds no longer refuses its file at start; `sipnab fleet verify` reports that file.
+  - Docs: [The files of the history store](docs/fleet.md#the-files-of-the-history-store).
+
+### Fixed
+
+- **A fleet center answers `503` while it rebuilds its member list at start.**
+  - Was: The center bound its port before it opened its store, and a request got no answer until the rebuild ended.
+  - Effect: Every request gets `503` with `Retry-After: 5` and the cause; a member keeps its heartbeats and delivers them after.
+  - Docs: [What the center answers while it starts](docs/fleet.md#what-the-center-answers-while-it-starts).
+- **A stop during a fleet center's start goes through its handler.**
+  - Was: A SIGTERM or SIGINT during the rebuild at start ended the process at once, without the center's handler.
+  - Effect: The center ends the rebuild before its next file and exits `0`; the store file keeps the members it held.
+  - Docs: [What the center answers while it starts](docs/fleet.md#what-the-center-answers-while-it-starts).
+
+### Security
+
+- **A capture run started as root reads no byte of its `-I` files as root.**
+  - Was: The run unpacked, probed and began reading its capture files as root, before it dropped to `--user` or `nobody`.
+  - Effect: It opens each file as root and reads it as the drop user, so root-only files still read; `Reading N capture files` follows the drop.
+  - Do: Give the drop user a writable `TMPDIR` such as `/tmp`, or the run stops at the first archive; other exit codes and messages are unchanged.
+  - Limit: On macOS root's `TMPDIR` is private: archive or `.pcap.gz` input needs `TMPDIR=/tmp` or `--user`; under `--chroot DIR`, it needs `DIR/tmp` (mode 1777).
+  - Docs: [Read capture files only root can read](docs/least-privilege.md#read-capture-files-only-root-can-read).
+
+## [0.5.258] - 2026-11-15
+
+### Added
+
 - **`sipnab fleet verify` reads every row of every history file of a fleet center.**
   - Effect: The command reports each file it refuses with the first reason, changes nothing, and exits `0`, `1` or `2`.
   - Do: Run it as the center's user with `--store` and `--store-key-file`, after a restore and before you destroy an old store key.
@@ -24,7 +430,7 @@ entry that carries them.
   - Effect: What to do before an upgrade is on the release page, above the download table and the list of pull requests.
   - Effect: Links in that section point at the documentation as it was at the release's tag.
   - Docs: [The text of a release](docs/internals/build-ci-release.md#the-text-of-a-release).
-- **Changelog sections 0.5.239 down to 0.5.190 are outlines too.**
+- **Changelog sections 0.5.239 down to 0.5.215 are outlines too.**
   - Effect: each entry says what changed, what to do and where the detail is; entries about hooks, CI and tests are removed.
   - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
 
@@ -2261,7 +2667,7 @@ entry that carries them.
   - Limit: the exporter never takes a name from the URI's user part.
   - Was: the help text, the `--export-vcon` row of `docs/cli-reference.md` and the `vcon` feature row of `docs/internals/build-ci-release.md` still denied it.
 - **A vCon callee's `sip_user_agent` no longer comes from a proxy.**
-  - Was: the exporter read the callee's `User-Agent`/`Server` and `Contact` from the first response in the ladder, through a proxy the proxy's own `100 Trying`.
+  - Was: the exporter read the callee's `User-Agent`/`Server` and `Contact` from the first response, through a proxy its own hop-by-hop `100 Trying` ([RFC 3261 section 16.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.7)).
   - Was: a call through OpenSIPS exported the proxy's `Server` banner as the callee's software and no callee `Contact`.
   - Effect: both come only from messages the callee sent; a callee that names no software gets no `sip_user_agent`.
   - Effect: those are a response from 101 to 699 carrying the dialog's remote `To` tag, or a request carrying that tag as its `From` tag.
@@ -2412,7 +2818,7 @@ entry that carries them.
   - Was: the exporter's module documentation and the vCon design page said a party never carries a `name`.
   - Effect: a party carries the `From` or `To` display name when the wire had one, with `validation: "none"` beside it.
 - **A call challenged for credentials keeps its parties on the vCon recording.**
-  - Was: a dialog took its remote tag from the first `To` tag it saw, for a challenged call the tag of the `401` or `407`.
+  - Was: the remote tag was the first `To` tag seen, for a challenged call a `401` or `407`, which creates no dialog ([RFC 3261 section 12.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1)).
   - Was: `--retain-audio` exported the call audio with no `parties` and the challenge's tag in `sip_to_tag`, a Dialog Object vcon.store refuses.
   - Effect: the remote tag comes from the strongest evidence: a 2xx answer to the opening request, then a 101-199 response to it, then any other tag.
   - Effect: `tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap` now exports `parties: [1, 0]` and `sip_to_tag: as0b1a917b`.
@@ -2456,9 +2862,9 @@ entry that carries them.
 - **A `tcp` or `tls` `--hep-send` connect no longer waits for the operating system's limit.**
   - Was: the dial had no time limit; a collector that drops the request held it about 127 seconds on Linux with the default six SYN retries.
   - Was: the dial runs on the thread that forwards packets, so for that time nothing was sent, counted or stopped.
-  - Effect: every connect gives up after 3 seconds and counts as a `connect` failure, as a refused one does; the next packet dials again.
-  - Limit: the limit is a fixed value with no flag or key, as is the 10-second TLS handshake limit.
-  - Effect: this reaches `--hep-send` with `--hep-send-transport tcp` or `tls`.
+  - Effect: every connect gives up after 3 seconds, which covers the request and one retransmission a second later ([RFC 6298](https://www.rfc-editor.org/rfc/rfc6298.html)).
+  - Effect: a connect that gives up counts as a `connect` failure, as a refused one does; the next packet dials again.
+  - Limit: for `--hep-send` with `--hep-send-transport tcp` or `tls`, a fixed value with no flag or key, as is the 10-second TLS handshake limit.
 - **sipnab read HEP v1 and v2 packets at the wrong offsets, and refused HEP v1.**
   - Was: the version 2 reader took the ports from bytes 2 to 5 and two IPv4 addresses from bytes 6 to 13.
   - Was: it assumed IPv4 and UDP, never read the time, and every message it produced began with header bytes and did not parse as SIP.
@@ -2869,7 +3275,7 @@ entry that carries them.
   - Was: on Debian 13 its `iptables-allports` action failed with `returned 127`, for want of `iptables`, and the scanner's traffic still got through.
   - Was: on Ubuntu 24.04 the jail named no `backend`, so it read the journal and never `/var/log/sipnab.log`.
   - Effect: `contrib/fail2ban/sipnab-jail.conf` sets `backend = auto`, bans with `nftables[type=allports]` on UDP and TCP, and shows the iptables action in a comment.
-  - Effect: it bans after 5 detections within `findtime`, not 1; the cookbook's scanner jail bans with nftables too.
+  - Effect: it bans after 5 detections within `findtime`, not 1; the cookbook's [scanner jail](docs/examples.md#detect-sip-scanners-and-auto-block-via-fail2ban) bans with nftables too.
   - Docs: [Install sipnab's filter and jail](docs/fail2ban-sipnab.md#install-sipnabs-filter-and-jail), [Ban with iptables instead of nftables](docs/fail2ban-sipnab.md#ban-with-iptables-instead-of-nftables).
 
 ## [0.5.199] - 2026-10-01
@@ -2938,7 +3344,7 @@ entry that carries them.
   - Docs: [Stop a browser reaching your server](docs/mcp-deploy.md#stop-a-browser-reaching-your-server---mcp-allowed-host).
 - **Two-factor authentication is mandatory for write access and the project's credentials.**
   - Effect: it uses an authenticator app or a security key; SMS is not accepted.
-  - Docs: [Getting commit access](MAINTAINERS.md#getting-commit-access).
+  - Docs: [Getting commit access](MAINTAINERS.md#getting-commit-access), linked from [SECURITY.md](SECURITY.md).
 
 ### Fixed
 
@@ -3214,7 +3620,7 @@ entry that carries them.
   - Effect: it runs over MCP stdio, or over HTTP with a read-scoped token minted from a signing key, and prints the same verdict on both.
   - Effect: `evidence_handoff.py` has `build_evidence_package` and `generate_repro` write a package and SIPp scenario per call under `--mcp-file-root`.
   - Effect: `aggregate_for_model.py` cuts an `aggregate_dialogs` answer to a byte budget by folding whole buckets into `other_count`; `mcp_calls.py` serves both transports.
-  - Docs: [Runnable examples](docs/client-examples.md).
+  - Docs: [Runnable examples](docs/client-examples.md), linked from the [MCP guide](docs/mcp.md).
 - **Five operator-task programs, one per multi-step cookbook recipe.**
   - Effect: [`triage.py`](docs/client-examples.md) turns `--json-analyze` into a verdict and exit status; a capture with no dialog to judge is inconclusive.
   - Effect: `failed_calls.py` groups failed calls by final response code over REST and names calls answered and never acknowledged.

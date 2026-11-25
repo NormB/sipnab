@@ -22,6 +22,10 @@ pub enum SdpDisplayMode {
     Summary,
     /// Full — show complete SDP body below the arrow.
     Full,
+    /// sngrep mode only: the arrow says the method's first three letters and
+    /// the media address, `INV (10.0.0.1)`, and one line per RTP media
+    /// follows, `audio 12220 (PCMU)`.
+    Sngrep,
 }
 
 impl SdpDisplayMode {
@@ -30,7 +34,17 @@ impl SdpDisplayMode {
         match self {
             Self::None => Self::Summary,
             Self::Summary => Self::Full,
-            Self::Full => Self::None,
+            Self::Full | Self::Sngrep => Self::None,
+        }
+    }
+
+    /// The next mode in the cycle of a session in or out of sngrep mode: in
+    /// it, `Full` is followed by `Sngrep`; out of it, the cycle is
+    /// [`Self::next`]'s three states.
+    pub fn next_in(self, sngrep: bool) -> Self {
+        match self {
+            Self::Full if sngrep => Self::Sngrep,
+            other => other.next(),
         }
     }
 
@@ -40,12 +54,33 @@ impl SdpDisplayMode {
             Self::None => "Hidden",
             Self::Summary => "Summary",
             Self::Full => "Full",
+            Self::Sngrep => "sngrep",
         }
     }
 
     /// Human-readable label for the status bar.
     pub(in crate::tui) fn label(self) -> String {
         format!("SDP: {}", self.name())
+    }
+
+    /// Parse a `[display] sdp_display` value (`none`, `summary`, `full`).
+    /// `None` for any other spelling.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "summary" => Some(Self::Summary),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    /// [`Self::parse`] for a session in or out of sngrep mode: in it,
+    /// `sngrep` is a fourth value.
+    pub fn parse_in(s: &str, sngrep: bool) -> Option<Self> {
+        match s {
+            "sngrep" if sngrep => Some(Self::Sngrep),
+            _ => Self::parse(s),
+        }
     }
 }
 
@@ -154,6 +189,17 @@ impl ColorMode {
     /// Human-readable label for the status bar.
     pub(in crate::tui) fn label(self) -> String {
         format!("Color: {}", self.name())
+    }
+
+    /// Parse a `[display] color_mode` value (`method`, `call_id`, `cseq`).
+    /// `None` for any other spelling.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "method" => Some(Self::Method),
+            "call_id" => Some(Self::CallId),
+            "cseq" => Some(Self::CSeq),
+            _ => None,
+        }
     }
 }
 
@@ -271,6 +317,93 @@ impl ViewFilterDetail {
 }
 
 // ── Session wiring passed in from CLI/config ────────────────────────
+
+/// How the TUI opens: the `[display]` preferences a mode only supplies
+/// defaults for. Precedence, per key: a CLI flag (none of these has one
+/// today) > the user's `[display]` key > the mode's default
+/// ([`Self::mode_default`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayPrefs {
+    /// `[display] fold`: retransmissions and auth retries folded into one
+    /// arrow (`e` expands one).
+    pub fold: bool,
+    /// `[display] autoscroll`: the call list follows new dialogs.
+    pub autoscroll: bool,
+    /// `[display] sdp_display`: how SDP shows under its arrow.
+    pub sdp_display: SdpDisplayMode,
+    /// `[display] color_mode`: what colors the arrows.
+    pub color_mode: ColorMode,
+    /// `[display] extended_flow`: a call opens as the multi-leg flow.
+    pub extended_flow: bool,
+}
+
+impl DisplayPrefs {
+    /// The defaults of the mode the session runs in; `sngrep` is sngrep
+    /// mode, else sipnab's own.
+    pub fn mode_default(sngrep: bool) -> Self {
+        if sngrep {
+            Self {
+                // sngrep draws each retransmission and auth retry as its own
+                // arrow.
+                fold: false,
+                // sngrep starts with autoscroll off.
+                autoscroll: false,
+                // The mode's own SDP form on the arrow.
+                sdp_display: SdpDisplayMode::Sngrep,
+                // The `c` key's Call-ID coloring, and the multi-leg flow
+                // (F4), open on.
+                color_mode: ColorMode::CallId,
+                extended_flow: true,
+            }
+        } else {
+            Self {
+                fold: true,
+                autoscroll: true,
+                sdp_display: SdpDisplayMode::default(),
+                color_mode: ColorMode::default(),
+                extended_flow: false,
+            }
+        }
+    }
+
+    /// The notice for a `[display]` key this mode ignores, for the status
+    /// line at start-up: a TUI run logs only errors, so a logged warning
+    /// alone is never seen. `None` when every key is used. The one key it
+    /// can name is `sdp_display = "sngrep"` with sngrep mode off.
+    pub fn ignored_notice(cfg: &crate::config::DisplayConfig, sngrep: bool) -> Option<String> {
+        (!sngrep && cfg.sdp_display.as_deref() == Some("sngrep")).then(|| {
+            "Ignoring [display] sdp_display = \"sngrep\": it needs sngrep mode \
+             (--sngrep-mode or [display] sngrep_mode = true)"
+                .to_string()
+        })
+    }
+
+    /// The user's `[display]` keys over the mode's defaults. The config
+    /// loader has already refused a spelling `parse_in` does not know in
+    /// sngrep mode; `sdp_display = "sngrep"` with the mode off is ignored,
+    /// logged here and shown on the status line ([`Self::ignored_notice`]).
+    pub fn resolve(cfg: &crate::config::DisplayConfig, sngrep: bool) -> Self {
+        let d = Self::mode_default(sngrep);
+        if let Some(notice) = Self::ignored_notice(cfg, sngrep) {
+            tracing::warn!("{notice}");
+        }
+        Self {
+            fold: cfg.fold.unwrap_or(d.fold),
+            autoscroll: cfg.autoscroll.unwrap_or(d.autoscroll),
+            sdp_display: cfg
+                .sdp_display
+                .as_deref()
+                .and_then(|s| SdpDisplayMode::parse_in(s, sngrep))
+                .unwrap_or(d.sdp_display),
+            color_mode: cfg
+                .color_mode
+                .as_deref()
+                .and_then(ColorMode::parse)
+                .unwrap_or(d.color_mode),
+            extended_flow: cfg.extended_flow.unwrap_or(d.extended_flow),
+        }
+    }
+}
 
 /// Name-resolution wiring passed into the TUI from CLI/config.
 pub struct NameSetup {
@@ -410,6 +543,10 @@ pub struct TuiOptions {
     /// sessions only). `Some` for `-I one.pcap`; `None` for a live capture, a
     /// multi-file input, or no input.
     pub rescan_path: Option<std::path::PathBuf>,
+    /// The words that name the run's capture source, as given: each `-I`
+    /// input, `--recursive`, or else `-d` and `-L`. The call list's `Y` puts
+    /// them in the command line it copies. Empty when the run named none.
+    pub capture_source: Vec<String>,
     /// True when the session reads capture files (`-I`) and runs no live
     /// capture. The default, false, is a live session.
     pub offline: bool,
@@ -422,11 +559,18 @@ pub struct TuiOptions {
     /// `-c` / `--calls-only`: open with only INVITE checked in the filter
     /// dialog and that filter applied, so the call list shows calls (#474).
     pub calls_only: bool,
+    /// The run's typed filter, `--filter` or else `[filter] expression`, as
+    /// typed: the session opens with it in the filter dialog's Expression
+    /// field and applied (#841). `None` when the run has neither.
+    pub filter_expression: Option<String>,
     /// `[display] mouse_capture = false`: open with mouse capture off (#484).
     pub mouse_capture_off: bool,
     /// `[display] view_filter_detail`: how status line 3 opens showing the F7
     /// dialog's filter.
     pub view_filter_detail: ViewFilterDetail,
+    /// The `[display]` preferences over the mode's defaults. `None` keeps
+    /// the defaults of the mode the keymap is in.
+    pub display: Option<DisplayPrefs>,
     /// The capture-mode label the status bar opens with (`Online (eth0)`,
     /// `Offline (call.pcap)`). `None` keeps the built-in `Online (any)`.
     pub capture_mode: Option<String>,
@@ -499,6 +643,7 @@ impl TuiOptions {
         app.declared_one_way_delay_ms = self.declared_one_way_delay_ms;
         app.quality_bands = self.quality_bands;
         app.alias_thresholds = self.alias_thresholds;
+        app.filter_publisher = Some(crate::sip::named_filters::publish);
         app.set_protected_inputs(self.protected_inputs);
         app.set_bpf_filter(self.bpf_filter, self.bpf_filter_generated);
         app.set_resolver(self.name_setup.resolver);
@@ -517,9 +662,6 @@ impl TuiOptions {
                     .map(|why| format!("Name edits {why}")),
             )
             .collect();
-        if !notices.is_empty() {
-            app.status_error = Some(notices.join(" | "));
-        }
         app.set_action_trail(self.action_trail);
         app.relay_query = self.relay_query;
         app.set_column_save_target(self.config_save.0);
@@ -530,19 +672,39 @@ impl TuiOptions {
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app.rescan_path = self.rescan_path;
+        app.capture_source = self.capture_source;
         app.set_live_capture(!self.offline);
         app.set_capture_options(self.capture_options);
         app.set_notes(self.notes, self.notes_path);
         app.capture_meter = self.capture_meter;
         app.mouse_capture_enabled = !self.mouse_capture_off;
         app.view_filter_detail = self.view_filter_detail;
+        if let Some(prefs) = self.display {
+            app.apply_display_prefs(prefs);
+        }
         // Last, once the action trail is attached, so the applied filter is
-        // recorded the way one applied from the dialog is.
+        // recorded the way one applied from the dialog is. The run's typed
+        // filter goes in the Expression field first, so `-c` applies with it.
+        if let Some(text) = self.filter_expression {
+            app.filter_dialog.expression = text;
+        }
         if self.calls_only {
             super::controllers::start_calls_only(&mut app);
+        } else if !app.filter_dialog.expression.trim().is_empty() {
+            super::controllers::apply_filter_dialog(&mut app);
         }
+        // Planning refused a filter that does not parse, so this is only
+        // reached if the dialog and the plan ever disagreed; it is said
+        // rather than left in a dialog nobody opened.
+        let refused = app.filter_dialog.error.take();
         if let Some(mode) = self.capture_mode {
             app.set_capture_mode(mode);
+        }
+        // After the filter: applying one clears the status line, which would
+        // drop a notice set before it.
+        let notices: Vec<String> = notices.into_iter().chain(refused).collect();
+        if !notices.is_empty() {
+            app.status_error = Some(notices.join(" | "));
         }
         app
     }
@@ -714,9 +876,13 @@ pub(in crate::tui) const FILTER_METHODS: [&str; 10] = [
 ];
 
 /// Number of text input fields in the filter dialog.
-pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 9;
+pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 10;
 
-/// Total focusable items: 9 text fields + 10 method checkboxes + the
+/// Focus index of the Expression field: the last text field, right after
+/// Named filter, so the two fields that take Filter DSL sit together.
+pub(in crate::tui) const EXPRESSION_FIELD_IDX: usize = 9;
+
+/// Total focusable items: 10 text fields + 10 method checkboxes + the
 /// "All" master checkbox + 2 buttons.
 pub(in crate::tui) const FILTER_ITEM_COUNT: usize =
     FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 3;
@@ -873,6 +1039,19 @@ pub(in crate::tui) struct CallFlowViewState {
     /// percentage while the rendered boundary stayed put: the key registered,
     /// the status line updated, and nothing moved (#184).
     pub(in crate::tui) raw_preview_pct_user_set: bool,
+    /// sngrep mode: the raw pane width set with `9` / `0`; `None` = the
+    /// width the ladder leaves (`T` goes back to it).
+    pub(in crate::tui) sngrep_raw_fixed: Option<u16>,
+    /// sngrep mode: `(raw pane text width, screen width)` as last drawn,
+    /// what `9` / `0` step from.
+    pub(in crate::tui) sngrep_raw_drawn: (u16, u16),
+    /// sngrep mode `D`: only the messages that carry SDP (per call).
+    pub(in crate::tui) sdp_only: bool,
+    /// sngrep mode `M`: only the media arrows.
+    pub(in crate::tui) only_media: bool,
+    /// sngrep mode `s`: `false` = compressed, one column per name; `true` =
+    /// a column per address:port.
+    pub(in crate::tui) split: bool,
     /// Whether extended (multi-leg) flow is active.
     pub(in crate::tui) extended: bool,
     /// Call-IDs of the checkbox-selected dialogs this flow merges, in
@@ -892,6 +1071,9 @@ pub(in crate::tui) struct CallFlowViewState {
     pub(in crate::tui) mark_index: Option<usize>,
     /// Set of message indices where folds are expanded ('e' toggles).
     pub(in crate::tui) fold_expanded: HashSet<usize>,
+    /// `[display] fold`: whether retransmissions and auth retries fold at
+    /// all. Off draws each as its own arrow.
+    pub(in crate::tui) fold: bool,
     /// Cached rendered message count (after folding).
     pub(in crate::tui) cached_msg_count: usize,
     /// Indices of FormattedMessages that carry an RTP bar (Enter drill-down).
@@ -920,7 +1102,13 @@ impl Default for CallFlowViewState {
             raw_preview: true,
             raw_preview_pct: 40,
             raw_preview_pct_user_set: false,
+            sngrep_raw_fixed: None,
+            sngrep_raw_drawn: (0, 0),
+            sdp_only: false,
+            only_media: false,
+            split: false,
             extended: false,
+            fold: true,
             merged_calls: Vec::new(),
             transaction_filter: None,
             show_rtp: false,
@@ -978,6 +1166,8 @@ pub(in crate::tui) struct LadderKey {
     /// Checked dialogs a multi-selection flow merges (display order);
     /// empty for the classic single-dialog ladder.
     pub(in crate::tui) merged_calls: Vec<String>,
+    /// sngrep mode `(D, M, s)`: SDP-only, media-only, compressed columns.
+    pub(in crate::tui) sngrep_view: (bool, bool, bool),
 }
 
 /// The dialogs whose RTP streams the call flow draws: what the view shows.
@@ -1141,6 +1331,10 @@ pub struct FilterDialogState {
     /// Names of `[filters]` entries, space-separated, each with or without a
     /// leading `@`. Each becomes `@name` and they AND together.
     pub(in crate::tui) named: String,
+    /// A Filter DSL expression typed as it is: any text `--filter` accepts.
+    /// It is resolved and parsed by the rule `--filter` uses, not escaped, and
+    /// it ANDs with every other field. Empty means no expression.
+    pub(in crate::tui) expression: String,
     /// The names the run's `[filters]` defines, filled when the dialog opens
     /// and shown beside the Named field.
     pub(in crate::tui) known_names: Vec<String>,
@@ -1155,6 +1349,30 @@ pub struct FilterDialogState {
     /// Parse error shown inline; while set, Enter keeps the dialog open so
     /// the typed values can be corrected instead of being discarded.
     pub(in crate::tui) error: Option<String>,
+    /// Whether `F1` has put the Filter DSL's field help in the lower part of
+    /// the dialog. Off each time the dialog opens.
+    pub(in crate::tui) show_help: bool,
+    /// The name typed into the `F2` "Save as" prompt; `Some` while the
+    /// prompt is open, when the dialog's other keys wait for it.
+    pub(in crate::tui) save_name: Option<String>,
+    /// The line a successful save leaves in the dialog: the name and the
+    /// file it went to. Cleared when the dialog opens.
+    pub(in crate::tui) notice: Option<String>,
+    /// Set when the last `F2` save kept the name for this session only,
+    /// because no config file could be written: shown in the lower part of
+    /// the dialog until Esc, F2 or the dialog opening again.
+    pub(in crate::tui) session_note: Option<SessionNote>,
+}
+
+/// A named filter kept for this session only: why it is not in a file, and
+/// the `[filters]` entry line to add to one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::tui) struct SessionNote {
+    /// The lines shown: what happened, why (path and cause), what to do.
+    pub(in crate::tui) lines: Vec<String>,
+    /// `name = "definition"`, quoted as a config file holds it; `F3`
+    /// copies it.
+    pub(in crate::tui) entry: String,
 }
 
 impl Default for FilterDialogState {
@@ -1171,6 +1389,7 @@ impl Default for FilterDialogState {
             time_after: String::new(),
             time_before: String::new(),
             named: String::new(),
+            expression: String::new(),
             known_names: Vec::new(),
             // All SIP methods checked by default == show every message. The
             // method filter only narrows once the user unchecks something.
@@ -1178,6 +1397,10 @@ impl Default for FilterDialogState {
             focused_field: 0,
             cursor_pos: 0,
             error: None,
+            show_help: false,
+            save_name: None,
+            notice: None,
+            session_note: None,
         }
     }
 }
@@ -1214,6 +1437,7 @@ impl FilterDialogState {
             6 => &self.time_after,
             7 => &self.time_before,
             8 => &self.named,
+            EXPRESSION_FIELD_IDX => &self.expression,
             _ => "",
         }
     }
@@ -1230,6 +1454,7 @@ impl FilterDialogState {
             6 => Some(&mut self.time_after),
             7 => Some(&mut self.time_before),
             8 => Some(&mut self.named),
+            EXPRESSION_FIELD_IDX => Some(&mut self.expression),
             _ => None,
         }
     }
@@ -1468,6 +1693,10 @@ impl FilterDialogState {
                 .split_whitespace()
                 .map(|word| format!("@{}", word.trim_start_matches('@'))),
         );
+        let expression = self.expression.trim();
+        if !expression.is_empty() {
+            parts.push(format!("expr {expression}"));
+        }
         for (label, text) in [("after", &self.time_after), ("before", &self.time_before)] {
             if !text.is_empty() {
                 parts.push(format!("{label} {text}"));
@@ -1491,6 +1720,7 @@ impl FilterDialogState {
         self.time_after.clear();
         self.time_before.clear();
         self.named.clear();
+        self.expression.clear();
         // Re-check every method so "clear filter" means show all, matching the
         // dialog's default state.
         self.methods = [true; 10];
@@ -1528,6 +1758,7 @@ impl FilterDialogState {
             && self.time_after.is_empty()
             && self.time_before.is_empty()
             && self.named.is_empty()
+            && self.expression.is_empty()
             // All methods checked == no method narrowing == an "empty" filter.
             && self.methods.iter().all(|&v| v)
     }
@@ -1792,6 +2023,11 @@ pub enum Popup {
     /// now?" -- the first time a G.729 stream appears on a host without the
     /// tables. See `controllers::g729_offer`.
     G729Install,
+    /// The command line `Y` in the call list copied: `sipnab`, the capture
+    /// source and `--filter` with the filter in force. Shown on every copy,
+    /// because an OSC 52 write is not acknowledged and the TUI cannot tell
+    /// whether a clipboard took it.
+    CommandLine(String),
 }
 
 /// The note being typed, and the frame it is about.
@@ -1826,6 +2062,8 @@ pub(in crate::tui) struct DisplayedKey {
     pub(in crate::tui) sort_column: crate::tui::call_list::SortColumn,
     /// Sort direction in effect at derivation (`true` = ascending).
     pub(in crate::tui) sort_ascending: bool,
+    /// The call list's `d` (only dialogs not over) at derivation.
+    pub(in crate::tui) only_open: bool,
 }
 
 /// Cross-tick cache of the displayed dialog list (filter + search + sort):
@@ -1838,6 +2076,9 @@ pub(in crate::tui) struct DisplayedCache {
     pub(in crate::tui) key: Option<DisplayedKey>,
     /// Call-IDs in display order.
     pub(in crate::tui) ids: Vec<String>,
+    /// The capture's clock (`DialogStore::capture_now`) read when `ids` was
+    /// derived; the State cells use it so a frame never rescans the store.
+    pub(in crate::tui) capture_now: Option<chrono::DateTime<chrono::Utc>>,
     /// Floors generation-driven rebuilds (user inputs bypass it).
     pub(in crate::tui) floor: ChurnFloor,
 }

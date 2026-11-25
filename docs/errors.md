@@ -66,11 +66,26 @@ each one covers in full.
 |------|-------|
 | `0` | The run did what you asked. |
 | `1` | The run failed: a capture or I/O error, a capture not read in full, a report sipnab could not produce, or a configuration file sipnab refused. |
-| `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. |
+| `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. So does a relay question the run cannot ask, such as `--relay-stats` on a capture file. |
 | `3` | The tool worked and the input failed a check you asked for: `--lint-fail-on`, a failed `--expect` rule, an invalid container under `--vcon-validate`, or the vCon forwarder refused with `401` or `403`. |
 | `101` | sipnab panicked, an internal failure. Report it with the crash report sipnab wrote. With `[crash] core = true` the process aborts instead, and the shell shows the signal (`134`). |
 | `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away. `SIGTERM` and `SIGINT` stop it the same way and exit `0`. |
 | `130` | You pressed Ctrl-C at the archive password prompt. |
+
+A run that exits `1` because a capture file was not read in full says why on
+stderr at any log level, including with `SIPNAB_LOG=off`. It prints one
+`Stopped reading '<file>' early: <cause>. Continuing with the rest of the set.`
+line for each such file, then a `Run incomplete: <reason>.` line for what the
+run is missing:
+
+```text
+Stopped reading 'cut.pcap' early: <cause>. Continuing with the rest of the set.
+Run incomplete: 1 of 1 capture file(s) was not read to the end; every report from this run rests on a partial read.
+```
+
+The usual cause is a file that ends in the middle of a packet. Read a whole
+copy of the file: a capture that a writer still holds open is whole only after
+the writer stops.
 
 ## What this page covers
 
@@ -937,6 +952,22 @@ The `[capture] node_name` key holds an empty string. `node_name` is the name thi
 
 **Exit code:** 1.
 
+### `[capture] {key} names an unknown SIP method {bad:?}; use one of {}`
+
+`[capture] drop_methods` or `only_methods` lists a name that is not a SIP method sipnab knows. `{key}` is the key, `{bad:?}` the first unknown name, and `{}` the list of accepted methods: the standard ones, then the extension method KDMQ. A misspelled name in `only_methods` would otherwise drop every dialog, so sipnab refuses it. The printed line starts with `invalid config value: `.
+
+**What to do:** Correct the spelling. Case does not matter. `--drop-method` and `--only-method` refuse the same names.
+
+**Exit code:** 1.
+
+### `unknown SIP method '{s}'; use one of {}`
+
+`--drop-method` or `--only-method` names a method that is not a SIP method sipnab knows. `{s}` is the name as typed and `{}` the list of accepted methods: the standard ones, then the extension method KDMQ. The command-line parser prints it after `invalid value '{s}' for '--drop-method <METHOD>'` (or `--only-method`). In a comma list, one unknown name refuses the whole flag.
+
+**What to do:** Correct the spelling. Case does not matter. The flags take no other extension method than the ones the list names.
+
+**Exit code:** 2.
+
 ### `config file not found: {path}`
 
 The file that `-f`/`--config` names does not exist. `{path}` is the path you gave. A missing file named by `$SIPNAB_CONFIG` is not an error: the search moves on to the default locations.
@@ -957,15 +988,30 @@ sipnab could not read a names file when it loaded names. A names file is an `/et
 
 **Exit code:** None. This is a warning, and the run continues.
 
+### `cannot {action} {path}: {source}. {advice}`
+
+A save from the terminal UI could not read or write its configuration file because the user running sipnab lacks the permission, or the file system allows no writes. The save was the column layout (F10 selector), a name for an address, or a named filter (`F2` in the filter dialog).
+
+- `{action}` is the step that failed: `read` the file, `create` its folder, or `write` the file.
+- `{path}` is the file, or for `create` the folder.
+- `{source}` is the operating system's reason, for example `Permission denied (os error 13)`.
+- `{advice}` is ``To save, run with `--config <writable file>` or set `$SIPNAB_CONFIG`, or fix the permissions``.
+- sipnab writes nothing and leaves no temporary file. It does not replace a file the user may not write, even when the folder allows it.
+- A named filter is still kept for this session only; the dialog shows the `[filters]` entry to add to a file.
+
+**What to do:** Start sipnab with `--config` naming a file you may write, or set `$SIPNAB_CONFIG` to one, or fix the permissions of the file or folder in the message. Then save again.
+
+**Exit code:** None. sipnab shows the error on the terminal UI status line or in the filter dialog, and the run continues.
+
 ### `create {}: {e}`
 
-sipnab could not create the folder that holds the configuration file. This happened while saving from the terminal UI, either the column layout (F10 selector) or a name for an address.
+sipnab could not create the folder that holds the configuration file, for a reason other than permission. This happened while saving from the terminal UI: the column layout (F10 selector), a name for an address, or a named filter (`F2` in the filter dialog). A permission failure prints `cannot {action} {path}: {source}. {advice}` instead (see that entry).
 
 - `{}` is the folder path.
-- `{e}` is the operating system's reason.
+- `{e}` is the operating system's reason, for example that a part of the path is a file.
 - sipnab writes nothing.
 
-**What to do:** Create the folder yourself, or give the user running sipnab permission to create it, then save again.
+**What to do:** Fix the path the reason names, then save again.
 
 **Exit code:** None. sipnab shows the error on the terminal UI status line, and the run continues.
 
@@ -1039,6 +1085,29 @@ A `[diagnosis]` threshold is 0, negative, infinity or NaN (not-a-number).
 
 **What to do:** Set `view_filter_detail` to `summary` or `full`, or remove the key.
 
+### `[display] sdp_display must be one of none, summary, full (or sngrep, in sngrep mode), got {m:?}`
+
+`[display] sdp_display` names an SDP form the call flow does not have.
+
+- `{m:?}` is the value in the file.
+- `none`, `summary` and `full` are the forms the `d` key cycles through in the call flow; the key sets the one it starts in.
+- `sngrep` is the fourth form, used only in sngrep mode. With the mode off sipnab starts, ignores the key and says so on the status line.
+- sipnab checks this key only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `sdp_display` to `none`, `summary`, `full` or `sngrep`, in lower case, or remove the key.
+
+### `[display] color_mode must be one of method, call_id, cseq, got {m:?}`
+
+`[display] color_mode` names a way to color the call flow arrows that the terminal UI does not have.
+
+- `{m:?}` is the value in the file.
+- `method`, `call_id` and `cseq` are the modes the `c` key cycles through in the call flow; the key sets the one it starts in.
+- sipnab checks this key only in builds that include the terminal UI.
+- The printed line starts with `invalid config value: `.
+
+**What to do:** Set `color_mode` to `method`, `call_id` or `cseq`, in lower case, or remove the key.
+
 **Exit code:** 1.
 
 ### `[display] is not a table`
@@ -1087,6 +1156,30 @@ You saved the column layout from the terminal UI (the `s` action in the F10 colu
 **What to do:** Correct the pattern so it is a valid regular expression, or remove the key. Characters such as `(`, `[` and `+` have a special meaning and need a `\` before them to match literally.
 
 **Exit code:** 1.
+
+### `[filters] already defines '{name}'; choose another name, or edit that entry in the config file`
+
+You pressed `F2` in the terminal UI filter dialog and typed a name. The run's named filters, or the `[filters]` table of the configuration file, already hold `{name}`.
+
+- A save never replaces an entry. The file's own `[filters]` can hold a name the run lacks when someone edited the file after sipnab started.
+- sipnab writes nothing, and the named filters of the run stay as they were.
+- The dialog shows the line, after `Save failed: invalid config value: ` when the file holds the name.
+
+**What to do:** Type another name, or edit that entry in the configuration file. See [Save the dialog's filter under a name](tui-walkthrough.md#save-the-dialogs-filter-under-a-name).
+
+**Exit code:** None. sipnab shows the error in the filter dialog, and the run continues.
+
+### `[filters] is not a table`
+
+You pressed `F2` in the terminal UI filter dialog to save a named filter. sipnab could not add the entry to the configuration file.
+
+- The reason: the file defines `filters` as a plain value instead of a `[filters]` table (section).
+- sipnab writes nothing.
+- The dialog shows `Save failed: invalid config value: [filters] is not a table`.
+
+**What to do:** Edit the configuration file so `filters` is a `[filters]` section, then save again.
+
+**Exit code:** None. sipnab shows the error in the filter dialog, and the run continues.
 
 ### `ignoring invalid [display] from_to = {s:?}`
 
@@ -1289,13 +1382,13 @@ A `[keybindings]` value is not a key the terminal UI can read.
 
 **Exit code:** 1.
 
-### `[limits] max_tcp_buffer must be >= {} (a smaller ceiling cannot hold one SIP header line, so every SIP/TCP message would be flushed mid-message and reported malformed), got {v}`
+### `[limits] max_tcp_buffer must be >= {} (a smaller ceiling cannot hold one SIP header line, so every SIP/TCP message would be dropped as oversized), got {v}`
 
-`[limits] max_tcp_buffer` is how many bytes sipnab may buffer for one direction of a SIP over TCP connection, before it flushes the buffer.
+`[limits] max_tcp_buffer` is how many bytes sipnab may buffer for one direction of a SIP over TCP connection. It is also the longest SIP over TCP message sipnab keeps: sipnab drops a longer one.
 
 - `{}` is the smallest value accepted, 8192. That is the longest single header line the parser accepts.
 - `{v}` is the value in the file.
-- A smaller buffer cannot hold one header line. So sipnab would report every SIP over TCP message as malformed.
+- A smaller buffer cannot hold one header line. So sipnab would drop every SIP over TCP message.
 - The printed line starts with `invalid config value: `.
 
 **What to do:** Set a value of 8192 or more, for example the default `65536`, or remove the key.
@@ -1966,9 +2059,9 @@ The media type given to `--vcon-forward-content-type`, or to `[vcon_forward] con
 
 ### `write {}: {e}`
 
-sipnab could not write the configuration file while saving from the terminal UI. `{}` is the file path and `{e}` is the operating system's reason. sipnab writes to a temporary file in the same folder and then renames it, so the existing file stays unchanged.
+sipnab could not write the configuration file while saving from the terminal UI, for a reason other than permission, such as a full disk. `{}` is the file path and `{e}` is the operating system's reason. sipnab writes to a temporary file in the same folder and then renames it, so the existing file stays unchanged and sipnab leaves no temporary file. A permission failure prints `cannot {action} {path}: {source}. {advice}` instead (see that entry).
 
-**What to do:** Give the user running sipnab permission to write in the folder that holds the file. Check that the disk has free space. Then save again.
+**What to do:** Check that the disk has free space, then save again.
 
 **Exit code:** None. sipnab shows the error on the terminal UI status line, and the run continues.
 
@@ -2309,6 +2402,46 @@ sipnab could not turn the `-I`/`--input` values into a list of capture files to 
 - a pattern that is not valid.
 
 **What to do:** Correct the path, glob or directory given to `-I` so that it names at least one readable capture file. The reason after the colon names the value that failed.
+
+**Exit code:** 1.
+
+### `-I/--input: cannot unpack '{}': user '{user}' cannot create files in the temporary directory '{}', where sipnab unpacks an archive or a compressed capture after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), or pass --user with a user who can write it`
+
+A run started as root drops to `{user}` (`--user`, else `[privilege] user`,
+else `nobody`) before it reads its `-I` files, and unpacks an archive or a
+`.pcap.gz` as that user, under `TMPDIR`. The first `{}` is the first file
+that needs unpacking, the second is `TMPDIR`. sipnab stops there, before it
+unpacks anything. On macOS, root's own `TMPDIR` under `/var/folders` is a
+directory `nobody` cannot write.
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.pcap.gz': user 'nobody' cannot create files in the temporary directory '/var/folders/xy/T', where sipnab unpacks an archive or a compressed capture after it drops root. Set TMPDIR to a directory that user can write (TMPDIR=/tmp), or pass --user with a user who can write it
+```
+
+**What to do:** Run with `TMPDIR=/tmp` before the rest of the command
+(`sudo TMPDIR=/tmp sipnab -N -I a.pcap.gz`), or pass `--user` with a user
+that can write the directory. See
+[Read capture files only root can read](least-privilege.md#read-capture-files-only-root-can-read).
+
+**Exit code:** 1.
+
+### `-I/--input: cannot unpack '{}': user '{user}' cannot create files in the temporary directory '{}' inside --chroot '{dir}', where sipnab unpacks an archive or a compressed capture after it drops root. Create '{dir}/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '{dir}'`
+
+The same refusal for a `--chroot` run. Such a run changes its root to
+`{dir}` and drops to `{user}` before it reads its `-I` files, and unpacks an
+archive or a `.pcap.gz` under the temporary directory as seen inside `{dir}`:
+the second `{}`, normally `/tmp`, which is `{dir}/tmp` on the host. sipnab
+stops at the first file that needs unpacking, before it unpacks anything. A
+capture that needs no unpacking reads with an empty `{dir}`.
+
+```text
+-I/--input: cannot unpack '/var/lib/captures/a.tgz': user 'nobody' cannot create files in the temporary directory '/tmp' inside --chroot '/srv/jail', where sipnab unpacks an archive or a compressed capture after it drops root. Create '/srv/jail/tmp' writable by that user (mode 1777), or set TMPDIR to such a directory inside '/srv/jail'
+```
+
+**What to do:** Create the directory (`sudo mkdir -m 1777 /srv/jail/tmp`),
+or point `TMPDIR` at a directory inside `{dir}` that user can write, named
+as the run sees it after the chroot. See
+[Confine it to a directory](least-privilege.md#confine-it-to-a-directory).
 
 **Exit code:** 1.
 
@@ -3308,7 +3441,7 @@ The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not tru
 
 **What to do:** Add `--rtpengine-control <ip:port>` with the relay's ng control port, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-compare will not ask a relay on a run that reads a file: asking transmits. Compare from a live capture (-d <device>).`
 
@@ -3316,7 +3449,7 @@ Asking the relay sends a packet. sipnab does not transmit during a run without a
 
 **What to do:** Run the comparison during a live capture, for example with `-d <device>`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `{flag} needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
 
@@ -3446,22 +3579,22 @@ An `engine not listed` reason names the engine by `homer-id`, for a HEP copy, or
 
 ### `--relay-stats-interval needs a relay to poll. Name one with --rtpengine-control <addr>.`
 
-`--relay-stats-interval` asks sipnab to poll a media relay's statistics every N seconds, but the command names no relay, so sipnab polls nothing. The rest of the run continues.
+`--relay-stats-interval` asks sipnab to poll a media relay's statistics every N seconds, but the command names no relay, so sipnab polls nothing and stops before it reads a capture.
 
 **What to do:** Add `--rtpengine-control <addr:port>` with the relay's control port (for example `127.0.0.1:22222`), or remove `--relay-stats-interval`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-stats-interval will not poll a relay on a run that reads a file: polling transmits. Poll from a live capture (-d <device>).`
 
-Polling a relay sends packets, and sipnab transmits only on a run that watches a live source. This run's source does not permit transmitting, so sipnab polls nothing, and the rest of the run continues. A live interface and a HEP listener permit transmitting. Capture files and uprobe reads do not.
+Polling a relay sends packets, and sipnab transmits only on a run that watches a live source. This run's source does not permit transmitting, so sipnab polls nothing and stops before it reads a capture. A live interface and a HEP listener permit transmitting. Capture files and uprobe reads do not.
 
 **What to do:** Do one of these:
 
 - Run the poll from a live capture (`-d <device>`) or a HEP listener (`--hep-listen`).
 - Remove `--relay-stats-interval` from runs that read files.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-stats needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
 
@@ -3469,7 +3602,7 @@ Polling a relay sends packets, and sipnab transmits only on a run that watches a
 
 **What to do:** Add `--rtpengine-control <ip:port>`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--relay-stats will not ask a relay on a run that reads a file: asking transmits, and a file's addresses are historical and belong to third parties. Ask from a live capture (-d <device>).`
 
@@ -3480,7 +3613,7 @@ Asking the relay sends a packet. sipnab does not transmit during a run without a
 
 **What to do:** Ask from a live capture, for example `-d <device>`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--rtpengine-control {addr} asks a live relay which calls are up right now, but this run is reading a capture FILE — offline analysis never transmits. The calls in a file ended in the past; the relay's answer would describe whatever is up TODAY, which is other people's traffic. Passive decoding of any relay control plane already in the capture still runs; capture live with -d <device> to ask.`
 
@@ -3500,7 +3633,7 @@ The `--rtpengine-control` value `{addr}` is not an IP address and port, so `--re
 
 **What to do:** Give the relay's ng control address as `IP:port`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** 2. sipnab prints this on stderr and stops before it reads a capture.
 
 ### `--rtpengine-control {addr} is not an address and port ({e}). It names the relay's ng control port, for example 127.0.0.1:22222. Nothing was asked, so streams this relay handles stay unattributed.`
 
@@ -3528,7 +3661,7 @@ The `--rtpengine-control` value `{addr}` is not an IP address and port, so the r
 
 **What to do:** Give the address as numeric `IP:port`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None for the statistics request: sipnab logs the error, and the run continues. 2 for `--relay-holdings`, which exits without answering.
+**Exit code:** 2. sipnab prints this on stderr and exits without answering.
 
 ### `{}: {} stepped backwards {} -> {} between polls; a cumulative counter cannot decrease, so the relay probably restarted (suspect). The counters below are since an unknown start.`
 
@@ -4435,7 +4568,7 @@ The credential line names header `{name}`. The forwarder writes this header itse
 
 ### `{url}: {problem}; nothing was written`
 
-The store's answer from `{url}` was incomplete. `{problem}` says how. sipnab wrote nothing.
+The store's answer from `{url}` was incomplete. `{problem}` says how, in the forms listed under [`{url}: {problem}, so the file is not whole`](#url-problem-so-the-file-is-not-whole): it names the bytes read and, when the answer declared it, the length. sipnab wrote nothing.
 
 **What to do:** Retry, and check the store and the network path.
 
@@ -4920,7 +5053,14 @@ The file a recording names is larger than the limit. `{}` is the limit and `{max
 
 ### `{url}: {problem}, so the file is not whole`
 
-The server that holds a recording's file closed the connection before it sent the length it declared. `{problem}` gives the two lengths. sipnab writes nothing for the recording.
+The file a recording names did not arrive whole. `{problem}` is one of these:
+
+- `the answer ended after {got} of its {n} bytes`: the server closed the connection before it sent the length it declared; a read error, such as a timeout, follows after a colon.
+- `the chunked answer ended after {got} bytes, before its last chunk`: a chunked answer stopped before its last chunk.
+- `a chunk of the answer ended after {read} of its {size} bytes`: one chunk stopped before its size.
+- `reading the answer's body failed after {got} bytes: {e}`: an answer without a length failed to read, for example on a timeout.
+
+sipnab writes nothing for the recording.
 
 **What to do:** Run the command again. If it recurs, check the server.
 
@@ -5218,6 +5358,55 @@ which.
 
 **Exit code:** 1.
 
+### `{COMMAND}: the download as user '{user}' failed (exit {code}); its reason is above. Nothing was installed.`
+
+`sipnab g729 install` started as root downloads the package as `{user}`, in a
+process of its own, and that process failed. The line above this one is its
+reason: the download, the CA bundle or the package check.
+
+**What to do:** Fix what the line above names. A CA bundle that `{user}`
+cannot read says `Permission denied`. See
+[Install as root](g729.md#install-as-root).
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' was ended by a signal. Nothing was installed.`
+
+The process that downloads the package as `{user}` ended on a signal before
+it sent the table file: someone stopped it, or the system ended it.
+
+**What to do:** Run the install again.
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' sent more than {limit} bytes, more than a table file. Nothing was installed.`
+
+The process that downloads the package as `{user}` sent more than one table
+file holds. sipnab reads no more than that and installs nothing.
+
+**What to do:** Run the install again. A sipnab binary that differs from the
+one that started the install is the usual cause: install one sipnab only.
+
+**Exit code:** 1.
+
+### `{COMMAND}: the download as user '{user}' has no output`
+
+sipnab started the download as `{user}` but could not read what it sends.
+
+**What to do:** Run the install again.
+
+**Exit code:** 1.
+
+### `{COMMAND}: this platform cannot start the download as user '{user}'; pass --no-priv-drop to download as this user. Nothing was installed.`
+
+A build for a platform without Unix user ids cannot start a process as
+another user.
+
+**What to do:** Pass `--no-priv-drop`, or install with `--from PATH`, which
+opens no connection.
+
+**Exit code:** 1.
+
 ### `Refused {}: {e}. Nothing was installed.`
 
 The importer could not build the tables from the package. `{}` is the zip or
@@ -5494,8 +5683,12 @@ when the reason changes. `{why}` is `the center did not answer: <reason>` for
 a center that is down, unreachable or not trusted, `the center refused this
 member's token (HTTP 401)` for a token the center does not accept, or `the
 center answered HTTP <status>`. The heartbeats stay in the spool, and the
-member tries again, at most one interval apart. A line
-`the center takes heartbeats again` follows when the spool drains.
+member tries again after 1 s, then 2 s, 4 s and so on, at most one
+`[fleet] heartbeat_secs` apart. A line `the center takes heartbeats again`
+follows when the spool drains. `the center answered HTTP 503` comes, among
+other causes, from a center that is starting and
+[rebuilds its member list](#a-503-while-the-center-starts).
+The member does not read the answer's `Retry-After`.
 
 **What to do:** For a refused token, mint a new one on the center and restart
 the member. Otherwise, bring the center back or let the member reach it.
@@ -5535,7 +5728,29 @@ more of the history while it is away.
 them. [Run a fleet center](fleet.md#run-a-fleet-center) describes the command.
 A message that starts with `sipnab fleet serve:` stops the center with exit
 code 2. A message the center answers a member with goes in the `detail` of a
-`400` answer, and the center keeps running.
+`400` or `503` answer, and the center keeps running.
+
+### A `503` while the center starts
+
+`the center is rebuilding its member list from the history store` is the
+`detail` of the `503` answer the center gives every request, on every
+route, from the time it binds its port until it has opened its store and
+rebuilt its member list. The answer carries `Retry-After: 5`. It logs
+`fleet center answering 503 on <address> until it serves: the center is
+rebuilding its member list from the history store` when it binds, and
+`fleet center serving` once it answers again. A start with its store file
+reads one heartbeat file. A start without it reads every heartbeat file of
+`--retention-hours`, which takes seconds for a large fleet
+([The files of the history store](fleet.md#the-files-of-the-history-store)).
+A build without the history store answers `the center is opening its store`
+for the same window. A SIGTERM or SIGINT during the rebuild ends it before
+the next file it would read, and the center exits 0: the store file holds
+the members it held before the start, and the center does not open its
+intake.
+
+**What to do:** Nothing. Send the request again after the `Retry-After`
+seconds. A member keeps its heartbeats in its spool and delivers them once
+the center serves.
 
 ### `sipnab fleet serve: {e}`
 
@@ -7083,6 +7298,19 @@ Data is shorter than the structure it must hold.
 **What to do:** For truncated frames, capture again with a larger `--snaplen`. For a capture file or RTP packet, the input ends early or is not in that format.
 
 **Exit code:** None. The error goes back to the program that calls the library, or sipnab counts the frame as truncated, and the run continues.
+
+### `{what} too long: {len} bytes (max {max})`
+
+Data is longer than the most its structure may hold.
+
+- `{what}` names the structure. The SIP parser reports `SIP message`.
+- `{len}` is the number of bytes given.
+- `{max}` is the most the parser accepts: 65535, the largest UDP datagram, or the `--max-tcp-buffer` ceiling when that is larger.
+- No input path delivers a SIP message longer than that intact, so the parser refuses it rather than reading it.
+
+**What to do:** If the message came from a SIP over TCP capture, raise `--max-tcp-buffer` or `[limits] max_tcp_buffer` above its length. A program that calls the library can split or shorten its input.
+
+**Exit code:** None. The error goes back to the program that calls the library, or sipnab does not analyze the message, and the run continues.
 
 ### `unsupported GRE inner protocol: 0x{0:04X}`
 

@@ -29,6 +29,8 @@
 
 #[path = "support/release_tags.rs"]
 mod tag_rule;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 
 use std::process::Command;
 
@@ -162,16 +164,22 @@ fn the_site_advertises_the_newest_release_whose_assets_exist() -> Result<(), Tes
         as_tag(below)
     );
 
-    let Some(assets) = published_asset_count(&tag) else {
-        // Not a silent skip: prove `gh` genuinely cannot answer, so this arm
-        // can never become a way for the assertion below to go unrun.
-        let probe = Command::new("gh").arg("--version").output();
-        let reason = match &probe {
+    let assets = published_asset_count(&tag).ok_or_else(|| {
+        match Command::new("gh").arg("--version").output() {
             Err(e) => format!("gh is not installed ({e})"),
             Ok(o) if !o.status.success() => "gh exits non-zero".to_string(),
             Ok(_) => format!("gh works but cannot read release {tag}"),
-        };
-        eprintln!("release-completeness: cannot verify assets for {tag} — {reason}");
+        }
+    });
+    let Some(assets) = test_prereq::check(
+        "gh",
+        test_prereq::Need::Optional(
+            "reading a release's assets needs gh with a token and the network; \
+             the suite does not have them everywhere.",
+        ),
+        assets,
+    )?
+    else {
         return Ok(());
     };
     assert!(

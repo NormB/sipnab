@@ -1354,8 +1354,9 @@ mod tests {
         // mount; it is present on every Unix this runs on.
         let path = Path::new("/etc/passwd");
         let meta = std::fs::metadata(path).map_err(|e| format!("stat: {e:?}"))?;
-        if meta.uid() == current_uid() {
-            return Ok(()); // Running as root: the case cannot be built here.
+        // Running as root: the case cannot be built here.
+        if !crate::test_prereq::not_root(meta.uid() == current_uid()) {
+            return Ok(());
         }
         assert!(
             meta.mode() & 0o044 != 0,

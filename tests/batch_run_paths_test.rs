@@ -6,7 +6,8 @@
 //! ICMP summaries, the key files the decryptors load at startup, the vCon
 //! redaction map, `--vcon-digest`, `--wireshark` with nothing to filter,
 //! STIR/SHAKEN extraction, the `SIPNAB_PERF_STATS` probe, and the startup
-//! refusals and notices around `--cores`, `--sandbox` and `--hep-send`.
+//! refusals and notices around `--cores`, `--sandbox` and `--hep-send`, and
+//! the end of a run: its exit status, whole outputs and signals.
 //!
 //! Every capture is built here, into a temporary directory, from the committed
 //! frame builders -- or is one of the committed `tests/fixtures/` captures.
@@ -112,62 +113,356 @@ fn invite(call_id: &str, extra: &[&str]) -> Vec<u8> {
 
 // ── Relay asks on a file run ──────────────────────────────────────────────
 
-/// Every relay ask on a run that names no relay says which flag to add, and
-/// the run still completes.
+/// Each relay question a file run can be given, as the flags that ask it.
+fn relay_questions() -> [(&'static str, Vec<&'static str>); 5] {
+    [
+        ("--relay-stats", vec!["--relay-stats"]),
+        ("--relay-stats", vec!["--relay-stats-call", SIP_CALL_ID]),
+        ("--relay-stats", vec!["--relay-stats-list"]),
+        (
+            "--relay-stats-interval",
+            vec!["--relay-stats-interval", "5"],
+        ),
+        ("--relay-compare", vec!["--relay-compare", SIP_CALL_ID]),
+    ]
+}
+
+/// A relay question on a run that names no relay is refused before the
+/// capture opens: exit 2, and the reason on stderr with the log off.
+///
+/// RELAY-STATS-FILE-EXIT-0: the reason was a log line and the run exited 0, so
+/// at `SIPNAB_LOG=off` a script got no answer, no reason and a success code.
 #[test]
-fn relay_asks_naming_no_relay_are_told_which_flag_to_add() -> Result<(), TestError> {
-    let run = sipnab(&[
-        "-N",
-        "-I",
-        SIP_CALL,
-        "--relay-stats",
-        "--relay-stats-interval",
-        "5",
-        "--relay-compare",
-        SIP_CALL_ID,
-    ])?;
-    assert_eq!(run.code, Some(0), "{}", run.dump());
-    for needle in [
-        "--relay-stats needs a relay to ask",
-        "--relay-stats-interval needs a relay to poll",
-        "--relay-compare needs a relay to ask",
-    ] {
-        assert!(run.stderr.contains(needle), "{needle}\n{}", run.dump());
+fn a_relay_question_naming_no_relay_exits_2_with_the_reason_on_stderr() -> Result<(), TestError> {
+    for (flag, ask) in relay_questions() {
+        let mut args = vec!["-N", "-I", SIP_CALL];
+        args.extend(ask.iter().copied());
+        let run = sipnab_env(&args, &[("SIPNAB_LOG", "off")])?;
+        assert_eq!(run.code, Some(2), "{ask:?}: {}", run.dump());
+        let verb = if flag == "--relay-stats-interval" {
+            "poll"
+        } else {
+            "ask"
+        };
+        let needle = format!("{flag} needs a relay to {verb}");
+        assert!(
+            run.stderr.contains(&needle),
+            "{ask:?}: {needle}\n{}",
+            run.dump()
+        );
+        assert!(
+            !run.stdout.contains(SIP_CALL_ID),
+            "{ask:?}: a refused run analyzes nothing\n{}",
+            run.dump()
+        );
     }
     Ok(())
 }
 
-/// With a relay named, every ask on a file run is refused as offline -- and
+/// With a relay named, a relay question on a file run is refused before the
+/// capture opens -- exit 2, the reason on stderr with the log off -- and
 /// nothing reaches the address named, which this test owns and watches.
 #[test]
-fn relay_asks_on_a_file_run_are_refused_and_nothing_is_sent() -> Result<(), TestError> {
+fn a_relay_question_on_a_file_run_exits_2_and_nothing_is_sent() -> Result<(), TestError> {
     let watch = std::net::UdpSocket::bind("127.0.0.1:0")?;
     watch.set_nonblocking(true)?;
     let relay = watch.local_addr()?.to_string();
-    let run = sipnab(&[
-        "-N",
-        "-I",
-        SIP_CALL,
-        "--rtpengine-control",
-        &relay,
-        "--relay-stats",
-        "--relay-stats-interval",
-        "5",
-        "--relay-compare",
-        SIP_CALL_ID,
-    ])?;
-    assert_eq!(run.code, Some(0), "{}", run.dump());
-    for needle in [
-        "--relay-stats will not ask a relay on a run that reads a file",
-        "--relay-stats-interval will not poll a relay on a run that reads a file",
-        "--relay-compare will not ask a relay on a run that reads a file",
-    ] {
-        assert!(run.stderr.contains(needle), "{needle}\n{}", run.dump());
+    for (flag, ask) in relay_questions() {
+        let mut args = vec!["-N", "-I", SIP_CALL, "--rtpengine-control", relay.as_str()];
+        args.extend(ask.iter().copied());
+        let run = sipnab_env(&args, &[("SIPNAB_LOG", "off")])?;
+        assert_eq!(run.code, Some(2), "{ask:?}: {}", run.dump());
+        let verb = if flag == "--relay-stats-interval" {
+            "poll"
+        } else {
+            "ask"
+        };
+        let needle = format!("{flag} will not {verb} a relay on a run that reads a file");
+        assert!(
+            run.stderr.contains(&needle),
+            "{ask:?}: {needle}\n{}",
+            run.dump()
+        );
     }
     let mut buf = [0u8; 64];
     assert!(
         watch.recv_from(&mut buf).is_err(),
         "a file run must not transmit to the relay it names"
+    );
+    Ok(())
+}
+
+/// A relay named with no question asked is not a refusal: the file run
+/// analyzes its capture and exits 0, with nothing on stderr at
+/// `SIPNAB_LOG=off`.
+#[test]
+fn a_relay_named_with_no_question_still_reads_the_file() -> Result<(), TestError> {
+    let run = sipnab_env(
+        &[
+            "-N",
+            "-I",
+            SIP_CALL,
+            "--rtpengine-control",
+            "127.0.0.1:9",
+            "--json-dialogs",
+        ],
+        &[("SIPNAB_LOG", "off")],
+    )?;
+    assert_eq!(run.code, Some(0), "{}", run.dump());
+    assert!(
+        run.stdout.contains(SIP_CALL_ID),
+        "the run analyzed the file\n{}",
+        run.dump()
+    );
+    assert_eq!(run.stderr, "", "nothing to say on stderr\n{}", run.dump());
+    Ok(())
+}
+
+/// Several questions on one file run are refused once, for the first: one
+/// reason, one exit 2, before anything is read.
+#[test]
+fn several_relay_questions_on_a_file_run_are_refused_once() -> Result<(), TestError> {
+    let run = sipnab_env(
+        &[
+            "-N",
+            "-I",
+            SIP_CALL,
+            "--rtpengine-control",
+            "127.0.0.1:9",
+            "--relay-stats",
+            "--relay-compare",
+            SIP_CALL_ID,
+        ],
+        &[("SIPNAB_LOG", "off")],
+    )?;
+    assert_eq!(run.code, Some(2), "{}", run.dump());
+    assert_eq!(
+        run.stderr.lines().count(),
+        1,
+        "one refusal line, for the first question\n{}",
+        run.dump()
+    );
+    assert!(
+        run.stderr.contains("--relay-stats will not ask"),
+        "{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+/// The text of `sipnab --help` under `flag`, up to the empty line before the
+/// next flag. clap indents the line between a flag's summary and its long
+/// text, so only a line with nothing on it ends the text.
+fn help_paragraph(help: &str, flag: &str) -> Option<String> {
+    let mut lines = help.lines();
+    lines.find(|line| {
+        let head = line.trim_start();
+        head == flag || head.starts_with(&format!("{flag} "))
+    })?;
+    let mut text = String::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        text.push_str(line.trim());
+        text.push('\n');
+    }
+    Some(text)
+}
+
+/// The row of `flag` in a Markdown table whose first cell is `` `flag` ``.
+fn reference_row<'a>(page: &'a str, flag: &str) -> Option<&'a str> {
+    let head = format!("| `{flag}` |");
+    page.lines().find(|line| line.starts_with(&head))
+}
+
+/// What `sipnab --help` and docs/cli-reference.md say a relay question on a
+/// file run does is what the run does: `--relay-stats` names the exit code
+/// the run returns and says the reason is on stderr, and every other relay
+/// question says it passes the same gate.
+///
+/// Found by the documentation audit of #891: the help and the reference
+/// still said a file-backed run "prints why it will not ask rather than
+/// asking", the text from before RELAY-STATS-FILE-EXIT-0, which reads as a
+/// run that goes on and exits 0. The exit code here comes from a run, so a
+/// change of the code fails this test until both texts change with it.
+#[test]
+fn the_help_and_the_reference_say_how_a_relay_question_on_a_file_run_ends() -> Result<(), TestError>
+{
+    let run = sipnab_env(
+        &[
+            "-N",
+            "-I",
+            SIP_CALL,
+            "--rtpengine-control",
+            "127.0.0.1:9",
+            "--relay-stats",
+        ],
+        &[("SIPNAB_LOG", "off")],
+    )?;
+    let code = run.code.ok_or("the refused run exits with a code")?;
+    let help = sipnab(&["--help"])?;
+    assert_eq!(help.code, Some(0), "--help succeeds\n{}", help.dump());
+    let page = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/cli-reference.md"),
+    )?;
+    let exits = format!("exits {code}");
+    let gate = "Same live-source gate as `--relay-stats`";
+    let flags = [
+        "--relay-stats",
+        "--relay-stats-call",
+        "--relay-stats-list",
+        "--relay-stats-interval",
+        "--relay-compare",
+    ];
+    for flag in flags {
+        let said = help_paragraph(&help.stdout, flag)
+            .ok_or_else(|| format!("sipnab --help has a paragraph for {flag}"))?
+            .replace('\n', " ");
+        let row = reference_row(&page, flag)
+            .ok_or_else(|| format!("docs/cli-reference.md has a row for {flag}"))?;
+        for (place, text) in [
+            ("sipnab --help", said.as_str()),
+            ("docs/cli-reference.md", row),
+        ] {
+            if flag == "--relay-stats" {
+                assert!(
+                    text.contains(&exits) && text.contains("stderr"),
+                    "{place} for {flag} says a file-backed run {exits} with the reason on \
+                     stderr, as the run does: {text}"
+                );
+                assert!(
+                    !text.contains("rather than asking"),
+                    "{place} for {flag} no longer says the run goes on: {text}"
+                );
+            } else {
+                assert!(
+                    text.contains(gate),
+                    "{place} for {flag} says it passes the gate of --relay-stats: {text}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_help_and_reference_readers_find_the_text_of_one_flag() {
+    let help = "      --a\n          One line.\n          \n          More text.\n\n      --a-b <X>\n          Other.\n\n      --c\n          Last.\n";
+    assert_eq!(
+        help_paragraph(help, "--a").as_deref(),
+        Some("One line.\n\nMore text.\n"),
+        "the text is the summary and the long text after it, not the next flag"
+    );
+    assert_eq!(
+        help_paragraph(help, "--a-b").as_deref(),
+        Some("Other.\n"),
+        "a flag that is a prefix of another, and one with a value, are found by the whole name"
+    );
+    assert_eq!(
+        help_paragraph(help, "--c").as_deref(),
+        Some("Last.\n"),
+        "a summary alone ends at the end of the help"
+    );
+    assert_eq!(
+        help_paragraph(help, "--d"),
+        None,
+        "an absent flag has no text"
+    );
+    let page = "| `--a` | x |\n| `--a-b` | y |\n";
+    assert_eq!(
+        reference_row(page, "--a"),
+        Some("| `--a` | x |"),
+        "the row of --a"
+    );
+    assert_eq!(
+        reference_row(page, "--b"),
+        None,
+        "an absent flag has no row"
+    );
+}
+
+// ── Why a file run exits 1 ────────────────────────────────────────────────
+
+/// A copy of `tests/fixtures/sip_call.pcap` cut `short` bytes before its end,
+/// written into `dir` as `name`.
+fn cut_copy(dir: &Path, name: &str, short: usize) -> Result<std::path::PathBuf, TestError> {
+    let whole = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(SIP_CALL))?;
+    let path = dir.join(name);
+    std::fs::write(&path, &whole[..whole.len() - short])?;
+    Ok(path)
+}
+
+/// EXIT-REASON-IN-LOG-ONLY: a capture file cut short exits 1, and with the log
+/// off stderr still names the file, why it stopped, and the run's verdict.
+#[test]
+fn a_file_cut_short_exits_1_with_the_reason_on_stderr_with_the_log_off() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cut = cut_copy(dir.path(), "cut.pcap", 20)?;
+    let run = sipnab_env(&["-N", "-I", s(&cut)?], &[("SIPNAB_LOG", "off")])?;
+    assert_eq!(run.code, Some(1), "{}", run.dump());
+    assert!(
+        run.stderr
+            .contains(&format!("Stopped reading '{}' early", cut.display())),
+        "the file and that it stopped early\n{}",
+        run.dump()
+    );
+    assert!(
+        run.stderr
+            .contains("1 of 1 capture file(s) was not read to the end"),
+        "the run's verdict, in the words of the run record\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+/// A whole file says nothing on stderr at `SIPNAB_LOG=off` and exits 0: the
+/// reason is printed for a run that failed, never for one that did not.
+#[test]
+fn a_whole_file_exits_0_with_nothing_on_stderr_with_the_log_off() -> Result<(), TestError> {
+    let run = sipnab_env(&["-N", "-I", SIP_CALL], &[("SIPNAB_LOG", "off")])?;
+    assert_eq!(run.code, Some(0), "{}", run.dump());
+    assert_eq!(run.stderr, "", "{}", run.dump());
+    Ok(())
+}
+
+/// The `--cores` reader ends on the same rule: a set whose second file is cut
+/// short exits 1 and names that file, and only that file, on stderr.
+#[test]
+fn a_cut_member_of_a_cores_set_is_named_on_stderr_with_the_log_off() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let whole = cut_copy(dir.path(), "a-whole.pcap", 0)?;
+    let cut = cut_copy(dir.path(), "b-cut.pcap", 20)?;
+    let run = sipnab_env(
+        &[
+            "-N",
+            "--cores",
+            "2",
+            "--report",
+            "-I",
+            s(&whole)?,
+            "-I",
+            s(&cut)?,
+        ],
+        &[("SIPNAB_LOG", "off")],
+    )?;
+    assert_eq!(run.code, Some(1), "{}", run.dump());
+    assert!(
+        run.stderr
+            .contains(&format!("Stopped reading '{}' early", cut.display())),
+        "{}",
+        run.dump()
+    );
+    assert!(
+        !run.stderr.contains("a-whole.pcap"),
+        "a whole file is not named\n{}",
+        run.dump()
+    );
+    assert!(
+        run.stderr
+            .contains("1 of 2 capture file(s) was not read to the end"),
+        "{}",
+        run.dump()
     );
     Ok(())
 }
@@ -1453,5 +1748,735 @@ fn a_cores_run_counts_every_record_it_read_as_the_default_reader_does() -> Resul
             run.dump()
         );
     }
+    Ok(())
+}
+
+// ── The end of a batch run ────────────────────────────────────────────────
+//
+// A finished batch run hands its dialog and stream stores back to `main`,
+// which keeps them alive until the process exits instead of freeing them
+// first (`batch::RunStores`; freeing them was 1.89% of a SIP-only run's
+// instructions). Everything else the run owns is still dropped at the same
+// point as before. These cases pin what a user sees at the end of a run on
+// each way it can end: the exit status, that every output is whole, that a
+// temporary extraction is removed, and that a signal or the end of an MCP
+// client's input still ends the run with the status it always had. Each
+// expected status was read from the main-branch build before the change.
+
+#[cfg(target_os = "linux")]
+include!("support/timeout.rs");
+
+#[cfg(target_os = "linux")]
+#[path = "support/held_stdin.rs"]
+mod held_stdin;
+
+/// The seven message lines the default run prints for [`SIP_CALL`].
+const SIP_CALL_LINES: usize = 7;
+
+/// As [`sipnab`], with `TMPDIR` pointed at `tmpdir`.
+fn sipnab_tmp(args: &[&str], tmpdir: &Path) -> Result<Outcome, TestError> {
+    sipnab_env(args, &[("TMPDIR", s(tmpdir)?)])
+}
+
+/// Write a capture of `n` one-INVITE dialogs (`end-<i>@192.0.2.10`).
+fn many_dialogs(dir: &Path, n: usize) -> Result<std::path::PathBuf, TestError> {
+    let pcap = dir.join(format!("dialogs-{n}.pcap"));
+    let frames: Vec<Vec<u8>> = (0..n)
+        .map(|i| {
+            udp_frame(
+                [192, 0, 2, 10],
+                [192, 0, 2, 20],
+                5060,
+                5060,
+                &invite(&format!("end-{i}@192.0.2.10"), &[]),
+            )
+        })
+        .collect();
+    write_pcap(&pcap, &frames)?;
+    Ok(pcap)
+}
+
+/// The `call_id` of every dialog `--json-dialogs` printed, one object a line.
+fn dialog_ids(stdout: &str) -> Result<Vec<String>, TestError> {
+    stdout
+        .lines()
+        .map(|line| {
+            let row: serde_json::Value = serde_json::from_str(line)?;
+            row.get("call_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| "a dialog row without call_id".into())
+        })
+        .collect()
+}
+
+// ── success ──
+
+#[test]
+fn run_end_plain_run_exits_0_with_every_message() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL])?;
+    assert_eq!(run.code, Some(0), "a whole capture exits 0\n{}", run.dump());
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        SIP_CALL_LINES,
+        "every message is printed\n{}",
+        run.dump()
+    );
+    assert!(
+        lines[0].contains("INVITE"),
+        "the first line is the INVITE\n{}",
+        run.dump()
+    );
+    assert!(
+        lines[6].contains("200 OK"),
+        "the last line is the BYE's 200\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_report_lists_the_call_after_the_messages() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--report"])?;
+    assert_eq!(run.code, Some(0), "--report exits 0\n{}", run.dump());
+    let last = run.stdout.lines().last().ok_or("a report row")?;
+    assert!(
+        last.starts_with(SIP_CALL_ID) && last.contains("Completed"),
+        "the report's last row is the completed call\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_json_lines_are_each_a_whole_object() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--json"])?;
+    assert_eq!(run.code, Some(0), "--json exits 0\n{}", run.dump());
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        SIP_CALL_LINES,
+        "one object per message\n{}",
+        run.dump()
+    );
+    for line in lines {
+        let v: serde_json::Value = serde_json::from_str(line)?;
+        assert_eq!(
+            v.get("call_id").and_then(serde_json::Value::as_str),
+            Some(SIP_CALL_ID),
+            "every object is whole and names the call: {line}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn run_end_json_dialogs_prints_one_whole_row_naming_the_call() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--json-dialogs"])?;
+    assert_eq!(run.code, Some(0), "--json-dialogs exits 0\n{}", run.dump());
+    assert_eq!(
+        dialog_ids(&run.stdout)?,
+        vec![SIP_CALL_ID.to_owned()],
+        "one whole row, for the one call\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_analyze_ends_with_the_verdict() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--analyze"])?;
+    assert_eq!(run.code, Some(0), "--analyze exits 0\n{}", run.dump());
+    let last = run.stdout.lines().last().ok_or("a verdict line")?;
+    assert!(
+        last.starts_with("No problems found in 1 dialog(s)"),
+        "the analysis verdict is the last line\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_analyze_on_and_off_print_the_same_messages() -> Result<(), TestError> {
+    let off = sipnab(&["-N", "-I", SIP_CALL])?;
+    let on = sipnab(&["-N", "-I", SIP_CALL, "--analyze"])?;
+    assert_eq!(
+        (off.code, on.code),
+        (Some(0), Some(0)),
+        "both exit 0\n{}\n{}",
+        off.dump(),
+        on.dump()
+    );
+    let on_messages: Vec<&str> = on.stdout.lines().take(SIP_CALL_LINES).collect();
+    let off_messages: Vec<&str> = off.stdout.lines().collect();
+    assert_eq!(
+        on_messages, off_messages,
+        "--analyze adds a verdict, not other messages"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_summary_is_logged_once() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL])?;
+    assert_eq!(run.code, Some(0), "exit 0\n{}", run.dump());
+    assert_eq!(
+        run.stderr
+            .matches("sipnab: 7 packets captured, 7 SIP messages")
+            .count(),
+        1,
+        "the end-of-run summary is logged exactly once\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_quiet_run_exits_0_without_the_summary() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-q", "-I", SIP_CALL])?;
+    assert_eq!(run.code, Some(0), "-q exits 0\n{}", run.dump());
+    assert!(
+        !run.stderr.contains("packets captured"),
+        "-q prints no summary\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_pcap_output_holds_every_frame() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let out = dir.path().join("out.pcap");
+    let run = sipnab(&["-N", "-I", SIP_CALL, "-O", s(&out)?])?;
+    assert_eq!(run.code, Some(0), "-O exits 0\n{}", run.dump());
+    let again = sipnab(&["-N", "-I", s(&out)?])?;
+    assert_eq!(
+        again.code,
+        Some(0),
+        "the written file reads back\n{}",
+        again.dump()
+    );
+    assert_eq!(
+        again.stdout, run.stdout,
+        "the written file holds every frame of the run"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_pcapng_output_holds_every_frame() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let out = dir.path().join("out.pcapng");
+    let run = sipnab(&["-N", "-I", SIP_CALL, "-O", s(&out)?, "--pcapng"])?;
+    assert_eq!(run.code, Some(0), "-O --pcapng exits 0\n{}", run.dump());
+    let head = std::fs::read(&out)?;
+    assert_eq!(
+        head.get(..4),
+        Some(&[0x0a, 0x0d, 0x0d, 0x0a][..]),
+        "a pcapng section header"
+    );
+    let again = sipnab(&["-N", "-I", s(&out)?])?;
+    assert_eq!(
+        again.stdout, run.stdout,
+        "the written file holds every frame of the run"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_vcon_export_writes_one_whole_container() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        "tests/pcap-samples/sip-rtp-g711.pcap",
+        "--export-vcon-when",
+        "state == 'Completed'",
+        "--export-vcon-dir",
+        s(dir.path())?,
+    ])?;
+    assert_eq!(run.code, Some(0), "the export run exits 0\n{}", run.dump());
+    let files: Vec<_> = std::fs::read_dir(dir.path())?.collect::<Result<_, _>>()?;
+    assert_eq!(
+        files.len(),
+        1,
+        "one completed call, one container\n{}",
+        run.dump()
+    );
+    let text = std::fs::read_to_string(files[0].path())?;
+    let _: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(())
+}
+
+#[test]
+fn run_end_two_runs_print_identical_bytes() -> Result<(), TestError> {
+    let first = sipnab(&["-N", "-I", SIP_CALL, "--json"])?;
+    let second = sipnab(&["-N", "-I", SIP_CALL, "--json"])?;
+    assert_eq!(first.code, Some(0), "exit 0\n{}", first.dump());
+    assert_eq!(
+        first.stdout, second.stdout,
+        "the same capture prints the same bytes"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_lint_run_exits_0_with_its_findings() -> Result<(), TestError> {
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        "tests/pcap-samples/sip-lint-findings.pcap",
+        "--lint",
+    ])?;
+    assert_eq!(
+        run.code,
+        Some(0),
+        "--lint without a gate exits 0\n{}",
+        run.dump()
+    );
+    assert!(
+        run.stdout.lines().count() > SIP_CALL_LINES,
+        "the findings follow the messages\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_zip_input_leaves_no_extraction_behind() -> Result<(), TestError> {
+    use std::io::Write as _;
+    let dir = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
+    let zip_path = dir.path().join("call.zip");
+    let mut w = zip::ZipWriter::new(std::fs::File::create(&zip_path)?);
+    w.start_file("sip_call.pcap", zip::write::SimpleFileOptions::default())?;
+    w.write_all(&std::fs::read(SIP_CALL)?)?;
+    w.finish()?;
+    let run = sipnab_tmp(&["-N", "-I", s(&zip_path)?], tmp.path())?;
+    assert_eq!(run.code, Some(0), "the archive run exits 0\n{}", run.dump());
+    assert_eq!(
+        run.stdout.lines().count(),
+        SIP_CALL_LINES,
+        "every message\n{}",
+        run.dump()
+    );
+    let left: Vec<_> = std::fs::read_dir(tmp.path())?.collect::<Result<_, _>>()?;
+    assert!(
+        left.is_empty(),
+        "the extraction is removed at exit: {left:?}"
+    );
+    Ok(())
+}
+
+// ── failure: each error path keeps its status ──
+
+#[test]
+fn run_end_missing_input_exits_1() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", "tests/fixtures/no-such-capture.pcap"])?;
+    assert_eq!(run.code, Some(1), "a missing input exits 1\n{}", run.dump());
+    assert!(
+        run.stderr.contains("does not exist"),
+        "the reason\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_non_capture_input_exits_1() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", "README.md"])?;
+    assert_eq!(
+        run.code,
+        Some(1),
+        "a file that is no capture exits 1\n{}",
+        run.dump()
+    );
+    assert!(
+        run.stderr.contains("cannot read capture"),
+        "the reason\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_unopenable_output_exits_1() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let out = dir.path().join("no-such-dir").join("out.pcap");
+    let run = sipnab(&["-N", "-I", SIP_CALL, "-O", s(&out)?])?;
+    assert_eq!(
+        run.code,
+        Some(1),
+        "an -O that cannot be opened exits 1\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+/// Linux-gated, not `cfg(unix)`: `/dev/full` is a Linux device and macOS is
+/// also unix. On a host without it, `-O /dev/full` never reaches a failed
+/// write, so the test would not test the path its name gives.
+/// macOS has no `/dev/full`; this exit path is still covered on Linux.
+#[cfg(target_os = "linux")]
+#[test]
+fn run_end_output_write_failure_exits_1() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "-O", "/dev/full"])?;
+    assert_eq!(
+        run.code,
+        Some(1),
+        "an -O write that fails exits 1\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+/// Linux-gated for `/dev/full`, as above: on macOS opening it fails with
+/// `NotFound` before sipnab starts (CI run 45520999488, macOS shard 2).
+/// macOS has no `/dev/full`; this exit path is still covered on Linux.
+#[cfg(target_os = "linux")]
+#[test]
+fn run_end_stdout_write_failure_exits_1() -> Result<(), TestError> {
+    let full = std::fs::OpenOptions::new().write(true).open("/dev/full")?;
+    let home = tempfile::tempdir()?;
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["-N", "-I", SIP_CALL, "--json"])
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .env_remove("SIPNAB_CONFIG")
+        .env("NO_COLOR", "1")
+        .stdout(full)
+        .output()?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a stdout that cannot be written exits 1"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_invalid_filter_exits_2() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--filter", "((("])?;
+    assert_eq!(run.code, Some(2), "a bad --filter exits 2\n{}", run.dump());
+    assert!(run.stdout.is_empty(), "nothing is read\n{}", run.dump());
+    Ok(())
+}
+
+#[test]
+fn run_end_unknown_call_report_id_exits_1_after_the_messages() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--call-report", "nosuch@example.com"])?;
+    assert_eq!(
+        run.code,
+        Some(1),
+        "an unknown --call-report id exits 1\n{}",
+        run.dump()
+    );
+    assert_eq!(
+        run.stdout.lines().count(),
+        SIP_CALL_LINES,
+        "the messages still print\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_unwritable_vcon_dir_exits_1() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    // A regular file where the directory should be: no directory can be made.
+    let blocked = dir.path().join("blocked");
+    std::fs::write(&blocked, b"")?;
+    let target = blocked.join("vcon");
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        "tests/pcap-samples/sip-rtp-g711.pcap",
+        "--export-vcon-when",
+        "state == 'Completed'",
+        "--export-vcon-dir",
+        s(&target)?,
+    ])?;
+    assert_eq!(
+        run.code,
+        Some(1),
+        "a vCon directory that cannot be made exits 1\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_empty_input_directory_exits_1() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let run = sipnab(&["-N", "-I", s(dir.path())?])?;
+    assert_eq!(
+        run.code,
+        Some(1),
+        "a directory with no files exits 1\n{}",
+        run.dump()
+    );
+    assert!(
+        run.stderr.contains("no files in"),
+        "the reason\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_garbage_header_exits_1() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let bad = dir.path().join("bad.pcap");
+    std::fs::write(&bad, [0x55_u8; 64])?;
+    let run = sipnab(&["-N", "-I", s(&bad)?])?;
+    assert_eq!(
+        run.code,
+        Some(1),
+        "a file with no capture header exits 1\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_zero_count_is_refused_with_2() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--count", "0"])?;
+    assert_eq!(run.code, Some(2), "--count 0 is refused\n{}", run.dump());
+    Ok(())
+}
+
+#[test]
+fn run_end_zero_limit_is_refused_with_2() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--limit", "0"])?;
+    assert_eq!(run.code, Some(2), "--limit 0 is refused\n{}", run.dump());
+    Ok(())
+}
+
+#[test]
+fn run_end_unknown_flag_is_refused_with_2() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--no-such-flag"])?;
+    assert_eq!(
+        run.code,
+        Some(2),
+        "an unknown flag is refused\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+// ── edge ──
+
+#[test]
+fn run_end_empty_capture_exits_0_with_no_messages() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = dir.path().join("empty.pcap");
+    write_pcap(&pcap, &[])?;
+    let run = sipnab(&["-N", "-I", s(&pcap)?])?;
+    assert_eq!(
+        run.code,
+        Some(0),
+        "a header-only capture exits 0\n{}",
+        run.dump()
+    );
+    assert!(run.stdout.is_empty(), "no message lines\n{}", run.dump());
+    Ok(())
+}
+
+#[test]
+fn run_end_one_packet_capture_prints_one_message() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = many_dialogs(dir.path(), 1)?;
+    let run = sipnab(&["-N", "-I", s(&pcap)?])?;
+    assert_eq!(run.code, Some(0), "one packet exits 0\n{}", run.dump());
+    assert_eq!(
+        run.stdout.lines().count(),
+        1,
+        "one message line\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_capture_without_sip_exits_0() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", "tests/fixtures/stun_nat_probe.pcap"])?;
+    assert_eq!(
+        run.code,
+        Some(0),
+        "a STUN-only capture exits 0\n{}",
+        run.dump()
+    );
+    assert!(
+        run.stderr.contains(" 0 SIP messages"),
+        "no dialog was stored\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_count_stops_after_one_packet() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--count", "1"])?;
+    assert_eq!(run.code, Some(0), "--count 1 exits 0\n{}", run.dump());
+    assert_eq!(
+        run.stdout.lines().count(),
+        1,
+        "one message line\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_dialog_limit_below_the_call_count_exits_0() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = many_dialogs(dir.path(), 5)?;
+    let run = sipnab(&["-N", "-I", s(&pcap)?, "--limit", "1"])?;
+    assert_eq!(
+        run.code,
+        Some(0),
+        "a full store still exits 0\n{}",
+        run.dump()
+    );
+    assert_eq!(
+        run.stdout.lines().count(),
+        5,
+        "every message still prints\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_five_hundred_dialogs_are_all_reported() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = many_dialogs(dir.path(), 500)?;
+    let run = sipnab(&["-N", "-I", s(&pcap)?, "--json-dialogs"])?;
+    assert_eq!(run.code, Some(0), "500 dialogs exit 0\n{}", run.dump());
+    let ids = dialog_ids(&run.stdout)?;
+    assert_eq!(ids.len(), 500, "every dialog has its row");
+    Ok(())
+}
+
+#[test]
+fn run_end_gzip_input_prints_the_same_messages() -> Result<(), TestError> {
+    use std::io::Write as _;
+    let dir = tempfile::tempdir()?;
+    let gz = dir.path().join("call.pcap.gz");
+    let mut enc =
+        flate2::write::GzEncoder::new(std::fs::File::create(&gz)?, flate2::Compression::fast());
+    enc.write_all(&std::fs::read(SIP_CALL)?)?;
+    enc.finish()?;
+    let plain = sipnab(&["-N", "-I", SIP_CALL])?;
+    let zipped = sipnab(&["-N", "-I", s(&gz)?])?;
+    assert_eq!(
+        zipped.code,
+        Some(0),
+        "a gzip capture exits 0\n{}",
+        zipped.dump()
+    );
+    assert_eq!(
+        zipped.stdout, plain.stdout,
+        "the same messages as the plain file"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_directory_of_two_copies_reads_both() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    std::fs::copy(SIP_CALL, dir.path().join("a.pcap"))?;
+    std::fs::copy(SIP_CALL, dir.path().join("b.pcap"))?;
+    let run = sipnab(&["-N", "-I", s(dir.path())?])?;
+    assert_eq!(run.code, Some(0), "a directory run exits 0\n{}", run.dump());
+    assert_eq!(
+        run.stdout.lines().count(),
+        2 * SIP_CALL_LINES,
+        "both files' messages print\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_cores_run_exits_0_with_the_report() -> Result<(), TestError> {
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--cores", "2", "--report"])?;
+    assert_eq!(run.code, Some(0), "--cores 2 exits 0\n{}", run.dump());
+    assert!(
+        run.stdout.contains(SIP_CALL_ID),
+        "the report names the call\n{}",
+        run.dump()
+    );
+    Ok(())
+}
+
+#[test]
+fn run_end_mcp_client_closing_its_input_exits_0() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["--mcp", "-N", "-I", SIP_CALL])
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path())
+        .env_remove("SIPNAB_CONFIG")
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an MCP run whose client input ends exits 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}
+
+/// Start an MCP stdio run over [`SIP_CALL`] whose client input stays open,
+/// send it `signal` once its handlers are in place, and return its status.
+#[cfg(target_os = "linux")]
+fn mcp_run_stopped_by(signal: libc::c_int) -> Result<std::process::ExitStatus, TestError> {
+    let args = ["--no-config", "--mcp", "-N", "-I", SIP_CALL].map(String::from);
+    let mut run = held_stdin::HeldStdin::spawn(&args)?;
+    run.wait_for_handlers(test_timeout(10))?;
+    run.signal(signal)?;
+    let (status, _) = run.wait_for_exit(test_timeout(10), "the signal")?;
+    Ok(status)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn run_end_sigterm_ends_a_serving_run_with_0() -> Result<(), TestError> {
+    let status = mcp_run_stopped_by(libc::SIGTERM)?;
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "SIGTERM ends the run cleanly: {status}"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn run_end_sigint_ends_a_serving_run_with_0() -> Result<(), TestError> {
+    let status = mcp_run_stopped_by(libc::SIGINT)?;
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "SIGINT ends the run cleanly: {status}"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn run_end_sighup_ends_a_serving_run_with_129() -> Result<(), TestError> {
+    let status = mcp_run_stopped_by(libc::SIGHUP)?;
+    assert_eq!(
+        status.code(),
+        Some(129),
+        "SIGHUP exits 129 (OPS-5): {status}"
+    );
     Ok(())
 }

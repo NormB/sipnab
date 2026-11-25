@@ -69,6 +69,8 @@ pub struct ExportVconParams {
     /// take.
     /// Values may be bare or quoted.
     pub filter: Option<String>,
+    /// A `[filters]` name or alias, instead of `filter`.
+    pub named: Option<String>,
     /// Maximum containers to return (default 50, ceiling `--mcp-max-rows`, itself 1000 unless the operator says otherwise).
     ///
     /// A container is a large answer, so a filter matching a whole capture is
@@ -752,7 +754,7 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<ExportVconParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let selection = self.vcon_selection(params.call_id, params.filter)?;
+        let selection = self.vcon_selection(params.call_id, params.filter, params.named)?;
         // Parsed the way every other paged tool parses it, and refused the
         // same way: restarting from the beginning on a malformed cursor would
         // loop a paging agent over the first page forever.
@@ -906,34 +908,46 @@ impl SipnabMcp {
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when both are given, when neither is, or when
-    /// the filter is neither a known alias nor parseable.
+    /// `invalid_params` (-32602) when `call_id` is given with `filter` or
+    /// `named`, when none is given, and the `filter`/`named` refusals of
+    /// [`SipnabMcp::compile_selected`].
     fn vcon_selection(
         &self,
         call_id: Option<String>,
         filter: Option<String>,
+        named: Option<String>,
     ) -> Result<Selection, rmcp::ErrorData> {
-        match (call_id, filter) {
-            (Some(_), Some(_)) => Err(errors::refuse(
+        let rule = if named.is_some() && filter.is_none() {
+            "named"
+        } else {
+            "filter"
+        };
+        match (call_id, filter.is_some() || named.is_some()) {
+            (Some(_), true) => Err(errors::refuse(
                 Reason::ConflictingParams,
-                "`call_id` and `filter` are alternatives, not a pair: one names \
-                 a dialog, the other names a rule for choosing them. Give one",
+                format!(
+                    "`call_id` and `{rule}` are alternatives, not a pair: one names \
+                     a dialog, the other names a rule for choosing them. Give one"
+                ),
             )),
-            (None, None) => Err(errors::refuse(
+            (None, false) => Err(errors::refuse(
                 Reason::MissingParam,
                 "give `call_id` for one dialog, or `filter` for every dialog it \
-                 selects -- for example \"response_code >= 400\"",
+                 selects -- for example \"response_code >= 400\" -- or `named` \
+                 for every dialog a named filter selects",
             )),
-            (Some(id), None) => Ok(Selection::One(id)),
-            (None, Some(expression)) => {
-                let compiled = self.compile_filter(Some(&expression))?.ok_or_else(|| {
-                    errors::refuse_param(
-                        Reason::InvalidValue,
-                        "filter",
-                        "an empty filter selects nothing and names nothing; omit \
-                         it, or give an expression",
-                    )
-                })?;
+            (Some(id), false) => Ok(Selection::One(id)),
+            (None, true) => {
+                let compiled = self
+                    .compile_selected(filter.as_deref(), named.as_deref())?
+                    .ok_or_else(|| {
+                        errors::refuse_param(
+                            Reason::InvalidValue,
+                            "filter",
+                            "an empty filter selects nothing and names nothing; omit \
+                             it, or give an expression",
+                        )
+                    })?;
                 Ok(Selection::Matching(Box::new(compiled)))
             }
         }
@@ -942,16 +956,18 @@ impl SipnabMcp {
     /// Build the containers a selection asks for.
     ///
     /// ONE pass over the store under ONE set of locks, with the capture facts
-    /// and the analysis computed once for the whole answer. Per-container
-    /// analysis would be quadratic — the analysis reads the whole store — and,
-    /// worse, would let two containers in one response quote different
-    /// numbers for the same run, which reads as two captures.
+    /// and the blind spots computed once for the whole answer, so two
+    /// containers in one response cannot quote different numbers for the same
+    /// run, which reads as two captures.
     ///
-    /// The analysis is run rather than skipped, so each container's blind-spot
-    /// list means "somebody looked" instead of "nobody looked" — two answers
-    /// `CaptureCompleteness` deliberately keeps apart. It is unfiltered for
-    /// the reason [`crate::analysis::analyze`] gives: an undecodable frame
-    /// belongs to no dialog.
+    /// The blind spots are read rather than skipped, so each container's
+    /// blind-spot list means "somebody looked" instead of "nobody looked" —
+    /// two answers `CaptureCompleteness` deliberately keeps apart. They come
+    /// from [`crate::analysis::analyze_blind_spots`], the capture-level part
+    /// of the analysis a container quotes, and not from a full analysis that
+    /// reads every dialog. They are unfiltered for the reason
+    /// [`crate::analysis::analyze`] gives: an undecodable frame belongs to no
+    /// dialog.
     ///
     /// # Errors
     ///
@@ -986,9 +1002,13 @@ impl SipnabMcp {
 
         let facts =
             crate::analysis::CaptureFacts::observed(&ds, &ss, crate::capture::captured_packets());
-        let analysis = crate::analysis::analyze_with(&ds, &ss, None, &facts);
+        let analysis = crate::analysis::analyze_blind_spots(&facts);
         let capture = crate::rtp::diagnosis::CaptureMedia::of_store(&ss);
         let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
+        // One grouping of the streams for the match and the page: a scan of
+        // the stream store per dialog made an export by filter cost dialogs x
+        // streams steps.
+        let by_call = ss.by_call();
 
         // Every match, counted and ordered; only the page is BUILT.
         // `total_matched` is the number an agent pages against, and it cannot
@@ -998,9 +1018,7 @@ impl SipnabMcp {
             .filter(|dialog| match selection {
                 Selection::One(id) => dialog.call_id == *id,
                 Selection::Matching(expr) => {
-                    let streams: Vec<&crate::rtp::stream::RtpStream> =
-                        ss.streams_for(&dialog.call_id).collect();
-                    expr.matches_dialog(dialog, &streams, capture, delay)
+                    expr.matches_dialog(dialog, by_call.of(&dialog.call_id), capture, delay)
                 }
             })
             .collect();
@@ -1042,10 +1060,12 @@ impl SipnabMcp {
             .flatten()
             .map(|d| crate::mcp::shape::format_cursor(d.created_at, &d.call_id));
 
+        // The related legs of the whole page from one correlation pass: one
+        // pass per container read every dialog's SDP once per container.
+        let related_of_page = crate::output::vcon::related_legs_many(&ds, page);
         let mut containers = Vec::new();
-        for dialog in page {
-            let streams: Vec<&crate::rtp::stream::RtpStream> =
-                ss.streams_for(&dialog.call_id).collect();
+        for (dialog, related) in page.iter().zip(&related_of_page) {
+            let streams = by_call.of(&dialog.call_id);
 
             // With `media: inline`, media is attempted always. When the run
             // retained no payload the decode fails, and its message -- which
@@ -1055,7 +1075,7 @@ impl SipnabMcp {
             // and the container records `not-considered`: the outcome the
             // exporter already has for an export that did not look at media.
             let decoded = match request.media {
-                VconMedia::Inline => Some(crate::rtp::audio_export::decode_dialog_audio(&streams)),
+                VconMedia::Inline => Some(crate::rtp::audio_export::decode_dialog_audio(streams)),
                 VconMedia::Omit => None,
             };
             let reason = decoded
@@ -1068,15 +1088,14 @@ impl SipnabMcp {
                 Some(Err(_)) => ObservedAudio::NothingToDecode(&reason),
             };
 
-            let media = crate::output::vcon::media_quality_for(&ss, &dialog.call_id);
-            let related = crate::output::vcon::related_legs(&ds, dialog);
+            let media = crate::output::vcon::media_quality_of(&ss, streams);
             let context = ExportContext {
                 capture_id: crate::output::vcon::dialog_capture_id(dialog),
                 facts: &facts,
                 analysis: Some(&analysis),
                 max_inline_media_bytes: budget,
                 media: &media,
-                related_legs: &related,
+                related_legs: related,
             };
             let exported =
                 export_dialog_and_completeness(dialog, &context, audio, chrono::Utc::now());
@@ -1403,6 +1422,104 @@ mod tests {
             .await
             .map_err(|e| format!("the export should succeed: {e:?}"))?;
         payload(&result)
+    }
+
+    /// An export by filter reads each dialog's streams from one grouping of
+    /// the store, for the match and for the page, not from a pass over every
+    /// stream per dialog.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn export_vcon_by_filter_groups_the_streams_once_not_once_per_dialog()
+    -> Result<(), TestError> {
+        let (ds, ss) = crate::test_utils::calls_with_media(6)?;
+        let server = SipnabMcp::new(Arc::new(RwLock::new(ds)), Arc::new(RwLock::new(ss)));
+        crate::rtp::stream_store::STREAMS_FOR_CALLS.with(|c| c.set(0));
+        let v = exported(
+            &server,
+            ExportVconParams {
+                filter: Some("rtp.packets > 0".to_string()),
+                ..ExportVconParams::default()
+            },
+        )
+        .await?;
+        assert_eq!(
+            crate::rtp::stream_store::STREAMS_FOR_CALLS.with(std::cell::Cell::get),
+            0,
+            "no per-dialog scan of the stream store"
+        );
+        assert_eq!(v["total_matched"], 6, "all six dialogs carry media: {v}");
+        Ok(())
+    }
+
+    /// An export reads its blind spots from the capture's facts, without
+    /// analyzing every dialog of the capture, and still states that it looked:
+    /// each container carries an empty blind-spot list, not a missing one.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn export_vcon_reads_its_blind_spots_without_analyzing_every_dialog()
+    -> Result<(), TestError> {
+        let (ds, ss) = crate::test_utils::calls_with_media(6)?;
+        let server = SipnabMcp::new(Arc::new(RwLock::new(ds)), Arc::new(RwLock::new(ss)));
+        crate::analysis::ANALYZE_WITH_CALLS.with(|c| c.set(0));
+        let v = exported(
+            &server,
+            ExportVconParams {
+                filter: Some("rtp.packets > 0".to_string()),
+                limit: Some(2),
+                ..ExportVconParams::default()
+            },
+        )
+        .await?;
+        assert_eq!(
+            crate::analysis::ANALYZE_WITH_CALLS.with(std::cell::Cell::get),
+            0,
+            "no full capture analysis per export"
+        );
+        assert_eq!(v["returned"], 2, "a page of two: {v}");
+        // Process-global facts (stored vCons other tests read) may put rows in
+        // the lists; what this pins is that each list is there, not `null`.
+        let text = v.to_string();
+        assert!(
+            text.contains("\"blind_spots\":[") && !text.contains("\"blind_spots\":null"),
+            "the containers carry the list: {text}"
+        );
+        Ok(())
+    }
+
+    /// A page of containers finds the related legs of all its dialogs in one
+    /// pass over the store: each dialog's SDP origins are read once, not once
+    /// per container.
+    #[cfg(feature = "vcon")]
+    #[tokio::test]
+    async fn export_vcon_reads_each_dialogs_sdp_origins_once_per_page() -> Result<(), TestError> {
+        let mut ds = DialogStore::new(100, false);
+        for i in 0..6 {
+            let (offer, answer) =
+                crate::test_utils::sdp_offer_and_answer(&format!("sdp-{i}@example.com"))?;
+            ds.process_message(offer);
+            ds.process_message(answer);
+        }
+        let server = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(16))),
+        );
+        crate::sip::dialog_store::ORIGIN_KEY_READS.with(|c| c.set(0));
+        let v = exported(
+            &server,
+            ExportVconParams {
+                filter: Some("method == 'INVITE'".to_string()),
+                limit: Some(3),
+                ..ExportVconParams::default()
+            },
+        )
+        .await?;
+        assert_eq!(v["returned"], 3, "a page of three: {v}");
+        assert_eq!(
+            crate::sip::dialog_store::ORIGIN_KEY_READS.with(std::cell::Cell::get),
+            6,
+            "one read per dialog in the store, not one per dialog per container"
+        );
+        Ok(())
     }
 
     // ── export_vcon: the single-dialog form ──────────────────────────

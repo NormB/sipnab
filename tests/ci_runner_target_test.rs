@@ -477,7 +477,9 @@ const AARCH64_HOST_ONLY: &[(&str, &str, &str)] = &[
         "features",
         "only on a push to main, whose run waited 34 and 68 minutes for the \
          two overflow runners behind pull request runs on 2026-11-11 (run \
-         42977445618); every other event keeps the overflow pair, and \
+         42977445618), and on a release pull request of this repository, \
+         whose jobs queued behind another pull request's on 2026-11-14 \
+         (PR #808); every other event keeps the overflow pair, and \
          scripts/tests/test_feature_matrix_runner.py holds that split",
     ),
     (
@@ -796,11 +798,12 @@ fn selections(job: &Job) -> Result<Option<Vec<Vec<String>>>, TestError> {
         }
         return Ok(Some(values.into_iter().map(|v| vec![v]).collect()));
     }
-    // A conditional: every operand that is not a comparison is a value.
+    // A conditional: every operand that is not a comparison, or a call of
+    // one of GitHub's boolean functions, is a value.
     let mut out = Vec::new();
     for part in expr.split("||").flat_map(|p| p.split("&&")) {
         let t = strip_grouping(part);
-        if t.contains("==") || t.contains("!=") {
+        if t.contains("==") || t.contains("!=") || BOOLEAN_CALLS.iter().any(|f| t.starts_with(f)) {
             continue;
         }
         out.push(operand(t)?);
@@ -809,6 +812,49 @@ fn selections(job: &Job) -> Result<Option<Vec<Vec<String>>>, TestError> {
         return Err(format!("{}:{}: no runner in `{value}`", job.workflow, job.id).into());
     }
     Ok(Some(out))
+}
+
+/// GitHub's expression functions that return a boolean, as a `runs-on`
+/// condition may call them.
+const BOOLEAN_CALLS: &[&str] = &["startsWith(", "endsWith(", "contains("];
+
+/// A `runs-on` condition may call GitHub's boolean functions; such a call
+/// selects, it is not a runner. ci.yml's features job tests
+/// `startsWith(github.head_ref, 'release/')` since 2026-11-15.
+#[test]
+fn a_condition_that_calls_a_boolean_function_is_not_a_runner() -> Result<(), TestError> {
+    let job = Job {
+        workflow: "ci.yml".into(),
+        id: "features".into(),
+        body: "    runs-on: ${{ (github.event_name == 'push' || startsWith(github.head_ref, 'release/') \
+               && contains(github.ref, 'x') && endsWith(github.ref, 'y')) \
+               && fromJSON('[\"self-hosted\",\"jetson\"]') || fromJSON('[\"self-hosted\",\"overflow\"]') }}\n"
+            .into(),
+    };
+    let found = selections(&job)?.ok_or("the job has no runs-on selections")?;
+    let want: Vec<Vec<String>> = vec![
+        vec!["self-hosted".into(), "jetson".into()],
+        vec!["self-hosted".into(), "overflow".into()],
+    ];
+    assert_eq!(found, want, "only the two fromJSON lists are runners");
+    Ok(())
+}
+
+/// A call that is not one of GitHub's boolean functions is still refused,
+/// so an operand the gate cannot read never passes as a condition.
+#[test]
+fn an_operand_that_calls_another_function_is_refused() {
+    let job = Job {
+        workflow: "ci.yml".into(),
+        id: "features".into(),
+        body: "    runs-on: ${{ github.event_name == 'push' && format('{0}', github.ref) || 'ubuntu-24.04' }}\n"
+            .into(),
+    };
+    let refused = selections(&job);
+    assert!(
+        refused.is_err(),
+        "format(...) was taken for a condition: {refused:?}"
+    );
 }
 
 /// One operand of `a && b || c` without the grouping parentheses around

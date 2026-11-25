@@ -551,9 +551,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError::arg(msg)",
-      "count": 2,
+      "count": 3,
       "carries": [],
-      "why": "One occurrence is src/capture/bpf_filter.rs::forgot_input_flag (out of scope); the other is capture_source_capacity_refusal in bootstrap.rs."
+      "why": "One occurrence is src/capture/bpf_filter.rs::forgot_input_flag (out of scope); the other two are capture_source_capacity_refusal in bootstrap.rs, for a run without -I in plan and for a judged -I set in resolve_planned_inputs."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -771,13 +771,6 @@
       "count": 1,
       "carries": [],
       "why": "Informational, not a failure: the end-of-run vCon count, built by end_of_run_vcon_summary in batch.rs with plain format! calls that are not extracted sites. It reports how many containers were written, so the page does not list it."
-    },
-    {
-      "file": "src/app/bootstrap.rs",
-      "call": "PlanError::arg( crate::sip::named_filters::unknown_reference_message(name, &filters), )",
-      "count": 1,
-      "carries": [],
-      "why": "resolved_filter_text in bootstrap.rs: src/sip/named_filters.rs::unknown_reference_message, a format! outside the extractor's scope; the same text reaches the request-time surfaces through src/sip/dsl.rs."
     },
     {
       "file": "src/app/bootstrap.rs",

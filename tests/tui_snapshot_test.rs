@@ -1375,6 +1375,116 @@ mod tui_snapshots {
         Ok(())
     }
 
+    /// Snapshot: the F7 popup after Enter refused a typed Expression: the
+    /// field keeps the text, the parser's headline and hint are shown, and
+    /// the cursor sits where the parser stopped (#841).
+    #[test]
+    fn filter_dialog_expression_error_popup() -> Result<(), TestError> {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = App::new_test();
+        app.handle_key(crossterm::event::KeyCode::F(7));
+        for _ in 0..9 {
+            app.handle_key(crossterm::event::KeyCode::Tab);
+        }
+        for c in "msg_count > 5 AND msgcount < 9".chars() {
+            app.handle_key(crossterm::event::KeyCode::Char(c));
+        }
+        app.handle_key(crossterm::event::KeyCode::Enter);
+
+        terminal.draw(|frame| app.render(frame))?;
+
+        let output = buffer_to_string(&terminal)?;
+        insta::assert_snapshot!(output);
+        Ok(())
+    }
+
+    /// Snapshot: the F7 popup with an Expression typed and not yet applied:
+    /// the first screen of the how-to (#841).
+    #[test]
+    fn filter_dialog_expression_typed_popup() -> Result<(), TestError> {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
+        app.handle_key(crossterm::event::KeyCode::F(7));
+        for _ in 0..9 {
+            app.handle_key(crossterm::event::KeyCode::Tab);
+        }
+        for c in "from.user =~ '1003' OR msg_count > 3".chars() {
+            app.handle_key(crossterm::event::KeyCode::Char(c));
+        }
+
+        terminal.draw(|frame| app.render(frame))?;
+
+        let output = buffer_to_string(&terminal)?;
+        insta::assert_snapshot!(output);
+        Ok(())
+    }
+
+    /// Snapshot: the F7 popup with `F1`'s field help shown: the Filter DSL's
+    /// fields, operators and combining words in place of the method boxes.
+    #[test]
+    fn filter_dialog_field_help_popup() -> Result<(), TestError> {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = App::new_test();
+        app.handle_key(crossterm::event::KeyCode::F(7));
+        app.handle_key(crossterm::event::KeyCode::F(1));
+
+        terminal.draw(|frame| app.render(frame))?;
+
+        let output = buffer_to_string(&terminal)?;
+        insta::assert_snapshot!(output);
+        Ok(())
+    }
+
+    /// Snapshot: `Y` in the call list after an Expression was applied: the
+    /// command line it copied, shown over the list.
+    #[test]
+    fn call_list_copied_command_line_popup() -> Result<(), TestError> {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
+        app.handle_key(crossterm::event::KeyCode::F(7));
+        for _ in 0..9 {
+            app.handle_key(crossterm::event::KeyCode::Tab);
+        }
+        for c in "from.user =~ '1003' OR msg_count > 3".chars() {
+            app.handle_key(crossterm::event::KeyCode::Char(c));
+        }
+        app.handle_key(crossterm::event::KeyCode::Enter);
+        app.handle_key(crossterm::event::KeyCode::Char('Y'));
+
+        terminal.draw(|frame| app.render(frame))?;
+
+        let output = buffer_to_string(&terminal)?;
+        insta::assert_snapshot!(output);
+        Ok(())
+    }
+
+    /// Snapshot: the call list under an applied Expression, with status
+    /// line 3 naming it (#841).
+    #[test]
+    fn call_list_with_expression_active() -> Result<(), TestError> {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = test_app_with_dialogs()?;
+        app.handle_key(crossterm::event::KeyCode::F(7));
+        for _ in 0..9 {
+            app.handle_key(crossterm::event::KeyCode::Tab);
+        }
+        for c in "from.user =~ '1003' OR msg_count > 3".chars() {
+            app.handle_key(crossterm::event::KeyCode::Char(c));
+        }
+        app.handle_key(crossterm::event::KeyCode::Enter);
+
+        terminal.draw(|frame| app.render(frame))?;
+
+        let output = buffer_to_string(&terminal)?;
+        insta::assert_snapshot!(output);
+        Ok(())
+    }
+
     /// Snapshot: the F2 save popup, with the path overridden for determinism.
     #[test]
     fn save_dialog_popup() -> Result<(), TestError> {

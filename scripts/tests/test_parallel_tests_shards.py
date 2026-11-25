@@ -264,7 +264,8 @@ def real_targets():
 
 def test_ci_runs_the_sharded_suite_with_the_index_and_count_strategy_gives_it():
     counts = ci_shard_counts()
-    assert set(counts) == {"test"}, counts
+    # The Linux suite and, through the same steps, the macOS suite.
+    assert set(counts) == {"test", "test-macos"}, counts
     text = CI.read_text()
     assert (
         "--shard-index ${{ strategy.job-index }} --shard-count ${{ strategy.job-total }}" in text

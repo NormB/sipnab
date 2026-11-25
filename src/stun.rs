@@ -2572,7 +2572,7 @@ pub fn unanswered_requests() -> (Vec<UnansweredRequest>, u64) {
     }
     // Most-retried first, then by address so two runs over one capture print
     // the same order.
-    out.sort_by(|a, b| {
+    crate::sort::sort_by_dyn(&mut out, &mut |a, b| {
         b.attempts
             .cmp(&a.attempts)
             .then_with(|| a.from.to_string().cmp(&b.from.to_string()))

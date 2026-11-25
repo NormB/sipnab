@@ -127,6 +127,19 @@ pub fn open_offline_with(
     )
 }
 
+/// [`open_offline`] for a file opened up front, read through `file`: `path`
+/// is the name it goes by and is never opened.
+///
+/// # Errors
+///
+/// As [`open_offline`].
+pub(crate) fn open_offline_opened(
+    path: &Path,
+    file: &std::fs::File,
+) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+    open_offline_up_front(path, file, &crate::capture::archive::Limits::for_run())
+}
+
 /// [`open_offline_with`] for a file opened up front, read through `file`:
 /// `path` is the name it goes by and is never opened.
 ///
@@ -595,7 +608,10 @@ pub fn capture_files(
         ..ReadTally::default()
     };
     let mut count: u64 = 0;
-    let up_front = config.open_set_up_front.then(|| open_set_up_front(paths));
+    let up_front = config
+        .handed_set
+        .take()
+        .or_else(|| config.open_set_up_front.then(|| open_set_up_front(paths)));
     let result = read_set(
         paths, up_front, config, &tx, ready_tx, &mut tally, &mut count,
     );
@@ -628,6 +644,32 @@ pub(crate) fn open_set_up_front(
     paths: &[std::path::PathBuf],
 ) -> Vec<std::io::Result<std::fs::File>> {
     paths.iter().map(|path| open_up_front(path)).collect()
+}
+
+/// The descriptors a run opened for its `-I` set before it confined itself,
+/// handed to the reader ([`CaptureConfig::handed_set`]): one open result per
+/// path, in set order.
+///
+/// Shared by every clone of the config and taken once, so the one reader of
+/// the set gets them and nothing else holds a descriptor after it.
+#[derive(Debug, Clone, Default)]
+pub struct HandedSet(std::sync::Arc<parking_lot::Mutex<Option<OpenResults>>>);
+
+/// One open result per path of a set, in set order.
+pub type OpenResults = Vec<std::io::Result<std::fs::File>>;
+
+impl HandedSet {
+    /// Hand `files` to the reader.
+    #[must_use]
+    pub fn new(files: OpenResults) -> Self {
+        Self(std::sync::Arc::new(parking_lot::Mutex::new(Some(files))))
+    }
+
+    /// The handed results, once; `None` when nothing was handed or another
+    /// reader took them.
+    pub(crate) fn take(&self) -> Option<OpenResults> {
+        self.0.lock().take()
+    }
 }
 
 /// Open one file of a set up front. See [`open_set_up_front`].
@@ -860,6 +902,23 @@ pub(crate) struct ReadTally {
 }
 
 impl ReadTally {
+    /// Count `path` as stopped early by `e`, a loss, and say why.
+    ///
+    /// The one place both file readers (this one and the `--cores` reader in
+    /// `crate::parallel`) record a file they could not read to its end. The
+    /// line goes to the log as it is read, and is kept for the notice the run
+    /// prints on stderr if it exits 1 for it (EXIT-REASON-IN-LOG-ONLY).
+    pub(crate) fn stopped_early_by<E: std::fmt::Display>(&mut self, path: &Path, e: &E) {
+        self.stopped_early += 1;
+        self.lost = true;
+        let line = format!(
+            "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
+            crate::capture::archive::source_name(path)
+        );
+        tracing::error!("{line}");
+        crate::output::run_integrity::record_stopped_early(line);
+    }
+
     /// Files the run never got to, because it stopped inside an earlier one.
     fn not_reached(&self) -> usize {
         self.given
@@ -1154,12 +1213,7 @@ fn read_member(
     ) {
         Ok(read) => read,
         Err(e) => {
-            state.tally.stopped_early += 1;
-            state.tally.lost = true;
-            tracing::error!(
-                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                crate::capture::archive::source_name(path)
-            );
+            state.tally.stopped_early_by(path, &e);
             return Ok(true);
         }
     };
@@ -1842,51 +1896,122 @@ mod tests {
         Ok(())
     }
 
+    /// Run `sleep_interruptible(total, ..)` on its own thread with a stop
+    /// that answers `true` from its `stop_at`-th question on (never when
+    /// `stop_at` is 0).
+    ///
+    /// # Returns
+    ///
+    /// Whether the sleep reported a stop, and how many times it asked. Every
+    /// question is counted, so a test proves "the stop is asked once per
+    /// slice" by the count and not by a stopwatch, which a loaded host
+    /// stretches. `None` when the sleep had not returned after `CEILING`: a
+    /// sleep that never asks again holds its thread for the whole `total`,
+    /// and the ceiling ends the TEST, far past any slice, instead of hanging
+    /// it.
+    fn counted_sleep(total: std::time::Duration, stop_at: u32) -> Option<(bool, u32)> {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        const CEILING: std::time::Duration = std::time::Duration::from_secs(60);
+        let asked = Arc::new(AtomicU32::new(0));
+        let counter = Arc::clone(&asked);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let stopped = sleep_interruptible(total, || {
+                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                stop_at != 0 && n >= stop_at
+            });
+            let _ = tx.send(stopped);
+        });
+        let stopped = rx.recv_timeout(CEILING).ok()?;
+        Some((stopped, asked.load(Ordering::SeqCst)))
+    }
+
     /// A huge replay inter-packet delta must not delay shutdown: the sleep is
-    /// sliced and polls the stop signal between slices, so it returns promptly
-    /// once the signal fires instead of blocking for the full duration.
-    /// Regression for the "large delta delays shutdown arbitrarily" gap.
+    /// sliced and polls the stop signal between slices, so it returns once the
+    /// signal fires instead of blocking for the full duration. Regression for
+    /// the "large delta delays shutdown arbitrarily" gap.
+    ///
+    /// Proved by the count of questions: a stop that answers yes on its third
+    /// question ends an hour-long sleep after exactly three, two slices in.
+    /// (This test once asserted "under 2 s" against a stop set by a timer
+    /// thread, a bet on the host's speed.)
     #[test]
     fn sleep_interruptible_returns_promptly_on_stop() -> Result<(), TestError> {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_setter = Arc::clone(&stop);
-        // Fire the stop signal shortly after the (would-be hour-long) sleep starts.
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            stop_setter.store(true, Ordering::SeqCst);
-        });
-
-        let started = std::time::Instant::now();
-        let interrupted = sleep_interruptible(std::time::Duration::from_secs(3600), || {
-            stop.load(Ordering::SeqCst)
-        });
-        let elapsed = started.elapsed();
-
+        let (interrupted, asked) = counted_sleep(std::time::Duration::from_secs(3600), 3).ok_or(
+            "an hour-long sleep whose stop said yes did not return: the stop is not \
+                 asked between slices",
+        )?;
         assert!(
             interrupted,
             "must report that the stop signal interrupted the sleep"
         );
-        assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "sliced sleep must react to the stop signal promptly, took {elapsed:?}"
+        assert_eq!(
+            asked, 3,
+            "the sleep ends at the first yes, the third question"
         );
         Ok(())
     }
 
     /// Without a stop signal the sliced sleep runs to completion and reports
-    /// that it was not interrupted.
+    /// that it was not interrupted: one question before its one slice, and
+    /// one at the end.
     #[test]
     fn sleep_interruptible_runs_to_completion_without_stop() -> Result<(), TestError> {
         let started = std::time::Instant::now();
-        let interrupted = sleep_interruptible(std::time::Duration::from_millis(120), || false);
+        let (interrupted, asked) = counted_sleep(std::time::Duration::from_millis(120), 0)
+            .ok_or("a 120 ms sleep did not return")?;
         assert!(!interrupted, "no stop signal → not interrupted");
+        assert_eq!(asked, 2, "one question per slice and one at the end");
         assert!(
             started.elapsed() >= std::time::Duration::from_millis(100),
             "must actually sleep the requested duration"
         );
+        Ok(())
+    }
+
+    /// The stop is asked before each slice: a sleep of two whole slices and a
+    /// part asks three times on the way and once at the end.
+    #[test]
+    fn sleep_interruptible_asks_once_per_slice() -> Result<(), TestError> {
+        let (interrupted, asked) = counted_sleep(std::time::Duration::from_millis(450), 0)
+            .ok_or("a 450 ms sleep did not return")?;
+        assert!(!interrupted, "no stop signal → not interrupted");
+        assert_eq!(asked, 4, "200 + 200 + 50 ms: three slices, four questions");
+        Ok(())
+    }
+
+    /// A stop already requested is seen before the first slice is slept.
+    #[test]
+    fn sleep_interruptible_sleeps_no_slice_after_an_earlier_stop() -> Result<(), TestError> {
+        let (interrupted, asked) = counted_sleep(std::time::Duration::from_secs(3600), 1)
+            .ok_or("a stop requested before the sleep was not seen")?;
+        assert!(interrupted, "a stop before the sleep interrupts it");
+        assert_eq!(asked, 1, "one question, before any slice");
+        Ok(())
+    }
+
+    /// A zero sleep asks once, sleeps nothing, and is not interrupted.
+    #[test]
+    fn sleep_interruptible_of_zero_asks_once() -> Result<(), TestError> {
+        let (interrupted, asked) =
+            counted_sleep(std::time::Duration::ZERO, 0).ok_or("a zero sleep did not return")?;
+        assert!(!interrupted, "nothing asked for a stop");
+        assert_eq!(asked, 1, "the one question at the end");
+        Ok(())
+    }
+
+    /// A stop that arrives during the last slice is still reported: the end
+    /// of the sleep asks once more.
+    #[test]
+    fn sleep_interruptible_reports_a_stop_seen_at_the_end() -> Result<(), TestError> {
+        let (interrupted, asked) = counted_sleep(std::time::Duration::from_millis(120), 2)
+            .ok_or("a 120 ms sleep did not return")?;
+        assert!(
+            interrupted,
+            "the stop seen by the last question is reported"
+        );
+        assert_eq!(asked, 2, "one question before the slice, one after it");
         Ok(())
     }
 
@@ -1952,11 +2077,11 @@ mod tests {
     fn reads_gzip_compressed_pcap() -> Result<(), TestError> {
         use std::io::Write;
 
-        let sample = sample_pcap();
-        if !sample.exists() {
-            stderr_line!("Skipping: sample not found at {}", sample.display());
-            return Ok(());
-        }
+        // A tracked sample: its absence is a defect of the checkout.
+        let sample = crate::test_prereq::required(
+            "tracked-file",
+            crate::test_prereq::path_exists(&sample_pcap()),
+        )?;
         let baseline = count_packets(&sample)?;
         assert!(baseline > 0, "sample should contain packets");
 
@@ -2390,12 +2515,11 @@ mod tests {
     /// the file it was read from.
     #[test]
     fn read_fixture_pcap() -> Result<(), TestError> {
-        let path = fixture_path();
-        if !path.exists() {
-            // Skip if fixture not yet generated
-            stderr_line!("Skipping: fixture not found at {}", path.display());
-            return Ok(());
-        }
+        // A tracked fixture: its absence is a defect of the checkout.
+        let path = crate::test_prereq::required(
+            "tracked-file",
+            crate::test_prereq::path_exists(&fixture_path()),
+        )?;
 
         let (tx, rx) = packet_channel(TEST_CAP);
         let config = CaptureConfig::default();
@@ -2726,12 +2850,15 @@ mod tests {
     /// wrong origin for the whole of the second file.
     #[test]
     fn each_file_of_a_set_stamps_its_own_source() -> Result<(), TestError> {
-        let a = sample("register-invite-reinvite-bye.pcap");
-        let b = sample("sip-rtp-g711.pcap");
-        if !a.exists() || !b.exists() {
-            stderr_line!("Skipping: samples not found");
-            return Ok(());
-        }
+        // Tracked samples: their absence is a defect of the checkout.
+        let a = crate::test_prereq::required(
+            "tracked-file",
+            crate::test_prereq::path_exists(&sample("register-invite-reinvite-bye.pcap")),
+        )?;
+        let b = crate::test_prereq::required(
+            "tracked-file",
+            crate::test_prereq::path_exists(&sample("sip-rtp-g711.pcap")),
+        )?;
 
         let (tx, rx) = packet_channel(4096);
         capture_files(&[a.clone(), b.clone()], &CaptureConfig::default(), tx, None)
@@ -3345,5 +3472,98 @@ mod tests {
         capture_files(&paths, &config, tx, None).map_err(|e| format!("read: {e:#}"))?;
         assert_eq!(rx.try_iter().count(), 5, "three frames and two");
         Ok(())
+    }
+
+    /// A config carrying the descriptors `paths` were opened with.
+    fn handed(paths: &[std::path::PathBuf]) -> CaptureConfig {
+        CaptureConfig {
+            handed_set: HandedSet::new(open_set_up_front(paths)),
+            ..CaptureConfig::default()
+        }
+    }
+
+    #[test]
+    fn success_capture_files_reads_the_descriptors_it_was_handed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let config = handed(&paths);
+        // Gone by path: only the handed descriptors reach the files.
+        remove_all(&paths)?;
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&paths, &config, tx, None)
+            .map_err(|e| format!("a handed set must read without its paths: {e:#}"))?;
+        assert_eq!(
+            rx.try_iter().count(),
+            5,
+            "three frames and two, by descriptor"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_handed_set_is_read_whether_or_not_the_config_opens_up_front()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let config = CaptureConfig {
+            open_set_up_front: true,
+            ..handed(&paths)
+        };
+        remove_all(&paths)?;
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&paths, &config, tx, None).map_err(|e| format!("read: {e:#}"))?;
+        assert_eq!(
+            rx.try_iter().count(),
+            5,
+            "the handed descriptors are used, not opened again"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_handed_open_error_skips_that_file_and_reads_the_rest() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let config = CaptureConfig {
+            handed_set: HandedSet::new(vec![
+                Err(std::io::Error::other("refused for the test")),
+                open_up_front(&paths[1]),
+            ]),
+            ..CaptureConfig::default()
+        };
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&paths, &config, tx, None).map_err(|e| format!("read: {e:#}"))?;
+        assert_eq!(
+            rx.try_iter().count(),
+            2,
+            "the file whose open failed is skipped, not opened by path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_handed_set_is_taken_once() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let set = HandedSet::new(open_set_up_front(&paths));
+        let copy = set.clone();
+        assert_eq!(
+            set.take().map(|f| f.len()),
+            Some(2),
+            "the first take has both"
+        );
+        assert!(
+            copy.take().is_none(),
+            "a clone shares the one set, so a second reader opens by path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_default_config_hands_no_set() {
+        assert!(
+            CaptureConfig::default().handed_set.take().is_none(),
+            "nothing is handed unless a run opened its set"
+        );
     }
 }

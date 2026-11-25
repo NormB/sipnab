@@ -37,6 +37,13 @@ The rules:
   yet, it is `X.Y.Z`: the release that commit becomes when tagged. Tagging it
   changes nothing, because the tag's history then gives the same X.Y.Z. A cut
   heading that differs from Cargo.toml's version is refused.
+- After the release commit and before its tag is pushed, the next pull
+  request puts a new `[Unreleased]` above `[X.Y.Z]`. While X.Y.Z, the newest
+  cut heading, is Cargo.toml's version and no vX.Y.Z tag exists, the oldest
+  commit of HEAD that adds the line `## [X.Y.Z]` to CHANGELOG.md stands in for
+  the tag: a flag it declares is X.Y.Z, and a flag added after it is
+  `Unreleased`, as the tag will say. No such commit in the history is
+  refused.
 
 A clone without vX.Y.Z tags cannot answer, and the script refuses rather than
 calling every flag Unreleased.
@@ -320,40 +327,85 @@ def sources_at(repo, specs: list) -> dict:
     return out
 
 
-def pending_release(repo, tags: list):
-    """The version the working tree is the release commit of, or None.
+VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 
-    CHANGELOG.md's first `## [` heading is `[Unreleased]` between releases,
-    and None is the answer. Cutting a release renames it `[X.Y.Z]` in the
-    same commit that sets Cargo.toml's version to X.Y.Z; until the tag
-    vX.Y.Z exists, that commit is the release and X.Y.Z is the answer. Once
-    the tag exists, its history answers instead, with the same X.Y.Z.
+
+def cut_commit(repo, version: str):
+    """The oldest commit of HEAD whose CHANGELOG.md adds the line
+    `## [version]`, or None. That commit cut the release.
+
+    In a merge not yet committed (MERGE_HEAD exists, as it does in the merge's
+    pre-commit hook), the history read is that of the commit being made: HEAD
+    and MERGE_HEAD. The index then already holds the release the merge brings,
+    while the release commit is reachable only from MERGE_HEAD (2026-11-21,
+    backlog FLAG-SINCE-MERGE-BEFORE-TAG)."""
+    # Read the same by git's basic regular expressions and by Python's: only
+    # digits and dots reach here (VERSION), and `[.]` and a bare `]` are
+    # literal in both.
+    pattern = r"^## \[" + version.replace(".", "[.]") + "]"
+    # The oldest commit whose diff touches such a line is the one that adds
+    # it: a line is removed only after a commit has added it.
+    tips = ["HEAD"]
+    if subprocess.run(["git", "-C", str(repo), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                      capture_output=True).returncode == 0:
+        tips.append("MERGE_HEAD")
+    revs = git(repo, "log", "--format=%H", "--reverse", "-G", pattern, *tips, "--", "CHANGELOG.md").split()
+    return revs[0] if revs else None
+
+
+def pending_release(repo, tags: list):
+    """`(X.Y.Z, commit)` for a release that is cut and not yet tagged, or None.
+
+    CHANGELOG.md's first `## [` heading is `[Unreleased]` between releases.
+    Cutting a release renames it `[X.Y.Z]` in the same commit that sets
+    Cargo.toml's version to X.Y.Z. Until the tag vX.Y.Z exists:
+      - on that commit, the working tree is the release: `(X.Y.Z, None)`;
+      - after it, the next pull request puts a new `[Unreleased]` above
+        `[X.Y.Z]`, and the commit that added `## [X.Y.Z]` stands in for the
+        tag: `(X.Y.Z, <that commit>)`. Reading only the first heading gave
+        Unreleased for every flag of the release on every pull request
+        until the tag was pushed (backlog RELEASE-SINCE-BEFORE-TAG).
+    Once the tag exists, its history answers instead, with the same X.Y.Z.
     """
     try:
         changelog = (repo / "CHANGELOG.md").read_text()
         manifest = tomllib.loads((repo / "Cargo.toml").read_text())
     except (OSError, tomllib.TOMLDecodeError) as e:
         raise FlagSinceError(f"cannot read CHANGELOG.md and Cargo.toml: {e}") from e
-    m = re.search(r"^## \[([^\]]+)\]", changelog, re.M)
-    if not m:
+    headings = re.findall(r"^## \[([^\]]+)\]", changelog, re.M)
+    if not headings:
         raise FlagSinceError("CHANGELOG.md has no `## [` heading")
-    heading = m.group(1)
-    if heading == UNRELEASED:
-        return None
     version = manifest.get("package", {}).get("version")
-    if heading != version:
+    if headings[0] != UNRELEASED:
+        if headings[0] != version:
+            raise FlagSinceError(
+                f"CHANGELOG.md's first heading is [{headings[0]}] but Cargo.toml's version is "
+                f"{version}: a release commit names the same version in both, and between "
+                "releases the first heading is [Unreleased]")
+        return None if f"v{version}" in tags else (version, None)
+    newest = next((h for h in headings[1:] if VERSION.match(h)), None)
+    if newest is None or newest != version or f"v{version}" in tags:
+        return None
+    rev = cut_commit(repo, version)
+    if rev is None:
         raise FlagSinceError(
-            f"CHANGELOG.md's first heading is [{heading}] but Cargo.toml's version is "
-            f"{version}: a release commit names the same version in both, and between "
-            "releases the first heading is [Unreleased]")
-    return None if f"v{heading}" in tags else heading
+            f"CHANGELOG.md's newest release heading is [{version}], Cargo.toml's version is "
+            f"{version} and no tag v{version} exists, but no commit of HEAD adds `## [{version}]` "
+            "to CHANGELOG.md: the release commit that cut it is missing from this history")
+    return version, rev
 
 
 def flag_since(repo, source: str = SOURCE) -> dict:
     """`{name: "X.Y.Z" | "Unreleased"}` for every name of every current flag."""
     repo = pathlib.Path(repo)
     tagged = releases(repo)
-    unreleased = pending_release(repo, [t for t, _ in tagged]) or UNRELEASED
+    unreleased = UNRELEASED
+    pending = pending_release(repo, [t for t, _ in tagged])
+    if pending and pending[1] is None:
+        unreleased = pending[0]
+    elif pending:
+        # The cut commit stands in for the tag not pushed yet, after every tag.
+        tagged = [*tagged, (pending[1], pending[0])]
     texts = command_lines_at(repo, [t for t, _ in tagged], source)
     declared = [(version, {n for a in declared_args(texts[tag]) for n in a})
                 for tag, version in tagged]

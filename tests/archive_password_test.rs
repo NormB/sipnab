@@ -19,6 +19,8 @@ use std::process::{Command, Stdio};
 
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -588,8 +590,17 @@ fn get_with_password(
 #[cfg(feature = "api")]
 #[test]
 fn a_remote_client_s_password_header_needs_api_accept_archive_passwords() -> Result<(), TestError> {
-    let Some(ip) = non_loopback_address() else {
-        eprintln!("SKIPPED: this host has no non-loopback address to send from");
+    let Some(ip) = test_prereq::check(
+        "non-loopback-address",
+        test_prereq::Need::Optional(
+            "a host with only a loopback interface has no other address to send from; \
+             CI's runners have one.",
+        ),
+        non_loopback_address().ok_or_else(|| {
+            "no route to 192.0.2.1 leaves from an address other than loopback".to_owned()
+        }),
+    )?
+    else {
         return Ok(());
     };
     let root = tempfile::tempdir()?;

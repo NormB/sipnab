@@ -19,10 +19,9 @@
 use anyhow::{Result, bail};
 use nom::{
     IResult, Parser,
-    branch::alt,
-    bytes::complete::{tag, tag_no_case, take_while1},
+    bytes::complete::{tag_no_case, take_while1},
     character::complete::{char, multispace0, multispace1},
-    combinator::{map, opt, recognize},
+    combinator::{opt, recognize},
     sequence::preceded,
 };
 
@@ -72,6 +71,125 @@ const MAX_EXPRESSION_NODES: usize = 1024;
 /// Maximum regex size in bytes (D17).
 pub(crate) const REGEX_SIZE_LIMIT: usize = 1_000_000;
 
+// ── Regex budget of one expression ──────────────────────────────────
+//
+// [`REGEX_SIZE_LIMIT`] bounds a compiled program, not the work done to reach
+// it. The regex crate case-folds a bracket class or a Unicode class under
+// `(?i)` over the whole range it covers while it translates the pattern, before
+// the size limit is consulted. Measured 2026-11-20 on an optimized build: 1 KiB
+// of `(?i)[\D]` took 369 ms to compile and 16 KiB took 98 s in a debug build;
+// a near-limit `\w{n}` costs about 6 ms each. Every `=~` value is compiled when
+// the expression is parsed, so before this budget one `--filter`, REST `filter`
+// or MCP filter argument of 512 comparisons could cost seconds of CPU and,
+// near the size limit, hundreds of megabytes. The same cost timed out the
+// ClusterFuzzLite corpus merge of `fuzz_filter_dsl`.
+//
+// The three limits below are spent by all regexes of one expression together
+// and are checked on the pattern text before the regex crate sees it, so a
+// refused expression costs a scan of its text. Every documented filter holds
+// one regex of under 60 bytes. Within the budget the costliest expression
+// measured on the same build took 131 ms: eight 103-byte patterns of many `?`
+// from the fuzz corpus, about 16 ms each in the regex crate's own bounded
+// literal analysis.
+
+/// Most `=~` comparisons one filter expression may hold.
+pub(crate) const MAX_REGEX_COMPARISONS: usize = 8;
+
+/// Most pattern bytes the regexes of one expression may hold together.
+///
+/// Also the most one MCP `search_messages` pattern may hold.
+pub(crate) const MAX_REGEX_PATTERN_BYTES: usize = 1024;
+
+/// Most character classes the regexes of one expression may hold together.
+///
+/// What [`regex_class_count`] counts: each `[` and each `\p`/`\P`.
+pub(crate) const MAX_REGEX_CLASSES: usize = 16;
+
+/// The character classes in `pattern` the regex crate may case-fold: each `[`
+/// that is not escaped (a nested class is folded on its own, so each counts)
+/// and each `\p` or `\P` Unicode class. A `\` escapes the character after it,
+/// so `\[` is a literal and `\\[` is a backslash and then a class.
+///
+/// A count of the text, not a parse: a `[` the regex crate reads as a literal
+/// (`[[]`) counts too, which only ever refuses sooner.
+pub(crate) fn regex_class_count(pattern: &str) -> usize {
+    let mut count = 0;
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if matches!(chars.next(), Some('p' | 'P')) {
+                    count += 1;
+                }
+            }
+            '[' => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
+/// The limit of a [`RegexBudget`] a pattern went past.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegexOverBudget {
+    /// More than [`MAX_REGEX_COMPARISONS`] regexes.
+    Comparisons,
+    /// More than [`MAX_REGEX_PATTERN_BYTES`] pattern bytes.
+    PatternBytes,
+    /// More than [`MAX_REGEX_CLASSES`] character classes.
+    Classes,
+}
+
+/// What the regexes of one expression may still spend before they compile.
+///
+/// One budget per parse (or per MCP search): each pattern is spent with
+/// [`RegexBudget::spend`] before it is handed to the regex crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RegexBudget {
+    /// Regexes still allowed.
+    comparisons: usize,
+    /// Pattern bytes still allowed.
+    bytes: usize,
+    /// Character classes still allowed.
+    classes: usize,
+}
+
+impl RegexBudget {
+    /// The whole budget: [`MAX_REGEX_COMPARISONS`], [`MAX_REGEX_PATTERN_BYTES`]
+    /// and [`MAX_REGEX_CLASSES`].
+    pub(crate) const fn new() -> Self {
+        Self {
+            comparisons: MAX_REGEX_COMPARISONS,
+            bytes: MAX_REGEX_PATTERN_BYTES,
+            classes: MAX_REGEX_CLASSES,
+        }
+    }
+
+    /// Spends `pattern` from the budget, or names the limit it goes past and
+    /// spends nothing. The limits are checked in the order comparisons, bytes,
+    /// classes; the classes are counted only on a pattern within the bytes.
+    ///
+    /// # Errors
+    ///
+    /// The [`RegexOverBudget`] limit `pattern` would go past.
+    pub(crate) fn spend(&mut self, pattern: &str) -> Result<(), RegexOverBudget> {
+        if self.comparisons == 0 {
+            return Err(RegexOverBudget::Comparisons);
+        }
+        if pattern.len() > self.bytes {
+            return Err(RegexOverBudget::PatternBytes);
+        }
+        let classes = regex_class_count(pattern);
+        if classes > self.classes {
+            return Err(RegexOverBudget::Classes);
+        }
+        self.comparisons -= 1;
+        self.bytes -= pattern.len();
+        self.classes -= classes;
+        Ok(())
+    }
+}
+
 /// Compiles `pattern` for a scan of raw message bytes.
 ///
 /// The one compile rule for the two surfaces that search a whole message with
@@ -109,9 +227,26 @@ const MAX_HEADER_NAME_LEN: usize = 256;
 /// `header.<name>` reads any SIP header by name.
 const HEADER_FIELD_PREFIX: &str = "header.";
 
-/// How the header family is written in the parse-error field list, beside the
-/// fixed names of [`FIELD_NAMES`].
-const HEADER_FIELD_HINT: &str = "header.<name>";
+/// How the header family is written in the parse-error field list and the TUI
+/// filter dialog's field help, beside the fixed names of [`FIELD_NAMES`].
+pub(crate) const HEADER_FIELD_HINT: &str = "header.<name>";
+
+/// The word that joins two terms that must both hold. Matched without regard
+/// to case.
+const AND_KEYWORD: &str = "AND";
+
+/// The word that joins two terms of which one must hold. Matched without
+/// regard to case.
+const OR_KEYWORD: &str = "OR";
+
+/// The word that negates the term after it. Matched without regard to case.
+const NOT_KEYWORD: &str = "NOT";
+
+/// The words that combine comparisons, in the parser's own spelling: the
+/// constants the `AND`, `OR` and `NOT` parsers match, listed for a help
+/// surface such as the TUI filter dialog's field help.
+#[cfg(any(test, feature = "tui"))]
+pub(crate) const LOGICAL_KEYWORDS: &[&str] = &[AND_KEYWORD, OR_KEYWORD, NOT_KEYWORD];
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -139,10 +274,15 @@ pub struct FilterExpr {
     /// Root node of the parsed expression tree.
     root: Expr,
     /// Whether the expression references any diagnosis-derived field.
-    /// Cached at parse time (via [`expr_references_diagnosis`]) so
+    /// Cached at parse time (via [`expr_references`]) so
     /// [`FilterExpr::matches_dialog`] can skip the media/asymmetry
     /// diagnosis entirely when no such field appears.
     needs_diagnosis: bool,
+    /// Whether the expression references any field read from the dialog's
+    /// RTP streams. Cached at parse time beside `needs_diagnosis`, by the
+    /// same walk, so a caller asks for a dialog's streams only when the
+    /// filter reads them ([`FilterExpr::needs_streams`]).
+    needs_streams: bool,
     /// The expression text this was compiled from, trimmed. Kept so an
     /// answer narrowed by a filter can say which one — see
     /// [`FilterExpr::source`].
@@ -440,6 +580,60 @@ impl Field {
                 | Field::DurationAsymmetry
                 | Field::LateMedia
         )
+    }
+
+    /// Whether this field's value is read from the dialog's RTP streams:
+    /// directly (the `rtp.*` fields) or through the diagnosis, which is
+    /// computed from them. Drives the parse-time `needs_streams` flag, so a
+    /// caller can skip collecting a dialog's streams for a filter that reads
+    /// none. Exhaustive, so a new field must say. Keep in step with the arms
+    /// of `eval_compare` that read `streams` or `diag`.
+    fn reads_streams(&self) -> bool {
+        match self {
+            Field::RtpMos
+            | Field::RtpJitter
+            | Field::RtpLoss
+            | Field::RtpPackets
+            | Field::RtpCodec
+            | Field::RtpCodecs
+            | Field::RtpSsrc
+            | Field::OneWay
+            | Field::NatMismatch
+            | Field::NoMedia
+            | Field::CodecAsymmetry
+            | Field::PtimeAsymmetry
+            | Field::PayloadAsymmetry
+            | Field::DurationAsymmetry
+            | Field::LateMedia => true,
+            Field::FromUser
+            | Field::ToUser
+            | Field::FromHost
+            | Field::ToHost
+            | Field::FromUri
+            | Field::ToUri
+            | Field::Ruri
+            | Field::PaiUser
+            | Field::Side
+            | Field::Endpoint
+            | Field::Method
+            | Field::Ua
+            | Field::CallId
+            | Field::Payload
+            | Field::SrcIp
+            | Field::DstIp
+            | Field::SrcPort
+            | Field::DstPort
+            | Field::State
+            | Field::Duration
+            | Field::MsgCount
+            | Field::ResponseClass
+            | Field::ResponseCode
+            | Field::Pdd
+            | Field::SetupTime
+            | Field::Retransmits
+            | Field::Time
+            | Field::Header(_) => false,
+        }
     }
 
     /// What a literal on the right of this field means.
@@ -814,7 +1008,7 @@ pub fn resolve_filter_text<'a>(input: &'a str, t: &AliasThresholds) -> std::borr
     if let Some(expansion) = expand_alias(input, t) {
         return std::borrow::Cow::Owned(expansion);
     }
-    resolve_references(input, super::named_filters::installed(), t)
+    resolve_references(input, &super::named_filters::installed(), t)
 }
 
 /// `input` with each `@name` replaced through `filters` (and the built-in
@@ -850,14 +1044,45 @@ pub fn parse_filter(input: &str, t: &AliasThresholds) -> Result<FilterExpr> {
     FilterExpr::parse(&resolve_filter_text(input, t))
 }
 
-/// Whether any leaf comparison in the tree references a diagnosis-derived
-/// field. Walked once at parse time to cache `FilterExpr::needs_diagnosis`.
+/// The expression text a filter the user typed stands for, resolved through
+/// a given `[filters]` table: each `@name` replaced, then a diagnostic alias
+/// name expanded when it is the whole input.
+///
+/// The one rule `--filter`, `[filter] expression` and the TUI filter
+/// dialog's Expression field resolve typed text with, so the same text
+/// selects the same dialogs on each.
+///
+/// # Errors
+///
+/// The message for the first `@name` that `filters` does not define, which
+/// names the ones it does.
+pub fn resolve_typed_filter(
+    input: &str,
+    filters: &super::named_filters::NamedFilters,
+    t: &AliasThresholds,
+) -> std::result::Result<String, String> {
+    let referenced = resolve_references(input, filters, t);
+    // Said here, with the caller's table, rather than left to the parser,
+    // which knows only the table installed for the request-time surfaces.
+    if let Some(name) = super::named_filters::first_reference(&referenced) {
+        return Err(super::named_filters::unknown_reference_message(
+            name, filters,
+        ));
+    }
+    Ok(resolve_filter_text(&referenced, t).into_owned())
+}
+
+/// Whether any leaf comparison in the tree references a field for which
+/// `reads` is true. Walked once at parse time for each cached flag:
+/// `FilterExpr::needs_diagnosis` ([`Field::is_diagnosis`]) and
+/// `FilterExpr::needs_streams` ([`Field::reads_streams`]), so the two flags
+/// come from one walk rule.
 ///
 /// Iterative like [`count_nodes`]. `parse` only reaches it once the node cap
 /// has passed, so a stack frame per level would be survivable here — but it
 /// would be a second thing to re-argue every time that cap moves, and this
 /// walk gains nothing from the recursion.
-fn expr_references_diagnosis(expr: &Expr) -> bool {
+fn expr_references(expr: &Expr, reads: fn(&Field) -> bool) -> bool {
     let mut stack: Vec<&Expr> = vec![expr];
     while let Some(node) = stack.pop() {
         match node {
@@ -867,7 +1092,7 @@ fn expr_references_diagnosis(expr: &Expr) -> bool {
             }
             Expr::Not(inner) => stack.push(inner),
             Expr::Compare(field, _, _) => {
-                if field.is_diagnosis() {
+                if reads(field) {
                     return true;
                 }
             }
@@ -902,13 +1127,33 @@ impl FilterExpr {
                 Value::Bool(false),
             )),
         );
-        let needs_diagnosis = expr_references_diagnosis(&root);
+        // The tree above, written the way `parse` would read it back.
+        Self::compiled(root, "one_way == true AND one_way == false".to_string())
+    }
+
+    /// A compiled filter for `root`, its flags cached from the tree: the one
+    /// place a `FilterExpr` is built, so no constructor sets one flag and
+    /// forgets another.
+    fn compiled(root: Expr, source: String) -> Self {
+        let needs_diagnosis = expr_references(&root, Field::is_diagnosis);
+        let needs_streams = expr_references(&root, Field::reads_streams);
         FilterExpr {
             root,
             needs_diagnosis,
-            // The tree above, written the way `parse` would read it back.
-            source: "one_way == true AND one_way == false".to_string(),
+            needs_streams,
+            source,
         }
+    }
+
+    /// Whether this filter reads any field taken from a dialog's RTP streams
+    /// (`rtp.*` or a diagnosis field).
+    ///
+    /// When it is `false`, [`FilterExpr::matches_dialog`] gives the same
+    /// answer with an empty stream slice as with the dialog's streams, so a
+    /// caller judging many dialogs or messages can skip collecting them.
+    #[must_use]
+    pub fn needs_streams(&self) -> bool {
+        self.needs_streams
     }
 
     /// AND a half-open `[after, before)` time window into a compiled filter.
@@ -954,18 +1199,13 @@ impl FilterExpr {
         .collect::<Vec<_>>()
         .join(" AND ");
         Some(match base {
-            None => FilterExpr {
-                root: window,
-                needs_diagnosis: false,
-                source: window_source,
-            },
+            None => Self::compiled(window, window_source),
             Some(mut base) => {
                 let root = std::mem::replace(&mut base.root, placeholder_leaf());
-                FilterExpr {
-                    root: Expr::And(Box::new(root), Box::new(window)),
-                    needs_diagnosis: base.needs_diagnosis,
-                    source: format!("({}) AND {window_source}", base.source),
-                }
+                Self::compiled(
+                    Expr::And(Box::new(root), Box::new(window)),
+                    format!("({}) AND {window_source}", base.source),
+                )
             }
         })
     }
@@ -1023,7 +1263,7 @@ impl FilterExpr {
                 "{}",
                 super::named_filters::unknown_reference_message(
                     name,
-                    super::named_filters::installed()
+                    &super::named_filters::installed()
                 )
             );
         }
@@ -1031,13 +1271,13 @@ impl FilterExpr {
         // Count max nesting depth before parsing
         check_nesting_depth(trimmed)?;
 
-        let (remaining, expr) = parse_or_expr(trimmed).map_err(|e| match e {
+        // One regex budget for the whole expression, spent by every `=~`
+        // value before it compiles.
+        let mut budget = RegexBudget::new();
+        let (remaining, expr) = parse_or_expr(trimmed, &mut budget).map_err(|e| match e {
             nom::Err::Error(err) | nom::Err::Failure(err) => {
                 let pos = trimmed.len() - err.input.len();
-                anyhow::anyhow!(
-                    "{}",
-                    render_parse_error(trimmed, pos, &parse_problem(err.code))
-                )
+                SyntaxError::at(trimmed, pos, &parse_problem(err.code)).into()
             }
             nom::Err::Incomplete(_) => anyhow::anyhow!("incomplete filter expression"),
         })?;
@@ -1045,10 +1285,7 @@ impl FilterExpr {
         if !remaining.trim().is_empty() {
             // Position of the first non-space char of the unparsed tail.
             let pos = trimmed.len() - remaining.trim_start().len();
-            bail!(
-                "{}",
-                render_parse_error(trimmed, pos, trailing_input_problem(trimmed, pos))
-            );
+            return Err(SyntaxError::at(trimmed, pos, trailing_input_problem(trimmed, pos)).into());
         }
 
         // Size, not grouping depth. `check_nesting_depth` above measures
@@ -1065,12 +1302,7 @@ impl FilterExpr {
             );
         }
 
-        let needs_diagnosis = expr_references_diagnosis(&expr);
-        Ok(FilterExpr {
-            root: expr,
-            needs_diagnosis,
-            source: trimmed.to_string(),
-        })
+        Ok(Self::compiled(expr, trimmed.to_string()))
     }
 
     /// Evaluate this filter against a SIP dialog and its associated RTP streams.
@@ -1215,13 +1447,7 @@ pub fn select_dialogs<'a>(
     #[cfg(not(target_arch = "wasm32"))]
     crate::pipeline::resolve_icmp_media(stream_store);
 
-    let mut by_call: std::collections::HashMap<&'a str, Vec<&'a RtpStream>> =
-        std::collections::HashMap::new();
-    for stream in stream_store.iter() {
-        if let Some(id) = stream.associated_dialog.as_deref() {
-            by_call.entry(id).or_default().push(stream);
-        }
-    }
+    let by_call = stream_store.by_call();
 
     // One run-level fact, read once rather than per dialog.
     let capture = CaptureMedia::of_store(stream_store);
@@ -1234,13 +1460,10 @@ pub fn select_dialogs<'a>(
     let dialogs: Vec<(&'a SipDialog, Vec<&'a RtpStream>)> = dialog_store
         .iter()
         .filter_map(|dialog| {
-            let streams = by_call
-                .get(dialog.call_id.as_str())
-                .cloned()
-                .unwrap_or_default();
+            let streams = by_call.of(&dialog.call_id);
             match filter {
-                Some(expr) if !expr.matches_dialog(dialog, &streams, capture, delay) => None,
-                _ => Some((dialog, streams)),
+                Some(expr) if !expr.matches_dialog(dialog, streams, capture, delay) => None,
+                _ => Some((dialog, streams.to_vec())),
             }
         })
         .collect();
@@ -1311,17 +1534,23 @@ type NomErr<'a> = nom::error::Error<&'a str>;
 /// The unconsumed remainder and the parsed node — a left-associative `Or`
 /// chain (or just the single and-expression) — or a nom error at the
 /// failing position.
-fn parse_or_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
-    let (input, first) = parse_and_expr(input)?;
+fn parse_or_expr<'a>(
+    input: &'a str,
+    budget: &mut RegexBudget,
+) -> IResult<&'a str, Expr, NomErr<'a>> {
+    let (input, first) = parse_and_expr(input, budget)?;
     let mut result = first;
     let mut remaining = input;
 
     loop {
         let trimmed = remaining.trim_start();
-        if let Ok((after_or, _)) =
-            preceded(tag_no_case::<&str, &str, NomErr<'_>>("OR"), multispace1).parse(trimmed)
+        if let Ok((after_or, _)) = preceded(
+            tag_no_case::<&str, &str, NomErr<'_>>(OR_KEYWORD),
+            multispace1,
+        )
+        .parse(trimmed)
         {
-            let (rest, right) = parse_and_expr(after_or)?;
+            let (rest, right) = parse_and_expr(after_or, budget)?;
             result = Expr::Or(Box::new(result), Box::new(right));
             remaining = rest;
         } else {
@@ -1345,18 +1574,24 @@ fn parse_or_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 /// The unconsumed remainder and the parsed node — a left-associative
 /// `And` chain (or just the single not-expression) — or a nom error at
 /// the failing position.
-fn parse_and_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
+fn parse_and_expr<'a>(
+    input: &'a str,
+    budget: &mut RegexBudget,
+) -> IResult<&'a str, Expr, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
-    let (input, first) = parse_not_expr(input)?;
+    let (input, first) = parse_not_expr(input, budget)?;
     let mut result = first;
     let mut remaining = input;
 
     loop {
         let trimmed = remaining.trim_start();
-        if let Ok((after_and, _)) =
-            preceded(tag_no_case::<&str, &str, NomErr<'_>>("AND"), multispace1).parse(trimmed)
+        if let Ok((after_and, _)) = preceded(
+            tag_no_case::<&str, &str, NomErr<'_>>(AND_KEYWORD),
+            multispace1,
+        )
+        .parse(trimmed)
         {
-            let (rest, right) = parse_not_expr(after_and)?;
+            let (rest, right) = parse_not_expr(after_and, budget)?;
             result = Expr::And(Box::new(result), Box::new(right));
             remaining = rest;
         } else {
@@ -1378,18 +1613,24 @@ fn parse_and_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 ///
 /// The unconsumed remainder and either a `Not` wrapping the atom or the
 /// atom itself, or a nom error from the atom parser.
-fn parse_not_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
+fn parse_not_expr<'a>(
+    input: &'a str,
+    budget: &mut RegexBudget,
+) -> IResult<&'a str, Expr, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
 
     // Try "NOT" followed by whitespace
-    if let Ok((after_not, _)) =
-        preceded(tag_no_case::<&str, &str, NomErr<'_>>("NOT"), multispace1).parse(input)
+    if let Ok((after_not, _)) = preceded(
+        tag_no_case::<&str, &str, NomErr<'_>>(NOT_KEYWORD),
+        multispace1,
+    )
+    .parse(input)
     {
-        let (rest, inner) = parse_atom(after_not)?;
+        let (rest, inner) = parse_atom(after_not, budget)?;
         return Ok((rest, Expr::Not(Box::new(inner))));
     }
 
-    parse_atom(input)
+    parse_atom(input, budget)
 }
 
 /// Parse an atom: parenthesized expression or comparison.
@@ -1402,20 +1643,20 @@ fn parse_not_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 ///
 /// The unconsumed remainder and the inner expression (parens are consumed
 /// but add no node), or a nom error when neither form parses.
-fn parse_atom(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
+fn parse_atom<'a>(input: &'a str, budget: &mut RegexBudget) -> IResult<&'a str, Expr, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
 
     // Try parenthesized expression
     if input.starts_with('(') {
         let (input, _) = char('(').parse(input)?;
-        let (input, expr) = parse_or_expr(input)?;
+        let (input, expr) = parse_or_expr(input, budget)?;
         let (input, _) = multispace0(input)?;
         let (input, _) = char(')').parse(input)?;
         return Ok((input, expr));
     }
 
     // Otherwise, parse a comparison
-    parse_comparison(input)
+    parse_comparison(input, budget)
 }
 
 /// Parse a comparison: `field operator value`, with optional whitespace
@@ -1429,7 +1670,10 @@ fn parse_atom(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 ///
 /// The unconsumed remainder and an `Expr::Compare` leaf, or the first nom
 /// error from the field, operator, or value parser.
-fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
+fn parse_comparison<'a>(
+    input: &'a str,
+    budget: &mut RegexBudget,
+) -> IResult<&'a str, Expr, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
     let (input, field) = parse_field(input)?;
     let (input, _) = multispace0(input)?;
@@ -1448,7 +1692,7 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
         )));
     }
     let (input, _) = multispace0(input)?;
-    let (input, value) = parse_value(input, &field, op)?;
+    let (input, value) = parse_value(input, &field, op, budget)?;
 
     Ok((input, Expr::Compare(field, op, value)))
 }
@@ -1689,6 +1933,15 @@ const SYMBOLIC_COMBINATOR: nom::error::ErrorKind = nom::error::ErrorKind::Escape
 /// [`REGEX_SIZE_LIMIT`]. Unused by every combinator here.
 const REGEX_INVALID: nom::error::ErrorKind = nom::error::ErrorKind::RegexpMatch;
 
+/// A regex past [`MAX_REGEX_COMPARISONS`] in one expression.
+const REGEX_TOO_MANY: nom::error::ErrorKind = nom::error::ErrorKind::RegexpFind;
+
+/// A regex past [`MAX_REGEX_PATTERN_BYTES`] in one expression.
+const REGEX_TOO_LONG: nom::error::ErrorKind = nom::error::ErrorKind::RegexpCapture;
+
+/// A regex past [`MAX_REGEX_CLASSES`] in one expression.
+const REGEX_TOO_MANY_CLASSES: nom::error::ErrorKind = nom::error::ErrorKind::RegexpCaptures;
+
 /// The headline for a parse error of `kind`.
 ///
 /// Only the two header-name problems get words of their own: every other
@@ -1725,6 +1978,18 @@ fn parse_problem(kind: nom::error::ErrorKind) -> String {
         REGEX_INVALID => {
             format!("the regex does not compile or is larger than {REGEX_SIZE_LIMIT} bytes")
         }
+        REGEX_TOO_MANY => format!(
+            "too many regexes: one expression holds at most \
+             {MAX_REGEX_COMPARISONS} regex comparisons (=~)"
+        ),
+        REGEX_TOO_LONG => format!(
+            "regex too long: the regexes of one expression hold at most \
+             {MAX_REGEX_PATTERN_BYTES} bytes together"
+        ),
+        REGEX_TOO_MANY_CLASSES => format!(
+            "too many regex classes: the regexes of one expression hold at most \
+             {MAX_REGEX_CLASSES} character classes (each [, \\p or \\P) together"
+        ),
         _ => "unexpected input".to_string(),
     }
 }
@@ -1796,6 +2061,54 @@ fn trailing_input_problem(expr: &str, pos: usize) -> &'static str {
         "unexpected trailing input"
     }
 }
+
+/// A syntax error [`FilterExpr::parse`] found at a known place in its input.
+///
+/// Its text is exactly what [`render_parse_error`] writes, so every surface
+/// that prints the error prints what it always did. The place is kept as a
+/// value as well, so a surface that edits the expression, such as the TUI's
+/// filter dialog, can put its cursor where the parser stopped instead of
+/// reading the number back out of the text.
+#[derive(Debug)]
+pub(crate) struct SyntaxError {
+    /// Byte offset into the TRIMMED input, on a char boundary.
+    offset: usize,
+    /// The rendered message.
+    message: String,
+}
+
+impl SyntaxError {
+    /// The error for `problem` at byte `pos` of the trimmed `expr`.
+    fn at(expr: &str, pos: usize, problem: &str) -> Self {
+        Self {
+            offset: crate::text::floor_char_boundary(expr, pos),
+            message: render_parse_error(expr, pos, problem),
+        }
+    }
+
+    /// Byte offset of the error in the input with its leading and trailing
+    /// whitespace removed, which is the text the parser read.
+    ///
+    /// Read by the TUI's filter dialog and by the REST and MCP filter
+    /// validation ([`super::filter_request::check_expression`]), so a build
+    /// with none of `tui`, `api` and `mcp` has no caller outside the tests;
+    /// the `cfg_attr` says exactly that.
+    #[cfg_attr(
+        not(any(feature = "tui", feature = "api", feature = "mcp", test)),
+        allow(dead_code)
+    )]
+    pub(crate) fn offset(&self) -> usize {
+        self.offset
+    }
+}
+
+impl std::fmt::Display for SyntaxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SyntaxError {}
 
 /// Render a filter parse error as a multi-line diagnostic: the (possibly
 /// windowed) expression, a caret under the offending position, the operator
@@ -1908,7 +2221,8 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
         ));
     }
 
-    out.push_str("\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)");
+    out.push_str("\nvalid operators: ");
+    out.push_str(&operator_footer_list());
     out.push_str("\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases");
     out
 }
@@ -1941,26 +2255,66 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// Every comparison operator, as the parser reads it, in the order it tries
+/// them: the one table [`parse_operator`] matches against and
+/// `operator_tokens` lists for help, so the two cannot disagree.
+///
+/// Two-character operators come before the one-character `<` and `>`, so a
+/// prefix is never read as the whole operator. No token is a prefix of a later
+/// one of a different length, which `operator_table_tests` checks.
+const OPERATOR_TABLE: [(&str, Operator); 8] = [
+    ("==", Operator::Eq),
+    ("!=", Operator::Ne),
+    ("<=", Operator::Le),
+    (">=", Operator::Ge),
+    ("<", Operator::Lt),
+    (">", Operator::Gt),
+    ("=~", Operator::Regex),
+    ("in_subnet", Operator::InSubnet),
+];
+
+/// The comparison operators the DSL accepts, as they are typed, in the order
+/// of [`OPERATOR_TABLE`]: `==`, `!=`, `<=`, `>=`, `<`, `>`, `=~`, `in_subnet`.
+///
+/// For a help surface that lists the language: the TUI filter dialog's
+/// field help reads it, so its list is the parser's own. The parse error
+/// footer reads the table itself ([`operator_footer_list`]), in every build.
+#[cfg(any(test, feature = "tui"))]
+pub(crate) fn operator_tokens() -> impl Iterator<Item = &'static str> {
+    OPERATOR_TABLE.iter().map(|(token, _)| *token)
+}
+
+/// The operators for a parse error's footer: every [`OPERATOR_TABLE`] token
+/// in its order, the two whose right side is not a plain value followed by
+/// what that side is (`=~ (regex)`, `in_subnet (CIDR)`).
+fn operator_footer_list() -> String {
+    OPERATOR_TABLE
+        .iter()
+        .map(|(token, op)| match op {
+            Operator::Regex => format!("{token} (regex)"),
+            Operator::InSubnet => format!("{token} (CIDR)"),
+            Operator::Eq
+            | Operator::Ne
+            | Operator::Lt
+            | Operator::Le
+            | Operator::Gt
+            | Operator::Ge => (*token).to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Parse a comparison operator token into an `Operator`.
 ///
-/// Two-character operators (`=~`, `==`, `!=`, `<=`, `>=`) are tried
-/// before single-character `<`/`>` so a prefix is never misparsed.
-/// Returns the remainder and the operator, or a nom error when no
-/// operator matches.
+/// The first entry of [`OPERATOR_TABLE`] that `input` starts with wins; the
+/// table puts each two-character operator before its one-character prefix.
+/// Returns the remainder and the operator, or a nom `Tag` error at `input`
+/// when no operator matches.
 fn parse_operator(input: &str) -> IResult<&str, Operator, NomErr<'_>> {
-    alt((
-        // Before the symbolic operators: a word operator cannot be confused
-        // with them, and putting it first keeps the longest-match rule simple.
-        map(tag("in_subnet"), |_| Operator::InSubnet),
-        map(tag("=~"), |_| Operator::Regex),
-        map(tag("=="), |_| Operator::Eq),
-        map(tag("!="), |_| Operator::Ne),
-        map(tag("<="), |_| Operator::Le),
-        map(tag(">="), |_| Operator::Ge),
-        map(tag("<"), |_| Operator::Lt),
-        map(tag(">"), |_| Operator::Gt),
-    ))
-    .parse(input)
+    OPERATOR_TABLE
+        .iter()
+        .find_map(|(token, op)| input.strip_prefix(token).map(|rest| (rest, *op)))
+        .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)))
 }
 
 /// Scan a quoted string body (everything after the opening `quote`),
@@ -2072,7 +2426,7 @@ fn ends_a_comparison(rest: &str) -> bool {
     if rest.is_empty() || rest.starts_with(')') {
         return true;
     }
-    ["AND", "OR"].iter().any(|word| {
+    [AND_KEYWORD, OR_KEYWORD].iter().any(|word| {
         rest.get(..word.len())
             .is_some_and(|w| w.eq_ignore_ascii_case(word))
             && rest[word.len()..]
@@ -2112,6 +2466,7 @@ fn parse_value<'a>(
     input: &'a str,
     field: &Field,
     op: Operator,
+    budget: &mut RegexBudget,
 ) -> IResult<&'a str, Value, NomErr<'a>> {
     let (input, _) = multispace0(input)?;
     let fail = |at: &'a str, kind| nom::Err::Failure(nom::error::Error::new(at, kind));
@@ -2149,6 +2504,18 @@ fn parse_value<'a>(
     };
 
     if op == Operator::Regex {
+        // Spent before the compile: a pattern past the budget never reaches
+        // the regex crate (see `RegexBudget`).
+        budget.spend(&text).map_err(|over| {
+            fail(
+                input,
+                match over {
+                    RegexOverBudget::Comparisons => REGEX_TOO_MANY,
+                    RegexOverBudget::PatternBytes => REGEX_TOO_LONG,
+                    RegexOverBudget::Classes => REGEX_TOO_MANY_CLASSES,
+                },
+            )
+        })?;
         // `payload` greps the raw message bytes, so its regex is compiled
         // with the byte engine to match without a lossy UTF-8 copy.
         if *field == Field::Payload {
@@ -3331,6 +3698,29 @@ mod tests {
             "problems must not include a term that can never be true: {expr}"
         );
         FilterExpr::parse(&expr)?;
+        Ok(())
+    }
+
+    /// Evaluating the `problems` alias against a whole call parses each of
+    /// its messages' CSeq and SDP at most once, though several of its terms
+    /// read them (the diagnosis, `retransmits`, `pdd`, `state`).
+    #[test]
+    fn the_problems_alias_parses_each_message_once() -> Result<(), TestError> {
+        let mut store = crate::sip::dialog_store::DialogStore::new(16, false);
+        for msg in crate::test_utils::sdp_call("problems-once@example.com")? {
+            store.process_message(msg);
+        }
+        let dialog = store.iter().next().ok_or("the call opened a dialog")?;
+        let expr = FilterExpr::parse(
+            &expand_alias("problems", &AliasThresholds::default()).ok_or("alias exists")?,
+        )?;
+        crate::test_utils::clear_parses();
+        let matched = expr.matches_dialog(dialog, &[], CaptureMedia::Absent, MosDelay::unknown());
+        assert!(!matched, "a clean answered call is not a problem");
+        let (cseq, sdp, read) = crate::test_utils::worst_parses();
+        assert_eq!(read, 7, "the filter read all seven messages");
+        assert!(cseq <= 1, "one message's CSeq was parsed {cseq} times");
+        assert!(sdp <= 1, "one message's SDP was parsed {sdp} times");
         Ok(())
     }
 
@@ -5025,6 +5415,184 @@ mod tests {
         Ok(())
     }
 
+    /// The fields whose value is read from a dialog's RTP streams: the
+    /// `rtp.*` fields, and every diagnosis field (the diagnosis is computed
+    /// from the streams).
+    const STREAM_FIELDS: &[&str] = &[
+        "rtp.mos",
+        "rtp.jitter",
+        "rtp.loss",
+        "rtp.packets",
+        "rtp.codec",
+        "rtp.codecs",
+        "rtp.ssrc",
+        "one_way",
+        "nat_mismatch",
+        "no_media",
+        "codec_asymmetry",
+        "ptime_asymmetry",
+        "payload_asymmetry",
+        "duration_asymmetry",
+        "late_media",
+    ];
+
+    /// The `Field` a fixed field name parses to.
+    fn field_named(name: &str) -> Result<Field, TestError> {
+        let (rest, field) = parse_field(name).map_err(|e| format!("{name}: {e:?}"))?;
+        assert!(rest.is_empty(), "{name} parses whole, left {rest:?}");
+        Ok(field)
+    }
+
+    /// Every field name says whether its value is read from the streams, and
+    /// exactly the stream fields say yes.
+    #[test]
+    fn every_field_says_whether_it_reads_streams() -> Result<(), TestError> {
+        for name in FIELD_NAMES {
+            let field = field_named(name)?;
+            assert_eq!(
+                field.reads_streams(),
+                STREAM_FIELDS.contains(name),
+                "{name}: reads_streams"
+            );
+        }
+        for name in STREAM_FIELDS {
+            assert!(FIELD_NAMES.contains(name), "{name} is a field name");
+        }
+        assert!(
+            !Field::Header("X-Foo".into()).reads_streams(),
+            "a header field reads the dialog's messages only"
+        );
+        Ok(())
+    }
+
+    /// A diagnosis field reads the streams: the diagnosis is computed from
+    /// them, so a filter needing the diagnosis must be handed them.
+    #[test]
+    fn every_diagnosis_field_reads_streams() -> Result<(), TestError> {
+        for name in FIELD_NAMES {
+            let field = field_named(name)?;
+            if field.is_diagnosis() {
+                assert!(field.reads_streams(), "{name} is a diagnosis field");
+            }
+        }
+        Ok(())
+    }
+
+    /// The parse-time `needs_streams` flag is set iff some leaf reads a
+    /// stream field, at any depth, and a time window keeps it.
+    #[test]
+    fn needs_streams_flag_reflects_field_use() -> Result<(), TestError> {
+        for (text, want) in [
+            ("method == INVITE", false),
+            ("from.user == '1001' AND response_code >= 400", false),
+            ("header.X-Rtp == 'rtp.packets'", false),
+            ("ua =~ 'rtp'", false),
+            ("rtp.packets > 0", true),
+            (
+                "method == INVITE AND (state == 'InCall' OR rtp.mos < 3.0)",
+                true,
+            ),
+            ("NOT (rtp.codec == PCMU)", true),
+            ("no_media == true", true),
+            ("method == BYE OR late_media == true", true),
+        ] {
+            assert_eq!(FilterExpr::parse(text)?.needs_streams(), want, "{text}");
+        }
+        let after = Some(base_ts()?);
+        for (text, want) in [("method == INVITE", false), ("rtp.loss > 1", true)] {
+            let windowed =
+                FilterExpr::with_time_window(Some(FilterExpr::parse(text)?), after, None)
+                    .ok_or("a window gives a filter")?;
+            assert_eq!(windowed.needs_streams(), want, "{text} with a window");
+        }
+        let window_only =
+            FilterExpr::with_time_window(None, after, None).ok_or("a window gives a filter")?;
+        assert!(
+            !window_only.needs_streams(),
+            "a bare window reads no stream"
+        );
+        assert!(
+            FilterExpr::never().needs_streams(),
+            "never() is written with one_way, a diagnosis field"
+        );
+        Ok(())
+    }
+
+    /// Literals of each kind for `field`, written as the right-hand side of
+    /// a comparison.
+    fn literals_for(field: &Field) -> &'static [&'static str] {
+        match field.value_kind() {
+            ValueKind::Text => &["== ''", "== 'x'", "!= ''", "== PCMU", "== '0xdeadbeef'"],
+            ValueKind::Number => &["> 0", ">= 0", "== 0", "< 1", "== 1"],
+            ValueKind::Boolean => &["== true", "== false"],
+            ValueKind::Instant => &[">= '2000-01-01T00:00:00Z'", "< '2000-01-01T00:00:00Z'"],
+        }
+    }
+
+    /// A field that reads no stream gives the same verdict with the dialog's
+    /// streams as with none, for every literal tried: so a caller may skip
+    /// collecting them.
+    #[test]
+    fn a_field_that_reads_no_stream_ignores_the_streams() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let mut stream = make_rtp_stream(false)?;
+        stream.codec = Some("PCMU".to_string());
+        let streams = [&stream];
+        let mut checked = 0;
+        for name in FIELD_NAMES.iter().filter(|n| !STREAM_FIELDS.contains(n)) {
+            let field = field_named(name)?;
+            for literal in literals_for(&field) {
+                let text = format!("{name} {literal}");
+                let Ok(expr) = FilterExpr::parse(&text) else {
+                    continue;
+                };
+                for capture in [CaptureMedia::Absent, CaptureMedia::Observed] {
+                    assert_eq!(
+                        expr.matches_dialog(&dialog, &streams, capture, MosDelay::unknown()),
+                        expr.matches_dialog(&dialog, &[], capture, MosDelay::unknown()),
+                        "{text}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 28,
+            "every non-stream field was tried, {checked} expressions"
+        );
+        Ok(())
+    }
+
+    /// Each `rtp.*` field gives a different verdict with a stream than with
+    /// none for some literal: skipping the streams for it would be wrong.
+    #[test]
+    fn each_rtp_field_depends_on_the_streams() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let mut stream = make_rtp_stream(false)?;
+        stream.codec = Some("PCMU".to_string());
+        let streams = [&stream];
+        for name in STREAM_FIELDS.iter().filter(|n| n.starts_with("rtp.")) {
+            let field = field_named(name)?;
+            let differs = literals_for(&field).iter().any(|literal| {
+                FilterExpr::parse(&format!("{name} {literal}")).is_ok_and(|expr| {
+                    expr.matches_dialog(
+                        &dialog,
+                        &streams,
+                        CaptureMedia::Observed,
+                        MosDelay::unknown(),
+                    ) != expr.matches_dialog(
+                        &dialog,
+                        &[],
+                        CaptureMedia::Observed,
+                        MosDelay::unknown(),
+                    )
+                })
+            });
+            assert!(differs, "{name}: some literal must depend on the streams");
+        }
+        Ok(())
+    }
+
     /// Item 2: `rtp.codec` / `rtp.ssrc` match if ANY linked stream matches,
     /// consistent with the worst-across-streams quality fields. A codec or
     /// SSRC carried only by the *second* stream must still match. The old
@@ -5176,6 +5744,127 @@ mod tests {
 
 /// Tests for the unknown-field diagnostic: naming the field, suggesting
 /// the closest valid one, and keeping FIELD_NAMES in sync with the parser.
+#[cfg(test)]
+mod regex_budget_tests {
+    use super::*;
+
+    #[test]
+    fn a_pattern_without_classes_counts_none() {
+        assert_eq!(
+            regex_class_count("(?i)friendly-scanner"),
+            0,
+            "no class at all"
+        );
+        assert_eq!(regex_class_count(""), 0, "the empty pattern");
+    }
+
+    #[test]
+    fn each_bracket_and_unicode_class_counts_once() {
+        assert_eq!(regex_class_count("[a-z][0-9]"), 2, "two bracket classes");
+        assert_eq!(
+            regex_class_count("\\pL\\PL\\p{Greek}"),
+            3,
+            "three Unicode classes"
+        );
+        assert_eq!(
+            regex_class_count("[[a][b]]"),
+            3,
+            "a nested class counts per bracket"
+        );
+    }
+
+    #[test]
+    fn an_escape_consumes_the_character_after_it() {
+        assert_eq!(
+            regex_class_count("\\[x\\]"),
+            0,
+            "an escaped bracket is a literal"
+        );
+        assert_eq!(
+            regex_class_count("\\\\[x]"),
+            1,
+            "an escaped backslash, then a class"
+        );
+        assert_eq!(
+            regex_class_count("\\\\pL"),
+            0,
+            "an escaped backslash, then the letters pL"
+        );
+        assert_eq!(
+            regex_class_count("\\d\\w\\D"),
+            0,
+            "Perl classes are not counted"
+        );
+        assert_eq!(
+            regex_class_count("a\\"),
+            0,
+            "a trailing backslash ends the scan"
+        );
+    }
+
+    #[test]
+    fn a_fresh_budget_takes_exactly_its_limits() {
+        let mut budget = RegexBudget::new();
+        let classes = "[a]".repeat(MAX_REGEX_CLASSES);
+        assert_eq!(budget.spend(&classes), Ok(()), "the class limit fits");
+        assert_eq!(
+            budget.spend("[b]"),
+            Err(RegexOverBudget::Classes),
+            "one past it does not"
+        );
+
+        let mut budget = RegexBudget::new();
+        let bytes = "a".repeat(MAX_REGEX_PATTERN_BYTES);
+        assert_eq!(budget.spend(&bytes), Ok(()), "the byte limit fits");
+        assert_eq!(
+            budget.spend("b"),
+            Err(RegexOverBudget::PatternBytes),
+            "one past it does not"
+        );
+
+        let mut budget = RegexBudget::new();
+        for n in 0..MAX_REGEX_COMPARISONS {
+            assert_eq!(budget.spend(""), Ok(()), "comparison {n} fits");
+        }
+        assert_eq!(
+            budget.spend(""),
+            Err(RegexOverBudget::Comparisons),
+            "one past them does not"
+        );
+    }
+
+    #[test]
+    fn a_refused_spend_spends_nothing() {
+        let mut budget = RegexBudget::new();
+        let before = budget;
+        assert_eq!(
+            budget.spend(&"[a]".repeat(MAX_REGEX_CLASSES + 1)),
+            Err(RegexOverBudget::Classes),
+            "past the class limit"
+        );
+        assert_eq!(budget, before, "a refusal leaves the budget as it was");
+    }
+
+    #[test]
+    fn the_limits_are_checked_comparisons_then_bytes_then_classes() {
+        let mut budget = RegexBudget::new();
+        let both = "[a]".repeat(MAX_REGEX_PATTERN_BYTES);
+        assert_eq!(
+            budget.spend(&both),
+            Err(RegexOverBudget::PatternBytes),
+            "past bytes and classes: bytes name it"
+        );
+        for _ in 0..MAX_REGEX_COMPARISONS {
+            let _ = budget.spend("");
+        }
+        assert_eq!(
+            budget.spend(&both),
+            Err(RegexOverBudget::Comparisons),
+            "past all three: comparisons name it"
+        );
+    }
+}
+
 #[cfg(test)]
 mod unknown_field_hint_tests {
     use super::*;
@@ -6436,6 +7125,415 @@ mod latest_message_tests {
             !selects_the_call("duration < 1")?,
             "0.905 s, to the last message read, is not the duration"
         );
+        Ok(())
+    }
+}
+
+/// Tests for the place a syntax error carries and for the rule that resolves
+/// typed filter text (#841): the TUI's Expression field reads both.
+#[cfg(test)]
+mod typed_filter_tests {
+    use super::*;
+    use crate::sip::named_filters::NamedFilters;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The syntax error `parse` returns for `input`.
+    fn syntax_error_of(input: &str) -> Result<(usize, String), TestError> {
+        let err = match FilterExpr::parse(input) {
+            Ok(_) => return Err(format!("{input:?} must not parse").into()),
+            Err(e) => e,
+        };
+        let syntax = err
+            .downcast_ref::<SyntaxError>()
+            .ok_or_else(|| format!("{input:?}: not a syntax error: {err}"))?;
+        Ok((syntax.offset(), err.to_string()))
+    }
+
+    /// A `[filters]` table defining `sales`.
+    fn sales_table() -> Result<NamedFilters, TestError> {
+        let mut defs = std::collections::BTreeMap::new();
+        defs.insert("sales".to_string(), "to.user == '7000'".to_string());
+        Ok(NamedFilters::resolve(&defs, &AliasThresholds::default())?)
+    }
+
+    /// The offset is the place the message names: for an unquoted value
+    /// followed by more text, the value's first byte.
+    #[test]
+    fn a_syntax_error_carries_the_offset_its_message_names() -> Result<(), TestError> {
+        let (offset, message) = syntax_error_of("msg_count > 5 garbage")?;
+        assert_eq!(offset, 12, "the offset is where '5' starts");
+        assert!(
+            message.contains("at position 12: '5'"),
+            "the message is unchanged: {message}"
+        );
+        Ok(())
+    }
+
+    /// Trailing input after a complete expression: the offset is where the
+    /// tail starts.
+    #[test]
+    fn trailing_input_is_placed_at_its_start() -> Result<(), TestError> {
+        let (offset, message) = syntax_error_of("msg_count > 5 )")?;
+        assert_eq!(offset, 14, "the stray ')': {message}");
+        Ok(())
+    }
+
+    /// The offset counts in the text the parser read, without the leading
+    /// whitespace it trimmed.
+    #[test]
+    fn the_offset_is_into_the_trimmed_input() -> Result<(), TestError> {
+        let (offset, _) = syntax_error_of("   msg_count > 5 garbage  ")?;
+        assert_eq!(offset, 12, "measured from the first non-space character");
+        Ok(())
+    }
+
+    /// A single `=` is not an operator; the error is at the operator.
+    #[test]
+    fn a_single_equals_sign_is_refused_at_its_place() -> Result<(), TestError> {
+        let (offset, message) = syntax_error_of("msg_count = 5")?;
+        assert!(
+            offset >= "msg_count".len(),
+            "the error is at or after the field: {offset} in {message}"
+        );
+        assert!(
+            message.contains(&format!("at position {offset}")),
+            "the offset and the message agree for ASCII text: {offset} in {message}"
+        );
+        Ok(())
+    }
+
+    /// An error after a multibyte character lands on a char boundary.
+    #[test]
+    fn the_offset_is_on_a_char_boundary_after_multibyte_text() -> Result<(), TestError> {
+        let input = "payload =~ 'é' garbage";
+        let (offset, _) = syntax_error_of(input)?;
+        assert!(
+            input.is_char_boundary(offset),
+            "offset {offset} splits a char"
+        );
+        assert_eq!(&input[offset..], "garbage", "offset {offset}");
+        Ok(())
+    }
+
+    /// An error with no place in the text is not a syntax error.
+    #[test]
+    fn an_empty_expression_has_no_place() -> Result<(), TestError> {
+        let err = match FilterExpr::parse("   ") {
+            Ok(_) => return Err("an empty expression must not parse".into()),
+            Err(e) => e,
+        };
+        assert!(
+            err.downcast_ref::<SyntaxError>().is_none(),
+            "an empty expression has no position: {err}"
+        );
+        Ok(())
+    }
+
+    /// A plain expression resolves to itself.
+    #[test]
+    fn a_plain_expression_resolves_unchanged() -> Result<(), TestError> {
+        let text = "payload =~ 'X-Foo' AND msg_count > 5";
+        let resolved = resolve_typed_filter(text, &sales_table()?, &AliasThresholds::default())?;
+        assert_eq!(resolved, text, "nothing to resolve");
+        Ok(())
+    }
+
+    /// An `@name` resolves through the table passed in.
+    #[test]
+    fn a_reference_resolves_through_the_given_table() -> Result<(), TestError> {
+        let resolved = resolve_typed_filter(
+            "@sales AND msg_count > 5",
+            &sales_table()?,
+            &AliasThresholds::default(),
+        )?;
+        assert_eq!(
+            resolved, "(to.user == '7000') AND msg_count > 5",
+            "@sales replaced by its grouped definition"
+        );
+        Ok(())
+    }
+
+    /// A diagnostic alias name as the whole text expands, as `--filter
+    /// one-way` does.
+    #[test]
+    fn a_bare_alias_name_expands() -> Result<(), TestError> {
+        let resolved =
+            resolve_typed_filter("one-way", &sales_table()?, &AliasThresholds::default())?;
+        assert_eq!(resolved, "one_way == true", "the alias's expansion");
+        Ok(())
+    }
+
+    /// A name the table does not define is refused, naming what it defines.
+    #[test]
+    fn an_undefined_reference_is_refused_naming_the_defined_ones() -> Result<(), TestError> {
+        let err = match resolve_typed_filter("@nope", &sales_table()?, &AliasThresholds::default())
+        {
+            Ok(text) => return Err(format!("'@nope' resolved to {text:?}").into()),
+            Err(e) => e,
+        };
+        assert!(err.contains("'@nope' is not a defined filter"), "{err}");
+        assert!(err.contains("sales"), "names what is defined: {err}");
+        Ok(())
+    }
+}
+
+/// The operator and keyword lists a help surface reads are the parser's own:
+/// each listed operator parses, each operator that parses is listed, and the
+/// table's order cannot shadow a longer operator behind a shorter one.
+#[cfg(test)]
+mod operator_table_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Every listed operator is one whole operator to the parser.
+    #[test]
+    fn each_listed_operator_parses_whole() -> Result<(), TestError> {
+        let tokens: Vec<&str> = operator_tokens().collect();
+        assert_eq!(
+            tokens,
+            ["==", "!=", "<=", ">=", "<", ">", "=~", "in_subnet"],
+            "the help lists the parser's operators in its order"
+        );
+        for token in tokens {
+            let (rest, _) = parse_operator(token).map_err(|e| format!("{token}: {e}"))?;
+            assert!(
+                rest.is_empty(),
+                "'{token}' parsed only in part: rest {rest:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Every string the parser takes whole as an operator is in the list: a
+    /// new operator added to the parser cannot be left out of the help.
+    #[test]
+    fn every_operator_the_parser_takes_is_listed() {
+        let listed: Vec<&str> = operator_tokens().collect();
+        let symbols = ['=', '!', '<', '>', '~'];
+        let mut probes: Vec<String> = symbols.iter().map(char::to_string).collect();
+        for a in symbols {
+            for b in symbols {
+                probes.push(format!("{a}{b}"));
+            }
+        }
+        probes.extend(["in_subnet", "in", "IN_SUBNET", "subnet"].map(str::to_owned));
+        let mut taken = 0;
+        for probe in &probes {
+            if let Ok(("", _)) = parse_operator(probe) {
+                taken += 1;
+                assert!(
+                    listed.contains(&probe.as_str()),
+                    "the parser takes '{probe}' but the list leaves it out"
+                );
+            }
+        }
+        assert_eq!(taken, 8, "the probes reach every operator: {listed:?}");
+    }
+
+    /// No operator is a prefix of one tried after it, which would make the
+    /// later one unreachable.
+    #[test]
+    fn no_operator_shadows_a_later_one() {
+        for (i, (first, _)) in OPERATOR_TABLE.iter().enumerate() {
+            for (later, _) in &OPERATOR_TABLE[i + 1..] {
+                assert!(
+                    !later.starts_with(first),
+                    "'{first}' is tried before '{later}' and would cut it short"
+                );
+            }
+        }
+    }
+
+    /// A string that is not an operator is refused, as before the table.
+    #[test]
+    fn a_non_operator_is_refused() {
+        for probe in ["", "=", "!", "~", "<>", "in", " ==", "IN_SUBNET"] {
+            assert!(
+                !matches!(parse_operator(probe), Ok(("", _))),
+                "'{probe}' must not parse as a whole operator"
+            );
+        }
+    }
+
+    /// The listed combining words are the ones the parser joins terms with,
+    /// in any case, and a word it does not know is refused.
+    #[test]
+    fn the_listed_keywords_combine_terms() -> Result<(), TestError> {
+        assert_eq!(
+            LOGICAL_KEYWORDS,
+            ["AND", "OR", "NOT"],
+            "the parser's three words"
+        );
+        for word in LOGICAL_KEYWORDS {
+            for spelled in [word.to_string(), word.to_lowercase()] {
+                let text = if *word == NOT_KEYWORD {
+                    format!("{spelled} method == 'BYE'")
+                } else {
+                    format!("method == 'BYE' {spelled} method == 'ACK'")
+                };
+                FilterExpr::parse(&text).map_err(|e| format!("{text}: {e}"))?;
+            }
+        }
+        assert!(
+            FilterExpr::parse("method == 'BYE' XOR method == 'ACK'").is_err(),
+            "a word the parser does not know is refused"
+        );
+        Ok(())
+    }
+}
+
+/// The "valid operators" footer of a parse error is built from
+/// [`OPERATOR_TABLE`], so it names every operator the parser accepts,
+/// `in_subnet` included, in every build.
+#[cfg(test)]
+mod operator_footer_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The footer line of a rendered error, without its leading newline.
+    fn footer_of(rendered: &str) -> Result<&str, TestError> {
+        Ok(rendered
+            .lines()
+            .find(|l| l.starts_with("valid operators: "))
+            .ok_or_else(|| format!("no footer line in:\n{rendered}"))?)
+    }
+
+    /// The footer of a real parse error names `in_subnet`.
+    #[test]
+    fn a_parse_error_footer_names_in_subnet() -> Result<(), TestError> {
+        let err = FilterExpr::parse("src.ip @@ '198.51.100.0/24'")
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
+        assert!(
+            footer_of(&err)?.contains("in_subnet"),
+            "the footer must list in_subnet, got:\n{err}"
+        );
+        Ok(())
+    }
+
+    /// Every operator of the table appears in the footer.
+    #[test]
+    fn the_footer_lists_every_table_operator() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        let footer = footer_of(&out)?;
+        for (token, _) in OPERATOR_TABLE {
+            assert!(footer.contains(token), "footer lacks '{token}': {footer}");
+        }
+        Ok(())
+    }
+
+    /// The footer lists the operators in the table's order.
+    #[test]
+    fn the_footer_keeps_the_table_order() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        let footer = footer_of(&out)?;
+        let listed: Vec<&str> = footer
+            .trim_start_matches("valid operators: ")
+            .split(", ")
+            .map(|item| item.split(' ').next().unwrap_or(item))
+            .collect();
+        let table: Vec<&str> = OPERATOR_TABLE.iter().map(|(t, _)| *t).collect();
+        assert_eq!(listed, table, "footer order must be the table's: {footer}");
+        Ok(())
+    }
+
+    /// The exact footer: each token once, `=~` and `in_subnet` explained.
+    #[test]
+    fn the_footer_text_is_exact() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        assert_eq!(
+            footer_of(&out)?,
+            "valid operators: ==, !=, <=, >=, <, >, =~ (regex), in_subnet (CIDR)",
+            "the footer wording"
+        );
+        Ok(())
+    }
+
+    /// The footer appears once per rendered error.
+    #[test]
+    fn the_footer_appears_once() -> Result<(), TestError> {
+        let out = render_parse_error("a == ", 5, "unexpected end of input");
+        let count = out
+            .lines()
+            .filter(|l| l.starts_with("valid operators: "))
+            .count();
+        assert_eq!(count, 1, "one footer line in:\n{out}");
+        Ok(())
+    }
+
+    /// The unknown-field hint path still ends with the same footer.
+    #[test]
+    fn the_unknown_field_error_has_the_same_footer() -> Result<(), TestError> {
+        let err = FilterExpr::parse("frm.user == 'alice'")
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
+        let plain = render_parse_error("a", 0, "unexpected input");
+        assert_eq!(
+            footer_of(&err)?,
+            footer_of(&plain)?,
+            "every error carries one footer"
+        );
+        Ok(())
+    }
+
+    /// The footer is followed by the docs pointer line, as before.
+    #[test]
+    fn the_docs_pointer_follows_the_footer() -> Result<(), TestError> {
+        let out = render_parse_error("a", 0, "unexpected input");
+        let lines: Vec<&str> = out.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("valid operators: "))
+            .ok_or("no footer")?;
+        assert!(
+            lines
+                .get(at + 1)
+                .is_some_and(|l| l.starts_with("see docs/filter-dsl.md")),
+            "the docs pointer follows the footer:\n{out}"
+        );
+        Ok(())
+    }
+
+    /// A typed `in_subnet` with a bad value still names the operator list
+    /// that holds it.
+    #[test]
+    fn an_in_subnet_value_error_lists_in_subnet() -> Result<(), TestError> {
+        let err = FilterExpr::parse("src.ip in_subnet")
+            .err()
+            .ok_or("expected an error")?
+            .to_string();
+        assert!(footer_of(&err)?.contains("in_subnet (CIDR)"), "got:\n{err}");
+        Ok(())
+    }
+
+    /// Every page and example that quotes the footer quotes the parser's
+    /// own line, so a reader never sees an operator list the parser does
+    /// not print.
+    #[test]
+    fn every_quoted_footer_matches_the_parser() -> Result<(), TestError> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let rendered = render_parse_error("a", 0, "unexpected input");
+        let want = footer_of(&rendered)?;
+        let mut seen = 0;
+        for rel in [
+            "docs/filter-dsl.md",
+            "docs/rest-api.md",
+            "docs/mcp-tools-signaling.md",
+            "examples/filter_dialogs.rs",
+        ] {
+            let text = std::fs::read_to_string(root.join(rel))?;
+            for (at, _) in text.match_indices("valid operators: ") {
+                let line = text[at..].split(['\n', '\\']).next().ok_or("empty match")?;
+                assert_eq!(line, want, "{rel} quotes a stale footer");
+                seen += 1;
+            }
+        }
+        assert!(seen >= 5, "the four files quote the footer {seen} times");
         Ok(())
     }
 }

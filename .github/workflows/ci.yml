@@ -26,9 +26,13 @@ env:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same ref to save runner minutes.
+# Cancel superseded runs on the same ref to save runner minutes. A pull
+# request's runs are grouped by its number, `ci-CI-<number>`, so that
+# .github/workflows/pr-closed.yml, started when the pull request closes, can
+# enter the same group and cancel a run still in progress. A push has no pull
+# request, so its group is still its ref.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
@@ -187,7 +191,7 @@ jobs:
       # step after Build then runs every one of them.
       - name: Set up Go (Linux)
         if: runner.os == 'Linux'
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.1'
           # clients/go uses the standard library only, so there is no go.sum
@@ -282,23 +286,12 @@ jobs:
       - name: Run and check the G.729 examples
         run: cargo test -p sipnab-g729 --features std --test examples
 
-      # The suite on macOS, whole, in this job. On Linux it runs split into
-      # shards in the `test` job, which is what the required `CI success`
-      # waits for; the macOS leg blocks no pull request (see `check-macos`),
-      # so splitting it would shorten nothing a merge waits for. On main the
-      # tag gate waits for every workflow of the commit, and Quality took
-      # 28.6 minutes on run 41620629650 (2026-11-03) against this job's 22.2.
-      # One job also keeps macOS to the one `cargo-check` cache entry it had,
-      # 4.07 GB of the repository's 10 GB.
-      # scripts/parallel-tests.py runs the suite under the cargo-nextest
-      # version .config/nextest.toml pins, and refuses any other.
-      - name: Install cargo-nextest (macOS)
-        if: runner.os == 'macOS'
-        uses: ./.github/actions/nextest
-
-      - name: Test (macOS, every target)
-        if: runner.os == 'macOS'
-        run: python3 scripts/parallel-tests.py -- --all-features
+      # The suite runs in the `test` job on Linux and in `test-macos` on
+      # macOS, in shards, not here. It ran whole in this job on macOS until
+      # main's run 43880888975 (2026-11-16) canceled Check (macos-26) at
+      # its 45-minute cap: the suite step took 38.2 of the job's 45.5
+      # minutes, and 22.3 to 32.5 on the three runs before it.
+      # tests/support/macos_suite.rs holds the layout.
 
       - name: Test the sipnab-bpf-types crate
         # The test job's Test step covers the sipnab package only, because
@@ -400,6 +393,16 @@ jobs:
           tmux -V
           cargo test --features tui --test tui_e2e_test -- --ignored
 
+      # What a pane's process sees after each way the TUI tests lose its
+      # terminal, and how long sipnab takes to end after each, printed under
+      # --nocapture so a passing run carries the numbers
+      # (MACOS-TUI-NOT-ENDING-AFTER-TMUX-KILL was seen only on macOS). The
+      # launch test takes up to six minutes, so it runs here and not in the
+      # pre-push hook; see tests/tui_terminal_loss_test.rs for the pass rules.
+      - name: TUI terminal-loss measurements (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --features tui --test tui_terminal_loss_test -- --ignored --nocapture --test-threads=1
+
       # The workspace's own executables are rebuilt by any change to the
       # sources, so they are removed before the save; see the script. It runs
       # on every run, not only before a save, so each run's log records the
@@ -418,7 +421,8 @@ jobs:
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # The macOS leg of Check: the same steps as `check`, through the YAML
-  # alias, and on macOS they include the whole suite.
+  # alias. The macOS suite is the job `test-macos`, which follows the same
+  # rule as this one.
   #
   # `CI success`, the one required status check, does not need this job, so
   # a pull request neither waits for macOS nor turns red when GitHub cancels
@@ -434,7 +438,10 @@ jobs:
   # green. the_macos_leg_blocks_main_and_no_pull_request in
   # tests/site_journey_test.rs holds both halves.
   check-macos:
-    # Slowest run measured on GitHub's runners: 27.7 min
+    # Slowest run measured on GitHub's runners: 45.5 min (canceled at the
+    # cap, run 43880888975, 2026-11-16), 38.2 of it the suite, which has
+    # since moved to `test-macos`; the rest of the job took about 6.7 to
+    # 11.3 min on the three completed runs before it.
     timeout-minutes: 45
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-24.04-arm' || 'macos-26' }}
@@ -451,12 +458,12 @@ jobs:
   # scripts/parallel-tests.py --shard-index I --shard-count N is the one rule
   # for which shard runs what: every integration-test target in exactly one
   # shard, and the library and binary unit tests and the doctests in the
-  # first. The `shard:` list is the only place N is written; the step reads
-  # its index and count from `strategy`. Linux only: macOS runs the suite
-  # whole in `check-macos`.
+  # first. Each job's `shard:` list is the only place its N is written; the
+  # step reads its index and count from `strategy`. Linux here; macOS runs
+  # these same steps in `test-macos` below, through the alias *test-steps.
   # scripts/tests/test_parallel_tests_shards.py holds the rule, on this
   # repository's real targets too, and the `test-results` job refuses a set
-  # of outputs that is not every shard with every target exactly once.
+  # of Linux outputs that is not every shard with every target exactly once.
   test:
     # Slowest run measured on GitHub's runners: 27.7 min
     timeout-minutes: 45
@@ -467,7 +474,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         shard: [1, 2]
-    steps:
+    steps: &test-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
@@ -481,12 +488,12 @@ jobs:
 
       # The packages the suite ran with when it ran in `check`, so every
       # test sees the same machine: yanglint for the YANG tests, cmake for
-      # libopus, tmux for the PTY tests' probes.
+      # libopus, tmux for the PTY tests' probes, groff for the man page.
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         uses: ./.github/actions/system-deps
         with:
-          packages: libpcap-dev libasound2-dev libyang2-tools tmux cmake
+          packages: libpcap-dev libasound2-dev libyang2-tools tmux cmake groff-base
 
       - id: toolchain
         uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
@@ -511,6 +518,13 @@ jobs:
           restore-keys: |
             cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
+      # Every platform's crates, after the cache restore. A build downloads
+      # only its own platform's, and release_pipeline_gate_test runs
+      # `cargo tree --offline --target all`: on main b8700e3f2 a cold macOS
+      # cache failed it. scripts/check-suite-fetch.py holds this step.
+      - name: Fetch every platform's crates
+        run: cargo fetch --locked
+
       # The tools `check` installs before the suite ran there: the pinned
       # rustfmt, Go, Node.js and tshark.
       - name: Install the pinned rustfmt (Linux)
@@ -518,7 +532,7 @@ jobs:
         run: rustup toolchain install "$(cat .rustfmt-toolchain)" --profile minimal --component rustfmt
       - name: Set up Go for the suite (Linux)
         if: runner.os == 'Linux'
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.1'
           cache: false
@@ -556,8 +570,19 @@ jobs:
         # binary, so `test-results` counts the shards' outputs together by
         # the rule it applied to one unsharded run, and the exit status is
         # non-zero if any test failed.
+        #
+        # SIPNAB_REQUIRE_PREREQS names the prerequisites these runners have, so
+        # a test that needs one fails here instead of skipping when it goes
+        # missing (src/test_prereq.rs). parallel-tests.py prints how many tests
+        # skipped on a prerequisite that is not named.
         run: |
           set -o pipefail
+          case "$RUNNER_OS" in
+            Linux) SIPNAB_REQUIRE_PREREQS=sudo,non-root,seccomp,landlock,lsm-list,dev-full,proc-maps,separate-shm,ca-bundle,capture-refused,no-new-privs-off,non-loopback-address,editcap,tshark,node,groff,strings,setpriv,git-checkout,git-dir,release-history ;;
+            macOS) SIPNAB_REQUIRE_PREREQS=sudo,non-root,ca-bundle,non-loopback-address,git-checkout,git-dir,release-history ;;
+            *) SIPNAB_REQUIRE_PREREQS= ;;
+          esac
+          export SIPNAB_REQUIRE_PREREQS
           mkdir -p "$RUNNER_TEMP/test-shard"
           python3 scripts/parallel-tests.py --shard-index ${{ strategy.job-index }} --shard-count ${{ strategy.job-total }} \
             --manifest "$RUNNER_TEMP/test-shard/shard.json" -- --all-features 2>&1 \
@@ -585,6 +610,33 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  # The macOS leg of the suite: the same steps as `test`, through the YAML
+  # alias, in shards by the same rule, so each shard compiles only its own
+  # targets. It ran whole in `check-macos` until that job reached its
+  # 45-minute cap on main's run 43880888975 (2026-11-16), the suite step
+  # taking 38.2 minutes of it. Like `check-macos`, `CI success` does not need
+  # it: a pull request neither waits for macOS nor fails when GitHub cancels
+  # a macOS job for capacity, and on main a failed shard fails the CI run,
+  # which the tag gate refuses. The shards' outputs are not uploaded (that
+  # step is Linux-only): the published test count describes the Linux suite.
+  # the_macos_leg_blocks_main_and_no_pull_request in
+  # tests/site_journey_test.rs and tests/support/macos_suite.rs hold it.
+  test-macos:
+    # The whole suite took 22.3 to 38.2 min in one job on the four main runs
+    # before the split. In two shards with the Linux unit weight, shard 1
+    # took 17.8 to 23.8 min and shard 2 13.8 to 15.9 on six main runs
+    # (43957731312 to 44024489366); scripts/parallel-tests.py now weighs the
+    # unit tests on macOS from those runs' phases (MACOS-SHARD-BALANCE).
+    timeout-minutes: 45
+    name: Test (${{ matrix.os }}, shard ${{ matrix.shard }})
+    runs-on: ${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-24.04-arm' || 'macos-26' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26]
+        shard: [1, 2]
+    steps: *test-steps
 
   # The Linux shards' outputs, put back together and checked as one run.
   test-results:
@@ -1125,6 +1177,9 @@ jobs:
           persist-credentials: false
       - name: Shellcheck (bash)
         run: shellcheck -s bash -S warning .githooks/pre-push .githooks/pre-commit .githooks/commit-msg
+      # The pre-push hook runs this helper for every push that holds a tag.
+      - name: Shellcheck (sh, tag proof picker)
+        run: shellcheck -s sh -S warning scripts/pick-tag-proof.sh
 
   # Reduced feature combinations must keep compiling AND lint-clean (lib and
   # test code). --all-features alone let `#[cfg]`-gating rot: at one point 7
@@ -1178,7 +1233,12 @@ jobs:
     # 68 minutes behind pull request and Dependabot runs. `runner_labels` in
     # scripts/check-feature-matrix.py is the rule and renders this line;
     # scripts/tests/test_feature_matrix_runner.py holds the two together.
-    runs-on: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && fromJSON('["self-hosted","jetson"]') || fromJSON('["self-hosted","overflow"]') }}
+    #
+    # A release pull request (head branch `release/...` of this repository,
+    # never a fork's) asks for the four runners too: on 2026-11-14 release
+    # PR #808's two groups queued from 23:15Z behind another pull request's
+    # job on the overflow pair.
+    runs-on: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/') && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","jetson"]') || fromJSON('["self-hosted","overflow"]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -1207,6 +1267,14 @@ jobs:
       # lint locally.
       # A `suite` combination runs through scripts/parallel-tests.py, under
       # the cargo-nextest version .config/nextest.toml pins.
+      # Every platform's crates first, as in `test`: scripts/check-suite-fetch.py.
+      # A fetch builds nothing; the build directory is set here too so that
+      # no cargo command of this self-hosted job runs without it.
+      - name: Fetch every platform's crates
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
+        run: cargo fetch --locked
+
       - name: Install cargo-nextest
         uses: ./.github/actions/nextest
 
@@ -1389,7 +1457,8 @@ jobs:
     # "every other job" — so install-sh and deb-package could both fail with
     # the one required check on main still green.
     #
-    # The macOS-only job, check-macos, is left out on purpose, and this list
+    # The macOS-only jobs (check-macos, test-macos, symbol-split-macos) are
+    # left out on purpose, and this list
     # is the one place that rule lives: a pull request neither waits for
     # macOS nor fails when GitHub cancels a macOS job for capacity, and on
     # main a macOS failure still fails the CI run, which the tag gate

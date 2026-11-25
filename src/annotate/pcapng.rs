@@ -19,6 +19,7 @@
 use std::borrow::Cow;
 
 use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketOption;
+use pcap_file::pcapng::blocks::opt_common::CommonOption;
 
 use super::NoteText;
 #[cfg(feature = "tui")]
@@ -122,7 +123,7 @@ impl EpbComment {
     /// The pcapng option the writer puts on the frame's Enhanced Packet
     /// Block. Crate-private: the writer is its only caller.
     pub(crate) fn option(&self) -> EnhancedPacketOption<'_> {
-        EnhancedPacketOption::Comment(Cow::Borrowed(self.0.as_str()))
+        EnhancedPacketOption::Common(CommonOption::Comment(Cow::Borrowed(self.0.as_str())))
     }
 
     /// Length of the comment in bytes, as it will be written.
@@ -172,7 +173,7 @@ mod tests {
     #[test]
     fn a_note_on_an_original_frame_is_the_prefix_and_the_text() -> Result<(), TestError> {
         let c = EpbComment::on_original_frame(&note("the 183 with new SDP")?);
-        let EnhancedPacketOption::Comment(text) = c.option() else {
+        let EnhancedPacketOption::Common(CommonOption::Comment(text)) = c.option() else {
             return Err("a note is written as opt_comment".into());
         };
         assert_eq!(text, "[operator note] the 183 with new SDP");
@@ -189,7 +190,7 @@ mod tests {
             .map_err(|e| format!("pointer: {e:?}"))?;
         let c = EpbComment::on_rebuilt_frame(&note("here")?, &original)
             .map_err(|e| format!("fits: {e:?}"))?;
-        let EnhancedPacketOption::Comment(text) = c.option() else {
+        let EnhancedPacketOption::Common(CommonOption::Comment(text)) = c.option() else {
             return Err("a note is written as opt_comment".into());
         };
         assert_eq!(

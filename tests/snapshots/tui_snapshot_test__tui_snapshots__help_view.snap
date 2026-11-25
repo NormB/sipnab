@@ -1,8 +1,9 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 952
 expression: output
 ---
- Live capture: any    Dialogs: 0 shown of 0    Autoscroll: on
+ Live capture: any    Dialogs: 0 shown of 0    Sort: # ▲    Autoscroll: on
  Capture filter (BPF): none
  View filter: none
 ┌ Help (↑/↓ scroll, Esc close) ────────────────────────────────────────────────┐
@@ -17,8 +18,12 @@ expression: output
 │  Enter             Open call flow                                            │
 │  Space             Select/deselect dialog                                    │
 │  Esc, q            Quit (asks first, Ctrl+C quits at once)                   │
-│  < / >             Change sort column                                        │
+│  < / >             Change sort column (the status line shows Sort:)          │
 │  Z                 Reverse sort direction                                    │
+│  L                 Last updated last (by each dialog's last message); again =│
+│                    number order                                              │
+│  d                 Only the dialogs not over (a dead REGISTER counts as      │
+│                    over); again = all                                        │
 │  A                 Toggle autoscroll                                         │
 │  p                 Pause/resume capture                                      │
 │  /                 Search (arrows/Space work while typing; Enter opens)      │
@@ -32,13 +37,9 @@ expression: output
 │  F3                Search (same as /)                                        │
 │  F5, Ctrl+L        Clear calls (asks first during a live capture)            │
 │  r, F6             Show raw SIP message                                      │
-│  F7                Filter dialog                                             │
+│  F7                Filter dialog (fields, methods, typed expression)         │
 │  F8                Settings                                                  │
 │  t                 Cycle timestamps (absolute / delta from previous / delta  │
 │                    from first / scaled)                                      │
-│  u                 Cycle From/To (default/host:port/user/user@host:port)     │
-│  n                 Cycle name resolution (off/static/DNS) — global           │
-│  N                 Name selected address (IP -> host / FQDN)                 │
-│  O                 Open pcap file                                            │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Close  ↑↓ Scroll  PgUp/Dn Page

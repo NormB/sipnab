@@ -375,6 +375,101 @@ fn json_dialogs_lines_validate_against_the_call_report_schema() -> Result<(), Te
     Ok(())
 }
 
+/// The `--json-dialogs` streams of `tests/fixtures/rtcp-xr-call.pcap`, by SSRC.
+fn rtcp_xr_streams() -> Result<Vec<Value>, TestError> {
+    let out = run_sipnab(&[
+        "-N",
+        "-I",
+        "tests/fixtures/rtcp-xr-call.pcap",
+        "--json-dialogs",
+        "--no-cli-print",
+    ])?;
+    let v = load_validator("call_report.schema.json")?;
+    let mut streams = Vec::new();
+    for (i, line) in out.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+        let inst: Value = serde_json::from_str(line).map_err(|e| format!("line {i}: {e}"))?;
+        assert_valid(&v, &inst, &format!("rtcp-xr json-dialogs line {i}"));
+        if let Some(list) = inst.get("streams").and_then(Value::as_array) {
+            streams.extend(list.iter().cloned());
+        }
+    }
+    Ok(streams)
+}
+
+/// One stream of [`rtcp_xr_streams`] by SSRC.
+fn stream_by_ssrc(streams: &[Value], ssrc: &str) -> Result<Value, TestError> {
+    Ok(streams
+        .iter()
+        .find(|s| s["ssrc"] == ssrc)
+        .cloned()
+        .ok_or_else(|| format!("no stream {ssrc} in {streams:?}"))?)
+}
+
+/// FROM-#634 defect 1: a `--json-dialogs` stream carries the round trip the far
+/// end reported in RTCP XR, with its source, as `GET /v1/streams` does.
+#[test]
+fn json_dialogs_streams_carry_the_round_trip_the_far_end_reported() -> Result<(), TestError> {
+    let caller = stream_by_ssrc(&rtcp_xr_streams()?, "0x0a0a0a0a")?;
+    assert_eq!(
+        caller["round_trip_ms"].as_f64(),
+        Some(180.0),
+        "the XR VoIP Metrics block reports 180 ms: {caller}"
+    );
+    assert_eq!(caller["round_trip_source"], "xr_voip_metrics", "{caller}");
+    Ok(())
+}
+
+/// A stream nobody reported on omits both keys: absent, not null and not 0.
+#[test]
+fn json_dialogs_streams_nobody_reported_on_omit_the_round_trip() -> Result<(), TestError> {
+    let callee = stream_by_ssrc(&rtcp_xr_streams()?, "0x0b0b0b0b")?;
+    assert!(
+        callee.get("round_trip_ms").is_none() && callee.get("round_trip_source").is_none(),
+        "no report about this stream, so no round trip: {callee}"
+    );
+    assert!(
+        callee["jitter_ms"].is_number(),
+        "the stream is otherwise whole: {callee}"
+    );
+    Ok(())
+}
+
+/// The schema refuses a round trip with no number or an unknown source, so the
+/// declaration cannot admit the `null` this defect used to read as.
+#[test]
+fn the_call_report_schema_refuses_a_null_round_trip_or_an_unknown_source() -> Result<(), TestError>
+{
+    let v = load_validator("call_report.schema.json")?;
+    let caller = stream_by_ssrc(&rtcp_xr_streams()?, "0x0a0a0a0a")?;
+    // The stream inside a real dialog document, so it is judged by the same
+    // definition the whole report is judged by.
+    let shell = run_sipnab(&[
+        "-N",
+        "-I",
+        "tests/fixtures/rtcp-xr-call.pcap",
+        "--json-dialogs",
+        "--no-cli-print",
+    ])?;
+    let first = shell.lines().next().ok_or("one dialog line")?;
+    let base: Value = serde_json::from_str(first)?;
+    let with = |stream: &Value| -> Value {
+        let mut d = base.clone();
+        d["streams"] = Value::Array(vec![stream.clone()]);
+        d
+    };
+    assert!(
+        v.is_valid(&with(&caller)),
+        "the emitted stream validates: {caller}"
+    );
+    let mut null_rtt = caller.clone();
+    null_rtt["round_trip_ms"] = Value::Null;
+    assert!(!v.is_valid(&with(&null_rtt)), "null is not a round trip");
+    let mut unknown = caller.clone();
+    unknown["round_trip_source"] = Value::String("guessed".into());
+    assert!(!v.is_valid(&with(&unknown)), "an unknown source is refused");
+    Ok(())
+}
+
 /// Negative test: removing `diagnosis`, mistyping `timing.retransmits`, or
 /// adding an unknown top-level field makes the call-report schema reject.
 #[test]

@@ -31,6 +31,10 @@ use sipnab::app::vcon_forward::{
 };
 use sipnab::config::{FORWARD_BACKOFF_CAP, FORWARD_BACKOFF_FIRST, FORWARD_MAX_ERROR_BODY};
 
+include!("support/timeout.rs");
+
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
 #[path = "support/tls_pki.rs"]
 mod tls_pki;
 
@@ -74,6 +78,74 @@ enum Reply {
     Silence(Duration),
     /// Answer with these bytes exactly: status line, headers and body.
     Raw(String),
+    /// Read the request and say nothing until the client hangs up, or
+    /// [`HOLD_CEILING`] has passed; record which in the watch.
+    HoldUntilHangUp(Arc<HangUpWatch>),
+}
+
+/// How long a [`Reply::HoldUntilHangUp`] store holds a connection whose
+/// client never hangs up: far past any timeout a test sets, so it only ends a
+/// test whose client waits for ever.
+const HOLD_CEILING: Duration = Duration::from_secs(60);
+
+/// How a held connection ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HoldEnd {
+    /// The client closed its end first.
+    HungUp,
+    /// The store held to its ceiling with the client still waiting.
+    Outlasted,
+}
+
+/// Where a store that holds its connections records how each one ended.
+#[derive(Default)]
+struct HangUpWatch {
+    ends: Mutex<Vec<HoldEnd>>,
+    ended: parking_lot::Condvar,
+}
+
+impl HangUpWatch {
+    /// Record how a held connection ended.
+    fn record(&self, end: HoldEnd) {
+        self.ends.lock().push(end);
+        self.ended.notify_all();
+    }
+
+    /// The end of the first held connection, waiting up to `ceiling` for it.
+    fn first_end(&self, ceiling: Duration) -> Option<HoldEnd> {
+        let deadline = Instant::now() + ceiling;
+        let mut ends = self.ends.lock();
+        while ends.is_empty() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            let _ = self.ended.wait_for(&mut ends, left);
+        }
+        ends.first().copied()
+    }
+}
+
+/// Hold `stream` until its peer hangs up or `ceiling` passes. A read that
+/// times out (the socket's read timeout) is not an end; a read of 0 or a
+/// reset is the hang-up, and so is any byte, since a client that writes
+/// after its request has given up on the answer.
+fn hold_until_hang_up(stream: &mut impl Read, ceiling: Duration) -> HoldEnd {
+    let until = Instant::now() + ceiling;
+    let mut byte = [0u8; 1];
+    while Instant::now() < until {
+        match stream.read(&mut byte) {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) => {}
+            _ => return HoldEnd::HungUp,
+        }
+    }
+    HoldEnd::Outlasted
 }
 
 /// The script: the request and its 0-based index in, the reply out.
@@ -212,6 +284,7 @@ fn exchange(
             stream.flush()?;
         }
         Reply::Silence(d) => std::thread::sleep(d),
+        Reply::HoldUntilHangUp(watch) => watch.record(hold_until_hang_up(stream, HOLD_CEILING)),
         Reply::Raw(text) => {
             stream.write_all(text.as_bytes())?;
             stream.flush()?;
@@ -449,22 +522,112 @@ fn an_unreachable_store_keeps_the_file() -> Result<(), TestError> {
 
 /// A store that accepts the request and never answers is given up on after
 /// the timeout, and the container stays for a later pass.
+///
+/// The store holds the connection until the client hangs up, so that the
+/// client gave up is an event the store records, not a reading of the clock:
+/// a client that waits for ever is held to [`HOLD_CEILING`] and the store
+/// records `Outlasted`. Which timeout the client used (the 500 ms set here,
+/// not the rig's 5 s) can only be told by time, so that one bound stays,
+/// scaled by `SIPNAB_TEST_TIMEOUT_SCALE` and eight times the timeout (it was
+/// a fixed 4 s against a store that slept 8 s).
 #[test]
 fn a_store_that_never_answers_times_out_and_keeps_the_file() -> Result<(), TestError> {
-    let store = FakeStore::start(|_, _| Reply::Silence(Duration::from_secs(8)))?;
+    let watch = Arc::new(HangUpWatch::default());
+    let held = watch.clone();
+    let store = FakeStore::start(move |_, _| Reply::HoldUntilHangUp(held.clone()))?;
     let mut rig = Rig::new(&store.url("/v1/vcons"), "Authorization")?;
     rig.settings.timeout = Duration::from_millis(500);
     rig.drop_in("e.vcon.json", &container("018bcfe5-3", RECORDING))?;
     let started = Instant::now();
     let report = rig.forwarder()?.pass(Instant::now(), &never);
-    assert!(
-        started.elapsed() < Duration::from_secs(4),
-        "took {:?}",
-        started.elapsed()
+    let took = started.elapsed();
+    assert_eq!(
+        watch.first_end(HOLD_CEILING),
+        Some(HoldEnd::HungUp),
+        "the client did not give up on a store that never answers"
     );
-    assert_eq!(report.waiting, ["e.vcon.json"]);
-    assert!(rig.spool().join("e.vcon.json").exists());
+    assert!(
+        took < test_timeout(4),
+        "the 500 ms timeout was not the one used: the pass took {took:?}"
+    );
+    assert_eq!(report.waiting, ["e.vcon.json"], "the container waits");
+    assert!(
+        rig.spool().join("e.vcon.json").exists(),
+        "the container stays in the spool"
+    );
     Ok(())
+}
+
+/// A held connection whose client closes is recorded as hung up.
+#[test]
+fn a_held_connection_records_the_clients_hang_up() -> Result<(), TestError> {
+    let watch = Arc::new(HangUpWatch::default());
+    let held = watch.clone();
+    let store = FakeStore::start(move |_, _| Reply::HoldUntilHangUp(held.clone()))?;
+    let mut client = TcpStream::connect(store.addr)?;
+    client.write_all(b"POST /v1/vcons HTTP/1.1\r\nContent-Length: 0\r\n\r\n")?;
+    // The request is recorded before the hold begins; then the client goes.
+    let recorded_by = Instant::now() + HOLD_CEILING;
+    while store.requests().is_empty() && Instant::now() < recorded_by {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(client);
+    assert_eq!(
+        watch.first_end(HOLD_CEILING),
+        Some(HoldEnd::HungUp),
+        "a client that closed is a hang-up"
+    );
+    Ok(())
+}
+
+/// A client that keeps waiting is outlasted at the ceiling, which is what
+/// a test reads as "the client never gave up".
+#[test]
+fn a_held_connection_outlasts_a_client_that_keeps_waiting() -> Result<(), TestError> {
+    let (server, client) = {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let client = TcpStream::connect(listener.local_addr()?)?;
+        (listener.accept()?.0, client)
+    };
+    server.set_read_timeout(Some(Duration::from_millis(20)))?;
+    let mut server = server;
+    let began = Instant::now();
+    let end = hold_until_hang_up(&mut server, Duration::from_millis(100));
+    assert_eq!(
+        end,
+        HoldEnd::Outlasted,
+        "an open, silent client is outlasted"
+    );
+    assert!(
+        began.elapsed() >= Duration::from_millis(100),
+        "the hold lasted its ceiling"
+    );
+    drop(client);
+    Ok(())
+}
+
+/// A client that writes after its request has given up on the answer: a
+/// hang-up too.
+#[test]
+fn a_client_that_writes_during_the_hold_has_given_up() -> Result<(), TestError> {
+    let mut stream: &[u8] = b"x";
+    assert_eq!(
+        hold_until_hang_up(&mut stream, HOLD_CEILING),
+        HoldEnd::HungUp,
+        "a byte ends the hold"
+    );
+    Ok(())
+}
+
+/// A watch with nothing recorded answers `None` at its ceiling.
+#[test]
+fn a_watch_with_no_end_answers_none() {
+    let watch = HangUpWatch::default();
+    assert_eq!(
+        watch.first_end(Duration::from_millis(20)),
+        None,
+        "nothing was held, so nothing ended"
+    );
 }
 
 // ── Refusal ─────────────────────────────────────────────────────────────
@@ -842,7 +1005,21 @@ fn a_destination_on_another_filesystem_is_refused() -> Result<(), TestError> {
     use std::os::unix::fs::MetadataExt;
     let mut rig = Rig::new("http://127.0.0.1:9/v1/vcons", "Authorization")?;
     let shm = Path::new("/dev/shm");
-    if !shm.is_dir() || std::fs::metadata(shm)?.dev() == std::fs::metadata(rig.spool())?.dev() {
+    let probe = if !shm.is_dir() {
+        Err("/dev/shm is not a directory".to_owned())
+    } else if std::fs::metadata(shm)?.dev() == std::fs::metadata(rig.spool())?.dev() {
+        Err("/dev/shm is on the spool's filesystem".to_owned())
+    } else {
+        Ok(())
+    };
+    if !test_prereq::present(
+        "separate-shm",
+        test_prereq::Need::Optional(
+            "the case needs /dev/shm on a filesystem of its own, which Linux hosts have \
+             and macOS does not.",
+        ),
+        probe,
+    ) {
         return Ok(());
     }
     let elsewhere = tempfile::tempdir_in(shm)?;

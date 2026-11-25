@@ -597,10 +597,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_write_that_fails_is_reported_not_swallowed() -> Result<(), TestError> {
-        let dev_full = Path::new("/dev/full");
-        if !dev_full.exists() {
-            return Ok(());
-        }
+        // Linux always has /dev/full, so on Linux its absence is a broken host.
+        let dev_full = crate::test_prereq::required("dev-full", crate::test_prereq::dev_full())?;
+        let dev_full = dev_full.as_path();
         let sink =
             AuditSink::open(dev_full).map_err(|e| format!("open /dev/full for append: {e:?}"))?;
         let err = sink

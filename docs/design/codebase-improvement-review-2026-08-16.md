@@ -476,7 +476,7 @@ either finds a Sipnab span in Tempo or explicitly says traces are unavailable.
 **Priority / type / effort:** P2 / capability improvement / M
 
 **Evidence:** REST health always returns literal `ok`
-([`src/output/api.rs:595-597`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/output/api.rs#L595-L597); [`docs/rest-api.md:797-799`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L797-L799)<!-- "### GET /health" -->), and MCP health is also
+([`src/output/api.rs:595-597`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/output/api.rs#L595-L597); [`docs/rest-api.md:818-820`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L818-L820)<!-- "### GET /health" -->), and MCP health is also
 unconditional ([`src/mcp/transport.rs:734-737`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L734-L737)<!-- "let mcp_router = Router::new()" -->). Existing capture state is not
 consulted by these probes.
 
@@ -521,7 +521,7 @@ credential-file type.
 
 **Evidence:** [`packaging/sipnab.service:9-13`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/packaging/sipnab.service#L9-L13) runs as root and comments about
 `--user sipnab`, but does not pass it. The documented default internal drop target
-is `nobody` ([`docs/install.md:417-420`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L417-L420); [`docs/config-reference.md:1207`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md#L1207)<!-- "User to drop privileges" -->). Package
+is `nobody` ([`docs/install.md:417-420`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L417-L420); [`docs/config-reference.md:1215`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md#L1215)<!-- "User to drop privileges" -->). Package
 scripts create a dedicated `sipnab` user
 ([`packaging/deb/build-deb.sh:137-140`](https://github.com/NormB/sipnab/blob/main/packaging/deb/build-deb.sh#L137-L140)<!-- "# Create sipnab user for privilege drop" -->; [`packaging/rpm/build-rpm.sh:215-218`](https://github.com/NormB/sipnab/blob/main/packaging/rpm/build-rpm.sh#L215-L218)<!-- "# Create sipnab user" -->).
 
@@ -613,7 +613,7 @@ drift test; the guide accurately explains Cargo's top-level integration targets.
 
 **Priority / type / effort:** P2 / onboarding gap / M
 
-**Evidence:** [`CONTRIBUTING.md:68-76`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#L68-L76)<!-- "## Prerequisites" --> lists Rust, libpcap, and fuzzing tools, but
+**Evidence:** [`CONTRIBUTING.md:112-120`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#L112-L120)<!-- "## Prerequisites" --> lists Rust, libpcap, and fuzzing tools, but
 later required/important workflows depend on Vale, codespell, Python, cargo-insta,
 tmux, wasm-pack, and other CI/release tools ([`CONTRIBUTING.md:132-179`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/CONTRIBUTING.md#L132-L179);
 `docs/internals/testing.md:19,60,113-128`;

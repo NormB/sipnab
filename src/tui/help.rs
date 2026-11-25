@@ -23,8 +23,10 @@ CALL LIST:
   Enter            Open call flow
   Space            Select/deselect dialog
   Esc, q           Quit (asks first, Ctrl+C quits at once)
-  < / >            Change sort column
+  < / >            Change sort column (the status line shows Sort:)
   Z                Reverse sort direction
+  L                Last updated last (by each dialog's last message); again = number order
+  d                Only the dialogs not over (a dead REGISTER counts as over); again = all
   A                Toggle autoscroll
   p                Pause/resume capture
   /                Search (arrows/Space work while typing; Enter opens)
@@ -35,7 +37,7 @@ CALL LIST:
   F3               Search (same as /)
   F5, Ctrl+L       Clear calls (asks first during a live capture)
   r, F6            Show raw SIP message
-  F7               Filter dialog
+  F7               Filter dialog (fields, methods, typed expression)
   F8               Settings
   t                Cycle timestamps (absolute / delta from previous / delta from first / scaled)
   u                Cycle From/To (default/host:port/user/user@host:port)
@@ -58,6 +60,7 @@ CALL LIST:
   D                Quality dashboard (live MOS/jitter/loss)
   T                Call timeline (selected dialog)
   F9               Clear the view filter and search
+  Y                Copy the view filter as a sipnab --filter command line
   F                Show the F7 view filter as a summary or in full \u{2014} global
   F10              Choose columns
   Tab              Switch to RTP streams
@@ -68,7 +71,7 @@ CALL FLOW:
   PgUp/PgDn       Page through messages
   Home/End         First/last message
   Enter            Full-screen raw message
-  Space            Select message for diff (press twice to compare)
+  Space            Select message for diff (press twice to compare; again on it = clear)
   a / A            Combined detail: this transaction / whole dialog
   f                Filter ladder to this transaction (toggle)
   Esc              Back to call list
@@ -230,6 +233,27 @@ TERMS:
   HEP      Homer Encapsulation Protocol: SIP mirrored by a proxy
   TFPS     Optional peer that bans sources (this view only reads it)
 
+DROP BY METHOD (--drop-method / --only-method at start):
+Start flags --drop-method / --only-method, or [capture] drop_methods /
+only_methods; known SIP methods, case-insensitive. Decided ONCE per
+dialog, on the request that starts it (INVITE, REGISTER, OPTIONS,
+SUBSCRIBE, MESSAGE, ...). Kept = its method is in only (or no
+only list) AND not in drop: then EVERY message of the dialog is kept and
+shown (ACK, BYE, CANCEL, re-INVITE, UPDATE, INFO, PRACK, REFER, NOTIFY, an
+in-dialog OPTIONS, ...) with every reply. Refused = the whole dialog is
+dropped at ingest: no dialog, no number, never in memory; only the
+\"Dropped by method\" count on status line 1 and in the capture report.
+A message whose dialog start was never seen (capture began mid-call) is
+decided by its own method (a reply by its CSeq method).
+
+FILTER DIALOG (F7):
+  Tab, Shift+Tab   Next / previous field
+  \u{2191}/\u{2193}              In Expression: earlier applied expressions (newest 50), then the next field
+  F1               Show or hide the Filter DSL field names and operators
+  Enter            Apply
+  Esc              Hide the field list, else cancel
+  F9               Clear every field and the filter
+
 ARCHIVE PASSWORD (a load waits on an encrypted archive member):
   Enter            Try the password (three attempts per archive)
   Esc              Skip this archive's locked members
@@ -239,6 +263,7 @@ ARCHIVE PASSWORD (a load waits on an encrypted archive member):
 COPY & PASTE:
   y                Copy displayed message to clipboard (raw message, call flow)
   E                Export Mermaid diagram to clipboard (call flow view)
+  Y                Copy the view filter as a command line (call list)
   F12              Toggle mouse capture for native drag-to-select \u{2014} global
 
 VCON EXPORT (one call, for handing to somebody else):
@@ -300,8 +325,12 @@ pub fn render_help(
 /// under the title. Used to clamp the scroll offset, so it counts exactly
 /// what [`render_help`] draws; counting source lines instead left the end of
 /// the help unreachable once wrapped lines outnumbered the slack.
-pub fn help_line_count(inner_width: usize) -> usize {
-    build_help_lines(&super::Theme::default(), "", "", inner_width).len()
+pub fn help_line_count(inner_width: usize, sngrep: bool) -> usize {
+    let theme = super::Theme {
+        sngrep,
+        ..Default::default()
+    };
+    build_help_lines(&theme, "", "", inner_width).len()
 }
 
 /// Build styled help lines from the help text.
@@ -329,7 +358,17 @@ fn build_help_lines(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    for text_line in HELP_TEXT.lines() {
+    // In sngrep mode its key map comes first, right under the title.
+    let mut text_lines: Vec<&str> = HELP_TEXT.lines().collect();
+    if theme.sngrep {
+        let at = 2.min(text_lines.len());
+        let sngrep = super::sngrep_mode::HELP_TEXT
+            .lines()
+            .chain(std::iter::once(""));
+        text_lines.splice(at..at, sngrep);
+    }
+
+    for text_line in text_lines {
         if text_line.starts_with("sipnab") {
             // Title line
             lines.push(Line::from(Span::styled(
@@ -677,7 +716,11 @@ mod tests {
         let theme = crate::tui::Theme::default();
         for width in [40usize, 78, 120] {
             let lines = build_help_lines(&theme, "1.2.3", "libpcap version 1.2.3", width);
-            assert_eq!(lines.len(), help_line_count(width), "at {width} columns");
+            assert_eq!(
+                lines.len(),
+                help_line_count(width, false),
+                "at {width} columns"
+            );
         }
     }
 

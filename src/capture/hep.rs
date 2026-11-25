@@ -1105,6 +1105,20 @@ pub struct HepPacket {
 
 // ── Parsing ──────────────────────────────────────────────────────────
 
+/// Whether `data` starts the way a HEP packet does: `"HEP3"`, or a first
+/// byte of `0x01` or `0x02`. [`parse_hep`] refuses everything else with this
+/// same test.
+///
+/// For a caller that reads every datagram as a possible HEP packet (RTP
+/// included): asking here first turns away a datagram that cannot be HEP
+/// without building the error value `parse_hep` returns for it, an
+/// allocation and a backtrace capture per packet.
+#[must_use]
+#[inline]
+pub fn looks_like_hep(data: &[u8]) -> bool {
+    data.starts_with(HEP3_MAGIC) || matches!(data.first(), Some(&(HEP1_VERSION | HEP2_VERSION)))
+}
+
 /// Parse a HEP packet from raw bytes.
 ///
 /// Detects the version automatically:
@@ -1116,12 +1130,13 @@ pub struct HepPacket {
 /// Returns an error if the packet is malformed, truncated, or
 /// uses an unrecognized version.
 pub fn parse_hep(data: &[u8]) -> Result<HepPacket> {
-    if data.len() >= 4 && &data[..4] == HEP3_MAGIC {
-        parse_hep_v3(data)
-    } else if !data.is_empty() && (data[0] == HEP1_VERSION || data[0] == HEP2_VERSION) {
-        parse_hep_v12(data)
-    } else {
+    if !looks_like_hep(data) {
         bail!("Not a HEP packet: unrecognized magic/version byte");
+    }
+    if data.starts_with(HEP3_MAGIC) {
+        parse_hep_v3(data)
+    } else {
+        parse_hep_v12(data)
     }
 }
 
@@ -2644,6 +2659,10 @@ struct HepStreamShared<'a, 'o> {
     start: Instant,
     /// The address the listener bound, for log lines.
     bind_addr: &'a str,
+    /// How long a TLS peer has to finish its handshake before no stop has
+    /// been seen: [`HEP_TLS_HANDSHAKE_TIMEOUT`] in every run, from
+    /// [`HepListenerStart::tls_handshake_timeout`].
+    tls_handshake_timeout: Duration,
 }
 
 /// Read one stream connection to its end, handing whole HEP packets to
@@ -2892,30 +2911,32 @@ impl HepStreamShared<'_, '_> {
         stop_seen: &mut Option<Instant>,
         peer: IpAddr,
     ) -> bool {
-        let now = Instant::now();
-        let stop = self.limit();
-        let wound_down = self.stop.load(std::sync::atomic::Ordering::Relaxed);
-        if stop_seen.is_none() && (stop.is_some() || wound_down) {
-            *stop_seen = Some(now);
-        }
-        if !tls_handshake_given_up(
-            stop,
-            wound_down,
-            *stop_seen,
-            now,
+        let check = || {
+            (
+                self.limit(),
+                self.stop.load(std::sync::atomic::Ordering::Relaxed),
+            )
+        };
+        match handshake_step(
+            check,
+            Instant::now,
+            stop_seen,
             deadline,
             HEP_STREAM_DRAIN_BUDGET,
         ) {
-            return false;
+            HandshakeStep::Go => false,
+            HandshakeStep::DeadlinePassed => {
+                tracing::warn!(
+                    "HEP TLS handshake with {peer} did not finish within {:?}",
+                    self.tls_handshake_timeout
+                );
+                true
+            }
+            HandshakeStep::StopReached => {
+                tracing::debug!("HEP TLS handshake with {peer} given up: the listener stopped");
+                true
+            }
         }
-        if now >= deadline {
-            tracing::warn!(
-                "HEP TLS handshake with {peer} did not finish within {HEP_TLS_HANDSHAKE_TIMEOUT:?}"
-            );
-        } else {
-            tracing::debug!("HEP TLS handshake with {peer} given up: the listener stopped");
-        }
-        true
     }
 
     /// Hand every whole HEP packet at the front of `buf` to the ingest path
@@ -3108,6 +3129,129 @@ fn accepts_after_stop(
     stop_finishes_what_was_sent(stop) && now.saturating_duration_since(stopped_at) < budget
 }
 
+/// Run `check`, which reads a stream listener's limits, and date what it
+/// found by `clock` (CAP-2).
+///
+/// The one rule for every place a stream listener dates a stop: the drain
+/// budgets of [`accepts_after_stop`] and [`tls_handshake_given_up`] count
+/// from the time this returns. The clock is read after the check, never
+/// before: a reading taken first is older than the stop by however long the
+/// process was frozen or not scheduled between the two (SIGSTOP, job
+/// control, a loaded host), and a budget counted from it could end before
+/// the stop was seen. A loop that dated the stop that way ended at a
+/// `--duration` stop without accepting the connection waiting in its
+/// backlog, and lost everything its peer had sent (2026-11-15).
+///
+/// # Returns
+///
+/// What `check` found, and the time `clock` gave after it.
+#[inline]
+fn checked_then_dated<T>(
+    check: impl FnOnce() -> T,
+    clock: impl FnOnce() -> Instant,
+) -> (T, Instant) {
+    let found = check();
+    (found, clock())
+}
+
+/// What one pass of a stream listener's accept loop does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcceptPass {
+    /// No limit has been reached: sweep the roster at this time, then accept.
+    Serve(Instant),
+    /// This pass saw the limit: log it, then go on to the next pass.
+    Stopped(ListenerStop),
+    /// A stop that finishes what was sent, within its budget: take one more
+    /// connection from the backlog.
+    Drain,
+    /// End the loop.
+    End,
+}
+
+/// Decide one pass of a stream listener's accept loop (CAP-2).
+///
+/// Before a stop, the limits are read by `limit` and dated by `clock`
+/// through [`checked_then_dated`]; a limit found is recorded in `stopped`
+/// with that time. After it, [`accepts_after_stop`] decides at `clock`'s
+/// time whether the backlog is still taken; `limit` is not read again.
+///
+/// # Arguments
+///
+/// * `stopped` — the stop the loop has seen and when; set on the pass that
+///   first sees one.
+/// * `limit` — reads the listener's limits.
+/// * `clock` — the time of this pass.
+/// * `budget` — how long after the stop the backlog is taken.
+#[inline]
+fn accept_pass(
+    stopped: &mut Option<(ListenerStop, Instant)>,
+    limit: impl FnOnce() -> Option<ListenerStop>,
+    clock: impl FnOnce() -> Instant,
+    budget: Duration,
+) -> AcceptPass {
+    if let Some((stop, at)) = *stopped {
+        return if accepts_after_stop(stop, at, clock(), budget) {
+            AcceptPass::Drain
+        } else {
+            AcceptPass::End
+        };
+    }
+    match checked_then_dated(limit, clock) {
+        (Some(stop), now) => {
+            *stopped = Some((stop, now));
+            AcceptPass::Stopped(stop)
+        }
+        (None, now) => AcceptPass::Serve(now),
+    }
+}
+
+/// Whether a TLS handshake goes on at this step, and if not, why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandshakeStep {
+    /// The handshake goes on.
+    Go,
+    /// The handshake's own deadline has passed.
+    DeadlinePassed,
+    /// The listener stopped and the handshake's share of the stop is used up.
+    StopReached,
+}
+
+/// Decide one step of a TLS handshake on a stream listener (CAP-2).
+///
+/// The listener's limit and stop flag are read by `check` and dated by
+/// `clock` through [`checked_then_dated`]; the first step that sees either
+/// records that time in `stop_seen`. [`tls_handshake_given_up`] then decides.
+///
+/// # Arguments
+///
+/// * `check` — reads the limit the listener reached, if any, and its stop
+///   flag.
+/// * `clock` — the time of this step.
+/// * `stop_seen` — when this handshake first saw a stop; set here the first
+///   time it does.
+/// * `deadline` — the handshake's own deadline.
+/// * `budget` — how long a handshake goes on after it first saw the stop.
+#[inline]
+fn handshake_step(
+    check: impl FnOnce() -> (Option<ListenerStop>, bool),
+    clock: impl FnOnce() -> Instant,
+    stop_seen: &mut Option<Instant>,
+    deadline: Instant,
+    budget: Duration,
+) -> HandshakeStep {
+    let ((stop, wound_down), now) = checked_then_dated(check, clock);
+    if stop_seen.is_none() && (stop.is_some() || wound_down) {
+        *stop_seen = Some(now);
+    }
+    if !tls_handshake_given_up(stop, wound_down, *stop_seen, now, deadline, budget) {
+        HandshakeStep::Go
+    } else if now >= deadline {
+        HandshakeStep::DeadlinePassed
+    } else {
+        HandshakeStep::StopReached
+    }
+}
+
 /// Whether a TLS handshake under way is given up before its next step.
 ///
 /// Before any stop the handshake goes on until `deadline`. At a stop that
@@ -3288,6 +3432,7 @@ fn capture_hep_stream(
         opts,
         roster,
         ready_tx,
+        tls_handshake_timeout,
     } = start;
 
     let bound = match source {
@@ -3334,6 +3479,7 @@ fn capture_hep_stream(
         config,
         start: Instant::now(),
         bind_addr,
+        tls_handshake_timeout,
     };
     let mut fatal: Option<anyhow::Error> = None;
 
@@ -3342,19 +3488,19 @@ fn capture_hep_stream(
         // takes what is waiting in the backlog (CAP-2).
         let mut stopped: Option<(ListenerStop, Instant)> = None;
         loop {
-            let now = Instant::now();
-            match stopped {
-                Some((stop, at)) => {
-                    if !accepts_after_stop(stop, at, now, HEP_STREAM_DRAIN_BUDGET) {
-                        break;
-                    }
+            match accept_pass(
+                &mut stopped,
+                || shared.limit(),
+                Instant::now,
+                HEP_STREAM_DRAIN_BUDGET,
+            ) {
+                AcceptPass::End => break,
+                AcceptPass::Stopped(stop) => {
+                    stop.log();
+                    continue;
                 }
-                None => {
-                    if let Some(stop) = shared.limit() {
-                        stop.log();
-                        stopped = Some((stop, now));
-                        continue;
-                    }
+                AcceptPass::Drain => {}
+                AcceptPass::Serve(now) => {
                     // Every pass, as the datagram loop does: readers on other
                     // threads feed the watch, and this loop is the one that
                     // polls it. Taken as a value so the ingest lock is not held
@@ -3441,7 +3587,7 @@ fn hep_tls_accept(
         }
     };
     let mut sock = sock;
-    let deadline = Instant::now() + HEP_TLS_HANDSHAKE_TIMEOUT;
+    let deadline = Instant::now() + shared.tls_handshake_timeout;
     let mut stop_seen = None;
     while conn.is_handshaking() {
         if shared.tls_handshake_cut_short(deadline, &mut stop_seen, peer)
@@ -3583,6 +3729,7 @@ pub fn capture_hep(
         tx,
         opts,
         ready_tx,
+        HEP_TLS_HANDSHAKE_TIMEOUT,
     )
 }
 
@@ -3619,6 +3766,7 @@ fn capture_hep_on(
     tx: PacketTx,
     opts: &HepListenerOpts<'_>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    tls_handshake_timeout: Duration,
 ) -> Result<()> {
     let addr = match &socket {
         HepSocketSource::Address => Err(anyhow::anyhow!("capture_hep_on needs a bound socket")),
@@ -3634,7 +3782,15 @@ fn capture_hep_on(
             return Err(e);
         }
     };
-    serve_hep(&addr, socket, config, tx, opts, ready_tx)
+    serve_hep(
+        &addr,
+        socket,
+        config,
+        tx,
+        opts,
+        ready_tx,
+        tls_handshake_timeout,
+    )
 }
 
 /// The body of [`capture_hep`], with the socket's source made explicit.
@@ -3649,6 +3805,7 @@ fn serve_hep(
     tx: PacketTx,
     opts: &HepListenerOpts<'_>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    tls_handshake_timeout: Duration,
 ) -> Result<()> {
     let tls = match hep_listener_preflight(bind_addr, opts) {
         Ok(tls) => tls,
@@ -3674,6 +3831,7 @@ fn serve_hep(
         opts,
         roster,
         ready_tx,
+        tls_handshake_timeout,
     };
     match opts.transport {
         HepTransport::Udp => capture_hep_udp(start, tx),
@@ -3697,6 +3855,12 @@ struct HepListenerStart<'a, 'o> {
     roster: HepRoster,
     /// Receives `Ok(())` once the socket is bound, or the startup failure.
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    /// How long a TLS peer has to finish its handshake before no stop has
+    /// been seen: [`HEP_TLS_HANDSHAKE_TIMEOUT`] from [`capture_hep`]. Not in
+    /// the public [`HepListenerOpts`]: only a test sets another (an hour, so
+    /// a handshake given up at a stop is told from one given up at this
+    /// deadline by the outcome alone).
+    tls_handshake_timeout: Duration,
 }
 
 /// The checks a HEP listener makes before it touches a socket.
@@ -3849,6 +4013,7 @@ fn capture_hep_udp(start: HepListenerStart<'_, '_>, tx: PacketTx) -> Result<()> 
         opts,
         roster,
         ready_tx,
+        tls_handshake_timeout: _,
     } = start;
     let socket = match bind_hep_udp(bind_addr, source) {
         Ok(s) => s,
@@ -5046,6 +5211,72 @@ mod tests {
         c.extend_from_slice(&chunk(CHUNK_DST_PORT, &5060u16.to_be_bytes()));
         c.extend_from_slice(&chunk(CHUNK_PAYLOAD, b"OPTIONS sip:a@b SIP/2.0"));
         c
+    }
+
+    /// `looks_like_hep` is the test `parse_hep` refuses with, so a caller that
+    /// asks it first turns away nothing `parse_hep` would read.
+    #[test]
+    fn looks_like_hep_names_the_starts_parse_hep_reads() {
+        for (bytes, expected) in [
+            (&b"HEP3"[..], true),
+            (&b"HEP3\x00\x00rest"[..], true),
+            (&[0x01, 0, 0, 0][..], true),
+            (&[0x02][..], true),
+            (&[][..], false),
+            (&b"H"[..], false),
+            (&b"HEP"[..], false),
+            (&b"HEP2rest"[..], false),
+            (&b"hep3rest"[..], false),
+            (&[0x00, 0x01][..], false),
+            (&[0x03][..], false),
+            (&[0x80, 0x00, 0x12, 0x34][..], false),
+            (&b"OPTIONS sip:x SIP/2.0\r\n\r\n"[..], false),
+        ] {
+            assert_eq!(
+                super::looks_like_hep(bytes),
+                expected,
+                "looks_like_hep({bytes:02x?})"
+            );
+        }
+    }
+
+    /// Every first byte: `parse_hep` refuses each one `looks_like_hep`
+    /// refuses, with the refusal it always gave.
+    #[test]
+    fn parse_hep_refuses_every_start_looks_like_hep_refuses() {
+        for first in 0u8..=255 {
+            let mut d = vec![first];
+            d.extend_from_slice(&valid_chunks());
+            if super::looks_like_hep(&d) {
+                assert!(
+                    matches!(first, 0x01 | 0x02),
+                    "first byte {first:#04x} passes"
+                );
+                continue;
+            }
+            let err = super::parse_hep(&d).err().map(|e| e.to_string());
+            assert_eq!(
+                err.as_deref(),
+                Some("Not a HEP packet: unrecognized magic/version byte"),
+                "first byte {first:#04x}"
+            );
+        }
+    }
+
+    /// A well-formed HEP v3 packet still parses, through the same check.
+    #[test]
+    fn a_valid_hep_v3_packet_still_parses() -> Result<(), TestError> {
+        let body = valid_chunks();
+        let mut d = hep3_with_total_len((6 + body.len()) as u16);
+        d.extend_from_slice(&body);
+        assert!(super::looks_like_hep(&d), "starts like HEP");
+        let hep = super::parse_hep(&d)?;
+        assert_eq!(
+            &hep.payload[..],
+            b"OPTIONS sip:a@b SIP/2.0",
+            "the payload is read"
+        );
+        Ok(())
     }
 
     /// Every way a packet can be malformed, with the word its refusal must
@@ -6791,6 +7022,30 @@ mod tests {
         crate::capture::channel::PacketRx,
         std::sync::mpsc::Receiver<std::result::Result<(), String>>,
     ) {
+        start_listener_with_handshake(
+            socket,
+            transport,
+            tls,
+            allowlist,
+            auth_key,
+            config,
+            HEP_TLS_HANDSHAKE_TIMEOUT,
+        )
+    }
+
+    /// [`start_listener`] with a TLS handshake deadline of `handshake`.
+    fn start_listener_with_handshake(
+        socket: HepSocketSource,
+        transport: HepTransport,
+        tls: Option<(std::path::PathBuf, std::path::PathBuf)>,
+        allowlist: Vec<CidrRange>,
+        auth_key: Option<String>,
+        config: CaptureConfig,
+        handshake: Duration,
+    ) -> (
+        crate::capture::channel::PacketRx,
+        std::sync::mpsc::Receiver<std::result::Result<(), String>>,
+    ) {
         use std::sync::mpsc;
         let (tx, rx) = crate::capture::channel::packet_channel(64);
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
@@ -6809,7 +7064,7 @@ mod tests {
                 tls_key: tls.as_ref().map(|(_, k)| k.as_path()),
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
             };
-            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
+            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx), handshake);
             let _ = done_tx.send(r.map_err(|e| format!("{e:#}")));
         });
         let ready = ready_rx.recv_timeout(MUST_ARRIVE);
@@ -6926,15 +7181,65 @@ mod tests {
         })
     }
 
-    /// Start a listener on `transport` with a 1.5 s `--duration`, write 300
-    /// packets through the stream `connect` opens, read nothing until the
-    /// deadline has passed, and require all 300.
+    /// Start a listener on `transport` with a 1.5 s `--duration`, write up to
+    /// 300 packets through the stream `connect` opens while the deadline has
+    /// not passed, read nothing until it has, and require every packet
+    /// written.
+    ///
+    /// What is required is COUNTED, not assumed: the test once wrote all 300
+    /// and asserted, as a precondition, that it had done so inside the 1.5 s,
+    /// a bet that a loaded host can lose before a single packet is wrong.
+    /// Now each packet is written, and flushed to the kernel, only while the
+    /// test's own clock is short of the deadline; the listener started after
+    /// that clock did, so every packet counted was sent before the
+    /// listener's deadline. An attempt that wrote nothing in time is no
+    /// evidence and is made again, up to [`BURST_ATTEMPTS`].
     fn duration_stop_delivers_a_burst(
         transport: HepTransport,
         tls: Option<(std::path::PathBuf, std::path::PathBuf)>,
-        connect: impl FnOnce(&str) -> Result<Box<dyn std::io::Write>, TestError>,
+        connect: impl Fn(&str) -> Result<Box<dyn std::io::Write>, TestError>,
     ) -> Result<(), TestError> {
-        const SENT: usize = 300;
+        for _ in 0..BURST_ATTEMPTS {
+            if let Some((got, sent, written, stopped)) =
+                duration_stop_burst_once(transport, tls.clone(), &connect)?
+            {
+                assert!(
+                    (sent..=written).contains(&got),
+                    "every packet sent before the deadline is delivered, and no \
+                     more than were written ({transport}): {got} delivered, {sent} \
+                     sent in time, {written} written"
+                );
+                assert!(stopped, "the listener stops cleanly at the deadline");
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "no packet could be written inside the 1.5 s deadline in {BURST_ATTEMPTS} \
+             attempts ({transport}): this host was too slow to OBSERVE the stop's drain"
+        )
+        .into())
+    }
+
+    /// What opens the peer's stream to a listener's bound address.
+    type BurstPeer<'a> = dyn Fn(&str) -> Result<Box<dyn std::io::Write>, TestError> + 'a;
+
+    /// Attempts of [`duration_stop_delivers_a_burst`] before it gives up.
+    const BURST_ATTEMPTS: usize = 3;
+
+    /// One attempt of [`duration_stop_delivers_a_burst`].
+    ///
+    /// # Returns
+    ///
+    /// `None` when no packet was written before the deadline; else the
+    /// packets delivered, the packets written before the deadline, the
+    /// packets written in all (one more when the last write ended past the
+    /// deadline), and whether the listener stopped cleanly.
+    fn duration_stop_burst_once(
+        transport: HepTransport,
+        tls: Option<(std::path::PathBuf, std::path::PathBuf)>,
+        connect: &BurstPeer<'_>,
+    ) -> Result<Option<(usize, usize, usize, bool)>, TestError> {
+        const MOST: usize = 300;
         let (socket, bind) = loopback_tcp()?;
         let deadline = Duration::from_millis(1500);
         let config = CaptureConfig {
@@ -6942,10 +7247,13 @@ mod tests {
             ..CaptureConfig::default()
         };
         let started = Instant::now();
+        let until = started + deadline;
         let (rx, done) = start_listener(socket, transport, tls, vec![], None, config);
         let mut peer = connect(&bind)?;
         let endpoint = v4_endpoint();
-        for n in 0..SENT {
+        let mut sent = 0usize;
+        let mut written = 0usize;
+        for n in 0..MOST {
             let body = format!("OPTIONS sip:a@b SIP/2.0\r\nCSeq: {n} OPTIONS\r\n\r\n");
             let frame = build_hep_v3(
                 &endpoint,
@@ -6955,30 +7263,31 @@ mod tests {
                 None,
                 body.as_bytes(),
             );
+            if Instant::now() >= until {
+                break;
+            }
             peer.write_all(&frame)?;
+            peer.flush()?;
+            written += 1;
+            if Instant::now() >= until {
+                // Written, but perhaps after the deadline: allowed, not
+                // required. Nothing more is written.
+                break;
+            }
+            sent += 1;
         }
-        peer.flush()?;
-        assert!(
-            started.elapsed() < deadline,
-            "precondition: every packet was sent before the deadline"
+        // Read nothing until the deadline has passed (a lower bound only:
+        // the channel holds 64, so the rest stay unread in the socket).
+        std::thread::sleep(
+            (until + Duration::from_millis(500)).saturating_duration_since(Instant::now()),
         );
-        // Read nothing until the deadline has passed.
-        std::thread::sleep(deadline + Duration::from_millis(500) - started.elapsed());
-        let mut got = 0usize;
-        while rx.recv_timeout(Duration::from_secs(2)).is_ok() {
-            got += 1;
-        }
+        let (got, stopped) = deliveries_until_stopped(&rx, &done);
         // Held open to here: the stop, not the peer, ends the connection.
         drop(peer);
-        assert_eq!(
-            got, SENT,
-            "every packet sent before the deadline is delivered ({transport})"
-        );
-        assert!(
-            matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
-            "the listener stops cleanly at the deadline"
-        );
-        Ok(())
+        if sent == 0 {
+            return Ok(None);
+        }
+        Ok(Some((got, sent, written, stopped)))
     }
 
     /// A HEP v3 frame carrying OPTIONS number `n` between RFC 5737 addresses.
@@ -7253,11 +7562,14 @@ mod tests {
     }
 
     /// A waiting TLS connection whose peer never answers the handshake holds
-    /// the stop for the drain budget, not for the whole
-    /// [`HEP_TLS_HANDSHAKE_TIMEOUT`].
+    /// the stop for the drain budget, not for the whole handshake timeout.
     ///
-    /// The bound asserted is the handshake timeout itself, ten times the
-    /// budget, so a loaded host has nine seconds of slack.
+    /// The handshake timeout is made an hour here, so a stop that waited for
+    /// it would not end inside [`deliveries_until_stopped`]'s bound (twice
+    /// [`MUST_ARRIVE`]), and that bound only ends a hang: no clock is read
+    /// by the test. (It once asserted "under the 10 s
+    /// [`HEP_TLS_HANDSHAKE_TIMEOUT`]", a margin a host under a signal storm
+    /// used up at 14.1 s.)
     #[test]
     fn a_backlogged_tls_peer_that_stalls_its_handshake_cannot_hold_the_stop()
     -> Result<(), TestError> {
@@ -7266,23 +7578,22 @@ mod tests {
         let (socket, bind) = loopback_tcp()?;
         // The ClientHello is sent and the peer then says nothing more.
         let (_conn, sock) = tls_peer_in_backlog(&ca, &bind, b"")?;
-        let begun = Instant::now();
-        let (rx, done) = start_listener(
+        let (rx, done) = start_listener_with_handshake(
             socket,
             HepTransport::Tls,
             Some((cert, key)),
             vec![],
             None,
             stopped_at_start(),
+            Duration::from_secs(3600),
         );
         let (got, stopped) = deliveries_until_stopped(&rx, &done);
-        let took = begun.elapsed();
         drop(sock);
         assert_eq!(got, 0, "a stalled handshake delivers nothing");
-        assert!(stopped, "the listener stops cleanly");
         assert!(
-            took < HEP_TLS_HANDSHAKE_TIMEOUT,
-            "a stalled handshake is given up at the drain budget: {took:?}"
+            stopped,
+            "the listener did not stop: a stalled handshake held the stop past the \
+             drain budget"
         );
         Ok(())
     }
@@ -11224,7 +11535,14 @@ mod tests {
                 tls_key: None,
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
             };
-            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
+            let r = capture_hep_on(
+                socket,
+                &config,
+                tx,
+                &opts,
+                Some(ready_tx),
+                HEP_TLS_HANDSHAKE_TIMEOUT,
+            );
             let _ = done_tx.send(r.is_ok());
         });
 
@@ -11913,7 +12231,14 @@ mod tests {
                 tls_key: None,
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
             };
-            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
+            let r = capture_hep_on(
+                socket,
+                &config,
+                tx,
+                &opts,
+                Some(ready_tx),
+                HEP_TLS_HANDSHAKE_TIMEOUT,
+            );
             let _ = done_tx.send(r.is_ok());
         });
 
@@ -12254,9 +12579,14 @@ mod tests {
         fn the_duration_limit_is_reached_once_that_long_has_passed() -> Result<(), TestError> {
             let cfg = limits(None, Some(Duration::from_secs(60)));
             assert_eq!(capture_limit_reached(&cfg, 0, Instant::now()), None);
-            let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(61)) else {
-                // A monotonic clock younger than a minute cannot express the
-                // start; nothing to assert on such a host.
+            // A monotonic clock younger than a minute cannot express the
+            // start.
+            let Some(long_ago) = crate::test_prereq::check(
+                "monotonic-uptime",
+                crate::test_prereq::MONOTONIC_UPTIME,
+                crate::test_prereq::instant_ago(Duration::from_secs(61)),
+            )?
+            else {
                 return Ok(());
             };
             assert_eq!(
@@ -12268,7 +12598,12 @@ mod tests {
 
         #[test]
         fn the_count_is_asked_before_the_duration() -> Result<(), TestError> {
-            let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(61)) else {
+            let Some(long_ago) = crate::test_prereq::check(
+                "monotonic-uptime",
+                crate::test_prereq::MONOTONIC_UPTIME,
+                crate::test_prereq::instant_ago(Duration::from_secs(61)),
+            )?
+            else {
                 return Ok(());
             };
             let cfg = limits(Some(1), Some(Duration::from_secs(60)));
@@ -12393,6 +12728,7 @@ mod tests {
                 config,
                 start: Instant::now(),
                 bind_addr: "127.0.0.1:9060",
+                tls_handshake_timeout: HEP_TLS_HANDSHAKE_TIMEOUT,
             }
         }
 
@@ -12836,18 +13172,38 @@ mod tests {
 
         /// A peer that never pauses cannot hold a stop: the reader gives up
         /// draining after the budget.
+        ///
+        /// The defect is a reader that drains for ever. The stream is endless
+        /// up to a ceiling far past the budget, where it ends and records
+        /// that it was read that far, so the defect fails the test on the
+        /// record instead of hanging it, and the test reads the clock only
+        /// from below. (It once asserted "under the budget plus 2 s", a
+        /// margin a stalled host can use up.)
         #[test]
         fn a_winding_down_reader_stops_draining_a_peer_that_never_pauses() -> Result<(), TestError>
         {
             use std::sync::atomic::Ordering;
-            /// A stream that always has another whole packet ready.
-            struct Endless(Vec<u8>, usize);
+            /// How long the stream stays endless: thirty budgets.
+            const CEILING: Duration = Duration::from_secs(30);
+            /// A stream that always has another whole packet ready, until
+            /// `CEILING` after its first read; then it ends.
+            struct Endless {
+                packet: Vec<u8>,
+                at: usize,
+                first_read: Option<Instant>,
+                reached_the_ceiling: bool,
+            }
             impl std::io::Read for Endless {
                 fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                    let first = *self.first_read.get_or_insert_with(Instant::now);
+                    if first.elapsed() >= CEILING {
+                        self.reached_the_ceiling = true;
+                        return Ok(0);
+                    }
                     let mut n = 0;
                     while n < out.len() {
-                        out[n] = self.0[self.1 % self.0.len()];
-                        self.1 += 1;
+                        out[n] = self.packet[self.at % self.packet.len()];
+                        self.at += 1;
                         n += 1;
                     }
                     Ok(n)
@@ -12859,7 +13215,12 @@ mod tests {
             // Read on another thread, so the pipeline never fills and blocks.
             let (tx, rx) = crate::capture::channel::packet_channel(1 << 16);
             shared.stop.store(true, Ordering::Relaxed);
-            let mut stream = Endless(stream_packet(), 0);
+            let mut stream = Endless {
+                packet: stream_packet(),
+                at: 0,
+                first_read: None,
+                reached_the_ceiling: false,
+            };
             let begun = Instant::now();
             std::thread::scope(|scope| {
                 scope.spawn(move || while rx.recv_timeout(Duration::from_secs(5)).is_ok() {});
@@ -12872,8 +13233,9 @@ mod tests {
                 "the reader drained for its budget, not less: {took:?}"
             );
             assert!(
-                took < HEP_STREAM_DRAIN_BUDGET + Duration::from_secs(2),
-                "the reader stopped draining at its budget: {took:?}"
+                !stream.reached_the_ceiling,
+                "the reader drained a peer that never pauses for {CEILING:?}, not for its \
+                 {HEP_STREAM_DRAIN_BUDGET:?} budget"
             );
             Ok(())
         }
@@ -13659,5 +14021,1002 @@ mod delivery_tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         Ok(())
+    }
+}
+
+/// How a stream listener dates a stop (HEP-ACCEPT-DRAIN-STOP-TIMED-BEFORE-IT-WAS-SEEN).
+///
+/// A clock the test moves stands in for `Instant::now`, and a limit check
+/// that moves it forward stands in for a listener frozen while it reads its
+/// limits: stopped by SIGSTOP or job control, or not scheduled on a loaded
+/// host. On 2026-11-15 main's ThreadSanitizer job reported none of 300
+/// messages on a connection waiting at a `--duration` stop: the accept loop
+/// dated the stop by a clock reading taken before its limit check, so a
+/// freeze between the two used up the drain budget before the stop was seen,
+/// and the loop ended without one accept. A running listener cannot be
+/// frozen at that instant on purpose, so these tests drive the decision the
+/// loop and the handshake make at every pass.
+#[cfg(test)]
+mod stop_dating_tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    /// The budget the listener uses.
+    const BUDGET: Duration = HEP_STREAM_DRAIN_BUDGET;
+
+    /// A `--duration` stop, the one that finishes what was already sent.
+    const DURATION_STOP: ListenerStop = ListenerStop::Duration(Duration::from_secs(3));
+
+    /// A `--count` stop.
+    const COUNT_STOP: ListenerStop = ListenerStop::Count(10);
+
+    /// The freeze of the failing CI run: its test held sipnab stopped 4 s.
+    const FREEZE: Duration = Duration::from_secs(4);
+
+    /// The time between two passes of a listener that is not frozen.
+    const STEP: Duration = Duration::from_millis(1);
+
+    /// A clock the test moves, counting how often it is read.
+    struct TestClock {
+        /// The time the clock started at.
+        t0: Instant,
+        /// The time it reads now.
+        now: Cell<Instant>,
+        /// How many times it has been read.
+        reads: Cell<u32>,
+    }
+
+    impl TestClock {
+        fn new() -> Self {
+            let t0 = Instant::now();
+            Self {
+                t0,
+                now: Cell::new(t0),
+                reads: Cell::new(0),
+            }
+        }
+
+        fn read(&self) -> Instant {
+            self.reads.set(self.reads.get() + 1);
+            self.now.get()
+        }
+
+        fn advance(&self, by: Duration) {
+            self.now.set(self.now.get() + by);
+        }
+
+        /// A handshake deadline no test reaches unless it means to.
+        fn far_off(&self) -> Instant {
+            self.t0 + Duration::from_secs(3600)
+        }
+    }
+
+    /// One accept pass on `clock` whose limit check takes `freeze` and finds
+    /// `found`.
+    fn pass(
+        stopped: &mut Option<(ListenerStop, Instant)>,
+        clock: &TestClock,
+        freeze: Duration,
+        found: Option<ListenerStop>,
+    ) -> AcceptPass {
+        pass_within(stopped, clock, freeze, found, BUDGET)
+    }
+
+    /// [`pass`] with a budget of the test's choosing.
+    fn pass_within(
+        stopped: &mut Option<(ListenerStop, Instant)>,
+        clock: &TestClock,
+        freeze: Duration,
+        found: Option<ListenerStop>,
+        budget: Duration,
+    ) -> AcceptPass {
+        accept_pass(
+            stopped,
+            || {
+                clock.advance(freeze);
+                found
+            },
+            || clock.read(),
+            budget,
+        )
+    }
+
+    /// One handshake step on `clock` whose check takes `freeze` and finds
+    /// `found` (the limit, and the stop flag).
+    fn step(
+        seen: &mut Option<Instant>,
+        clock: &TestClock,
+        freeze: Duration,
+        found: (Option<ListenerStop>, bool),
+        deadline: Instant,
+    ) -> HandshakeStep {
+        handshake_step(
+            || {
+                clock.advance(freeze);
+                found
+            },
+            || clock.read(),
+            seen,
+            deadline,
+            BUDGET,
+        )
+    }
+
+    /// A `--duration` stop seen by a pass frozen for `freeze` inside its
+    /// limit check, then one more pass `STEP` later.
+    fn second_pass_after_frozen_stop(freeze: Duration) -> AcceptPass {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let first = pass(&mut stopped, &clock, freeze, Some(DURATION_STOP));
+        assert_eq!(
+            first,
+            AcceptPass::Stopped(DURATION_STOP),
+            "the first pass sees the stop"
+        );
+        clock.advance(STEP);
+        pass(&mut stopped, &clock, Duration::ZERO, None)
+    }
+
+    // The shared rule.
+
+    /// Success: what the check found is handed back.
+    #[test]
+    fn the_rule_hands_back_what_the_check_found() {
+        let clock = TestClock::new();
+        let (found, _) = checked_then_dated(|| Some(DURATION_STOP), || clock.read());
+        assert_eq!(found, Some(DURATION_STOP), "the check's answer");
+    }
+
+    /// Success: with no freeze the time is the clock's.
+    #[test]
+    fn the_rule_dates_an_unfrozen_check_by_the_clock() {
+        let clock = TestClock::new();
+        let (_, at) = checked_then_dated(|| (), || clock.read());
+        assert_eq!(at, clock.t0, "the time the clock reads");
+    }
+
+    /// Success: a check frozen 4 s is dated after the freeze.
+    #[test]
+    fn the_rule_dates_a_frozen_check_after_the_freeze() {
+        let clock = TestClock::new();
+        let (_, at) = checked_then_dated(|| clock.advance(FREEZE), || clock.read());
+        assert_eq!(
+            at,
+            clock.t0 + FREEZE,
+            "a check frozen 4 s is dated when it returned, not when it began"
+        );
+    }
+
+    /// Edge: the check runs before the clock is read.
+    #[test]
+    fn the_rule_runs_the_check_before_it_reads_the_clock() {
+        let order = RefCell::new(Vec::new());
+        let _ = checked_then_dated(
+            || order.borrow_mut().push("check"),
+            || {
+                order.borrow_mut().push("clock");
+                Instant::now()
+            },
+        );
+        assert_eq!(
+            *order.borrow(),
+            ["check", "clock"],
+            "the limits are read first, then the clock"
+        );
+    }
+
+    /// Edge: the clock is read once.
+    #[test]
+    fn the_rule_reads_the_clock_once() {
+        let clock = TestClock::new();
+        let _ = checked_then_dated(|| (), || clock.read());
+        assert_eq!(clock.reads.get(), 1, "one clock reading per check");
+    }
+
+    /// Edge: a day-long freeze is dated a day later.
+    #[test]
+    fn the_rule_dates_a_day_long_freeze_a_day_later() {
+        let clock = TestClock::new();
+        let day = Duration::from_secs(86_400);
+        let (_, at) = checked_then_dated(|| clock.advance(day), || clock.read());
+        assert_eq!(at, clock.t0 + day, "dated when the check returned");
+    }
+
+    // The accept loop: the backlog is taken.
+
+    /// Success: the CI run's case. A pass frozen 4 s while it reads its
+    /// limits sees the `--duration` stop, and the next pass takes the
+    /// connection waiting in the backlog.
+    #[test]
+    fn a_pass_frozen_4_s_in_its_limit_check_still_takes_the_backlog() {
+        assert_eq!(
+            second_pass_after_frozen_stop(FREEZE),
+            AcceptPass::Drain,
+            "a stop seen after a 4 s freeze leaves its whole budget for the backlog"
+        );
+    }
+
+    /// Success: a freeze as long as the budget.
+    #[test]
+    fn a_pass_frozen_as_long_as_the_budget_still_takes_the_backlog() {
+        assert_eq!(
+            second_pass_after_frozen_stop(BUDGET),
+            AcceptPass::Drain,
+            "a freeze of exactly the budget"
+        );
+    }
+
+    /// Success: a freeze half again as long as the budget.
+    #[test]
+    fn a_pass_frozen_past_the_budget_still_takes_the_backlog() {
+        assert_eq!(
+            second_pass_after_frozen_stop(BUDGET + BUDGET / 2),
+            AcceptPass::Drain,
+            "a freeze of 1.5 budgets"
+        );
+    }
+
+    /// Success: a freeze of a minute.
+    #[test]
+    fn a_pass_frozen_a_minute_still_takes_the_backlog() {
+        assert_eq!(
+            second_pass_after_frozen_stop(Duration::from_secs(60)),
+            AcceptPass::Drain,
+            "a freeze of 60 s"
+        );
+    }
+
+    /// Success: a freeze shorter than the budget.
+    #[test]
+    fn a_pass_frozen_less_than_the_budget_takes_the_backlog() {
+        assert_eq!(
+            second_pass_after_frozen_stop(BUDGET / 2),
+            AcceptPass::Drain,
+            "a freeze of half the budget"
+        );
+    }
+
+    /// Success: no freeze at all.
+    #[test]
+    fn an_unfrozen_pass_takes_the_backlog() {
+        assert_eq!(
+            second_pass_after_frozen_stop(Duration::ZERO),
+            AcceptPass::Drain,
+            "no freeze"
+        );
+    }
+
+    /// Success: the stop is recorded at the time the check returned.
+    #[test]
+    fn the_stop_is_recorded_when_the_frozen_check_returned() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(DURATION_STOP));
+        assert_eq!(
+            stopped,
+            Some((DURATION_STOP, clock.t0 + FREEZE)),
+            "the stop and the time it was seen"
+        );
+    }
+
+    /// Success: a pass that finds no limit serves, dated after its check.
+    #[test]
+    fn a_pass_with_no_limit_serves_at_the_time_its_check_returned() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        assert_eq!(
+            pass(&mut stopped, &clock, FREEZE, None),
+            AcceptPass::Serve(clock.t0 + FREEZE),
+            "the roster is swept at the time the check returned"
+        );
+    }
+
+    /// Success: half way through the budget the backlog is still taken.
+    #[test]
+    fn half_way_through_the_budget_the_backlog_is_taken() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(DURATION_STOP));
+        clock.advance(BUDGET / 2);
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::Drain,
+            "half the budget after the stop was seen"
+        );
+    }
+
+    /// Success: one millisecond before the budget ends.
+    #[test]
+    fn just_before_the_budget_ends_the_backlog_is_taken() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(DURATION_STOP));
+        clock.advance(BUDGET - STEP);
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::Drain,
+            "one millisecond before the budget ends"
+        );
+    }
+
+    /// Success: the pass that sees the stop says which stop it was.
+    #[test]
+    fn the_pass_that_sees_a_stop_names_it() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, Some(COUNT_STOP)),
+            AcceptPass::Stopped(COUNT_STOP),
+            "the stop is handed back to be logged"
+        );
+    }
+
+    /// Success: several passes in a row take the backlog within the budget.
+    #[test]
+    fn every_pass_within_the_budget_takes_the_backlog() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(DURATION_STOP));
+        for n in 0..5 {
+            clock.advance(BUDGET / 10);
+            assert_eq!(
+                pass(&mut stopped, &clock, Duration::ZERO, None),
+                AcceptPass::Drain,
+                "pass {n} within the budget"
+            );
+        }
+    }
+
+    /// Success: a drain pass leaves the recorded stop as it was.
+    #[test]
+    fn a_drain_pass_keeps_the_recorded_stop() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(DURATION_STOP));
+        let recorded = stopped;
+        clock.advance(STEP);
+        let _ = pass(&mut stopped, &clock, Duration::ZERO, None);
+        assert_eq!(stopped, recorded, "the stop is recorded once");
+    }
+
+    // The accept loop: the loop ends.
+
+    /// Failure: at the end of the budget the loop ends.
+    #[test]
+    fn at_the_end_of_the_budget_the_loop_ends() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(DURATION_STOP));
+        clock.advance(BUDGET);
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::End,
+            "the budget counts from when the stop was seen and ends"
+        );
+    }
+
+    /// Failure: long after the budget the loop ends.
+    #[test]
+    fn long_after_the_budget_the_loop_ends() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, Duration::ZERO, Some(DURATION_STOP));
+        clock.advance(10 * BUDGET);
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::End,
+            "ten budgets after the stop"
+        );
+    }
+
+    /// Failure: a freeze after the stop was seen still uses up the budget.
+    #[test]
+    fn a_freeze_after_the_stop_was_seen_uses_up_the_budget() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, Duration::ZERO, Some(DURATION_STOP));
+        clock.advance(FREEZE);
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::End,
+            "the budget is time after the stop, frozen or not"
+        );
+    }
+
+    /// Failure: a `--count` stop takes no backlog.
+    #[test]
+    fn a_count_stop_ends_the_loop_at_the_next_pass() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, Duration::ZERO, Some(COUNT_STOP));
+        clock.advance(STEP);
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::End,
+            "a count stop has every packet it asked for"
+        );
+    }
+
+    /// Failure: a signal stop takes no backlog.
+    #[test]
+    fn a_signal_stop_ends_the_loop_at_the_next_pass() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(
+            &mut stopped,
+            &clock,
+            Duration::ZERO,
+            Some(ListenerStop::Shutdown),
+        );
+        clock.advance(STEP);
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::End,
+            "a signal stops at once"
+        );
+    }
+
+    /// Failure: a `--count` stop seen after a freeze still takes no backlog.
+    #[test]
+    fn a_frozen_count_stop_still_ends_the_loop() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(COUNT_STOP));
+        clock.advance(STEP);
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::End,
+            "the freeze does not change what a count stop keeps"
+        );
+    }
+
+    /// Failure: a signal stop seen after a freeze still takes no backlog.
+    #[test]
+    fn a_frozen_signal_stop_still_ends_the_loop() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(ListenerStop::Shutdown));
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::End,
+            "the freeze does not change what a signal stop keeps"
+        );
+    }
+
+    /// Failure: a zero budget takes no backlog.
+    #[test]
+    fn a_zero_budget_ends_the_loop_at_the_next_pass() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass_within(
+            &mut stopped,
+            &clock,
+            FREEZE,
+            Some(DURATION_STOP),
+            Duration::ZERO,
+        );
+        assert_eq!(
+            pass_within(&mut stopped, &clock, Duration::ZERO, None, Duration::ZERO),
+            AcceptPass::End,
+            "no budget, no backlog"
+        );
+    }
+
+    /// Failure: after a stop the limits are not read again.
+    #[test]
+    fn after_a_stop_the_limits_are_not_read_again() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, Duration::ZERO, Some(DURATION_STOP));
+        let checks = Cell::new(0);
+        let _ = accept_pass(
+            &mut stopped,
+            || {
+                checks.set(checks.get() + 1);
+                None
+            },
+            || clock.read(),
+            BUDGET,
+        );
+        assert_eq!(checks.get(), 0, "a stopped loop does not ask the limits");
+    }
+
+    /// Failure: a stop is reported to be logged only once.
+    #[test]
+    fn a_stop_is_handed_back_to_be_logged_once() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, Duration::ZERO, Some(DURATION_STOP));
+        assert_ne!(
+            pass(&mut stopped, &clock, Duration::ZERO, Some(DURATION_STOP)),
+            AcceptPass::Stopped(DURATION_STOP),
+            "the second pass does not see the stop again"
+        );
+    }
+
+    /// Failure: an ended loop leaves the recorded stop as it was.
+    #[test]
+    fn an_ended_loop_keeps_the_recorded_stop() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, Duration::ZERO, Some(COUNT_STOP));
+        let recorded = stopped;
+        let _ = pass(&mut stopped, &clock, Duration::ZERO, None);
+        assert_eq!(stopped, recorded, "ending does not change the record");
+    }
+
+    /// Failure: a stop the caller recorded long ago ends the loop.
+    #[test]
+    fn a_stop_recorded_long_ago_ends_the_loop() {
+        let clock = TestClock::new();
+        let mut stopped = Some((DURATION_STOP, clock.t0));
+        clock.advance(FREEZE);
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::End,
+            "the rule dates new stops; an old record is not moved"
+        );
+    }
+
+    // The accept loop: edges.
+
+    /// Edge: a check that finds nothing after a freeze leaves no stop.
+    #[test]
+    fn a_frozen_pass_with_no_limit_records_no_stop() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, None);
+        assert_eq!(stopped, None, "no limit, no stop");
+    }
+
+    /// Edge: a pass before a stop reads the clock once.
+    #[test]
+    fn a_pass_before_a_stop_reads_the_clock_once() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, Duration::ZERO, None);
+        assert_eq!(clock.reads.get(), 1, "one reading per pass");
+    }
+
+    /// Edge: a pass after a stop reads the clock once.
+    #[test]
+    fn a_pass_after_a_stop_reads_the_clock_once() {
+        let clock = TestClock::new();
+        let mut stopped = Some((DURATION_STOP, clock.t0));
+        let _ = pass(&mut stopped, &clock, Duration::ZERO, None);
+        assert_eq!(clock.reads.get(), 1, "one reading per pass");
+    }
+
+    /// Edge: the pass reads its limits before the clock.
+    #[test]
+    fn a_pass_reads_its_limits_before_the_clock() {
+        let order = RefCell::new(Vec::new());
+        let mut stopped = None;
+        let _ = accept_pass(
+            &mut stopped,
+            || {
+                order.borrow_mut().push("limit");
+                None
+            },
+            || {
+                order.borrow_mut().push("clock");
+                Instant::now()
+            },
+            BUDGET,
+        );
+        assert_eq!(
+            *order.borrow(),
+            ["limit", "clock"],
+            "limits, then the clock"
+        );
+    }
+
+    /// Edge: the next pass at the very time of the stop takes the backlog.
+    #[test]
+    fn a_pass_at_the_time_of_the_stop_takes_the_backlog() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(DURATION_STOP));
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::Drain,
+            "no time has passed since the stop was seen"
+        );
+    }
+
+    /// Edge: the largest budget there is.
+    #[test]
+    fn the_largest_budget_takes_the_backlog_a_day_later() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass_within(
+            &mut stopped,
+            &clock,
+            FREEZE,
+            Some(DURATION_STOP),
+            Duration::MAX,
+        );
+        clock.advance(Duration::from_secs(86_400));
+        assert_eq!(
+            pass_within(&mut stopped, &clock, Duration::ZERO, None, Duration::MAX),
+            AcceptPass::Drain,
+            "a budget of Duration::MAX"
+        );
+    }
+
+    /// Edge: a `--duration` of zero is still a stop that drains.
+    #[test]
+    fn a_zero_duration_stop_takes_the_backlog() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let stop = ListenerStop::Duration(Duration::ZERO);
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(stop));
+        clock.advance(STEP);
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::Drain,
+            "--duration 0"
+        );
+    }
+
+    /// Edge: a frozen serve pass, then a stop: the stop is dated by its own
+    /// pass.
+    #[test]
+    fn a_stop_after_a_frozen_serve_pass_is_dated_by_its_own_pass() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, None);
+        clock.advance(STEP);
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(DURATION_STOP));
+        assert_eq!(
+            stopped,
+            Some((DURATION_STOP, clock.t0 + FREEZE + STEP + FREEZE)),
+            "dated when the second check returned"
+        );
+    }
+
+    /// Edge: the budget is counted from the very instant recorded.
+    #[test]
+    fn the_budget_ends_exactly_one_budget_after_the_recorded_time() {
+        let clock = TestClock::new();
+        let mut stopped = None;
+        let _ = pass(&mut stopped, &clock, FREEZE, Some(DURATION_STOP));
+        clock.advance(BUDGET - Duration::from_nanos(1));
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::Drain,
+            "one nanosecond before the budget ends"
+        );
+        clock.advance(Duration::from_nanos(1));
+        assert_eq!(
+            pass(&mut stopped, &clock, Duration::ZERO, None),
+            AcceptPass::End,
+            "the budget ends exactly one budget after the stop was seen"
+        );
+    }
+
+    // The TLS handshake: it goes on.
+
+    /// Success: a step frozen 4 s while it reads the stop goes on at the
+    /// next step.
+    #[test]
+    fn a_handshake_step_frozen_4_s_in_its_check_goes_on_at_the_next_step() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        let _ = step(&mut seen, &clock, FREEZE, (Some(DURATION_STOP), false), far);
+        clock.advance(STEP);
+        assert_eq!(
+            step(
+                &mut seen,
+                &clock,
+                Duration::ZERO,
+                (Some(DURATION_STOP), false),
+                far
+            ),
+            HandshakeStep::Go,
+            "a stop seen after a 4 s freeze leaves the handshake its budget"
+        );
+    }
+
+    /// Success: the step that sees the stop goes on.
+    #[test]
+    fn the_handshake_step_that_sees_a_duration_stop_goes_on() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        assert_eq!(
+            step(&mut seen, &clock, FREEZE, (Some(DURATION_STOP), false), far),
+            HandshakeStep::Go,
+            "the first step at the stop"
+        );
+    }
+
+    /// Success: with no stop the handshake goes on.
+    #[test]
+    fn a_handshake_with_no_stop_goes_on() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        assert_eq!(
+            step(&mut seen, &clock, FREEZE, (None, false), far),
+            HandshakeStep::Go,
+            "nothing has stopped"
+        );
+    }
+
+    /// Success: half way through the budget the handshake goes on.
+    #[test]
+    fn half_way_through_the_budget_the_handshake_goes_on() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        let _ = step(&mut seen, &clock, FREEZE, (Some(DURATION_STOP), false), far);
+        clock.advance(BUDGET / 2);
+        assert_eq!(
+            step(
+                &mut seen,
+                &clock,
+                Duration::ZERO,
+                (Some(DURATION_STOP), true),
+                far
+            ),
+            HandshakeStep::Go,
+            "half the budget after the stop was seen"
+        );
+    }
+
+    /// Success: the stop is recorded when the frozen check returned.
+    #[test]
+    fn the_handshake_records_the_stop_when_the_frozen_check_returned() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        let _ = step(&mut seen, &clock, FREEZE, (Some(DURATION_STOP), false), far);
+        assert_eq!(seen, Some(clock.t0 + FREEZE), "the time the stop was seen");
+    }
+
+    /// Success: a stop flag and a `--duration` stop seen after a freeze.
+    #[test]
+    fn a_frozen_wind_down_at_a_duration_stop_goes_on_at_the_next_step() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        let _ = step(&mut seen, &clock, FREEZE, (Some(DURATION_STOP), true), far);
+        clock.advance(STEP);
+        assert_eq!(
+            step(
+                &mut seen,
+                &clock,
+                Duration::ZERO,
+                (Some(DURATION_STOP), true),
+                far
+            ),
+            HandshakeStep::Go,
+            "the accept loop has ended; the handshake keeps its budget"
+        );
+    }
+
+    // The TLS handshake: it is given up.
+
+    /// Failure: the handshake's own deadline.
+    #[test]
+    fn a_handshake_past_its_deadline_is_given_up() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let deadline = clock.t0 + STEP;
+        clock.advance(STEP);
+        assert_eq!(
+            step(&mut seen, &clock, Duration::ZERO, (None, false), deadline),
+            HandshakeStep::DeadlinePassed,
+            "the deadline has passed"
+        );
+    }
+
+    /// Failure: a `--duration` stop at the end of the budget.
+    #[test]
+    fn a_handshake_at_the_end_of_the_budget_is_given_up() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        let _ = step(&mut seen, &clock, FREEZE, (Some(DURATION_STOP), false), far);
+        clock.advance(BUDGET);
+        assert_eq!(
+            step(
+                &mut seen,
+                &clock,
+                Duration::ZERO,
+                (Some(DURATION_STOP), true),
+                far
+            ),
+            HandshakeStep::StopReached,
+            "the budget counts from when the stop was seen and ends"
+        );
+    }
+
+    /// Failure: a `--count` stop gives the handshake up at once.
+    #[test]
+    fn a_count_stop_gives_a_handshake_up_at_once() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        assert_eq!(
+            step(
+                &mut seen,
+                &clock,
+                Duration::ZERO,
+                (Some(COUNT_STOP), false),
+                far
+            ),
+            HandshakeStep::StopReached,
+            "a count stop"
+        );
+    }
+
+    /// Failure: a signal gives the handshake up at once.
+    #[test]
+    fn a_signal_stop_gives_a_handshake_up_at_once() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        assert_eq!(
+            step(
+                &mut seen,
+                &clock,
+                Duration::ZERO,
+                (Some(ListenerStop::Shutdown), false),
+                far
+            ),
+            HandshakeStep::StopReached,
+            "a signal stop"
+        );
+    }
+
+    /// Failure: a listener winding down with no limit reached.
+    #[test]
+    fn a_wind_down_with_no_limit_gives_a_handshake_up_at_once() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        assert_eq!(
+            step(&mut seen, &clock, Duration::ZERO, (None, true), far),
+            HandshakeStep::StopReached,
+            "the pipeline has gone or accept failed"
+        );
+    }
+
+    /// Failure: a check frozen past the deadline gives the handshake up.
+    #[test]
+    fn a_check_frozen_past_the_deadline_gives_the_handshake_up() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let deadline = clock.t0 + BUDGET;
+        assert_eq!(
+            step(&mut seen, &clock, FREEZE, (None, false), deadline),
+            HandshakeStep::DeadlinePassed,
+            "the deadline passed while the check was frozen"
+        );
+    }
+
+    /// Failure: a freeze after the stop was seen uses up the budget.
+    #[test]
+    fn a_freeze_after_the_handshake_saw_the_stop_uses_up_the_budget() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        let _ = step(
+            &mut seen,
+            &clock,
+            Duration::ZERO,
+            (Some(DURATION_STOP), false),
+            far,
+        );
+        assert_eq!(
+            step(&mut seen, &clock, FREEZE, (Some(DURATION_STOP), false), far),
+            HandshakeStep::StopReached,
+            "the budget is time after the stop, frozen or not"
+        );
+    }
+
+    // The TLS handshake: edges.
+
+    /// Edge: the first stop seen is kept.
+    #[test]
+    fn the_handshake_keeps_the_first_time_it_saw_the_stop() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        let _ = step(&mut seen, &clock, FREEZE, (Some(DURATION_STOP), false), far);
+        clock.advance(STEP);
+        let _ = step(&mut seen, &clock, FREEZE, (Some(DURATION_STOP), true), far);
+        assert_eq!(seen, Some(clock.t0 + FREEZE), "the first sighting stands");
+    }
+
+    /// Edge: no stop, nothing recorded.
+    #[test]
+    fn a_handshake_with_no_stop_records_none() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        let _ = step(&mut seen, &clock, FREEZE, (None, false), far);
+        assert_eq!(seen, None, "nothing stopped");
+    }
+
+    /// Edge: the deadline itself gives the handshake up.
+    #[test]
+    fn a_handshake_at_its_deadline_is_given_up() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let deadline = clock.t0;
+        assert_eq!(
+            step(&mut seen, &clock, Duration::ZERO, (None, false), deadline),
+            HandshakeStep::DeadlinePassed,
+            "now equals the deadline"
+        );
+    }
+
+    /// Edge: a deadline and a stop together are named as the deadline.
+    #[test]
+    fn a_deadline_and_a_stop_together_name_the_deadline() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let deadline = clock.t0;
+        assert_eq!(
+            step(
+                &mut seen,
+                &clock,
+                Duration::ZERO,
+                (Some(COUNT_STOP), true),
+                deadline
+            ),
+            HandshakeStep::DeadlinePassed,
+            "the deadline is named first"
+        );
+    }
+
+    /// Edge: the step reads the stop before the clock.
+    #[test]
+    fn a_handshake_step_reads_the_stop_before_the_clock() {
+        let order = RefCell::new(Vec::new());
+        let mut seen = None;
+        let now = Instant::now();
+        let _ = handshake_step(
+            || {
+                order.borrow_mut().push("check");
+                (None, false)
+            },
+            || {
+                order.borrow_mut().push("clock");
+                now
+            },
+            &mut seen,
+            now + Duration::from_secs(3600),
+            BUDGET,
+        );
+        assert_eq!(
+            *order.borrow(),
+            ["check", "clock"],
+            "the stop, then the clock"
+        );
+    }
+
+    /// Edge: a frozen wind-down alone is recorded after the freeze.
+    #[test]
+    fn a_frozen_wind_down_is_recorded_after_the_freeze() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        let _ = step(&mut seen, &clock, FREEZE, (None, true), far);
+        assert_eq!(seen, Some(clock.t0 + FREEZE), "the time the flag was seen");
+    }
+
+    /// Edge: one clock reading per handshake step.
+    #[test]
+    fn a_handshake_step_reads_the_clock_once() {
+        let clock = TestClock::new();
+        let mut seen = None;
+        let far = clock.far_off();
+        let _ = step(&mut seen, &clock, FREEZE, (Some(DURATION_STOP), true), far);
+        assert_eq!(clock.reads.get(), 1, "one reading per step");
     }
 }

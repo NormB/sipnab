@@ -34,16 +34,16 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{self, EnterAlternateScreen};
 use parking_lot::RwLock;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::names::{NameMode, NameResolver};
 use crate::rtp::stream_store::StreamStore;
@@ -57,8 +57,15 @@ use crate::config::{KeybindingsConfig, ThemeConfig, parse_color, parse_keycode};
 
 mod clipboard;
 mod controllers;
+mod expression_history;
+mod filter_command;
+mod filter_help;
+mod input_parse;
 mod render;
 mod save;
+mod sngrep_mode;
+#[cfg(test)]
+mod sngrep_mode_tests;
 mod state;
 mod terminal_input;
 mod test_api;
@@ -91,6 +98,14 @@ use save::{
 };
 pub use state::*;
 pub use theme::*;
+
+/// Turn on sngrep mode: sngrep's keys, layout, help and key bar on the
+/// screens sngrep has, and its colors unless NO_COLOR is set. The mode is
+/// the one flag [`Theme::sngrep`]. See the crate-internal `sngrep_mode`
+/// module.
+pub fn enable_sngrep_mode(theme: &mut Theme) {
+    sngrep_mode::apply_theme(theme);
+}
 
 // ── App state ───────────────────────────────────────────────────────
 
@@ -146,10 +161,22 @@ pub struct App {
     raw_msg_return_view: Option<View>,
     /// Structured filter dialog state (preserved between opens).
     pub filter_dialog: FilterDialogState,
+    /// The Expression field's history for this session: the expressions the
+    /// dialog applied, newest first, which Up and Down recall.
+    expression_history: expression_history::ExpressionHistory,
+    /// The words that name the capture source the session was started with
+    /// (`-I` inputs, `--recursive`, `-d`, `-L`), for the command line `Y`
+    /// copies. Empty when the session named none.
+    capture_source: Vec<String>,
     /// The run's resolved `[filters]`, which the dialog's Named field and
     /// `@name` references read. The table installed at startup, held here so
     /// a test can give the app any table.
     pub(crate) named_filters: crate::sip::named_filters::NamedFilters,
+    /// Where an `F2` save publishes the run's new table, so the REST API
+    /// and MCP server of this process resolve the name at once: the
+    /// process's live table in a real session (`TuiOptions::into_app`),
+    /// `None` in a test app, which must not change the process's table.
+    pub(crate) filter_publisher: Option<fn(crate::sip::named_filters::NamedFilters)>,
     /// The thresholds a built-in alias referenced as `@name` compares against:
     /// the run's, set by the TUI launcher.
     pub(crate) alias_thresholds: crate::sip::dsl::AliasThresholds,
@@ -320,6 +347,9 @@ pub struct App {
     capture_options: crate::pipeline::PipelineOptions,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
+    /// Messages dropped at ingest by method (`--drop-method`,
+    /// `--only-method`), refreshed with `cached_dialog_count`.
+    cached_dropped_by_method: u64,
     /// Displayed dialog list cache (filter+search+sort, derived per tick).
     displayed: DisplayedCache,
     /// Cached displayed dialog count (updated when lock is available).
@@ -521,7 +551,13 @@ impl App {
             libpcap: crate::capture::libpcap::running().summary_line(),
             current_view: View::CallList,
             active_popup: None,
-            call_list: CallListState::new(),
+            call_list: {
+                // sngrep mode starts with autoscroll off; sipnab's own mode
+                // starts it on.
+                let mut call_list = CallListState::new();
+                call_list.autoscroll = !theme.sngrep;
+                call_list
+            },
             stream_list: StreamListState::new(),
             should_quit: false,
             last_data_update: Instant::now(),
@@ -534,7 +570,10 @@ impl App {
             stream_list_show_all: false,
             raw_msg_return_view: None,
             filter_dialog: FilterDialogState::default(),
-            named_filters: crate::sip::named_filters::installed().clone(),
+            expression_history: expression_history::ExpressionHistory::default(),
+            capture_source: Vec::new(),
+            named_filters: (*crate::sip::named_filters::installed()).clone(),
+            filter_publisher: None,
             alias_thresholds: crate::sip::dsl::AliasThresholds::default(),
             settings_dialog: SettingsDialogState::default(),
             active_filter: None,
@@ -604,6 +643,7 @@ impl App {
             bpf_filter: String::new(),
             bpf_filter_generated: false,
             cached_dialog_count: 0,
+            cached_dropped_by_method: 0,
             displayed: DisplayedCache::default(),
             cached_displayed_count: 0,
             save: SaveDialogState::default(),
@@ -622,7 +662,13 @@ impl App {
             action_trail: None,
             name_dialog: NameDialogState::default(),
             header_form: header_form::HeaderFormMode::default(),
-            sdp_display_mode: SdpDisplayMode::default(),
+            // sngrep mode opens on its SDP form; sipnab's own mode starts
+            // hidden.
+            sdp_display_mode: if theme.sngrep {
+                SdpDisplayMode::Sngrep
+            } else {
+                SdpDisplayMode::default()
+            },
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),
             from_to_mode: FromToMode::default(),
@@ -1032,6 +1078,35 @@ impl App {
         );
     }
 
+    /// sngrep mode: the ladder row (raw index) of the message Space selected
+    /// for a compare, when the ladder shows it. `None` outside sngrep mode.
+    pub(in crate::tui) fn sngrep_marked_raw(&self, view_cid: &str) -> Option<usize> {
+        let (cid, idx) = self
+            .flow
+            .diff_selected
+            .as_ref()
+            .filter(|_| self.theme.sngrep)?;
+        if !self.flow.ladder.index_map.is_empty() {
+            return self
+                .flow
+                .ladder
+                .index_map
+                .iter()
+                .position(|(c, i)| c == cid && i == idx);
+        }
+        // A transaction filter renumbers the rows; its index is not a row.
+        (cid == view_cid && self.flow.transaction_filter.is_none()).then_some(*idx)
+    }
+
+    /// Open the session with these `[display]` preferences.
+    pub(crate) fn apply_display_prefs(&mut self, prefs: DisplayPrefs) {
+        self.flow.fold = prefs.fold;
+        self.call_list.autoscroll = prefs.autoscroll;
+        self.sdp_display_mode = prefs.sdp_display;
+        self.color_mode = prefs.color_mode;
+        self.flow.extended = prefs.extended_flow;
+    }
+
     /// Reset all per-call transient state when entering a call flow view.
     /// Scroll, selection, fold expansion, marks and diff selection are all
     /// positions within ONE dialog's ladder; carrying them into another
@@ -1049,6 +1124,7 @@ impl App {
         self.flow.mark_index = None;
         self.flow.diff_selected = None;
         self.flow.merged_calls.clear();
+        self.flow.sdp_only = false;
     }
 
     /// Keep the relay-statistics view's answer current (ST8).
@@ -1112,7 +1188,17 @@ impl App {
     /// the stores.
     fn drive_relay_sessions(&mut self, call_id: Option<&str>, mode: RelayStatsMode) {
         let now = std::time::Instant::now();
-        self.relay_sessions.absorb(now);
+        // The store is read only while a snapshot is in flight: a landed one
+        // samples the capture once, for its capture rate.
+        if self.relay_sessions.pending() {
+            let ss = self.stream_store.read();
+            let counts = crate::output::query::relay_capture::counts_in(&ss);
+            self.relay_sessions.absorb_rated(
+                now,
+                crate::relay::rate::monotonic_now(),
+                Some(&counts),
+            );
+        }
         let access = match &self.relay_query {
             relay_stats::RelayQueryState::Ready(a) => a.clone(),
             other => {
@@ -1310,6 +1396,7 @@ impl App {
             return;
         };
         self.cached_dialog_count = store.len();
+        self.cached_dropped_by_method = store.total_messages_dropped_by_method();
 
         self.sync_displayed_dialogs(&store);
         self.cached_displayed_count = self.displayed.ids.len();
@@ -1371,6 +1458,22 @@ impl App {
         }
     }
 
+    /// The call list's view inputs (filter, time window, search, sort, `d`)
+    /// as one [`call_list::DisplayQuery`], so every caller asks the same
+    /// question. `capture_now` is left for the callee to read when needed.
+    pub(in crate::tui) fn display_query(&self) -> call_list::DisplayQuery<'_> {
+        call_list::DisplayQuery {
+            filter: self.active_filter.as_ref(),
+            after: self.active_time_after,
+            before: self.active_time_before,
+            search_query: &self.search_query,
+            sort_column: self.call_list.sort_column(),
+            sort_ascending: self.call_list.sort_ascending(),
+            only_open: self.call_list.only_open,
+            capture_now: None,
+        }
+    }
+
     /// The displayed dialog list (filter + search + sort), rebuilt when a
     /// user input changed, or at the churn floor when only the store did.
     fn sync_displayed_dialogs(&mut self, store: &DialogStore) {
@@ -1379,6 +1482,7 @@ impl App {
                 && k.query == self.search_query
                 && k.sort_column == self.call_list.sort_column()
                 && k.sort_ascending == self.call_list.sort_ascending()
+                && k.only_open == self.call_list.only_open
         });
         let data_fresh = self
             .displayed
@@ -1394,14 +1498,16 @@ impl App {
         if fresh || churn_floored {
             return;
         }
-        self.displayed.ids = call_list::displayed_dialogs(
+        // The capture's clock, read once per rebuild and kept with the list:
+        // the `d` filter uses it here and the State cells on every frame.
+        let capture_now = store.capture_now();
+        self.displayed.capture_now = Some(capture_now);
+        self.displayed.ids = call_list::displayed_dialogs_open(
             store,
-            self.active_filter.as_ref(),
-            self.active_time_after,
-            self.active_time_before,
-            &self.search_query,
-            self.call_list.sort_column(),
-            self.call_list.sort_ascending(),
+            &call_list::DisplayQuery {
+                capture_now: Some(capture_now),
+                ..self.display_query()
+            },
         )
         .iter()
         .map(|d| d.call_id.clone())
@@ -1412,6 +1518,7 @@ impl App {
             query: self.search_query.clone(),
             sort_column: self.call_list.sort_column(),
             sort_ascending: self.call_list.sort_ascending(),
+            only_open: self.call_list.only_open,
         });
         self.displayed.floor.mark();
     }
@@ -1424,6 +1531,19 @@ impl App {
         // A narrowed filter/search (or eviction) can strand the
         // selection past the new end; pull it back onto a real row.
         self.call_list.clamp_to(displayed_len);
+        // sngrep mode: sngrep's autoscroll — while on, the cursor sits on
+        // the newest dialog in the current sort order, wherever it was.
+        if self.theme.sngrep {
+            if self.call_list.autoscroll {
+                match sngrep_mode::autoscroll_row(displayed_len, self.call_list.sort_ascending()) {
+                    Some(0) => self.call_list.move_to_top(),
+                    Some(_) => self.call_list.move_to_bottom(displayed_len),
+                    None => {}
+                }
+            }
+            self.last_rendered_dialog_rows = displayed_len;
+            return;
+        }
         if self.call_list.autoscroll
             && self.last_rendered_dialog_rows > 0
             && displayed_len > self.last_rendered_dialog_rows
@@ -1695,6 +1815,7 @@ impl App {
             media_rev,
             fold_expanded: self.flow.fold_expanded.clone(),
             merged_calls: self.flow.merged_calls.clone(),
+            sngrep_view: (self.flow.sdp_only, self.flow.only_media, self.flow.split),
         };
         if self.flow.ladder.key.as_ref() == Some(&key) {
             return;
@@ -1709,10 +1830,64 @@ impl App {
         } else {
             self.dialog_ladder(store, &cid)
         };
+        let (participants, rows) = self.sngrep_ladder(store, &cid, participants, rows);
         self.flow.ladder.participants = participants;
         self.flow.ladder.rows = rows;
-        self.flow.ladder.key = Some(key);
+        self.flow.ladder.key = Some(self.ladder_key_after_sngrep(key));
         self.flow.ladder.churn.mark();
+    }
+
+    /// sngrep mode's ladder views: `D` keeps the messages with SDP (and
+    /// turns itself off when the call has none, as sngrep does), `M` keeps
+    /// only the media arrows, `s` merges the columns of one host. Rows keep
+    /// their `raw_index`, so selection and drill-down resolve as before.
+    fn sngrep_ladder(
+        &mut self,
+        store: &DialogStore,
+        cid: &str,
+        participants: Vec<call_flow::Participant>,
+        rows: Vec<call_flow::LayoutRow>,
+    ) -> (Vec<call_flow::Participant>, Vec<call_flow::LayoutRow>) {
+        if !self.theme.sngrep {
+            return (participants, rows);
+        }
+        let (sdp_only, only_media) = (self.flow.sdp_only, self.flow.only_media);
+        let rows = if sdp_only || only_media {
+            let has_sdp = |raw: usize| {
+                render::row_message(self, store, cid, raw).is_some_and(|m| m.sdp().is_some())
+            };
+            let any_sdp = rows.iter().any(|r| {
+                matches!(r.kind, call_flow::prepare::RowKind::Message { .. })
+                    && r.raw_index.is_some_and(has_sdp)
+            });
+            let keep =
+                sngrep_mode::filter_rows(rows.clone(), sdp_only && any_sdp, only_media, has_sdp);
+            if sdp_only && !any_sdp {
+                self.flow.sdp_only = false;
+            }
+            keep
+        } else {
+            rows
+        };
+        if !self.flow.split {
+            let resolver = self.resolver.clone();
+            let mode = self.name_mode;
+            sngrep_mode::compress_participants(participants, rows, |host| {
+                match host.parse::<std::net::IpAddr>() {
+                    Ok(ip) => resolver.label_ip(ip, mode),
+                    Err(_) => host.to_string(),
+                }
+            })
+        } else {
+            (participants, rows)
+        }
+    }
+
+    /// The ladder key as it stands after [`Self::sngrep_ladder`], which may
+    /// switch `D` off for a call without SDP.
+    fn ladder_key_after_sngrep(&self, mut key: LadderKey) -> LadderKey {
+        key.sngrep_view = (self.flow.sdp_only, self.flow.only_media, self.flow.split);
+        key
     }
 
     /// The RTP streams of the dialogs the view shows feed the layout while
@@ -1871,7 +2046,9 @@ impl App {
         // Sort references (the timestamp key is Copy) and clone
         // each message once AFTER the sort, so the sort never shuffles
         // full SipMessages.
-        tagged.sort_by_key(|(m, _)| m.timestamp);
+        crate::sort::sort_by_dyn(&mut tagged, &mut |(a, _), (b, _)| {
+            a.timestamp.cmp(&b.timestamp)
+        });
         let (owned, index_map): (Vec<crate::sip::SipMessage>, Vec<(String, usize)>) =
             tagged.into_iter().map(|(m, t)| (m.clone(), t)).unzip();
         self.flow.ladder.index_map = index_map;
@@ -1885,6 +2062,7 @@ impl App {
             ts_mode: self.timestamp_mode,
             show_rtp: self.flow.show_rtp && !self.flow.ladder.rtp_streams.is_empty(),
             resolver: self.resolver.as_ref(),
+            fold: self.flow.fold,
             name_mode: self.name_mode,
             rtp_streams: &self.flow.ladder.rtp_streams,
         };
@@ -1929,6 +2107,7 @@ impl App {
             ts_mode: self.timestamp_mode,
             show_rtp: self.flow.show_rtp,
             resolver: self.resolver.as_ref(),
+            fold: self.flow.fold,
             name_mode: self.name_mode,
             // A transaction filter narrows the ladder to one transaction;
             // the call's streams are not part of it.
@@ -2001,6 +2180,9 @@ impl App {
         // than swallow (#188).
         if let Some(v) = fb.flow_detail_max_hscroll {
             self.flow_detail_max_hscroll = Some(v);
+        }
+        if let Some(v) = fb.sngrep_raw_drawn {
+            self.flow.sngrep_raw_drawn = v;
         }
         if let Some((count, bars, raws)) = fb.flow_caches {
             self.flow.cached_msg_count = count;
@@ -2105,7 +2287,7 @@ impl App {
                 packet_count: s.packet_count,
             })
             .collect();
-        streams.sort_by(|a, b| {
+        crate::sort::sort_by_dyn(&mut streams, &mut |a, b| {
             (a.first_seen, a.key.src, a.key.dst, a.key.ssrc).cmp(&(
                 b.first_seen,
                 b.key.src,
@@ -2243,16 +2425,9 @@ impl Drop for TerminalGuard {
     /// there is no recovery path during teardown), then tell the crash
     /// hook the terminal is sane so it won't restore twice.
     fn drop(&mut self) {
-        let _ = execute!(
-            io::stdout(),
-            crossterm::event::DisableMouseCapture,
-            // Harmless when paste was never on; restores it when the run
-            // ended with the password popup open.
-            crossterm::event::DisableBracketedPaste,
-            crossterm::cursor::Show,
-            LeaveAlternateScreen
-        );
-        let _ = terminal::disable_raw_mode();
+        // Disabling bracketed paste is harmless when it was never on; it
+        // restores it when the run ended with the password popup open.
+        crate::crash::restore_terminal();
         // The terminal is sane again; the crash hook must not restore twice.
         crate::crash::set_terminal_raw(false);
     }
@@ -2323,8 +2498,12 @@ pub fn run_tui_with_pause(
     let _guard = TerminalGuard;
 
     let backend = CrosstermBackend::new(io::stdout());
+    // No `terminal.clear()`: the screen is cleared above, and a new Terminal
+    // has nothing to reset. ratatui's clear asks the terminal for the cursor
+    // position, which crossterm's reader reads, and that reader never returns
+    // on a terminal that goes while it reads
+    // (TUI-SPINS-IN-CROSSTERM-READ-AFTER-TERMINAL-LOSS).
     let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
 
     // Every resolved option reaches the App through one function, which the
     // snapshot suite calls too — an option that arrives here and is never
@@ -2345,9 +2524,10 @@ pub fn run_tui_with_pause(
         app.status_error = Some(first.clone());
     }
 
-    // The terminal the loop waits on itself: crossterm's own wait never
-    // returns once the terminal has hung up (see `terminal_input`).
+    // The terminal the loop waits on and reads itself: crossterm's own read
+    // never returns once the terminal has hung up (see `terminal_input`).
     let input = terminal_input::TerminalInput::open()?;
+    let _resize_wake = terminal_input::ResizeWake::install()?;
     // The loop's errors are terminal reads and writes, and one that fails
     // because the terminal has gone is the same lost terminal, not a failure
     // of the run.
@@ -2389,7 +2569,8 @@ fn event_loop(
     // flag; all terminal I/O stays here).
     let mut mouse_captured = true;
     let mut pasting = false;
-    let mut interest = terminal_input::Interest::Input;
+    // Bytes of a sequence that has not ended yet stay here between waits.
+    let mut parser = input_parse::Parser::new(terminal::is_raw_mode_enabled()?);
 
     loop {
         if app.should_quit {
@@ -2436,25 +2617,28 @@ fn event_loop(
         // the next redraw — a paste or key burst must not be metered out at
         // one event per frame.
         //
-        // The wait is this loop's own, on the terminal, so a terminal that
-        // has gone ends the run; crossterm is asked only for events already
-        // there (a zero timeout), after a check that the terminal is still
-        // there. A lost terminal is the hang-up SIGHUP reports, and the run
-        // stops the way SIGHUP stops it, exiting 129.
-        let found = input.wait(app.poll_timeout(), interest)?;
-        let mut crossterm_had_events = false;
-        while !app.should_quit {
-            // Before every crossterm read, so neither a hang-up the wait
-            // reported nor one during a slow key below (a save, a decode)
-            // reaches crossterm's read, which would never return.
-            if input.gone()? {
-                return Ok(true);
-            }
-            if !event::poll(Duration::ZERO)? {
+        // The wait and the read are this loop's own, on the terminal, so a
+        // terminal that has gone ends the run: the wait reports a hang-up,
+        // and a read of 0 or EIO is one too. crossterm never reads the
+        // terminal; its read loop never returns on one that has gone. A lost
+        // terminal is the hang-up SIGHUP reports, and the run stops the way
+        // SIGHUP stops it, exiting 129.
+        // A lone ESC held by the parser bounds the wait to its ESC_DELAY,
+        // so a lone Esc acts at once and a split arrow key stays an arrow.
+        let timeout = parser
+            .escape_wait()
+            .map_or(app.poll_timeout(), |left| left.min(app.poll_timeout()));
+        let found = input.wait(timeout)?;
+        let terminal_input::Taken::Events(events) =
+            terminal_input::take_input(input, found, &mut parser)?
+        else {
+            return Ok(true);
+        };
+        for event in events {
+            if app.should_quit {
                 break;
             }
-            crossterm_had_events = true;
-            match event::read()? {
+            match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     handle_key_event(app, key);
                 }
@@ -2465,7 +2649,6 @@ fn event_loop(
                 _ => {}
             }
         }
-        interest = terminal_input::next_interest(found, crossterm_had_events);
 
         // Apply an F12 mouse-capture toggle to the terminal. While capture
         // is off the terminal's native drag-to-select works (wheel
@@ -2670,6 +2853,20 @@ mod tests {
             ..TuiOptions::default()
         };
         assert_eq!(options.into_app(d, s).column_config_path, Ok(target));
+        Ok(())
+    }
+
+    /// A real session publishes F2 saves to the process's live table; the
+    /// test app (`App::new` alone) does not.
+    #[test]
+    fn a_session_publishes_saved_names_and_a_test_app_does_not() -> Result<(), TestError> {
+        let (d, s) = stores();
+        let app = TuiOptions::default().into_app(d, s);
+        assert!(app.filter_publisher.is_some(), "a session publishes");
+        assert!(
+            App::new_test().filter_publisher.is_none(),
+            "a test app does not"
+        );
         Ok(())
     }
 
@@ -2949,6 +3146,33 @@ mod tests {
             0,
             "unchanged data: the next frame must reuse the cached list"
         );
+        Ok(())
+    }
+
+    /// The capture's clock (`DialogStore::capture_now`, a scan of every
+    /// dialog) is read when the displayed list is rebuilt, never per frame:
+    /// a frame that reuses the cached list reads it zero times, and the
+    /// State cells use the value cached with the list.
+    #[test]
+    fn call_list_frame_reads_the_capture_clock_only_on_a_rebuild() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("clock-1@test", "1001", "1002", base_ts())?,
+            make_invite("clock-2@test", "1003", "1004", base_ts())?,
+        ]);
+        let reads = || crate::sip::dialog_store::CAPTURE_NOW_CALLS.with(|c| c.get());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        let before = reads();
+        terminal.draw(|f| app.render(f))?;
+        assert!(
+            reads() - before <= 1,
+            "a frame that rebuilds the list reads the clock at most once, did {}x",
+            reads() - before
+        );
+        let mid = reads();
+        terminal.draw(|f| app.render(f))?;
+        assert_eq!(reads() - mid, 0, "a cached frame must not read the clock");
         Ok(())
     }
 
@@ -3903,6 +4127,70 @@ mod tests {
         Ok(())
     }
 
+    /// The call list's `#` is the dialog's own number, given when it was
+    /// first seen: a search that hides the first two rows, or a reversed sort,
+    /// shows the third dialog as 3, never as its row position.
+    #[test]
+    fn the_index_column_is_the_dialog_number_not_the_row() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("num-1@test", "1001", "1002", base_ts())?,
+            make_invite("num-2@test", "1003", "1004", base_ts())?,
+            make_invite("num-3@test", "1005", "1006", base_ts())?,
+        ]);
+        // The number after each row's checkbox, top to bottom.
+        let numbers = |app: &mut App| -> Result<Vec<String>, TestError> {
+            app.elapse_churn_floors_for_test();
+            app.sync_caches();
+            let mut terminal = Terminal::new(TestBackend::new(120, 12))?;
+            terminal.draw(|f| app.render(f))?;
+            Ok((0..12u16)
+                .map(|y| {
+                    (0..120u16)
+                        .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .filter(|line| line.contains("INVITE"))
+                .filter_map(|line| {
+                    let (_, rest) = line.split_once(']')?;
+                    rest.split_whitespace().next().map(str::to_string)
+                })
+                .collect())
+        };
+        assert_eq!(
+            numbers(&mut app)?,
+            ["1", "2", "3"],
+            "every dialog shows its number"
+        );
+        app.search_query = "1005".to_string();
+        assert_eq!(numbers(&mut app)?, ["3"], "a search keeps the number");
+        app.search_query.clear();
+        app.call_list.reverse_sort();
+        assert_eq!(
+            numbers(&mut app)?,
+            ["3", "2", "1"],
+            "a reversed sort keeps it"
+        );
+        // A number wider than the box is shown whole, never cut short.
+        if let Some(d) = app.dialog_store.write().get_mut("num-3@test") {
+            d.number = 123_456;
+        }
+        app.dialog_store.write().retain(|_| true); // a change the tick sees
+        app.elapse_churn_floors_for_test();
+        app.sync_caches();
+        let mut terminal = Terminal::new(TestBackend::new(120, 12))?;
+        terminal.draw(|f| app.render(f))?;
+        let shown = (0..12u16).any(|y| {
+            let line: String = (0..120u16)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
+                .collect();
+            line.contains(" 123456 ") && line.contains("INVITE")
+        });
+        assert!(shown, "the six-digit number is shown whole");
+        Ok(())
+    }
+
     /// Sticky-bottom autoscroll is tick logic, not render logic: with the
     /// selection on the last row and new dialogs arriving, sync_caches()
     /// must pull the selection to the new bottom.
@@ -3932,6 +4220,183 @@ mod tests {
             app.call_list.selected(),
             2,
             "selection must follow the new bottom row"
+        );
+        Ok(())
+    }
+
+    /// sngrep mode, autoscroll as sngrep users know it: off at start;
+    /// `A` jumps to the newest dialog at once; while on every new dialog
+    /// pulls the cursor from wherever it was; a hand move (arrow, page key,
+    /// Home/End, mouse wheel) or the search key turns it off; the `A`
+    /// indicator sits in the header's first cell; a descending sort makes
+    /// the top row the newest.
+    #[test]
+    fn sngrep_mode_autoscroll_follows_sngrep() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite};
+        use crossterm::event::{KeyEvent, KeyModifiers, MouseEventKind};
+        use ratatui::{Terminal, backend::TestBackend};
+        let press = |app: &mut App, code: KeyCode| {
+            controllers::handle_key_event(app, KeyEvent::new(code, KeyModifiers::NONE));
+        };
+        let arrive = |app: &mut App, cid: &str| -> Result<(), TestError> {
+            let msg = make_invite(cid, "1005", "1006", base_ts())?;
+            app.dialog_store.write().process_message(msg);
+            app.elapse_churn_floors_for_test();
+            app.sync_caches();
+            Ok(())
+        };
+        let mut app = App::with_processed_messages(vec![
+            make_invite("sa-1@test", "1001", "1002", base_ts())?,
+            make_invite("sa-2@test", "1001", "1002", base_ts())?,
+            make_invite("sa-3@test", "1001", "1002", base_ts())?,
+        ]);
+        // As App::new sets it for sngrep mode.
+        app.theme.sngrep = true;
+        app.call_list.autoscroll = false;
+        app.sync_caches();
+        assert_eq!(
+            app.call_list.selected(),
+            0,
+            "the cursor starts on the first row"
+        );
+
+        // Off: a new dialog leaves the cursor where it is.
+        arrive(&mut app, "sa-4@test")?;
+        assert_eq!(app.call_list.selected(), 0, "off: cursor stays");
+
+        // 1. A: on, and the cursor is on the newest row at the next tick.
+        press(&mut app, KeyCode::Char('A'));
+        assert!(app.call_list.autoscroll, "A turns autoscroll on");
+        app.sync_caches();
+        assert_eq!(app.call_list.selected(), 3, "A jumps to the newest");
+
+        // 4. The header shows sngrep's `A` while on.
+        let mut terminal = Terminal::new(TestBackend::new(120, 12))?;
+        terminal.draw(|f| app.render(f))?;
+        let header_row = (0..12u16)
+            .find(|&y| {
+                let line: String = (0..120u16)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string())
+                    .collect();
+                line.contains("Method")
+            })
+            .ok_or("no header row")?;
+        assert_eq!(
+            terminal.backend().buffer()[(0, header_row)].symbol(),
+            "A",
+            "the header starts with sngrep's A while autoscroll is on"
+        );
+
+        // 2. While on, a new dialog pulls the cursor wherever it was.
+        app.call_list.move_to_top(); // not a key: autoscroll stays on
+        arrive(&mut app, "sa-5@test")?;
+        assert_eq!(app.call_list.selected(), 4, "follows the newest");
+
+        // 3. Every hand move turns it off; A resumes.
+        for code in [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Char('k'),
+            KeyCode::Char('j'),
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Home,
+            KeyCode::End,
+        ] {
+            app.call_list.autoscroll = true;
+            press(&mut app, code);
+            assert!(!app.call_list.autoscroll, "{code:?} must stop autoscroll");
+        }
+        app.call_list.autoscroll = true;
+        controllers::handle_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        );
+        assert!(!app.call_list.autoscroll, "Ctrl+F must stop autoscroll");
+        app.call_list.autoscroll = true;
+        controllers::handle_mouse_event(&mut app, MouseEventKind::ScrollUp);
+        assert!(
+            !app.call_list.autoscroll,
+            "the mouse wheel must stop autoscroll"
+        );
+        app.call_list.autoscroll = true;
+        press(&mut app, KeyCode::Char('/'));
+        assert!(!app.call_list.autoscroll, "the search must stop autoscroll");
+        app.search_active = false;
+
+        // Off: the header loses its `A`, new dialogs leave the cursor.
+        app.call_list.move_to_top();
+        arrive(&mut app, "sa-6@test")?;
+        assert_eq!(
+            app.call_list.selected(),
+            0,
+            "off: a new dialog leaves the cursor"
+        );
+        terminal.draw(|f| app.render(f))?;
+        assert_ne!(
+            terminal.backend().buffer()[(0, header_row)].symbol(),
+            "A",
+            "off: the header loses its A"
+        );
+
+        // Descending sort: sngrep's "last" is the top row.
+        press(&mut app, KeyCode::Char('z')); // sngrep z = reverse sort
+        assert!(!app.call_list.sort_ascending(), "z reverses the sort");
+        app.call_list.move_down(app.displayed.ids.len());
+        press(&mut app, KeyCode::Char('A'));
+        app.sync_caches();
+        assert_eq!(app.call_list.selected(), 0, "descending: newest on top");
+        Ok(())
+    }
+
+    /// sipnab's own mode keeps its autoscroll: on at start, sticky-bottom
+    /// (a cursor elsewhere is not yanked), arrows do not turn it off, and
+    /// no `A` in the header.
+    #[test]
+    fn sipnab_mode_autoscroll_unchanged() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite};
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let fresh = App::new(ds, ss, Theme::default(), Keymap::default());
+        assert!(
+            fresh.call_list.autoscroll,
+            "sipnab mode starts with autoscroll on"
+        );
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let mut th = Theme::default();
+        enable_sngrep_mode(&mut th);
+        let sng = App::new(ds, ss, th, Keymap::default());
+        assert!(
+            !sng.call_list.autoscroll,
+            "sngrep mode starts with autoscroll off"
+        );
+
+        let mut app = App::with_processed_messages(vec![
+            make_invite("sm-1@test", "1001", "1002", base_ts())?,
+            make_invite("sm-2@test", "1001", "1002", base_ts())?,
+        ]);
+        app.call_list.autoscroll = true;
+        app.sync_caches();
+        controllers::handle_key_event(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert!(
+            app.call_list.autoscroll,
+            "arrows keep autoscroll in sipnab mode"
+        );
+        assert_eq!(
+            app.call_list.selected(),
+            0,
+            "Up on the first row stays there"
+        );
+        let msg = make_invite("sm-3@test", "1005", "1006", base_ts())?;
+        app.dialog_store.write().process_message(msg);
+        app.elapse_churn_floors_for_test();
+        app.sync_caches();
+        assert_eq!(
+            app.call_list.selected(),
+            0,
+            "sticky-bottom never yanks a cursor elsewhere"
         );
         Ok(())
     }
@@ -4579,6 +5044,83 @@ mod tests {
         Ok(())
     }
 
+    /// The fourth SDP form exists only in sngrep mode: out of it the cycle
+    /// and the `[display] sdp_display` spellings are the three of
+    /// `sdp_display_mode_cycle_and_labels`.
+    #[test]
+    fn sdp_sngrep_form_only_in_sngrep_mode() -> Result<(), TestError> {
+        for mode in [
+            SdpDisplayMode::None,
+            SdpDisplayMode::Summary,
+            SdpDisplayMode::Full,
+        ] {
+            assert_eq!(
+                mode.next_in(false),
+                mode.next(),
+                "out of the mode {mode:?} cycles as before"
+            );
+        }
+        assert_eq!(
+            SdpDisplayMode::Full.next_in(true),
+            SdpDisplayMode::Sngrep,
+            "in the mode Full is followed by sngrep's form"
+        );
+        assert_eq!(
+            SdpDisplayMode::Sngrep.next_in(true),
+            SdpDisplayMode::None,
+            "sngrep's form wraps to hidden"
+        );
+        assert_eq!(
+            SdpDisplayMode::parse("sngrep"),
+            None,
+            "the mode-less parse knows no sngrep"
+        );
+        assert_eq!(
+            SdpDisplayMode::parse_in("sngrep", false),
+            None,
+            "out of the mode sngrep is not a form"
+        );
+        assert_eq!(
+            SdpDisplayMode::parse_in("sngrep", true),
+            Some(SdpDisplayMode::Sngrep),
+            "in the mode sngrep is a form"
+        );
+        assert_eq!(
+            SdpDisplayMode::parse_in("full", false),
+            Some(SdpDisplayMode::Full),
+            "the three forms parse in either mode"
+        );
+        Ok(())
+    }
+
+    /// sngrep mode opens the ladder in its SDP form; sipnab's own mode keeps
+    /// SDP hidden.
+    #[test]
+    fn sdp_mode_default_follows_the_mode() -> Result<(), TestError> {
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let own = App::new(ds.clone(), ss.clone(), Theme::default(), Keymap::default());
+        assert_eq!(
+            own.sdp_display_mode,
+            SdpDisplayMode::None,
+            "sipnab's mode starts with SDP hidden"
+        );
+        let mut theme = Theme::default();
+        enable_sngrep_mode(&mut theme);
+        let sng = App::new(ds, ss, theme, Keymap::default());
+        assert_eq!(
+            sng.sdp_display_mode,
+            SdpDisplayMode::Sngrep,
+            "sngrep mode starts on its SDP form"
+        );
+        assert_eq!(
+            SdpDisplayMode::Sngrep.label(),
+            "SDP: sngrep",
+            "the status line label"
+        );
+        Ok(())
+    }
+
     /// Timestamp mode cycles Absolute → DeltaPrev → DeltaFirst → Scaled
     /// → Absolute with "Time:" labels.
     #[test]
@@ -5053,7 +5595,7 @@ mod tests {
         assert_eq!(st.text_field(5), "h");
         assert_eq!(st.text_field(6), "a");
         assert_eq!(st.text_field(7), "b");
-        assert_eq!(FILTER_TEXT_FIELD_COUNT, 9);
+        assert_eq!(FILTER_TEXT_FIELD_COUNT, 10, "Expression is the tenth");
         if let Some(s) = st.text_field_mut(5) {
             s.push('x');
         }
@@ -5450,6 +5992,7 @@ mod relay_s0_tests {
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .push(format!("query {c}"));
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: c.to_string(),
                 tags: vec![RelayTag {
                     tag: "caller-tag-1".to_string(),

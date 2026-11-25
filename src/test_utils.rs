@@ -107,6 +107,110 @@ pub fn sdp_offer_and_answer(
     }
 }
 
+/// A whole answered call for `call_id`, parsed, 100 ms apart: an INVITE and
+/// its 200 each carrying SDP, a 100 and a 180 between them, the ACK, a BYE and
+/// the BYE's 200. Seven messages, two with SDP. RFC 5737 addresses,
+/// `example.com` hosts.
+///
+/// # Errors
+///
+/// A message failing to parse, which would be a defect in the parser.
+pub fn sdp_call(call_id: &str) -> Result<Vec<crate::sip::SipMessage>, String> {
+    let offer = b"v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\n\
+                  t=0 0\r\nm=audio 16384 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
+    let answer = b"v=0\r\no=- 2 2 IN IP4 192.0.2.2\r\ns=-\r\nc=IN IP4 192.0.2.2\r\n\
+                   t=0 0\r\nm=audio 20000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
+    let t0 = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap_or_default();
+    let (a, b): (std::net::IpAddr, std::net::IpAddr) =
+        ([192, 0, 2, 1].into(), [192, 0, 2, 2].into());
+    let call = format!("Call-ID: {call_id}");
+    /// First line, branch, To tag, CSeq, body, sent by the caller.
+    type Step<'a> = (&'a str, &'a str, &'a str, &'a str, &'a [u8], bool);
+    let plan: [Step<'_>; 7] = [
+        (
+            "INVITE sip:b@example.com SIP/2.0",
+            "i",
+            "",
+            "1 INVITE",
+            offer,
+            true,
+        ),
+        ("SIP/2.0 100 Trying", "i", "", "1 INVITE", b"", false),
+        ("SIP/2.0 180 Ringing", "i", ";tag=2", "1 INVITE", b"", false),
+        ("SIP/2.0 200 OK", "i", ";tag=2", "1 INVITE", answer, false),
+        (
+            "ACK sip:b@example.com SIP/2.0",
+            "a",
+            ";tag=2",
+            "1 ACK",
+            b"",
+            true,
+        ),
+        (
+            "BYE sip:b@example.com SIP/2.0",
+            "b",
+            ";tag=2",
+            "2 BYE",
+            b"",
+            true,
+        ),
+        ("SIP/2.0 200 OK", "b", ";tag=2", "2 BYE", b"", false),
+    ];
+    let mut out = Vec::with_capacity(plan.len());
+    for (n, (first, branch, tag, cseq, body, caller)) in plan.into_iter().enumerate() {
+        let via = format!("Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-{branch}");
+        let to = format!("To: <sip:b@example.com>{tag}");
+        let cseq = format!("CSeq: {cseq}");
+        let mut headers = vec![
+            via.as_str(),
+            "From: <sip:a@example.com>;tag=1",
+            to.as_str(),
+            call.as_str(),
+            cseq.as_str(),
+        ];
+        if !body.is_empty() {
+            headers.push("Content-Type: application/sdp");
+        }
+        let raw = build_sip_message(first, &headers, body);
+        let (src, dst) = if caller { (a, b) } else { (b, a) };
+        let at = t0 + chrono::TimeDelta::milliseconds(100 * i64::try_from(n).unwrap_or(0));
+        let msg = crate::sip::parser::parse_sip(
+            &raw,
+            at,
+            src,
+            dst,
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .map_err(|e| format!("fixture message {n} of {call_id} must parse: {e:?}"))?;
+        out.push(msg);
+    }
+    Ok(out)
+}
+
+/// Start recording, from nothing, every CSeq and SDP parse on this thread.
+pub fn clear_parses() {
+    crate::sip::message::PARSES.with(|p| *p.borrow_mut() = Some(Default::default()));
+}
+
+/// Since [`clear_parses`]: the most parses of one message's CSeq, the most
+/// of one message's SDP, and how many messages had either read. All zero
+/// when this thread is not recording.
+pub fn worst_parses() -> (u32, u32, usize) {
+    crate::sip::message::PARSES.with(|p| {
+        let p = p.borrow();
+        let Some(p) = p.as_ref() else {
+            return (0, 0, 0);
+        };
+        (
+            p.values().map(|c| c.0).max().unwrap_or(0),
+            p.values().map(|c| c.1).max().unwrap_or(0),
+            p.len(),
+        )
+    })
+}
+
 /// When [`call_read_out_of_order`]'s call opens: 2023-11-14T22:13:20Z.
 pub const OUT_OF_ORDER_T0: i64 = 1_700_000_000;
 
@@ -393,6 +497,9 @@ pub fn capture_logs(level: tracing::Level, f: impl FnOnce()) -> String {
         .with_max_level(level)
         .with_ansi(false)
         .with_writer(buf.clone())
+        // The rule for every fmt builder in src (tests/closed_stderr_test.rs):
+        // a line it cannot write is dropped, never reported with eprintln!.
+        .log_internal_errors(false)
         .finish();
     tracing::subscriber::with_default(subscriber, || {
         tracing::callsite::rebuild_interest_cache();
@@ -659,4 +766,81 @@ pub fn th_store(key: Option<&[u8]>) -> Result<crate::sip::dialog_store::DialogSt
         None => None,
     };
     Ok(crate::sip::dialog_store::DialogStore::new(100, false).with_th_callid(th))
+}
+
+/// `n` INVITE dialogs, `media-<i>@example.com`, each from a different
+/// RFC 5737 address, with one RTP stream from that address linked to it; and
+/// one more stream linked to no call. The fixture for a pass over every
+/// dialog that reads each dialog's streams.
+///
+/// # Errors
+///
+/// A message failing to parse, which would be a defect in the parser.
+pub fn calls_with_media(
+    n: u8,
+) -> Result<
+    (
+        crate::sip::dialog_store::DialogStore,
+        crate::rtp::stream_store::StreamStore,
+    ),
+    String,
+> {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    let mut ds = crate::sip::dialog_store::DialogStore::new(1000, false);
+    let mut ss = crate::rtp::stream_store::StreamStore::new(1000);
+    let at = chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_718_452_800);
+    let callee = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1));
+    let rtp = |ssrc: u32| crate::rtp::parser::RtpHeader {
+        version: 2,
+        padding: false,
+        extension: false,
+        csrc_count: 0,
+        marker: false,
+        payload_type: 0,
+        sequence: 1,
+        timestamp: 160,
+        ssrc,
+        payload_offset: 12,
+    };
+    for i in 0..n {
+        let caller = IpAddr::V4(Ipv4Addr::new(192, 0, 2, i.saturating_add(1)));
+        let call_id = format!("media-{i}@example.com");
+        let raw = build_sip_message(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                &format!("Via: SIP/2.0/UDP {caller}:5060;branch=z9hG4bK{i}"),
+                &format!("From: <sip:alice{i}@example.com>;tag=f{i}"),
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = crate::sip::parser::parse_sip(
+            &raw,
+            at + chrono::TimeDelta::seconds(i64::from(i)),
+            caller,
+            callee,
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .map_err(|e| format!("fixture INVITE {i} must parse: {e:?}"))?;
+        ds.process_message(msg);
+        let packet = udp_parsed(
+            SocketAddr::new(caller, 40000),
+            SocketAddr::new(callee, 50000),
+            &[0u8; 172],
+        );
+        ss.process_rtp(&packet, &rtp(0x5000 + u32::from(i)), at);
+        ss.link_to_dialog(caller, 40000, &call_id);
+    }
+    let stray = udp_parsed(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 40000),
+        SocketAddr::new(callee, 50002),
+        &[0u8; 172],
+    );
+    ss.process_rtp(&stray, &rtp(0x6000), at);
+    Ok((ds, ss))
 }

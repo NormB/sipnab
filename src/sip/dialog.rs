@@ -188,6 +188,9 @@ pub struct SipDialog {
     pub to_tag: Option<String>,
     /// What [`Self::to_tag`] was taken from.
     pub(crate) to_tag_basis: RemoteTagBasis,
+    /// The `To` tags of the other forks that answered the opening request
+    /// `2xx`, in the order they answered: see [`Self::forked_answers`].
+    pub(crate) forked_answers: Vec<String>,
     /// Display name from the From header.
     pub from_display: Option<String>,
     /// Display name from the To header.
@@ -239,6 +242,12 @@ pub struct SipDialog {
     /// cursor that names it never falls behind a dialog that changed later,
     /// whatever the message's timestamp. 0 until a store stamps it.
     pub change_seq: u64,
+    /// The dialog's number in the store that holds it: 1 for the first dialog
+    /// it ever opened, 2 for the next, and so on. Assigned once, when the
+    /// dialog is first seen, and kept for good: filters, search, sorting,
+    /// eviction and `clear` never renumber, so the call list's `#` names the
+    /// same dialog for as long as it is shown. 0 until a store numbers it.
+    pub number: u64,
     /// User-supplied tags (from `--tag` CLI flag).
     pub tags: Vec<String>,
     /// Source IP address of the initial message.
@@ -319,8 +328,13 @@ pub const MAX_SEEN_CSEQ_PER_DIALOG: usize = 4096;
 /// distinct transactions that reuse Call-ID + CSeq — e.g. OPTIONS or
 /// REGISTER keepalives — would be misclassified as retransmissions.
 /// Messages lacking a branch (RFC 2543 peers) fall back to CSeq identity.
-/// `\n` separates the branch because header values cannot contain one
-/// after parsing, so a crafted CSeq method can't collide with a branch.
+/// A response's key also holds its `To` tag: a forking proxy relays the
+/// responses of several legs on one transaction, and two legs' `180` or
+/// `2xx` are two responses, not one sent twice
+/// ([RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.2.4)).
+/// `\n` separates the branch and the tag because header values cannot
+/// contain one after parsing, so a crafted CSeq method can't collide with a
+/// branch.
 ///
 /// # Arguments
 ///
@@ -333,11 +347,35 @@ pub const MAX_SEEN_CSEQ_PER_DIALOG: usize = 4096;
 pub(crate) fn seen_cseq_key(msg: &SipMessage) -> Option<String> {
     let (seq, method) = msg.cseq()?;
     let branch = msg.top_via_branch().unwrap_or("");
+    let mut seq_digits = [0; 10];
+    let seq = decimal(seq, &mut seq_digits);
+    // `concat` sizes the key exactly and copies each part once: this runs for
+    // every SIP message a dialog takes in, and `format!` made more than one
+    // allocation per key.
     Some(if msg.is_request {
-        format!("R {seq} {method}\n{branch}")
+        ["R ", seq, " ", method, "\n", branch].concat()
     } else {
-        format!("r{} {seq} {method}\n{branch}", msg.status_code.unwrap_or(0))
+        let mut code_digits = [0; 10];
+        let code = decimal(u32::from(msg.status_code.unwrap_or(0)), &mut code_digits);
+        let tag = msg.to_tag().unwrap_or("");
+        ["r", code, " ", seq, " ", method, "\n", branch, "\n", tag].concat()
     })
+}
+
+/// `n` in decimal, written into the end of `digits`, as `n.to_string()`
+/// spells it.
+fn decimal(mut n: u32, digits: &mut [u8; 10]) -> &str {
+    let mut start = digits.len();
+    loop {
+        start -= 1;
+        digits[start] = b"0123456789"[(n % 10) as usize];
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    // Only ASCII digits were written, so this cannot fail.
+    std::str::from_utf8(&digits[start..]).unwrap_or("")
 }
 
 /// The final responses of one transaction, folded into its outcome by
@@ -390,9 +428,93 @@ impl SipDialog {
         self.latest_message_at - self.earliest_message_at
     }
 
+    /// The `To` tags of the forks that answered the opening request `2xx`
+    /// after the one in [`Self::to_tag`], in the order they answered; empty
+    /// for a call one leg answered.
+    ///
+    /// A proxy that forks an INVITE can draw a `2xx` from more than one leg,
+    /// and each one is a dialog of its own
+    /// ([RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.2.4)): the caller acknowledges every one
+    /// and usually ends the extra ones with a `BYE`. sipnab keeps the first
+    /// answer as this dialog and records the others here, so a forked call
+    /// says it was answered more than once.
+    #[must_use]
+    pub fn forked_answers(&self) -> &[String] {
+        &self.forked_answers
+    }
+
     /// Returns a reference to the current dialog state.
     pub fn state(&self) -> &DialogState {
         &self.state
+    }
+
+    /// The state as of `now` (the capture's clock), for views that ask
+    /// "is this dialog over?".
+    ///
+    /// The state machine moves only on messages, so two REGISTER dialogs
+    /// that end in silence never reach a final state there:
+    /// - one still `Trying` whose newest final answer is a non-2xx (a
+    ///   `401`/`407`, an auth loop) and that sent no REGISTER with a higher
+    ///   CSeq after it is `Failed`; a credentialed retry still waiting for
+    ///   its answer keeps it `Trying`;
+    /// - one `Registered` whose granted interval (the last `2xx`'s Contact
+    ///   `expires`, else its `Expires`, else RFC 3261's 3600 s) ran out before
+    ///   `now` with no further message is `Expired`.
+    ///
+    /// Every other dialog returns [`Self::state`] unchanged.
+    #[must_use]
+    pub fn state_at(&self, now: DateTime<Utc>) -> DialogState {
+        if self.method != SipMethod::Register {
+            return self.state.clone();
+        }
+        let final_answers = || {
+            self.messages.iter().rev().filter(|m| {
+                !m.is_request
+                    && m.status_code.is_some_and(|c| c >= 200)
+                    && m.cseq()
+                        .is_some_and(|(_, meth)| meth.eq_ignore_ascii_case("REGISTER"))
+            })
+        };
+        match self.state {
+            DialogState::Trying => {
+                // The newest final answer is a refusal, and no REGISTER with
+                // a higher CSeq answered it (a credentialed retry still in
+                // flight is not over).
+                let refused = final_answers()
+                    .next()
+                    .filter(|m| m.status_code.is_some_and(|c| c >= 300))
+                    .and_then(|m| m.cseq().map(|(n, _)| n));
+                match refused {
+                    Some(n) if !self.register_sent_after(n) => DialogState::Failed,
+                    _ => DialogState::Trying,
+                }
+            }
+            DialogState::Registered => {
+                let Some(ok) = final_answers().find(|m| m.status_code.is_some_and(|c| c < 300))
+                else {
+                    return DialogState::Registered;
+                };
+                let granted = i64::from(crate::sip::registration_expiry(ok).unwrap_or(3600));
+                if self.latest_message_at + chrono::TimeDelta::seconds(granted) < now {
+                    DialogState::Expired
+                } else {
+                    DialogState::Registered
+                }
+            }
+            _ => self.state.clone(),
+        }
+    }
+
+    /// Whether the dialog holds a REGISTER request whose CSeq number is
+    /// above `cseq`: a new transaction, such as the credentialed retry after
+    /// a challenge. A retransmission (the same CSeq) does not count. CSeq,
+    /// not capture order, decides, so reordered packets give the same answer.
+    fn register_sent_after(&self, cseq: u32) -> bool {
+        self.messages.iter().any(|m| {
+            m.is_request
+                && m.cseq()
+                    .is_some_and(|(n, meth)| n > cseq && meth.eq_ignore_ascii_case("REGISTER"))
+        })
     }
 
     /// The final SIP response code of the transaction that decides the
@@ -418,6 +540,16 @@ impl SipDialog {
     /// are ignored unless the request was *only* ever challenged (never
     /// authenticated), in which case the challenge is the outcome.
     pub fn final_status_code(&self) -> Option<u16> {
+        self.final_status_code_of(self.messages.iter().map(SipMessage::cseq))
+    }
+
+    /// [`Self::final_status_code`] read from CSeqs the caller already parsed:
+    /// `cseqs` yields [`SipMessage::cseq`] of each of [`Self::messages`], in
+    /// order (as [`crate::sip::message::cseqs`] returns them).
+    pub(crate) fn final_status_code_of<'a>(
+        &self,
+        cseqs: impl IntoIterator<Item = Option<(u32, &'a str)>>,
+    ) -> Option<u16> {
         // Single scan, no intermediate Vec: fold the INVITE responses and the
         // own-method responses side by side, and pick the INVITE fold when
         // the dialog holds any INVITE at all (a call still ringing behind a
@@ -426,8 +558,8 @@ impl SipDialog {
         let mut invite = FinalCodeFold::default();
         let mut own = FinalCodeFold::default();
         let mut holds_invite = false;
-        for m in &self.messages {
-            let Some((_, method)) = m.cseq() else {
+        for (m, cseq) in self.messages.iter().zip(cseqs) {
+            let Some((_, method)) = cseq else {
                 continue;
             };
             let is_invite = method == "INVITE";
@@ -515,6 +647,7 @@ impl SipDialog {
             from_tag: msg.from_tag().map(str::to_string),
             to_tag: msg.to_tag().map(str::to_string),
             to_tag_basis: remote_tag_basis(&method, msg),
+            forked_answers: Vec::new(),
             from_display: msg.from_display(),
             to_display: msg.to_display(),
             state: initial_state,
@@ -525,6 +658,7 @@ impl SipDialog {
             latest_message_at: msg.timestamp,
             earliest_message_at: msg.timestamp,
             change_seq: 0,
+            number: 0,
             src_addr: msg.src_addr,
             dst_addr: msg.dst_addr,
             src_port: msg.src_port,
@@ -571,7 +705,9 @@ impl SipDialog {
 ///
 /// May rewrite `dialog.state`, and records the remote tag in `dialog.to_tag`
 /// when this message's `To` tag is stronger evidence of the remote end than
-/// the one held (see `RemoteTagBasis`). No other fields are touched.
+/// the one held (see `RemoteTagBasis`), or in `dialog.forked_answers` when it
+/// is another fork's `2xx` after the dialog's own. No other fields are
+/// touched.
 pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
     let family = family_of_seed(&dialog.method);
     let cseq_method = msg.cseq().map(|(_, m)| SipMethod::parse(m));
@@ -616,6 +752,15 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
         && dialog.from_tag.as_deref() != Some(tag)
     {
         let basis = remote_tag_basis(&dialog.method, msg);
+        // Another fork's answer after the dialog's own: a second dialog
+        // (RFC 3261 section 13.2.2.4), recorded once, in arrival order.
+        if basis == RemoteTagBasis::Confirmed
+            && dialog.to_tag_basis == RemoteTagBasis::Confirmed
+            && dialog.to_tag.as_deref() != Some(tag)
+            && !dialog.forked_answers.iter().any(|t| t == tag)
+        {
+            dialog.forked_answers.push(tag.to_string());
+        }
         if dialog.to_tag.is_none() || basis > dialog.to_tag_basis {
             dialog.to_tag = Some(tag.to_string());
             dialog.to_tag_basis = basis;
@@ -1069,7 +1214,161 @@ mod tests {
             .as_deref(),
             Some("fork-b"),
             "the first 2xx establishes the dialog; a later 2xx from another fork \
-             is a second dialog sipnab does not track"
+             is a second dialog, recorded in forked_answers"
+        );
+        Ok(())
+    }
+
+    /// Responses as (status, CSeq, `From` tag, `To` tag).
+    type Responses<'a> = &'a [(u16, &'a str, &'a str, &'a str)];
+
+    /// Feed `responses` to a fresh INVITE dialog from Alice (tag `t1`) and
+    /// return the dialog.
+    fn dialog_after(responses: Responses<'_>) -> Result<SipDialog, TestError> {
+        let mut dialog = SipDialog::new(&make_invite()?).ok_or("an INVITE opens a dialog")?;
+        for &(status, cseq, from_tag, to_tag) in responses {
+            update_state(
+                &mut dialog,
+                &make_tagged_response(status, cseq, from_tag, to_tag)?,
+            );
+        }
+        Ok(dialog)
+    }
+
+    /// A forked INVITE answered `2xx` by two legs is two dialogs
+    /// ([RFC 3261 section 13.2.2.4](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.2.4)): the first answer stays the
+    /// dialog, and the later fork's tag is recorded, not lost.
+    #[test]
+    fn a_second_fork_answer_is_recorded() -> Result<(), TestError> {
+        let d = dialog_after(&[
+            (180, "1 INVITE", "t1", "fork-a"),
+            (180, "1 INVITE", "t1", "fork-b"),
+            (200, "1 INVITE", "t1", "fork-b"),
+            (200, "1 INVITE", "t1", "fork-a"),
+        ])?;
+        assert_eq!(
+            d.to_tag.as_deref(),
+            Some("fork-b"),
+            "the first answer stays the dialog"
+        );
+        assert_eq!(
+            d.forked_answers(),
+            ["fork-a"],
+            "the later fork's answer is recorded"
+        );
+        Ok(())
+    }
+
+    /// Three answering forks: every later one, in the order they answered.
+    #[test]
+    fn every_later_fork_answer_is_recorded_in_order() -> Result<(), TestError> {
+        let d = dialog_after(&[
+            (200, "1 INVITE", "t1", "fork-a"),
+            (200, "1 INVITE", "t1", "fork-c"),
+            (200, "1 INVITE", "t1", "fork-b"),
+        ])?;
+        assert_eq!(
+            d.to_tag.as_deref(),
+            Some("fork-a"),
+            "the first answer stays the dialog"
+        );
+        assert_eq!(d.forked_answers(), ["fork-c", "fork-b"], "in arrival order");
+        Ok(())
+    }
+
+    /// A call answered by one leg has no forked answer, however many legs
+    /// rang or refused and however often the answer is retransmitted.
+    #[test]
+    fn one_answer_is_not_a_fork() -> Result<(), TestError> {
+        let cases: [(&str, Responses<'_>); 4] = [
+            (
+                "retransmitted 200",
+                &[(200, "1 INVITE", "t1", "a"), (200, "1 INVITE", "t1", "a")],
+            ),
+            (
+                "forks that only rang",
+                &[
+                    (180, "1 INVITE", "t1", "a"),
+                    (183, "1 INVITE", "t1", "b"),
+                    (200, "1 INVITE", "t1", "a"),
+                ],
+            ),
+            (
+                "a fork that refused",
+                &[(486, "1 INVITE", "t1", "a"), (200, "1 INVITE", "t1", "b")],
+            ),
+            (
+                "unanswered",
+                &[(180, "1 INVITE", "t1", "a"), (180, "1 INVITE", "t1", "b")],
+            ),
+        ];
+        for (what, responses) in cases {
+            let d = dialog_after(responses)?;
+            assert!(
+                d.forked_answers().is_empty(),
+                "{what}: {:?}",
+                d.forked_answers()
+            );
+        }
+        Ok(())
+    }
+
+    /// Only a `2xx` to the request that opened the dialog is a fork's
+    /// answer: not the `200` to a `BYE`, a `PRACK` or a re-INVITE, and not
+    /// the answer to a re-INVITE the callee sent, whose `To` tag is the
+    /// caller's own.
+    #[test]
+    fn a_2xx_to_another_request_is_not_a_fork_answer() -> Result<(), TestError> {
+        let d = dialog_after(&[
+            (200, "1 INVITE", "t1", "a"),
+            (200, "2 BYE", "t1", "b"),
+            (200, "3 PRACK", "t1", "c"),
+            (200, "102 INVITE", "a", "t1"),
+        ])?;
+        assert!(d.forked_answers().is_empty(), "{:?}", d.forked_answers());
+        Ok(())
+    }
+
+    /// Each fork is recorded once, whatever the order and repetition of
+    /// retransmissions, and a `2xx` that carries no `To` tag records nothing.
+    #[test]
+    fn a_fork_answer_is_recorded_once() -> Result<(), TestError> {
+        let d = dialog_after(&[
+            (200, "1 INVITE", "t1", "a"),
+            (200, "1 INVITE", "t1", "b"),
+            (200, "1 INVITE", "t1", "a"),
+            (200, "1 INVITE", "t1", "b"),
+        ])?;
+        assert_eq!(d.forked_answers(), ["b"], "one entry per fork");
+        let mut untagged = SipDialog::new(&make_invite()?).ok_or("an INVITE opens a dialog")?;
+        update_state(
+            &mut untagged,
+            &make_tagged_response(200, "1 INVITE", "t1", "a")?,
+        );
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.com>",
+                "Call-ID: dialog-test@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let no_tag = parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?;
+        update_state(&mut untagged, &no_tag);
+        assert!(
+            untagged.forked_answers().is_empty(),
+            "an untagged 2xx is no fork"
         );
         Ok(())
     }
@@ -1429,6 +1728,73 @@ mod tests {
                 .push(make_response(*code, reason, cseq_method)?);
         }
         Ok(dialog)
+    }
+
+    /// The final status read from CSeqs the caller parsed is the one
+    /// `final_status_code` parses for itself, on every deciding shape: an
+    /// answered call, a failure, a challenge only, a canceled call, a
+    /// non-INVITE request, and a call with no final answer yet.
+    #[test]
+    fn final_status_code_of_parsed_cseqs_agrees() -> Result<(), TestError> {
+        /// The opening method and the `(code, reason, CSeq method)` answers.
+        type Shape<'a> = (&'a str, &'a [(u16, &'a str, &'a str)]);
+        let shapes: [Shape<'_>; 6] = [
+            (
+                "INVITE",
+                &[(180, "Ringing", "INVITE"), (200, "OK", "INVITE")],
+            ),
+            ("INVITE", &[(486, "Busy Here", "INVITE")]),
+            (
+                "INVITE",
+                &[(407, "Proxy Authentication Required", "INVITE")],
+            ),
+            (
+                "INVITE",
+                &[(200, "OK", "CANCEL"), (487, "Request Terminated", "INVITE")],
+            ),
+            ("PUBLISH", &[(489, "Bad Event", "PUBLISH")]),
+            ("INVITE", &[(180, "Ringing", "INVITE")]),
+        ];
+        for (method, responses) in shapes {
+            let dialog = dialog_with_responses(method, responses)?;
+            let cseqs = crate::sip::message::cseqs(&dialog.messages);
+            assert_eq!(
+                dialog.final_status_code_of(cseqs.iter().copied()),
+                dialog.final_status_code(),
+                "{method} {responses:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Handed parsed CSeqs, the final status parses none itself.
+    #[test]
+    fn final_status_code_of_parses_no_cseq() -> Result<(), TestError> {
+        let dialog = dialog_with_responses("INVITE", &[(200, "OK", "INVITE")])?;
+        let cseqs = crate::sip::message::cseqs(&dialog.messages);
+        crate::test_utils::clear_parses();
+        assert_eq!(
+            dialog.final_status_code_of(cseqs.iter().copied()),
+            Some(200),
+            "the answer"
+        );
+        let (cseq, _, _) = crate::test_utils::worst_parses();
+        assert_eq!(cseq, 0, "a CSeq was parsed {cseq} times");
+        Ok(())
+    }
+
+    /// The final status is read from the CSeqs it is handed: a slice that
+    /// says the 200 answered a CANCEL leaves the call without a final answer.
+    #[test]
+    fn final_status_code_of_reads_the_cseqs_it_is_handed() -> Result<(), TestError> {
+        let dialog = dialog_with_responses("INVITE", &[(200, "OK", "INVITE")])?;
+        let cseqs = [Some((1, "INVITE")), Some((1, "CANCEL"))];
+        assert_eq!(
+            dialog.final_status_code_of(cseqs),
+            None,
+            "the handed CSeq method decides, not the message's own header"
+        );
+        Ok(())
     }
 
     /// A non-INVITE dialog's final status is the final response to its own
@@ -1931,6 +2297,277 @@ mod tests {
         // The 200 races the CANCEL and wins — the call was established.
         update_state(&mut dialog, &make_response(200, "OK", "INVITE")?);
         assert_eq!(dialog.state, DialogState::InCall);
+        Ok(())
+    }
+
+    /// A REGISTER for `state_at`: the request, then each response in turn
+    /// through `update_state`, every message kept as the store keeps it.
+    fn register_with(responses: &[SipMessage]) -> Result<SipDialog, TestError> {
+        let raw = build_sip(
+            "REGISTER sip:registrar.example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=r1",
+                "To: <sip:alice@example.com>",
+                "Call-ID: register-at@example.com",
+                "CSeq: 1 REGISTER",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let register = parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?;
+        let mut dialog = SipDialog::new(&register).ok_or("should create dialog")?;
+        dialog.messages.push(register);
+        for r in responses {
+            update_state(&mut dialog, r);
+            dialog.messages.push(r.clone());
+        }
+        Ok(dialog)
+    }
+
+    /// The auth loop: a REGISTER answered only by challenges stays
+    /// `Trying` in the machine, but it is over -- `state_at` says `Failed`.
+    /// A `2xx` after the challenge makes it `Registered` again.
+    #[test]
+    fn state_at_a_register_never_answered_2xx_after_a_challenge_is_failed() -> Result<(), TestError>
+    {
+        let now = ts()?;
+        let looped = register_with(&[make_response(401, "Unauthorized", "REGISTER")?])?;
+        assert_eq!(
+            looped.state(),
+            &DialogState::Trying,
+            "the machine itself is unchanged"
+        );
+        assert_eq!(
+            looped.state_at(now),
+            DialogState::Failed,
+            "a challenge never answered is a failed registration"
+        );
+        assert!(looped.state_at(now).is_final(), "Failed is a final state");
+        let fresh = register_with(&[])?;
+        assert_eq!(
+            fresh.state_at(now),
+            DialogState::Trying,
+            "no answer yet is not over"
+        );
+        let answered = register_with(&[
+            make_response(401, "Unauthorized", "REGISTER")?,
+            make_response(200, "OK", "REGISTER")?,
+        ])?;
+        assert_eq!(
+            answered.state_at(now),
+            DialogState::Registered,
+            "a 2xx after the challenge registers"
+        );
+        Ok(())
+    }
+
+    /// A registration whose granted interval ran out with no further message
+    /// is `Expired` by the capture's clock; before that it is
+    /// `Registered`. The interval is the 2xx's Contact `expires`.
+    #[test]
+    fn state_at_a_registration_past_its_expiry_is_expired() -> Result<(), TestError> {
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:alice@example.com>;tag=r1",
+                "To: <sip:alice@example.com>;tag=t2",
+                "Call-ID: register-at@example.com",
+                "CSeq: 1 REGISTER",
+                "Contact: <sip:alice@192.0.2.1:5060>;expires=60",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let ok = parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?;
+        let dialog = register_with(&[ok])?;
+        assert_eq!(
+            dialog.state(),
+            &DialogState::Registered,
+            "the 200 registers"
+        );
+        let t0 = dialog.latest_message_at;
+        assert_eq!(
+            dialog.state_at(t0 + chrono::TimeDelta::seconds(59)),
+            DialogState::Registered,
+            "inside expires=60 it is registered"
+        );
+        assert_eq!(
+            dialog.state_at(t0 + chrono::TimeDelta::seconds(61)),
+            DialogState::Expired,
+            "past expires=60 it is expired"
+        );
+        // No Contact/Expires: RFC 3261's default 3600 s.
+        let plain = register_with(&[make_response(200, "OK", "REGISTER")?])?;
+        assert_eq!(
+            plain.state_at(t0 + chrono::TimeDelta::seconds(61)),
+            DialogState::Registered,
+            "the 3600 s default still holds at 61 s"
+        );
+        assert_eq!(
+            plain.state_at(t0 + chrono::TimeDelta::seconds(3601)),
+            DialogState::Expired,
+            "past the 3600 s default it is expired"
+        );
+        Ok(())
+    }
+
+    /// A REGISTER request of the `register_with` dialog with CSeq `cseq`,
+    /// with credentials when `authorized`.
+    fn register_request(cseq: u32, authorized: bool) -> Result<SipMessage, TestError> {
+        let cseq_line = format!("CSeq: {cseq} REGISTER");
+        let mut headers = vec![
+            "From: <sip:alice@example.com>;tag=r1",
+            "To: <sip:alice@example.com>",
+            "Call-ID: register-at@example.com",
+            cseq_line.as_str(),
+        ];
+        if authorized {
+            headers.push("Authorization: Digest username=\"alice\", realm=\"example.com\"");
+        }
+        headers.push("Content-Length: 0");
+        let raw = build_sip("REGISTER sip:registrar.example.com SIP/2.0", &headers, b"");
+        Ok(parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
+    }
+
+    /// A final answer to the REGISTER with CSeq `cseq`.
+    fn register_answer(status: u16, reason: &str, cseq: u32) -> Result<SipMessage, TestError> {
+        let cseq_line = format!("CSeq: {cseq} REGISTER");
+        let raw = build_sip(
+            &format!("SIP/2.0 {status} {reason}"),
+            &[
+                "From: <sip:alice@example.com>;tag=r1",
+                "To: <sip:alice@example.com>;tag=t2",
+                "Call-ID: register-at@example.com",
+                cseq_line.as_str(),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        Ok(parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
+    }
+
+    /// Regression (review of the `d` filter): the client answered the 401
+    /// with a credentialed REGISTER that has no answer yet. The registration
+    /// is in flight, not over: `state_at` agrees with the machine (`Trying`).
+    #[test]
+    fn state_at_a_challenge_answered_by_a_later_register_is_trying() -> Result<(), TestError> {
+        let now = ts()?;
+        let in_flight = register_with(&[
+            register_answer(401, "Unauthorized", 1)?,
+            register_request(2, true)?,
+        ])?;
+        assert_eq!(
+            in_flight.state(),
+            &DialogState::Trying,
+            "the machine says Trying"
+        );
+        assert_eq!(
+            in_flight.state_at(now),
+            DialogState::Trying,
+            "a credentialed retry in flight is not a failed registration"
+        );
+        Ok(())
+    }
+
+    /// Success: the credentialed retry is answered `200`, so the dialog is
+    /// `Registered` by both the machine and `state_at`.
+    #[test]
+    fn state_at_a_challenge_then_an_accepted_retry_is_registered() -> Result<(), TestError> {
+        let now = ts()?;
+        let done = register_with(&[
+            register_answer(401, "Unauthorized", 1)?,
+            register_request(2, true)?,
+            register_answer(200, "OK", 2)?,
+        ])?;
+        assert_eq!(
+            done.state_at(now),
+            DialogState::Registered,
+            "a retry answered 200 is a registration"
+        );
+        Ok(())
+    }
+
+    /// Failure: the retry is challenged again and nothing follows. The
+    /// newest challenge was never answered, so the registration failed.
+    #[test]
+    fn state_at_a_retry_challenged_again_and_left_is_failed() -> Result<(), TestError> {
+        let now = ts()?;
+        let looped = register_with(&[
+            register_answer(401, "Unauthorized", 1)?,
+            register_request(2, true)?,
+            register_answer(401, "Unauthorized", 2)?,
+        ])?;
+        assert_eq!(
+            looped.state_at(now),
+            DialogState::Failed,
+            "the newest challenge has no later REGISTER"
+        );
+        Ok(())
+    }
+
+    /// Edge: a retransmission of the challenged REGISTER (same CSeq) is not
+    /// an answer to the challenge, so the dialog is still `Failed`.
+    #[test]
+    fn state_at_a_retransmitted_challenged_register_is_still_failed() -> Result<(), TestError> {
+        let now = ts()?;
+        let retx = register_with(&[
+            register_answer(401, "Unauthorized", 1)?,
+            register_request(1, false)?,
+        ])?;
+        assert_eq!(
+            retx.state_at(now),
+            DialogState::Failed,
+            "the same CSeq again is a retransmission, not a new REGISTER"
+        );
+        Ok(())
+    }
+
+    /// Edge: the capture holds the retry before the challenge (packets
+    /// reordered). The retry's higher CSeq still answers the challenge.
+    #[test]
+    fn state_at_a_retry_captured_before_its_challenge_is_trying() -> Result<(), TestError> {
+        let now = ts()?;
+        let reordered = register_with(&[
+            register_request(2, true)?,
+            register_answer(401, "Unauthorized", 1)?,
+        ])?;
+        assert_eq!(
+            reordered.state_at(now),
+            DialogState::Trying,
+            "the order of capture does not decide which REGISTER came later"
+        );
         Ok(())
     }
 
@@ -2536,6 +3173,229 @@ mod tests {
             cmp.differences,
             vec!["state".to_string(), "final_status_code".to_string()]
         );
+        Ok(())
+    }
+}
+
+/// [`seen_cseq_key`] spells the same key it always has, and builds it in one
+/// allocation: it runs for every SIP message a dialog takes in.
+#[cfg(test)]
+mod seen_cseq_key_tests {
+    use super::*;
+    use crate::net::TransportProto;
+    use crate::sip::parser::parse_sip;
+    use crate::test_utils::build_sip_message as build_sip;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The key as `format!` spelled it before it was built by hand: the
+    /// reference every case is compared with.
+    fn reference_key(msg: &SipMessage) -> Option<String> {
+        let (seq, method) = msg.cseq()?;
+        let branch = msg.top_via_branch().unwrap_or("");
+        Some(if msg.is_request {
+            format!("R {seq} {method}\n{branch}")
+        } else {
+            format!(
+                "r{} {seq} {method}\n{branch}\n{}",
+                msg.status_code.unwrap_or(0),
+                msg.to_tag().unwrap_or("")
+            )
+        })
+    }
+
+    /// Parse a message with `first_line` and `headers`.
+    fn parse(first_line: &str, headers: &[&str]) -> Result<SipMessage, TestError> {
+        let raw = build_sip(first_line, headers, b"");
+        let ts = chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("invalid fixture timestamp")?;
+        let host = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+        Ok(
+            parse_sip(&raw, ts, host, host, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("fixture should parse: {e:?}"))?,
+        )
+    }
+
+    /// A request with the given CSeq and Via rows.
+    fn request(cseq: &str, vias: &[&str]) -> Result<SipMessage, TestError> {
+        let mut headers: Vec<&str> = vias.to_vec();
+        headers.extend([
+            "From: <sip:a@example.com>;tag=f1",
+            "To: <sip:b@example.com>",
+            "Call-ID: key@example.com",
+        ]);
+        headers.push(cseq);
+        headers.push("Content-Length: 0");
+        parse("INVITE sip:b@example.com SIP/2.0", &headers)
+    }
+
+    /// A response with the given status line, CSeq, To and Via rows.
+    fn response(
+        status: &str,
+        cseq: &str,
+        to: &str,
+        vias: &[&str],
+    ) -> Result<SipMessage, TestError> {
+        let mut headers: Vec<&str> = vias.to_vec();
+        headers.extend([
+            "From: <sip:a@example.com>;tag=f1",
+            "Call-ID: key@example.com",
+        ]);
+        headers.push(to);
+        headers.push(cseq);
+        headers.push("Content-Length: 0");
+        parse(status, &headers)
+    }
+
+    /// Every case's key, next to the reference's.
+    fn cases() -> Result<Vec<SipMessage>, TestError> {
+        let via = "Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKone";
+        Ok(vec![
+            request("CSeq: 1 INVITE", &[via])?,
+            request("CSeq: 0 INVITE", &[via])?,
+            request("CSeq: 4294967295 INVITE", &[via])?,
+            request("CSeq: 42 INVITE", &[])?,
+            request(
+                "CSeq: 7 INVITE",
+                &["Via: SIP/2.0/UDP a.example.com;branch="],
+            )?,
+            request("CSeq: 9 X-VERY-LONG-EXTENSION-METHOD-NAME", &[via])?,
+            request("CSeq:   12    INVITE   trailing", &[via])?,
+            response(
+                "SIP/2.0 100 Trying",
+                "CSeq: 1 INVITE",
+                "To: <sip:b@example.com>",
+                &[via],
+            )?,
+            response(
+                "SIP/2.0 180 Ringing",
+                "CSeq: 1 INVITE",
+                "To: <sip:b@example.com>;tag=leg1",
+                &[via],
+            )?,
+            response(
+                "SIP/2.0 200 OK",
+                "CSeq: 1 INVITE",
+                "To: <sip:b@example.com>;tag=leg2",
+                &[via],
+            )?,
+            response(
+                "SIP/2.0 486 Busy Here",
+                "CSeq: 3000000000 INVITE",
+                "To: <sip:b@example.com>;tag=x",
+                &[],
+            )?,
+            response(
+                "SIP/2.0 699 Whatever",
+                "CSeq: 2 BYE",
+                "To: <sip:b@example.com>;tag=y",
+                &[via],
+            )?,
+        ])
+    }
+
+    #[test]
+    fn every_key_is_spelled_as_before() -> Result<(), TestError> {
+        for msg in cases()? {
+            assert_eq!(
+                seen_cseq_key(&msg),
+                reference_key(&msg),
+                "key of {:?}",
+                msg.cseq()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_request_key_names_its_sequence_method_and_branch() -> Result<(), TestError> {
+        let msg = request(
+            "CSeq: 5 INVITE",
+            &["Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKr"],
+        )?;
+        assert_eq!(
+            seen_cseq_key(&msg).as_deref(),
+            Some("R 5 INVITE\nz9hG4bKr"),
+            "request key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_response_key_names_its_code_and_to_tag() -> Result<(), TestError> {
+        let msg = response(
+            "SIP/2.0 183 Session Progress",
+            "CSeq: 5 INVITE",
+            "To: <sip:b@example.com>;tag=t9",
+            &["Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKr"],
+        )?;
+        assert_eq!(
+            seen_cseq_key(&msg).as_deref(),
+            Some("r183 5 INVITE\nz9hG4bKr\nt9"),
+            "response key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_response_with_no_to_tag_or_branch_keeps_its_empty_fields() -> Result<(), TestError> {
+        let msg = response(
+            "SIP/2.0 100 Trying",
+            "CSeq: 1 INVITE",
+            "To: <sip:b@example.com>",
+            &[],
+        )?;
+        assert_eq!(
+            seen_cseq_key(&msg).as_deref(),
+            Some("r100 1 INVITE\n\n"),
+            "empty branch and tag"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_message_without_a_parseable_cseq_has_no_key() -> Result<(), TestError> {
+        for cseq in [
+            "CSeq: INVITE",
+            "CSeq: 99999999999 INVITE",
+            "CSeq: 1",
+            "X-No-CSeq: 1",
+        ] {
+            let msg = request(cseq, &[])?;
+            assert_eq!(seen_cseq_key(&msg), None, "{cseq} has no key");
+            assert_eq!(reference_key(&msg), None, "{cseq} had no key before either");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_key_is_built_in_one_allocation() -> Result<(), TestError> {
+        for msg in cases()? {
+            let (allocations, key) = crate::test_alloc::allocations_during(|| seen_cseq_key(&msg));
+            assert!(key.is_some(), "every case has a key");
+            assert_eq!(
+                allocations,
+                1,
+                "the key of {:?} is one allocation",
+                msg.cseq()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_key_holds_no_spare_capacity() -> Result<(), TestError> {
+        for msg in cases()? {
+            let key = seen_cseq_key(&msg).ok_or("every case has a key")?;
+            assert_eq!(
+                key.capacity(),
+                key.len(),
+                "the key of {:?} is sized exactly",
+                msg.cseq()
+            );
+        }
         Ok(())
     }
 }

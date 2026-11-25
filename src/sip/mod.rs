@@ -20,6 +20,8 @@ pub(crate) mod dialog_state_machine;
 pub mod dialog_store;
 pub mod dsl;
 pub mod endpoint;
+#[cfg(any(feature = "api", feature = "mcp"))]
+pub mod filter_request;
 pub mod group_metrics;
 pub mod lint;
 #[cfg(feature = "native")]

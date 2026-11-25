@@ -17,6 +17,9 @@
 //! whose record cannot be written must STOP, and "stop" is a process exit code
 //! and an absent report — neither of which is visible from inside the library.
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -226,7 +229,7 @@ fn a_destination_that_cannot_be_opened_stops_the_run_and_names_the_path() -> Res
 /// report here.
 #[test]
 fn a_write_that_fails_stops_the_run() -> Result<(), TestError> {
-    if !Path::new("/dev/full").exists() {
+    if test_prereq::check("dev-full", test_prereq::DEV_FULL, test_prereq::dev_full())?.is_none() {
         return Ok(());
     }
     let out = run(&["--run-provenance-file", "/dev/full", "--json"])?;

@@ -1,0 +1,28 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ L┌ Filter ──────────────────────────────────────────────────────────────────┐
+ C│  From user:       [                                                   ]  │
+ V│  To user:         [                                                   ]  │
+  │  Source IP:       [                                                   ]  │on
+  │  Destination IP:  [                                                   ]  │
+  │  Text in message: [                                                   ]  │
+  │  Header:          [Name: text                                         ]  │
+  │  After:           [2026-07-07T08:00:00Z                               ]  │
+  │  Before:          [2026-07-07T09:00:00Z                               ]  │
+  │  Named filter:    [none in [filters]                                  ]  │
+  │  Expression:      [any --filter expression                            ]  │
+  │  ──────────────────────────────────────────────────────────────────────  │
+  │  Filter DSL · F1 or Esc closes this help                                 │
+  │  Fields: from.user to.user from.host to.host from.uri to.uri ruri        │
+  │  pai.user method ua call_id payload src.ip dst.ip src.port dst.port      │
+  │  state duration msg_count response_code final_status_code                │
+  │  response_class pdd setup_time retransmits rtp.mos rtp.jitter rtp.loss   │
+  │  rtp.packets rtp.codec rtp.codecs rtp.ssrc side endpoint one_way         │
+  │  nat_mismatch no_media codec_asymmetry ptime_asymmetry                   │
+  │  payload_asymmetry duration_asymmetry late_media time header.<name>      │
+  │  Operators: == != <= >= < > =~ in_subnet                                 │
+  │  Combine: AND OR NOT ( )                                                 │
+  └──────────────────────────────────────────────────────────────────────────┘
+Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear  F1 Fields  F2 Save as

@@ -188,23 +188,43 @@ pub fn related_legs(
     store: &crate::sip::dialog_store::DialogStore,
     dialog: &SipDialog,
 ) -> Vec<RelatedLeg> {
-    let mut found = store.find_correlated_scored(&dialog.call_id);
-    found.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then_with(|| a.dialog.call_id.cmp(&b.dialog.call_id))
-    });
-    found
+    related_legs_many(store, &[dialog])
+        .pop()
+        .unwrap_or_default()
+}
+
+/// [`related_legs`] for each of `dialogs`, from one correlation pass over the
+/// store ([`DialogStore::find_correlated_scored_many`]), so a page of N
+/// containers reads each dialog's SDP origins once rather than N times.
+///
+/// [`DialogStore::find_correlated_scored_many`]: crate::sip::dialog_store::DialogStore::find_correlated_scored_many
+pub fn related_legs_many(
+    store: &crate::sip::dialog_store::DialogStore,
+    dialogs: &[&SipDialog],
+) -> Vec<Vec<RelatedLeg>> {
+    let ids: Vec<&str> = dialogs.iter().map(|d| d.call_id.as_str()).collect();
+    store
+        .find_correlated_scored_many(&ids)
         .into_iter()
-        .map(|r| {
-            let (strategy, identifier_match) = r.reason.strategy();
-            RelatedLeg {
-                uuid: dialog_uuid(r.dialog, dialog_capture_id(r.dialog)),
-                strategy,
-                method: r.reason.method().as_str(),
-                identifier_match,
-                score: r.score,
-            }
+        .map(|mut found| {
+            found.sort_by(|a, b| {
+                b.score
+                    .cmp(&a.score)
+                    .then_with(|| a.dialog.call_id.cmp(&b.dialog.call_id))
+            });
+            found
+                .into_iter()
+                .map(|r| {
+                    let (strategy, identifier_match) = r.reason.strategy();
+                    RelatedLeg {
+                        uuid: dialog_uuid(r.dialog, dialog_capture_id(r.dialog)),
+                        strategy,
+                        method: r.reason.method().as_str(),
+                        identifier_match,
+                        score: r.score,
+                    }
+                })
+                .collect()
         })
         .collect()
 }
@@ -937,6 +957,9 @@ pub struct CaptureCompleteness {
     pub dialogs_refused: u64,
     /// Oldest dialogs discarded at capacity by rotation.
     pub dialogs_rotated: u64,
+    /// Oldest RTP streams discarded at capacity (`--max-streams`): media
+    /// this run saw and no report or container holds.
+    pub streams_rotated: u64,
     /// Whether an operator stopped this run writing content partway through.
     ///
     /// Serialized always, including as `false`. Unlike `blind_spots`, absence
@@ -1060,6 +1083,7 @@ impl CaptureCompleteness {
             ("messages_evicted", self.messages_evicted, "message"),
             ("dialogs_refused", self.dialogs_refused, "dialog"),
             ("dialogs_rotated", self.dialogs_rotated, "dialog"),
+            ("streams_rotated", self.streams_rotated, "stream"),
         ] {
             if count > 0 {
                 push(kind, count, unit);
@@ -1804,9 +1828,21 @@ pub fn media_quality_for(
     store: &crate::rtp::stream_store::StreamStore,
     call_id: &str,
 ) -> Vec<crate::output::model::StreamSummary> {
+    let streams: Vec<&crate::rtp::stream::RtpStream> = store.streams_for(call_id).collect();
+    media_quality_of(store, &streams)
+}
+
+/// [`media_quality_for`] over a call's `streams` already in hand (from
+/// [`crate::rtp::stream_store::StreamStore::by_call`]), for a caller that
+/// exports many calls and must not scan the store once per call.
+#[must_use]
+pub fn media_quality_of(
+    store: &crate::rtp::stream_store::StreamStore,
+    streams: &[&crate::rtp::stream::RtpStream],
+) -> Vec<crate::output::model::StreamSummary> {
     let delay = crate::rtp::quality::MosDelay::from_capture(store);
-    store
-        .streams_for(call_id)
+    streams
+        .iter()
         .map(|s| crate::output::model::StreamSummary::of(s, delay))
         .collect()
 }
@@ -4467,6 +4503,7 @@ fn completeness_of(
         messages_evicted: facts.retention.messages_evicted,
         dialogs_refused: facts.retention.dialogs_refused,
         dialogs_rotated: facts.retention.dialogs_rotated,
+        streams_rotated: facts.retention.streams_rotated,
         gate_closed_during_run: facts.gate_closed_during_run,
         dialogs_suppressed_by_deny: facts.dialogs_suppressed_by_deny,
         headers_dropped_oversize: facts.headers_dropped_oversize,
@@ -4544,6 +4581,12 @@ fn completeness_note(
         partial.push_str(&format!(
             " — INCOMPLETE: {} dialog(s) were discarded at capacity by rotation.",
             facts.retention.dialogs_rotated
+        ));
+    }
+    if facts.retention.streams_rotated > 0 {
+        partial.push_str(&format!(
+            " — INCOMPLETE: {} RTP stream(s) were discarded at capacity (--max-streams).",
+            facts.retention.streams_rotated
         ));
     }
 
@@ -5649,6 +5692,7 @@ mod tests {
             "messages_evicted" => facts.retention.messages_evicted = count,
             "dialogs_refused" => facts.retention.dialogs_refused = count,
             "dialogs_rotated" => facts.retention.dialogs_rotated = count,
+            "streams_rotated" => facts.retention.streams_rotated = count,
             "gate_closed_during_run" => facts.gate_closed_during_run = count > 0,
             "dialogs_suppressed_by_deny" => facts.dialogs_suppressed_by_deny = count,
             "headers_dropped_oversize" => facts.headers_dropped_oversize = count,
@@ -5670,6 +5714,7 @@ mod tests {
         "messages_evicted",
         "dialogs_refused",
         "dialogs_rotated",
+        "streams_rotated",
         "gate_closed_during_run",
         "dialogs_suppressed_by_deny",
         "headers_dropped_oversize",
@@ -5722,6 +5767,7 @@ mod tests {
         all.retention.messages_evicted = 4;
         all.retention.dialogs_refused = 5;
         all.retention.dialogs_rotated = 6;
+        all.retention.streams_rotated = 9;
         all.gate_closed_during_run = true;
         all.dialogs_suppressed_by_deny = 7;
         all.headers_dropped_oversize = 8;
@@ -5761,6 +5807,44 @@ mod tests {
             }],
             "the row must say what was lost, how much, and in what unit"
         );
+        Ok(())
+    }
+
+    /// STREAM-EVICTION-NOT-IN-ANALYSIS: RTP streams discarded at
+    /// `--max-streams` are a row counted in streams, a clause that names the
+    /// flag, and a key in the serialized carrier.
+    #[test]
+    fn streams_discarded_at_max_streams_are_an_omission() -> Result<(), TestError> {
+        let exported = export_reporting(
+            &dialog_with(&[response(200, "OK")?])?,
+            &facts_losing("streams_rotated", 2)?,
+        )?;
+        assert_eq!(
+            exported.completeness.omissions(),
+            vec![Omission {
+                kind: "streams_rotated",
+                count: 2,
+                unit: "stream",
+            }],
+            "the row names the streams lost"
+        );
+        let note = &exported.completeness.note;
+        assert!(
+            note.contains("--max-streams"),
+            "the clause names the flag: {note}"
+        );
+        let json = serde_json::to_value(&exported.completeness)?;
+        assert_eq!(json["streams_rotated"], 2, "the key is serialized: {json}");
+        Ok(())
+    }
+
+    /// Edge: a clean run still serializes the key, as 0, like every other
+    /// counter of the carrier.
+    #[test]
+    fn a_clean_capture_serializes_streams_rotated_as_zero() -> Result<(), TestError> {
+        let exported = export_reporting(&dialog_with(&[response(200, "OK")?])?, &clean_facts())?;
+        let json = serde_json::to_value(&exported.completeness)?;
+        assert_eq!(json["streams_rotated"], 0, "present as 0: {json}");
         Ok(())
     }
 
@@ -9251,6 +9335,7 @@ mod tests {
     fn the_capture_host_does_not_survive_in_prose() -> Result<(), TestError> {
         let node = crate::provenance::node_name();
         if node.is_empty() {
+            // not a prerequisite: node_name falls back to `unknown`; an empty name has no prose to find
             return Ok(());
         }
         let json = redacted_container()?;

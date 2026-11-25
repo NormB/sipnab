@@ -20,6 +20,9 @@
 //! documentation fails this test; so does editing the documentation to claim a
 //! protection the API does not report.
 
+#[path = "../src/test_prereq.rs"]
+mod test_prereq;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -35,7 +38,9 @@ type TestError = Box<dyn std::error::Error>;
 const DECLARED_ENFORCE_ADMINS: bool = true;
 const DECLARED_REQUIRES_PULL_REQUEST: bool = true;
 const DECLARED_STATUS_CHECK: &str = "CI success";
-const DECLARED_CLA_CHECK: &str = "license/cla";
+const DECLARED_SIGN_OFF_CHECK: &str = "DCO";
+/// The status the retired CLA posted; main must no longer require it.
+const RETIRED_CLA_CHECK: &str = "license/cla";
 
 fn repo() -> &'static Path {
     static ONCE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -70,14 +75,26 @@ fn why_gh_cannot_answer() -> String {
     }
 }
 
+/// The live protection, or `None` for a skip decided by
+/// `src/test_prereq.rs` when `gh` cannot read it.
+///
+/// # Errors
+/// Where `SIPNAB_REQUIRE_PREREQS` names `gh` and it cannot answer.
+fn protection_or_skip() -> Result<Option<serde_json::Value>, test_prereq::PrereqError> {
+    test_prereq::check(
+        "gh",
+        test_prereq::Need::Optional(
+            "reading the live protection needs gh with a token and the network; \
+             the suite does not have them everywhere.",
+        ),
+        live_protection().ok_or_else(why_gh_cannot_answer),
+    )
+}
+
 /// 1. The live `enforce_admins` matches what this repository declares.
 #[test]
 fn the_enforce_admins_switch_matches_what_the_repository_declares() -> Result<(), TestError> {
-    let Some(p) = live_protection() else {
-        eprintln!(
-            "branch-protection-drift: cannot read protection — {}",
-            why_gh_cannot_answer()
-        );
+    let Some(p) = protection_or_skip()? else {
         return Ok(());
     };
     let live = p["enforce_admins"]["enabled"].as_bool();
@@ -98,11 +115,7 @@ fn the_enforce_admins_switch_matches_what_the_repository_declares() -> Result<()
 /// 2. The required status check is still the one the release flow depends on.
 #[test]
 fn the_required_status_check_is_still_the_aggregate_ci_gate() -> Result<(), TestError> {
-    let Some(p) = live_protection() else {
-        eprintln!(
-            "branch-protection-drift: cannot read protection — {}",
-            why_gh_cannot_answer()
-        );
+    let Some(p) = protection_or_skip()? else {
         return Ok(());
     };
     let contexts: Vec<String> = p["required_status_checks"]["contexts"]
@@ -126,11 +139,7 @@ fn the_required_status_check_is_still_the_aggregate_ci_gate() -> Result<(), Test
 /// 3. The pull-request requirement matches what is declared.
 #[test]
 fn the_pull_request_requirement_matches_what_is_declared() -> Result<(), TestError> {
-    let Some(p) = live_protection() else {
-        eprintln!(
-            "branch-protection-drift: cannot read protection — {}",
-            why_gh_cannot_answer()
-        );
+    let Some(p) = protection_or_skip()? else {
         return Ok(());
     };
     let live = p.get("required_pull_request_reviews").is_some();
@@ -199,35 +208,43 @@ fn the_documentation_states_the_same_enforce_admins_value() -> Result<(), TestEr
     Ok(())
 }
 
-/// 5. `license/cla` is a required check, and the docs say so.
+/// 5. The `DCO` sign-off check is required, the retired `license/cla` is not,
+///    and the docs say so.
 ///
 /// OpenSSF Baseline LE-01.01 asks that every contributor assert they may
-/// contribute. CLA Assistant posts `license/cla`; until 2026-09-29 nothing
-/// required it and five Dependabot pull requests merged with it pending. Bots
-/// are allowlisted in CLA Assistant and the check is required on `main`.
+/// contribute. Until the switch to the Developer Certificate of Origin, CLA
+/// Assistant's `license/cla` was that assertion and was required on `main`
+/// from 2026-09-29. Now the `DCO` job in .github/workflows/pr-text.yml is, and
+/// the CLA is retired (owner decisions (i) and (iii), 2026-11-18).
 #[test]
-fn the_cla_check_is_required_and_documented_as_required() -> Result<(), TestError> {
+fn the_sign_off_check_is_required_and_documented_as_required() -> Result<(), TestError> {
     for rel in ["MAINTAINERS.md", "CONTRIBUTING.md"] {
         let doc = read(rel)?;
         assert!(
-            !doc.contains("Nothing enforces `license/cla` yet")
-                && !doc.contains("does not block a merge on `license/cla`"),
-            "{rel} still says nothing enforces `license/cla`, but it is a \
-             required status check on main since 2026-09-29"
+            doc.contains(&format!("`{DECLARED_SIGN_OFF_CHECK}`")),
+            "{rel} does not name the required `{DECLARED_SIGN_OFF_CHECK}` check"
+        );
+        assert!(
+            !doc.contains("does not require the `DCO` check yet")
+                && !doc.contains("requires `CI success` and `license/cla`"),
+            "{rel} still describes the CLA as required or the `DCO` check as \
+             advisory, but main requires `{DECLARED_SIGN_OFF_CHECK}` in place of \
+             `{RETIRED_CLA_CHECK}`"
         );
     }
-    let Some(p) = live_protection() else {
-        eprintln!(
-            "branch-protection-drift: cannot read protection — {}",
-            why_gh_cannot_answer()
-        );
+    let Some(p) = protection_or_skip()? else {
         return Ok(());
     };
     let contexts = p["required_status_checks"]["contexts"].to_string();
     assert!(
-        contexts.contains(&format!("\"{DECLARED_CLA_CHECK}\"")),
-        "main does not require `{DECLARED_CLA_CHECK}` (it requires {contexts}), \
+        contexts.contains(&format!("\"{DECLARED_SIGN_OFF_CHECK}\"")),
+        "main does not require `{DECLARED_SIGN_OFF_CHECK}` (it requires {contexts}), \
          but MAINTAINERS.md and CONTRIBUTING.md describe it as required"
+    );
+    assert!(
+        !contexts.contains(&format!("\"{RETIRED_CLA_CHECK}\"")),
+        "main still requires the retired `{RETIRED_CLA_CHECK}` (it requires \
+         {contexts}), but MAINTAINERS.md and CONTRIBUTING.md say the CLA is retired"
     );
     Ok(())
 }

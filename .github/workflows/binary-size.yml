@@ -1,0 +1,98 @@
+name: Binary size
+
+# Builds the x86_64-unknown-linux-musl release binary the way release.yml
+# builds it and refuses it over the size ceiling the homepage and the build
+# docs quote (binary_size_ceiling_mb in website/config.toml).
+#
+# Until this workflow, only release.yml measured the musl binary, in the build
+# job of a tag push: a change that grew it failed at the tag, after the merge.
+# #534 grew it by 16.97% and the first v0.5.228 Release run failed its size
+# step at 22,685,568 bytes against 20 MB, after GHCR had received the image.
+#
+# The rule is scripts/check-binary-size.sh, which release.yml's size step
+# runs too. The build is scripts/reproducible-build.sh `build` with cross, the
+# entry point release.yml's musl build uses, with release.yml's musl feature
+# set (the Python tests of scripts/check-binary-size.sh hold the two equal), and the
+# symbols are split off with scripts/split-debuginfo.sh before measuring, as
+# in the artifact that ships.
+#
+# On pull requests that change what the size depends on beyond the source:
+# the manifests and the lockfile (a new or bumped dependency), the build
+# scripts and cargo configuration, the ceiling, and the workflows that build
+# and measure. Weekly for growth in src/, and on demand.
+on:
+  schedule:
+    # Fridays 05:17 UTC: clear of reproducible.yml (Thu 04:37) and the
+    # other weekly jobs. GitHub-hosted, so it adds no load to the
+    # self-hosted runners.
+    - cron: '17 5 * * 5'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'build_script/**'
+      - '.cargo/**'
+      - 'Cross.toml'
+      - 'docker/cross/**'
+      - 'website/config.toml'
+      - 'scripts/check-binary-size.sh'
+      - 'scripts/reproducible-build.sh'
+      - 'scripts/split-debuginfo.sh'
+      - '.github/workflows/binary-size.yml'
+      - '.github/workflows/release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binary-size-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  binary-size:
+    name: Binary size (x86_64-unknown-linux-musl)
+    # release.yml builds this target on ubuntu-24.04 with cross; the same
+    # runner image and tool, so the size measured is the size that ships.
+    # GitHub-hosted only, never a self-hosted label: this job adds no load
+    # to the self-hosted runners.
+    runs-on: ubuntu-24.04
+    # One full LTO release build in cross's container, plus installing cross.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes.
+          persist-credentials: false
+
+      # llvm-tools carries the llvm-objcopy the symbol split uses.
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+        with:
+          targets: x86_64-unknown-linux-musl
+          components: llvm-tools
+
+      # The commit release.yml installs, so the measured build is the
+      # shipped one.
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --rev a9301e91f72bba3850460512685f6b16062015ff
+
+      - name: Build (cross)
+        env:
+          FEATURES: native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729
+        run: bash scripts/reproducible-build.sh build x86_64-unknown-linux-musl "$FEATURES" cross
+
+      - name: Split the debug symbols, as the shipped binary is
+        run: |
+          mkdir -p dist
+          bash scripts/split-debuginfo.sh target/x86_64-unknown-linux-musl/release/sipnab dist/sipnab-dev-x86_64-unknown-linux-musl
+
+      - name: Enforce published binary size
+        run: bash scripts/check-binary-size.sh target/x86_64-unknown-linux-musl/release/sipnab
