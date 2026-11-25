@@ -37,6 +37,9 @@ TRACKED = REPO / "website/static/.well-known/security.txt"
 SECURITY_MD = REPO / "SECURITY.md"
 PAGES = REPO / ".github/workflows/pages.yml"
 CERT_EXPIRY = REPO / ".github/workflows/cert-expiry.yml"
+QUALITY = REPO / ".github/workflows/quality.yml"
+LYCHEE = REPO / "lychee.toml"
+LIVE_URL = "https://sipnab.com/.well-known/security.txt"
 
 NOW = dt.datetime(2026, 11, 24, 12, 0, 0, tzinfo=dt.timezone.utc)
 GOOD_EXPIRES = "2027-06-01T00:00:00Z"
@@ -450,6 +453,58 @@ def test_daily_check_runs_on_changes_to_the_file_and_script():
     for p in ("scripts/check-security-txt.py",
               "website/static/.well-known/security.txt", "SECURITY.md"):
         assert f"- '{p}'" in paths, f"cert-expiry.yml push paths lack {p}"
+
+
+# ------------------------------------------------- the docs dead-link pass
+# SECURITY.md links the live file, which the site serves only after Pages
+# deploys the change that adds or moves it. The docs pass runs before that, so
+# it remaps the URL to the committed file the site serves, and lychee then
+# fails when that file is missing from the tree.
+
+
+def docs_link_pass():
+    text = QUALITY.read_text(encoding="utf-8")
+    step = text.split("- name: Dead links (docs Markdown)", 1)[1]
+    return step.split("- name:", 1)[0]
+
+
+REMAP_RE = re.compile(
+    r"--remap \"\^https://sipnab\\\.com/\\\.well-known/security\\\.txt\\\$ "
+    r"file://\$GITHUB_WORKSPACE/(?P<target>[^\"\s]+)\"")
+
+
+def test_docs_link_pass_remaps_the_live_security_txt():
+    assert REMAP_RE.search(docs_link_pass()), (
+        "the docs dead-link pass must remap the live security.txt URL to the "
+        "committed file, because the live file exists only after a deploy")
+
+
+def test_docs_link_pass_remap_target_is_the_committed_file():
+    m = REMAP_RE.search(docs_link_pass())
+    assert m, "the docs dead-link pass has no security.txt remap"
+    assert REPO / m.group("target") == TRACKED, (
+        f"the remap points at {m.group('target')}, not the file the site serves")
+
+
+def test_docs_link_pass_remap_target_exists():
+    m = REMAP_RE.search(docs_link_pass())
+    assert m, "the docs dead-link pass has no security.txt remap"
+    assert (REPO / m.group("target")).is_file(), (
+        f"the remap target {m.group('target')} is missing from the tree")
+
+
+def test_lychee_does_not_exclude_the_live_security_txt():
+    import tomllib
+    config = tomllib.loads(LYCHEE.read_text(encoding="utf-8"))
+    hits = [p for p in config.get("exclude", []) if re.search(p, LIVE_URL)]
+    assert not hits, (
+        f"lychee.toml excludes {LIVE_URL} ({hits}); remap it instead, so the "
+        "link is still checked")
+
+
+def test_security_md_links_the_live_security_txt():
+    assert f"<{LIVE_URL}>" in SECURITY_MD.read_text(encoding="utf-8"), (
+        "SECURITY.md must link the live security.txt that the remap covers")
 
 
 # ---------------------------------------------------------------- command
