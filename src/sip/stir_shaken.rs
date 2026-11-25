@@ -763,6 +763,7 @@ mod tests {
             input_origin: None,
             is_retransmission: false,
             also_seen_by: 0,
+            cache: Default::default(),
         };
 
         assert!(msg.stir_shaken().is_none());
@@ -846,6 +847,7 @@ mod tests {
             input_origin: None,
             is_retransmission: false,
             also_seen_by: 0,
+            cache: Default::default(),
         }
     }
 

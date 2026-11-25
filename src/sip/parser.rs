@@ -368,6 +368,7 @@ pub fn parse_sip_bytes(
         transport,
         is_retransmission: false,
         also_seen_by: 0,
+        cache: Default::default(),
     })
 }
 

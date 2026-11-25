@@ -10,6 +10,40 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **Changelog sections 0.5.189 down to 0.5.186 are outlines too.**
+  - Effect: each entry says what changed, what to do and where the detail is; entries about hooks, CI and tests are removed.
+  - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
+
+## [0.5.273] - 2026-11-25
+
+### Changed
+
+- **Repeated MCP reports, `find_problems` and `/metrics` scrapes use less CPU on large captures.**
+  - Effect: sipnab keeps each SIP message's CSeq position, and a summary of its SDP media lines once a query reads them.
+  - Effect: On a 100,000-call capture, 3 `get_capture_report` calls ran 33% fewer instructions, 3 `find_problems` calls 42%, 3 `GET /metrics` scrapes 39%.
+  - Effect: Reading 150,000 packets of a SIP capture with `-N` ran 0.85% fewer instructions; replies and output are unchanged.
+  - Limit: On the 100,000-call capture, resident memory was 3.2% higher after loading it and 4.6% higher after 3 reports.
+  - Docs: [Estimate memory for a larger capture](docs/benchmarks.md#estimate-memory-for-a-larger-capture)
+- **Changelog sections 0.5.214 down to 0.5.190 are outlines too.**
+  - Effect: each entry says what changed, what to do and where the detail is; entries about hooks, CI and tests are removed.
+  - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
+
+### Fixed
+
+- **TLS 1.2 captures decrypt every connection, not only the first ones.**
+  - Was: With `--keylog` read at startup, a connection whose handshake came after the first decrypted record stayed encrypted and took an earlier connection's keys away.
+  - Effect: Each connection gets its session when its own ServerHello arrives.
+  - Docs: [TLS capture](docs/tls-capture.md)
+- **A long `--keylog-watch` run keeps TLS key memory bounded.**
+  - Was: Key log entries, ServerHello messages and sessions grew for the whole run, and each new key cost more than the one before.
+  - Effect: Each has a bound; the end of the run and a first-time warning say what a bound dropped.
+  - Limit: A key log file read at startup is always held whole.
+  - Docs: [Error messages](docs/errors.md)
+
+## [0.5.272] - 2026-11-25
+
 ### Added
 
 - **The relay sessions answer gives each RTP socket's rate, from the relay and the capture.**
@@ -25,9 +59,6 @@ entry that carries them.
   - Effect: The operating system takes the memory back at exit; the output, the output files and the exit status stay the same.
   - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 1.90% fewer instructions, and one with RTP 1.75% fewer.
   - Limit: callgrind counted the instructions; there is no wall-time figure, because the host stayed busy.
-- **Changelog sections 0.5.214 down to 0.5.186 are outlines too.**
-  - Effect: each entry says what changed, what to do and where the detail is; entries about hooks, CI and tests are removed.
-  - Docs: [The format of an entry](docs/internals/build-ci-release.md#the-format-of-an-entry).
 
 ## [0.5.271] - 2026-11-24
 
