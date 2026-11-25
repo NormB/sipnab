@@ -121,12 +121,50 @@ pub(crate) fn content_length_overrun(msg: &SipMessage) -> Option<usize> {
     (declared > msg.body.len()).then_some(declared)
 }
 
-/// True when `s` holds a C0 control byte or DEL.
+/// True for a C0 control byte or DEL other than tab, which is legal linear
+/// whitespace in a header value.
+const fn is_control_byte(b: u8) -> bool {
+    (b < 0x20 && b != b'\t') || b == 0x7f
+}
+
+/// True when `s` holds a control byte that no `quoted-pair` makes legal.
 ///
-/// Tab is legal linear whitespace in a header value, so it is excluded. CR and
-/// LF cannot survive line parsing, so finding one here is itself anomalous.
+/// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) gives `quoted-pair = "\" (%x00-09 / %x0B-0C / %x0E-7F)`
+/// inside a `quoted-string`, so an escaped BEL, NUL or DEL in a quoted display
+/// name is well formed: [RFC 4475 section 3.1.1.2](https://www.rfc-editor.org/rfc/rfc4475.html#section-3.1.1.2) (`intmeth`) sends exactly that
+/// and calls the message valid. Every other control byte is outside the
+/// grammar. An escape counts only once its quoted-string closes, because a
+/// quote that never closes holds no quoted-pair. CR and LF cannot survive line
+/// parsing, so finding one here, escaped or not, is itself anomalous.
 fn has_control_bytes(s: &str) -> bool {
-    s.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7f)
+    let mut bytes = s.bytes();
+    let mut in_quote = false;
+    // An escaped control byte inside a quoted-string that has not closed yet.
+    let mut escaped_in_open_quote = false;
+    while let Some(b) = bytes.next() {
+        if !in_quote {
+            if b == b'"' {
+                in_quote = true;
+            } else if is_control_byte(b) {
+                return true;
+            }
+            continue;
+        }
+        match b {
+            b'\\' => match bytes.next() {
+                Some(b'\r' | b'\n') => return true,
+                Some(e) if is_control_byte(e) => escaped_in_open_quote = true,
+                _ => {}
+            },
+            b'"' => {
+                in_quote = false;
+                escaped_in_open_quote = false;
+            }
+            _ if is_control_byte(b) => return true,
+            _ => {}
+        }
+    }
+    escaped_in_open_quote
 }
 
 /// The names of every header whose name or value carries a control byte.

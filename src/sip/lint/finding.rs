@@ -299,7 +299,8 @@ pub const HEADER_CONTROL_BYTE: RuleMeta = RuleMeta {
     basis: Basis::Must,
     rfc: 3261,
     // §25.1 Basic Rules: a header value is TEXT-UTF8char / UTF8-CONT / LWS.
-    // No C0 control byte other than the tab of LWS can appear.
+    // No C0 control byte other than the tab of LWS can appear, except as the
+    // escaped octet of a quoted-pair inside a quoted-string.
     section: "25.1",
 };
 

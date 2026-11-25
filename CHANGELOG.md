@@ -26,6 +26,13 @@ entry that carries them.
   - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 1.90% fewer instructions, and one with RTP 1.75% fewer.
   - Limit: callgrind counted the instructions; there is no wall-time figure, because the host stayed busy.
 
+### Fixed
+
+- **The linter no longer reports an escaped control byte inside a quoted string.**
+  - Was: A display name such as `"BEL:\<BEL>"`, valid per [RFC 4475 section 3.1.1.2](https://www.rfc-editor.org/rfc/rfc4475.html#section-3.1.1.2), raised `SIP-3261-25.1-HEADER-CONTROL-BYTE` and a `--json` malformation.
+  - Effect: A raw control byte, or one escaped in a quote that never closes, is still reported.
+  - Docs: [SIP conformance rules](docs/sip-lint-rules.md#syntactic-rules)
+
 ## [0.5.271] - 2026-11-24
 
 ### Changed
