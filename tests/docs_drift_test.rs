@@ -48,6 +48,24 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // The commit-message rule (class I) names `git interpret-trailers --parse`
+    // and `--no-divider`.
+    (
+        "parse",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "no-divider",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "Every platform's crates before the suite" names cargo's `--offline`
     // and `--target`.
     (

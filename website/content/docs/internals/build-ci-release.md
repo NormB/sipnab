@@ -908,6 +908,11 @@ gate every commit, from any worktree.
   on the commit message.
 - That script runs the private-identity rules of
   [`tests/private_identity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/private_identity_test.rs) over each line.
+- It also refuses an email address in a trailer (class I).
+  - The trailers are the lines `git interpret-trailers --parse --no-divider` reads as trailers.
+  - The test runs that command with no git configuration, outside any repository.
+  - A GitHub noreply alias and the GitHub support address Dependabot signs with name no person, so a trailer may carry them.
+  - The noreply rule is `_NOREPLY` in [`scripts/check-dco.py`](https://github.com/NormB/sipnab/blob/main/scripts/check-dco.py), read by the test, so the trailer rule and the `DCO` check accept the same addresses.
 - It skips with `NOT CHECKED` on a branch that does not carry the script.
 - [CONTRIBUTING.md](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#git-hooks) describes:
   - what it checks

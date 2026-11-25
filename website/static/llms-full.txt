@@ -83931,6 +83931,14 @@ project's license, as the DCO text says. The line stays in the history of
 personal mailbox. The `DCO` check refuses a sign-off that names any other
 address.
 
+No other trailer carries an email address. A commit carries an address only
+in its author and committer fields. The `commit-msg` hook and CI refuse a
+trailer that names any address except a GitHub noreply alias, a reserved one
+such as `example.com` included (class I in
+[Never publish a machine, an account, or a network](#never-publish-a-machine-an-account-or-a-network)).
+Name a co-author or a reviewer by name alone, or by the person's noreply
+alias.
+
 **Before you start.**
 
 - On GitHub, open Settings, then Emails. Turn on "Keep my email addresses
@@ -84128,9 +84136,10 @@ names any of these:
 - an address on its LAN,
 - a path under an account's home directory.
 
-It also refuses a message that credits an AI assistant as an author.
+It also refuses a message that credits an AI assistant as an author, an
+email address at a domain somebody owns, and an email address in a trailer.
 
-- These are classes A to E and H of
+- These are classes A to E and G to I of
   [Never publish a machine, an account, or a network](#never-publish-a-machine-an-account-or-a-network).
 - The rules are the same predicates in `tests/private_identity_test.rs`, run
   through `scripts/check-message-identity.sh`.
@@ -84618,6 +84627,38 @@ Naming an MCP client is not attribution. These are all accepted:
 - Claude Desktop,
 - a `claude mcp add` command,
 - a model name in an MCP example.
+
+A commit carries an email address only in its author and committer fields,
+never in the message. The commit-msg hook, the pre-push hook and CI's
+pull-request check refuse:
+
+- an address in a trailer (class I), even a reserved one such as
+  `someone@example.com`. A trailer is a line that
+  `git interpret-trailers --parse` reads as one: a `Key: value` line in the
+  last paragraph, a folded line included. `Signed-off-by:`,
+  `Co-Authored-By:`, `Reported-by:` and `Cc:` are trailers.
+- an address at a domain somebody owns in the body (class G), the address
+  of the maintainer included.
+
+The checks accept:
+
+- a GitHub noreply alias, `ID+login` followed by `@users.noreply.github.com`,
+  in a trailer or the body. A DCO sign-off takes this form.
+- the GitHub support address that Dependabot signs its commits with.
+- a reserved address in the body: `alice@example.com`, or a `.test` or
+  `.invalid` name.
+- a trailer with a name and no address: `Reviewed-by: A Reviewer`.
+
+The rule is the same for every commit, by the maintainer or by a contributor,
+in the commit-msg hook, the pre-push hook and CI. The noreply alias a trailer
+may name is exactly the one the `DCO` check accepts: the test reads it from
+`_NOREPLY` in `scripts/check-dco.py`. Sign off with your GitHub noreply
+address, never another one.
+
+A commit the repository owner authored and committed needs no sign-off, so it
+needs no trailer that names an address. The commits on `main` from before
+2026-11-25 that carry an address in a sign-off stay. The checks read new
+messages only.
 
 The one file exempt from the tracked-file scan is
 `tests/no_commit_attribution_test.rs`, the gate over recent commit messages.
@@ -89419,6 +89460,11 @@ gate every commit, from any worktree.
   on the commit message.
 - That script runs the private-identity rules of
   [`tests/private_identity_test.rs`](../../tests/private_identity_test.rs) over each line.
+- It also refuses an email address in a trailer (class I).
+  - The trailers are the lines `git interpret-trailers --parse --no-divider` reads as trailers.
+  - The test runs that command with no git configuration, outside any repository.
+  - A GitHub noreply alias and the GitHub support address Dependabot signs with name no person, so a trailer may carry them.
+  - The noreply rule is `_NOREPLY` in [`scripts/check-dco.py`](../../scripts/check-dco.py), read by the test, so the trailer rule and the `DCO` check accept the same addresses.
 - It skips with `NOT CHECKED` on a branch that does not carry the script.
 - [CONTRIBUTING.md](../../CONTRIBUTING.md#git-hooks) describes:
   - what it checks

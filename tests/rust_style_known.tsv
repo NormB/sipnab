@@ -477,7 +477,7 @@ AssertWithoutMessage	tests/pppoe_decap_test.rs	7
 AssertWithoutMessage	tests/pre_push_build_profile_test.rs	2
 AssertWithoutMessage	tests/pre_push_cross_arch_test.rs	3
 AssertWithoutMessage	tests/preflight_strict_test.rs	6
-AssertWithoutMessage	tests/private_identity_test.rs	23
+AssertWithoutMessage	tests/private_identity_test.rs	22
 AssertWithoutMessage	tests/quality_interval_period_test.rs	2
 AssertWithoutMessage	tests/real_world_labels_test.rs	3
 AssertWithoutMessage	tests/relay_anchoring_bdd_test.rs	3

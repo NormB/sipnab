@@ -8,6 +8,10 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+Not released. Contributor-tooling changes since 0.5.273 (the commit-msg hook, pre-push and CI refuse an email address in a commit message trailer, and an address at a real domain in a commit message body); nothing a user of the released artifacts can see.
+
 ## [0.5.273] - 2026-11-25
 
 ### Changed

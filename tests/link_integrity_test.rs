@@ -2117,7 +2117,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // MAINTAINERS.md, as before in number.
     // 173 -> 174 (WC2a stability page): README.md's docs table links
     // docs/stability.md.
-    const EXPECTED_COMMUNITY_LINKS: usize = 174;
+    // 174 -> 175 (no address in a trailer): CONTRIBUTING.md's "Signing off
+    // commits" links #never-publish-a-machine-an-account-or-a-network.
+    const EXPECTED_COMMUNITY_LINKS: usize = 175;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
