@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Reading a capture file stores each SIP message without copying it first.**
+  - Effect: The call store keeps the message itself; the output, the output files and the exit status stay the same.
+  - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 4.12% fewer instructions, and one with RTP 3.33% fewer.
+  - Limit: callgrind counted the instructions; there is no wall-time figure, because the host stayed busy.
+
 ## [0.5.271] - 2026-11-24
 
 ### Changed
