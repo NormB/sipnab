@@ -46,7 +46,7 @@ AssertWithoutMessage	src/capture/atomic.rs	7
 AssertWithoutMessage	src/capture/bpf_filter.rs	12
 AssertWithoutMessage	src/capture/channel.rs	26
 AssertWithoutMessage	src/capture/compare.rs	10
-AssertWithoutMessage	src/capture/decrypt.rs	108
+AssertWithoutMessage	src/capture/decrypt.rs	105
 AssertWithoutMessage	src/capture/decrypted_export.rs	36
 AssertWithoutMessage	src/capture/device.rs	14
 AssertWithoutMessage	src/capture/dtls.rs	21

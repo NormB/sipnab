@@ -19,6 +19,18 @@ entry that carries them.
   - Limit: On the 100,000-call capture, resident memory was 3.2% higher after loading it and 4.6% higher after 3 reports.
   - Docs: [Estimate memory for a larger capture](docs/benchmarks.md#estimate-memory-for-a-larger-capture)
 
+### Fixed
+
+- **TLS 1.2 captures decrypt every connection, not only the first ones.**
+  - Was: With `--keylog` read at startup, a connection whose handshake came after the first decrypted record stayed encrypted and took an earlier connection's keys away.
+  - Effect: Each connection gets its session when its own ServerHello arrives.
+  - Docs: [TLS capture](docs/tls-capture.md)
+- **A long `--keylog-watch` run keeps TLS key memory bounded.**
+  - Was: Key log entries, ServerHello messages and sessions grew for the whole run, and each new key cost more than the one before.
+  - Effect: Each has a bound; the end of the run and a first-time warning say what a bound dropped.
+  - Limit: A key log file read at startup is always held whole.
+  - Docs: [Error messages](docs/errors.md)
+
 ## [0.5.272] - 2026-11-25
 
 ### Added

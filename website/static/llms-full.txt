@@ -28765,6 +28765,20 @@ sipnab holds TLS records that arrive before their key, so that it can decrypt th
 
 **Exit code:** None. This is a warning, and the run continues.
 
+### `sipnab dropped TLS key material to stay within its memory bounds: {} key log entries no session had used ({} kept at most), {} ServerHello message(s) no key had arrived for ({} kept at most), {} session(s) unused the longest ({} kept at most). Records of those connections were not decrypted. Split a long run into shorter ones, or capture fewer TLS connections at once.`
+
+The TLS decryptor keeps a bounded number of key log entries, ServerHello messages and sessions, so that a long `--keylog-watch` run or a capture with many TLS connections cannot grow without limit. This run reached at least one bound. Each count is what sipnab dropped of that kind, and each bound follows it:
+
+- sipnab drops key log entries oldest first. Entries whose session already exists go first and are not counted, because the session holds their keys. sipnab keeps a key log file read at startup whole, so a file larger than the bound raises the bound to its entry count, and the line prints that number.
+- sipnab keeps a ServerHello message until a key for its connection arrives. A ServerHello whose connection already has its keys, as each connection of a key log read at startup has, is not kept and never counts here.
+- sipnab drops the session that has opened no record for the longest time.
+
+A warning names each kind the first time it happens, so a live run shows it as well.
+
+**What to do:** Split a long run into shorter ones, or capture fewer TLS connections at once.
+
+**Exit code:** None. This is a warning, and the run continues.
+
 ### `sipnab holds keys for {} TLS session(s) and could not decrypt any of the {} application-data record(s) it saw.`
 
 sipnab holds keys for the first number of TLS sessions and could not decrypt any of the second number of records.
@@ -83740,6 +83754,18 @@ argues for neither:
 for them. Nothing was discarded and starting the capture earlier would not
 have helped -- the key source never produced those secrets.
 ```
+
+A long `--keylog-watch` run also has bounds on the key material it keeps:
+`MAX_KEYLOG_ENTRIES` (65,536) key log entries, `MAX_OBSERVED_HANDSHAKES`
+(4,096) ServerHello messages that no key has arrived for, and
+`MAX_TLS_SESSIONS` (16,384) sessions. sipnab drops entries whose session
+exists first, which costs nothing. sipnab keeps a key log file read at
+startup whole: when that file holds more entries than the key bound, its entry
+count is the bound for the run, and the line and the warning print that
+number. When a bound drops
+something that a later record needed, the end of the run says so in one line
+that names each count, and a warning says it the first time it happens. The
+[error reference](errors.md) has the line.
 
 
 ## What does not work, and why

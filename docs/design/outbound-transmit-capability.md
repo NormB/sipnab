@@ -50,7 +50,7 @@ it is not the same guarantee:
    `KillUdpSocket::bind` ([`:335`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L335)<!-- "fn bind(_permit:" -->) take it by
    reference, and `spawn_scanner_kill_worker`
    ([`:1640`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1640)<!-- "pub fn spawn_scanner_kill_worker(" -->) and `BatchRunner::new`
-   ([`batch.rs:4096`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4096)<!-- "fn new( cli: Cli, config: &Config, mut batch: BatchProcessing," -->) by value. The sends themselves
+   ([`batch.rs:4126`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4126)<!-- "fn new( cli: Cli, config: &Config, mut batch: BatchProcessing," -->) by value. The sends themselves
    take none, and that is the design rather than a gap: they happen in the
    scanner-kill worker, a process of its own, and a proof token cannot cross a
    pipe. The worker's capability is the descriptors it inherited — all of
@@ -67,7 +67,7 @@ it is not the same guarantee:
    no guard at all.
 
 The permit is derived once, from the source the capture thread actually opened
-rather than from the flags ([`batch.rs:3094-3095`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3094-L3095)<!-- "let transmit_permit" -->), with
+rather than from the flags ([`batch.rs:3124-3125`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3124-L3125)<!-- "let transmit_permit" -->), with
 the reasoning recorded above it — `-I` beating `-d`, device auto-detection and
 `--hep-listen` are already resolved into `handle.source`, so re-deriving it from
 `cli` would be a second copy of that precedence to get wrong.
