@@ -1094,7 +1094,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 910 -> 912 (PRECHECK-MISSES-HOOK-GATES, +2): testing.md's "The
     // pre-check, before the hook" links .config/precheck-skip.txt and
     // scripts/tests/test_precheck_hook.py.
-    const EXPECTED_CODE_LINKS: usize = 915;
+    // 915 -> 916 (SIP torture tests, +1): testing.md's "IETF SIP torture
+    // tests" links tests/sip_torture_conformance_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 916;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

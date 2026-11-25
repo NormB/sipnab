@@ -571,6 +571,79 @@ A second gate once demanded a freshly built bundle alongside any staged
   - `cargo clippy --workspace --all-features --all-targets -- -D warnings`.
   - The `fuzz` workspace check.
 
+## IETF SIP torture tests
+
+[RFC 4475](https://www.rfc-editor.org/rfc/rfc4475.html) holds 49 SIP messages
+and [RFC 5118](https://www.rfc-editor.org/rfc/rfc5118.html) 12 IPv6 messages,
+each with the handling the RFC expects. These tests check that sipnab agrees.
+
+### Purpose
+
+A message the RFC calls valid must parse with the right fields and raise no
+finding that calls it malformed. For a message the RFC calls invalid, sipnab
+must refuse it or report it with a named lint rule, never accept it in silence.
+
+### Run the tests
+
+```sh
+cargo test --features full --test sip_torture_conformance_test
+```
+
+[`tests/sip_torture_conformance_test.rs`](../../tests/sip_torture_conformance_test.rs)
+builds, for each RFC case, a minimal message that keeps the property under
+test. Every name, domain and address in it is a reserved example value, and
+each test names the RFC section it comes from. The RFC messages themselves are
+not in the repository, because they carry names, domains and addresses that
+are not reserved.
+
+### What each verdict means
+
+| Verdict | RFC wording | What sipnab does |
+|---|---|---|
+| valid | "well-formed", "must accept" | Parses; no rule reports the shape the case tests. |
+| tolerated | "acceptable to reject", "may ignore" | Parses as a lenient element would, and a lint rule reports the defect. |
+| invalid | "should respond with a 400 Bad Request", "should simply drop it" | Refuses the message with a parse error, or parses it and a lint rule reports the defect. |
+
+### Coverage
+
+A local run put every message of both RFCs, byte for byte from the Appendix A
+archive of each, through the parser, the linter and the dialog store. All 61 get the
+verdict the RFC expects. The RFC 5118 archive ends its lines with LF, which
+[RFC 3261 section 7](https://www.rfc-editor.org/rfc/rfc3261.html#section-7) does not allow, so those 12 ran with CRLF line ends. For an
+invalid or tolerated message the table names the finding that answers the
+case, and such a message can raise others too. For a valid message it names every
+finding.
+
+| RFC section | Message | RFC verdict | sipnab |
+|---|---|---|---|
+| RFC 4475 3.1.1.1 to 3.1.1.13 | `wsinv` to `noreason` | valid | All 13 parse with their fields. `wsinv` and `longreq` also get the `SIP-3261-8.1.1.7-BRANCH-COOKIE` warning, since their top Via has no `z9hG4bK`, and `intmeth` and `esc01` the `SIP-3261-20.22-MAX-FORWARDS-RANGE` notice for values above 70. `intmeth` (3.1.1.2) raised `SIP-3261-25.1-HEADER-CONTROL-BYTE` for escaped control bytes until that rule learned quoted-pairs. |
+| RFC 4475 3.1.2.1 | `badinv01` | invalid | `SIP-3261-25.1-EMPTY-PARAMETER` |
+| RFC 4475 3.1.2.2 | `clerr` | invalid | `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH` |
+| RFC 4475 3.1.2.3 | `ncl` | invalid | `SIP-3261-20.14-CONTENT-LENGTH-INVALID` |
+| RFC 4475 3.1.2.4, 3.1.2.5 | `scalar02`, `scalarlg` | invalid | `SIP-3261-20.16-CSEQ-MALFORMED` |
+| RFC 4475 3.1.2.6 | `quotbal` | invalid | `SIP-3261-25.1-QUOTED-STRING-UNTERMINATED` |
+| RFC 4475 3.1.2.7 | `ltgtruri` | tolerated | `SIP-3261-25.1-REQUEST-URI-BRACKETED` |
+| RFC 4475 3.1.2.8 | `lwsruri` | invalid | `SIP-3261-25.1-REQUEST-URI-WHITESPACE` |
+| RFC 4475 3.1.2.9, 3.1.2.10 | `lwsstart`, `trws` | tolerated | `SIP-3261-7.1-REQUEST-LINE-SPACING`. sipnab refused `trws` as not SIP until the parser learned to ignore trailing whitespace. |
+| RFC 4475 3.1.2.11 | `escruri` | tolerated | `SIP-3261-19.1.1-REQUEST-URI-HEADERS` |
+| RFC 4475 3.1.2.12 | `baddate` | tolerated | `SIP-3261-20.17-DATE-NOT-GMT` |
+| RFC 4475 3.1.2.13 | `regbadct` | invalid | `SIP-3261-20-URI-BRACKETS` |
+| RFC 4475 3.1.2.14 | `badaspec` | invalid | `SIP-3261-25.1-ADDR-SPEC-WHITESPACE` |
+| RFC 4475 3.1.2.15 | `baddn` | invalid | `SIP-3261-25.1-DISPLAY-NAME-UNQUOTED` |
+| RFC 4475 3.1.2.16 | `badvers` | invalid | Refused: not SIP/2.0. |
+| RFC 4475 3.1.2.17, 3.1.2.18 | `mismatch01`, `mismatch02` | invalid | `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` |
+| RFC 4475 3.1.2.19 | `bigcode` | invalid | Refused: status code out of range. |
+| RFC 4475 3.2.1 | `badbranch` | tolerated | `SIP-3261-8.1.1.7-BRANCH-NO-IDENTIFIER` |
+| RFC 4475 3.3.1 | `insuf` | invalid | `SIP-3261-8.1.1-MANDATORY-HEADER-MISSING`; no dialog, since there is no Call-ID. |
+| RFC 4475 3.3.2 to 3.3.7 | `unkscm` to `regaut01` | valid | Parse with no finding. The responses the RFC names (416, 420, 415, 401) belong to the receiving element. |
+| RFC 4475 3.3.8, 3.3.9 | `multi01`, `mcl01` | invalid | `SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` |
+| RFC 4475 3.3.10 to 3.3.15 | `bcast` to `sdp01` | valid | Parse. `zeromf` (3.3.11) raises the `SIP-3261-20.22-MAX-FORWARDS-RANGE` notice for Max-Forwards 0. |
+| RFC 4475 3.4.1 | `inv2543` | valid ([RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html)) | Parses. Reports what RFC 3261 requires of the RFC 2543 form: `BRANCH-COOKIE`, `MAX-FORWARDS-MISSING`, `RECORD-ROUTE-NOT-LOOSE` and `URI-PARAM-DEMOTED`. |
+| RFC 5118 4.1, 4.3, 4.4, 4.5, 4.7, 4.8, 4.9 | IPv6 references, both `received` forms, IPv4-mapped | valid | Parse with no finding. 4.3 is well formed even though its port is inside the brackets. |
+| RFC 5118 4.2 | `ipv6-bad` | invalid | `SIP-3261-25.1-IPV6-REFERENCE-UNBRACKETED` |
+| RFC 5118 4.6 | `ipv6-in-sdp` | valid | Parses; `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH`, because the message in the RFC declares 268 octets for a 251-octet body. |
+| RFC 5118 4.10 | three-colon and two-colon references | tolerated, valid | Both parse with no finding. The archive copies lack the blank line that ends the headers, which the text implies. |
+
 ## Failure-path coverage
 
 The tests and audits behind the operator [fault model](../fault-model.md). That

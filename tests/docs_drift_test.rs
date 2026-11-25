@@ -6793,7 +6793,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/keybindings.md and their site mirrors (+8).
     // 1532 -> 1534 (relay rates): the units table of "Read the rate media
     // arrives at" in docs/relay-statistics.md and its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1534;
+    // 1534 -> 1538 (SIP torture tests): the verdict and coverage tables of
+    // "IETF SIP torture tests" in docs/internals/testing.md and its site
+    // mirror (+4).
+    const EXPECTED_TABLES: usize = 1538;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

@@ -18,6 +18,12 @@ entry that carries them.
   - Limit: A socket the capture holds no stream for reads `not_captured`, never 0.
   - Docs: [Read the rate media arrives at](docs/relay-statistics.md#read-the-rate-media-arrives-at)
   - Credit: Inspired by irontec/sngrep#581.
+- **The linter reports eleven more malformed-message shapes from the IETF SIP torture tests.**
+  - Effect: Each has a rule: unbracketed IPv6 hosts, empty parameters, a bad `Content-Length`, open quotes, bad Request-URIs and addresses, non-GMT dates, bare branches.
+  - Limit: Each rule reports; sipnab still parses and tracks the message.
+  - Do: Count them in a CI suite with a `lint_errors` expectation rule.
+  - Docs: [Check conformance in the same suite](docs/expectations.md#check-conformance-in-the-same-suite)
+  - Docs: [SIP conformance rules](docs/sip-lint-rules.md#syntactic-rules)
 
 ### Changed
 

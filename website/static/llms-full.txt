@@ -49330,7 +49330,7 @@ it to [`show_evidence`](mcp-tools-captures.md#show_evidence) to read the bytes b
 `suppressions` names the `.sipnablint` file that took part, both of them exactly
 as [`lint_dialog`](#lint_dialog) reports them.
 
-Nineteen of the forty-two rules skip on a one-message run, and
+Nineteen of the fifty-three rules skip on a one-message run, and
 `rules_not_evaluated` names them. Run `lint_dialog` first, and use this tool to
 confirm one message.
 
@@ -49339,14 +49339,14 @@ confirm one message.
 Returns the catalog entry for a rule identifier taken from a finding, a CI log
 or a suppression file.
 
-**Parameters:** `rule_id` (string, required) — one of the 42 catalog
+**Parameters:** `rule_id` (string, required) — one of the 53 catalog
 identifiers, matched exactly, such as `OBS-3264-6.1-PT-UNDECLARED`. No optional
 parameters, and the tool reads no capture, so it answers the same on any
 server. An unknown identifier fails with `invalid_params` (-32602) **listing all
-42**, so a call with any unknown identifier lists the catalog:
+53**, so a call with any unknown identifier lists the catalog:
 
 ```text
-'NOPE' is not a rule in the catalog. The 42 rules are: SIP-3261-8.1.1-MANDATORY-HEADER-MISSING, SIP-3261-20.16-CSEQ-MALFORMED, SIP-3261-20.14-CONTENT-LENGTH-MISMATCH, SIP-3261-25.1-HEADER-CONTROL-BYTE, SIP-3261-20-URI-BRACKETS, SIP-3261-19.1.1-URI-PARAM-DEMOTED, SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING, SIP-3261-20.22-MAX-FORWARDS-RANGE, SIP-3261-8.1.1.7-BRANCH-COOKIE, SIP-3261-7.1-REQUEST-LINE-SPACING, SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST, SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH, SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH, SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH, SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX, SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED, SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE, SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE, SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED, SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ, SIP-3262-4-PRACK-MISSING, SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE, SIP-4028-4-SESSION-EXPIRES-TOO-SMALL, SIP-4028-5-MIN-SE-TOO-SMALL, SIP-4028-9-REFRESHER-MISSING, SIP-7989-5-SESSION-ID-MALFORMED, SIP-7989-5-SESSION-ID-UPPERCASE, SIP-7989-11-SESSION-ID-LEGACY-FORM, SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT, SDP-3264-6.1-ANSWER-EXTRA-FORMAT, SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL, SDP-3264-8.4-HOLD-CONNECTION-ZERO, SDP-3264-8.3.2-DYNAMIC-PT-REBOUND, SDP-3264-7-TELEPHONE-EVENT-ONE-WAY, SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES, SDP-7587-7-OPUS-RTPMAP-RATE, OBS-3264-6.1-PT-UNDECLARED, OBS-4566-5.14-MEDIA-PORT-MISMATCH, OBS-3264-6.1-DIRECTION-UNMET, OBS-4566-6-PTIME-MISMATCH, OBS-5761-5.1.1-RTCP-MUX-UNANSWERED, OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE
+'NOPE' is not a rule in the catalog. The 53 rules are: SIP-3261-8.1.1-MANDATORY-HEADER-MISSING, SIP-3261-20.16-CSEQ-MALFORMED, SIP-3261-20.14-CONTENT-LENGTH-MISMATCH, SIP-3261-25.1-HEADER-CONTROL-BYTE, SIP-3261-20-URI-BRACKETS, SIP-3261-19.1.1-URI-PARAM-DEMOTED, SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING, SIP-3261-20.22-MAX-FORWARDS-RANGE, SIP-3261-8.1.1.7-BRANCH-COOKIE, SIP-3261-7.1-REQUEST-LINE-SPACING, SIP-3261-25.1-IPV6-REFERENCE-UNBRACKETED, SIP-3261-25.1-EMPTY-PARAMETER, SIP-3261-20.14-CONTENT-LENGTH-INVALID, SIP-3261-25.1-QUOTED-STRING-UNTERMINATED, SIP-3261-25.1-REQUEST-URI-BRACKETED, SIP-3261-25.1-REQUEST-URI-WHITESPACE, SIP-3261-19.1.1-REQUEST-URI-HEADERS, SIP-3261-25.1-ADDR-SPEC-WHITESPACE, SIP-3261-25.1-DISPLAY-NAME-UNQUOTED, SIP-3261-20.17-DATE-NOT-GMT, SIP-3261-8.1.1.7-BRANCH-NO-IDENTIFIER, SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST, SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH, SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH, SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH, SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX, SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED, SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE, SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE, SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED, SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ, SIP-3262-4-PRACK-MISSING, SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE, SIP-4028-4-SESSION-EXPIRES-TOO-SMALL, SIP-4028-5-MIN-SE-TOO-SMALL, SIP-4028-9-REFRESHER-MISSING, SIP-7989-5-SESSION-ID-MALFORMED, SIP-7989-5-SESSION-ID-UPPERCASE, SIP-7989-11-SESSION-ID-LEGACY-FORM, SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT, SDP-3264-6.1-ANSWER-EXTRA-FORMAT, SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL, SDP-3264-8.4-HOLD-CONNECTION-ZERO, SDP-3264-8.3.2-DYNAMIC-PT-REBOUND, SDP-3264-7-TELEPHONE-EVENT-ONE-WAY, SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES, SDP-7587-7-OPUS-RTPMAP-RATE, OBS-3264-6.1-PT-UNDECLARED, OBS-4566-5.14-MEDIA-PORT-MISMATCH, OBS-3264-6.1-DIRECTION-UNMET, OBS-4566-6-PTIME-MISMATCH, OBS-5761-5.1.1-RTCP-MUX-UNANSWERED, OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE
 ```
 
 ```jsonc
@@ -56392,6 +56392,17 @@ These read one message on its own.
 | `SIP-3261-20.22-MAX-FORWARDS-RANGE` | notice | should | [RFC 3261 section 20.22](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.22) | `Max-Forwards` reads zero, exceeds the recommended 70, or holds no integer. | Start requests at `Max-Forwards: 70`. |
 | `SIP-3261-8.1.1.7-BRANCH-COOKIE` | warning | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) | A request's top `Via` branch lacks the `z9hG4bK` magic cookie, or carries no branch at all. | Generate branches that start with `z9hG4bK`. |
 | `SIP-3261-7.1-REQUEST-LINE-SPACING` | warning | must | [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1) | A request line has whitespace before the method or after `SIP/2.0`, more than one space between elements, or a tab. sipnab still reads the request. | Send `Method SP Request-URI SP SIP/2.0` with one space between elements. |
+| `SIP-3261-25.1-IPV6-REFERENCE-UNBRACKETED` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | An IPv6 address is the host of the Request-URI, of a `To`, `From`, `Contact`, `Reply-To`, `Route` or `Record-Route` URI, or a `Via` sent-by, without `[` and `]`. A `received` parameter takes the bare form and is not reported. | Write the host as `[2001:db8::10]`, with any port after the `]`. |
+| `SIP-3261-25.1-EMPTY-PARAMETER` | warning | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | A `Via`, `To`, `From`, `Contact`, `Reply-To`, `Route` or `Record-Route` field holds `;;`, a trailing `;`, or an empty element between commas. | Remove the extra separators. |
+| `SIP-3261-20.14-CONTENT-LENGTH-INVALID` | error | must | [RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.14) | `Content-Length` is negative, empty or not a decimal number. | Send the body length in octets as a decimal number. |
+| `SIP-3261-25.1-QUOTED-STRING-UNTERMINATED` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | An address field opens a quoted display name and never closes it. | Close the display name with `"`. |
+| `SIP-3261-25.1-REQUEST-URI-BRACKETED` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | The Request-URI sits inside `<` and `>`. | Send the Request-URI without angle brackets. |
+| `SIP-3261-25.1-REQUEST-URI-WHITESPACE` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | The Request-URI holds a space or a tab. | Remove the whitespace from the URI. |
+| `SIP-3261-19.1.1-REQUEST-URI-HEADERS` | warning | must | [RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-19.1.1) | A `sip` or `sips` Request-URI carries a `?` headers component after its host. | Remove the headers component before sending the request. |
+| `SIP-3261-25.1-ADDR-SPEC-WHITESPACE` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | An address field has whitespace between its `<` and `>`. | Write `<sip:user@example.com>` with nothing between the brackets but the URI. |
+| `SIP-3261-25.1-DISPLAY-NAME-UNQUOTED` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | An unquoted display name holds a character that is not a token character, such as a comma. | Put the display name in double quotes. |
+| `SIP-3261-20.17-DATE-NOT-GMT` | info | must | [RFC 3261 section 20.17](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.17) | The `Date` field does not end in `GMT`. The rule also reports `UT`, `UTC` and every other zone. | Send the date in GMT. |
+| `SIP-3261-8.1.1.7-BRANCH-NO-IDENTIFIER` | info | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) | A request's top `Via` branch is `z9hG4bK` with nothing after it. | Append a unique transaction identifier to the cookie. |
 | `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` | error | must | [RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.5) | The `CSeq` method disagrees with the request line. | Make the `CSeq` method match the request method. |
 | `SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX` | error | must | [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.1) | A 2xx answer to `INVITE` carries no `Contact`, so the dialog it creates has no remote target for the `ACK` or the `BYE`. | Add a `Contact` to the 2xx. |
 | `SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ` | error | must | [RFC 3262 section 3](https://www.rfc-editor.org/rfc/rfc3262.html#section-3) | A provisional demands `100rel` and carries no `RSeq`, so the receiver has to acknowledge a response it cannot name. | Add `RSeq` to every reliable provisional response. |
@@ -87674,6 +87685,79 @@ A second gate once demanded a freshly built bundle alongside any staged
 - For exactly this reason, the pre-push hook runs two checks before pushing:
   - `cargo clippy --workspace --all-features --all-targets -- -D warnings`.
   - The `fuzz` workspace check.
+
+## IETF SIP torture tests
+
+[RFC 4475](https://www.rfc-editor.org/rfc/rfc4475.html) holds 49 SIP messages
+and [RFC 5118](https://www.rfc-editor.org/rfc/rfc5118.html) 12 IPv6 messages,
+each with the handling the RFC expects. These tests check that sipnab agrees.
+
+### Purpose
+
+A message the RFC calls valid must parse with the right fields and raise no
+finding that calls it malformed. For a message the RFC calls invalid, sipnab
+must refuse it or report it with a named lint rule, never accept it in silence.
+
+### Run the tests
+
+```sh
+cargo test --features full --test sip_torture_conformance_test
+```
+
+[`tests/sip_torture_conformance_test.rs`](../../tests/sip_torture_conformance_test.rs)
+builds, for each RFC case, a minimal message that keeps the property under
+test. Every name, domain and address in it is a reserved example value, and
+each test names the RFC section it comes from. The RFC messages themselves are
+not in the repository, because they carry names, domains and addresses that
+are not reserved.
+
+### What each verdict means
+
+| Verdict | RFC wording | What sipnab does |
+|---|---|---|
+| valid | "well-formed", "must accept" | Parses; no rule reports the shape the case tests. |
+| tolerated | "acceptable to reject", "may ignore" | Parses as a lenient element would, and a lint rule reports the defect. |
+| invalid | "should respond with a 400 Bad Request", "should simply drop it" | Refuses the message with a parse error, or parses it and a lint rule reports the defect. |
+
+### Coverage
+
+A local run put every message of both RFCs, byte for byte from the Appendix A
+archive of each, through the parser, the linter and the dialog store. All 61 get the
+verdict the RFC expects. The RFC 5118 archive ends its lines with LF, which
+[RFC 3261 section 7](https://www.rfc-editor.org/rfc/rfc3261.html#section-7) does not allow, so those 12 ran with CRLF line ends. For an
+invalid or tolerated message the table names the finding that answers the
+case, and such a message can raise others too. For a valid message it names every
+finding.
+
+| RFC section | Message | RFC verdict | sipnab |
+|---|---|---|---|
+| RFC 4475 3.1.1.1 to 3.1.1.13 | `wsinv` to `noreason` | valid | All 13 parse with their fields. `wsinv` and `longreq` also get the `SIP-3261-8.1.1.7-BRANCH-COOKIE` warning, since their top Via has no `z9hG4bK`, and `intmeth` and `esc01` the `SIP-3261-20.22-MAX-FORWARDS-RANGE` notice for values above 70. `intmeth` (3.1.1.2) raised `SIP-3261-25.1-HEADER-CONTROL-BYTE` for escaped control bytes until that rule learned quoted-pairs. |
+| RFC 4475 3.1.2.1 | `badinv01` | invalid | `SIP-3261-25.1-EMPTY-PARAMETER` |
+| RFC 4475 3.1.2.2 | `clerr` | invalid | `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH` |
+| RFC 4475 3.1.2.3 | `ncl` | invalid | `SIP-3261-20.14-CONTENT-LENGTH-INVALID` |
+| RFC 4475 3.1.2.4, 3.1.2.5 | `scalar02`, `scalarlg` | invalid | `SIP-3261-20.16-CSEQ-MALFORMED` |
+| RFC 4475 3.1.2.6 | `quotbal` | invalid | `SIP-3261-25.1-QUOTED-STRING-UNTERMINATED` |
+| RFC 4475 3.1.2.7 | `ltgtruri` | tolerated | `SIP-3261-25.1-REQUEST-URI-BRACKETED` |
+| RFC 4475 3.1.2.8 | `lwsruri` | invalid | `SIP-3261-25.1-REQUEST-URI-WHITESPACE` |
+| RFC 4475 3.1.2.9, 3.1.2.10 | `lwsstart`, `trws` | tolerated | `SIP-3261-7.1-REQUEST-LINE-SPACING`. sipnab refused `trws` as not SIP until the parser learned to ignore trailing whitespace. |
+| RFC 4475 3.1.2.11 | `escruri` | tolerated | `SIP-3261-19.1.1-REQUEST-URI-HEADERS` |
+| RFC 4475 3.1.2.12 | `baddate` | tolerated | `SIP-3261-20.17-DATE-NOT-GMT` |
+| RFC 4475 3.1.2.13 | `regbadct` | invalid | `SIP-3261-20-URI-BRACKETS` |
+| RFC 4475 3.1.2.14 | `badaspec` | invalid | `SIP-3261-25.1-ADDR-SPEC-WHITESPACE` |
+| RFC 4475 3.1.2.15 | `baddn` | invalid | `SIP-3261-25.1-DISPLAY-NAME-UNQUOTED` |
+| RFC 4475 3.1.2.16 | `badvers` | invalid | Refused: not SIP/2.0. |
+| RFC 4475 3.1.2.17, 3.1.2.18 | `mismatch01`, `mismatch02` | invalid | `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` |
+| RFC 4475 3.1.2.19 | `bigcode` | invalid | Refused: status code out of range. |
+| RFC 4475 3.2.1 | `badbranch` | tolerated | `SIP-3261-8.1.1.7-BRANCH-NO-IDENTIFIER` |
+| RFC 4475 3.3.1 | `insuf` | invalid | `SIP-3261-8.1.1-MANDATORY-HEADER-MISSING`; no dialog, since there is no Call-ID. |
+| RFC 4475 3.3.2 to 3.3.7 | `unkscm` to `regaut01` | valid | Parse with no finding. The responses the RFC names (416, 420, 415, 401) belong to the receiving element. |
+| RFC 4475 3.3.8, 3.3.9 | `multi01`, `mcl01` | invalid | `SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED` |
+| RFC 4475 3.3.10 to 3.3.15 | `bcast` to `sdp01` | valid | Parse. `zeromf` (3.3.11) raises the `SIP-3261-20.22-MAX-FORWARDS-RANGE` notice for Max-Forwards 0. |
+| RFC 4475 3.4.1 | `inv2543` | valid ([RFC 2543](https://www.rfc-editor.org/rfc/rfc2543.html)) | Parses. Reports what RFC 3261 requires of the RFC 2543 form: `BRANCH-COOKIE`, `MAX-FORWARDS-MISSING`, `RECORD-ROUTE-NOT-LOOSE` and `URI-PARAM-DEMOTED`. |
+| RFC 5118 4.1, 4.3, 4.4, 4.5, 4.7, 4.8, 4.9 | IPv6 references, both `received` forms, IPv4-mapped | valid | Parse with no finding. 4.3 is well formed even though its port is inside the brackets. |
+| RFC 5118 4.2 | `ipv6-bad` | invalid | `SIP-3261-25.1-IPV6-REFERENCE-UNBRACKETED` |
+| RFC 5118 4.6 | `ipv6-in-sdp` | valid | Parses; `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH`, because the message in the RFC declares 268 octets for a 251-octet body. |
+| RFC 5118 4.10 | three-colon and two-colon references | tolerated, valid | Both parse with no finding. The archive copies lack the blank line that ends the headers, which the text implies. |
 
 ## Failure-path coverage
 
