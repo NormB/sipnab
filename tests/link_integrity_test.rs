@@ -2115,7 +2115,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // MAINTAINERS.md, as before in number.
     // 173 -> 174 (WC2a stability page): README.md's docs table links
     // docs/stability.md.
-    const EXPECTED_COMMUNITY_LINKS: usize = 174;
+    // 174 -> 175 (WCA-SCORECARD-BRANCH-PROTECTION): SECURITY.md's secrets
+    // table links docs/internals/build-ci-release.md#scorecard-token.
+    const EXPECTED_COMMUNITY_LINKS: usize = 175;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

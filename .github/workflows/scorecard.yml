@@ -54,6 +54,16 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
+          # Branch-Protection reads the classic protection rules, which the
+          # default token cannot: without a token that can, the check scores
+          # -1 ("some github tokens can't read classic branch protection
+          # rules"). SCORECARD_TOKEN is a fine-grained token with
+          # Administration: Read-only on NormB/sipnab only; see "Scorecard
+          # token" in docs/internals/build-ci-release.md.
+          # Fallback: while the secret is absent it reads as an empty string,
+          # so the expression yields github.token, the action's own default,
+          # and the workflow runs as it did before the token existed.
+          repo_token: ${{ secrets.SCORECARD_TOKEN || github.token }}
           # Publishes the score to the public OpenSSF API, which is what backs
           # the score badge and lets downstream consumers check this project
           # without running Scorecard themselves. Requires a public repo and

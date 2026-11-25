@@ -1364,3 +1364,560 @@ fn the_pinned_tool_action_pins_every_tool_through_pinned_download() -> Result<()
     }
     Ok(())
 }
+
+/// The `repo_token` the Scorecard step passes, written once.
+///
+/// With the workflow's default token, Scorecard's Branch-Protection check
+/// reports "internal error: ... some github tokens can't read classic branch
+/// protection rules" and scores -1. The scorecard-action documentation
+/// (docs/authentication/fine-grained-auth-token.md at the pinned v2.5.0) has the
+/// fix: a fine-grained token with Administration: Read-only in the repository
+/// secret `SCORECARD_TOKEN`. The `|| github.token` half keeps the workflow
+/// working while that secret is absent (not yet created, deleted, or on a
+/// fork): an unset secret is the empty string, so the expression yields the
+/// default token, which is also the action's own default for this input.
+const SCORECARD_REPO_TOKEN: &str = "repo_token: ${{ secrets.SCORECARD_TOKEN || github.token }}";
+
+/// A workflow line with its trailing YAML comment and surrounding blanks
+/// removed. `${{ }}` expressions hold no `#`, so the first ` #` starts the
+/// comment.
+fn yaml_code(line: &str) -> &str {
+    let t = line.trim();
+    if t.starts_with('#') {
+        return "";
+    }
+    t.split_once(" #").map_or(t, |(code, _)| code.trim_end())
+}
+
+/// The key and value of a step line, without a leading `- ` list marker.
+fn step_key(line: &str) -> &str {
+    let code = yaml_code(line);
+    code.strip_prefix("- ").map_or(code, str::trim_start)
+}
+
+/// Every reason `workflow` does not pass the Scorecard token the one safe way.
+///
+/// Rules: exactly one `ossf/scorecard-action` step; it is pinned to a 40-hex
+/// commit SHA; it carries [`SCORECARD_REPO_TOKEN`] exactly once; no other step
+/// names `SCORECARD_TOKEN` in code (a comment may); and the workflow has no
+/// `pull_request_target` trigger, which would run with the secret in reach of
+/// a fork's pull request.
+fn scorecard_token_problems(workflow: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let all = steps(workflow);
+    let is_scorecard_uses = |l: &str| step_key(l).starts_with("uses: ossf/scorecard-action@");
+    let scorecard: Vec<&String> = all
+        .iter()
+        .filter(|s| s.lines().any(is_scorecard_uses))
+        .collect();
+    if workflow
+        .lines()
+        .any(|l| step_key(l).starts_with("pull_request_target"))
+    {
+        problems.push(
+            "the workflow has a pull_request_target trigger, which runs with \
+             SCORECARD_TOKEN in reach of a fork's pull request"
+                .to_string(),
+        );
+    }
+    let [step] = scorecard.as_slice() else {
+        problems.push(format!(
+            "{} ossf/scorecard-action steps; expected exactly 1",
+            scorecard.len()
+        ));
+        return problems;
+    };
+    let uses = step
+        .lines()
+        .find(|l| is_scorecard_uses(l))
+        .map(step_key)
+        .unwrap_or("");
+    let sha = uses
+        .split_once('@')
+        .map_or("", |(_, r)| r.split_whitespace().next().unwrap_or(""));
+    if !(sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())) {
+        problems.push(format!("`{uses}` is not pinned to a 40-hex commit SHA"));
+    }
+    let tokens: Vec<&str> = step
+        .lines()
+        .map(step_key)
+        .filter(|t| t.starts_with("repo_token:"))
+        .collect();
+    match tokens.as_slice() {
+        [] => problems.push(
+            "the scorecard step passes no repo_token, so Branch-Protection \
+             cannot read the classic protection rules and scores -1"
+                .to_string(),
+        ),
+        [t] if *t == SCORECARD_REPO_TOKEN => {}
+        [t] if *t == "repo_token: ${{ secrets.SCORECARD_TOKEN }}" => {
+            problems.push(format!(
+                "`{t}` has no `|| github.token` fallback: the step gets an \
+                 empty token, and fails, while the secret is absent"
+            ));
+        }
+        [t] => problems.push(format!("`{t}` is not `{SCORECARD_REPO_TOKEN}`")),
+        many => problems.push(format!(
+            "{} repo_token lines in the scorecard step; expected 1",
+            many.len()
+        )),
+    }
+    for other in all.iter().filter(|s| !std::ptr::eq(*s, *step)) {
+        if other
+            .lines()
+            .map(yaml_code)
+            .any(|c| c.contains("SCORECARD_TOKEN"))
+        {
+            problems.push(format!(
+                "SCORECARD_TOKEN reaches a step other than the scorecard \
+                 analysis: {}",
+                other.lines().next().unwrap_or("").trim()
+            ));
+        }
+    }
+    problems
+}
+
+/// The facts the CI documentation must give about the Scorecard token, each
+/// with what it is for.
+const SCORECARD_TOKEN_DOC_FACTS: &[(&str, &str)] = &[
+    ("SCORECARD_TOKEN", "the secret's name"),
+    ("fine-grained", "the kind of token"),
+    ("Administration", "the one permission it needs"),
+    ("Read-only", "the level of that permission"),
+    ("NormB/sipnab", "the one repository it may reach"),
+    // Whole phrases, not stems: "renew" alone also matched the section's
+    // own sentence about this test, so deleting the renewal step passed.
+    ("expires one year after", "when it expires"),
+    ("regenerate the token", "how it is renewed"),
+    ("GITHUB_TOKEN", "what runs when the secret is absent"),
+    ("settings/personal-access-tokens", "where it is created"),
+];
+
+/// The heading of the section that documents the token.
+const SCORECARD_TOKEN_HEADING: &str = "### Scorecard token";
+
+/// The body of the `### Scorecard token` section of `doc`, up to the
+/// next heading of any level, or `None` when the section is absent.
+fn scorecard_token_section(doc: &str) -> Option<String> {
+    let mut lines = doc.lines();
+    lines.find(|l| l.trim_end() == SCORECARD_TOKEN_HEADING)?;
+    Some(
+        lines
+            .take_while(|l| !l.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// Each fact of [`SCORECARD_TOKEN_DOC_FACTS`] that `doc`'s token section
+/// does not state; every fact when the section is absent.
+fn scorecard_token_doc_missing(doc: &str) -> Vec<&'static str> {
+    let section = scorecard_token_section(doc).unwrap_or_default();
+    SCORECARD_TOKEN_DOC_FACTS
+        .iter()
+        .filter(|(needle, _)| !section.contains(needle))
+        .map(|(needle, _)| *needle)
+        .collect()
+}
+
+#[test]
+fn the_scorecard_workflow_passes_the_token_with_a_fallback() -> Result<(), TestError> {
+    let body = std::fs::read_to_string(repo().join(".github/workflows/scorecard.yml"))
+        .map_err(|e| format!("read scorecard.yml: {e}"))?;
+    let problems = scorecard_token_problems(&body);
+    assert!(
+        problems.is_empty(),
+        "scorecard.yml:\n  {}",
+        problems.join("\n  ")
+    );
+    Ok(())
+}
+
+#[test]
+fn the_ci_docs_state_the_scorecard_token_scope_and_renewal() -> Result<(), TestError> {
+    let doc = std::fs::read_to_string(repo().join("docs/internals/build-ci-release.md"))
+        .map_err(|e| format!("read build-ci-release.md: {e}"))?;
+    let missing = scorecard_token_doc_missing(&doc);
+    assert!(
+        missing.is_empty(),
+        "docs/internals/build-ci-release.md `{SCORECARD_TOKEN_HEADING}` does not \
+         state: {missing:?}"
+    );
+    Ok(())
+}
+
+/// A workflow shaped like scorecard.yml, with the analysis step's `uses:`
+/// line and `with:` block given.
+fn scorecard_fixture(uses: &str, with: &str) -> String {
+    format!(
+        "name: OpenSSF Scorecard\n\
+         on:\n  push:\n    branches: [main]\n\
+         permissions: {{}}\n\
+         jobs:\n  analysis:\n    runs-on: ubuntu-24.04\n    steps:\n\
+         \x20     - name: Checkout\n\
+         \x20       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n\
+         \x20     - name: Run analysis\n\
+         \x20       {uses}\n\
+         \x20       with:\n{with}\
+         \x20     - name: Upload artifact\n\
+         \x20       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7\n"
+    )
+}
+
+const SC_SHA: &str = "fa7117db83c52d787ae5a89f350999701505d78e";
+
+fn sc_uses() -> String {
+    format!("uses: ossf/scorecard-action@{SC_SHA} # v2.5.0")
+}
+
+fn sc_with(token: &str) -> String {
+    format!(
+        "          results_file: results.sarif\n\
+         \x20         results_format: sarif\n\
+         {token}\
+         \x20         publish_results: true\n"
+    )
+}
+
+fn sc_token() -> String {
+    format!("          {SCORECARD_REPO_TOKEN}\n")
+}
+
+#[test]
+fn scorecard_token_rule_accepts_every_safe_shape() {
+    let canonical = scorecard_fixture(&sc_uses(), &sc_with(&sc_token()));
+    let cases: Vec<(&str, String)> = vec![
+        ("canonical", canonical.clone()),
+        (
+            "an extra input after the token",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with(&format!("{}          file_mode: git\n", sc_token())),
+            ),
+        ),
+        (
+            "the token as the first input",
+            scorecard_fixture(&sc_uses(), &format!("{}{}", sc_token(), sc_with(""))),
+        ),
+        (
+            "a header comment naming the secret",
+            format!("# Reads secrets.SCORECARD_TOKEN when set.\n{canonical}"),
+        ),
+        (
+            "a comment inside the with block",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with(&format!(
+                    "          # SCORECARD_TOKEN: Administration read\n{}",
+                    sc_token()
+                )),
+            ),
+        ),
+        (
+            "a workflow_dispatch trigger",
+            canonical.replace("  push:\n", "  workflow_dispatch:\n  push:\n"),
+        ),
+        (
+            "another full SHA",
+            scorecard_fixture(
+                "uses: ossf/scorecard-action@0123456789abcdef0123456789abcdef01234567 # v2.6.0",
+                &sc_with(&sc_token()),
+            ),
+        ),
+        (
+            "deeper indentation of the token",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with(&format!("              {SCORECARD_REPO_TOKEN}\n")),
+            ),
+        ),
+        (
+            "uses as the step's first key",
+            canonical.replace("      - name: Run analysis\n        uses:", "      - uses:"),
+        ),
+        (
+            "a trailing comment on the token line",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with(&format!("          {SCORECARD_REPO_TOKEN} # falls back\n")),
+            ),
+        ),
+        (
+            "a pull_request trigger (secrets are withheld from forks)",
+            canonical.replace("  push:\n", "  pull_request:\n  push:\n"),
+        ),
+        ("CRLF line endings", canonical.replace('\n', "\r\n")),
+    ];
+    assert!(
+        cases.len() >= 12,
+        "at least 12 success cases, got {}",
+        cases.len()
+    );
+    for (name, wf) in &cases {
+        let problems = scorecard_token_problems(wf);
+        assert!(
+            problems.is_empty(),
+            "{name}: expected no problem, got {problems:?}\n{wf}"
+        );
+    }
+}
+
+#[test]
+fn scorecard_token_rule_refuses_every_unsafe_shape() {
+    let canonical = scorecard_fixture(&sc_uses(), &sc_with(&sc_token()));
+    let cases: Vec<(&str, String, &str)> = vec![
+        (
+            "no repo_token",
+            scorecard_fixture(&sc_uses(), &sc_with("")),
+            "passes no repo_token",
+        ),
+        (
+            "the secret with no fallback",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with("          repo_token: ${{ secrets.SCORECARD_TOKEN }}\n"),
+            ),
+            "no `|| github.token` fallback",
+        ),
+        (
+            "a tag ref",
+            scorecard_fixture("uses: ossf/scorecard-action@v2.5.0", &sc_with(&sc_token())),
+            "not pinned",
+        ),
+        (
+            "a short SHA",
+            scorecard_fixture(
+                "uses: ossf/scorecard-action@fa7117d # v2.5.0",
+                &sc_with(&sc_token()),
+            ),
+            "not pinned",
+        ),
+        (
+            "the secret in another step's env",
+            format!(
+                "{canonical}      - name: Leak\n        env:\n          T: ${{{{ secrets.SCORECARD_TOKEN }}}}\n        run: true\n"
+            ),
+            "reaches a step other than",
+        ),
+        (
+            "a pull_request_target trigger",
+            canonical.replace("  push:\n", "  pull_request_target:\n  push:\n"),
+            "pull_request_target",
+        ),
+        (
+            "two scorecard steps",
+            format!(
+                "{canonical}      - name: Again\n        {}\n        with:\n{}",
+                sc_uses(),
+                sc_with(&sc_token())
+            ),
+            "2 ossf/scorecard-action steps",
+        ),
+        (
+            "no scorecard step",
+            canonical.replace("ossf/scorecard-action", "ossf/other-action"),
+            "0 ossf/scorecard-action steps",
+        ),
+        (
+            "the default token only",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with("          repo_token: ${{ github.token }}\n"),
+            ),
+            "is not `repo_token",
+        ),
+        (
+            "the fallback first, which always wins",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with("          repo_token: ${{ github.token || secrets.SCORECARD_TOKEN }}\n"),
+            ),
+            "is not `repo_token",
+        ),
+        (
+            "another secret's name",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with("          repo_token: ${{ secrets.GH_PAT || github.token }}\n"),
+            ),
+            "is not `repo_token",
+        ),
+        (
+            "the token given twice",
+            scorecard_fixture(&sc_uses(), &sc_with(&format!("{0}{0}", sc_token()))),
+            "2 repo_token lines",
+        ),
+    ];
+    assert!(
+        cases.len() >= 12,
+        "at least 12 failure cases, got {}",
+        cases.len()
+    );
+    for (name, wf, want) in &cases {
+        let problems = scorecard_token_problems(wf);
+        assert!(
+            problems.iter().any(|p| p.contains(want)),
+            "{name}: expected a problem containing {want:?}, got {problems:?}\n{wf}"
+        );
+    }
+}
+
+#[test]
+fn scorecard_token_rule_edges() {
+    let canonical = scorecard_fixture(&sc_uses(), &sc_with(&sc_token()));
+    // (name, workflow, None = no problem, Some(text) = a problem containing it)
+    let cases: Vec<(&str, String, Option<&str>)> = vec![
+        (
+            "an empty workflow",
+            String::new(),
+            Some("0 ossf/scorecard-action steps"),
+        ),
+        (
+            "the secret named only in another step's comment",
+            format!(
+                "{canonical}      - name: Note\n        # SCORECARD_TOKEN is not read here\n        run: true\n"
+            ),
+            None,
+        ),
+        (
+            "pull_request_target only in a comment",
+            format!("# never add pull_request_target here\n{canonical}"),
+            None,
+        ),
+        (
+            "a 40-character ref that is not hex",
+            scorecard_fixture(
+                "uses: ossf/scorecard-action@ga7117db83c52d787ae5a89f350999701505d78e # v2.5.0",
+                &sc_with(&sc_token()),
+            ),
+            Some("not pinned"),
+        ),
+        (
+            "a 41-character hex ref",
+            scorecard_fixture(
+                &format!("uses: ossf/scorecard-action@{SC_SHA}0 # v2.5.0"),
+                &sc_with(&sc_token()),
+            ),
+            Some("not pinned"),
+        ),
+        (
+            "the token line commented out",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with(&format!("          # {SCORECARD_REPO_TOKEN}\n")),
+            ),
+            Some("passes no repo_token"),
+        ),
+        (
+            "trailing blanks after the SHA",
+            scorecard_fixture(
+                &format!("uses: ossf/scorecard-action@{SC_SHA}   "),
+                &sc_with(&sc_token()),
+            ),
+            None,
+        ),
+        (
+            "a pinned scorecard step under a commented-out tag step",
+            format!("#      - uses: ossf/scorecard-action@v2\n{canonical}"),
+            None,
+        ),
+        (
+            "a token line with trailing blanks",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with(&format!("          {SCORECARD_REPO_TOKEN}   \n")),
+            ),
+            None,
+        ),
+        (
+            "an extra space inside the expression",
+            scorecard_fixture(
+                &sc_uses(),
+                &sc_with("          repo_token: ${{  secrets.SCORECARD_TOKEN || github.token }}\n"),
+            ),
+            Some("is not `repo_token"),
+        ),
+        (
+            "the secret in the job's env, outside any step",
+            canonical.replace(
+                "    runs-on: ubuntu-24.04\n",
+                "    runs-on: ubuntu-24.04\n    env:\n      T: ${{ secrets.SCORECARD_TOKEN }}\n",
+            ),
+            Some("reaches a step other than"),
+        ),
+        (
+            "no workflow-level trigger at all",
+            canonical.replace("on:\n  push:\n    branches: [main]\n", ""),
+            None,
+        ),
+    ];
+    assert!(
+        cases.len() >= 12,
+        "at least 12 edge cases, got {}",
+        cases.len()
+    );
+    for (name, wf, want) in &cases {
+        let problems = scorecard_token_problems(wf);
+        match want {
+            None => assert!(
+                problems.is_empty(),
+                "{name}: expected no problem, got {problems:?}\n{wf}"
+            ),
+            Some(w) => assert!(
+                problems.iter().any(|p| p.contains(w)),
+                "{name}: expected a problem containing {w:?}, got {problems:?}\n{wf}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn scorecard_token_doc_rule() {
+    let full: String = SCORECARD_TOKEN_DOC_FACTS
+        .iter()
+        .map(|(needle, _)| format!("States {needle}.\n"))
+        .collect();
+    let section =
+        |body: &str| format!("# Build\n\n{SCORECARD_TOKEN_HEADING}\n\n{body}\n### Next\n\nmore\n");
+    let cases: Vec<(&str, String, Vec<&str>)> = vec![
+        ("every fact present", section(&full), vec![]),
+        (
+            "no section",
+            format!("# Build\n\n{full}"),
+            SCORECARD_TOKEN_DOC_FACTS.iter().map(|f| f.0).collect(),
+        ),
+        (
+            "an empty section",
+            section(""),
+            SCORECARD_TOKEN_DOC_FACTS.iter().map(|f| f.0).collect(),
+        ),
+        (
+            "renewal missing",
+            section(&full.replace("States regenerate the token.\n", "")),
+            vec!["regenerate the token"],
+        ),
+        (
+            "a fact only after the next heading",
+            format!(
+                "{SCORECARD_TOKEN_HEADING}\n\n{}### Next\n\nStates regenerate the token.\n",
+                full.replace("States regenerate the token.\n", "")
+            ),
+            vec!["regenerate the token"],
+        ),
+        (
+            "renewal named only as a word, not as the step",
+            section(&full.replace("States regenerate the token.\n", "States the renewal.\n")),
+            vec!["regenerate the token"],
+        ),
+        (
+            "the heading at another level",
+            format!("## Scorecard token\n\n{full}"),
+            SCORECARD_TOKEN_DOC_FACTS.iter().map(|f| f.0).collect(),
+        ),
+    ];
+    for (name, doc, want) in &cases {
+        let missing = scorecard_token_doc_missing(doc);
+        assert_eq!(&missing, want, "{name}: missing facts differ\n{doc}");
+    }
+}

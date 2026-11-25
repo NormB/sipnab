@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # SPDX-FileCopyrightText: The sipnab contributors
 #
-# The image OSS-Fuzz builds sipnab's fuzz targets in. Submitted to
-# google/oss-fuzz as projects/sipnab/Dockerfile; kept here so it is versioned
-# beside the code it builds.
+# The image OSS-Fuzz would build sipnab's fuzz targets in. Not submitted:
+# held ready as projects/sipnab/Dockerfile for google/oss-fuzz, and kept here
+# so it is versioned beside the code it builds. ClusterFuzzLite in CI is what
+# fuzzes today (.clusterfuzzlite/Dockerfile).
 # Pinned by digest, matching `.clusterfuzzlite/Dockerfile`. OSS-Fuzz's
 # convention is a bare image name; if submission ever requires that, this
 # is the line to change and the reason to record.

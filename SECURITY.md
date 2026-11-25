@@ -102,6 +102,7 @@ secret. Each one is:
 |---|---|---|
 | `CODECOV_TOKEN` | `quality.yml`, the coverage upload | Upload coverage reports to Codecov |
 | `CLOUDFLARE_API_TOKEN` | `pages.yml`, the `csp` job | Update the site's Content-Security-Policy hashes at Cloudflare |
+| `SCORECARD_TOKEN` | `scorecard.yml`, the Scorecard analysis step | Read this repository's settings, including branch protection: a fine-grained token with Administration: Read-only on `NormB/sipnab` only, which expires after one year ([Scorecard token](docs/internals/build-ci-release.md#scorecard-token) gives its renewal). Without it the step uses the default token |
 
 Each token reaches only the one job and the one service it serves.
 

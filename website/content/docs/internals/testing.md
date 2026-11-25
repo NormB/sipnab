@@ -599,6 +599,7 @@ Two harnesses exercise every parser reachable from packet or file bytes:
   - The difference from the weekly run above is the corpus.
     It persists between runs instead of restarting from the tracked seeds.
     So what libFuzzer learns accumulates instead of starting over.
+- **OSS-Fuzz**: Not submitted. [`ops/oss-fuzz/`](https://github.com/NormB/sipnab/blob/main/ops/oss-fuzz) holds the project files ready for a later application; ClusterFuzzLite above is the continuous fuzzing that runs.
 - **Always-on smoke fuzz**: [`tests/smoke_fuzz_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/smoke_fuzz_test.rs) runs in
   `cargo test` (no nightly needed).
   - It runs ~40k random + structurally mutated inputs per entry point under `catch_unwind`.
