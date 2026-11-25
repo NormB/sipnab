@@ -224,7 +224,7 @@ configuration**. Enumerated from the code, everything below runs after
 | Idle wait | `libc::poll`, [`src/capture/live.rs:109-122`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L109-L122)<!-- "let mut pfd = libc::pollfd" --> | `poll`/`ppoll` |
 | Drop stats | `cap.stats()`, [`src/capture/live.rs:925`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L925)<!-- "match cap.stats()" -->; *"a `getsockopt` on Linux"*, [`:1193`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1193)<!-- "/// `pcap_stats`" --> | `getsockopt` |
 | Fanout join | [`src/capture/live.rs:808`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L808)<!-- "if let Err(e) = super::fanout::join_fanout_group(cap.as_raw_fd()," --> | `setsockopt` |
-| Output pcap, created **lazily on the first packet** | [`src/app/batch.rs:4749-4754`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4749-L4754)<!-- "// Lazily initialize the writer on first packet" --> → [`src/capture/writer.rs:113-116`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L113-L116)<!-- "fn create(path: &Path, link_type: i32, mode: crate::new_file::CreateMode)" --> | file create + write |
+| Output pcap, created **lazily on the first packet** | [`src/app/batch.rs:4779-4784`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4779-L4784)<!-- "// Lazily initialize the writer on first packet" --> → [`src/capture/writer.rs:113-116`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L113-L116)<!-- "fn create(path: &Path, link_type: i32, mode: crate::new_file::CreateMode)" --> | file create + write |
 | `--split` rotation, mid-run | [`src/capture/writer.rs:1023-1040`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L1023-L1040)<!-- "// Drop the old backend (flushes and closes) by replacing it" --> | more file creates |
 | REST API listener bind | [`src/app/servers.rs:834`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L834)<!-- "let listener = api::prepare_listener(bind," --> | socket/bind/listen/accept |
 | Metrics listener, raw TCP + threads | [`src/app/servers.rs:584`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L584)<!-- "let (_bound, _handle)" --> | the same, plus thread creation |
@@ -232,7 +232,7 @@ configuration**. Enumerated from the code, everything below runs after
 | MCP over HTTP, `mcp-http` | [`src/app/servers.rs:1036-1041`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L1036-L1041)<!-- "let bind_str = cli.mcp_args.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");" --> | tokio reactor: epoll, eventfd, timerfd |
 | Syslog, eight lines after the drop | [`src/app/bootstrap.rs:4160-4163`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4160-L4163)<!-- "// 16b. Initialize syslog if --syslog is set" --> → [`src/security/alerting.rs:1077-1088`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L1077-L1088)<!-- "pub fn init_syslog() {" --> | `AF_UNIX` connect to `/dev/log` |
 | Signing keys read from files | [`src/app/servers.rs:442`](https://github.com/NormB/sipnab/blob/52290a2f6cf7e9275a26f5149f4ca06c43600030/src/app/servers.rs#L442) | file open, after the drop *and* after any chroot |
-| `--keylog-watch` re-reads the keylog repeatedly | [`src/capture/decrypt.rs:956`](https://github.com/NormB/sipnab/blob/main/src/capture/decrypt.rs#L956)<!-- "/// Poll the keylog" --> | file open + stat, for the life of the run |
+| `--keylog-watch` re-reads the keylog repeatedly | [`src/capture/decrypt.rs:1059`](https://github.com/NormB/sipnab/blob/main/src/capture/decrypt.rs#L1059)<!-- "/// Poll the keylog" --> | file open + stat, for the life of the run |
 | Reverse DNS | [`src/names.rs:628`](https://github.com/NormB/sipnab/blob/main/src/names.rs#L628)<!-- "/// Reverse-DNS (PTR)" --> | resolver sockets, `/etc/resolv.conf`, glibc NSS `dlopen` |
 | Audio playback plugin | `Library::new`, [`src/rtp/playback.rs:548`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs#L548)<!-- "match unsafe { Library::new(cand)" --> | `dlopen` of `libsipnab_audio.so`: openat, mmap, **mprotect with PROT_EXEC** |
 | Event exec hooks | `Command::new("sh").spawn()`, [`src/output/event_exec.rs:586-592`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L586-L592)<!-- "let mut command =" --> | **clone + execve + wait4** |
@@ -261,7 +261,7 @@ permissive feature anyone might enable.
 code does the opposite: `drop_privileges` is at
 [`src/app/bootstrap.rs:4119-4124`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4119-L4124)<!-- "// 16a. Drop privileges now that capture devices are open" --> and `start_servers` is reached
 only after `launch` returns, from
-[`src/app/batch.rs:4217`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4217)<!-- "let servers = crate::app::servers::start_servers(" --> or
+[`src/app/batch.rs:4247`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4247)<!-- "let servers = crate::app::servers::start_servers(" --> or
 [`src/app/tui_mode.rs:1126`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L1126)<!-- "crate::app::servers::start_servers(" -->. Anyone deriving an allowlist from
 that comment would omit `socket`, `bind`, `listen` and `accept4` and ship a
 filter that kills every `--api` run. Correcting the comment is part of this work.
@@ -444,7 +444,7 @@ in it. Those are **confident wrong answers** — the exact failure this codebase
 has already had to fix once at the capture layer, where an unreadable
 encapsulation produced *"49 packets captured, 0 SIP messages … exit 0 — output
 textually IDENTICAL to a capture that was read perfectly"*
-([`src/capture/mod.rs:322-329`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L322-L329)<!-- "// sipnab's failure mode for an encapsulation it cannot read" -->).
+([`src/capture/mod.rs:324-331`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs#L324-L331)<!-- "// sipnab's failure mode for an encapsulation it cannot read" -->).
 
 `SECCOMP_RET_KILL_PROCESS` produces a death with a syscall number attached. That
 is diagnosable, it is loud, and it is the only action that makes the proof in [section 7.2, "The behavioral proof, which is the one that matters"](#72-the-behavioral-proof-which-is-the-one-that-matters)
@@ -467,8 +467,8 @@ Verified ordering today:
 | `drop_privileges` → setgroups, setgid, setuid | [`src/app/bootstrap.rs:4119-4124`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4119-L4124)<!-- "// 16a. Drop privileges now that capture devices are open" -->, [`src/privilege.rs:142-146`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L142-L146)<!-- "drop_group_credentials(gid)?;" --> |
 | `init_syslog` | [`src/app/bootstrap.rs:4160-4163`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4160-L4163)<!-- "// 16b. Initialize syslog if --syslog is set" --> |
 | `disable_core_dumps` (conditional on key material) | [`src/app/bootstrap.rs:4173-4176`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4173-L4176)<!-- "// 17. Disable core dumps if any decryption keys are loaded" --> |
-| `start_servers` — binds API, MCP, metrics | [`src/app/batch.rs:4217`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4217)<!-- "let servers = crate::app::servers::start_servers(" --> |
-| receive loop; writer created on first packet | [`src/app/batch.rs:4328-4332`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4328-L4332)<!-- "// 18. Main receive loop" -->, [`:4749`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4749)<!-- "// Lazily initialize the writer on first packet" --> |
+| `start_servers` — binds API, MCP, metrics | [`src/app/batch.rs:4247`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4247)<!-- "let servers = crate::app::servers::start_servers(" --> |
+| receive loop; writer created on first packet | [`src/app/batch.rs:4358-4362`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4358-L4362)<!-- "// 18. Main receive loop" -->, [`:4779`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4779)<!-- "// Lazily initialize the writer on first packet" --> |
 
 The first row runs on **every** start — that is the point of where it sits, and
 it is why it is first. Rows two and three run **only on a root start**, and the
@@ -508,7 +508,7 @@ routine case on the configuration most users run.
 
 **The writer stays lazy.** Making it eager would let the filter drop the file
 syscalls, but the writer needs `link_type`, which comes from the first packet
-([`src/app/batch.rs:4749`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4749)<!-- "// Lazily initialize the writer on first packet" -->). Re-architecting that to tighten a
+([`src/app/batch.rs:4779`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4779)<!-- "// Lazily initialize the writer on first packet" -->). Re-architecting that to tighten a
 syscall list is the wrong trade. Instead: seccomp permits the file syscalls,
 and **Landlock bounds where they may point** ([section 5, "Landlock: weaker, cheaper, and the one to ship first"](#5-landlock-weaker-cheaper-and-the-one-to-ship-first)). That division of labor is
 what G5 means by Landlock being *"additionally"* useful, and it is why the two
@@ -543,7 +543,7 @@ Proposed ruleset, derived from what actually runs post-drop:
 
 | Access | Paths |
 |---|---|
-| Read | the `-I` input set; the keylog, which `--keylog-watch` re-reads for the life of the run ([`src/capture/decrypt.rs:956`](https://github.com/NormB/sipnab/blob/main/src/capture/decrypt.rs#L956)<!-- "/// Poll the keylog" -->); the signing-key files ([`src/app/servers.rs:442`](https://github.com/NormB/sipnab/blob/52290a2f6cf7e9275a26f5149f4ca06c43600030/src/app/servers.rs#L442)) |
+| Read | the `-I` input set; the keylog, which `--keylog-watch` re-reads for the life of the run ([`src/capture/decrypt.rs:1059`](https://github.com/NormB/sipnab/blob/main/src/capture/decrypt.rs#L1059)<!-- "/// Poll the keylog" -->); the signing-key files ([`src/app/servers.rs:442`](https://github.com/NormB/sipnab/blob/52290a2f6cf7e9275a26f5149f4ca06c43600030/src/app/servers.rs#L442)) |
 | Read + execute | the audio plugin path, only when `audio` is compiled and playback is reachable ([`src/rtp/playback.rs:548`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs#L548)<!-- "match unsafe { Library::new(cand)" -->) |
 | Read, write, create | the `-O` output directory, including `--split` siblings; the crash-report directory ([`src/crash.rs:137-138`](https://github.com/NormB/sipnab/blob/main/src/crash.rs#L137-L138)<!-- "fn open_new_report_file(path: &Path)" -->) |
 | Read, only when reverse DNS is on | `/etc/resolv.conf`, `/etc/nsswitch.conf` and the NSS modules glibc `dlopen`s ([`src/names.rs:628`](https://github.com/NormB/sipnab/blob/main/src/names.rs#L628)<!-- "/// Reverse-DNS (PTR)" -->) |

@@ -81,6 +81,15 @@ Peak memory grows with the number of calls the capture holds, at about
 jitter and loss accounting). The [carrier-scale table](#throughput-and-memory-at-carrier-scale)
 gives measured points from 500 to 20,000 calls.
 
+Queries over a loaded capture add to that. Each SIP message keeps the
+position of its CSeq header, and the first query that reads a message's SDP
+(an MCP `get_capture_report` or `find_problems`, a `GET /metrics` scrape)
+keeps a summary of its media lines, so later queries do not parse the body
+again. On a 100,000-call capture this raised resident memory by 3.2% after
+the load and by 4.6% after three `get_capture_report` calls, and cut the
+instructions of three such calls by 33%. A capture that no query reads
+builds no summary.
+
 ## What the throughput is for
 
 The throughput decides how much traffic one sipnab process can take, and

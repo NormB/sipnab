@@ -280,6 +280,17 @@ struct TlsSession {
     /// a handful of records, instead of stalling a live capture for a second
     /// on the very first packet it cannot open.
     lockon_attempts: u32,
+    /// True for a TLS 1.2 session bound to a handshake by the fallback, that
+    /// is, to a ServerHello whose ClientHello was not seen.
+    ///
+    /// Such a session is derived again when its own ServerHello or a new key
+    /// for it arrives, because that may bind it to the right handshake. Every
+    /// other session is final: nothing that arrives later changes its keys.
+    rederivable: bool,
+    /// The decryptor's use counter when this session was made or last opened
+    /// a record. The sessions with the lowest values go first when the
+    /// session bound is reached.
+    last_used: u64,
 }
 
 impl Drop for TlsSession {
@@ -612,6 +623,8 @@ use super::REWIND_MAX_AGE_SECS;
 /// ClientHello client randoms remembered for the report. Defined beside the
 /// report type that documents the bound.
 use super::MAX_REMEMBERED_CLIENT_HELLOS;
+use super::keylog_store::KeylogStore;
+use super::{MAX_KEYLOG_ENTRIES, MAX_OBSERVED_HANDSHAKES, MAX_TLS_SESSIONS};
 
 /// Trial decryptions one sweep may attempt before stopping and resuming at the
 /// next key load. A full hold is 4096 directions x 16 records against every
@@ -674,8 +687,9 @@ fn conn_key(src: SocketAddr, dst: SocketAddr) -> (SocketAddr, SocketAddr) {
 /// CLIENT_RANDOM entries (the latter requires observing the ServerHello
 /// to extract the server_random and cipher suite).
 pub struct TlsDecryptor {
-    /// Raw keylog entries loaded from the SSLKEYLOGFILE.
-    keylog_entries: Vec<KeyLogEntry>,
+    /// Keylog entries, grouped by client random and bounded; see
+    /// [`KeylogStore`].
+    keylog: KeylogStore,
     /// Active sessions indexed by client random.
     sessions: HashMap<TlsSessionKey, TlsSession>,
     /// Crypto backend for actual decryption operations.
@@ -713,16 +727,28 @@ pub struct TlsDecryptor {
     /// key derivation can bind a keylog entry to the handshake whose
     /// ClientHello random matches it exactly, falling back to unpaired
     /// handshakes only when the ClientHello was never observed.
+    ///
+    /// A handshake leaves once its client random has a final session, and the
+    /// oldest leave when `handshake_limit` is reached.
     observed_handshakes: Vec<HandshakeInfo>,
+    /// Most handshakes `observed_handshakes` keeps; [`MAX_OBSERVED_HANDSHAKES`]
+    /// outside tests.
+    handshake_limit: usize,
+    /// Handshakes dropped by `handshake_limit` before a key arrived for them.
+    handshakes_dropped: u64,
+    /// Most sessions kept at once; [`MAX_TLS_SESSIONS`] outside tests.
+    session_limit: usize,
+    /// Sessions dropped by `session_limit`.
+    sessions_evicted: u64,
+    /// Counter stamped on a session when it is made and each time it opens a
+    /// record; see [`TlsSession::last_used`].
+    session_tick: u64,
     /// `client_random`s of observed ClientHellos not yet paired with a
     /// ServerHello, in arrival order (FIFO) per connection. Keyed by the
     /// direction-normalized 4-tuple (`conn_key`) so a ServerHello pops only
     /// its own connection's queue; bounded by `MAX_PENDING_HANDSHAKE_CONNS`
     /// (oldest-inserted connection evicted, mirroring `names.rs`).
     pending_client_randoms: IndexMap<(SocketAddr, SocketAddr), Vec<[u8; 32]>>,
-    /// Number of keylog entries already processed into sessions.
-    /// Avoids rebuilding the group map on every ApplicationData record.
-    keylog_processed_count: usize,
     /// ApplicationData records held for a retry once keys load, per TCP
     /// direction, oldest first within each.
     rewind_pending: IndexMap<(SocketAddr, SocketAddr), std::collections::VecDeque<PendingRecord>>,
@@ -798,22 +824,15 @@ impl HandshakeTally {
         self.client_randoms.insert(cr);
     }
 
-    /// How many of `entries` carry a client random that no remembered
-    /// ClientHello has, or `None` once a client random was dropped: an entry
-    /// that matches nothing remembered may match the one dropped.
-    fn unmatched(&self, entries: &[KeyLogEntry]) -> Option<usize> {
+    /// How many of the entries of `keylog` carry a client random that no
+    /// remembered ClientHello has, or `None` once a client random was dropped
+    /// here or an entry was dropped from `keylog`: an entry that matches
+    /// nothing remembered may match the one dropped.
+    fn unmatched(&self, keylog: &KeylogStore) -> Option<usize> {
         if self.dropped_a_random {
             return None;
         }
-        Some(
-            entries
-                .iter()
-                .filter(|entry| {
-                    <[u8; 32]>::try_from(entry.client_random.as_slice())
-                        .map_or(true, |cr| !self.client_randoms.contains(&cr))
-                })
-                .count(),
-        )
+        keylog.unmatched(|cr| self.client_randoms.contains(cr))
     }
 }
 
@@ -851,7 +870,7 @@ impl TlsDecryptor {
         }
 
         Ok(Self {
-            keylog_entries,
+            keylog: KeylogStore::from_startup(keylog_entries, MAX_KEYLOG_ENTRIES),
             sessions: HashMap::new(),
             crypto,
             decrypted_count: 0,
@@ -861,8 +880,12 @@ impl TlsDecryptor {
             keylog_path: keylog_path.map(|p| p.to_path_buf()),
             keylog_source,
             observed_handshakes: Vec::new(),
+            handshake_limit: MAX_OBSERVED_HANDSHAKES,
+            handshakes_dropped: 0,
+            session_limit: MAX_TLS_SESSIONS,
+            sessions_evicted: 0,
+            session_tick: 0,
             pending_client_randoms: IndexMap::new(),
-            keylog_processed_count: 0,
             rewind_pending: IndexMap::new(),
             rewind_bytes: 0,
             keylog_generation: 0,
@@ -883,7 +906,7 @@ impl TlsDecryptor {
     #[must_use]
     pub fn report(&self) -> crate::capture::TlsDecryptReport {
         crate::capture::TlsDecryptReport {
-            keylog_entries: self.keylog_entries.len(),
+            keylog_entries: self.keylog.loaded(),
             sessions_with_keys: self.sessions.len(),
             app_data_records: self.app_data_records,
             decrypted_records: self.decrypted_count,
@@ -892,7 +915,11 @@ impl TlsDecryptor {
             late_still_held: self.rewind_pending.values().map(|q| q.len() as u64).sum(),
             client_hellos_seen: self.handshake_tally.client_hellos,
             server_hellos_seen: self.handshake_tally.server_hellos,
-            keylog_unmatched_entries: self.handshake_tally.unmatched(&self.keylog_entries),
+            keylog_unmatched_entries: self.handshake_tally.unmatched(&self.keylog),
+            keylog_entries_dropped: self.keylog.lost(),
+            keylog_entry_bound: self.keylog.limit(),
+            handshakes_dropped: self.handshakes_dropped,
+            sessions_evicted: self.sessions_evicted,
             // This report comes from a decryptor, so the run has a key source.
             unkeyed_app_data_records: 0,
         }
@@ -900,7 +927,7 @@ impl TlsDecryptor {
 
     /// Return the number of loaded keylog entries.
     pub fn keylog_entry_count(&self) -> usize {
-        self.keylog_entries.len()
+        self.keylog.loaded()
     }
 
     /// Install an RSA private key (`--tls-key`) to recover the pre-master secret
@@ -925,7 +952,7 @@ impl TlsDecryptor {
     /// blanks, `#` comments, and any malformed line (untrusted-input safe).
     /// Returns the number of valid entries added.
     pub fn add_keylog_text(&mut self, text: &str) -> usize {
-        let before = self.keylog_entries.len();
+        let before = self.keylog.loaded();
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -933,14 +960,90 @@ impl TlsDecryptor {
             }
             // Malformed lines are skipped (DSB content may be untrusted).
             if let Ok(entry) = super::tls::parse_keylog_line(line) {
-                self.keylog_entries.push(entry);
+                self.keylog.push(entry);
             }
         }
-        let added = self.keylog_entries.len() - before;
+        let added = self.keylog.loaded() - before;
         if added > 0 {
             self.keylog_generation += 1;
+            self.enforce_keylog_limit();
         }
         added
+    }
+
+    /// Keep the key store within its bound, dropping the entries of final
+    /// sessions first, and warn once per process when an entry no session
+    /// held is dropped.
+    ///
+    /// # Returns
+    ///
+    /// The warning text when this call dropped an entry no session held,
+    /// whether or not the once-per-process latch let it be logged.
+    fn enforce_keylog_limit(&mut self) -> Option<String> {
+        let sessions = &self.sessions;
+        let lost = self.keylog.enforce_limit(|cr| {
+            sessions
+                .get(&TlsSessionKey { client_random: *cr })
+                .is_some_and(|s| !s.rederivable)
+        });
+        if lost == 0 {
+            return None;
+        }
+        let limit = self.keylog.limit();
+        let message = format!(
+            "TLS key log: dropped {lost} key(s) no session had used yet, to stay \
+             within {limit} entries; records of those connections cannot be \
+             decrypted"
+        );
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        warn_once(&WARNED, || message.clone());
+        Some(message)
+    }
+
+    /// Keep at most `session_limit` sessions, dropping the ones that opened a
+    /// record longest ago down to seven eighths of the bound, and their key
+    /// log entries with them.
+    ///
+    /// The entries go too because a session dropped here is not derived again:
+    /// a record carries no client random, so there is no way to tell which
+    /// dropped session a later record belongs to, and deriving every dropped
+    /// one again would fill the map back up.
+    fn enforce_session_limit(&mut self) {
+        if self.sessions.len() <= self.session_limit {
+            return;
+        }
+        let keep = self.session_limit - self.session_limit / 8;
+        let excess = self.sessions.len() - keep;
+        let mut stamps: Vec<u64> = self.sessions.values().map(|s| s.last_used).collect();
+        let (_, cut, _) = stamps.select_nth_unstable(excess - 1);
+        let cut = *cut;
+        let mut evicted = Vec::with_capacity(excess);
+        self.sessions.retain(|key, session| {
+            if evicted.len() < excess && session.last_used <= cut {
+                evicted.push(key.client_random);
+                return false;
+            }
+            true
+        });
+        for cr in &evicted {
+            self.keylog.forget(cr);
+        }
+        self.sessions_evicted += evicted.len() as u64;
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let limit = self.session_limit;
+        warn_once(&WARNED, || {
+            format!(
+                "TLS: dropped {} session(s) unused the longest, to stay within {limit} \
+                 sessions; records of those connections cannot be decrypted",
+                evicted.len()
+            )
+        });
+    }
+
+    /// Next value of the use counter; see [`TlsSession::last_used`].
+    fn next_tick(tick: &mut u64) -> u64 {
+        *tick += 1;
+        *tick
     }
 
     /// Adopt a keylog source opened elsewhere.
@@ -1000,34 +1103,15 @@ impl TlsDecryptor {
         let new_count = self.add_keylog_text(&outcome.lines);
 
         if new_count > 0 {
-            // Drop only TLS 1.2 sessions here, for the same reason as the
-            // ServerHello handler in `process_record`: a newly-arrived
-            // CLIENT_RANDOM entry can let a TLS 1.2 session that was
-            // speculatively (and maybe wrongly) paired via
-            // `ensure_sessions_populated`'s fallback now re-derive against
-            // its real match, but TLS 1.3 sessions have nothing to
-            // re-derive — they come straight from CLIENT_TRAFFIC_SECRET_0/
-            // SERVER_TRAFFIC_SECRET_0 keyed by client_random alone, and
-            // `ensure_sessions_populated` already skips a client_random it
-            // has already derived (`if sessions.contains_key(...) { continue }`),
-            // so nothing here was ever needed to "pick up" a genuinely new
-            // TLS 1.3 entry either.
-            //
-            // This call site matters far more than the ServerHello one:
-            // `--keylog-watch` polls on its own ~100ms wall-clock cadence
-            // (see the sweep-loop comment on `keylog_poll_clock`), so on a
-            // trunk where the keylog producer delivers a handshake's keys
-            // in more than one flush, blanket-clearing here could wipe a
-            // session within milliseconds of it becoming ready — often
-            // before the call's own SIP INVITE had even arrived to be
-            // decrypted against it. Confirmed live: a TLS 1.3 session
-            // reached "ready" a few seconds after one such flush, a second
-            // flush landed ~14s later (a second handshake, or the same
-            // handshake's keys arriving in more than one batch), and the
-            // call's SIP never decrypted — this call site's blanket clear
-            // is what did it, independent of the ServerHello fix above.
-            self.sessions
-                .retain(|_, session| session.version != SessionVersion::Tls12);
+            // No session is dropped here. The new entries mark their own
+            // client randoms, and `ensure_sessions_populated` derives those
+            // again only where the session is `rederivable` (a TLS 1.2
+            // session bound by the fallback). Clearing sessions here once
+            // wiped a TLS 1.3 session within milliseconds of it becoming
+            // ready, before the call's INVITE arrived (confirmed live on a
+            // trunk whose producer flushed one handshake's keys twice), and
+            // a cleared TLS 1.2 session was not derived again at all when no
+            // later key arrived.
             tracing::info!("Keylog watch: loaded {new_count} new key(s)");
         }
 
@@ -1145,40 +1229,57 @@ impl TlsDecryptor {
         if let Some(cr) = self.pair_pending_client_random(conn) {
             info.client_random = Some(cr);
         }
-        if let Some(cr) = info.client_random {
-            self.mark_handshake_seen(cr);
+        // Mark who this ServerHello can key, and drop no session.
+        //
+        // With its client random known, it can key only that client random:
+        // a CLIENT_RANDOM entry that had no handshake, or one bound by the
+        // fallback to a ServerHello whose ClientHello was not seen (a
+        // `rederivable` session), which this one now replaces. With its
+        // client random unknown, it is a new fallback candidate for every
+        // client random that has no session yet.
+        //
+        // This used to drop every TLS 1.2 session instead and leave the
+        // derivation to `ensure_sessions_populated`, which ran only when the
+        // key count changed. With a key log read once at startup it never
+        // changed again, so the second TLS 1.2 connection of a capture got no
+        // session and took the first connection's session away. Dropping TLS
+        // 1.3 sessions here once destroyed a ready session the moment an
+        // unrelated connection did its own handshake.
+        match info.client_random {
+            Some(cr) => {
+                self.mark_handshake_seen(cr);
+                // A final session needs no handshake: its keys cannot change.
+                // Keeping its ServerHello would fill the handshake list with
+                // every connection of a key log read at startup, and the
+                // bound would then count each one as a handshake no key had
+                // arrived for.
+                if self
+                    .sessions
+                    .get(&TlsSessionKey { client_random: cr })
+                    .is_some_and(|s| !s.rederivable)
+                {
+                    return;
+                }
+                self.keylog.mark(&cr);
+            }
+            None => self.keylog.mark_every_unkeyed(),
+        }
+        if self.observed_handshakes.len() >= self.handshake_limit {
+            let drop = (self.handshake_limit / 8).max(1);
+            self.observed_handshakes.drain(..drop);
+            self.handshakes_dropped += drop as u64;
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            let limit = self.handshake_limit;
+            warn_once(&WARNED, || {
+                format!(
+                    "TLS: dropped the {drop} oldest ServerHello message(s) no key had \
+                     arrived for, to stay within {limit}; a key that arrives later for \
+                     one of those connections cannot be used"
+                )
+            });
         }
         self.observed_handshakes.push(info);
-        // Drop only TLS 1.2 sessions, not TLS 1.3 ones.
-        //
-        // A TLS 1.2 session in `ensure_sessions_populated` is looked
-        // up by pairing a CLIENT_RANDOM keylog entry with a
-        // same-client_random handshake if one has been observed yet,
-        // falling back to the oldest handshake with an unknown
-        // client_random otherwise (`has_exact` above). If that
-        // CLIENT_RANDOM entry arrived and got paired via the fallback
-        // *before* this ServerHello supplied the real match, the
-        // session already in the map is bound to the wrong
-        // server_random/cipher — this ServerHello is what makes that
-        // pairing resolvable, so TLS 1.2 sessions need a chance to
-        // re-derive against it.
-        //
-        // TLS 1.3 sessions have no such ambiguity to correct:
-        // `ensure_sessions_populated`'s TLS 1.3 branch derives keys
-        // straight from CLIENT_TRAFFIC_SECRET_0/SERVER_TRAFFIC_SECRET_0
-        // keylog entries grouped by client_random alone, never
-        // consulting `observed_handshakes`. Clearing them here bought
-        // nothing — it only meant that any TLS 1.3 session already
-        // marked ready (and about to decrypt its call's actual SIP
-        // traffic) got silently destroyed the moment a second,
-        // unrelated TLS connection did its own ServerHello, e.g. a
-        // trunk that opens more than one TLS connection around the
-        // same time (a keepalive, a second concurrent call). The
-        // decrypt failure this produced looked exactly like a missing
-        // key: no error anywhere, `try_decrypt` just stopped finding
-        // a session for a client_random it had already keyed.
-        self.sessions
-            .retain(|_, session| session.version != SessionVersion::Tls12);
     }
 
     /// Take the oldest still-unanswered ClientHello random of connection
@@ -1244,14 +1345,16 @@ impl TlsDecryptor {
     fn observe_client_key_exchange(&mut self, payload: &[u8]) {
         if self.rsa.is_some()
             && let Some(ct) = parse_client_key_exchange_rsa(payload)
-            && let Some((skey, session)) = self.derive_rsa_session(ct)
+            && let Some((skey, mut session)) = self.derive_rsa_session(ct)
         {
             tracing::info!(
                 "TLS RSA session ready [session={}, cipher={}]",
                 hex_id(&skey.client_random),
                 session.cipher_suite
             );
+            session.last_used = Self::next_tick(&mut self.session_tick);
             self.sessions.insert(skey, session);
+            self.enforce_session_limit();
         }
     }
 
@@ -1308,6 +1411,8 @@ impl TlsDecryptor {
                 lockon_floor: Vec::new(),
                 handshake_seen: false,
                 client_addr: None,
+                rederivable: false,
+                last_used: 0,
             },
         ))
     }
@@ -1394,6 +1499,7 @@ impl TlsDecryptor {
             decrypted_count,
             lockon_budget,
             lockon_window,
+            session_tick,
             ..
         } = self;
         let lockon_window = *lockon_window;
@@ -1413,6 +1519,7 @@ impl TlsDecryptor {
                 },
             ) {
                 *decrypted_count += 1;
+                session.last_used = Self::next_tick(session_tick);
                 crate::capture::note_tls_record_decrypted();
                 tracing::info!(
                     "TLS session decrypted [session={}, cipher={}]",
@@ -1695,50 +1802,79 @@ impl TlsDecryptor {
         }
     }
 
-    /// Populate sessions from keylog entries.
-    /// Skips work when no new entries have been added since last call.
+    /// Derive sessions for the client randoms the key store marked: those a
+    /// key or a ServerHello arrived for since the last call.
+    ///
+    /// Work per call is the marked client randoms only, not the whole key
+    /// log. A client random whose session is final is skipped; a
+    /// `rederivable` one is derived again and replaced only when its keys
+    /// change, so its sequence state survives a re-derivation that binds it
+    /// to the same handshake. A ServerHello whose client random now has a
+    /// final session is no longer needed and leaves `observed_handshakes`.
     fn ensure_sessions_populated(&mut self) {
-        if self.keylog_entries.is_empty()
-            || self.keylog_entries.len() == self.keylog_processed_count
-        {
+        if self.keylog.is_empty() {
             return;
         }
         // Split the borrow into disjoint field references so the TLS 1.2
         // handshake-matching path can iterate `observed_handshakes` by reference
-        // while inserting into `sessions`, without cloning the observed-handshake
-        // vector on every pass (the borrow checker would otherwise reject an
-        // immutable iterator over `observed_handshakes` alongside `sessions`
-        // mutation while `self` is borrowed whole).
+        // while inserting into `sessions`.
         let Self {
-            keylog_entries,
+            keylog,
             sessions,
             crypto,
             observed_handshakes,
-            keylog_processed_count,
+            session_tick,
             ..
         } = self;
-        *keylog_processed_count = keylog_entries.len();
-
-        for (cr, entries) in &group_by_client_random(keylog_entries) {
+        let marked =
+            keylog.take_dirty(|cr| sessions.contains_key(&TlsSessionKey { client_random: *cr }));
+        if marked.is_empty() {
+            return;
+        }
+        let mut settled: Vec<[u8; 32]> = Vec::new();
+        for cr in &marked {
             let session_key = TlsSessionKey { client_random: *cr };
-            if sessions.contains_key(&session_key) {
+            if sessions.get(&session_key).is_some_and(|s| !s.rederivable) {
                 continue;
             }
-            warn_on_conflicting_traffic_secrets(entries);
+            let Some(group) = keylog.group(cr) else {
+                continue;
+            };
+            let entries: Vec<&KeyLogEntry> = group.iter().collect();
+            warn_on_conflicting_traffic_secrets(&entries);
 
-            match tls13_session_from_keylog(crypto.as_ref(), cr, entries, observed_handshakes) {
-                Ok(Some(session)) => {
-                    sessions.insert(session_key.clone(), session);
-                }
-                Ok(None) => {}
-                Err(UnsupportedSecretLength) => continue,
-            }
+            let mut derived =
+                match tls13_session_from_keylog(crypto.as_ref(), cr, &entries, observed_handshakes)
+                {
+                    Ok(session) => session,
+                    Err(UnsupportedSecretLength) => continue,
+                };
             if let Some(session) =
-                tls12_session_from_keylog(crypto.as_ref(), cr, entries, observed_handshakes)
+                tls12_session_from_keylog(crypto.as_ref(), cr, &entries, observed_handshakes)
             {
-                sessions.insert(session_key.clone(), session);
+                derived = Some(session);
             }
+            let Some(mut session) = derived else {
+                continue;
+            };
+            if !session.rederivable {
+                settled.push(*cr);
+            }
+            if let Some(old) = sessions.get_mut(&session_key)
+                && old.client_write_key == session.client_write_key
+                && old.server_write_key == session.server_write_key
+            {
+                old.rederivable = session.rederivable;
+                continue;
+            }
+            session.last_used = Self::next_tick(session_tick);
+            sessions.insert(session_key, session);
         }
+        if !settled.is_empty() {
+            observed_handshakes.retain(|h| h.client_random.is_none_or(|cr| !settled.contains(&cr)));
+        }
+        self.enforce_session_limit();
+        self.enforce_keylog_limit();
     }
 }
 
@@ -1777,20 +1913,10 @@ impl TlsSession {
             lockon_floor: Vec::new(),
             handshake_seen,
             client_addr: None,
+            rederivable: false,
+            last_used: 0,
         }
     }
-}
-
-/// Keylog entries grouped by their 32-byte client_random, in no particular
-/// order. Entries whose client_random is any other length are left out.
-fn group_by_client_random(entries: &[KeyLogEntry]) -> HashMap<[u8; 32], Vec<&KeyLogEntry>> {
-    let mut grouped: HashMap<[u8; 32], Vec<&KeyLogEntry>> = HashMap::new();
-    for entry in entries {
-        if let Ok(cr) = <[u8; 32]>::try_from(entry.client_random.as_slice()) {
-            grouped.entry(cr).or_default().push(entry);
-        }
-    }
-    grouped
 }
 
 /// The secret of the LAST entry under `label`, if any.
@@ -1985,8 +2111,15 @@ fn tls12_session_from_keylog(
         .iter()
         .find(|e| e.label == "CLIENT_RANDOM")
         .map(|e| &e.secret)?;
-    tls12_handshake_candidates(cr, observed_handshakes)
-        .find_map(|hs| tls12_session_for_handshake(crypto, cr, ms, hs))
+    let exact = observed_handshakes
+        .iter()
+        .any(|hs| hs.client_random == Some(*cr));
+    let mut session = tls12_handshake_candidates(cr, observed_handshakes)
+        .find_map(|hs| tls12_session_for_handshake(crypto, cr, ms, hs))?;
+    // Bound by the fallback, it may be bound to the wrong handshake; its own
+    // ServerHello arriving later must be able to replace it.
+    session.rederivable = !exact;
+    Some(session)
 }
 
 /// The TLS 1.2 session master secret `ms` of `cr` yields against one
@@ -2047,6 +2180,16 @@ fn tls12_session_for_handshake(
 ///
 /// Warned once per process; the condition persists while the tap is busy and
 /// a line per handshake would be its own flood.
+/// Log `message` at `warn` the first time `warned` is passed, and never again
+/// in this process.
+fn warn_once(warned: &std::sync::atomic::AtomicBool, message: impl FnOnce() -> String) {
+    if !warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!("{}", message());
+    }
+}
+
+/// Say once per `warned` latch that the pending-handshake table is full and
+/// its oldest entry is dropped before a ServerHello paired it.
 fn warn_handshake_eviction(warned: &std::sync::atomic::AtomicBool) {
     if !warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
         tracing::warn!(
@@ -2730,6 +2873,11 @@ mod tests {
         }
     }
 
+    /// A key store holding `entries` as a key log read at startup would.
+    fn keylog_of(entries: Vec<KeyLogEntry>) -> KeylogStore {
+        KeylogStore::from_startup(entries, MAX_KEYLOG_ENTRIES)
+    }
+
     /// Build a TLS 1.3 client/server traffic-secret keylog pair (both 32-byte
     /// secrets → AES-128-GCM) sharing one `client_random`.
     fn make_keylog_entries() -> Vec<KeyLogEntry> {
@@ -2829,7 +2977,7 @@ mod tests {
     #[test]
     fn sessions_populated_from_entries() -> Result<(), TestError> {
         let mut d = TlsDecryptor {
-            keylog_entries: make_keylog_entries(),
+            keylog: keylog_of(make_keylog_entries()),
             sessions: HashMap::new(),
             crypto: Box::new(MockCrypto {
                 decrypt_result: None,
@@ -2842,7 +2990,11 @@ mod tests {
             keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
-            keylog_processed_count: 0,
+            handshakes_dropped: 0,
+            sessions_evicted: 0,
+            session_tick: 0,
+            session_limit: MAX_TLS_SESSIONS,
+            handshake_limit: MAX_OBSERVED_HANDSHAKES,
             rewind_pending: IndexMap::new(),
             rewind_bytes: 0,
             keylog_generation: 0,
@@ -2886,7 +3038,7 @@ mod tests {
             app_data_records: 0,
             lockon_budget: LOCKON_TRIAL_BUDGET,
             lockon_window: SEQ_LOCKON_WINDOW,
-            keylog_entries: vec![
+            keylog: keylog_of(vec![
                 KeyLogEntry {
                     label: "CLIENT_TRAFFIC_SECRET_0".to_string(),
                     client_random: cr.to_vec(),
@@ -2907,7 +3059,7 @@ mod tests {
                     client_random: cr.to_vec(),
                     secret: real_server.clone(),
                 },
-            ],
+            ]),
             sessions: HashMap::new(),
             crypto: crate::crypto::default_backend(),
             decrypted_count: 0,
@@ -2915,7 +3067,11 @@ mod tests {
             keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
-            keylog_processed_count: 0,
+            handshakes_dropped: 0,
+            sessions_evicted: 0,
+            session_tick: 0,
+            session_limit: MAX_TLS_SESSIONS,
+            handshake_limit: MAX_OBSERVED_HANDSHAKES,
             rewind_pending: IndexMap::new(),
             rewind_bytes: 0,
             keylog_generation: 0,
@@ -2952,7 +3108,7 @@ mod tests {
     #[test]
     fn try_decrypt_no_matching_session() -> Result<(), TestError> {
         let mut d = TlsDecryptor {
-            keylog_entries: Vec::new(),
+            keylog: keylog_of(Vec::new()),
             sessions: HashMap::new(),
             crypto: Box::new(MockCrypto {
                 decrypt_result: None,
@@ -2965,7 +3121,11 @@ mod tests {
             keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
-            keylog_processed_count: 0,
+            handshakes_dropped: 0,
+            sessions_evicted: 0,
+            session_tick: 0,
+            session_limit: MAX_TLS_SESSIONS,
+            handshake_limit: MAX_OBSERVED_HANDSHAKES,
             rewind_pending: IndexMap::new(),
             rewind_bytes: 0,
             keylog_generation: 0,
@@ -2999,7 +3159,7 @@ mod tests {
         plaintext.push(23); // inner content type = ApplicationData
 
         let mut d = TlsDecryptor {
-            keylog_entries: make_keylog_entries(),
+            keylog: keylog_of(make_keylog_entries()),
             sessions: HashMap::new(),
             crypto: Box::new(MockCrypto {
                 decrypt_result: Some(plaintext),
@@ -3012,7 +3172,11 @@ mod tests {
             keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
-            keylog_processed_count: 0,
+            handshakes_dropped: 0,
+            sessions_evicted: 0,
+            session_tick: 0,
+            session_limit: MAX_TLS_SESSIONS,
+            handshake_limit: MAX_OBSERVED_HANDSHAKES,
             rewind_pending: IndexMap::new(),
             rewind_bytes: 0,
             keylog_generation: 0,
@@ -3064,7 +3228,7 @@ mod tests {
         plaintext.push(23);
 
         let mut d = TlsDecryptor {
-            keylog_entries: make_keylog_entries(),
+            keylog: keylog_of(make_keylog_entries()),
             sessions: HashMap::new(),
             crypto: Box::new(MockCrypto {
                 decrypt_result: Some(plaintext),
@@ -3077,7 +3241,11 @@ mod tests {
             keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
-            keylog_processed_count: 0,
+            handshakes_dropped: 0,
+            sessions_evicted: 0,
+            session_tick: 0,
+            session_limit: MAX_TLS_SESSIONS,
+            handshake_limit: MAX_OBSERVED_HANDSHAKES,
             rewind_pending: IndexMap::new(),
             rewind_bytes: 0,
             keylog_generation: 0,
@@ -3126,7 +3294,7 @@ mod tests {
     #[test]
     fn non_application_data_returns_none() -> Result<(), TestError> {
         let mut d = TlsDecryptor {
-            keylog_entries: make_keylog_entries(),
+            keylog: keylog_of(make_keylog_entries()),
             sessions: HashMap::new(),
             crypto: Box::new(MockCrypto {
                 decrypt_result: Some(vec![0x42]),
@@ -3139,7 +3307,11 @@ mod tests {
             keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
-            keylog_processed_count: 0,
+            handshakes_dropped: 0,
+            sessions_evicted: 0,
+            session_tick: 0,
+            session_limit: MAX_TLS_SESSIONS,
+            handshake_limit: MAX_OBSERVED_HANDSHAKES,
             rewind_pending: IndexMap::new(),
             rewind_bytes: 0,
             keylog_generation: 0,
@@ -3402,7 +3574,7 @@ mod tests {
         // record does. Without saying so the hold is disabled, exactly as
         // it is for a plain `--keylog` file that can never grow.
         d.set_keys_may_still_arrive(true);
-        d.keylog_entries = make_keylog_entries();
+        d.keylog = keylog_of(make_keylog_entries());
         Ok((d, key, iv))
     }
 
@@ -3559,11 +3731,11 @@ mod tests {
         // Two generations of the same label for one client_random.
         let logged = capture(|| {
             let mut d = TlsDecryptor::new(None, crate::crypto::default_backend())?;
-            d.keylog_entries = vec![
+            d.keylog = keylog_of(vec![
                 entry("CLIENT_TRAFFIC_SECRET_0", &cr, "keylog-generation-one"),
                 entry("SERVER_TRAFFIC_SECRET_0", &cr, "keylog-server-generation"),
                 entry("CLIENT_TRAFFIC_SECRET_0", &cr, "keylog-generation-two"),
-            ];
+            ]);
             d.ensure_sessions_populated();
             Ok(())
         })?;
@@ -3576,10 +3748,10 @@ mod tests {
         // fires on every ordinary capture and stops meaning anything.
         let quiet = capture(|| {
             let mut d = TlsDecryptor::new(None, crate::crypto::default_backend())?;
-            d.keylog_entries = vec![
+            d.keylog = keylog_of(vec![
                 entry("CLIENT_TRAFFIC_SECRET_0", &cr, "keylog-generation-one"),
                 entry("SERVER_TRAFFIC_SECRET_0", &cr, "keylog-server-generation"),
-            ];
+            ]);
             d.ensure_sessions_populated();
             Ok(())
         })?;
@@ -3682,7 +3854,7 @@ mod tests {
         d.poll_keylog_file()
             .map_err(|e| format!("keylog must be readable: {e:?}"))?;
         assert_eq!(
-            d.keylog_entries.len(),
+            d.keylog.loaded(),
             2,
             "both secrets must load from the file on disk"
         );
@@ -4064,7 +4236,7 @@ mod tests {
         );
 
         // eCapture writes the secrets 56 ms later and the watch picks them up.
-        d.keylog_entries = make_keylog_entries();
+        d.keylog = keylog_of(make_keylog_entries());
 
         let recovered = d.rewind();
         assert_eq!(
@@ -4119,7 +4291,7 @@ mod tests {
         );
 
         // The keys finally land, and the SAME record still opens.
-        d.keylog_entries = make_keylog_entries();
+        d.keylog = keylog_of(make_keylog_entries());
         assert_eq!(
             d.rewind().len(),
             1,
@@ -4181,7 +4353,7 @@ mod tests {
         }
 
         // The keys land, and the replay cannot open that junk — as expected.
-        d.keylog_entries = make_keylog_entries();
+        d.keylog = keylog_of(make_keylog_entries());
         assert!(
             d.rewind().is_empty(),
             "handshake-epoch records cannot open under application traffic keys"
@@ -4385,7 +4557,7 @@ mod tests {
     #[test]
     fn a_key_log_of_another_connection_matches_no_client_hello_seen() -> Result<(), TestError> {
         let mut d = decryptor_with(Box::new(crate::crypto::RingCryptoBackend));
-        d.keylog_entries = make_keylog_entries(); // client random 0xAA
+        d.keylog = keylog_of(make_keylog_entries()); // client random 0xAA
         offer_handshake_and_one_sealed_record(&mut d, &[0x11; 32])?;
 
         let report = d.report();
@@ -4464,7 +4636,7 @@ mod tests {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
-        d.keylog_entries = make_keylog_entries();
+        d.keylog = keylog_of(make_keylog_entries());
         let report = d.report();
         assert_eq!(report.client_hellos_seen, 0, "no ClientHello was offered");
         assert_eq!(report.server_hellos_seen, 0, "no ServerHello was offered");
@@ -4483,15 +4655,15 @@ mod tests {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
-        d.keylog_entries = make_keylog_entries(); // client random 0xAA, two lines
+        d.keylog = keylog_of(make_keylog_entries()); // client random 0xAA, two lines
         for label in ["CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"] {
-            d.keylog_entries.push(KeyLogEntry {
+            d.keylog.push(KeyLogEntry {
                 label: label.to_string(),
                 client_random: vec![0xBB; 32],
                 secret: crate::test_material::bytes_for("decrypt-other-connection-secret", 32),
             });
         }
-        d.keylog_entries.push(KeyLogEntry {
+        d.keylog.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: vec![0xAA; 16],
             secret: crate::test_material::bytes_for("decrypt-short-random-secret", 48),
@@ -4515,7 +4687,7 @@ mod tests {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
-        d.keylog_entries = make_keylog_entries();
+        d.keylog = keylog_of(make_keylog_entries());
         let (client, server) = hello_endpoints()?;
         let hello = client_hello_record(&[0xAA; 32]);
         d.process_record(&hello, client, server);
@@ -4582,7 +4754,7 @@ mod tests {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
-        d.keylog_entries = make_keylog_entries();
+        d.keylog = keylog_of(make_keylog_entries());
         let (client, server) = hello_endpoints()?;
         let random = |i: usize| -> [u8; 32] {
             let mut cr = [0u8; 32];
@@ -4669,7 +4841,7 @@ mod tests {
     fn ensure_sessions_populated_idempotent() {
         // First call should process all entries; second call should be a no-op.
         let mut d = TlsDecryptor {
-            keylog_entries: make_keylog_entries(),
+            keylog: keylog_of(make_keylog_entries()),
             sessions: HashMap::new(),
             crypto: Box::new(MockCrypto {
                 decrypt_result: None,
@@ -4682,7 +4854,11 @@ mod tests {
             keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
-            keylog_processed_count: 0,
+            handshakes_dropped: 0,
+            sessions_evicted: 0,
+            session_tick: 0,
+            session_limit: MAX_TLS_SESSIONS,
+            handshake_limit: MAX_OBSERVED_HANDSHAKES,
             rewind_pending: IndexMap::new(),
             rewind_bytes: 0,
             keylog_generation: 0,
@@ -4697,27 +4873,23 @@ mod tests {
 
         // First call: should create sessions
         d.ensure_sessions_populated();
-        assert_eq!(d.sessions.len(), 1);
         assert_eq!(
-            d.keylog_processed_count,
-            d.keylog_entries.len(),
-            "processed count must match entry count after first call"
+            d.sessions.len(),
+            1,
+            "one session from the one client random"
         );
-
         let sessions_after_first = d.sessions.len();
-        let processed_after_first = d.keylog_processed_count;
 
-        // Second call: should be a no-op (early return because
-        // keylog_entries.len() == keylog_processed_count)
+        // Second call: a no-op, because no client random is marked any more.
         d.ensure_sessions_populated();
         assert_eq!(
             d.sessions.len(),
             sessions_after_first,
             "session count must not change on second call"
         );
-        assert_eq!(
-            d.keylog_processed_count, processed_after_first,
-            "processed count must not change on second call"
+        assert!(
+            d.keylog.take_dirty(|_| true).is_empty(),
+            "nothing is left to derive after a populate"
         );
     }
 
@@ -4728,7 +4900,7 @@ mod tests {
         // Verify that adding new keylog entries after the first populate
         // causes a second call to process only the new entries.
         let mut d = TlsDecryptor {
-            keylog_entries: make_keylog_entries(), // 2 entries, same client_random
+            keylog: keylog_of(make_keylog_entries()), // 2 entries, same client_random
             sessions: HashMap::new(),
             crypto: Box::new(MockCrypto {
                 decrypt_result: None,
@@ -4741,7 +4913,11 @@ mod tests {
             keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
-            keylog_processed_count: 0,
+            handshakes_dropped: 0,
+            sessions_evicted: 0,
+            session_tick: 0,
+            session_limit: MAX_TLS_SESSIONS,
+            handshake_limit: MAX_OBSERVED_HANDSHAKES,
             rewind_pending: IndexMap::new(),
             rewind_bytes: 0,
             keylog_generation: 0,
@@ -4755,12 +4931,15 @@ mod tests {
         };
 
         d.ensure_sessions_populated();
-        assert_eq!(d.sessions.len(), 1);
-        assert_eq!(d.keylog_processed_count, 2);
+        assert_eq!(
+            d.sessions.len(),
+            1,
+            "one session from the first client random"
+        );
 
         // Add entries with a different client_random
         let cr2 = [0xBBu8; 32];
-        d.keylog_entries.push(KeyLogEntry {
+        d.keylog.push(KeyLogEntry {
             label: "CLIENT_TRAFFIC_SECRET_0".to_string(),
             client_random: cr2.to_vec(),
             secret: crate::test_material::bytes_for(
@@ -4768,7 +4947,7 @@ mod tests {
                 32,
             ),
         });
-        d.keylog_entries.push(KeyLogEntry {
+        d.keylog.push(KeyLogEntry {
             label: "SERVER_TRAFFIC_SECRET_0".to_string(),
             client_random: cr2.to_vec(),
             secret: crate::test_material::bytes_for(
@@ -4777,14 +4956,10 @@ mod tests {
             ),
         });
 
-        // Now keylog_entries.len() (4) != keylog_processed_count (2),
-        // so ensure_sessions_populated should process the new entries.
+        // The new client random is marked, so the next populate derives it.
         d.ensure_sessions_populated();
         assert_eq!(d.sessions.len(), 2, "should now have 2 sessions");
-        assert_eq!(
-            d.keylog_processed_count, 4,
-            "processed count should reflect all entries"
-        );
+        assert_eq!(d.keylog.loaded(), 4, "every entry is counted as loaded");
     }
 
     // ── helpers for the added tests ────────────────────────────────────
@@ -4802,7 +4977,7 @@ mod tests {
     /// A decryptor wrapping `crypto` with no keylog file and empty state.
     fn decryptor_with(crypto: Box<dyn CryptoBackend>) -> TlsDecryptor {
         TlsDecryptor {
-            keylog_entries: Vec::new(),
+            keylog: keylog_of(Vec::new()),
             sessions: HashMap::new(),
             crypto,
             decrypted_count: 0,
@@ -4813,7 +4988,11 @@ mod tests {
             keylog_source: None,
             observed_handshakes: Vec::new(),
             pending_client_randoms: IndexMap::new(),
-            keylog_processed_count: 0,
+            handshakes_dropped: 0,
+            sessions_evicted: 0,
+            session_tick: 0,
+            session_limit: MAX_TLS_SESSIONS,
+            handshake_limit: MAX_OBSERVED_HANDSHAKES,
             rewind_pending: IndexMap::new(),
             rewind_bytes: 0,
             keylog_generation: 0,
@@ -5179,7 +5358,7 @@ mod tests {
     #[test]
     fn tls13_session_survives_an_unrelated_serverhello() -> Result<(), TestError> {
         let mut d = TlsDecryptor {
-            keylog_entries: make_keylog_entries(),
+            keylog: keylog_of(make_keylog_entries()),
             ..decryptor_with(Box::new(MockCrypto {
                 decrypt_result: None,
             }))
@@ -5220,7 +5399,7 @@ mod tests {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
-        d.keylog_entries.push(KeyLogEntry {
+        d.keylog.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: cr.to_vec(),
             secret: crate::test_material::bytes_for(
@@ -5302,7 +5481,7 @@ mod tests {
             "decrypt-tls12-client-random-binds-to-matching-handshake-master-secret",
             48,
         );
-        d.keylog_entries.push(KeyLogEntry {
+        d.keylog.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: cr2.to_vec(),
             secret: master_secret.clone(),
@@ -5471,7 +5650,7 @@ mod tests {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
-        d.keylog_entries.push(KeyLogEntry {
+        d.keylog.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: cr.to_vec(),
             secret: crate::test_material::bytes_for(
@@ -5507,7 +5686,7 @@ mod tests {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
-        d.keylog_entries.push(KeyLogEntry {
+        d.keylog.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: cr.to_vec(),
             secret: crate::test_material::bytes_for(
@@ -5587,6 +5766,8 @@ mod tests {
                 lockon_floor: Vec::new(),
                 handshake_seen: false,
                 client_addr: None,
+                rederivable: false,
+                last_used: 0,
             },
         );
     }
@@ -5938,10 +6119,11 @@ mod tests {
         Ok(())
     }
 
-    /// A ServerHello gives every TLS 1.2 session a chance to re-derive
-    /// against it, and leaves every TLS 1.3 session alone.
+    /// A ServerHello of another connection leaves every final session alone,
+    /// TLS 1.2 and TLS 1.3 alike: it cannot change their keys. (It used to
+    /// drop every TLS 1.2 session, which nothing derived again.)
     #[test]
-    fn a_serverhello_drops_tls12_sessions_and_keeps_tls13_ones() -> Result<(), TestError> {
+    fn a_serverhello_keeps_every_final_session() -> Result<(), TestError> {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
@@ -5973,7 +6155,10 @@ mod tests {
 
         d.process_record(&server_hello_record(0x009C), server_sock()?, client_sock()?);
 
-        assert!(!d.sessions.contains_key(&tls12), "TLS 1.2 is re-derived");
+        assert!(
+            d.sessions.contains_key(&tls12),
+            "a final TLS 1.2 session is kept"
+        );
         assert!(d.sessions.contains_key(&tls13), "TLS 1.3 is kept");
         Ok(())
     }
@@ -5998,7 +6183,7 @@ mod tests {
             ("SERVER_TRAFFIC_SECRET_0", 20),
             ("CLIENT_RANDOM", 48),
         ] {
-            d.keylog_entries.push(KeyLogEntry {
+            d.keylog.push(KeyLogEntry {
                 label: label.to_string(),
                 client_random: cr.to_vec(),
                 secret: crate::test_material::bytes_for("decrypt-a-client-random-with-an-unsupported-secret-length-is-skipped-whole-secret", len),
@@ -6026,7 +6211,7 @@ mod tests {
         });
         for cr in [watched, unwatched] {
             for label in ["CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"] {
-                d.keylog_entries.push(KeyLogEntry {
+                d.keylog.push(KeyLogEntry {
                     label: label.to_string(),
                     client_random: cr.to_vec(),
                     secret: crate::test_material::bytes_for("decrypt-a-keylog-session-knows-whether-its-own-handshake-was-watched-secret", 32),
@@ -6058,7 +6243,7 @@ mod tests {
                 client_random: None,
             });
         }
-        d.keylog_entries.push(KeyLogEntry {
+        d.keylog.push(KeyLogEntry {
             label: "CLIENT_RANDOM".to_string(),
             client_random: cr.to_vec(),
             secret: crate::test_material::bytes_for(
@@ -6166,6 +6351,599 @@ mod tests {
         assert!(session.locked_client);
         assert_eq!(session.sequence_client, 1);
         assert_eq!(session.client_addr, Some(client));
+        Ok(())
+    }
+
+    /// Feed `d` one TLS 1.2 handshake: the ClientHello of `cr` from `client`
+    /// and the ServerHello of `sr` (AES-128-GCM) back to it.
+    fn tls12_handshake(
+        d: &mut TlsDecryptor,
+        cr: &[u8; 32],
+        sr: &[u8; 32],
+        client: SocketAddr,
+    ) -> Result<(), TestError> {
+        d.process_record(&client_hello_record(cr), client, server_sock()?);
+        d.process_record(
+            &handshake_record(server_hello_with_random(0x009C, 0, sr)),
+            server_sock()?,
+            client,
+        );
+        Ok(())
+    }
+
+    /// A CLIENT_RANDOM entry the key log held from the start, for `cr`.
+    fn client_random_entry(cr: &[u8; 32], seed: &str) -> KeyLogEntry {
+        KeyLogEntry {
+            label: "CLIENT_RANDOM".to_string(),
+            client_random: cr.to_vec(),
+            secret: crate::test_material::bytes_for(seed, 48),
+        }
+    }
+
+    /// SUCCESS. A key log read once at startup holds the keys of two TLS 1.2
+    /// connections; the second connection's handshake comes after the first
+    /// connection's records were read. Both connections get a session, and
+    /// the first keeps the one it had.
+    #[test]
+    fn a_second_tls12_handshake_after_the_first_records_gets_its_session() -> Result<(), TestError>
+    {
+        let (cr1, cr2) = ([0x31u8; 32], [0x32u8; 32]);
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog.push(client_random_entry(
+            &cr1,
+            "decrypt-second-tls12-handshake-1",
+        ));
+        d.keylog.push(client_random_entry(
+            &cr2,
+            "decrypt-second-tls12-handshake-2",
+        ));
+
+        tls12_handshake(&mut d, &cr1, &[0x41; 32], client_sock()?)?;
+        d.ensure_sessions_populated(); // the first connection's first record
+        let first = TlsSessionKey { client_random: cr1 };
+        assert!(
+            d.sessions.contains_key(&first),
+            "the first connection is keyed"
+        );
+
+        tls12_handshake(&mut d, &cr2, &[0x42; 32], "10.0.0.3:51002".parse()?)?;
+        d.ensure_sessions_populated(); // the second connection's first record
+
+        assert!(
+            d.sessions
+                .contains_key(&TlsSessionKey { client_random: cr2 }),
+            "the second connection's handshake must key its session"
+        );
+        assert!(
+            d.sessions.contains_key(&first),
+            "the second handshake must not take the first connection's session away"
+        );
+        Ok(())
+    }
+
+    /// Feed `d` a ServerHello of `sr` on `client`'s connection with no
+    /// ClientHello before it, so its client random is unknown.
+    fn unpaired_server_hello(
+        d: &mut TlsDecryptor,
+        sr: &[u8; 32],
+        client: SocketAddr,
+    ) -> Result<(), TestError> {
+        d.process_record(
+            &handshake_record(server_hello_with_random(0x009C, 0, sr)),
+            server_sock()?,
+            client,
+        );
+        Ok(())
+    }
+
+    /// SUCCESS. A TLS 1.2 session bound by the fallback to a ServerHello whose
+    /// ClientHello was not seen is bound again, to its own handshake, when
+    /// that handshake arrives; it is then final.
+    #[test]
+    fn a_fallback_session_is_bound_again_by_its_own_handshake() -> Result<(), TestError> {
+        let cr = [0x51u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog
+            .push(client_random_entry(&cr, "decrypt-fallback-bound-again"));
+        unpaired_server_hello(&mut d, &[0x61; 32], "10.0.0.4:51004".parse()?)?;
+        d.ensure_sessions_populated();
+        let key = TlsSessionKey { client_random: cr };
+        let fallback_key = d
+            .sessions
+            .get(&key)
+            .ok_or("a fallback session")?
+            .client_write_key
+            .clone();
+        assert!(d.sessions[&key].rederivable, "bound by the fallback");
+
+        tls12_handshake(&mut d, &cr, &[0x62; 32], client_sock()?)?;
+        d.ensure_sessions_populated();
+
+        let session = d.sessions.get(&key).ok_or("still a session")?;
+        assert_ne!(
+            session.client_write_key, fallback_key,
+            "bound to its own ServerHello"
+        );
+        assert!(!session.rederivable, "and final");
+        Ok(())
+    }
+
+    /// SUCCESS. A ServerHello whose client random has a final session leaves
+    /// the handshake list, which is then not a list of every connection.
+    #[test]
+    fn a_final_session_releases_its_server_hello() -> Result<(), TestError> {
+        let cr = [0x52u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog
+            .push(client_random_entry(&cr, "decrypt-final-releases-hello"));
+        tls12_handshake(&mut d, &cr, &[0x63; 32], client_sock()?)?;
+
+        d.ensure_sessions_populated();
+
+        assert!(
+            d.sessions
+                .contains_key(&TlsSessionKey { client_random: cr }),
+            "keyed"
+        );
+        assert!(
+            d.observed_handshakes.is_empty(),
+            "its ServerHello is not kept"
+        );
+        Ok(())
+    }
+
+    /// FAILURE. The handshake list holds at most its bound: the oldest go and
+    /// are counted in the report.
+    #[test]
+    fn the_handshake_bound_drops_the_oldest_and_counts_them() -> Result<(), TestError> {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.handshake_limit = 8;
+        for i in 0..9u8 {
+            unpaired_server_hello(
+                &mut d,
+                &[i; 32],
+                format!("10.0.0.9:{}", 52000 + u16::from(i)).parse()?,
+            )?;
+        }
+
+        assert_eq!(d.observed_handshakes.len(), 8, "within the bound");
+        assert_eq!(
+            d.observed_handshakes.first().and_then(|h| h.server_random),
+            Some([1; 32]),
+            "the oldest went"
+        );
+        assert_eq!(d.report().handshakes_dropped, 1, "and is counted");
+        Ok(())
+    }
+
+    /// Give `d` the TLS 1.3 traffic secrets of client random `[b; 32]`.
+    fn tls13_keys(d: &mut TlsDecryptor, b: u8) {
+        for label in ["CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"] {
+            d.keylog.push(KeyLogEntry {
+                label: label.to_string(),
+                client_random: vec![b; 32],
+                secret: crate::test_material::bytes_for("decrypt-tls13-keys", 32),
+            });
+        }
+    }
+
+    /// Feed `d` the ClientHello of `[b; 32]` and a TLS 1.3 ServerHello back,
+    /// on a connection of its own.
+    fn tls13_handshake(d: &mut TlsDecryptor, b: u8) -> Result<(), TestError> {
+        let client: SocketAddr = format!("10.0.1.{b}:53000").parse()?;
+        d.process_record(&client_hello_record(&[b; 32]), client, server_sock()?);
+        d.process_record(
+            &handshake_record(server_hello_with_random(0x1301, 0, &[0x70; 32])),
+            server_sock()?,
+            client,
+        );
+        Ok(())
+    }
+
+    /// FAILURE. A ServerHello whose client random already has a final
+    /// session, as every connection of a key log read at startup does, is
+    /// not kept: the handshake bound never drops it, and the report never
+    /// counts it as a handshake no key arrived for.
+    #[test]
+    fn a_server_hello_of_a_session_keyed_before_it_is_not_kept() -> Result<(), TestError> {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.handshake_limit = 8;
+        for b in 0..12 {
+            tls13_keys(&mut d, b);
+        }
+        d.ensure_sessions_populated(); // at startup, before any packet
+        assert_eq!(d.sessions.len(), 12, "every connection keyed at startup");
+
+        for b in 0..12 {
+            tls13_handshake(&mut d, b)?;
+            d.ensure_sessions_populated(); // the connection's first record
+        }
+
+        assert!(
+            d.observed_handshakes.is_empty(),
+            "no ServerHello of a keyed session is kept, found {}",
+            d.observed_handshakes.len()
+        );
+        assert_eq!(
+            d.report().handshakes_dropped,
+            0,
+            "a key had arrived for every one of them"
+        );
+        Ok(())
+    }
+
+    /// SUCCESS. A decryptor that dropped nothing reports no bound count, and
+    /// the key bound it keeps.
+    #[test]
+    fn a_fresh_decryptor_reports_no_drop_and_its_key_bound() -> Result<(), TestError> {
+        let tmp = tempfile::NamedTempFile::new()?;
+        let d = TlsDecryptor::new(
+            Some(tmp.path()),
+            Box::new(MockCrypto {
+                decrypt_result: None,
+            }),
+        )?;
+        let report = d.report();
+        assert_eq!(
+            (
+                report.keylog_entries_dropped,
+                report.handshakes_dropped,
+                report.sessions_evicted
+            ),
+            (0, 0, 0),
+            "nothing dropped"
+        );
+        assert_eq!(
+            report.keylog_entry_bound, MAX_KEYLOG_ENTRIES,
+            "the default key bound"
+        );
+        Ok(())
+    }
+
+    /// EDGE. A key log read at startup larger than the key bound is the
+    /// bound, and the report says so.
+    #[test]
+    fn the_report_gives_the_key_bound_a_large_startup_file_set() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        let entries = (0..10u8)
+            .map(|b| client_random_entry(&[b; 32], "decrypt-report-key-bound"))
+            .collect();
+        d.keylog = KeylogStore::from_startup(entries, 4);
+
+        assert_eq!(d.report().keylog_entry_bound, 10, "the file's size");
+    }
+
+    /// EDGE. The warning for keys the bound dropped names the bound the run
+    /// kept, which a large startup file raised past the default.
+    #[test]
+    fn the_key_bound_warning_names_the_bound_the_run_kept() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        let entries = (0..10u8)
+            .map(|b| client_random_entry(&[b; 32], "decrypt-key-bound-warning"))
+            .collect();
+        d.keylog = KeylogStore::from_startup(entries, 4);
+        d.keylog
+            .push(client_random_entry(&[10; 32], "decrypt-key-bound-warning"));
+
+        let message = d.enforce_keylog_limit().unwrap_or_default();
+
+        assert!(
+            message.contains("to stay within 10 entries"),
+            "the bound kept, not the default: {message:?}"
+        );
+    }
+
+    /// SUCCESS. Three TLS 1.2 connections whose handshakes interleave each
+    /// get the session of their own handshake, final.
+    #[test]
+    fn interleaved_tls12_handshakes_each_key_their_own_connection() -> Result<(), TestError> {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        let crs = [[0x81u8; 32], [0x82; 32], [0x83; 32]];
+        let clients: Vec<SocketAddr> = vec![
+            "10.0.2.1:54001".parse()?,
+            "10.0.2.2:54002".parse()?,
+            "10.0.2.3:54003".parse()?,
+        ];
+        for cr in &crs {
+            d.keylog
+                .push(client_random_entry(cr, "decrypt-interleaved-tls12"));
+        }
+        for (cr, client) in crs.iter().zip(&clients) {
+            d.process_record(&client_hello_record(cr), *client, server_sock()?);
+        }
+        for i in [2usize, 0, 1] {
+            d.process_record(
+                &handshake_record(server_hello_with_random(0x009C, 0, &[0x90 + i as u8; 32])),
+                server_sock()?,
+                clients[i],
+            );
+            d.ensure_sessions_populated();
+        }
+
+        for cr in &crs {
+            let session = d
+                .sessions
+                .get(&TlsSessionKey { client_random: *cr })
+                .ok_or("each connection is keyed")?;
+            assert!(!session.rederivable, "bound to its own handshake");
+        }
+        assert!(d.observed_handshakes.is_empty(), "no ServerHello is kept");
+        Ok(())
+    }
+
+    /// FAILURE. A session the session bound dropped is not derived again:
+    /// its keys went with it, so a later mark finds nothing.
+    #[test]
+    fn a_session_the_bound_dropped_is_not_derived_again() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.session_limit = 8;
+        for b in 0..9 {
+            tls13_keys(&mut d, b);
+        }
+        d.ensure_sessions_populated();
+        let evicted: Vec<u8> = (0..9)
+            .filter(|b| {
+                !d.sessions.contains_key(&TlsSessionKey {
+                    client_random: [*b; 32],
+                })
+            })
+            .collect();
+        assert_eq!(evicted.len(), 2, "two dropped: {evicted:?}");
+
+        for b in &evicted {
+            d.keylog.mark(&[*b; 32]);
+        }
+        d.keylog.mark_every_unkeyed();
+        d.ensure_sessions_populated();
+
+        assert_eq!(d.sessions.len(), 7, "nothing derived again");
+        assert_eq!(d.report().sessions_evicted, 2, "counted once");
+    }
+
+    /// EDGE. A session map at exactly its bound drops nothing.
+    #[test]
+    fn a_session_map_at_its_bound_drops_nothing() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.session_limit = 8;
+        for b in 0..8 {
+            tls13_keys(&mut d, b);
+        }
+        d.ensure_sessions_populated();
+
+        assert_eq!(d.sessions.len(), 8, "all eight kept");
+        assert_eq!(d.report().sessions_evicted, 0, "nothing dropped");
+    }
+
+    /// EDGE. A handshake list at exactly its bound drops nothing.
+    #[test]
+    fn a_handshake_list_at_its_bound_drops_nothing() -> Result<(), TestError> {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.handshake_limit = 8;
+        for i in 0..8u8 {
+            unpaired_server_hello(
+                &mut d,
+                &[i; 32],
+                format!("10.0.0.9:{}", 55000 + u16::from(i)).parse()?,
+            )?;
+        }
+
+        assert_eq!(d.observed_handshakes.len(), 8, "all eight kept");
+        assert_eq!(d.report().handshakes_dropped, 0, "nothing dropped");
+        Ok(())
+    }
+
+    /// EDGE. A handshake bound below eight drops one ServerHello at a time,
+    /// never none.
+    #[test]
+    fn a_small_handshake_bound_drops_one_at_a_time() -> Result<(), TestError> {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.handshake_limit = 3;
+        for i in 0..5u8 {
+            unpaired_server_hello(
+                &mut d,
+                &[i; 32],
+                format!("10.0.0.9:{}", 56000 + u16::from(i)).parse()?,
+            )?;
+        }
+
+        assert_eq!(d.observed_handshakes.len(), 3, "within the bound");
+        assert_eq!(
+            d.report().handshakes_dropped,
+            2,
+            "one per ServerHello past it"
+        );
+        Ok(())
+    }
+
+    /// FAILURE. The session map holds at most its bound: the sessions that
+    /// opened a record longest ago go, with their keys, and are counted.
+    #[test]
+    fn the_session_bound_drops_the_least_recently_used() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.session_limit = 8;
+        let tls13 = |d: &mut TlsDecryptor, b: u8| {
+            for label in ["CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"] {
+                d.keylog.push(KeyLogEntry {
+                    label: label.to_string(),
+                    client_random: vec![b; 32],
+                    secret: crate::test_material::bytes_for("decrypt-session-bound-lru", 32),
+                });
+            }
+        };
+        for b in 0..8 {
+            tls13(&mut d, b);
+        }
+        d.ensure_sessions_populated();
+        // Client random 0 opened a record just now.
+        if let Some(s) = d.sessions.get_mut(&TlsSessionKey {
+            client_random: [0; 32],
+        }) {
+            s.last_used = TlsDecryptor::next_tick(&mut d.session_tick);
+        }
+
+        tls13(&mut d, 8);
+        d.ensure_sessions_populated();
+
+        assert_eq!(d.sessions.len(), 7, "down to seven eighths of the bound");
+        assert!(
+            d.sessions.contains_key(&TlsSessionKey {
+                client_random: [0; 32]
+            }),
+            "recently used stays"
+        );
+        assert!(
+            !d.sessions.contains_key(&TlsSessionKey {
+                client_random: [1; 32]
+            }),
+            "least recent goes"
+        );
+        assert!(d.keylog.group(&[1; 32]).is_none(), "its keys go with it");
+        assert_eq!(d.report().sessions_evicted, 2, "counted");
+    }
+
+    /// FAILURE. Keys arriving during the run past the key bound, with no
+    /// session to hold them, are dropped and counted in the report, and the
+    /// unmatched count is then not known.
+    #[test]
+    fn keys_past_the_key_bound_are_counted_in_the_report() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog = KeylogStore::with_limit(4);
+        let text: String = (0..6u8)
+            .map(|b| {
+                format!(
+                    "CLIENT_RANDOM {} {}\n",
+                    format!("{b:02x}").repeat(32),
+                    "cd".repeat(48)
+                )
+            })
+            .collect();
+
+        assert_eq!(d.add_keylog_text(&text), 6, "six keys read");
+
+        let report = d.report();
+        assert_eq!(report.keylog_entries, 6, "loaded counts every key");
+        assert_eq!(report.keylog_entries_dropped, 2, "two dropped and counted");
+        assert_eq!(
+            report.keylog_unmatched_entries, None,
+            "the match count is not known"
+        );
+    }
+
+    /// EDGE. A key that found no handshake is keyed by a ServerHello whose
+    /// ClientHello was not seen, when that ServerHello arrives later.
+    #[test]
+    fn a_key_without_a_handshake_is_keyed_by_a_later_unpaired_server_hello() -> Result<(), TestError>
+    {
+        let cr = [0x55u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog.push(client_random_entry(
+            &cr,
+            "decrypt-key-before-unpaired-hello",
+        ));
+        d.ensure_sessions_populated();
+        assert!(d.sessions.is_empty(), "no handshake yet, no session");
+
+        unpaired_server_hello(&mut d, &[0x65; 32], client_sock()?)?;
+        d.ensure_sessions_populated();
+
+        assert!(
+            d.sessions
+                .contains_key(&TlsSessionKey { client_random: cr }),
+            "the later ServerHello keys it"
+        );
+        Ok(())
+    }
+
+    /// EDGE. A fallback session derived again to the same keys is kept as it
+    /// was, sequence state included.
+    #[test]
+    fn a_rederivation_to_the_same_keys_keeps_the_session_state() -> Result<(), TestError> {
+        let cr = [0x53u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog
+            .push(client_random_entry(&cr, "decrypt-same-keys-keep-state"));
+        unpaired_server_hello(&mut d, &[0x64; 32], client_sock()?)?;
+        d.ensure_sessions_populated();
+        let key = TlsSessionKey { client_random: cr };
+        d.sessions
+            .get_mut(&key)
+            .ok_or("a fallback session")?
+            .sequence_client = 5;
+
+        d.keylog
+            .push(client_random_entry(&cr, "decrypt-same-keys-keep-state"));
+        d.ensure_sessions_populated();
+
+        assert_eq!(
+            d.sessions[&key].sequence_client, 5,
+            "the same session, its state kept"
+        );
+        Ok(())
+    }
+
+    /// EDGE. Keys a watched key log delivers leave a final TLS 1.2 session
+    /// alone. (Every TLS 1.2 session used to be dropped on each new batch.)
+    #[test]
+    fn a_watched_key_batch_keeps_a_final_tls12_session() -> Result<(), TestError> {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new()?;
+        let mut d = TlsDecryptor::new(
+            Some(tmp.path()),
+            Box::new(MockCrypto {
+                decrypt_result: None,
+            }),
+        )?;
+        let keys = || (vec![0; 16], vec![0; 16], vec![0; 4], vec![0; 4]);
+        let key = TlsSessionKey {
+            client_random: [0x54; 32],
+        };
+        d.sessions.insert(
+            key.clone(),
+            TlsSession::at_stream_start(
+                SessionVersion::Tls12,
+                keys(),
+                CipherSuite::Aes128Gcm,
+                true,
+            ),
+        );
+        writeln!(tmp, "CLIENT_RANDOM {} {}", "ee".repeat(32), "cd".repeat(48))?;
+        tmp.flush()?;
+
+        assert_eq!(d.poll_keylog_file()?, 1, "one key delivered");
+
+        assert!(d.sessions.contains_key(&key), "the final session is kept");
         Ok(())
     }
 
