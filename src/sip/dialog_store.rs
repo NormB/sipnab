@@ -39,6 +39,11 @@ pub fn set_max_messages_per_dialog(limit: usize) {
     MAX_MESSAGES_PER_DIALOG.store(limit, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The per-dialog message limit the message path applies now.
+fn max_messages_per_dialog() -> usize {
+    MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// How many dialog keys refused by method are remembered (see
 /// `DialogStore::method_refused`).
 const METHOD_REFUSED_CAP: usize = 65_536;
@@ -1667,6 +1672,121 @@ impl DialogStore {
     /// parsed (the packet pipeline does, to link media to streams), so the
     /// dialog's SDP timeline does not parse the body a second time.
     pub(crate) fn process_message_read(&mut self, msg: SipMessage, sdp: &SdpRead) {
+        // A message the store does not keep is dropped, as it always was.
+        let _ = self.place(msg, sdp, max_messages_per_dialog(), drop);
+    }
+
+    /// [`Self::process_message_read`] for a caller that reads the message
+    /// after the store took it (the batch runner): the answer says where the
+    /// message went, and [`Self::placed`] reads it back.
+    #[cfg(feature = "native")]
+    pub(crate) fn process_message_placed(&mut self, msg: SipMessage, sdp: &SdpRead) -> Placed {
+        self.process_message_capped(msg, sdp, max_messages_per_dialog())
+    }
+
+    /// [`Self::process_message_placed`] with the per-dialog message cap `cap`
+    /// given rather than read from `MAX_MESSAGES_PER_DIALOG`, so a test can
+    /// reach the cap without changing the process-wide value.
+    ///
+    /// # Returns
+    ///
+    /// [`Placed::Stored`] with the dialog's index when the store keeps the
+    /// message as that dialog's newest; otherwise [`Placed::Returned`] with
+    /// the message, unchanged, in a box (allocated only on that path).
+    #[cfg(feature = "native")]
+    pub(crate) fn process_message_capped(
+        &mut self,
+        msg: SipMessage,
+        sdp: &SdpRead,
+        cap: usize,
+    ) -> Placed {
+        match self.place(msg, sdp, cap, Box::new) {
+            Ok(index) => Placed::Stored(index),
+            Err(msg) => Placed::Returned(msg),
+        }
+    }
+
+    /// The message a [`Placed`] answer names: the dialog's newest stored
+    /// message for [`Placed::Stored`], the message itself for
+    /// [`Placed::Returned`].
+    ///
+    /// An index into the map, not a hash lookup, so reading a message back
+    /// costs the caller nothing it did not pay before. `None` only when the
+    /// store changed between the answer and this read (an eviction moved the
+    /// dialogs, or the dialog's messages were removed): a `Stored` index is
+    /// valid until the store next changes.
+    #[cfg(feature = "native")]
+    pub(crate) fn placed<'a>(&'a self, placed: &'a Placed) -> Option<&'a SipMessage> {
+        match placed {
+            Placed::Stored(index) => self
+                .dialogs
+                .get_index(*index)
+                .and_then(|(_, d)| d.messages.last()),
+            Placed::Returned(msg) => Some(msg),
+        }
+    }
+
+    /// Where [`Self::get`] finds the dialog of `call_id`: its index, and
+    /// whether the hit was by the exact key (what [`Self::get_mut`] finds)
+    /// rather than, under `Branch` tracking, by the Call-ID prefix of the
+    /// first unit.
+    ///
+    /// An index, not a reference, so a caller can find the dialog through a
+    /// message the store holds and then change the store.
+    pub(crate) fn find_dialog(&self, call_id: &str) -> Option<DialogAt> {
+        if let Some(index) = self.key_index(call_id) {
+            return Some(DialogAt { index, exact: true });
+        }
+        if self.tracking == DialogTracking::Branch {
+            let prefix = format!("{call_id}\n");
+            return self
+                .dialogs
+                .keys()
+                .position(|k| k.starts_with(&prefix))
+                .map(|index| DialogAt {
+                    index,
+                    exact: false,
+                });
+        }
+        None
+    }
+
+    /// The dialog at `index` of the store's map.
+    pub(crate) fn dialog_at(&self, index: usize) -> Option<&SipDialog> {
+        self.dialogs.get_index(index).map(|(_, d)| d)
+    }
+
+    /// [`Self::get_mut`] for a dialog already found by [`Self::find_dialog`]:
+    /// the dialog when the hit was exact, `None` otherwise (`get_mut` does
+    /// not search by prefix).
+    ///
+    /// # Side effects
+    ///
+    /// Bumps the generation counter, even when it answers `None`, as
+    /// `get_mut` does.
+    #[cfg(feature = "native")]
+    pub(crate) fn exact_dialog_mut(&mut self, found: Option<DialogAt>) -> Option<&mut SipDialog> {
+        self.generation += 1;
+        let at = found.filter(|at| at.exact)?;
+        self.dialogs.get_index_mut(at.index).map(|(_, d)| d)
+    }
+
+    /// The one message path every `process_message*` form takes, with the
+    /// per-dialog message cap `cap`.
+    ///
+    /// # Returns
+    ///
+    /// `Ok` with the dialog's index when the store keeps the message as that
+    /// dialog's newest; otherwise `Err` with what `back` makes of the message,
+    /// which it receives unchanged: `drop` for a caller that does not read it
+    /// again, `Box::new` for [`Placed::Returned`].
+    fn place<B>(
+        &mut self,
+        msg: SipMessage,
+        sdp: &SdpRead,
+        cap: usize,
+        back: impl FnOnce(SipMessage) -> B,
+    ) -> Result<usize, B> {
         self.generation += 1;
         self.sweep_th_mappings(msg.timestamp);
         // Look up by the borrowed Call-ID (str is Equivalent<String> for
@@ -1684,9 +1804,9 @@ impl DialogStore {
         let lookup: &str = match (composed.as_deref(), msg.call_id()) {
             (Some(k), _) => k,
             (None, Some(id)) => id,
-            (None, None) => return,
+            (None, None) => return Err(back(msg)),
         };
-        let dialog_idx = self.dialogs.get_index_of(lookup);
+        let dialog_idx = self.key_index(lookup);
         // The method filter decides ONCE per dialog, on the message that
         // would open it: a message of a dialog already kept is always kept
         // (ACK, BYE, re-INVITE, in-dialog OPTIONS, ... and their replies);
@@ -1694,38 +1814,37 @@ impl DialogStore {
         if dialog_idx.is_none() && self.method_filter_on() {
             if self.method_refused.contains(lookup) {
                 self.messages_dropped_by_method += 1;
-                return;
+                return Err(back(msg));
             }
             if self.dropped_by_method(&msg) {
                 self.messages_dropped_by_method += 1;
                 self.method_refused
                     .remember(lookup, self.method_refused_cap);
-                return;
+                return Err(back(msg));
             }
         }
         #[cfg(feature = "native")]
         if dialog_idx.is_none() && self.admission.as_ref().is_some_and(|m| !m.matches(&msg)) {
-            return;
+            return Err(back(msg));
         }
 
         if let Some(idx) = dialog_idx {
             let Some((_, dialog)) = self.dialogs.get_index_mut(idx) else {
-                return; // unreachable: idx came from get_index_of
+                return Err(back(msg)); // unreachable: idx came from get_index_of
             };
-            advance_dialog_read(
-                dialog,
-                msg,
-                MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed),
-                sdp,
-            );
+            let unkept = advance_dialog_read(dialog, msg, cap, sdp);
             self.changes += 1;
             dialog.change_seq = self.changes;
+            match unkept {
+                Some(msg) => Err(back(msg)),
+                None => Ok(idx),
+            }
         } else {
             // A message that cannot open a dialog changes nothing, and in
             // particular neither evicts a dialog nor counts a refusal: there
             // was no new dialog to make room for.
             let Some(dialog) = open_dialog_read(&msg, sdp) else {
-                return;
+                return Err(back(msg));
             };
             // Insert under the SAME key the lookup used, or the next
             // message for this unit would miss and create a duplicate.
@@ -1733,7 +1852,8 @@ impl DialogStore {
                 Some(k) => k,
                 None => match msg.call_id() {
                     Some(id) => id.to_string(),
-                    None => return, // unreachable: checked at function entry
+                    // unreachable: checked at function entry
+                    None => return Err(back(msg)),
                 },
             };
             // New dialog — check capacity
@@ -1745,7 +1865,7 @@ impl DialogStore {
                     // Counted once per Call-ID, the observability sibling of
                     // idle eviction.
                     self.refuse(key);
-                    return;
+                    return Err(back(msg));
                 }
             }
             // Counted here, at the single site where a live message
@@ -1760,7 +1880,11 @@ impl DialogStore {
             dialog.change_seq = self.changes;
             self.numbered += 1;
             dialog.number = self.numbered;
-            self.dialogs.insert(key, dialog);
+            // The dialog keeps its own copy of the opening message
+            // (`SipDialog::new`), so `msg` is dropped here and the answer
+            // names that copy.
+            let (index, _) = self.dialogs.insert_full(key, dialog);
+            Ok(index)
         }
     }
 
@@ -1827,18 +1951,8 @@ impl DialogStore {
     /// `--call-report`, the REST API, the MCP tools and the TUI working on a
     /// Call-ID as they always have; `get_by_key` addresses one specific unit.
     pub fn get(&self, call_id: &str) -> Option<&SipDialog> {
-        if let Some(d) = self.dialogs.get(call_id) {
-            return Some(d);
-        }
-        if self.tracking == DialogTracking::Branch {
-            let prefix = format!("{call_id}\n");
-            return self
-                .dialogs
-                .iter()
-                .find(|(k, _)| k.starts_with(&prefix))
-                .map(|(_, d)| d);
-        }
-        None
+        self.find_dialog(call_id)
+            .and_then(|at| self.dialog_at(at.index))
     }
 
     /// Look up one specific tracked unit by its full tracking key.
@@ -1856,7 +1970,19 @@ impl DialogStore {
     /// store's back.
     pub fn get_mut(&mut self, call_id: &str) -> Option<&mut SipDialog> {
         self.generation += 1;
-        self.dialogs.get_mut(call_id)
+        let i = self.key_index(call_id)?;
+        self.dialogs.get_index_mut(i).map(|(_, d)| d)
+    }
+
+    /// The index of the dialog under exactly `key`: the one hash lookup of
+    /// the map that [`Self::get`], [`Self::get_mut`] and the message path
+    /// make. Counted on this thread in test builds
+    /// ([`key_lookups_on_this_thread`]), so a test can pin how many lookups
+    /// one message costs.
+    fn key_index(&self, key: &str) -> Option<usize> {
+        #[cfg(test)]
+        KEY_LOOKUPS.with(|n| n.set(n.get() + 1));
+        self.dialogs.get_index_of(key)
     }
 
     /// Iterate over all tracked dialogs in insertion order (the TUI call
@@ -2999,6 +3125,20 @@ thread_local! {
     static IDLE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many hash lookups of the dialog map [`DialogStore::key_index`]
+    /// made on this thread. Per thread, so parallel tests do not count each
+    /// other's lookups.
+    static KEY_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The value of [`KEY_LOOKUPS`] on this thread.
+#[cfg(all(test, feature = "native"))]
+pub(crate) fn key_lookups_on_this_thread() -> usize {
+    KEY_LOOKUPS.with(std::cell::Cell::get)
+}
+
 /// The value of [`IDLE_CHECKS`] on this thread.
 #[cfg(test)]
 fn idle_checks_on_this_thread() -> usize {
@@ -3153,11 +3293,23 @@ pub(crate) fn copy_of(stored: &[SipMessage], msg: &SipMessage) -> Option<usize> 
 /// `cap` is the most messages the dialog stores, `MAX_MESSAGES_PER_DIALOG`
 /// for every caller but a test.
 fn advance_dialog(dialog: &mut SipDialog, msg: SipMessage, cap: usize) {
-    advance_dialog_read(dialog, msg, cap, &SdpRead::Unread);
+    // A message the dialog did not keep is dropped: a merge replays messages
+    // it owns and reads none of them after.
+    drop(advance_dialog_read(dialog, msg, cap, &SdpRead::Unread));
 }
 
 /// [`advance_dialog`] with the message's SDP as the caller already parsed it.
-fn advance_dialog_read(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize, sdp: &SdpRead) {
+///
+/// # Returns
+///
+/// `None` when the dialog stored the message as its newest; otherwise the
+/// message, unchanged (a copy from another source, or a message past `cap`).
+fn advance_dialog_read(
+    dialog: &mut SipDialog,
+    mut msg: SipMessage,
+    cap: usize,
+    sdp: &SdpRead,
+) -> Option<SipMessage> {
     // A copy of a stored message from another source (DEDUP-1): the wire and
     // a HEP feed of one proxy deliver every message twice. It changes nothing
     // but the sources of the message it copies and the two times; above all
@@ -3171,7 +3323,7 @@ fn advance_dialog_read(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize, 
         dialog.updated_at = ts;
         dialog.latest_message_at = dialog.latest_message_at.max(ts);
         dialog.earliest_message_at = dialog.earliest_message_at.min(ts);
-        return;
+        return Some(msg);
     }
 
     // Retransmission detection: same CSeq identity already seen. O(1) set
@@ -3193,19 +3345,23 @@ fn advance_dialog_read(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize, 
         if let Some(key) = cseq_key {
             *dialog.timing.retransmit_counts.entry(key).or_insert(0) += 1;
         }
-        // Mark as retransmission but store it for ladder display (capped)
-        msg.is_retransmission = true;
+        // Store it for ladder display (capped), marked as a retransmission.
+        // Only a stored copy is marked: one past the cap goes back to the
+        // caller as it came.
         let ts = msg.timestamp;
-        if dialog.messages.len() < cap {
-            dialog.messages.push(msg);
-        }
+        let unkept = if dialog.messages.len() < cap {
+            msg.is_retransmission = true;
+            keep_under_cap(&mut dialog.messages, msg, cap)
+        } else {
+            Some(msg)
+        };
         // Even a dropped (at-cap) retransmission is activity: use the arriving
         // message's timestamp, not the stored tail's, so a retransmission flood
         // keeps the dialog out of compact_idle.
         dialog.updated_at = ts;
         dialog.latest_message_at = dialog.latest_message_at.max(ts);
         dialog.earliest_message_at = dialog.earliest_message_at.min(ts);
-        return;
+        return unkept;
     }
 
     // Update state machine
@@ -3219,12 +3375,26 @@ fn advance_dialog_read(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize, 
 
     // Record the message (move instead of clone, capped per D17)
     let ts = msg.timestamp;
-    if dialog.messages.len() < cap {
-        dialog.messages.push(msg);
-    }
+    let unkept = keep_under_cap(&mut dialog.messages, msg, cap);
     dialog.updated_at = ts;
     dialog.latest_message_at = dialog.latest_message_at.max(ts);
     dialog.earliest_message_at = dialog.earliest_message_at.min(ts);
+    unkept
+}
+
+/// Store `msg` at the end of `messages` while they number fewer than `cap`;
+/// otherwise hand it back.
+fn keep_under_cap(
+    messages: &mut Vec<SipMessage>,
+    msg: SipMessage,
+    cap: usize,
+) -> Option<SipMessage> {
+    if messages.len() < cap {
+        messages.push(msg);
+        None
+    } else {
+        Some(msg)
+    }
 }
 
 /// The derived state one message contributes to the dialog it belongs to.
@@ -3678,8 +3848,41 @@ pub fn bucket_by_start(
         .collect())
 }
 
+/// Where [`DialogStore::process_message_read`] left the message it was given.
+///
+/// The batch runner still reads a message after the store took it (the DSL
+/// filter, the detectors and the per-message output run after the dialog
+/// update). It used to clone every message for the store; with this answer it
+/// moves the message in and reads it back with [`DialogStore::placed`].
+#[cfg(feature = "native")]
+#[derive(Debug)]
+pub(crate) enum Placed {
+    /// The store holds the message as the newest stored message of the dialog
+    /// at this index of its map. Valid until the store next changes.
+    Stored(usize),
+    /// The store did not keep the message: no Call-ID, refused by the method
+    /// filter, the admission matcher or capacity, unable to open a dialog, a
+    /// copy from another source, or past the dialog's message cap. Handed back
+    /// unchanged, boxed so the answer stays small on the path that keeps it.
+    Returned(Box<SipMessage>),
+}
+
+/// A dialog [`DialogStore::find_dialog`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DialogAt {
+    /// Its index in the store's map.
+    pub(crate) index: usize,
+    /// Found by the exact key, as [`DialogStore::get_mut`] finds it; `false`
+    /// for a `Branch` tracking unit found by its Call-ID prefix.
+    pub(crate) exact: bool,
+}
+
 #[cfg(test)]
 mod compact_walk_tests;
+// The forms that hand a message back exist for the batch runner, which is
+// native-only.
+#[cfg(all(test, feature = "native"))]
+mod placed_tests;
 #[cfg(test)]
 mod sdp_origin_tests;
 

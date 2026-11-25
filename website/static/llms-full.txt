@@ -13699,6 +13699,7 @@ minute.
 | Move to a newer release | [Upgrade sipnab](#upgrade-sipnab) |
 | Take it off this machine | [Uninstall it](#uninstall-it) |
 | Fix an install that failed | [When something does not work](#when-something-does-not-work) |
+| Tell the project about a vulnerability | [Report a security problem](#report-a-security-problem) |
 
 ## Before you start
 
@@ -15433,6 +15434,25 @@ Remove it yourself:
 ```bash
 sudo rm -rf /etc/sipnab
 ```
+
+## Report a security problem
+
+Send a vulnerability report by email to `security@sipnab.com`, never as a
+public issue. [The security policy](https://github.com/NormB/sipnab/blob/main/SECURITY.md)
+says what to include and how long each stage takes.
+
+Scanners and researchers can read the same address from the site's
+[RFC 9116](https://www.rfc-editor.org/rfc/rfc9116.html) file. You need an
+HTTPS client such as `curl`, and nothing changes on your systems.
+
+```bash
+curl -sS https://sipnab.com/.well-known/security.txt
+```
+
+- The answer names `Contact: mailto:security@sipnab.com` and a `Policy` link
+  to the security policy.
+- Its `Expires` date is in the future. A date in the past means the file is
+  stale: email the address above anyway, and say so in the report.
 
 ## Next steps
 
@@ -49351,7 +49371,7 @@ it to [`show_evidence`](mcp-tools-captures.md#show_evidence) to read the bytes b
 `suppressions` names the `.sipnablint` file that took part, both of them exactly
 as [`lint_dialog`](#lint_dialog) reports them.
 
-Nineteen of the forty-one rules skip on a one-message run, and
+Nineteen of the forty-two rules skip on a one-message run, and
 `rules_not_evaluated` names them. Run `lint_dialog` first, and use this tool to
 confirm one message.
 
@@ -49360,14 +49380,14 @@ confirm one message.
 Returns the catalog entry for a rule identifier taken from a finding, a CI log
 or a suppression file.
 
-**Parameters:** `rule_id` (string, required) — one of the 41 catalog
+**Parameters:** `rule_id` (string, required) — one of the 42 catalog
 identifiers, matched exactly, such as `OBS-3264-6.1-PT-UNDECLARED`. No optional
 parameters, and the tool reads no capture, so it answers the same on any
 server. An unknown identifier fails with `invalid_params` (-32602) **listing all
-41**, so a call with any unknown identifier lists the catalog:
+42**, so a call with any unknown identifier lists the catalog:
 
 ```text
-'NOPE' is not a rule in the catalog. The 41 rules are: SIP-3261-8.1.1-MANDATORY-HEADER-MISSING, SIP-3261-20.16-CSEQ-MALFORMED, SIP-3261-20.14-CONTENT-LENGTH-MISMATCH, SIP-3261-25.1-HEADER-CONTROL-BYTE, SIP-3261-20-URI-BRACKETS, SIP-3261-19.1.1-URI-PARAM-DEMOTED, SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING, SIP-3261-20.22-MAX-FORWARDS-RANGE, SIP-3261-8.1.1.7-BRANCH-COOKIE, SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST, SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH, SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH, SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH, SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX, SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED, SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE, SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE, SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED, SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ, SIP-3262-4-PRACK-MISSING, SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE, SIP-4028-4-SESSION-EXPIRES-TOO-SMALL, SIP-4028-5-MIN-SE-TOO-SMALL, SIP-4028-9-REFRESHER-MISSING, SIP-7989-5-SESSION-ID-MALFORMED, SIP-7989-5-SESSION-ID-UPPERCASE, SIP-7989-11-SESSION-ID-LEGACY-FORM, SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT, SDP-3264-6.1-ANSWER-EXTRA-FORMAT, SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL, SDP-3264-8.4-HOLD-CONNECTION-ZERO, SDP-3264-8.3.2-DYNAMIC-PT-REBOUND, SDP-3264-7-TELEPHONE-EVENT-ONE-WAY, SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES, SDP-7587-7-OPUS-RTPMAP-RATE, OBS-3264-6.1-PT-UNDECLARED, OBS-4566-5.14-MEDIA-PORT-MISMATCH, OBS-3264-6.1-DIRECTION-UNMET, OBS-4566-6-PTIME-MISMATCH, OBS-5761-5.1.1-RTCP-MUX-UNANSWERED, OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE
+'NOPE' is not a rule in the catalog. The 42 rules are: SIP-3261-8.1.1-MANDATORY-HEADER-MISSING, SIP-3261-20.16-CSEQ-MALFORMED, SIP-3261-20.14-CONTENT-LENGTH-MISMATCH, SIP-3261-25.1-HEADER-CONTROL-BYTE, SIP-3261-20-URI-BRACKETS, SIP-3261-19.1.1-URI-PARAM-DEMOTED, SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING, SIP-3261-20.22-MAX-FORWARDS-RANGE, SIP-3261-8.1.1.7-BRANCH-COOKIE, SIP-3261-7.1-REQUEST-LINE-SPACING, SIP-3261-8.1.1.2-TO-TAG-IN-INITIAL-REQUEST, SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH, SIP-3261-17.1.1.3-ACK-CSEQ-MISMATCH, SIP-3261-17.1.1.3-ACK-BRANCH-MISMATCH, SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX, SIP-3261-12.1.1-RECORD-ROUTE-NOT-COPIED, SIP-3261-16.6-RECORD-ROUTE-NOT-LOOSE, SIP-3261-8.1.1.7-VIA-BRANCH-DUPLICATE, SIP-3261-7.3.1-SINGULAR-HEADER-REPEATED, SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ, SIP-3262-4-PRACK-MISSING, SIP-4028-7.1-SESSION-EXPIRES-BELOW-MIN-SE, SIP-4028-4-SESSION-EXPIRES-TOO-SMALL, SIP-4028-5-MIN-SE-TOO-SMALL, SIP-4028-9-REFRESHER-MISSING, SIP-7989-5-SESSION-ID-MALFORMED, SIP-7989-5-SESSION-ID-UPPERCASE, SIP-7989-11-SESSION-ID-LEGACY-FORM, SDP-3264-6.1-ANSWER-NO-COMMON-FORMAT, SDP-3264-6.1-ANSWER-EXTRA-FORMAT, SDP-3264-6.1-ANSWER-DIRECTION-ILLEGAL, SDP-3264-8.4-HOLD-CONNECTION-ZERO, SDP-3264-8.3.2-DYNAMIC-PT-REBOUND, SDP-3264-7-TELEPHONE-EVENT-ONE-WAY, SDP-3264-8.2-REJECTED-STREAM-ATTRIBUTES, SDP-7587-7-OPUS-RTPMAP-RATE, OBS-3264-6.1-PT-UNDECLARED, OBS-4566-5.14-MEDIA-PORT-MISMATCH, OBS-3264-6.1-DIRECTION-UNMET, OBS-4566-6-PTIME-MISMATCH, OBS-5761-5.1.1-RTCP-MUX-UNANSWERED, OBS-3551-4.2-FRAME-SIZE-IMPOSSIBLE
 ```
 
 ```jsonc
@@ -56406,12 +56426,13 @@ These read one message on its own.
 | `SIP-3261-8.1.1-MANDATORY-HEADER-MISSING` | error | must | [RFC 3261 section 8.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1) | One of `Call-ID`, `CSeq`, `From`, `To` or `Via` is absent. | Add the missing header field. |
 | `SIP-3261-20.16-CSEQ-MALFORMED` | error | must | [RFC 3261 section 20.16](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.16) | A `CSeq` arrives that nothing can read as a number and a method. | Send `CSeq: <number> <method>`. |
 | `SIP-3261-20.14-CONTENT-LENGTH-MISMATCH` | error | must | [RFC 3261 section 20.14](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.14) | `Content-Length` exceeds the body that arrived. | Set `Content-Length` to the body size in octets. |
-| `SIP-3261-25.1-HEADER-CONTROL-BYTE` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | A header name or value holds a control byte other than tab. | Remove the control byte at the element that inserts it. |
+| `SIP-3261-25.1-HEADER-CONTROL-BYTE` | error | must | [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-25.1) | A header name or value holds a control byte other than tab. A backslash-escaped control byte inside a quoted string is legal and is not reported. | Remove the control byte at the element that inserts it. |
 | `SIP-3261-20-URI-BRACKETS` | error | must | [RFC 3261 section 20](https://www.rfc-editor.org/rfc/rfc3261.html#section-20) | A `Contact`, `From` or `To` URI holds a comma or a question mark outside angle brackets. | Enclose the URI in angle brackets. |
 | `SIP-3261-19.1.1-URI-PARAM-DEMOTED` | warning | interop | [RFC 3261 section 19.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-19.1.1) | A URI parameter (`transport`, `user`, `method`, `ttl`, `maddr` or `lr`) sits outside the angle brackets, where the receiver reads it as a header parameter. | Enclose the URI and its parameters in angle brackets. A bare URI followed by `;tag=` does not fire this rule. |
 | `SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING` | warning | must | [RFC 3261 section 8.1.1.6](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.6) | A request carries no `Max-Forwards`. | Add `Max-Forwards: 70`. |
 | `SIP-3261-20.22-MAX-FORWARDS-RANGE` | notice | should | [RFC 3261 section 20.22](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.22) | `Max-Forwards` reads zero, exceeds the recommended 70, or holds no integer. | Start requests at `Max-Forwards: 70`. |
 | `SIP-3261-8.1.1.7-BRANCH-COOKIE` | warning | must | [RFC 3261 section 8.1.1.7](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.7) | A request's top `Via` branch lacks the `z9hG4bK` magic cookie, or carries no branch at all. | Generate branches that start with `z9hG4bK`. |
+| `SIP-3261-7.1-REQUEST-LINE-SPACING` | warning | must | [RFC 3261 section 7.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-7.1) | A request line has whitespace before the method or after `SIP/2.0`, more than one space between elements, or a tab. sipnab still reads the request. | Send `Method SP Request-URI SP SIP/2.0` with one space between elements. |
 | `SIP-3261-8.1.1.5-CSEQ-METHOD-MISMATCH` | error | must | [RFC 3261 section 8.1.1.5](https://www.rfc-editor.org/rfc/rfc3261.html#section-8.1.1.5) | The `CSeq` method disagrees with the request line. | Make the `CSeq` method match the request method. |
 | `SIP-3261-12.1.1-CONTACT-MISSING-IN-2XX` | error | must | [RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-12.1.1) | A 2xx answer to `INVITE` carries no `Contact`, so the dialog it creates has no remote target for the `ACK` or the `BYE`. | Add a `Contact` to the 2xx. |
 | `SIP-3262-3-RELIABLE-PROVISIONAL-WITHOUT-RSEQ` | error | must | [RFC 3262 section 3](https://www.rfc-editor.org/rfc/rfc3262.html#section-3) | A provisional demands `100rel` and carries no `RSeq`, so the receiver has to acknowledge a response it cannot name. | Add `RSeq` to every reliable provisional response. |
@@ -68623,15 +68644,23 @@ and where to send it.
 
 ## Rotate the audit and provenance files
 
-Three flags append one JSON line per event to a file and never truncate it:
+Four flags append one JSON line per event to a file and never truncate it:
 
 - `--mcp-audit-file`: every MCP tool call;
 - `--tui-audit-file`: every operator action in the terminal interface;
+- `--evidence-out PATH`: every security finding that names a source;
 - `--run-provenance-file`: one line per run, at startup.
 
-The two audit files stay open for the whole run. Rename one, and sipnab keeps
-writing to the renamed file until it restarts. Rotate them with
-`copytruncate`, which copies the file and then empties it in place:
+The first three stay open for the whole run. Before each line, sipnab checks
+that the path still names the file it holds open. When a rotation renamed or
+deleted the file, sipnab opens the path again, creates the file if it is missing,
+and writes the line there. It logs one line at `info`:
+`reopened /var/log/sipnab/mcp-audit.jsonl after rotation`.
+
+Prerequisites: `logrotate`, and a directory the service can write (below).
+
+Rotate the files with the default `create` mode of `logrotate`, which renames the file
+and lets the next line create a new one:
 
 ```text
 /var/log/sipnab/*.jsonl {
@@ -68641,7 +68670,7 @@ writing to the renamed file until it restarts. Rotate them with
     delaycompress
     missingok
     notifempty
-    copytruncate
+    create 0600 sipnab sipnab
 }
 ```
 
@@ -68655,16 +68684,26 @@ status 2:
 --mcp-audit-file /var/log/sipnab2/mcp-audit.jsonl: Read-only file system (os error 30). sipnab refuses to serve MCP without the audit trail it was asked for
 ```
 
-This run used the unit from [Write a unit of your own](#write-a-unit-of-your-own)
-with a drop-in adding `LogsDirectory=sipnab` and
-`--mcp-audit-file /var/log/sipnab/mcp-audit.jsonl`. After one tool call,
-`logrotate -f /etc/logrotate.d/sipnab`, and a second tool call, the second
-record landed in the emptied file as a complete line:
+To verify, make one tool call, rotate, and make a second call. This run was
+`sipnab -N --mcp -I capture.pcap --mcp-audit-file DIR/mcp-audit.jsonl` over
+stdio as an ordinary user, with the stanza above pointed at `DIR/*.jsonl` and
+`create 0600` (an ordinary user cannot give the file to another owner). Between
+the two calls it ran `logrotate -f -s DIR/state DIR/sipnab.logrotate`. `DIR`
+stands for the test directory:
 
 ```text
--rw------- 1 sipnab sipnab 195 Nov  3 14:43 mcp-audit.jsonl
--rw------- 1 sipnab sipnab 195 Nov  3 14:43 mcp-audit.jsonl.1
-{"args":"{}","caller":"127.0.0.1:38978 bearer-verified scope=full","elapsed_ms":0,"error":null,"id":"2","outcome":"ok","seq":2,"tool":"capture_status","ts":"2026-11-03T14:43:22.918525017+00:00"}
+-rw------- 158 mcp-audit.jsonl
+-rw------- 158 mcp-audit.jsonl.1
+--- mcp-audit.jsonl.1
+{"args":"{}","caller":"stdio","elapsed_ms":0,"error":null,"id":"2","outcome":"ok","seq":1,"tool":"capture_status","ts":"2026-11-25T02:48:14.667077241+00:00"}
+--- mcp-audit.jsonl
+{"args":"{}","caller":"stdio","elapsed_ms":2,"error":null,"id":"3","outcome":"ok","seq":2,"tool":"capture_status","ts":"2026-11-25T02:48:14.804894064+00:00"}
+```
+
+With `SIPNAB_LOG=info` the same run logged the reopen:
+
+```text
+INFO serve_inner: sipnab::append_file: reopened DIR/mcp-audit.jsonl after rotation
 ```
 
 - `seq` continues across the rotation, so the new file starts at `seq` 2 here,
@@ -68674,6 +68713,19 @@ record landed in the emptied file as a complete line:
   truncation. The window is the time `logrotate` takes to copy the file.
 - sipnab writes the provenance file once per run, at startup, so any rotation
   method works for it.
+
+Troubleshoot:
+
+- **New records still go to the rotated file.** The sipnab binary is older
+  than this release; `sipnab --version` names it.
+- **sipnab refuses a tool call after rotation.** The error names the path:
+  `<path>: the file was rotated away and cannot be opened again: <error>`. The
+  rotation removed the directory, or the service cannot write it; check `LogsDirectory=` and
+  the directory's owner. The refused call still used its `seq`, so the trail
+  shows the gap. The terminal interface keeps running and reports
+  `AUDIT TRAIL INCOMPLETE: '<action>' was not recorded to <path> (<error>)`.
+- **The new file has the wrong owner or mode.** `logrotate` made it from the
+  `create` line; sipnab appends to that file and leaves its mode alone.
 
 ## When the service does not start
 
@@ -87727,6 +87779,7 @@ Two harnesses exercise every parser reachable from packet or file bytes:
   - The difference from the weekly run above is the corpus.
     It persists between runs instead of restarting from the tracked seeds.
     So what libFuzzer learns accumulates instead of starting over.
+- **OSS-Fuzz**: Not submitted. [`ops/oss-fuzz/`](../../ops/oss-fuzz) holds the project files ready for a later application; ClusterFuzzLite above is the continuous fuzzing that runs.
 - **Always-on smoke fuzz**: [`tests/smoke_fuzz_test.rs`](../../tests/smoke_fuzz_test.rs) runs in
   `cargo test` (no nightly needed).
   - It runs ~40k random + structurally mutated inputs per entry point under `catch_unwind`.
@@ -88624,6 +88677,35 @@ That is exactly why CI has a feature matrix.
 | `binary-size.yml` | weekly cron (Fridays 05:17 UTC), manual, and PRs touching the manifests, the lockfile, the build scripts or the ceiling | Builds the x86_64 musl release binary the way `release.yml` does, splits its symbols, and fails when it exceeds `binary_size_ceiling_mb`, through [`scripts/check-binary-size.sh`](../../scripts/check-binary-size.sh), the script `release.yml`'s size step runs. |
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
 | `rerun-not-acquired.yml` | when a `CI` or `Release` run completes without success; manual, which prints the decision for one run and re-runs nothing | Re-runs the failed jobs of a run in which every job that did not succeed has the conclusion `skipped` or never started, because no hosted runner took it. See [A job no runner took](#a-job-no-runner-took). |
+
+### Scorecard token
+
+Scorecard's Branch-Protection check reads the classic branch protection rules of `main`.
+The workflow's default `GITHUB_TOKEN` cannot read them, so with it alone the check scores -1
+and reports that the token cannot read classic branch protection rules.
+
+- `scorecard.yml` passes `repo_token: ${{ secrets.SCORECARD_TOKEN || github.token }}`.
+- `SCORECARD_TOKEN` is a repository secret holding a fine-grained personal access token.
+  - Repository access: `NormB/sipnab` only.
+  - Permission: Administration: Read-only. GitHub adds Metadata: Read-only by itself.
+    The token holds no other permission.
+  - The owner creates it at <https://github.com/settings/personal-access-tokens/new>, as the
+    scorecard-action document
+    [Authentication with Fine-grained PAT](https://github.com/ossf/scorecard-action/blob/main/docs/authentication/fine-grained-auth-token.md)
+    describes.
+- The token expires one year after its owner makes it, the longest expiry that document gives.
+  - GitHub emails the owner before the expiry date.
+  - To renew it, regenerate the token with a new one-year expiry and paste the new value
+    into the same secret, under Settings, Secrets and variables, Actions.
+- When the secret is absent, the expression yields the default `GITHUB_TOKEN`, so the
+  workflow still runs and only Branch-Protection goes back to -1.
+  - An expired token is not absent: the secret still holds it and the fallback does not
+    apply. Renew it, or delete the secret.
+- Every workflow of the repository can read a repository secret. `scorecard.yml` is the only
+  one that names it, and it has no `pull_request_target` trigger.
+  [`tests/workflow_supply_chain_test.rs`](../../tests/workflow_supply_chain_test.rs) fails if
+  either stops being true, if the step loses the fallback, or if this section stops stating
+  the scope and the renewal.
 
 ### ThreadSanitizer
 

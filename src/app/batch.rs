@@ -6212,7 +6212,7 @@ fn process_parsed_packet(
     match action {
         crate::pipeline::PacketAction::None => {}
         crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
-            packet.on_sip(pp, &msg, &sdp_links, &sdp);
+            packet.on_sip(pp, msg, &sdp_links, &sdp);
         }
         crate::pipeline::PacketAction::ThMapping(event) => {
             // A mapping is call association, so `--no-dialog` opts out of it
@@ -6305,7 +6305,7 @@ impl PacketPass<'_, '_, '_> {
     fn on_sip(
         &mut self,
         pp: &ParsedPacket,
-        sip_msg: &sip::SipMessage,
+        msg: Box<sip::SipMessage>,
         sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
         sdp: &sip::sdp::SdpRead,
     ) {
@@ -6313,22 +6313,39 @@ impl PacketPass<'_, '_, '_> {
         self.counters.sip_count += 1;
 
         // Apply matcher (header-level filters)
-        let matcher_pass = self.ctx.matcher.matches(sip_msg);
+        let matcher_pass = self.ctx.matcher.matches(&msg);
 
-        // Track dialog regardless of filter (needed for filter DSL evaluation)
-        if !cli.dialog_args.no_dialog {
-            self.track_dialog(pp, sip_msg, sdp_links, sdp);
-        }
+        // Track dialog regardless of filter (needed for filter DSL evaluation).
+        // The store takes the message by value; everything below reads it
+        // back from where the store left it, through the same `&mut` the
+        // caller's guard gave (no lock, no lookup: an index into the map).
+        let placed = if cli.dialog_args.no_dialog {
+            sip::dialog_store::Placed::Returned(msg)
+        } else {
+            self.track_dialog(pp, *msg, sdp_links, sdp)
+        };
+        let dialog_store: &DialogStore = self.state.dialog_store;
+        let Some(sip_msg) = dialog_store.placed(&placed) else {
+            // unreachable: nothing changed the store since it answered
+            return;
+        };
 
         // Apply DSL filter (evaluated after dialog update)
         let filter_pass = dsl_filter_passes(
             self.ctx.filter_expr.as_ref(),
             sip_msg,
-            self.state.dialog_store,
+            dialog_store,
             self.state.stream_store,
         );
 
-        self.run_detectors(pp, sip_msg);
+        Self::run_detectors(
+            self.ctx,
+            self.engines,
+            self.effects,
+            dialog_store,
+            pp,
+            sip_msg,
+        );
 
         // STIR/SHAKEN extraction (I1)
         #[cfg(feature = "tls")]
@@ -6339,9 +6356,7 @@ impl PacketPass<'_, '_, '_> {
         // I5: --calls-only keeps every message of an INVITE dialog and
         // drops dialogs that are not calls. One rule, asked of the dialog.
         let calls_only_pass = !cli.mode_args.calls_only || {
-            let dialog = sip_msg
-                .call_id()
-                .and_then(|id| self.state.dialog_store.get(id));
+            let dialog = sip_msg.call_id().and_then(|id| dialog_store.get(id));
             crate::sip::matcher::calls_only_admits(
                 dialog.as_ref().map(|d| &d.method),
                 sip_msg.method.as_ref(),
@@ -6378,38 +6393,49 @@ impl PacketPass<'_, '_, '_> {
 
     /// Fold a SIP message into its dialog, tag it, queue a dialog event when
     /// its state changed, and link the SDP endpoints it carried.
+    ///
+    /// Takes the message by value and moves it into the store; the answer
+    /// says where it went, for the caller to read it back.
     #[inline]
     fn track_dialog(
         &mut self,
         pp: &ParsedPacket,
-        sip_msg: &sip::SipMessage,
+        msg: sip::SipMessage,
         sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
         sdp: &sip::sdp::SdpRead,
-    ) {
+    ) -> sip::dialog_store::Placed {
         let cli = self.ctx.cli;
         let dialog_store = &mut *self.state.dialog_store;
         // Fire event exec before updating state (captures state change)
-        let prev_state = sip_msg
+        let prev_state = msg
             .call_id()
             .and_then(|id| dialog_store.get(id))
             .map(|d| d.state().clone());
 
         // With the SDP classification parsed for the links, so the dialog's
         // SDP timeline does not parse the body again.
-        dialog_store.process_message_read(sip_msg.clone(), sdp);
+        let placed = dialog_store.process_message_placed(msg, sdp);
+
+        // The dialog of the message's Call-ID, as an index: the message may
+        // now be the store's own, and --tag changes the store. One lookup
+        // serves both --tag and the state check below.
+        let found = dialog_store
+            .placed(&placed)
+            .and_then(sip::SipMessage::call_id)
+            .map(|id| dialog_store.find_dialog(id));
 
         // Apply --tag to the dialog
         if let Some(ref tag_label) = cli.dialog_args.tag
-            && let Some(call_id) = sip_msg.call_id()
-            && let Some(dialog) = dialog_store.get_mut(call_id)
+            && let Some(found) = found
+            && let Some(dialog) = dialog_store.exact_dialog_mut(found)
             && !dialog.tags.contains(tag_label)
         {
             dialog.tags.push(tag_label.clone());
         }
 
         // Check if state changed, fire event
-        if let Some(call_id) = sip_msg.call_id()
-            && let Some(dialog) = dialog_store.get(call_id)
+        if let Some(at) = found.flatten()
+            && let Some(dialog) = dialog_store.dialog_at(at.index)
             && prev_state.as_ref() != Some(dialog.state())
         {
             // Queued, not fired: the command is decided here (it reads
@@ -6437,6 +6463,7 @@ impl PacketPass<'_, '_, '_> {
                 .stream_store
                 .link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
         }
+        placed
     }
 
     /// Security detection: every armed detector runs here, under the
@@ -6444,14 +6471,22 @@ impl PacketPass<'_, '_, '_> {
     /// the effects are applied right below. The fraud detector reads
     /// the dialog this message belongs to, looked up only when it is
     /// armed, so an unarmed run pays no hash lookup for it.
+    ///
+    /// Takes the pieces of the pass it uses rather than `&mut self`, because
+    /// `sip_msg` may be the store's own message: the store is borrowed for
+    /// reading while the detectors and the effects are changed.
     #[inline]
-    fn run_detectors(&mut self, pp: &ParsedPacket, sip_msg: &sip::SipMessage) {
-        let cli = self.ctx.cli;
-        let engines = &mut *self.engines;
+    fn run_detectors(
+        ctx: &BatchContext<'_>,
+        engines: &mut DetectionEngines,
+        effects: &mut DeferredEffects,
+        dialog_store: &DialogStore,
+        pp: &ParsedPacket,
+        sip_msg: &sip::SipMessage,
+    ) {
+        let cli = ctx.cli;
         let dialog = if engines.fraud.is_some() {
-            sip_msg
-                .call_id()
-                .and_then(|id| self.state.dialog_store.get(id))
+            sip_msg.call_id().and_then(|id| dialog_store.get(id))
         } else {
             None
         };
@@ -6475,7 +6510,7 @@ impl PacketPass<'_, '_, '_> {
             out,
             alerts: pending_alerts,
             evidence: evidence_sink,
-        } = &mut *self.effects;
+        } = effects;
         for effect in sec::detectors::run_detectors(&mut detectors, sip_msg, dialog, policy) {
             apply_detector_effect(
                 effect,
@@ -19108,6 +19143,237 @@ mod tests {
             dialogs: dialog_store,
             event_exec,
         })
+    }
+
+    /// What applying one packet cost on this thread.
+    struct PacketCost {
+        /// Allocations, reallocations included.
+        allocations: u64,
+        /// Hash lookups of the dialog map (`DialogStore::key_index`).
+        lookups: usize,
+    }
+
+    /// How many allocations this thread makes applying the LAST of
+    /// `packets`, after the others were applied to the same stores, as
+    /// [`drive_packets_kept`] applies them. Effects are not drained.
+    fn allocations_of_last_packet(cli: &Cli, packets: &[ParsedPacket]) -> Result<u64, TestError> {
+        Ok(cost_of_last_packet(cli, packets)?.allocations)
+    }
+
+    /// The [`PacketCost`] of applying the LAST of `packets`, after the others
+    /// were applied to the same stores.
+    fn cost_of_last_packet(cli: &Cli, packets: &[ParsedPacket]) -> Result<PacketCost, TestError> {
+        let (last, before) = packets.split_last().ok_or("at least one packet")?;
+        let matcher = SipMatcher::new(cli, None).map_err(|e| format!("matcher: {e:?}"))?;
+        let filter_expr: Option<FilterExpr> = None;
+        let output_opts = OutputOptions::default();
+        let mut dialog_store = DialogStore::new(100, false);
+        let mut stream_store = StreamStore::new(100);
+        let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+        let mut event_exec = EventExecEngine::new(
+            None,
+            None,
+            0,
+            0.0,
+            crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+        );
+        let mut engines = DetectionEngines {
+            scanner: None,
+            fraud: None,
+            digest: None,
+            reg_flood: None,
+            alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
+            kill_handle: None,
+            detect_only: false,
+            kill_response_code: 0,
+            kill_targets: Vec::new(),
+        };
+        let mut counters = PacketCounters {
+            sip_count: 0,
+            rtp_count: 0,
+            prev_timestamp: None,
+            trailing_remaining: 0,
+            followed_dialogs: std::collections::HashSet::new(),
+            dtmf_count: 0,
+            dtmf_seen: rtp::dtmf::DtmfDedupe::default(),
+        };
+        let ctx = BatchContext {
+            matcher: &matcher,
+            filter_expr: &filter_expr,
+            output_opts: &output_opts,
+            cli,
+            no_rtp: false,
+            telephone_events: cli.mode_args.telephone_event,
+            after_count: 0,
+            portrange: (5060, 5061),
+        };
+        // Reserved up front, so a buffer growing on the measured packet is
+        // not counted against it.
+        let mut effects = DeferredEffects::new();
+        let mut apply = |pp: &ParsedPacket| {
+            let mut state = ProcessingState {
+                dialog_store: &mut dialog_store,
+                stream_store: &mut stream_store,
+                rtp_heuristic: &mut rtp_heuristic,
+                event_exec: &mut event_exec,
+                #[cfg(feature = "tls")]
+                srtp: None,
+                #[cfg(feature = "tls")]
+                dtls: None,
+                #[cfg(feature = "tls")]
+                export: None,
+                group: None,
+            };
+            process_parsed_packet(
+                pp,
+                &ctx,
+                &mut state,
+                &mut engines,
+                &mut counters,
+                &mut effects,
+            );
+        };
+        for pp in before {
+            apply(pp);
+        }
+        let lookups_before = crate::sip::dialog_store::key_lookups_on_this_thread();
+        let (allocations, ()) = crate::test_alloc::allocations_during(|| apply(last));
+        let lookups = crate::sip::dialog_store::key_lookups_on_this_thread() - lookups_before;
+        Ok(PacketCost {
+            allocations,
+            lookups,
+        })
+    }
+
+    /// An INVITE of `call_id` and its 180, the second the measured packet.
+    fn invite_then_ringing(call_id: &str) -> [ParsedPacket; 2] {
+        [
+            parsed_sip_packet(invite_bytes(call_id), 5060, 5060),
+            parsed_sip_packet(ringing_with_headers(call_id, 0), 5060, 5060),
+        ]
+    }
+
+    /// An in-dialog message costs the dialog map three hash lookups: the
+    /// state before, the store's own, the state after. Reading the message
+    /// back from the store adds none.
+    #[test]
+    fn an_in_dialog_message_costs_three_lookups() -> Result<(), TestError> {
+        let cost = cost_of_last_packet(&base_cli(), &invite_then_ringing("l3@example.com"))?;
+        assert_eq!(cost.lookups, 3, "lookups for one in-dialog message");
+        Ok(())
+    }
+
+    /// `--tag` costs no lookup more: the dialog found for the state check is
+    /// the one tagged.
+    #[test]
+    fn tagging_an_in_dialog_message_costs_no_extra_lookup() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.dialog_args.tag = Some("probe".to_string());
+        let cost = cost_of_last_packet(&cli, &invite_then_ringing("lt@example.com"))?;
+        assert_eq!(cost.lookups, 3, "lookups for one tagged in-dialog message");
+        Ok(())
+    }
+
+    /// `--tag` still tags the dialog.
+    #[test]
+    fn tagging_still_tags_the_dialog() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.dialog_args.tag = Some("probe".to_string());
+        let driven = drive_packets_kept(
+            &cli,
+            &invite_then_ringing("tagged@example.com"),
+            EventExecEngine::new(
+                None,
+                None,
+                0,
+                0.0,
+                crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+            ),
+        )?;
+        let dialog = driven
+            .dialogs
+            .get("tagged@example.com")
+            .ok_or("the dialog is tracked")?;
+        assert_eq!(dialog.tags, ["probe"], "tagged once, by both messages");
+        Ok(())
+    }
+
+    /// `--no-dialog` costs the dialog map no lookup.
+    #[test]
+    fn an_untracked_message_costs_no_lookup() -> Result<(), TestError> {
+        let mut cli = base_cli();
+        cli.dialog_args.no_dialog = true;
+        let cost = cost_of_last_packet(&cli, &invite_then_ringing("l0@example.com"))?;
+        assert_eq!(cost.lookups, 0, "no dialog tracking, no lookup");
+        Ok(())
+    }
+
+    /// A 180 Ringing of `call_id` carrying `extra` more headers than a
+    /// minimal one, each of which a copy of the parsed message would have to
+    /// allocate again (name and value).
+    fn ringing_with_headers(call_id: &str, extra: usize) -> Vec<u8> {
+        let mut msg = String::from("SIP/2.0 180 Ringing\r\n");
+        msg.push_str("Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-abc\r\n");
+        msg.push_str("From: Alice <sip:alice@example.com>;tag=a1b2\r\n");
+        msg.push_str("To: Bob <sip:bob@example.com>;tag=b2\r\n");
+        msg.push_str(&format!("Call-ID: {call_id}\r\n"));
+        msg.push_str("CSeq: 1 INVITE\r\n");
+        for i in 0..extra {
+            msg.push_str(&format!("X-Fixture-{i}: value-{i}\r\n"));
+        }
+        msg.push_str("Content-Length: 0\r\n\r\n");
+        msg.into_bytes()
+    }
+
+    /// The batch runner hands each SIP message to the dialog store by value
+    /// and reads it back from there, so tracking a message in a dialog makes
+    /// no copy of it: the allocations it adds over `--no-dialog` stay below
+    /// one per extra header. A copy costs at least two per header (its name
+    /// and its value).
+    #[test]
+    fn tracking_a_message_in_its_dialog_makes_no_copy_of_it() -> Result<(), TestError> {
+        const EXTRA: usize = 40;
+        let call_id = "track-copy@example.com";
+        let packets = [
+            parsed_sip_packet(invite_bytes(call_id), 5060, 5060),
+            parsed_sip_packet(ringing_with_headers(call_id, EXTRA), 5060, 5060),
+        ];
+        let tracking = base_cli();
+        let mut untracked = base_cli();
+        untracked.dialog_args.no_dialog = true;
+        let with = allocations_of_last_packet(&tracking, &packets)?;
+        let without = allocations_of_last_packet(&untracked, &packets)?;
+        assert!(
+            with < without + EXTRA as u64,
+            "tracking the 180 cost {with} allocations against {without} untracked: \
+             a difference of {EXTRA} or more means the message was copied"
+        );
+        Ok(())
+    }
+
+    /// The same, for the message that opens the dialog: the store keeps its
+    /// own copy of an opening message (`SipDialog::new`), but the runner adds
+    /// no second one.
+    #[test]
+    fn opening_a_dialog_copies_the_message_at_most_once() -> Result<(), TestError> {
+        const EXTRA: usize = 40;
+        let packets = [parsed_sip_packet(
+            ringing_with_headers("open-copy@example.com", EXTRA),
+            5060,
+            5060,
+        )];
+        let tracking = base_cli();
+        let mut untracked = base_cli();
+        untracked.dialog_args.no_dialog = true;
+        let with = allocations_of_last_packet(&tracking, &packets)?;
+        let without = allocations_of_last_packet(&untracked, &packets)?;
+        assert!(
+            with < without + 3 * EXTRA as u64,
+            "opening the dialog cost {with} allocations against {without} untracked: \
+             {} or more means two copies were made",
+            3 * EXTRA
+        );
+        Ok(())
     }
 
     /// An RTP packet to `dst_port` with sequence number `seq`, built on the

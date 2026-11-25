@@ -1094,7 +1094,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 910 -> 912 (PRECHECK-MISSES-HOOK-GATES, +2): testing.md's "The
     // pre-check, before the hook" links .config/precheck-skip.txt and
     // scripts/tests/test_precheck_hook.py.
-    const EXPECTED_CODE_LINKS: usize = 915;
+    // 915 -> 917 (WCA-SCORECARD-BRANCH-PROTECTION, WCA-OSS-FUZZ-SUBMIT, +2):
+    // build-ci-release.md's "Scorecard token" links
+    // tests/workflow_supply_chain_test.rs, and testing.md's OSS-Fuzz line
+    // links ops/oss-fuzz.
+    const EXPECTED_CODE_LINKS: usize = 917;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -160,7 +160,7 @@ fn there_is_exactly_one_fuzz_build_script() -> Result<(), TestError> {
     let shim = read("ops/oss-fuzz/build.sh.shim")?;
     assert!(
         shim.contains(".clusterfuzzlite/build.sh"),
-        "the shim submitted to google/oss-fuzz must exec the ClusterFuzzLite \
+        "the shim held ready for google/oss-fuzz must exec the ClusterFuzzLite \
          build script, or the build logic exists twice"
     );
     assert!(
@@ -815,4 +815,223 @@ fn no_workflow_disables_the_bad_build_check() -> Result<(), TestError> {
          nothing."
     );
     Ok(())
+}
+
+/// What `ops/oss-fuzz/project.yaml` must say about its own state.
+///
+/// `gh api repos/google/oss-fuzz/contents/projects/sipnab` answered 404 on
+/// 2026-11-24, while that file's header said "Submitted to google/oss-fuzz".
+/// The continuous fuzzing that runs is ClusterFuzzLite in this repository's CI.
+/// When OSS-Fuzz accepts sipnab, this phrase and the docs change together.
+const OSS_FUZZ_STATE: &str = "Not submitted";
+
+/// Text that, right before "submitted" on the same line, makes it a
+/// statement that the submission has not happened ("un" for "unsubmitted").
+const SUBMISSION_NEGATIONS: &[&str] = &["not ", "never ", "not yet ", "not been ", "un"];
+
+/// The 1-based numbers of the lines of `text` that say sipnab was submitted to
+/// OSS-Fuzz: a line holding "submitted" (any case, also inside a longer word
+/// such as "resubmitted") with no negation right before it, and "oss-fuzz" on
+/// that line or the one before or after.
+fn oss_fuzz_submission_claims(text: &str) -> Vec<usize> {
+    let lower: Vec<String> = text.lines().map(str::to_lowercase).collect();
+    let mentions = |i: usize| {
+        let from = i.saturating_sub(1);
+        let to = (i + 1).min(lower.len().saturating_sub(1));
+        (from..=to).any(|j| lower[j].contains("oss-fuzz"))
+    };
+    let mut out = Vec::new();
+    for (i, line) in lower.iter().enumerate() {
+        let claims = line.match_indices("submitted").any(|(at, _)| {
+            let before = &line[..at];
+            !SUBMISSION_NEGATIONS.iter().any(|n| before.ends_with(n))
+        });
+        if claims && mentions(i) {
+            out.push(i + 1);
+        }
+    }
+    out
+}
+
+/// Every text file the OSS-Fuzz claim rule reads: the root Markdown files,
+/// and every file under `docs/`, `website/content/`, `ops/` and
+/// `.clusterfuzzlite/`. Private `*.local.md` files are not tracked and are
+/// skipped.
+fn oss_fuzz_doc_files() -> Result<Vec<PathBuf>, TestError> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), TestError> {
+        for e in std::fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
+            let p = e.map_err(|e| format!("dir entry: {e}"))?.path();
+            if p.is_dir() {
+                walk(&p, out)?;
+            } else if !p.to_string_lossy().ends_with(".local.md") {
+                out.push(p);
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(repo()).map_err(|e| format!("read repo: {e}"))? {
+        let p = e.map_err(|e| format!("dir entry: {e}"))?.path();
+        if p.extension().is_some_and(|x| x == "md") {
+            out.push(p);
+        }
+    }
+    for d in ["docs", "website/content", "ops", ".clusterfuzzlite"] {
+        walk(&repo().join(d), &mut out)?;
+    }
+    out.sort();
+    Ok(out)
+}
+
+#[test]
+fn no_doc_claims_an_oss_fuzz_submission_that_did_not_happen() -> Result<(), TestError> {
+    let files = oss_fuzz_doc_files()?;
+    assert!(
+        files
+            .iter()
+            .any(|p| p.ends_with("ops/oss-fuzz/project.yaml")),
+        "the scan must read ops/oss-fuzz/project.yaml, or it passes vacuously"
+    );
+    let mut claims = Vec::new();
+    for p in &files {
+        let Ok(text) = std::fs::read_to_string(p) else {
+            continue; // not UTF-8 text: no prose to check
+        };
+        for n in oss_fuzz_submission_claims(&text) {
+            claims.push(format!(
+                "{}:{n}",
+                p.strip_prefix(repo()).unwrap_or(p).display()
+            ));
+        }
+    }
+    assert!(
+        claims.is_empty(),
+        "these lines say sipnab was submitted to OSS-Fuzz; it was not (fuzzing \
+         runs in CI under ClusterFuzzLite): {claims:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_oss_fuzz_project_file_and_the_testing_doc_state_the_truth() -> Result<(), TestError> {
+    let project = read("ops/oss-fuzz/project.yaml")?;
+    let header: String = project
+        .lines()
+        .take_while(|l| l.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        header.contains(OSS_FUZZ_STATE) && header.contains("ClusterFuzzLite"),
+        "the header of ops/oss-fuzz/project.yaml must say {OSS_FUZZ_STATE:?} and \
+         name ClusterFuzzLite as what runs; it says:\n{header}"
+    );
+    let testing = read("docs/internals/testing.md")?;
+    assert!(
+        testing
+            .lines()
+            .any(|l| l.contains("OSS-Fuzz") && l.contains(OSS_FUZZ_STATE)),
+        "docs/internals/testing.md must state on one line that sipnab is \
+         {OSS_FUZZ_STATE:?} to OSS-Fuzz"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_submission_claim_rule_accepts_true_statements() {
+    let cases = [
+        "# Not submitted to google/oss-fuzz.",
+        "Not submitted: fuzzing runs in CI via ClusterFuzzLite (oss-fuzz is a later step).",
+        "The OSS-Fuzz project files are held ready but not submitted.",
+        "OSS-Fuzz: never submitted.",
+        "OSS-Fuzz: not yet submitted; see the backlog.",
+        "The OSS-Fuzz project has not been submitted.",
+        "Fill these in before submitting to OSS-Fuzz.",
+        "ops/oss-fuzz/ is the submission for google/oss-fuzz.",
+        "Reports submitted through GitHub are private.",
+        "This is the file that goes in google/oss-fuzz as projects/sipnab/build.sh.",
+        "The OSS-Fuzz application is not submitted.",
+        "OSS-Fuzz builds the targets.\n\nLater paragraph: a patch was submitted upstream.",
+    ];
+    assert!(
+        cases.len() >= 12,
+        "at least 12 success cases, got {}",
+        cases.len()
+    );
+    for text in cases {
+        assert_eq!(
+            oss_fuzz_submission_claims(text),
+            Vec::<usize>::new(),
+            "{text:?} is true and must not count as a claim"
+        );
+    }
+}
+
+#[test]
+fn the_submission_claim_rule_finds_false_statements() {
+    let cases: [(&str, Vec<usize>); 12] = [
+        (
+            "# Submitted to google/oss-fuzz as projects/sipnab/project.yaml.",
+            vec![1],
+        ),
+        (
+            "The image OSS-Fuzz builds in. Submitted to\ngoogle/oss-fuzz as projects/sipnab/Dockerfile.",
+            vec![1],
+        ),
+        ("Submitted to\ngoogle/oss-fuzz.", vec![1]),
+        ("sipnab was\nsubmitted to OSS-Fuzz on 2026-11-01.", vec![2]),
+        ("SUBMITTED TO OSS-FUZZ", vec![1]),
+        (
+            "The shim submitted to google/oss-fuzz execs the build.",
+            vec![1],
+        ),
+        ("OSS-Fuzz project: submitted.", vec![1]),
+        ("We submitted sipnab to oss-fuzz.", vec![1]),
+        ("The project was resubmitted to OSS-Fuzz.", vec![1]),
+        ("OSS-Fuzz\nsubmitted\nnext", vec![2]),
+        (
+            "a\nb\nsubmitted to oss-fuzz\nc\nsubmitted to oss-fuzz",
+            vec![3, 5],
+        ),
+        (
+            "Not submitted to OSS-Fuzz, then submitted to OSS-Fuzz.",
+            vec![1],
+        ),
+    ];
+    let claims = cases.iter().filter(|(_, want)| !want.is_empty()).count();
+    assert!(claims >= 12, "at least 12 claim cases, got {claims}");
+    for (text, want) in &cases {
+        assert_eq!(
+            &oss_fuzz_submission_claims(text),
+            want,
+            "{text:?}: claim lines differ"
+        );
+    }
+}
+
+#[test]
+fn the_submission_claim_rule_edges() {
+    let cases: [(&str, Vec<usize>); 12] = [
+        ("", vec![]),
+        ("submitted", vec![]),
+        ("oss-fuzz", vec![]),
+        ("submitted\n\noss-fuzz", vec![]),
+        ("oss-fuzz\nsubmitted", vec![2]),
+        ("submitted\noss-fuzz", vec![1]),
+        ("unsubmitted to OSS-Fuzz", vec![]),
+        ("submittedness of OSS-Fuzz", vec![1]),
+        ("OSS-Fuzz (submitted)", vec![1]),
+        ("OSS-Fuzz \u{2014} submitted", vec![1]),
+        ("OSS-Fuzz:\r\nsubmitted\r\n", vec![2]),
+        (
+            "is not submitted to OSS-Fuzz, never submitted, not yet submitted",
+            vec![],
+        ),
+    ];
+    for (text, want) in &cases {
+        assert_eq!(
+            &oss_fuzz_submission_claims(text),
+            want,
+            "{text:?}: claim lines differ"
+        );
+    }
 }

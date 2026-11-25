@@ -356,6 +356,9 @@ pub mod lru;
 pub mod names;
 pub mod net;
 pub mod new_file;
+// Every build: the audit sink and `--evidence-out` both follow log rotation
+// through it, and `security` is compiled in every build.
+pub mod append_file;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pipeline;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]

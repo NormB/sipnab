@@ -299,7 +299,8 @@ pub const HEADER_CONTROL_BYTE: RuleMeta = RuleMeta {
     basis: Basis::Must,
     rfc: 3261,
     // §25.1 Basic Rules: a header value is TEXT-UTF8char / UTF8-CONT / LWS.
-    // No C0 control byte other than the tab of LWS can appear.
+    // No C0 control byte other than the tab of LWS can appear, except as the
+    // escaped octet of a quoted-pair inside a quoted-string.
     section: "25.1",
 };
 
@@ -375,6 +376,19 @@ pub const BRANCH_COOKIE: RuleMeta = RuleMeta {
     // §8.1.1.7: "The branch ID inserted by an element compliant with this
     // specification MUST always begin with the characters 'z9hG4bK'."
     section: "8.1.1.7",
+};
+
+/// A Request-Line whose elements are not separated by exactly one SP, or that
+/// carries SP or HTAB before its CRLF.
+pub const REQUEST_LINE_SPACING: RuleMeta = RuleMeta {
+    id: "SIP-3261-7.1-REQUEST-LINE-SPACING",
+    title: "Request-Line not separated by single SP characters",
+    severity: Severity::Warning,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §7.1: "The elements are separated by single space (SP) characters."
+    // RFC 4475 §3.1.2.9 and §3.1.2.10 send extra SP inside and after the line.
+    section: "7.1",
 };
 
 /// A `To` tag on a request that starts a dialog.
@@ -876,6 +890,7 @@ pub const RULES: &[RuleMeta] = &[
     MAX_FORWARDS_MISSING,
     MAX_FORWARDS_RANGE,
     BRANCH_COOKIE,
+    REQUEST_LINE_SPACING,
     TO_TAG_IN_INITIAL_REQUEST,
     CSEQ_METHOD_MISMATCH,
     ACK_CSEQ_MISMATCH,

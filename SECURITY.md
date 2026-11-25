@@ -13,6 +13,18 @@ Email **security@sipnab.com** with:
 
 Use the subject line: `[SECURITY] <brief description>`
 
+The site publishes the same address at
+<https://sipnab.com/.well-known/security.txt>, in the form
+[RFC 9116](https://www.rfc-editor.org/rfc/rfc9116.html) defines.
+[Report a security problem](docs/install.md#report-a-security-problem) shows
+how to read it.
+
+Maintainers: the file is `website/static/.well-known/security.txt`.
+`scripts/check-security-txt.py` fails 30 days before its `Expires`, in the
+commit hook and in the daily `Certificate expiry` workflow. To renew it, set
+`Expires` to a date at most 366 days out and merge the change. The site deploy
+publishes it.
+
 ## Response Timeline
 
 | Stage | Target |
@@ -102,6 +114,7 @@ secret. Each one is:
 |---|---|---|
 | `CODECOV_TOKEN` | `quality.yml`, the coverage upload | Upload coverage reports to Codecov |
 | `CLOUDFLARE_API_TOKEN` | `pages.yml`, the `csp` job | Update the site's Content-Security-Policy hashes at Cloudflare |
+| `SCORECARD_TOKEN` | `scorecard.yml`, the Scorecard analysis step | Read this repository's settings, including branch protection: a fine-grained token with Administration: Read-only on `NormB/sipnab` only, which expires after one year ([Scorecard token](docs/internals/build-ci-release.md#scorecard-token) gives its renewal). Without it the step uses the default token |
 
 Each token reaches only the one job and the one service it serves.
 

@@ -464,7 +464,9 @@ fn every_cataloged_rule_is_explainable() -> Result<(), TestError> {
     // RECORD-ROUTE-NOT-COPIED, DYNAMIC-PT-REBOUND,
     // TELEPHONE-EVENT-ONE-WAY, REJECTED-STREAM-ATTRIBUTES,
     // OPUS-RTPMAP-RATE).
-    assert_eq!(ids.len(), 41, "the catalog size moved: {}", ids.len());
+    // 41 -> 42: REQUEST-LINE-SPACING, message-scoped (RFC 4475 3.1.2.9 and
+    // 3.1.2.10).
+    assert_eq!(ids.len(), 42, "the catalog size moved: {}", ids.len());
 
     for id in ids {
         let payload =

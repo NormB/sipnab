@@ -476,15 +476,23 @@ and where to send it.
 
 ## Rotate the audit and provenance files
 
-Three flags append one JSON line per event to a file and never truncate it:
+Four flags append one JSON line per event to a file and never truncate it:
 
 - `--mcp-audit-file`: every MCP tool call;
 - `--tui-audit-file`: every operator action in the terminal interface;
+- `--evidence-out PATH`: every security finding that names a source;
 - `--run-provenance-file`: one line per run, at startup.
 
-The two audit files stay open for the whole run. Rename one, and sipnab keeps
-writing to the renamed file until it restarts. Rotate them with
-`copytruncate`, which copies the file and then empties it in place:
+The first three stay open for the whole run. Before each line, sipnab checks
+that the path still names the file it holds open. When a rotation renamed or
+deleted the file, sipnab opens the path again, creates the file if it is missing,
+and writes the line there. It logs one line at `info`:
+`reopened /var/log/sipnab/mcp-audit.jsonl after rotation`.
+
+Prerequisites: `logrotate`, and a directory the service can write (below).
+
+Rotate the files with the default `create` mode of `logrotate`, which renames the file
+and lets the next line create a new one:
 
 ```text
 /var/log/sipnab/*.jsonl {
@@ -494,7 +502,7 @@ writing to the renamed file until it restarts. Rotate them with
     delaycompress
     missingok
     notifempty
-    copytruncate
+    create 0600 sipnab sipnab
 }
 ```
 
@@ -508,16 +516,26 @@ status 2:
 --mcp-audit-file /var/log/sipnab2/mcp-audit.jsonl: Read-only file system (os error 30). sipnab refuses to serve MCP without the audit trail it was asked for
 ```
 
-This run used the unit from [Write a unit of your own](#write-a-unit-of-your-own)
-with a drop-in adding `LogsDirectory=sipnab` and
-`--mcp-audit-file /var/log/sipnab/mcp-audit.jsonl`. After one tool call,
-`logrotate -f /etc/logrotate.d/sipnab`, and a second tool call, the second
-record landed in the emptied file as a complete line:
+To verify, make one tool call, rotate, and make a second call. This run was
+`sipnab -N --mcp -I capture.pcap --mcp-audit-file DIR/mcp-audit.jsonl` over
+stdio as an ordinary user, with the stanza above pointed at `DIR/*.jsonl` and
+`create 0600` (an ordinary user cannot give the file to another owner). Between
+the two calls it ran `logrotate -f -s DIR/state DIR/sipnab.logrotate`. `DIR`
+stands for the test directory:
 
 ```text
--rw------- 1 sipnab sipnab 195 Nov  3 14:43 mcp-audit.jsonl
--rw------- 1 sipnab sipnab 195 Nov  3 14:43 mcp-audit.jsonl.1
-{"args":"{}","caller":"127.0.0.1:38978 bearer-verified scope=full","elapsed_ms":0,"error":null,"id":"2","outcome":"ok","seq":2,"tool":"capture_status","ts":"2026-11-03T14:43:22.918525017+00:00"}
+-rw------- 158 mcp-audit.jsonl
+-rw------- 158 mcp-audit.jsonl.1
+--- mcp-audit.jsonl.1
+{"args":"{}","caller":"stdio","elapsed_ms":0,"error":null,"id":"2","outcome":"ok","seq":1,"tool":"capture_status","ts":"2026-11-25T02:48:14.667077241+00:00"}
+--- mcp-audit.jsonl
+{"args":"{}","caller":"stdio","elapsed_ms":2,"error":null,"id":"3","outcome":"ok","seq":2,"tool":"capture_status","ts":"2026-11-25T02:48:14.804894064+00:00"}
+```
+
+With `SIPNAB_LOG=info` the same run logged the reopen:
+
+```text
+INFO serve_inner: sipnab::append_file: reopened DIR/mcp-audit.jsonl after rotation
 ```
 
 - `seq` continues across the rotation, so the new file starts at `seq` 2 here,
@@ -527,6 +545,19 @@ record landed in the emptied file as a complete line:
   truncation. The window is the time `logrotate` takes to copy the file.
 - sipnab writes the provenance file once per run, at startup, so any rotation
   method works for it.
+
+Troubleshoot:
+
+- **New records still go to the rotated file.** The sipnab binary is older
+  than this release; `sipnab --version` names it.
+- **sipnab refuses a tool call after rotation.** The error names the path:
+  `<path>: the file was rotated away and cannot be opened again: <error>`. The
+  rotation removed the directory, or the service cannot write it; check `LogsDirectory=` and
+  the directory's owner. The refused call still used its `seq`, so the trail
+  shows the gap. The terminal interface keeps running and reports
+  `AUDIT TRAIL INCOMPLETE: '<action>' was not recorded to <path> (<error>)`.
+- **The new file has the wrong owner or mode.** `logrotate` made it from the
+  `create` line; sipnab appends to that file and leaves its mode alone.
 
 ## When the service does not start
 

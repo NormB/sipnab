@@ -127,10 +127,10 @@ already up is the normal way this tool is used.
 ### What it costs, which is more than a wrong label
 
 `Trying` is in the **active** set
-([`dialog_store.rs:2217-2227`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2217-L2227)<!-- "fn is_active_dialog_state(state: &DialogState)" -->) and is not `InCall`,
+([`dialog_store.rs:2343-2353`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2343-L2353)<!-- "fn is_active_dialog_state(state: &DialogState)" -->) and is not `InCall`,
 so a mid-dialog-seeded call is wrong in both directions on the two numbers
 operators graph: counted in `active_dialog_count` forever, invisible to
-`active_call_count` ([`:2275-2285`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2275-L2285)<!-- "/// Count calls that are up: dialogs in `InCall`" -->), whose doc calls
+`active_call_count` ([`:2401-2411`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2401-L2411)<!-- "/// Count calls that are up: dialogs in `InCall`" -->), whose doc calls
 it *"the concurrent-call figure — the one that maps to channels in use, to a
 carrier's simultaneous-call limit, and to the alert an operator actually
 wants."*
@@ -280,7 +280,7 @@ the guards at the same time.
 **The seed method's only remaining job is the initial state**
 ([`dialog.rs:632-634`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L632-L634)<!-- "let initial_state" -->), and for the two methods that
 matter it barely matters: since the creation branch now applies the creating
-message's own transition ([`dialog_store.rs:3074`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3074)<!-- "update_state(&mut dialog, msg);" -->),
+message's own transition ([`dialog_store.rs:3214`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L3214)<!-- "update_state(&mut dialog, msg);" -->),
 a BYE-seeded dialog goes `Trying → Completed` on its own first message, and a
 CANCEL-seeded one goes `Trying → Canceled`. Which is exactly the outcome the
 pinned defect test is waiting for.
@@ -560,7 +560,7 @@ machine sees the messages."*
   detectors quietly ignore the calls it fixed would recreate the shape
   `15b6337` warned about, one layer out.
 - **`DialogState` is public API.** It is re-exported at
-  [`lib.rs:493`](https://github.com/NormB/sipnab/blob/main/src/lib.rs#L493)<!-- "pub use sip::dialog::{DialogState," --> and is `serde::Serialize`, so any new variant
+  [`lib.rs:496`](https://github.com/NormB/sipnab/blob/main/src/lib.rs#L496)<!-- "pub use sip::dialog::{DialogState," --> and is `serde::Serialize`, so any new variant
   is a semver event. `#[non_exhaustive]` leaves room to add one;
   [section 7, "Open questions"](#7-open-questions) has the question of whether
   one is needed.

@@ -709,12 +709,22 @@ jobs:
       # External links, including other repositories on github.com, still run.
       # lychee exits non-zero on a dead link, which fails the step, as the
       # action's `fail: true` did. It reads GITHUB_TOKEN for github.com links.
+      #
+      # SECURITY.md links the site's security.txt, which the site serves only
+      # after Pages deploys the change that adds or moves it; this pass runs
+      # before that, and on 2026-11-25 the link answered 404 here before the
+      # file was ever deployed. The URL is remapped to the committed file the
+      # site serves, so lychee checks that file exists in this tree and fails
+      # when it does not. The remap is here, not in lychee.toml, because its
+      # target is an absolute file URL under this checkout.
+      # scripts/tests/test_check_security_txt.py holds the remap and its target.
       - name: Dead links (docs Markdown)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           lychee --no-progress --config lychee.toml \
             --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/' \
+            --remap "^https://sipnab\.com/\.well-known/security\.txt\$ file://$GITHUB_WORKSPACE/website/static/.well-known/security.txt" \
             'docs/**/*.md' 'README.md' 'CONTRIBUTING.md' 'SECURITY.md'
 
       # Pass two: the built site, where site-absolute links like /docs/install/

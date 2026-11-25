@@ -195,7 +195,7 @@ Timing deserves a firmer no. "The stream started 40 ms after the 200 OK, so it
 belongs to that call" is a coincidence detector on a busy proxy, where dozens of
 calls answer per second and every one of them starts media. sipnab already
 carries a timing-based leg correlator at score 50 out of 100
-([`src/sip/dialog_store.rs:2671`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2671)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
+([`src/sip/dialog_store.rs:2797`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L2797)<!-- "score: 50, reason: CorrelationReason::TimingHeuristic," -->), the lowest of seven strategies, and that is for
 correlating *signaling to signaling* where a Call-ID is present as a
 cross-check. Using timing to attach media to a dialog has no such cross-check.
 It should stay out.
@@ -346,7 +346,7 @@ device, one per HEP *sender* — and `input_origin` reaches `SipMessage`,
 
 **Leg correlation: adjacent, and deliberately separate.**
 [`docs/design/icid-correlation.md`](https://github.com/NormB/sipnab/blob/main/docs/design/icid-correlation.md) and the seven strategies at
-[`src/sip/dialog_store.rs:119`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L119)<!-- "pub enum CorrelationReason" --> correlate *signaling to signaling* across a B2BUA,
+[`src/sip/dialog_store.rs:124`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L124)<!-- "pub enum CorrelationReason" --> correlate *signaling to signaling* across a B2BUA,
 keyed on `Session-ID`, `P-Charging-Vector`, the SDP `o=` tuple, or `Via` branch.
 Every one of those keys is a SIP header. None exists on an RTP packet. The
 problem here is signaling-to-media across two transports, which shares the word
