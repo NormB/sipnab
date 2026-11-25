@@ -2434,7 +2434,8 @@ pub struct RtpArgs {
     /// starts one does not own the host it keeps transmitting from. The newest
     /// reading is readable over REST `GET /v1/relay/stats/polled` and the MCP
     /// tool `relay_stats_polled`, which send nothing. Same live-source gate as
-    /// `--relay-stats`.
+    /// `--relay-stats`. With `--relay-sessions` it is instead the gap between
+    /// that answer's two asks, for each socket's rate, and the run then exits.
     #[arg(
         help_heading = "RTP",
         long = "relay-stats-interval",

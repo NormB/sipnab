@@ -198,7 +198,7 @@ Elsewhere, contention is **asserted but never measured**. The oldest claim,
 [`implementation-plan-v6.md:368`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/docs/design/implementation-plan-v6.md#L368), says the store
 lock is *"read-heavy, write-rare, so RwLock contention is minimal"* — which is
 simply stale: the batch loop takes `dialog_store.write()` **once per packet**
-([`batch.rs:4920`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4920)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
+([`batch.rs:5017`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L5017)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
 most frequent operation in the process, not a rare one. No benchmark in
 `benches/` acquires a lock; no metric reports contention. *We do not know what
 it costs, and neither does anyone else.*
@@ -211,7 +211,7 @@ Specific to this codebase, not in general.
 
 **The stores are the product, and four surfaces read them in-process.** The
 same `Arc<RwLock<DialogStore>>` / `Arc<RwLock<StreamStore>>` is held by the
-capture loop ([`batch.rs:4070-4075`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4070-L4075)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
+capture loop ([`batch.rs:4154-4159`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4154-L4159)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
 every MCP tool ([`mcp/server.rs`](../../src/mcp/server.rs)), the Prometheus
 exporter and the TUI. Forking the capture away from the servers turns every one
 of those reads into IPC. That is not a refactor; it is a new wire protocol,
@@ -226,7 +226,7 @@ being exceptions and start being a replication problem.
 
 **The TUI depends on being able to *fail* to read.** Every render-side access is
 `try_read()`, and a contended read deliberately skips a frame
-([`threading.md:370-373`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L370-L373)<!-- "**The TUI never blocks:** all render-side store access is `try_read()`." -->). There is no `try_read`
+([`threading.md:374-377`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L374-L377)<!-- "**The TUI never blocks:** all render-side store access is `try_read()`." -->). There is no `try_read`
 over a socket.
 
 **A merged view is the deliverable.** Multi-device capture merges N interfaces

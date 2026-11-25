@@ -1327,6 +1327,7 @@ mod tests {
                         .map_or(RELAY_IP, String::as_str)
                         .to_owned();
                     Ok(ControlReply::Call(CallView {
+                        incarnation: None,
                         call_id: call_id.to_owned(),
                         tags: vec![RelayTag {
                             tag: "from-tag".to_owned(),
@@ -1393,6 +1394,7 @@ mod tests {
                 facts: Default::default(),
             };
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: call_id.to_owned(),
                 tags: vec![
                     RelayTag {
@@ -1900,6 +1902,7 @@ mod tests {
                 });
             }
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: call_id.to_owned(),
                 tags: vec![RelayTag {
                     tag: format!("tag-of-{call_id}"),
@@ -2294,6 +2297,7 @@ mod tests {
                 .position(|c| c == call_id)
                 .ok_or_else(|| anyhow::anyhow!("no such call"))?;
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: call_id.to_owned(),
                 tags: vec![RelayTag {
                     tag: format!("tag-of-{call_id}"),
@@ -3076,6 +3080,7 @@ mod tests {
                 anyhow::bail!("relay busy");
             };
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: call_id.to_owned(),
                 tags: vec![RelayTag {
                     tag: "from-tag".to_owned(),

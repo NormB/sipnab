@@ -416,6 +416,24 @@ pub fn parse_statistics_reply(body: &[u8]) -> anyhow::Result<ControlReply> {
     Ok(ControlReply::Statistics(pairs))
 }
 
+/// The call's incarnation from a `query` reply's top-level `created` and
+/// `created_us`: which of the calls that used the Call-ID answered.
+///
+/// `None` when `created` is absent or not a whole number of seconds; a
+/// missing or out-of-range `created_us` reads as 0, so a relay that reports
+/// only whole seconds still tells calls a second or more apart.
+fn incarnation_of(v: &super::bencode::Value<'_>) -> Option<crate::relay::rate::Incarnation> {
+    let created_s = v.get_int(b"created")?;
+    let created_us = v
+        .get_int(b"created_us")
+        .and_then(|us| u32::try_from(us).ok())
+        .unwrap_or(0);
+    Some(crate::relay::rate::Incarnation {
+        created_s,
+        created_us,
+    })
+}
+
 /// refused is not an error: see [`ControlReply::Refused`].
 pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlReply> {
     use anyhow::{Context, bail};
@@ -551,6 +569,7 @@ pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlRe
     crate::sort::sort_by_dyn(&mut tags, &mut |a, b| a.tag.cmp(&b.tag));
 
     Ok(ControlReply::Call(CallView {
+        incarnation: incarnation_of(&v),
         call_id: call_id.to_owned(),
         tags,
     }))
@@ -1854,6 +1873,68 @@ mod query_reply_tests {
         }
     }
 
+    /// The recorded reply's own `created` and `created_us` are the
+    /// incarnation a rate compares.
+    #[test]
+    fn success_real_reply_yields_the_call_incarnation() -> Result<(), TestError> {
+        let call = parsed()?;
+        assert_eq!(
+            call.incarnation,
+            Some(crate::relay::rate::Incarnation {
+                created_s: 1_787_517_788,
+                created_us: 160_191,
+            }),
+            "the top-level creation stamp of the recorded 12.5.1 reply"
+        );
+        Ok(())
+    }
+
+    fn view_of(body: &[u8]) -> Result<CallView, TestError> {
+        match parse_query_reply(body, "a@example.invalid") {
+            Ok(ControlReply::Call(c)) => Ok(c),
+            other => Err(format!("expected a call view, got {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn failure_a_reply_without_created_has_no_incarnation() -> Result<(), TestError> {
+        let call = view_of(b"d6:result2:ok4:tagsdee")?;
+        assert_eq!(call.incarnation, None, "absent, never a made-up stamp");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_created_that_is_not_a_number_has_no_incarnation() -> Result<(), TestError> {
+        let call = view_of(b"d7:created3:now10:created_usi5e6:result2:ok4:tagsdee")?;
+        assert_eq!(call.incarnation, None, "a string is not a stamp");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_created_without_microseconds_reads_them_as_zero() -> Result<(), TestError> {
+        let call = view_of(b"d7:createdi1787517788e6:result2:ok4:tagsdee")?;
+        assert_eq!(
+            call.incarnation,
+            Some(crate::relay::rate::Incarnation {
+                created_s: 1_787_517_788,
+                created_us: 0,
+            }),
+            "whole seconds still tell calls apart"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_microseconds_out_of_range_read_as_zero() -> Result<(), TestError> {
+        let call = view_of(b"d7:createdi7e10:created_usi-1e6:result2:ok4:tagsdee")?;
+        assert_eq!(
+            call.incarnation.map(|i| i.created_us),
+            Some(0),
+            "a negative microsecond count is not kept"
+        );
+        Ok(())
+    }
+
     /// Both sides of the call are read, and the Call-ID comes from the ASK.
     #[test]
     fn real_reply_yields_both_tags_and_the_requested_call_id() -> Result<(), TestError> {
@@ -2863,6 +2944,7 @@ mod session_fixture_tests {
     fn exactly_the_limit_returned_is_truncated_and_fewer_is_not() -> Result<(), TestError> {
         let at = chrono::Utc::now;
         let ask = |list_limit| SessionsAsk {
+            clock: crate::relay::rate::monotonic_now,
             selected: None,
             scan: false,
             cap: 32,
@@ -2911,6 +2993,7 @@ mod session_fixture_tests {
             query: "h-twoway-query-after-bye",
         };
         let ask = SessionsAsk {
+            clock: crate::relay::rate::monotonic_now,
             selected: Some("sg6-12calls-list-1000-1@example.invalid"),
             scan: false,
             cap: 32,

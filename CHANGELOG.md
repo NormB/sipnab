@@ -19,6 +19,24 @@ entry that carries them.
   - Limit: On the 100,000-call capture, resident memory was 3.2% higher after loading it and 4.6% higher after 3 reports.
   - Docs: [Estimate memory for a larger capture](docs/benchmarks.md#estimate-memory-for-a-larger-capture)
 
+## [0.5.272] - 2026-11-25
+
+### Added
+
+- **The relay sessions answer gives each RTP socket's rate, from the relay and the capture.**
+  - Effect: Each socket shows packets per second and kbps, and names the byte basis: UDP payload for the relay, RTP payload for the capture.
+  - Do: Ask twice over REST, MCP or the TUI, or add `--relay-stats-interval N` to `--relay-sessions`.
+  - Limit: A socket the capture holds no stream for reads `not_captured`, never 0.
+  - Docs: [Read the rate media arrives at](docs/relay-statistics.md#read-the-rate-media-arrives-at)
+  - Credit: Inspired by irontec/sngrep#581.
+
+### Changed
+
+- **A batch run exits without first freeing its stored calls and streams.**
+  - Effect: The operating system takes the memory back at exit; the output, the output files and the exit status stay the same.
+  - Effect: A `-N --quiet --analyze` run over 150,000 packets of a SIP-only capture runs 1.90% fewer instructions, and one with RTP 1.75% fewer.
+  - Limit: callgrind counted the instructions; there is no wall-time figure, because the host stayed busy.
+
 ## [0.5.271] - 2026-11-24
 
 ### Changed

@@ -87,7 +87,9 @@ pub struct GateArgs {
     /// returns. Needs a live source (`-d`, `-L`): on `-I <file>` it asks
     /// nothing and exits 2. Exits 0 with the answer, 1 when the relay did not
     /// answer the `list`. With `--json`, one JSON object on the last line of
-    /// stdout.
+    /// stdout. With `--relay-stats-interval N`, it asks twice, N seconds
+    /// apart, and prints the second answer with each RTP socket's rate:
+    /// packets per second and kbps (UDP payload, RTP header included).
     #[arg(help_heading = "Queries", long, requires = "rtpengine_control")]
     pub relay_sessions: bool,
 
