@@ -118,6 +118,10 @@ static REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// up, which are writable outputs a run must not refuse. Only a check made
 /// before that start-up can tell them apart. The probe does one `fcntl` and
 /// one atomic store, and allocates nothing.
+///
+/// On a platform with neither registration below, nothing runs it, and a
+/// closed standard output is not told apart from `/dev/null`.
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 extern "C" fn probe_at_exec() {
     // SAFETY: fcntl(2) with F_GETFD on the fixed descriptor 1 only reads its
     // descriptor flags; it touches no memory of this process. It runs before
@@ -137,7 +141,7 @@ static PROBE_AT_EXEC: extern "C" fn() = probe_at_exec;
 
 /// [`probe_at_exec`] in the Mach-O initializer list.
 // before-main: std's sanitize_standard_fds hides a closed stdout from main.
-#[cfg(target_vendor = "apple")]
+#[cfg(target_os = "macos")]
 #[used]
 #[unsafe(link_section = "__DATA,__mod_init_func")]
 static PROBE_AT_EXEC: extern "C" fn() = probe_at_exec;
