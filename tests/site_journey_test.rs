@@ -6976,7 +6976,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // remaps the live URL to `website/static/.well-known/security.txt` and its
     // comment names that file (+1). Measurement: the scan read 348 with the
     // change staged.
-    const EXPECTED_REFERENCES: usize = 348;
+    // 348 -> 349 (stale tap comment): release.yml's permissions comment names
+    // `scripts/post-release.py`, which pushes the Homebrew tap, in place of a
+    // `tap` job that no longer exists (+1). Measurement: the scan read 349
+    // with the change staged.
+    const EXPECTED_REFERENCES: usize = 349;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

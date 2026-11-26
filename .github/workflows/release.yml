@@ -13,9 +13,9 @@ on:
 
 # Read by default. Only the `release` job publishes, and it restates what it
 # needs in its own block. `preflight` and `build` just check out and upload
-# artifacts, and `tap` reads the release with github.token but pushes to
-# NormB/homebrew-tap with a separate secret — GITHUB_TOKEN cannot write to
-# another repository, so none of the three needs write here.
+# artifacts. No job here writes the Homebrew tap: scripts/post-release.py
+# commits the formula to NormB/homebrew-tap after the release, signed with the
+# SSH key of the machine that runs it, so no job needs write here.
 permissions:
   contents: read
 
@@ -1249,11 +1249,11 @@ jobs:
   # push that superseded the pending run (the `pages` group keeps one pending
   # run). Re-run the job; any later deploy advertises the release too.
   #
-  # The dispatched run also fails when its `live` job does: the deploy
-  # reported success and the site is not that deploy, even after the second
-  # deploy scripts/pages-live.py makes, or the live download page does not
-  # name this release (PAGES-SAME-SHA-REDEPLOY-NOT-LIVE). The site is stale
-  # then, and this run is red rather than green.
+  # The dispatched run also fails when pages.yml's `live` job does: the
+  # deploy reported success and the site is not that deploy, even after the
+  # second deploy scripts/pages-live.py makes, or the live download page does
+  # not name this release (PAGES-SAME-SHA-REDEPLOY-NOT-LIVE). The site is
+  # stale then, and this run is red rather than green.
   #
   # Dispatched on main rather than called from the tag: the github-pages
   # environment takes deployments from `main` only, and that stays.
