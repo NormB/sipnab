@@ -25,6 +25,10 @@ Not released. Contributor-tooling changes since 0.5.274 (the commit-msg hook, pr
   - Do: Add `--min-free-disk 2G`, for example; the packaged unit does not restart after exit `4`.
   - Limit: Without the flag sipnab only warns, once per crossing, under 1 GiB free; `0` turns that off.
   - Docs: [Stop a capture before the disk fills](docs/run-as-a-service.md#stop-a-capture-before-the-disk-fills)
+- **The security policy lists published advisories and a second private reporting channel.**
+  - Effect: `SECURITY.md` links each published advisory, starting with GHSA-vjqw-738j-4chx (fixed in 0.5.248).
+  - Effect: Reports can also go through GitHub's private vulnerability reporting, beside `security@sipnab.com`.
+  - Docs: [Report a security problem](docs/install.md#report-a-security-problem)
 
 ### Changed
 

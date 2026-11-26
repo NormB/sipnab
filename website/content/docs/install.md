@@ -1773,9 +1773,11 @@ sudo rm -rf /etc/sipnab
 
 ## Report a security problem
 
-Send a vulnerability report by email to `security@sipnab.com`, never as a
-public issue. [The security policy](https://github.com/NormB/sipnab/blob/main/SECURITY.md)
-says what to include and how long each stage takes.
+Send a vulnerability report by email to `security@sipnab.com`, or through
+GitHub's [private vulnerability reporting](https://github.com/NormB/sipnab/security/advisories/new),
+never as a public issue. [The security policy](https://github.com/NormB/sipnab/blob/main/SECURITY.md)
+says what to include, how long each stage takes, and which advisories the
+project has published.
 
 Scanners and researchers can read the same address from the site's
 [RFC 9116](https://www.rfc-editor.org/rfc/rfc9116.html) file. You need an
