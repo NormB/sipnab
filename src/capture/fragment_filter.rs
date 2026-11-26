@@ -43,19 +43,19 @@
 //!   untagged traffic. Classic BPF has no loop, so a Fragment header behind
 //!   two or more extension headers is not. Inside an encapsulation, only a
 //!   Fragment header directly behind the IPv6 header is matched.
-//! * SCTP (132) is not in the protocol list: an SCTP packet that arrives as
-//!   IP fragments is reassembled but not read for SIP, so passing its
-//!   fragments would cost capture bandwidth and produce nothing. SCTP splits
-//!   large messages into DATA chunks itself and normally sets Don't
-//!   Fragment.
+//! * SCTP (132) splits large messages into DATA chunks itself and normally
+//!   sets Don't Fragment, so its fragments are rare; they are passed and read
+//!   like UDP's when a sender does fragment.
 
 /// IP protocols whose fragments reassembly turns into something sipnab
-/// reads: UDP (17), TCP (6) and ESP (50, read when NULL-encrypted).
+/// reads: UDP (17), TCP (6), ESP (50, read when NULL-encrypted) and SCTP
+/// (132).
 ///
 /// Taken from what `PacketProcessor` does with a completed datagram: it
-/// re-reads a UDP or TCP header, and unwraps a NULL-encrypted ESP payload
-/// first. Any other protocol is handed on as raw bytes no decoder reads.
-pub const REASSEMBLED_PROTOCOLS: [u8; 3] = [17, 6, 50];
+/// re-reads a UDP, TCP or SCTP header, and unwraps a NULL-encrypted ESP
+/// payload first. Any other protocol is handed on as raw bytes no decoder
+/// reads.
+pub const REASSEMBLED_PROTOCOLS: [u8; 4] = [17, 6, 50, 132];
 
 /// The IPv6 extension headers [`fragment_arm`] steps over, one of them, to
 /// find a Fragment header behind it: Hop-by-Hop Options (0), Routing (43)
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn the_arm_rejects_fragments_of_protocols_reassembly_does_not_read() -> Result<(), TestError> {
-        for proto in [1u8, 47, 132, 51] {
+        for proto in [1u8, 47, 51] {
             let later = ipv4(proto, 185, &[], &[0u8; 64]);
             assert!(
                 !eth_accepts(&fragment_arm(), &on_eth(&later))?,
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn the_arm_rejects_ipv6_fragments_of_other_protocols() -> Result<(), TestError> {
-        for next in [58u8, 132] {
+        for next in [58u8, 47] {
             let later = ipv6_fragment(next, 181, false, &[0u8; 64]);
             assert!(
                 !eth_accepts(&fragment_arm(), &on_eth(&later))?,
@@ -743,13 +743,216 @@ mod tests {
             "reassembly re-reads TCP"
         );
         assert!(
-            crate::capture::parse::reparse_transport(132, &[0u8; 40]).is_none(),
-            "reassembly does not re-read SCTP, which is why 132 is left out"
+            crate::capture::parse::reparse_transport(132, &[0u8; 40]).is_some(),
+            "reassembly re-reads SCTP"
+        );
+        assert!(
+            crate::capture::parse::reparse_transport(1, &[0u8; 40]).is_none(),
+            "nor ICMP, which is why it is left out"
         );
         assert_eq!(
             REASSEMBLED_PROTOCOLS,
-            [17, 6, 50],
-            "UDP, TCP, and ESP, which reassembly unwraps first"
+            [17, 6, 50, 132],
+            "UDP, TCP, ESP, which reassembly unwraps first, and SCTP"
+        );
+        Ok(())
+    }
+
+    // ── SCTP (132), SCTP-REASSEMBLED-NOT-READ ──────────────────────────
+
+    /// The three IPv4 fragments of a 3,500-byte SCTP packet at MTU 1500.
+    fn three_sctp_v4_fragments() -> Vec<Vec<u8>> {
+        let mut sctp = vec![0x13, 0xc4, 0x13, 0xc4, 0, 0, 0, 1, 0, 0, 0, 0];
+        sctp.extend_from_slice(&sip_payload(3500));
+        ipv4_fragments(132, &sctp, 1500)
+    }
+
+    /// Every IPv4 fragment of an SCTP packet passes the arm.
+    #[test]
+    fn the_arm_passes_every_fragment_of_an_sctp_packet() -> Result<(), TestError> {
+        let frags = three_sctp_v4_fragments();
+        assert_eq!(frags.len(), 3, "three fragments");
+        for (i, f) in frags.iter().enumerate() {
+            assert!(
+                eth_accepts(&fragment_arm(), &on_eth(f))?,
+                "SCTP fragment {i} must pass"
+            );
+        }
+        Ok(())
+    }
+
+    /// A later IPv4 SCTP fragment, which names no port, passes.
+    #[test]
+    fn the_arm_passes_a_later_sctp_fragment() -> Result<(), TestError> {
+        let later = ipv4(132, 185, &[], &[0u8; 64]);
+        assert!(
+            eth_accepts(&fragment_arm(), &on_eth(&later))?,
+            "later SCTP fragment"
+        );
+        Ok(())
+    }
+
+    /// A first IPv4 SCTP fragment with header options passes.
+    #[test]
+    fn the_arm_passes_an_sctp_fragment_with_ip_options() -> Result<(), TestError> {
+        let first = ipv4(132, MF, &[1, 1, 1, 0], &[0u8; 64]);
+        assert!(
+            eth_accepts(&fragment_arm(), &on_eth(&first))?,
+            "options + MF"
+        );
+        Ok(())
+    }
+
+    /// IPv6 first and later SCTP fragments pass.
+    #[test]
+    fn the_arm_passes_ipv6_sctp_fragments() -> Result<(), TestError> {
+        for (offset, more) in [(0u16, true), (181, false)] {
+            let f = ipv6_fragment(132, offset, more, &[0u8; 64]);
+            assert!(
+                eth_accepts(&fragment_arm(), &on_eth(&f))?,
+                "IPv6 SCTP fragment at {offset} must pass"
+            );
+        }
+        Ok(())
+    }
+
+    /// An IPv6 SCTP fragment behind each extension header the arm steps over.
+    #[test]
+    fn the_arm_passes_an_ipv6_sctp_fragment_behind_one_extension_header() -> Result<(), TestError> {
+        for ext in IPV6_HEADERS_BEFORE_FRAGMENT {
+            let f = ipv6_fragment_behind(ext, 1, 132, 181, false, &[0u8; 64]);
+            assert!(
+                eth_accepts(&fragment_arm(), &on_eth(&f))?,
+                "SCTP fragment behind extension header {ext}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The arm passes SCTP fragments on every link type sipnab opens.
+    #[test]
+    fn the_arm_passes_sctp_fragments_on_cooked_links() -> Result<(), TestError> {
+        let later = ipv4(132, 185, &[], &[0u8; 64]);
+        let mut v1 = sll(0x0800);
+        v1.extend_from_slice(&later);
+        let mut v2 = sll2(0x0800);
+        v2.extend_from_slice(&later);
+        assert!(
+            accepts(pcap::Linktype::LINUX_SLL, &fragment_arm(), &v1)?,
+            "Linux cooked v1"
+        );
+        assert!(
+            accepts(pcap::Linktype::LINUX_SLL2, &fragment_arm(), &v2)?,
+            "Linux cooked v2"
+        );
+        assert!(
+            accepts(pcap::Linktype(12), &fragment_arm(), &later)?,
+            "raw IP"
+        );
+        Ok(())
+    }
+
+    /// A whole SCTP packet is not a fragment: the port test owns it.
+    #[test]
+    fn the_arm_rejects_a_whole_sctp_packet() -> Result<(), TestError> {
+        let whole = ipv4(132, DF, &[], &[0u8; 64]);
+        assert!(
+            !eth_accepts(&fragment_arm(), &on_eth(&whole))?,
+            "DF, offset 0"
+        );
+        let whole6 = ipv6(132, &[0u8; 64]);
+        assert!(
+            !eth_accepts(&fragment_arm(), &on_eth(&whole6))?,
+            "IPv6, no Fragment header"
+        );
+        Ok(())
+    }
+
+    /// An SCTP fragment cut before its protocol byte is rejected.
+    #[test]
+    fn a_cut_sctp_fragment_is_rejected() -> Result<(), TestError> {
+        let later = on_eth(&ipv4(132, 185, &[], &[0u8; 64]));
+        assert!(
+            !eth_accepts(&fragment_arm(), &later[..14 + 9])?,
+            "cut before byte 9"
+        );
+        Ok(())
+    }
+
+    /// The offset arms (VLAN, QinQ, PPPoE, MPLS) pass SCTP fragments.
+    #[test]
+    fn the_offset_arms_pass_tagged_sctp_fragments() -> Result<(), TestError> {
+        for (what, ip) in [
+            ("IPv4", ipv4(132, 185, &[], &[0u8; 64])),
+            ("IPv6", ipv6_fragment(132, 181, false, &[0u8; 64])),
+        ] {
+            let filter = format!(
+                "{} or (ether[18] & 0xf0 = 0x60 and {})",
+                ipv4_fragment_at(18),
+                ipv6_fragment_at(18)
+            );
+            let mut f = eth(0x8100);
+            f.extend_from_slice(&[0x00, 0x64]);
+            f.extend_from_slice(&ethertype_of(&ip).to_be_bytes());
+            f.extend_from_slice(&ip);
+            assert!(
+                eth_accepts(&filter, &f)?,
+                "a VLAN-tagged {what} SCTP fragment"
+            );
+        }
+        Ok(())
+    }
+
+    /// The offset arm finds an SCTP fragment at the QinQ offset (22).
+    #[test]
+    fn the_offset_arm_passes_an_sctp_fragment_inside_qinq() -> Result<(), TestError> {
+        let ip = ipv4(132, 185, &[], &[0u8; 64]);
+        let mut f = eth(0x88a8);
+        f.extend_from_slice(&[0x00, 0x64, 0x81, 0x00, 0x00, 0xc8, 0x08, 0x00]);
+        f.extend_from_slice(&ip);
+        assert!(
+            eth_accepts(&ipv4_fragment_at(22), &f)?,
+            "QinQ SCTP fragment"
+        );
+        Ok(())
+    }
+
+    /// The offset arms name 132 in both their IPv4 and IPv6 forms.
+    #[test]
+    fn the_offset_arms_name_sctp() {
+        assert!(
+            ipv4_fragment_at(18).contains("ether[27] = 132"),
+            "IPv4 at 18"
+        );
+        assert!(
+            ipv6_fragment_at(18).contains("ether[58] = 132"),
+            "IPv6 at 18"
+        );
+    }
+
+    /// The operator clause, appended to an SCTP port filter, passes every
+    /// SCTP fragment.
+    #[test]
+    fn the_clause_makes_an_sctp_port_filter_pass_every_fragment() -> Result<(), TestError> {
+        let filter = with_fragment_clause("sctp port 5060");
+        for (i, f) in three_sctp_v4_fragments().iter().enumerate() {
+            assert!(eth_accepts(&filter, &on_eth(f))?, "fragment {i}");
+        }
+        Ok(())
+    }
+
+    /// Without the clause, an SCTP port filter passes the first fragment only.
+    #[test]
+    fn an_sctp_port_filter_alone_passes_the_first_fragment_only() -> Result<(), TestError> {
+        let frags = three_sctp_v4_fragments();
+        let passed: Vec<bool> = frags
+            .iter()
+            .map(|f| eth_accepts("sctp port 5060", &on_eth(f)))
+            .collect::<Result<_, _>>()?;
+        assert_eq!(
+            passed,
+            vec![true, false, false],
+            "only the first names the port"
         );
         Ok(())
     }

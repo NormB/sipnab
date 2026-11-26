@@ -566,7 +566,7 @@ fn verify_command(flags: crate::cli::fleet_args::VerifyFlags) -> i32 {
             )
             .map(|_| ())
         },
-        &mut std::io::stdout().lock(),
+        &mut crate::output::stdout::lock(),
         &mut std::io::stderr().lock(),
     )
 }
@@ -598,10 +598,7 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
     use std::io::Write as _;
     let cli = match crate::cli::fleet_args::FleetCli::try_parse_from(args) {
         Ok(cli) => cli,
-        Err(e) => {
-            let _ = e.print();
-            return if e.use_stderr() { 2 } else { 0 };
-        }
+        Err(e) => return crate::output::stdout::clap_exit_code(&e),
     };
     let (hosts, json, timeout, run_as) = match cli.command {
         crate::cli::fleet_args::FleetCommand::Inventory {
@@ -617,7 +614,7 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
             ) {
                 Ok(id) => {
                     let line = format!("{}: key id {id}\n", out.display());
-                    i32::from(std::io::stdout().write_all(line.as_bytes()).is_err())
+                    i32::from(!super::batch::write_stdout(&line))
                 }
                 Err(e) => {
                     let _ = writeln!(std::io::stderr(), "sipnab fleet keygen: {e}");
@@ -730,7 +727,7 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
     } else {
         render_table(&report)
     };
-    if std::io::stdout().write_all(text.as_bytes()).is_err() {
+    if !super::batch::write_stdout(&text) {
         return 1;
     }
     i32::from(!report.ok)

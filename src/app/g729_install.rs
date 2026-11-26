@@ -65,16 +65,13 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
     use clap::Parser;
     let cli = match G729Cli::try_parse_from(args) {
         Ok(cli) => cli,
-        Err(e) => {
-            let _ = e.print();
-            return if e.use_stderr() { 2 } else { 0 };
-        }
+        Err(e) => return crate::output::stdout::clap_exit_code(&e),
     };
     let work_root = std::env::temp_dir();
     if let G729Command::InternalFetch { as_user } = &cli.command {
         // The child of an install started as root: it reads no config file,
         // and its standard output carries the table file.
-        let mut out = std::io::stdout();
+        let mut out = crate::output::stdout::handle();
         let mut err = std::io::stderr();
         return internal_fetch(
             as_user,
@@ -109,7 +106,7 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
     };
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
-    let mut out = std::io::stdout();
+    let mut out = crate::output::stdout::handle();
     let mut err = std::io::stderr();
     let mut io = Io {
         input: &mut input,

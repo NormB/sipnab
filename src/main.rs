@@ -60,6 +60,13 @@ use sipnab::signals;
 /// (exit code 2 on argument-validation failure, and on a provenance record
 /// `--run-provenance-file` could not write).
 fn main() {
+    // 00. Decide once, at start, whether standard output can be written:
+    //     closed before the process started (recorded ahead of the runtime's
+    //     start-up), or open but not for writing. Every write to standard
+    //     output is refused from then on, and the run exits 6. See
+    //     `sipnab::output::stdout`.
+    let _ = sipnab::output::stdout::unwritable();
+
     // 0. The scanner-kill worker process is this binary too, started by a
     //    parent run with `--internal-kill-worker` as its FIRST argument. It is
     //    dispatched before the command line is parsed, so no combination of
@@ -76,14 +83,14 @@ fn main() {
     //     trailing capture-filter positional would otherwise read `g729` as a
     //     filter. It opens no capture and exits.
     if std::env::args_os().nth(1).is_some_and(|a| a == "g729") {
-        std::process::exit(run_g729_command());
+        std::process::exit(sipnab::output::stdout::exit_code(run_g729_command()));
     }
 
     // 0c. `sipnab fleet inventory`: read the inventory of many instances.
     //     Dispatched before the capture command line is parsed, for the
     //     reason `g729` is. It opens no capture and exits.
     if std::env::args_os().nth(1).is_some_and(|a| a == "fleet") {
-        std::process::exit(run_fleet_command());
+        std::process::exit(sipnab::output::stdout::exit_code(run_fleet_command()));
     }
 
     // 0d. Raise the capture capabilities this process is permitted into its

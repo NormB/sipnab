@@ -8776,7 +8776,13 @@ impl Cli {
     /// `--help`, or `--version`, clap prints to stdout/stderr and exits
     /// the process without returning.
     pub fn parse_args() -> Self {
-        let mut cli = Cli::parse();
+        // Not `Cli::parse`: clap prints `--help` and `--version` through
+        // std's stdout, which reports a write to an unwritable standard
+        // output as a success, and exits 0.
+        let mut cli = match Cli::try_parse() {
+            Ok(cli) => cli,
+            Err(e) => std::process::exit(crate::output::stdout::clap_exit_code(&e)),
+        };
         cli.normalize();
         cli
     }

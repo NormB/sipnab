@@ -402,6 +402,161 @@ fn production_source_line_count_is_the_cut_index() -> Result<(), TestError> {
     Ok(())
 }
 
+// ── An out-of-line test module declared mid-file (item 4, 2026-11-26) ──
+//
+// `#[cfg(test)] mod x;` names a test module that lives in ANOTHER file. In
+// the middle of a file it is a declaration, not the start of the test
+// module, and code follows it: src/tui/mod.rs declares one on lines 67-68
+// of 6,230, and the cut there hid every line after it from every gate.
+
+/// The two-line form mid-file keeps every later production line.
+#[test]
+fn production_source_keeps_code_after_a_mid_file_test_module_declaration() {
+    let src =
+        "pub fn a() -> char { 'a' }\n#[cfg(test)]\nmod a_tests;\npub fn b() -> char { 'b' }\n";
+    let prod = production_source(src);
+    assert!(prod.contains("'a'"), "before the declaration: {prod:?}");
+    assert!(prod.contains("'b'"), "after the declaration: {prod:?}");
+}
+
+/// The one-line form mid-file keeps every later production line.
+#[test]
+fn production_source_keeps_code_after_a_one_line_mid_file_declaration() {
+    let src = "pub fn a() {}\n#[cfg(test)] mod a_tests;\npub fn b() -> char { 'b' }\n";
+    assert!(
+        production_source(src).contains("'b'"),
+        "after the one-line declaration: {:?}",
+        production_source(src)
+    );
+}
+
+/// A restricted-visibility declaration mid-file keeps later lines.
+#[test]
+fn production_source_keeps_code_after_a_restricted_mid_file_declaration() {
+    for decl in [
+        "pub(crate) mod t;",
+        "pub mod t;",
+        "pub(in crate::tui) mod t;",
+    ] {
+        let src = format!("fn a() {{}}\n#[cfg(test)]\n{decl}\nfn b() -> char {{ 'b' }}\n");
+        assert!(
+            production_source(&src).contains("'b'"),
+            "{decl}: {:?}",
+            production_source(&src)
+        );
+    }
+}
+
+/// Attributes and doc comments between `#[cfg(test)]` and a mid-file
+/// declaration are still stepped over, and later code is kept.
+#[test]
+fn production_source_keeps_code_after_an_attributed_mid_file_declaration() {
+    let src = "fn a() {}\n#[cfg(test)]\n#[path = \"x_tests.rs\"]\n/// The tests.\nmod x_tests;\nfn b() -> char { 'b' }\n";
+    let prod = production_source(src);
+    assert!(
+        prod.contains("'b'"),
+        "after the attributed declaration: {prod:?}"
+    );
+    assert!(src.starts_with(prod), "still a prefix");
+}
+
+/// Several mid-file declarations in a row, then code: the code is kept.
+#[test]
+fn production_source_keeps_code_after_several_mid_file_declarations() {
+    let src = "fn a() {}\n#[cfg(test)]\nmod one;\n#[cfg(test)]\nmod two;\nmod state;\nfn b() -> char { 'b' }\n";
+    let prod = production_source(src);
+    assert!(
+        prod.contains("mod state;"),
+        "the production module after: {prod:?}"
+    );
+    assert!(prod.contains("'b'"), "the code after: {prod:?}");
+}
+
+/// The inline test module after a mid-file declaration is still cut: the
+/// cut moves to it, not to the declaration.
+#[test]
+fn production_source_cuts_the_inline_module_after_a_mid_file_declaration() {
+    let src = "fn a() {}\n#[cfg(test)]\nmod a_tests;\nfn b() -> char { 'b' }\n\n#[cfg(test)]\nmod tests {\n    fn t() -> char { 'z' }\n}\n";
+    let prod = production_source(src);
+    assert!(prod.contains("'b'"), "code between: {prod:?}");
+    assert!(!prod.contains("'z'"), "the inline module is cut: {prod:?}");
+    assert!(
+        prod.ends_with("'b' }\n\n"),
+        "the cut is at the inline module: {prod:?}"
+    );
+}
+
+/// A declaration followed only by blank lines and comments ends the file's
+/// production part: the existing end-of-file form is unchanged.
+#[test]
+fn production_source_cuts_a_declaration_followed_only_by_comments() {
+    let src = "fn a() -> char { 'a' }\n#[cfg(test)]\nmod tests;\n\n// The end.\n";
+    let prod = production_source(src);
+    assert!(prod.contains("'a'"), "production: {prod:?}");
+    assert!(
+        !prod.contains("mod tests;"),
+        "the trailing declaration is cut: {prod:?}"
+    );
+}
+
+/// Two trailing declarations: the cut is at the first.
+#[test]
+fn production_source_cuts_at_the_first_of_two_trailing_declarations() {
+    let src = "fn a() {}\n#[cfg(test)]\nmod one;\n#[cfg(test)]\nmod two;\n";
+    assert_eq!(production_source(src), "fn a() {}\n", "cut at the first");
+}
+
+/// An attribute on a `use` after a mid-file declaration does not end the
+/// scan either, and the code after both is kept.
+#[test]
+fn production_source_keeps_code_after_a_declaration_and_a_test_use() {
+    let src =
+        "fn a() {}\n#[cfg(test)]\nmod a_tests;\n#[cfg(test)]\nuse x::y;\nfn b() -> char { 'b' }\n";
+    assert!(
+        production_source(src).contains("'b'"),
+        "{:?}",
+        production_source(src)
+    );
+}
+
+/// The prefix property holds across a mid-file declaration: the line count
+/// is still the cut index.
+#[test]
+fn production_source_line_count_holds_across_a_mid_file_declaration() {
+    let src = "a\n#[cfg(test)]\nmod t;\nb\n#[cfg(test)]\nmod tests {}\n";
+    let prod = production_source(src);
+    assert!(src.starts_with(prod), "a prefix");
+    assert_eq!(prod.lines().count(), 4, "lines a, the declaration, b");
+}
+
+/// A `mod` with a body after `#[cfg(test)]` is the test module even when
+/// production-looking text follows inside it.
+#[test]
+fn production_source_still_cuts_an_inline_module_mid_file() {
+    let src = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() -> char { 'z' }\n}\nfn b() -> char { 'b' }\n";
+    let prod = production_source(src);
+    assert!(!prod.contains("'z'"), "the inline module is cut: {prod:?}");
+}
+
+/// The real file: src/tui/mod.rs declares a test module on lines 67-68 and
+/// creates its terminal backend far below them.
+#[test]
+fn production_source_reads_past_line_68_of_tui_mod() -> Result<(), TestError> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tui/mod.rs");
+    let text = std::fs::read_to_string(path)?;
+    let prod = production_source(&text);
+    assert!(
+        prod.lines().count() > 2000,
+        "tui/mod.rs production part is {} lines",
+        prod.lines().count()
+    );
+    assert!(
+        prod.contains("CrosstermBackend::new("),
+        "the backend creation is production code"
+    );
+    Ok(())
+}
+
 /// While the guard lives, a connection to its port never succeeds: nothing
 /// listens there. Linux refuses it at once; macOS leaves the SYN unanswered,
 /// so there the connect is bounded and must end in a timeout or a refusal.

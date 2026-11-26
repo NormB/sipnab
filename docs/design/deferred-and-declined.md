@@ -165,7 +165,7 @@ retains no record of which capture anything came from.**
   `capture_mode` ([`tui/mod.rs:274`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L274)<!-- "/// Capture mode" -->), overwritten wholesale
   on each in-TUI open ([`file_open.rs:834`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L834)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
   The `-I` set never reaches the TUI: `plan.source` is consumed by
-  `bootstrap::launch` ([`main.rs:465-468`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L465-L468)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
+  `bootstrap::launch` ([`main.rs:472-475`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L472-L475)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
   ([`state.rs:218-229`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/tui/state.rs#L218-L229)) carries no path.
 - Opening a capture from inside the TUI **clears** both stores rather than
   merging — `reset_for_load`
@@ -548,7 +548,7 @@ with the reason stated above it: *"a HEP sender asserts the inner src/dst
 addresses, so absent receiver-side authentication an attacker could steer the
 kill response at a chosen victim (SSRF-style)."* `--hep-allow-kill` is off by
 default and a test pins that it stays off
-([`cli.rs:12158-12163`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L12158-L12163)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
+([`cli.rs:12164-12169`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L12164-L12169)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
 be opt-in (SN-01)"*).
 
 **Field injection into the input of a ban decision.** `fail2ban.rs`'s
@@ -743,9 +743,9 @@ thread plus a progress-polling tool, which is the TUI's `pcap-load` design porte
 to MCP — the real cost of the feature, and it is not small.
 
 **The server's own idea of what it is holding is per-session and immutable.**
-`SipnabMcp` is cloned per HTTP session — [`transport.rs:579`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L579)<!-- "/// * `server` — the tool" -->
+`SipnabMcp` is cloned per HTTP session — [`transport.rs:587`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L587)<!-- "/// * `server` — the tool" -->
 documents *"the tool server; cloned per HTTP session"* and
-[`:728-729`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L728-L729)<!-- "StreamableHttpService::new(" --> does it. `capture: Option<CaptureContext>`
+[`:736-737`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L736-L737)<!-- "StreamableHttpService::new(" --> does it. `capture: Option<CaptureContext>`
 ([`server.rs:64`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L64)) is a plain field, not an `Arc`,
 built once at startup ([`servers.rs:633-658`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L633-L658)<!-- "let capture_state" -->) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`

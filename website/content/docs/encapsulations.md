@@ -340,8 +340,10 @@ generated filter carries a fragment arm beside its port tests:
 - IPv4: every fragment, the first included (`ip[6:2] & 0x3fff != 0`).
 - IPv6: a Fragment header directly behind the IPv6 header, or behind one
   Hop-by-Hop, Routing or Destination Options header.
-- Only fragments of UDP, TCP and ESP, the protocols sipnab reads after
-  reassembly. Fragments of ICMP, GRE and SCTP stay in the kernel.
+- Only fragments of UDP, TCP, ESP and SCTP, the protocols sipnab reads after
+  reassembly. Fragments of ICMP and GRE stay in the kernel.
+- sipnab reads a reassembled SCTP packet as it reads one that arrived whole,
+  a message split across DATA chunks included.
 - The same test sits in every encapsulated arm: VLAN, QinQ, PPPoE and MPLS.
 
 The arm passes the fragments of every UDP datagram, because a later fragment
