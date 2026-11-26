@@ -1948,7 +1948,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // verify example is now a stdio run, not a run of that unit.
     // 2764 -> 2765 (security.txt, +1): docs/install.md's "I want to" table
     // links its new "Report a security problem" section.
-    const EXPECTED_WIKI_LINKS: usize = 2765;
+    // 2765 -> 2771 (IP fragments, #926, +6): docs/troubleshooting.md 2 (the
+    // "Find your symptom" row and the section's link to encapsulations.md),
+    // docs/encapsulations.md 1, docs/errors.md 1, docs/prometheus-metrics.md 1
+    // and docs/rest-api.md 1 (each links "Requests missing, replies present").
+    const EXPECTED_WIKI_LINKS: usize = 2771;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

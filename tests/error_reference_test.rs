@@ -1068,7 +1068,10 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // 693 -> 694 (MEM-2, bounded TLS key material): +1 in src/app/batch.rs, the
 // line `tls_bound_guidance` prints when a bound dropped key log entries,
 // ServerHello messages or sessions.
-const EXPECTED_TEMPLATES: usize = 694;
+// 694 -> 695 (IP fragments, #926): +1 in src/app/batch.rs, the
+// capture-quality part `incomplete_datagram_part` builds for datagrams whose
+// first fragment arrived and whose later fragments never did.
+const EXPECTED_TEMPLATES: usize = 695;
 
 // ---------------------------------------------------------------------------
 // The page gates

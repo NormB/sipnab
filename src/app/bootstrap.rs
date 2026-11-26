@@ -1873,7 +1873,12 @@ fn apply_capture_filter(
             );
         }
         // Their expression, unmodified — but say what it cannot see.
-        Some(ref filter) => warn_explicit_filter_limits(filter, source, &tunnel_ports),
+        Some(ref filter) => warn_explicit_filter_limits(
+            filter,
+            source,
+            &tunnel_ports,
+            !cli.capture_args.no_reassembly,
+        ),
     }
     Ok(())
 }
@@ -1914,12 +1919,18 @@ fn generated_capture_filter(
 }
 
 /// Say what the operator's own BPF expression cannot see: encapsulated
-/// traffic on the devices it applies to, and the tunnel ports
-/// `--capture-tunnels` would have added.
-fn warn_explicit_filter_limits(filter: &str, source: Option<&CaptureSource>, tunnel_ports: &[u16]) {
+/// traffic on the devices it applies to, later IP fragments when the run
+/// reassembles them, and the tunnel ports `--capture-tunnels` would have
+/// added.
+fn warn_explicit_filter_limits(
+    filter: &str,
+    source: Option<&CaptureSource>,
+    tunnel_ports: &[u16],
+    reassembly: bool,
+) {
     let devices = live_device_names(source);
     let devices: Vec<&str> = devices.iter().map(String::as_str).collect();
-    if let Some(msg) = explicit_filter_encap_notice(filter, &devices) {
+    if let Some(msg) = explicit_filter_notice(filter, &devices, reassembly) {
         tracing::warn!("{msg}");
     }
     if let Some(msg) = tunnel_ports_ignored_notice(tunnel_ports) {
@@ -8352,10 +8363,16 @@ fn port_pair_at(off: usize, lo: u16, hi: u16) -> String {
 ///
 /// IPv4 is pinned to `0x45` — version 4, header length 5 words — because the
 /// port offset has to be a constant and BPF cannot multiply the IHL nibble
-/// into an index. IPv4 options are therefore missed on the ENCAPSULATED arms
-/// only; the untagged arm is a real libpcap `portrange`, which handles them.
-/// The fragment-offset mask keeps the arm off trailing fragments, which carry
-/// no ports at all, matching what libpcap's own port matching does.
+/// into an index. IPv4 options are therefore missed by the port test on the
+/// ENCAPSULATED arms; the untagged arm is a real libpcap `portrange`, which
+/// handles them. The fragment-offset mask keeps the port test off trailing
+/// fragments, which carry no ports at all, matching what libpcap's own port
+/// matching does.
+///
+/// Fragments are taken by a test of their own beside the port test (issue
+/// #926): every fragment of a UDP, TCP or ESP datagram, the first included,
+/// from [`crate::capture::fragment_filter`]. That test reads only fixed
+/// fields, so it also takes a first fragment whose IPv4 header has options.
 fn ip_and_ports_at(ip_off: usize, lo: u16, hi: u16) -> String {
     let v4 = format!(
         "(ether[{ip_off}] = 0x45 and (ether[{proto}] = 17 or ether[{proto}] = 6) \
@@ -8364,13 +8381,15 @@ fn ip_and_ports_at(ip_off: usize, lo: u16, hi: u16) -> String {
         frag = ip_off + 6,
         ports = port_pair_at(ip_off + 20, lo, hi),
     );
+    let v4_fragment = crate::capture::fragment_filter::ipv4_fragment_at(ip_off);
     let v6 = format!(
-        "(ether[{ip_off}] & 0xf0 = 0x60 and (ether[{nh}] = 17 or ether[{nh}] = 6) \
-         and {ports})",
+        "(ether[{ip_off}] & 0xf0 = 0x60 and (((ether[{nh}] = 17 or ether[{nh}] = 6) \
+         and {ports}) or {fragment}))",
         nh = ip_off + 6,
         ports = port_pair_at(ip_off + 40, lo, hi),
+        fragment = crate::capture::fragment_filter::ipv6_fragment_at(ip_off),
     );
-    format!("({v4} or {v6})")
+    format!("({v4} or {v4_fragment} or {v6})")
 }
 
 /// Admits RTP and RTCP on any UDP port: the first payload byte carries
@@ -8424,8 +8443,9 @@ pub fn auto_capture_filter(lo: u16, hi: u16, tunnel_ports: &[u16], media: bool) 
 ///
 /// A `pcap_compile`-ready expression: a plain `portrange` for untagged
 /// traffic, one encapsulated arm that pairs a link-aware protocol test with
-/// every inner IP-header offset, plus one `udp port N` per requested tunnel
-/// port.
+/// every inner IP-header offset, the IP-fragment arm
+/// ([`crate::capture::fragment_filter::fragment_arm`]), plus one
+/// `udp port N` per requested tunnel port.
 ///
 /// # Why not `vlan` / `mpls` / `pppoes`
 ///
@@ -8478,7 +8498,9 @@ pub fn auto_capture_filter(lo: u16, hi: u16, tunnel_ports: &[u16], media: bool) 
 /// On any of the three link types, the depths in `ENCAP_DEPTHS` are
 /// covered: one VLAN tag (802.1Q / 802.1ad / 0x9100) or one MPLS label; QinQ,
 /// PPPoE Session or two MPLS labels; and one VLAN tag over PPPoE Session.
-/// Each offset covers IPv4 (no options, first fragment) and IPv6, UDP and TCP.
+/// Each offset covers IPv4 (no options, first fragment) and IPv6, UDP and TCP,
+/// by port, and every IPv4 or IPv6 fragment of UDP, TCP or ESP, by the
+/// fragment test.
 ///
 /// The cost of one filter string serving three link types is that four of the
 /// seven offsets belong to a different link header than the one in front of
@@ -8505,7 +8527,7 @@ pub fn auto_capture_filter(lo: u16, hi: u16, tunnel_ports: &[u16], media: bool) 
 /// logged for the operator to paste into `tcpdump`, where a device-specific
 /// expression would be a trap.
 pub fn auto_bpf_filter(lo: u16, hi: u16, tunnel_ports: &[u16]) -> String {
-    let mut arms: Vec<String> = Vec::with_capacity(2 + tunnel_ports.len());
+    let mut arms: Vec<String> = Vec::with_capacity(3 + tunnel_ports.len());
 
     // The untagged case stays a real libpcap portrange: it is the only arm
     // that gets IPv4 options, fragmentation and every link type right.
@@ -8537,6 +8559,12 @@ pub fn auto_bpf_filter(lo: u16, hi: u16, tunnel_ports: &[u16]) -> String {
         .join(" or ");
 
     arms.push(format!("(({encapsulated}) and ({inner}))"));
+
+    // IP fragments behind the link-layer header (issue #926). Only the first
+    // fragment carries ports, so `portrange` above passed the first fragment
+    // of a large SIP message and the kernel dropped the rest: the message
+    // never reassembled, and nothing counted the loss.
+    arms.push(crate::capture::fragment_filter::fragment_arm());
 
     // Opt-in only: these are not narrowing terms, they are the whole port.
     for port in tunnel_ports {
@@ -8636,26 +8664,35 @@ fn config_filter_file_notice(cli: &Cli, config: &Config, is_live: bool) -> Optio
 }
 
 /// The sentence an operator-supplied filter earns when it looks
-/// encapsulation-blind, or `None` when it does not.
+/// encapsulation-blind or blind to later IP fragments, or `None` when it is
+/// neither.
 ///
 /// Their expression is handed to `pcap_compile` exactly as typed — silently
 /// rewriting what someone asked for is worse than the blindness. But a bare
 /// `port 5060` on a tagged link matches nothing, and that reads as "no calls"
-/// rather than "wrong filter", so it is worth a sentence.
+/// rather than "wrong filter", so it is worth a sentence. The same filter
+/// passes only the first fragment of a SIP message larger than the path MTU
+/// (issue #926): the request goes missing and its replies do not.
 ///
-/// Deliberately narrow: it fires only when the filter has a port term and no
-/// sign of encapsulation handling. A filter with no port term at all is
+/// Deliberately narrow: the encapsulation sentence fires only when the filter
+/// has a port term and no sign of encapsulation handling, and the fragment
+/// sentence only when [`crate::capture::fragment_filter::misses_later_fragments`]
+/// says so and the run reassembles. A filter with no port term at all is
 /// selecting on something else and gets nothing. Nor does a capture on
 /// loopback only (`lo`, `lo0`): loopback carries no VLAN tag, QinQ, PPPoE or
-/// MPLS, so the sentence would be wrong there. A proxy's HEP copy sniffed on
-/// `lo` with `udp dst port 9063` is the case that showed it.
+/// MPLS, and its 64 KiB MTU fragments no SIP message, so either sentence
+/// would be wrong there. A proxy's HEP copy sniffed on `lo` with
+/// `udp dst port 9063` is the case that showed it.
 ///
 /// # Arguments
 ///
 /// * `filter` — the operator's expression.
 /// * `devices` — the interfaces this run captures on, from
 ///   [`live_device_names`]; empty when unknown, which keeps the notice.
-fn explicit_filter_encap_notice(filter: &str, devices: &[&str]) -> Option<String> {
+/// * `reassembly` — whether the run reassembles IP fragments (not
+///   `--no-reassembly`). Without it each fragment is read alone, and the
+///   fragment sentence would point at a remedy that changes nothing.
+fn explicit_filter_notice(filter: &str, devices: &[&str], reassembly: bool) -> Option<String> {
     let loopback_only =
         !devices.is_empty() && devices.iter().all(|d| matches!(d.trim(), "lo" | "lo0"));
     if loopback_only {
@@ -8668,18 +8705,39 @@ fn explicit_filter_encap_notice(filter: &str, devices: &[&str]) -> Option<String
     let already_aware = ["vlan", "mpls", "pppoes", "ether[", "link[", "radio["]
         .iter()
         .any(|token| lower.contains(token));
-    if already_aware {
-        return None;
+    let fragment_blind =
+        reassembly && crate::capture::fragment_filter::misses_later_fragments(filter);
+    let fragments = |opening: &str| {
+        format!(
+            "{opening} does not match the later fragments of an IP datagram, which \
+             carry no ports, so a SIP message larger than the path MTU is dropped in \
+             the kernel after its first fragment and never reassembled (counted as \
+             incomplete_ip_datagrams). To keep those fragments, use this filter: {}",
+            crate::capture::fragment_filter::with_fragment_clause(filter)
+        )
+    };
+    let mut msg = String::from("Your BPF filter is used as given and was not modified.");
+    match (already_aware, fragment_blind) {
+        (true, false) => return None,
+        (true, true) => {
+            msg.push(' ');
+            msg.push_str(&fragments("Note that a port-based filter"));
+        }
+        (false, blind) => {
+            msg.push_str(
+                " Note that a port-based filter is matched against the outer headers \
+                 only: it will not see SIP inside a VLAN tag, QinQ, PPPoE or MPLS, and \
+                 the packets are dropped in the kernel where no sipnab counter can \
+                 report them. Drop the filter to get sipnab's encapsulation-aware one, \
+                 or add --capture-tunnels for UDP-tunneled signaling.",
+            );
+            if blind {
+                msg.push(' ');
+                msg.push_str(&fragments("A port-based filter also"));
+            }
+        }
     }
-    Some(
-        "Your BPF filter is used as given and was not modified. Note that a \
-         port-based filter is matched against the outer headers only: it will \
-         not see SIP inside a VLAN tag, QinQ, PPPoE or MPLS, and the packets \
-         are dropped in the kernel where no sipnab counter can report them. \
-         Drop the filter to get sipnab's encapsulation-aware one, or add \
-         --capture-tunnels for UDP-tunneled signaling."
-            .to_string(),
-    )
+    Some(msg)
 }
 
 /// The interfaces a capture source reads, by name: a `-d` device (each entry
@@ -12247,34 +12305,54 @@ mod tests {
     }
 
     /// A trailing fragment carries no ports, so the bytes at the port offsets
-    /// are payload — matching them would be a false positive.
+    /// are payload — the port test must not read them as ports.
+    ///
+    /// Until issue #926 this test expected trailing fragments to be dropped,
+    /// which was the defect: the kernel discarded every later fragment of a
+    /// tagged SIP message and reassembly never completed it. They now pass
+    /// on the fragment test, which reads no port, so the port test still
+    /// never fires on payload: a trailing fragment of a protocol reassembly
+    /// does not read stays out even when its payload spells port 5060.
     ///
     /// These frames differ from the matching one only in the fragment word.
     #[test]
     fn encapsulated_arms_skip_trailing_fragments() -> Result<(), TestError> {
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
-        for (frag, expected, what) in [
-            (0x0000u16, 1usize, "no flags, offset 0"),
-            (0x4000, 1, "DF, offset 0"),
+        for (proto, frag, expected, what) in [
+            (17u8, 0x0000u16, 1usize, "no flags, offset 0"),
+            (17, 0x4000, 1, "DF, offset 0"),
             (
+                17,
                 0x2000,
                 1,
                 "MF, offset 0 — the FIRST fragment does carry ports",
             ),
-            (0x0001, 0, "offset 1"),
-            (0x20b9, 0, "MF, offset 185"),
+            (17, 0x0001, 1, "offset 1, taken by the fragment test"),
+            (17, 0x20b9, 1, "MF, offset 185, taken by the fragment test"),
+            (
+                47,
+                0x0001,
+                0,
+                "a GRE trailing fragment whose payload spells 5060",
+            ),
+            (
+                47,
+                0x20b9,
+                0,
+                "a GRE middle fragment whose payload spells 5060",
+            ),
         ] {
             assert_eq!(
                 count_frames(
                     dir.path(),
                     "frag",
                     DLT_EN10MB,
-                    &[vlan_wrap(&ipv4_with(17, frag))],
+                    &[vlan_wrap(&ipv4_with(proto, frag))],
                     &filter
                 )?,
                 expected,
-                "fragment word {frag:#06x} ({what})"
+                "protocol {proto}, fragment word {frag:#06x} ({what})"
             );
         }
         Ok(())
@@ -12850,32 +12928,32 @@ mod tests {
     /// past an encapsulation gets a sentence about it.
     #[test]
     fn explicit_filter_encap_notice_fires_only_on_a_blind_port_filter() -> Result<(), TestError> {
-        let msg = explicit_filter_encap_notice("udp port 5060", &["eth0"])
+        let msg = explicit_filter_notice("udp port 5060", &["eth0"], false)
             .ok_or("a bare port filter is encapsulation-blind")?;
         assert!(msg.contains("not modified"), "got: {msg}");
         assert!(msg.contains("--capture-tunnels"), "got: {msg}");
 
         // Already encapsulation-aware, by qualifier or by raw offset.
         assert_eq!(
-            explicit_filter_encap_notice("vlan and port 5060", &["eth0"]),
+            explicit_filter_notice("vlan and port 5060", &["eth0"], false),
             None
         );
         assert_eq!(
-            explicit_filter_encap_notice("pppoes and port 5060", &["eth0"]),
+            explicit_filter_notice("pppoes and port 5060", &["eth0"], false),
             None
         );
         assert_eq!(
-            explicit_filter_encap_notice("mpls and port 5060", &["eth0"]),
+            explicit_filter_notice("mpls and port 5060", &["eth0"], false),
             None
         );
         assert_eq!(
-            explicit_filter_encap_notice("port 5060 or ether[12:2] = 0x8100", &["eth0"]),
+            explicit_filter_notice("port 5060 or ether[12:2] = 0x8100", &["eth0"], false),
             None
         );
         // No port term at all: the operator is filtering on something else
         // entirely and this notice would be noise.
         assert_eq!(
-            explicit_filter_encap_notice("host 192.0.2.1", &["eth0"]),
+            explicit_filter_notice("host 192.0.2.1", &["eth0"], false),
             None
         );
         Ok(())
@@ -12889,15 +12967,382 @@ mod tests {
     #[test]
     fn explicit_filter_encap_notice_is_silent_on_loopback_only() -> Result<(), TestError> {
         let filter = "udp dst port 9063";
-        assert_eq!(explicit_filter_encap_notice(filter, &["lo"]), None);
-        assert_eq!(explicit_filter_encap_notice(filter, &["lo0"]), None);
-        assert_eq!(explicit_filter_encap_notice(filter, &["lo", "lo0"]), None);
+        assert_eq!(explicit_filter_notice(filter, &["lo"], false), None);
+        assert_eq!(explicit_filter_notice(filter, &["lo0"], false), None);
+        assert_eq!(explicit_filter_notice(filter, &["lo", "lo0"], false), None);
         for devices in [&["eth0"][..], &["lo", "eth0"], &["any"], &[]] {
             assert!(
-                explicit_filter_encap_notice(filter, devices).is_some(),
+                explicit_filter_notice(filter, devices, false).is_some(),
                 "{devices:?} can carry encapsulated SIP, so the notice stays"
             );
         }
+        Ok(())
+    }
+
+    // ── IP fragments in the generated filter (issue #926) ───────────────
+
+    use crate::capture::fragment_filter::test_frames as frag;
+
+    /// The issue's 3,500-byte OPTIONS as the three IPv4 fragments a 1500-byte
+    /// MTU makes of it.
+    fn issue_926_fragments() -> Vec<Vec<u8>> {
+        let datagram = frag::udp(5060, 5060, &frag::issue_926_options());
+        frag::ipv4_fragments(17, &datagram, 1500)
+    }
+
+    /// `ip` in every encapsulation the generated filter claims, behind the
+    /// link-layer header `link` builds: `(label, frame)`.
+    fn encapsulations_of(link: LinkHeader, ip: &[u8]) -> Vec<(&'static str, Vec<u8>)> {
+        let et = frag::ethertype_of(ip);
+        let ppp = if et == 0x86dd { 0x0057 } else { 0x0021 };
+        let shapes: [(&'static str, u16, Vec<u8>); 9] = [
+            ("802.1Q", 0x8100, tag(100, et)),
+            ("802.1ad single tag", 0x88a8, tag(100, et)),
+            ("0x9100 single tag", 0x9100, tag(100, et)),
+            ("QinQ", 0x88a8, [tag(10, 0x8100), tag(100, et)].concat()),
+            (
+                "QinQ, 0x8100 outer",
+                0x8100,
+                [tag(10, 0x8100), tag(100, et)].concat(),
+            ),
+            ("PPPoE Session", 0x8864, pppoe(ip.len(), ppp)),
+            (
+                "802.1Q over PPPoE",
+                0x8100,
+                [tag(100, 0x8864), pppoe(ip.len(), ppp)].concat(),
+            ),
+            ("MPLS, 1 label", 0x8847, mpls(16, true)),
+            (
+                "MPLS, 2 labels",
+                0x8848,
+                [mpls(16, false), mpls(17, true)].concat(),
+            ),
+        ];
+        shapes
+            .into_iter()
+            .map(|(name, outer, between)| {
+                let mut f = link(outer);
+                f.extend_from_slice(&between);
+                f.extend_from_slice(ip);
+                (name, f)
+            })
+            .collect()
+    }
+
+    /// `ip` directly behind the link-layer header `link` builds.
+    fn untagged(link: LinkHeader, ip: &[u8]) -> Vec<u8> {
+        let mut f = link(frag::ethertype_of(ip));
+        f.extend_from_slice(ip);
+        f
+    }
+
+    /// The defect itself: the default filter dropped the second and third
+    /// fragments of the issue's OPTIONS in the kernel. All three pass now, on
+    /// Ethernet and on the cooked headers `-d any` opens.
+    #[test]
+    fn the_generated_filter_passes_all_three_fragments_of_the_issue_926_request()
+    -> Result<(), TestError> {
+        let frags = issue_926_fragments();
+        assert_eq!(
+            frags.len(),
+            3,
+            "the issue's message is three fragments at MTU 1500"
+        );
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        for (name, dlt, link) in LINK_HEADERS {
+            let frames: Vec<Vec<u8>> = frags.iter().map(|ip| untagged(*link, ip)).collect();
+            for filter in [
+                auto_bpf_filter(5060, 5061, &[]),
+                auto_capture_filter(5060, 5061, &[], true),
+            ] {
+                assert_eq!(
+                    count_frames(dir.path(), "issue926", *dlt, &frames, &filter)?,
+                    3,
+                    "{name}: every fragment must reach reassembly"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Every encapsulated arm carries the fragment test too: a later IPv4 or
+    /// IPv6 fragment inside a VLAN tag, QinQ, PPPoE or MPLS passes, behind
+    /// every link-layer header.
+    #[test]
+    fn the_generated_filter_passes_later_fragments_in_every_encapsulation() -> Result<(), TestError>
+    {
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let later4 = frag::ipv4(17, 185, &[], &[b'X'; 96]);
+        let later6 = frag::ipv6_fragment(17, 181, false, &[b'X'; 96]);
+        for (link_name, dlt, link) in LINK_HEADERS {
+            for ip in [&later4, &later6] {
+                for (name, frame) in encapsulations_of(*link, ip) {
+                    assert_eq!(
+                        count_frames(dir.path(), "encap", *dlt, &[frame], &filter)?,
+                        1,
+                        "{link_name}, {name}, IPv{}: a later fragment must pass",
+                        ip[0] >> 4
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// An IPv6 first fragment names next header 44, so libpcap's `portrange`
+    /// never matched it, and the later ones carry no ports at all.
+    #[test]
+    fn the_generated_filter_passes_a_fragmented_ipv6_request() -> Result<(), TestError> {
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let datagram = frag::udp(5060, 5060, &frag::issue_926_options());
+        let first = frag::ipv6_fragment(17, 0, true, &datagram[..1448]);
+        let last = frag::ipv6_fragment(17, 181, false, &datagram[1448..]);
+        for (name, dlt, link) in LINK_HEADERS {
+            let frames = vec![untagged(*link, &first), untagged(*link, &last)];
+            assert_eq!(
+                count_frames(dir.path(), "v6", *dlt, &frames, &filter)?,
+                2,
+                "{name}: both IPv6 fragments must pass"
+            );
+        }
+        Ok(())
+    }
+
+    /// The encapsulated port arms are pinned to a 20-byte IPv4 header, so a
+    /// first fragment with options inside a VLAN missed them; the fragment
+    /// arm reads only fixed fields and takes it.
+    #[test]
+    fn the_generated_filter_passes_a_tagged_first_fragment_with_ip_options() -> Result<(), TestError>
+    {
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let first = frag::ipv4(
+            17,
+            frag::MF,
+            &[1, 1, 1, 0],
+            &frag::udp(5060, 5060, &[b'X'; 96]),
+        );
+        let mut f = eth(0x8100);
+        f.extend_from_slice(&tag(100, 0x0800));
+        f.extend_from_slice(&first);
+        assert_eq!(
+            count_frames(dir.path(), "opts", DLT_EN10MB, &[f], &filter)?,
+            1,
+            "a first fragment with IPv4 options inside a VLAN must pass"
+        );
+        Ok(())
+    }
+
+    /// Fragments of protocols reassembly reads nothing from stay in the
+    /// kernel, tagged or not: the fragment arm is not a firehose.
+    #[test]
+    fn the_generated_filter_rejects_fragments_of_other_protocols() -> Result<(), TestError> {
+        let filter = auto_bpf_filter(5060, 5061, &[]);
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        for proto in [1u8, 47, 132] {
+            let later = frag::ipv4(proto, 185, &[], &[0u8; 96]);
+            let mut frames = vec![untagged(eth, &later)];
+            frames.extend(encapsulations_of(eth, &later).into_iter().map(|(_, f)| f));
+            assert_eq!(
+                count_frames(dir.path(), "other", DLT_EN10MB, &frames, &filter)?,
+                0,
+                "protocol {proto} fragments must not pass"
+            );
+        }
+        let icmp6 = frag::ipv6_fragment(58, 181, false, &[0u8; 96]);
+        assert_eq!(
+            count_frames(
+                dir.path(),
+                "icmp6",
+                DLT_EN10MB,
+                &[untagged(eth, &icmp6)],
+                &filter
+            )?,
+            0,
+            "an ICMPv6 fragment must not pass"
+        );
+        Ok(())
+    }
+
+    /// `--capture-tunnels` appends ports; the fragment arm stays.
+    #[test]
+    fn the_generated_filter_with_tunnel_ports_keeps_the_fragment_arm() -> Result<(), TestError> {
+        let filter = auto_bpf_filter(5060, 5061, TUNNEL_PORTS_DEFAULT);
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let frames: Vec<Vec<u8>> = issue_926_fragments()
+            .iter()
+            .map(|ip| untagged(eth, ip))
+            .collect();
+        assert_eq!(
+            count_frames(dir.path(), "tunnels", DLT_EN10MB, &frames, &filter)?,
+            3,
+            "every fragment must pass with tunnel ports added"
+        );
+        Ok(())
+    }
+
+    /// A composite's interface takes media only, because its HEP listener
+    /// delivers the signaling. Passing SIP fragments there would deliver a
+    /// large message twice, so the media-only filter stays as it was.
+    #[test]
+    fn the_composite_media_filter_takes_no_signaling_fragments() -> Result<(), TestError> {
+        let filter = generated_capture_filter((5060, 5061), &[], true, true);
+        assert_eq!(
+            filter, MEDIA_FILTER_ARM,
+            "the composite filter is the media arm"
+        );
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let frames: Vec<Vec<u8>> = issue_926_fragments()[1..]
+            .iter()
+            .map(|ip| untagged(eth, ip))
+            .collect();
+        assert_eq!(
+            count_frames(dir.path(), "composite", DLT_EN10MB, &frames, &filter)?,
+            0,
+            "later SIP fragments are the HEP mirror's to deliver"
+        );
+        Ok(())
+    }
+
+    /// The whole generated filter still compiles on every link type sipnab
+    /// opens, and the optimized program stays well inside the classic BPF
+    /// limit of 4096 instructions (`BPF_MAXINSNS`).
+    #[test]
+    fn the_generated_filter_with_fragment_arms_fits_classic_bpf() -> Result<(), TestError> {
+        for filter in [
+            auto_bpf_filter(5060, 5061, &[]),
+            auto_capture_filter(5060, 5061, TUNNEL_PORTS_DEFAULT, true),
+        ] {
+            for lt in [
+                pcap::Linktype::ETHERNET,
+                pcap::Linktype::LINUX_SLL,
+                pcap::Linktype::LINUX_SLL2,
+                pcap::Linktype(12),
+                pcap::Linktype::NULL,
+            ] {
+                let cap = pcap::Capture::dead(lt).map_err(|e| format!("dead: {e}"))?;
+                let prog = cap
+                    .compile(&filter, true)
+                    .map_err(|e| format!("must compile on {lt:?}: {e}"))?;
+                let n = prog.get_instructions().len();
+                assert!(n < 4096, "{lt:?}: {n} instructions is past BPF_MAXINSNS");
+            }
+        }
+        Ok(())
+    }
+
+    /// The fragment arm sits beside the port test at every inner offset.
+    #[test]
+    fn every_inner_offset_carries_an_ipv4_and_an_ipv6_fragment_test() -> Result<(), TestError> {
+        let f = auto_bpf_filter(5060, 5061, &[]);
+        for off in [18usize, 20, 22, 24, 26, 28, 32] {
+            let v4 = crate::capture::fragment_filter::ipv4_fragment_at(off);
+            let v6 = crate::capture::fragment_filter::ipv6_fragment_at(off);
+            assert!(
+                !v4.is_empty() && f.contains(&v4),
+                "offset {off}: IPv4 fragment test missing"
+            );
+            assert!(
+                !v6.is_empty() && f.contains(&v6),
+                "offset {off}: IPv6 fragment test missing"
+            );
+        }
+        let arm = crate::capture::fragment_filter::fragment_arm();
+        assert!(
+            !arm.is_empty() && f.contains(&arm),
+            "the untagged fragment arm is missing: {f}"
+        );
+        Ok(())
+    }
+
+    // ── the used-as-given notice and later fragments (issue #926) ───────
+
+    #[test]
+    fn the_used_as_given_notice_names_later_fragments_and_the_fixed_filter() -> Result<(), TestError>
+    {
+        let filter = "port 5060 or port 5061";
+        let msg = explicit_filter_notice(filter, &["eth0"], true)
+            .ok_or("a port-only filter with reassembly on gets the notice")?;
+        assert!(
+            msg.starts_with("Your BPF filter is used as given"),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("later fragments"),
+            "the fragment loss is named: {msg}"
+        );
+        let fixed = crate::capture::fragment_filter::with_fragment_clause(filter);
+        assert!(
+            msg.contains(&fixed),
+            "the exact filter to use is given: {msg}"
+        );
+        assert!(
+            msg.contains("VLAN"),
+            "the encapsulation sentence stays: {msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_fragment_sentence_needs_reassembly() -> Result<(), TestError> {
+        let msg = explicit_filter_notice("udp port 5060", &["eth0"], false)
+            .ok_or("the encapsulation sentence is still owed")?;
+        assert!(
+            !msg.contains("fragment"),
+            "--no-reassembly reads fragments alone: {msg}"
+        );
+        assert_eq!(
+            msg,
+            "Your BPF filter is used as given and was not modified. Note that a \
+             port-based filter is matched against the outer headers only: it will \
+             not see SIP inside a VLAN tag, QinQ, PPPoE or MPLS, and the packets \
+             are dropped in the kernel where no sipnab counter can report them. \
+             Drop the filter to get sipnab's encapsulation-aware one, or add \
+             --capture-tunnels for UDP-tunneled signaling.",
+            "without the fragment sentence the notice is the one documented before #926"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_encapsulation_aware_port_filter_still_gets_the_fragment_sentence() -> Result<(), TestError>
+    {
+        let msg = explicit_filter_notice("vlan and port 5060", &["eth0"], true)
+            .ok_or("vlan does not make a port test see later fragments")?;
+        assert!(msg.contains("later fragments"), "got: {msg}");
+        assert!(
+            !msg.contains("outer headers only"),
+            "no encapsulation sentence: {msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_workaround_filter_gets_no_fragment_sentence() -> Result<(), TestError> {
+        let filter = "(port 5060 or port 5061) or (ip[6:2] & 0x1fff != 0)";
+        let msg = explicit_filter_notice(filter, &["eth0"], true)
+            .ok_or("it is still encapsulation-blind")?;
+        assert!(
+            !msg.contains("later fragments"),
+            "the clause is there: {msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_fragment_sentence_on_loopback_or_for_a_host_filter() -> Result<(), TestError> {
+        assert_eq!(
+            explicit_filter_notice("udp dst port 9063", &["lo"], true),
+            None,
+            "lo has a 64 KiB MTU: SIP is not fragmented there"
+        );
+        assert_eq!(
+            explicit_filter_notice("host 192.0.2.1", &["eth0"], true),
+            None,
+            "a host filter passes the fragments of what it selects"
+        );
         Ok(())
     }
 

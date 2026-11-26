@@ -8,6 +8,17 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **Live capture keeps SIP messages larger than the MTU, which arrive as IP fragments.**
+  - Was: The default filter passed only the first fragment, so large requests went missing while replies stayed, and no counter moved.
+  - Effect: The generated filter passes IPv4 and IPv6 fragments of UDP, TCP and ESP, untagged and inside VLAN, QinQ, PPPoE and MPLS.
+  - Effect: A port-only filter of your own gets a warning naming the fix, and `incomplete_ip_datagrams` counts each message lost this way.
+  - Do: With a port-only filter of your own, append `or (ip[6:2] & 0x1fff != 0) or (ip6[6] = 44)` to it.
+  - Docs: [Requests missing, replies present](docs/troubleshooting.md#requests-missing-replies-present)
+
 ## [0.5.274] - 2026-11-25
 
 ### Added

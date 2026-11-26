@@ -142,6 +142,7 @@
         "{snapped} frame(s) arrived truncated by the capture's snaplen (headers kept, payload cut short — raise --snaplen if you need RTP payload, audio export or a faithful -O re-emit)",
         "{snapped} frame(s) arrived truncated by the capture's snaplen and {snapped_undecodable} of them were cut too short to decode at all, so nothing in those was analyzed (raise --snaplen)",
         "{holes} hole(s) in TCP streams, {hole_bytes} byte(s) of sequence space the capture never held, were skipped: reading resumed at the next SIP message or TLS record behind each, and a message the hole cut is lost (packets the capture point missed)",
+        "{datagrams} IP datagram(s) arrived as a first fragment whose later fragments never did, so a SIP message in them is missing (a capture filter that tests ports passes only first fragments: append \"or {}\" to it, or capture without a filter)",
         "capture quality: {}. THIS ANALYSIS IS INCOMPLETE — the counts above are what sipnab RECEIVED AND UNDERSTOOD, not what crossed the wire. See docs/tuning-capture.md."
       ],
       "why": "retention_summary and capture_quality_summary in batch.rs (literal parts joined with '; ')."

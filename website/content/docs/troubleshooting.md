@@ -37,6 +37,7 @@ the cause from there.
 | "The phones keep dropping off" / no inbound calls arrive | [Registration failures](#registration-failures) |
 | "Something is hammering the PBX" / probes across unknown extensions | [SIP scanner detection](#sip-scanner-detection) |
 | "No SIP traffic found" on a link you know carries calls | [A live capture that sees nothing](#a-live-capture-that-sees-nothing) |
+| Large requests (an INVITE with a big SDP) are missing and their replies are there | [Requests missing, replies present](#requests-missing-replies-present) |
 | A HEP collector (`-L`) shows no calls, or one proxy's calls are missing | [A HEP collector that receives nothing](#a-hep-collector-that-receives-nothing) |
 | The two legs of a call through OpenSIPS `topology_hiding("C")` do not join | [Troubleshooting the OpenSIPS mapping](@/docs/opensips-sipnab.md#6-troubleshooting), or [Decode the hidden Call-ID](@/docs/opensips-sipnab.md#decode-the-hidden-call-id) |
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
@@ -1257,6 +1258,74 @@ IPv4 header with options. Untagged IPv4 with options matches.
 To confirm which of these you are looking at, run the generated filter and a
 plain `portrange` over the same capture with `tcpdump -r`, and compare the
 counts.
+
+## Requests missing, replies present
+
+A live capture shows a dialog with its replies but without the request that
+started it. The missing requests are the large ones: an INVITE with a large SDP
+body, a request with many `Via` or `Record-Route` headers, a MESSAGE with a
+large body. Reading a capture file of the same traffic with `-I` shows them.
+
+**Purpose.** Get every fragment of a SIP message larger than the path MTU to
+reassembly, and see when the capture lost a message this way.
+
+**Why it happens.** A UDP datagram larger than the MTU travels as IP
+fragments. Only the first fragment carries the UDP header and its ports.
+A capture filter that tests ports (`port 5060`, `portrange 5060-5061`) passes
+the first fragment and rejects the others in the kernel. Reassembly never
+gets them, and the kernel does not count them as dropped.
+
+**Prerequisites.**
+
+- sipnab 0.5.276 or later. Older releases generate a filter that drops the
+  later fragments too.
+- No change on the SIP servers or the network. To confirm that the traffic is
+  fragmented, `tcpdump` on the capture host helps.
+
+**Steps.**
+
+1. Check whether you gave a capture filter of your own: an expression after
+   the options, `--bpf-file`, or `[capture] bpf_filter` in the configuration.
+2. If you did not, the filter sipnab generates passes IP fragments of UDP, TCP
+   and ESP, inside VLAN, QinQ, PPPoE and MPLS too. You need nothing else.
+3. If you did, sipnab warns at startup when the filter tests ports and passes
+   no later fragment, and the warning gives the filter to use instead:
+
+   ```text
+   Your BPF filter is used as given and was not modified. Note that a port-based filter is matched against the outer headers only: it will not see SIP inside a VLAN tag, QinQ, PPPoE or MPLS, and the packets are dropped in the kernel where no sipnab counter can report them. Drop the filter to get sipnab's encapsulation-aware one, or add --capture-tunnels for UDP-tunneled signaling. A port-based filter also does not match the later fragments of an IP datagram, which carry no ports, so a SIP message larger than the path MTU is dropped in the kernel after its first fragment and never reassembled (counted as incomplete_ip_datagrams). To keep those fragments, use this filter: (port 5060 or port 5061) or (ip[6:2] & 0x1fff != 0) or (ip6[6] = 44)
+   ```
+
+   Append the clause to your filter, or drop the filter:
+
+   ```bash
+   sudo sipnab -N -d eth0 '(port 5060 or port 5061) or (ip[6:2] & 0x1fff != 0) or (ip6[6] = 44)'
+   ```
+
+**Verify.**
+
+- The end-of-run summary has no `IP datagram(s) arrived as a first fragment`
+  part.
+- `capture_status` (MCP) and the REST capture-quality block report
+  `incomplete_ip_datagrams: 0`, and `/metrics` reports
+  `sipnab_capture_incomplete_ip_datagrams_total 0`.
+- The dialogs that lacked their request now hold it.
+
+**Troubleshoot.**
+
+- `incomplete_ip_datagrams` is not zero with no filter of your own: the
+  capture point missed fragments. Check the kernel and interface drop counts
+  beside it, then capture closer to the traffic.
+- The fragments arrive with the Fragment header behind two or more IPv6
+  extension headers: classic BPF cannot walk that chain, so the generated
+  filter does not match them. Capture without a filter for that traffic.
+- `--no-reassembly` reads each fragment on its own, so a fragmented request
+  never reads as one message. Remove it.
+- On a run that takes signaling from `--hep-listen` and media from `-d`, the
+  interface filter passes media only, so it takes no SIP fragments. The HEP
+  sender delivers each SIP message whole.
+
+[The generated filter passes IP fragments](@/docs/encapsulations.md#the-generated-filter-passes-ip-fragments)
+describes the filter terms.
 
 ## An archive of captures
 

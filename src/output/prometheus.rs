@@ -498,6 +498,16 @@ pub struct CaptureQuality {
     /// `--snaplen` warnings fire once per run and cannot say how MUCH of a
     /// capture came in truncated.
     pub snapped_frames: u64,
+    /// IP datagrams whose first fragment was captured and which never
+    /// completed: their later fragments never arrived (issue #926).
+    ///
+    /// The loss a port-based capture filter causes. Only the first fragment
+    /// of a SIP message larger than the path MTU carries ports, so the
+    /// filter passed it and the kernel discarded the rest without counting
+    /// a drop: the request was missing and every other counter here read
+    /// zero. Counted when reassembly gives the datagram up, at its TTL, at
+    /// the entry cap, or at the end of the input.
+    pub incomplete_ip_datagrams: u64,
     /// STUN/TURN transactions that were sent and never answered.
     ///
     /// The only counter here that is about the NETWORK rather than about the
@@ -571,6 +581,7 @@ impl CaptureQuality {
                     .load(std::sync::atomic::Ordering::Relaxed),
                 undecodable_frames: crate::capture::undecodable_frames(),
                 snapped_frames: crate::capture::snapped_frames(),
+                incomplete_ip_datagrams: crate::capture::reassembly::incomplete_ip_datagrams(),
                 unanswered_nat_requests: crate::stun::unanswered_requests().0.len() as u64,
                 lapsed_turn_allocations,
                 lapsed_turn_allocation_streams,
@@ -582,6 +593,7 @@ impl CaptureQuality {
             Self {
                 undecodable_frames: crate::capture::undecodable_frames(),
                 snapped_frames: crate::capture::snapped_frames(),
+                incomplete_ip_datagrams: crate::capture::reassembly::incomplete_ip_datagrams(),
                 unanswered_nat_requests: crate::stun::unanswered_requests().0.len() as u64,
                 lapsed_turn_allocations,
                 lapsed_turn_allocation_streams,
@@ -1173,6 +1185,18 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         out,
         "sipnab_capture_snapped_frames_total {}",
         metrics.capture_quality.snapped_frames
+    );
+    out.push('\n');
+    write_help_type(
+        &mut out,
+        "sipnab_capture_incomplete_ip_datagrams_total",
+        "IP datagrams whose first fragment was captured and whose later fragments never arrived",
+        "counter",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_capture_incomplete_ip_datagrams_total {}",
+        metrics.capture_quality.incomplete_ip_datagrams
     );
     out.push('\n');
     // A GAUGE, not a counter: this is the number of transactions still
@@ -2541,6 +2565,7 @@ mod tests {
                 invalid_timestamps: 33,
                 undecodable_frames: 0,
                 snapped_frames: 44,
+                incomplete_ip_datagrams: 99,
                 unanswered_nat_requests: 55,
                 lapsed_turn_allocations: 66,
                 lapsed_turn_allocation_streams: 77,
@@ -2556,6 +2581,56 @@ mod tests {
         assert!(output.contains("sipnab_capture_interface_dropped_packets_total 22"));
         assert!(output.contains("# TYPE sipnab_capture_invalid_timestamps_total counter"));
         assert!(output.contains("sipnab_capture_invalid_timestamps_total 33"));
+        assert!(
+            output.contains("# TYPE sipnab_capture_incomplete_ip_datagrams_total counter"),
+            "the incomplete-datagram count is a counter of its own: {output}"
+        );
+        assert!(
+            output.contains("sipnab_capture_incomplete_ip_datagrams_total 99"),
+            "the incomplete-datagram count is exported (issue #926): {output}"
+        );
+        Ok(())
+    }
+
+    /// `CaptureQuality::current` reads the reassembler's process-wide count,
+    /// so /metrics, capture_status and the API all see the same number.
+    #[test]
+    #[serial_test::serial(undecodable_tally)]
+    fn current_capture_quality_reads_the_incomplete_datagram_count() -> Result<(), TestError> {
+        let mut r = crate::capture::reassembly::FragmentReassembler::new();
+        let first = crate::capture::parse::ParsedPacket {
+            frame_bytes: None,
+            frame: None,
+            timestamp: chrono::Utc::now(),
+            src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 20)),
+            dst_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 10)),
+            src_port: 0,
+            dst_port: 0,
+            transport: crate::capture::parse::TransportProto::Udp,
+            payload: bytes::Bytes::from_static(&[b'A'; 64]),
+            ip_id: Some(926),
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: Some(0),
+            more_fragments: true,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: crate::capture::parse::InputOrigin::Wire,
+            hep: None,
+        };
+        assert!(r.insert(&first).is_none(), "one fragment does not complete");
+        r.finish();
+        let q = CaptureQuality::current();
+        assert!(
+            q.incomplete_ip_datagrams >= 1,
+            "current() must carry the count the reassembler moved: {}",
+            q.incomplete_ip_datagrams
+        );
+        assert_eq!(
+            q.incomplete_ip_datagrams,
+            crate::capture::reassembly::incomplete_ip_datagrams(),
+            "one reading, one number"
+        );
         Ok(())
     }
 

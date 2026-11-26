@@ -285,6 +285,7 @@ Writing your own expression replaces the generated one whole.
   So the encapsulated arm goes away and `--capture-tunnels` turns inert.
 - Two warnings cover that:
   - one when a port-based expression shows no sign of handling encapsulation,
+    or passes no later IP fragment (it then gives the filter to use),
   - one naming `--capture-tunnels` as ignored when you passed it
     alongside a filter of your own.
 
@@ -329,6 +330,36 @@ Two limits:
 
 [Encapsulation decoding](https://github.com/NormB/sipnab/blob/main/docs/internals/encapsulation-decoding.md#how-the-generated-filter-reaches-encapsulated-sip)
 records the byte offsets the filter probes and why.
+
+### The generated filter passes IP fragments
+
+A SIP message larger than the path MTU travels as IP fragments, and only the
+first fragment carries the ports. A port test cannot match the others, so the
+generated filter carries a fragment arm beside its port tests:
+
+- IPv4: every fragment, the first included (`ip[6:2] & 0x3fff != 0`).
+- IPv6: a Fragment header directly behind the IPv6 header, or behind one
+  Hop-by-Hop, Routing or Destination Options header.
+- Only fragments of UDP, TCP and ESP, the protocols sipnab reads after
+  reassembly. Fragments of ICMP, GRE and SCTP stay in the kernel.
+- The same test sits in every encapsulated arm: VLAN, QinQ, PPPoE and MPLS.
+
+The arm passes the fragments of every UDP datagram, because a later fragment
+names no port. sipnab reassembles each datagram and discards the ones that
+carry no SIP.
+
+Limits:
+
+- Inside an encapsulation, the arm matches an IPv6 Fragment header only
+  directly behind the IPv6 header. Behind two or more extension headers no arm
+  matches it: classic BPF has no loop to walk the chain.
+- On a run that combines `--hep-listen` with `-d`, the interface filter passes
+  media only and no SIP fragments, because the HEP sender delivers the
+  signaling.
+
+sipnab counts a datagram whose first fragment arrived and whose later
+fragments did not as `incomplete_ip_datagrams`. See
+[Requests missing, replies present](@/docs/troubleshooting.md#requests-missing-replies-present).
 
 ## SIP over WebSocket, IP fragments and TCP segments
 

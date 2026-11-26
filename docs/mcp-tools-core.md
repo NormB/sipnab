@@ -50,6 +50,7 @@ No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.c
   "capture_quality": {
     "degraded": false,
     "ice_role_conflicts": 0,
+    "incomplete_ip_datagrams": 0,
     "interface_dropped_packets": 0,
     "invalid_timestamps": 0,
     "kernel_dropped_packets": 0,
