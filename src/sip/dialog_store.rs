@@ -1673,20 +1673,14 @@ impl DialogStore {
     /// dialog's SDP timeline does not parse the body a second time.
     pub(crate) fn process_message_read(&mut self, msg: SipMessage, sdp: &SdpRead) {
         // A message the store does not keep is dropped, as it always was.
-        let _ = self.place(msg, sdp, max_messages_per_dialog(), drop);
+        let _ = self.place(msg, sdp, max_messages_per_dialog(), drop, &mut ());
     }
 
     /// [`Self::process_message_read`] for a caller that reads the message
-    /// after the store took it (the batch runner): the answer says where the
-    /// message went, and [`Self::placed`] reads it back.
-    #[cfg(feature = "native")]
-    pub(crate) fn process_message_placed(&mut self, msg: SipMessage, sdp: &SdpRead) -> Placed {
-        self.process_message_capped(msg, sdp, max_messages_per_dialog())
-    }
-
-    /// [`Self::process_message_placed`] with the per-dialog message cap `cap`
-    /// given rather than read from `MAX_MESSAGES_PER_DIALOG`, so a test can
-    /// reach the cap without changing the process-wide value.
+    /// after the store took it, with the per-dialog message cap `cap` given
+    /// rather than read from `MAX_MESSAGES_PER_DIALOG`, so a test can reach
+    /// the cap without changing the process-wide value. The answer says where
+    /// the message went, and [`Self::placed`] reads it back.
     ///
     /// # Returns
     ///
@@ -1700,9 +1694,93 @@ impl DialogStore {
         sdp: &SdpRead,
         cap: usize,
     ) -> Placed {
-        match self.place(msg, sdp, cap, Box::new) {
+        self.place_answer(msg, sdp, cap, &mut ())
+    }
+
+    /// [`Self::place`] with its answer as [`Placed`], telling `watch` what it
+    /// saw of the dialog under the message's key.
+    #[cfg(feature = "native")]
+    fn place_answer(
+        &mut self,
+        msg: SipMessage,
+        sdp: &SdpRead,
+        cap: usize,
+        watch: &mut impl PlaceWatch,
+    ) -> Placed {
+        match self.place(msg, sdp, cap, Box::new, watch) {
             Ok(index) => Placed::Stored(index),
             Err(msg) => Placed::Returned(msg),
+        }
+    }
+
+    /// [`Self::process_message_read`] for the batch runner, which reads the
+    /// message after the store took it ([`Self::placed`] reads it back) and
+    /// also asks what the dialog of the message's Call-ID was before the
+    /// message and where it is after.
+    #[cfg(feature = "native")]
+    pub(crate) fn process_message_tracked(&mut self, msg: SipMessage, sdp: &SdpRead) -> Tracked {
+        self.process_message_tracked_capped(msg, sdp, max_messages_per_dialog())
+    }
+
+    /// [`Self::process_message_tracked`] with the per-dialog message cap `cap`
+    /// given, as [`Self::process_message_capped`] takes it.
+    ///
+    /// # Returns
+    ///
+    /// The [`Tracked`] answer: what [`Self::get`] of the message's Call-ID
+    /// gave before the message, the [`Placed`] answer, and what
+    /// [`Self::find_dialog`] of that Call-ID gives after it.
+    ///
+    /// Under `CallId` tracking the key the store looks the message up by is
+    /// its Call-ID, so that one lookup answers all three: `get` and
+    /// `find_dialog` would look up the same key, and an eviction or an insert
+    /// is seen where it happens. Under `Branch` tracking the key is the
+    /// unit's, while `get` finds the first unit of the Call-ID, so the three
+    /// are asked separately.
+    #[cfg(feature = "native")]
+    pub(crate) fn process_message_tracked_capped(
+        &mut self,
+        msg: SipMessage,
+        sdp: &SdpRead,
+        cap: usize,
+    ) -> Tracked {
+        if self.tracking == DialogTracking::Branch {
+            return self.tracked_by_call_id_lookups(msg, sdp, cap);
+        }
+        let mut seen = Seen::default();
+        let placed = self.place_answer(msg, sdp, cap, &mut seen);
+        let found = seen
+            .keyed
+            .then(|| seen.at.map(|index| DialogAt { index, exact: true }));
+        Tracked {
+            placed,
+            before: seen.before,
+            found,
+        }
+    }
+
+    /// [`Self::process_message_tracked_capped`] by three lookups: [`Self::get`]
+    /// before the message, the store's own, [`Self::find_dialog`] after.
+    #[cfg(feature = "native")]
+    fn tracked_by_call_id_lookups(
+        &mut self,
+        msg: SipMessage,
+        sdp: &SdpRead,
+        cap: usize,
+    ) -> Tracked {
+        let before = msg
+            .call_id()
+            .and_then(|id| self.get(id))
+            .map(|d| d.state().clone());
+        let placed = self.process_message_capped(msg, sdp, cap);
+        let found = self
+            .placed(&placed)
+            .and_then(SipMessage::call_id)
+            .map(|id| self.find_dialog(id));
+        Tracked {
+            placed,
+            before,
+            found,
         }
     }
 
@@ -1780,12 +1858,18 @@ impl DialogStore {
     /// dialog's newest; otherwise `Err` with what `back` makes of the message,
     /// which it receives unchanged: `drop` for a caller that does not read it
     /// again, `Box::new` for [`Placed::Returned`].
+    ///
+    /// # Side effects
+    ///
+    /// Tells `watch` whether the message had a key, the dialog under that key
+    /// before the message, and where a dialog it opened was inserted.
     fn place<B>(
         &mut self,
         msg: SipMessage,
         sdp: &SdpRead,
         cap: usize,
         back: impl FnOnce(SipMessage) -> B,
+        watch: &mut impl PlaceWatch,
     ) -> Result<usize, B> {
         self.generation += 1;
         self.sweep_th_mappings(msg.timestamp);
@@ -1807,6 +1891,7 @@ impl DialogStore {
             (None, None) => return Err(back(msg)),
         };
         let dialog_idx = self.key_index(lookup);
+        watch.keyed();
         // The method filter decides ONCE per dialog, on the message that
         // would open it: a message of a dialog already kept is always kept
         // (ACK, BYE, re-INVITE, in-dialog OPTIONS, ... and their replies);
@@ -1832,6 +1917,7 @@ impl DialogStore {
             let Some((_, dialog)) = self.dialogs.get_index_mut(idx) else {
                 return Err(back(msg)); // unreachable: idx came from get_index_of
             };
+            watch.existing(dialog, idx);
             let unkept = advance_dialog_read(dialog, msg, cap, sdp);
             self.changes += 1;
             dialog.change_seq = self.changes;
@@ -1884,6 +1970,7 @@ impl DialogStore {
             // (`SipDialog::new`), so `msg` is dropped here and the answer
             // names that copy.
             let (index, _) = self.dialogs.insert_full(key, dialog);
+            watch.inserted(index);
             Ok(index)
         }
     }
@@ -3865,6 +3952,70 @@ pub(crate) enum Placed {
     /// copy from another source, or past the dialog's message cap. Handed back
     /// unchanged, boxed so the answer stays small on the path that keeps it.
     Returned(Box<SipMessage>),
+}
+
+/// What [`DialogStore::place`] tells a caller about the dialog under the
+/// message's key as it finds it, so that caller needs no lookup of its own.
+/// Every method does nothing unless the watcher overrides it; `()` overrides
+/// none, so a caller that does not ask pays nothing.
+trait PlaceWatch {
+    /// The message had a key, and the store looked it up.
+    fn keyed(&mut self) {}
+    /// The message goes to `dialog`, at `index`, which held it before; called
+    /// before the message changes it.
+    fn existing(&mut self, dialog: &SipDialog, index: usize) {
+        let _ = (dialog, index);
+    }
+    /// The message opened a dialog, inserted at `index`.
+    fn inserted(&mut self, index: usize) {
+        let _ = index;
+    }
+}
+
+impl PlaceWatch for () {}
+
+/// What [`DialogStore::place`] saw of the dialog under the message's key.
+#[cfg(feature = "native")]
+#[derive(Debug, Default)]
+struct Seen {
+    /// The message had a key (under `CallId` tracking: a Call-ID), so the
+    /// store looked it up.
+    keyed: bool,
+    /// The state of the dialog under the key before the message; `None` when
+    /// there was none.
+    before: Option<DialogState>,
+    /// The index of the dialog under the key after the message; `None` when
+    /// there is none.
+    at: Option<usize>,
+}
+
+#[cfg(feature = "native")]
+impl PlaceWatch for Seen {
+    fn keyed(&mut self) {
+        self.keyed = true;
+    }
+    fn existing(&mut self, dialog: &SipDialog, index: usize) {
+        self.before = Some(dialog.state().clone());
+        self.at = Some(index);
+    }
+    fn inserted(&mut self, index: usize) {
+        self.at = Some(index);
+    }
+}
+
+/// What [`DialogStore::process_message_tracked`] tells the batch runner about
+/// one message.
+#[cfg(feature = "native")]
+#[derive(Debug)]
+pub(crate) struct Tracked {
+    /// Where the message went.
+    pub(crate) placed: Placed,
+    /// The state of the dialog [`DialogStore::get`] found for the message's
+    /// Call-ID before the message; `None` when there was none.
+    pub(crate) before: Option<DialogState>,
+    /// What [`DialogStore::find_dialog`] finds for the message's Call-ID after
+    /// it; `None` when the message has no Call-ID.
+    pub(crate) found: Option<Option<DialogAt>>,
 }
 
 /// A dialog [`DialogStore::find_dialog`] found.

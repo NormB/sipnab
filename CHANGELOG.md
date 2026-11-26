@@ -8,6 +8,14 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Reading a capture file looks up each SIP message's call once instead of three times.**
+  - Effect: A `-N --quiet --analyze` run over a SIP-only capture runs 2.01% fewer instructions; the output and the exit status stay the same.
+  - Limit: With `--dialog-track branch` each message still costs three lookups.
+
 ## [0.5.276] - 2026-11-26
 
 ### Fixed
