@@ -1,0 +1,11 @@
+BYE sip:desk@edge.example.net SIP/2.0
+Via: SIP/2.0/UDP [2001:db8::a1]:6060;branch=z9hG4bKv6-mh47a
+Via: SIP/2.0/UDP 192.0.2.47;branch=z9hG4bKv6-mh47b
+Via: SIP/2.0/TCP [2001:db8::a3];branch=z9hG4bKv6-mh47c;received=198.51.100.47
+Max-Forwards: 70
+To: sip:desk@example.net;tag=v6d47
+From: sip:front@example.org;tag=v6t
+Call-ID: multhdr47.c4v5b6
+CSeq: 47 BYE
+Content-Length: 0
+

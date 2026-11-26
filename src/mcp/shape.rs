@@ -925,19 +925,30 @@ mod injection_tests {
     /// This is what keeps [`MAX_FIELD_BYTES`] grounded rather than asserted.
     /// A cap chosen too tight would mangle ordinary captures, and a comment
     /// claiming otherwise cannot notice when the fixtures grow.
+    ///
+    /// `tests/fixtures/sip-torture/` is not honest traffic: it holds one
+    /// message per RFC 4475 and RFC 5118 torture case, and RFC 4475 section
+    /// 3.1.1.7 tests header values longer than any real element sends (the
+    /// RFC's own message has a 486-byte `To`). The cap is meant to shorten
+    /// such a value, so those files are left out here, and the test fails if
+    /// none of them still holds a value over the cap, because then there is
+    /// no reason left to leave them out.
     #[test]
     fn every_fixture_header_value_fits_the_field_cap() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         let mut checked = 0usize;
-        let mut stack = vec![root];
-        while let Some(dir) = stack.pop() {
+        let mut torture_over_cap = 0usize;
+        let mut stack = vec![(root, false)];
+        while let Some((dir, torture)) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
             };
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    stack.push(path);
+                    let is_torture =
+                        torture || path.file_name().is_some_and(|n| n == "sip-torture");
+                    stack.push((path, is_torture));
                     continue;
                 }
                 let Ok(bytes) = std::fs::read(&path) else {
@@ -949,9 +960,14 @@ mod injection_tests {
                         let Some(value) = line.trim_end().strip_prefix(header) else {
                             continue;
                         };
+                        let shortened = fence_field(value).contains(TRUNCATION_MARKER);
+                        if torture {
+                            torture_over_cap += usize::from(shortened);
+                            continue;
+                        }
                         checked += 1;
                         assert!(
-                            !fence_field(value).contains(TRUNCATION_MARKER),
+                            !shortened,
                             "MAX_FIELD_BYTES is too tight for real traffic: \
                              {header}{value:?} in {} is {} bytes",
                             path.display(),
@@ -965,6 +981,11 @@ mod injection_tests {
             checked >= 20,
             "only {checked} fixture header values were read — the scan found \
              almost nothing and this gate is passing vacuously"
+        );
+        assert!(
+            torture_over_cap > 0,
+            "no header value in tests/fixtures/sip-torture/ exceeds MAX_FIELD_BYTES \
+             any more, so nothing justifies leaving that directory out of this check"
         );
     }
 

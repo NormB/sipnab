@@ -1,0 +1,343 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+#
+# SIP torture test messages written for sipnab: provenance.
+#
+# These messages are original work, written for sipnab on 2026-11-25. None is
+# a copy or an edit of an RFC message: no RFC message text was copied into
+# them. Each one covers one torture case of RFC 4475 or RFC 5118, cited below
+# by RFC and section number, and has the property that section tests.
+#
+# Values. Every name and address is reserved for documentation: example.com,
+# example.net and example.org names (RFC 2606), the .test and .invalid
+# top-level domains (RFC 6761), RFC 5737 IPv4 addresses (192.0.2.0/24,
+# 198.51.100.0/24, 203.0.113.0/24), RFC 3849 IPv6 addresses (2001:db8::/32)
+# and 555-0100 to 555-0199 telephone numbers. One address is not: the Via of
+# rfc4475/3.3.10-bcast.dat is 255.255.255.255, the broadcast address that
+# RFC 4475 section 3.3.10 tests. User names such as "desk" and "front" are
+# roles, not people.
+#
+# Line ends are CRLF in every file, the RFC 5118 ones included.
+#
+# Two files keep a defect of the RFC's own message on purpose, so that each
+# gets the verdict the RFC message gets (see the "note" lines):
+# rfc4475/3.1.2.15-baddn.dat ends without the blank line after its headers,
+# and rfc5118/4.6-ipv6-in-sdp.dat declares a Content-Length 17 octets larger
+# than its body.
+#
+# Verdicts. tests/sip_torture_rfc_messages_test.rs runs each file through the
+# parser, the linter and the dialog store. A local run on 2026-11-25 gave each
+# file and the byte-exact message of its RFC section the same verdict, all 61
+# of them; that test records those verdicts. The RFC messages are not in the
+# repository.
+#
+# One entry per file: its path; "covers:" the RFC section; "tests:" the
+# property it has; optional "note:" lines; "SHA-256:" the digest of the file,
+# which the test checks.
+
+rfc4475/3.1.1.1-wsinv.dat
+  covers: RFC 4475 section 3.1.1.1
+  tests: a valid INVITE with unusual whitespace and line folding, mixed-case and compact header names, escaped quotes in display names, leading zeros, unknown parameters and headers, an empty header and a top Via whose branch has no magic cookie
+  SHA-256: 3d71ef481c5203fcfd2104a492a0e33d15529563752201b1f8f19c7e72f757ac
+
+rfc4475/3.1.1.2-intmeth.dat
+  covers: RFC 4475 section 3.1.1.2
+  tests: every token character in the method, URI user and password, branch, tag and parameter names; quoted-pairs escaping BEL, NUL and DEL; UTF-8 in a quoted parameter and an extension header; Max-Forwards 200
+  SHA-256: e15359e548cc1e36985209a7506eeab84d7b6c833a0fcff52e7aad27a172e6ab
+
+rfc4475/3.1.1.3-esc01.dat
+  covers: RFC 4475 section 3.1.1.3
+  tests: % escapes of ':' and '@' in the Request-URI user part, of unreserved characters and a space in user parts, and in URI parameter names and values; Max-Forwards 99
+  SHA-256: 9c5042583f7b2de302d87cbd885e8a72ab98084804f914355a95027bdd9c3c6c
+
+rfc4475/3.1.1.4-escnull.dat
+  covers: RFC 4475 section 3.1.1.4
+  tests: escaped NUL octets (%00) in URI user parts
+  SHA-256: 7a0c42317e578ab53c6e04af6e4cb7972948b0015a62d2f8035be326958ef179
+
+rfc4475/3.1.1.5-esc02.dat
+  covers: RFC 4475 section 3.1.1.5
+  tests: '%' that is not an escape, in a method name, display names, a branch and a header name
+  SHA-256: cd66f45dd47085f0dbfbc3d81b3f1094b6d13bc5d609ae6610a61ec25d114073
+
+rfc4475/3.1.1.6-lwsdisp.dat
+  covers: RFC 4475 section 3.1.1.6
+  tests: no whitespace between a display name and '<'
+  SHA-256: 06194bb08fbb442fa1cfff316afb27887753e5403c7d435110722e24f189330e
+
+rfc4475/3.1.1.7-longreq.dat
+  covers: RFC 4475 section 3.1.1.7
+  tests: very long values in many header fields, 30 Via header fields in varied case and spacing, the top one with no branch
+  SHA-256: 9c982e57ab04c8aacf703f647bf0e33913a1d1e1ad2918229dc869579d08d01e
+
+rfc4475/3.1.1.8-dblreq.dat
+  covers: RFC 4475 section 3.1.1.8
+  tests: octets after the end of a REGISTER with Content-Length 0, in the same datagram
+  SHA-256: f6e58b006375a42ebb6453b43dfb44dc8f8bcde6bca74745ca00dd66b128b114
+
+rfc4475/3.1.1.9-semiuri.dat
+  covers: RFC 4475 section 3.1.1.9
+  tests: a ';' inside the Request-URI user part, and a folded Accept list
+  SHA-256: c30d77da674a3887498d9cc073968c83a71bd3fab59bf2996dd2edc56104c6fa
+
+rfc4475/3.1.1.10-transports.dat
+  covers: RFC 4475 section 3.1.1.10
+  tests: Via transports TCP, TLS, SCTP, UDP and one nobody knows
+  SHA-256: 2271d93a9aacea3f87345bc79ef196b7207a99d95bc1c0906cf26172268057e7
+
+rfc4475/3.1.1.11-mpart01.dat
+  covers: RFC 4475 section 3.1.1.11
+  tests: a multipart/mixed MESSAGE whose second part is 512 octets of raw binary
+  SHA-256: 9a2d6c0b2799a1286313d7b0b36174e7a4a7366f838b070649e99e1d24b08bf1
+
+rfc4475/3.1.1.12-unreason.dat
+  covers: RFC 4475 section 3.1.1.12
+  tests: a reason phrase with UTF-8 and punctuation
+  SHA-256: a2daa2a6fb2bd894334aaeb8b91c89d4def791d1bea1d9a7ba3c9396e68fd9f0
+
+rfc4475/3.1.1.13-noreason.dat
+  covers: RFC 4475 section 3.1.1.13
+  tests: an empty reason phrase
+  SHA-256: ad36bb72c7910bb1669bf9149ed2afc4504709f8265e1e264e5f4be1b6629a91
+
+rfc4475/3.1.2.1-badinv01.dat
+  covers: RFC 4475 section 3.1.2.1
+  tests: extra parameter separators in Via (which then has no branch) and in Contact
+  SHA-256: addc2f13e0e2ba94d49f8c0c2db45a7cc567f223926a27ed782bc5263182b4bc
+
+rfc4475/3.1.2.2-clerr.dat
+  covers: RFC 4475 section 3.1.2.2
+  tests: a Content-Length larger than the message; Max-Forwards 90
+  SHA-256: 1728f0ea75dbca2b575c386c9cea1a58b066a946e4d9c2ff9236168869f700db
+
+rfc4475/3.1.2.3-ncl.dat
+  covers: RFC 4475 section 3.1.2.3
+  tests: a negative Content-Length; Max-Forwards 120
+  SHA-256: 2c98f3562afe2bac3522526f6f35b4e0e05fbd7501ddc654b5fd30fb35713a18
+
+rfc4475/3.1.2.4-scalar02.dat
+  covers: RFC 4475 section 3.1.2.4
+  tests: request scalars past their range: CSeq, Max-Forwards, Expires and a Contact expires parameter
+  SHA-256: b87cb81d03cff83d9709e97c4886eab898a45fa8ea1f811695a8d437f9834332
+
+rfc4475/3.1.2.5-scalarlg.dat
+  covers: RFC 4475 section 3.1.2.5
+  tests: response scalars past their range: CSeq, Retry-After and a warn-code
+  SHA-256: 826998c5594b4ade87bc010edd5abd40b174f2686dbecbba2ca5c36053f34b64
+
+rfc4475/3.1.2.6-quotbal.dat
+  covers: RFC 4475 section 3.1.2.6
+  tests: a quoted display name with no closing quote
+  SHA-256: efb64b3e0e0d611e00952c13f1133715f835016d62a9e8887e274cc616e6d785
+
+rfc4475/3.1.2.7-ltgtruri.dat
+  covers: RFC 4475 section 3.1.2.7
+  tests: the Request-URI enclosed in '<' and '>'; a Via with no branch
+  SHA-256: c2da78661dc9115a8e429c1258a1488d5efe1b6ba44fbbca196f751283658401
+
+rfc4475/3.1.2.8-lwsruri.dat
+  covers: RFC 4475 section 3.1.2.8
+  tests: whitespace inside the Request-URI
+  SHA-256: 5d8a74c25595a99bf9bcbfdf3ed4910fe65607958582d90cde8f515f2bc6db0e
+
+rfc4475/3.1.2.9-lwsstart.dat
+  covers: RFC 4475 section 3.1.2.9
+  tests: more than one SP between Request-Line elements
+  SHA-256: 4bb13b3d563e10ccc319c590f2b4d54ae5f737976da9f988e2776940b9623364
+
+rfc4475/3.1.2.10-trws.dat
+  covers: RFC 4475 section 3.1.2.10
+  tests: SP characters at the end of the Request-Line
+  SHA-256: b654cfdba913dd48b3394c64f644bef05f8c1a9cf1101b8a84bc874bb0e691c3
+
+rfc4475/3.1.2.11-escruri.dat
+  covers: RFC 4475 section 3.1.2.11
+  tests: an escaped header in the Request-URI
+  SHA-256: a6f4337e2fe3908af13a9b3ca19e3a694ffd2aac60734c77eabd29d90ad4058d
+
+rfc4475/3.1.2.12-baddate.dat
+  covers: RFC 4475 section 3.1.2.12
+  tests: a Date in a time zone other than GMT
+  SHA-256: c805051fa9155d8bfd80bfc0dedba1fabc4afd648028bfa5c8b9508ce982ef44
+
+rfc4475/3.1.2.13-regbadct.dat
+  covers: RFC 4475 section 3.1.2.13
+  tests: a Contact URI with a header part, not enclosed in '<' and '>'
+  SHA-256: feb0276de972ab1d00f1e0ee00e7a0c229c115e02570081ae39e15aeeaee52be
+
+rfc4475/3.1.2.14-badaspec.dat
+  covers: RFC 4475 section 3.1.2.14
+  tests: spaces between '<', the addr-spec and '>'
+  SHA-256: 67982aaa1989c279ec7445ddedbf8b9b391b2f3329c55833a1fd2822ff970bbe
+
+rfc4475/3.1.2.15-baddn.dat
+  covers: RFC 4475 section 3.1.2.15
+  tests: unquoted display names with a non-token character (a comma)
+  note: ends without the blank line after the headers, as the RFC's own message does
+  SHA-256: 8a370c3d54ea0fa21c558bf88d76e0508a01b73cb8e8a1cff738fdec070ea052
+
+rfc4475/3.1.2.16-badvers.dat
+  covers: RFC 4475 section 3.1.2.16
+  tests: an unknown SIP version
+  SHA-256: 9568738cf0fe6ddae4a3770788b2dd4c4636e36b996241e71f743adfaefb8cb7
+
+rfc4475/3.1.2.17-mismatch01.dat
+  covers: RFC 4475 section 3.1.2.17
+  tests: a Request-Line method and a CSeq method that differ
+  SHA-256: f3b35a884bc4d2dc2da76f1a83b24f65145ae96d519412cc54d90f669bac5365
+
+rfc4475/3.1.2.18-mismatch02.dat
+  covers: RFC 4475 section 3.1.2.18
+  tests: an unknown method, and a CSeq method that differs from it
+  SHA-256: cad360cbc419fa9e5b7dc623a524157c79841a42da9666399f4b188bab778a07
+
+rfc4475/3.1.2.19-bigcode.dat
+  covers: RFC 4475 section 3.1.2.19
+  tests: a status code far past 699
+  SHA-256: c468a3ceed9bc724572182d7e55fe8ee4f92979b9dbfa20fcb5d3ad2ed48c13a
+
+rfc4475/3.2.1-badbranch.dat
+  covers: RFC 4475 section 3.2.1
+  tests: a branch that is only the magic cookie
+  SHA-256: 145f71da4b999e3ac84dcfb4300d25fdd3a91855b54a2cc28ff0bfb3f397e491
+
+rfc4475/3.3.1-insuf.dat
+  covers: RFC 4475 section 3.3.1
+  tests: To, From, Call-ID and Max-Forwards missing
+  SHA-256: f6587fc40e18a9e731af86ba3b061b8635af90e1fe4f66476b69f319e2f4b331
+
+rfc4475/3.3.2-unkscm.dat
+  covers: RFC 4475 section 3.3.2
+  tests: a Request-URI with a scheme nobody knows
+  SHA-256: 593bf066be1c199e65fc0ba130d41f7b135af8f683dd19b7a505e4e44a35e2eb
+
+rfc4475/3.3.3-novelsc.dat
+  covers: RFC 4475 section 3.3.3
+  tests: a Request-URI with a known scheme other than sip
+  SHA-256: cba7b0aa3ee5fab42cda074e637ef28e7930ed1c8a6887506939a686b85b780a
+
+rfc4475/3.3.4-unksm2.dat
+  covers: RFC 4475 section 3.3.4
+  tests: URI schemes other than sip in To, From and Contact
+  SHA-256: b94717fb692c73489b855024b219ddd5b5b2e71cf6b8c0744535d59d33a71b27
+
+rfc4475/3.3.5-bext01.dat
+  covers: RFC 4475 section 3.3.5
+  tests: Require and Proxy-Require with option tags nobody supports
+  SHA-256: 1c293e7e2ba5d69b3fe4b7ef21c2d72e08882f233580ca7a4f43fc003584c885
+
+rfc4475/3.3.6-invut.dat
+  covers: RFC 4475 section 3.3.6
+  tests: a body of a Content-Type nobody knows
+  SHA-256: d86f622f9552ee6a0b461a4aedc186d4008bd1554852aae08466e0c3b15feafa
+
+rfc4475/3.3.7-regaut01.dat
+  covers: RFC 4475 section 3.3.7
+  tests: an Authorization header with a scheme nobody knows
+  SHA-256: a2d1659653bf22d0057f852b728906256d29bdea2a828a646679e3dc0942b4d2
+
+rfc4475/3.3.8-multi01.dat
+  covers: RFC 4475 section 3.3.8
+  tests: two values each of CSeq, Call-ID, From, To and Max-Forwards
+  SHA-256: d9b01f0fc4d44f08f5ead50eaf1a34b804b76c3db4447381a3cf9f8aa0d240b6
+
+rfc4475/3.3.9-mcl01.dat
+  covers: RFC 4475 section 3.3.9
+  tests: two Content-Length values, neither right
+  SHA-256: 7d2d4d79a24b9060f4d1e4e6b48becaf900386dc2358968395f245227fdb7830
+
+rfc4475/3.3.10-bcast.dat
+  covers: RFC 4475 section 3.3.10
+  tests: a 200 OK whose second Via is 255.255.255.255
+  SHA-256: fc3cc48df490336975dbc4fc1debef1a0e2d512c0cc40ad2f6097e8338f327a5
+
+rfc4475/3.3.11-zeromf.dat
+  covers: RFC 4475 section 3.3.11
+  tests: Max-Forwards 0
+  SHA-256: cb6452b64feb03b05348e6979347bfb4b13f92f4c935b2e98a087236b250787a
+
+rfc4475/3.3.12-cparam01.dat
+  covers: RFC 4475 section 3.3.12
+  tests: a REGISTER Contact without '<' and '>' and with a parameter, which then belongs to the header
+  SHA-256: 4a660fc90e2cbaa5307bf31cb084032b0232677a2367319bbecff81289e5ab72
+
+rfc4475/3.3.13-cparam02.dat
+  covers: RFC 4475 section 3.3.13
+  tests: the same Contact inside '<' and '>', where the parameter belongs to the URI
+  SHA-256: 8c24908f75a15ca7a2e840b826b73acb2ce622b27d4278afbf6decbabd9df63e
+
+rfc4475/3.3.14-regescrt.dat
+  covers: RFC 4475 section 3.3.14
+  tests: a REGISTER Contact inside '<' and '>' with an escaped header
+  SHA-256: 5e8230711ea68f2c984c93d29a2fe9249bc1e48d53c1702e60597093e596a6aa
+
+rfc4475/3.3.15-sdp01.dat
+  covers: RFC 4475 section 3.3.15
+  tests: an SDP offer in a request whose Accept names only a type nobody knows
+  SHA-256: f8dbee0b75390d93c49fb2ce6f24d6328f053726d67d2c15bcfb12fecb621a05
+
+rfc4475/3.4.1-inv2543.dat
+  covers: RFC 4475 section 3.4.1
+  tests: RFC 2543 syntax: no branch, no Max-Forwards, a strict Record-Route with maddr, user=phone outside '<' and '>', no Content-Length
+  SHA-256: c915a3d447a8127be338fc6860e4013582ccf28f0cdcc53d6622f62b5b72c61b
+
+rfc5118/4.1-ipv6-good.dat
+  covers: RFC 5118 section 4.1
+  tests: a valid IPv6 reference in the Request-URI, Via and Contact
+  SHA-256: 6bfb1f211944b89cb4438ede92f58157df7bb8384692c2c990e747895ab223b4
+
+rfc5118/4.2-ipv6-bad.dat
+  covers: RFC 5118 section 4.2
+  tests: an IPv6 address in the Request-URI without brackets
+  SHA-256: 06416fd3e6fcb04904231908c4f39dc07e4ab9827a4c974687f3be409ab4526d
+
+rfc5118/4.3-port-ambiguous.dat
+  covers: RFC 5118 section 4.3
+  tests: a port-like last group inside the IPv6 reference brackets
+  SHA-256: bd891f759a980e674facbfe168d14ab5db226e50e87f80bcb115b310ae48121b
+
+rfc5118/4.4-port-unambiguous.dat
+  covers: RFC 5118 section 4.4
+  tests: a port after the IPv6 reference brackets
+  SHA-256: 2d1add7ac15674b560754c5f0e26ea8b557fa962bd011361ae850cc928baee2d
+
+rfc5118/4.5-via-received-param-with-delim.dat
+  covers: RFC 5118 section 4.5
+  tests: a Via received parameter holding a bracketed IPv6 address
+  SHA-256: 7c2368c3df1568e149ddc2913fb3347c705c76f2cb122a8de27664f2c2857aa8
+
+rfc5118/4.5-via-received-param-no-delim.dat
+  covers: RFC 5118 section 4.5
+  tests: a Via received parameter holding an IPv6 address without brackets
+  SHA-256: a91c05c520186d65a46be3affcf4adcaa9011c41fdda4ffca753bbb7d0badeb0
+
+rfc5118/4.6-ipv6-in-sdp.dat
+  covers: RFC 5118 section 4.6
+  tests: IPv6 addresses in the SDP origin and connection lines
+  note: declares a Content-Length 17 octets larger than its body, as the RFC's own message declares one larger than its body
+  SHA-256: 4cd511f083ee95a33d017622f368496990f9c1ace892b362af0cba3dacc88a1f
+
+rfc5118/4.7-mult-ip-in-header.dat
+  covers: RFC 5118 section 4.7
+  tests: IPv6 and IPv4 Via header fields together, and an IPv4 received parameter on an IPv6 Via
+  SHA-256: 0b8cdae66ade24193aa515f2aec0a51befbfe937d6a5e4df175c24e62e56a9ee
+
+rfc5118/4.8-mult-ip-in-sdp.dat
+  covers: RFC 5118 section 4.8
+  tests: an IPv4 and an IPv6 connection line, one per media stream
+  SHA-256: 86a417afc5f7618f1721d14cb6a09c4067da187a91b33c1433b2b3cbd9ad9833
+
+rfc5118/4.9-ipv4-mapped-ipv6.dat
+  covers: RFC 5118 section 4.9
+  tests: IPv4-mapped IPv6 addresses in Via, Contact and SDP
+  SHA-256: b0e1495a56abf3b816a02f27228290540cf19b55223bc62beb56146f948a8605
+
+rfc5118/4.10-ipv6-bug-abnf-3-colons.dat
+  covers: RFC 5118 section 4.10
+  tests: an IPv6 reference with an embedded IPv4 part after three colons
+  SHA-256: f476c8fb4dc11715817882fca7492fd34af5409912086a931ef7f9fa44dc4fc1
+
+rfc5118/4.10-ipv6-correct-abnf-2-colons.dat
+  covers: RFC 5118 section 4.10
+  tests: an IPv6 reference with an embedded IPv4 part after two colons
+  SHA-256: 783a778070d36b8305eadce55892f92996720fa700022254ee1cf0e9085fc922

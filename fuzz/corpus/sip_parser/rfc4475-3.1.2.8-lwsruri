@@ -1,0 +1,19 @@
+INVITE sip:desk@example.org; transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.0.2.128:5060;branch=z9hG4bKlr28
+Max-Forwards: 28
+To: sip:desk@example.org
+From: sip:front@example.net;tag=lr28
+Call-ID: lwsruri.m3n4b5
+CSeq: 28 INVITE
+Contact: <sip:front@192.0.2.128>
+Content-Type: application/sdp
+Content-Length: 153
+
+v=0
+o=- 7100 7100 IN IP4 192.0.2.128
+s=check
+c=IN IP4 192.0.2.128
+t=0 0
+m=audio 41000 RTP/AVP 8 0
+m=video 41002 RTP/AVP 98
+a=rtpmap:98 VP8/90000

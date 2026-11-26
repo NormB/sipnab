@@ -299,7 +299,8 @@ pub const HEADER_CONTROL_BYTE: RuleMeta = RuleMeta {
     basis: Basis::Must,
     rfc: 3261,
     // §25.1 Basic Rules: a header value is TEXT-UTF8char / UTF8-CONT / LWS.
-    // No C0 control byte other than the tab of LWS can appear.
+    // No C0 control byte other than the tab of LWS can appear, except as the
+    // escaped octet of a quoted-pair inside a quoted-string.
     section: "25.1",
 };
 
@@ -374,6 +375,153 @@ pub const BRANCH_COOKIE: RuleMeta = RuleMeta {
     rfc: 3261,
     // §8.1.1.7: "The branch ID inserted by an element compliant with this
     // specification MUST always begin with the characters 'z9hG4bK'."
+    section: "8.1.1.7",
+};
+
+/// A Request-Line whose elements are not separated by exactly one SP, or that
+/// carries SP or HTAB before its CRLF.
+pub const REQUEST_LINE_SPACING: RuleMeta = RuleMeta {
+    id: "SIP-3261-7.1-REQUEST-LINE-SPACING",
+    title: "Request-Line not separated by single SP characters",
+    severity: Severity::Warning,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §7.1: "The elements are separated by single space (SP) characters."
+    // RFC 4475 §3.1.2.9 and §3.1.2.10 send extra SP inside and after the line.
+    section: "7.1",
+};
+
+/// An IPv6 address written as a SIP URI host or Via sent-by without brackets.
+pub const IPV6_REFERENCE_UNBRACKETED: RuleMeta = RuleMeta {
+    id: "SIP-3261-25.1-IPV6-REFERENCE-UNBRACKETED",
+    title: "IPv6 address in a URI host or Via sent-by without [ and ]",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §25.1: host = hostname / IPv4address / IPv6reference, and
+    // IPv6reference = "[" IPv6address "]". RFC 5118 §4.2 calls the bare form
+    // invalid and expects 400 Bad Request.
+    section: "25.1",
+};
+
+/// An empty element between `;` or `,` separators in a header field.
+pub const EMPTY_PARAMETER: RuleMeta = RuleMeta {
+    id: "SIP-3261-25.1-EMPTY-PARAMETER",
+    title: "empty parameter or list element in a header field",
+    severity: Severity::Warning,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §25.1: via-parm, contact-param and route-param carry *( SEMI param ) and
+    // lists are 1#element; neither production admits an empty element.
+    // RFC 4475 §3.1.2.1 sends ";;,;,," and expects 400 Bad Request.
+    section: "25.1",
+};
+
+/// A `Content-Length` value that is not a decimal number of octets.
+pub const CONTENT_LENGTH_INVALID: RuleMeta = RuleMeta {
+    id: "SIP-3261-20.14-CONTENT-LENGTH-INVALID",
+    title: "Content-Length not a non-negative decimal integer",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §20.14 / §25.1: Content-Length = ( "Content-Length" / "l" ) HCOLON 1*DIGIT.
+    // RFC 4475 §3.1.2.3 sends -999 and expects an error.
+    section: "20.14",
+};
+
+/// A quoted string in an address header field that is never closed.
+pub const QUOTED_STRING_UNTERMINATED: RuleMeta = RuleMeta {
+    id: "SIP-3261-25.1-QUOTED-STRING-UNTERMINATED",
+    title: "quoted string without its closing quote",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §25.1: quoted-string = SWS DQUOTE *(qdtext / quoted-pair ) DQUOTE.
+    // RFC 4475 §3.1.2.6 leaves the To display name open.
+    section: "25.1",
+};
+
+/// A Request-URI enclosed in `<` and `>`.
+pub const REQUEST_URI_BRACKETED: RuleMeta = RuleMeta {
+    id: "SIP-3261-25.1-REQUEST-URI-BRACKETED",
+    title: "Request-URI enclosed in angle brackets",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §25.1: Request-URI = SIP-URI / SIPS-URI / absoluteURI; the brackets belong
+    // to name-addr only. RFC 4475 §3.1.2.7.
+    section: "25.1",
+};
+
+/// Whitespace inside the Request-URI.
+pub const REQUEST_URI_WHITESPACE: RuleMeta = RuleMeta {
+    id: "SIP-3261-25.1-REQUEST-URI-WHITESPACE",
+    title: "whitespace inside the Request-URI",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §25.1: no URI production admits LWS. RFC 4475 §3.1.2.8 sends
+    // "sip:user@example.com; lr".
+    section: "25.1",
+};
+
+/// A SIP or SIPS Request-URI that carries a `?headers` component.
+pub const REQUEST_URI_HEADERS: RuleMeta = RuleMeta {
+    id: "SIP-3261-19.1.1-REQUEST-URI-HEADERS",
+    title: "header fields inside a SIP Request-URI",
+    severity: Severity::Warning,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §19.1.1, Table 1: the headers component is "not allowed" in a
+    // Request-URI. RFC 4475 §3.1.2.11.
+    section: "19.1.1",
+};
+
+/// Whitespace between the angle brackets of a name-addr.
+pub const ADDR_SPEC_WHITESPACE: RuleMeta = RuleMeta {
+    id: "SIP-3261-25.1-ADDR-SPEC-WHITESPACE",
+    title: "whitespace inside the angle brackets of an address",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §25.1: name-addr = [ display-name ] LAQUOT addr-spec RAQUOT, and an
+    // addr-spec admits no LWS. RFC 4475 §3.1.2.14.
+    section: "25.1",
+};
+
+/// An unquoted display name holding characters outside `token`.
+pub const DISPLAY_NAME_UNQUOTED: RuleMeta = RuleMeta {
+    id: "SIP-3261-25.1-DISPLAY-NAME-UNQUOTED",
+    title: "display name with non-token characters and no quotes",
+    severity: Severity::Error,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §25.1: display-name = *(token LWS) / quoted-string. RFC 4475 §3.1.2.15
+    // sends "Watson, Thomas" unquoted.
+    section: "25.1",
+};
+
+/// A `Date` header field whose time zone is not GMT.
+pub const DATE_NOT_GMT: RuleMeta = RuleMeta {
+    id: "SIP-3261-20.17-DATE-NOT-GMT",
+    title: "Date header field not in GMT",
+    severity: Severity::Info,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §20.17 / §25.1: SIP-date = rfc1123-date, which ends in "GMT" only.
+    // RFC 4475 §3.1.2.12 sends EST and says an element need not reject it.
+    section: "20.17",
+};
+
+/// A top `Via` branch that is the magic cookie and nothing else.
+pub const BRANCH_NO_IDENTIFIER: RuleMeta = RuleMeta {
+    id: "SIP-3261-8.1.1.7-BRANCH-NO-IDENTIFIER",
+    title: "Via branch is the bare z9hG4bK cookie",
+    severity: Severity::Info,
+    basis: Basis::Must,
+    rfc: 3261,
+    // §8.1.1.7: the branch MUST be unique across space and time; the cookie
+    // alone identifies no transaction. RFC 4475 §3.2.1.
     section: "8.1.1.7",
 };
 
@@ -876,6 +1024,18 @@ pub const RULES: &[RuleMeta] = &[
     MAX_FORWARDS_MISSING,
     MAX_FORWARDS_RANGE,
     BRANCH_COOKIE,
+    REQUEST_LINE_SPACING,
+    IPV6_REFERENCE_UNBRACKETED,
+    EMPTY_PARAMETER,
+    CONTENT_LENGTH_INVALID,
+    QUOTED_STRING_UNTERMINATED,
+    REQUEST_URI_BRACKETED,
+    REQUEST_URI_WHITESPACE,
+    REQUEST_URI_HEADERS,
+    ADDR_SPEC_WHITESPACE,
+    DISPLAY_NAME_UNQUOTED,
+    DATE_NOT_GMT,
+    BRANCH_NO_IDENTIFIER,
     TO_TAG_IN_INITIAL_REQUEST,
     CSEQ_METHOD_MISMATCH,
     ACK_CSEQ_MISMATCH,

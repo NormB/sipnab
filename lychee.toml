@@ -253,6 +253,11 @@ exclude = [
   # close to impossible. Reverse it when portal.3gpp.org serves a complete chain
   # again -- the exclusion is for their cert, not forever.
   'portal\.3gpp\.org',
+  # https://sipnab.com/.well-known/security.txt, which SECURITY.md links, is not
+  # excluded: the site serves it only after a deploy, so the docs pass in
+  # .github/workflows/quality.yml remaps it to the committed file
+  # website/static/.well-known/security.txt and fails when that file is
+  # missing. The remap is there because its target is an absolute file URL.
 ]
 
 exclude_path = [

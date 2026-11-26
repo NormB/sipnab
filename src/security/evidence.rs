@@ -67,8 +67,14 @@ impl Evidence {
 pub enum EvidenceSink {
     /// `-`: standard output, for a pipe into whatever reads the lines.
     Stdout,
-    /// A file, opened for append so a restart adds to the record.
-    File(std::fs::File),
+    /// A file, opened for append so a restart adds to the record, and
+    /// opened again at `path` when log rotation moves it away.
+    File {
+        /// The open file.
+        file: std::fs::File,
+        /// The path `--evidence-out` named, which the file follows.
+        path: std::path::PathBuf,
+    },
 }
 
 impl EvidenceSink {
@@ -81,11 +87,20 @@ impl EvidenceSink {
         if target == "-" {
             return Ok(Self::Stdout);
         }
-        let file = std::fs::OpenOptions::new()
+        let path = Path::new(target);
+        Ok(Self::File {
+            file: Self::open_file(path)?,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// The one set of open flags, for the first open and every reopen after
+    /// rotation.
+    fn open_file(path: &Path) -> std::io::Result<std::fs::File> {
+        std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(Path::new(target))?;
-        Ok(Self::File(file))
+            .open(path)
     }
 
     /// Writes one finding, newline-terminated, and flushes it.
@@ -108,9 +123,10 @@ impl EvidenceSink {
                 writeln!(lock, "{line}")?;
                 lock.flush()
             }
-            Self::File(f) => {
-                writeln!(f, "{line}")?;
-                f.flush()
+            Self::File { file, path } => {
+                crate::append_file::reopen_if_moved(file, path, Self::open_file)?;
+                writeln!(file, "{line}")?;
+                file.flush()
             }
         }
     }
@@ -294,6 +310,129 @@ mod tests {
         ] {
             assert!(!rule_for(k).is_empty());
         }
+        Ok(())
+    }
+}
+
+/// `--evidence-out PATH` under log rotation: a finding after the file was
+/// renamed or removed lands in a file at the path, as the audit files do.
+#[cfg(all(test, unix))]
+mod rotation_follow_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A finding about `rule`, from an RFC 5737 address.
+    fn finding(rule: &str) -> Result<Evidence, TestError> {
+        Ok(Evidence {
+            src_ip: "203.0.113.9".parse()?,
+            rule: rule.to_string(),
+            evidence: "ua=\"test\"".to_string(),
+            ts: None,
+        })
+    }
+
+    /// The `rule` of every line of `path`.
+    fn rules(path: &Path) -> Result<Vec<String>, TestError> {
+        let mut out = Vec::new();
+        for line in std::fs::read_to_string(path)?.lines() {
+            let e: Evidence = serde_json::from_str(line)?;
+            out.push(e.rule);
+        }
+        Ok(out)
+    }
+
+    /// SUCCESS: after a rename the next finding is in the file at the path.
+    #[test]
+    fn a_finding_after_a_rename_lands_at_the_path() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("evidence.jsonl");
+        let rotated = dir.path().join("evidence.jsonl.1");
+        let mut sink = EvidenceSink::open(path.to_str().ok_or("utf-8 path")?)?;
+        sink.write(&finding("before")?)?;
+        std::fs::rename(&path, &rotated)?;
+        sink.write(&finding("after")?)?;
+        assert_eq!(rules(&path)?, vec!["after"], "new finding at the path");
+        assert_eq!(rules(&rotated)?, vec!["before"], "old file keeps its own");
+        Ok(())
+    }
+
+    /// SUCCESS: after a removal the file is created again.
+    #[test]
+    fn a_finding_after_a_removal_creates_the_file_again() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("evidence.jsonl");
+        let mut sink = EvidenceSink::open(path.to_str().ok_or("utf-8 path")?)?;
+        sink.write(&finding("before")?)?;
+        std::fs::remove_file(&path)?;
+        sink.write(&finding("after")?)?;
+        assert_eq!(rules(&path)?, vec!["after"], "the file is created again");
+        Ok(())
+    }
+
+    /// EDGE: without rotation every finding stays in the one file.
+    #[test]
+    fn without_rotation_every_finding_stays_in_one_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("evidence.jsonl");
+        let mut sink = EvidenceSink::open(path.to_str().ok_or("utf-8 path")?)?;
+        for r in ["a", "b", "c"] {
+            sink.write(&finding(r)?)?;
+        }
+        assert_eq!(rules(&path)?, vec!["a", "b", "c"], "one file, three lines");
+        Ok(())
+    }
+
+    /// EDGE: a file the rotator created is appended to, not replaced.
+    #[test]
+    fn a_file_created_by_the_rotator_is_appended_to() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("evidence.jsonl");
+        let mut sink = EvidenceSink::open(path.to_str().ok_or("utf-8 path")?)?;
+        sink.write(&finding("before")?)?;
+        std::fs::rename(&path, dir.path().join("old"))?;
+        let seed = finding("seeded")?.to_line()?;
+        std::fs::write(&path, format!("{seed}\n"))?;
+        sink.write(&finding("after")?)?;
+        assert_eq!(
+            rules(&path)?,
+            vec!["seeded", "after"],
+            "the rotator's file keeps its content and gains the finding"
+        );
+        Ok(())
+    }
+
+    /// FAILURE: a rotation that took the directory away is a write error.
+    #[test]
+    fn a_reopen_that_fails_is_an_error() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let sub = dir.path().join("out");
+        std::fs::create_dir(&sub)?;
+        let path = sub.join("evidence.jsonl");
+        let mut sink = EvidenceSink::open(path.to_str().ok_or("utf-8 path")?)?;
+        sink.write(&finding("before")?)?;
+        std::fs::remove_file(&path)?;
+        std::fs::remove_dir(&sub)?;
+        assert!(
+            sink.write(&finding("after")?).is_err(),
+            "a finding with nowhere to go must be an error, not written unlinked"
+        );
+        Ok(())
+    }
+
+    /// FAILURE: a directory at the path is a write error.
+    #[test]
+    fn a_directory_at_the_path_is_an_error() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("evidence.jsonl");
+        let mut sink = EvidenceSink::open(path.to_str().ok_or("utf-8 path")?)?;
+        sink.write(&finding("before")?)?;
+        std::fs::rename(&path, dir.path().join("old"))?;
+        std::fs::create_dir(&path)?;
+        assert!(
+            sink.write(&finding("after")?).is_err(),
+            "writing a finding to a directory must fail"
+        );
         Ok(())
     }
 }

@@ -48,6 +48,24 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // The commit-message rule (class I) names `git interpret-trailers --parse`
+    // and `--no-divider`.
+    (
+        "parse",
+        &[
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "no-divider",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "Every platform's crates before the suite" names cargo's `--offline`
     // and `--target`.
     (
@@ -6793,7 +6811,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/keybindings.md and their site mirrors (+8).
     // 1532 -> 1534 (relay rates): the units table of "Read the rate media
     // arrives at" in docs/relay-statistics.md and its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1534;
+    // 1534 -> 1538 (SIP torture tests): the verdict and coverage tables of
+    // "IETF SIP torture tests" in docs/internals/testing.md and its site
+    // mirror (+4).
+    const EXPECTED_TABLES: usize = 1538;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

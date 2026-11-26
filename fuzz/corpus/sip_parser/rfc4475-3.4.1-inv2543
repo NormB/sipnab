@@ -1,0 +1,17 @@
+INVITE sip:DeskB@example.org SIP/2.0
+Via: SIP/2.0/UDP gw2543.example.org
+From: <sip:+12125550143@client.example.net;user=phone>;tag=old41
+Record-Route: <sip:DeskB@example.org;maddr=proxy.example.org>
+To: sip:+12125550144@proxy.example.net;user=phone
+Call-ID: inv2543.g7h8j9@client.example.net
+CSeq: 61 INVITE
+Content-Type: application/sdp
+
+v=0
+o=- 7100 7100 IN IP4 192.0.2.161
+s=check
+c=IN IP4 192.0.2.161
+t=0 0
+m=audio 41000 RTP/AVP 8 0
+m=video 41002 RTP/AVP 98
+a=rtpmap:98 VP8/90000

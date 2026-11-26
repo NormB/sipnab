@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
-# Submitted to google/oss-fuzz as projects/sipnab/project.yaml.
+# Not submitted. google/oss-fuzz has no projects/sipnab. This file is held
+# ready as projects/sipnab/project.yaml for a later application. The fuzzing
+# that runs today is ClusterFuzzLite in this repository's CI
+# (.github/workflows/clusterfuzzlite.yml, built from .clusterfuzzlite/).
 #
 # `primary_contact` and `auto_ccs` receive crash reports, which are private for
-# 90 days before disclosure. Fill these in before submitting: OSS-Fuzz requires
+# 90 days before disclosure. Confirm them before submitting: OSS-Fuzz requires
 # a reachable address, and an unreachable one means findings nobody reads.
 homepage: "https://sipnab.com"
 main_repo: "https://github.com/NormB/sipnab"

@@ -2242,6 +2242,13 @@ pub fn release_run() {
 /// goes through here instead.
 pub fn release_run_and_exit(code: i32) -> ! {
     release_run();
+    // A run a `--min-free-disk` floor stopped says why last, after the TUI
+    // gave the terminal back and the end-of-run lines were printed. On
+    // stderr, not through `tracing`: it explains the exit code, and
+    // `SIPNAB_LOG=off` silences every log line.
+    if let Some(reason) = crate::signals::low_disk_reason() {
+        stderr_line!("{reason}");
+    }
     // A run stopped by SIGHUP exits 129 where it would have exited 0, so a
     // supervisor that restarts on failure restarts it (OPS-5).
     std::process::exit(crate::signals::exit_code(code))

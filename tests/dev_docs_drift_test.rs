@@ -1094,9 +1094,20 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 910 -> 912 (PRECHECK-MISSES-HOOK-GATES, +2): testing.md's "The
     // pre-check, before the hook" links .config/precheck-skip.txt and
     // scripts/tests/test_precheck_hook.py.
-    // 915 -> 916 (+1): build-ci-release.md's CHANGELOG gate troubleshooting
+    // 915 -> 917 (WCA-SCORECARD-BRANCH-PROTECTION, WCA-OSS-FUZZ-SUBMIT, +2):
+    // build-ci-release.md's "Scorecard token" links
+    // tests/workflow_supply_chain_test.rs, and testing.md's OSS-Fuzz line
+    // links ops/oss-fuzz.
+    // 917 -> 918 (+1): build-ci-release.md's CHANGELOG gate troubleshooting
     // links .config/changelog-released.sha256 for the newer pin to take.
-    const EXPECTED_CODE_LINKS: usize = 916;
+    // 918 -> 922 (SIP torture tests and fixtures, +4): testing.md's "IETF SIP
+    // torture tests" links tests/sip_torture_conformance_test.rs,
+    // tests/sip_torture_rfc_messages_test.rs, tests/fixtures/sip-torture and
+    // tests/fixtures/sip-torture/PROVENANCE.txt.
+    // 922 -> 923 (no address in a trailer, +1): build-ci-release.md's
+    // commit-msg section links scripts/check-dco.py, where the noreply rule
+    // lives.
+    const EXPECTED_CODE_LINKS: usize = 923;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -356,6 +356,9 @@ pub mod lru;
 pub mod names;
 pub mod net;
 pub mod new_file;
+// Every build: the audit sink and `--evidence-out` both follow log rotation
+// through it, and `security` is compiled in every build.
+pub mod append_file;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pipeline;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
@@ -458,6 +461,10 @@ pub mod input_wait;
 #[doc(hidden)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod signals;
+// The free-disk floor of a run's outputs (`--min-free-disk`): read by the
+// CLI's value parser and started by `main` beside the signal handlers.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod disk_floor;
 pub mod sip;
 pub mod sort;
 pub mod text;

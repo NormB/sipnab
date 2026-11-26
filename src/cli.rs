@@ -1140,6 +1140,23 @@ pub struct CaptureArgs {
     #[arg(help_heading = "Capture", long, value_name = "N")]
     pub split_keep: Option<u32>,
 
+    /// Stop the capture when free disk space under an output falls below
+    /// SIZE (e.g. "2G", "500M"; binary units, 1G = 1024 MiB).
+    ///
+    /// sipnab watches the directory of `-O` (every `--split` file sits beside
+    /// it), of `--mcp-audit-file`, `--tui-audit-file`, `--evidence-out` and
+    /// of each vCon rule, before the capture opens and every 5 seconds. Below
+    /// SIZE the run stops as a stop signal stops it, its outputs closed, and
+    /// exits 4. Without the flag a directory under 1 GiB free gets one
+    /// warning and the run goes on; `0` turns the check off.
+    #[arg(
+        help_heading = "Capture",
+        long = "min-free-disk",
+        value_name = "SIZE",
+        value_parser = crate::disk_floor::parse_min_free_disk
+    )]
+    pub min_free_disk: Option<crate::disk_floor::MinFreeDisk>,
+
     /// Replay packets from a pcap file at original timing.
     #[arg(help_heading = "Capture", long)]
     pub replay: bool,

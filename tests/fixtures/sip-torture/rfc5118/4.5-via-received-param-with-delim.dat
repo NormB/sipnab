@@ -1,0 +1,9 @@
+BYE sip:[2001:db8::42] SIP/2.0
+Via: SIP/2.0/UDP [2001:db8::a1];received=[2001:db8::a9];branch=z9hG4bKv6-wd45
+Max-Forwards: 70
+To: sip:desk@example.org;tag=v6d
+From: sip:front@example.org;tag=v6t
+Call-ID: withdelim45.d4f5g6
+CSeq: 45 BYE
+Content-Length: 0
+

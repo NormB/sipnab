@@ -165,7 +165,7 @@ retains no record of which capture anything came from.**
   `capture_mode` ([`tui/mod.rs:274`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L274)<!-- "/// Capture mode" -->), overwritten wholesale
   on each in-TUI open ([`file_open.rs:834`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L834)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
   The `-I` set never reaches the TUI: `plan.source` is consumed by
-  `bootstrap::launch` ([`main.rs:443-446`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L443-L446)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
+  `bootstrap::launch` ([`main.rs:465-468`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L465-L468)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
   ([`state.rs:218-229`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/tui/state.rs#L218-L229)) carries no path.
 - Opening a capture from inside the TUI **clears** both stores rather than
   merging — `reset_for_load`
@@ -198,7 +198,7 @@ The cheap version — load both captures into one store and add a "capture A / B
 column — cannot work, because the column has nothing to read. There is no field
 to populate. Adding one means touching `Packet`, `ParsedPacket`, `SipMessage`
 and `SipDialog`, which is the zero-copy payload spine (D3) and the hot path;
-`process_message` ([`dialog_store.rs:1672-1674`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1672-L1674)<!-- "// Look up by the borrowed Call-ID" -->) is
+`process_message` ([`dialog_store.rs:1792-1794`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1792-L1794)<!-- "// Look up by the borrowed Call-ID" -->) is
 written to avoid even a single owned-key allocation per message. A per-message
 `String` source label is a straightforward regression of that work.
 
@@ -548,7 +548,7 @@ with the reason stated above it: *"a HEP sender asserts the inner src/dst
 addresses, so absent receiver-side authentication an attacker could steer the
 kill response at a chosen victim (SSRF-style)."* `--hep-allow-kill` is off by
 default and a test pins that it stays off
-([`cli.rs:12141-12146`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L12141-L12146)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
+([`cli.rs:12158-12163`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L12158-L12163)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
 be opt-in (SN-01)"*).
 
 **Field injection into the input of a ban decision.** `fail2ban.rs`'s
@@ -695,7 +695,7 @@ Three things changed since [`mcp-tool-roadmap.md`](mcp-tool-roadmap.md) filed
 state — needs the same opt-in treatment as shutdown."*
 
 **The opt-in treatment now exists and is proven.** `shutdown_server` shipped with
-a flag ([`cli.rs:4356-4369`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L4356-L4369)<!-- "/// Allow the `shutdown_server`" -->), an off-by-default field
+a flag ([`cli.rs:4373-4386`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L4373-L4386)<!-- "/// Allow the `shutdown_server`" -->), an off-by-default field
 ([`server.rs:187`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L187)<!-- "allow_shutdown: bool, /// Where" -->), a builder
 ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut self) -> Self {" -->) and a first-statement refusal
 ([`server.rs:9163`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9163)<!-- "if !self.allow_shutdown {" -->). Copying that shape costs almost
@@ -749,7 +749,7 @@ documents *"the tool server; cloned per HTTP session"* and
 ([`server.rs:64`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L64)) is a plain field, not an `Arc`,
 built once at startup ([`servers.rs:633-658`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L633-L658)<!-- "let capture_state" -->) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
-argument ([`cli.rs:8735-8737`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8735-L8737)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
+argument ([`cli.rs:8752-8754`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8752-L8754)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
 `capture_status` ([`server.rs:1548`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L1548)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the

@@ -571,6 +571,9 @@ pub const FLAGS: &[(&str, Link)] = &[
         "metrics-tls-key",
         Link::Key("metrics", "tls_key", Merge::Override),
     ),
+    // A stop condition, as `--autostop` is: one run's intent, not a standing
+    // default (the warning it replaces is on without it).
+    ("min-free-disk", Link::PerRun),
     ("mint-token", Link::Action),
     ("mos-bad", Link::Key("quality", "mos_bad", Merge::Override)),
     (

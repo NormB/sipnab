@@ -198,6 +198,44 @@ def test_failure_the_unreleased_heading_joined_to_the_text_above_is_refused():
     assert len(got) == 1 and "'## [Unreleased]'" in got[0]
 
 
+# 2026-11-25: origin/main held 14 headings with no blank line before them, all
+# in released sections below the first one, which the check did not read. The
+# two shapes found: a release heading joined to a sub-bullet, and a `###`
+# heading of an older release joined to a sub-bullet.
+OLDER = "\n## [0.5.36] - 2026-07-24\n\n### Fixed\n\n- **Reduced builds compile.**\n  - So reduced-feature CI builds compile.\n"
+
+
+def test_failure_an_older_release_heading_joined_to_a_sub_bullet_is_refused():
+    text = log(sections(Changed=A), released=RELEASED + OLDER + "## [0.5.35] - 2026-07-23\n\n- **A fix.**\n")
+    line = text.splitlines().index("## [0.5.35] - 2026-07-23") + 1
+    got = cm.blank_line_problems(text)
+    assert got == [f"no blank line before the heading '## [0.5.35] - 2026-07-23' (line {line}): a merge joined "
+                   "it to the line above; put one empty line between them."], got
+
+
+def test_failure_a_kind_heading_of_an_older_release_joined_to_a_sub_bullet_is_refused():
+    text = log(sections(Changed=A), released=RELEASED + OLDER + "### Security\n\n- **A fix.**\n  - Was: broken.\n")
+    line = text.splitlines().index("### Security") + 1
+    got = cm.blank_line_problems(text)
+    assert len(got) == 1 and f"'### Security' (line {line})" in got[0], got
+
+
+def test_failure_every_joined_heading_of_the_released_part_is_named():
+    joined = RELEASED + OLDER + "### Security\n\n- **A.**\n  - Was: a.\n## [0.5.35] - 2026-07-23\n\n- **B.**\n"
+    got = cm.blank_line_problems(log(sections(Changed=A), released=joined))
+    assert ["### Security" in got[0], "## [0.5.35]" in got[1], len(got)] == [True, True, 2], got
+
+
+def test_success_older_release_headings_after_a_blank_line_pass():
+    spaced = RELEASED + OLDER + "\n## [0.5.35] - 2026-07-23\n\n### Fixed\n\n- **A fix.**\n  - Was: broken.\n"
+    assert cm.blank_line_problems(log(sections(Changed=A), released=spaced)) == []
+
+
+def test_edge_a_heading_line_inside_a_code_fence_of_a_released_entry_is_not_a_heading():
+    fenced = RELEASED + "\n## [0.5.35] - 2026-07-23\n\n- **A command.**\n\n  ```sh\n  echo x\n## not a heading\n  ```\n"
+    assert cm.blank_line_problems(log(sections(Changed=A), released=fenced)) == []
+
+
 def test_failure_an_entry_merged_into_a_released_section_is_refused():
     # 2026-11-13, three times: an entry inside a released section.
     released = RELEASED.replace("### Fixed\n\n", "### Fixed\n\n" + D)

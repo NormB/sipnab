@@ -1,0 +1,10 @@
+REGISTER sip:[2001:db8::42] SIP/2.0
+Via: SIP/2.0/UDP [2001:db8::a1];branch=z9hG4bKv6-good41
+Max-Forwards: 70
+To: sip:desk@example.org
+From: sip:front@example.org;tag=v6t
+Contact: "Front" <sip:front@[2001:db8::a2]>
+Call-ID: good41.q1w2e3
+CSeq: 41 REGISTER
+Content-Length: 0
+

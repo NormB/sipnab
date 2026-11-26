@@ -1943,7 +1943,18 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // `--relay-sessions` row links "Read the rate media arrives at".
     // 2764 -> 2765 (MEM-2, +1): docs/tls-capture.md 1, the bounds paragraph
     // links the error reference.
-    const EXPECTED_WIKI_LINKS: usize = 2765;
+    // 2765 -> 2764 (FILE-2 a, -1): docs/run-as-a-service.md "Rotate the audit
+    // and provenance files" no longer links "Write a unit of your own"; its
+    // verify example is now a stdio run, not a run of that unit.
+    // 2764 -> 2765 (security.txt, +1): docs/install.md's "I want to" table
+    // links its new "Report a security problem" section.
+    // 2765 -> 2769 (FILE-2 b, +4): docs/cli-reference.md's `--min-free-disk`
+    // row and exit-code `4` row link "Stop a capture before the disk fills",
+    // and that how-to links "Write a unit of your own" and "Change the
+    // packaged unit with a drop-in".
+    // 2769 -> 2770 (FILE-2 c, +1): docs/troubleshooting.md "Send us a crash
+    // report" links "How many crash reports sipnab keeps".
+    const EXPECTED_WIKI_LINKS: usize = 2770;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2117,7 +2128,13 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // MAINTAINERS.md, as before in number.
     // 173 -> 174 (WC2a stability page): README.md's docs table links
     // docs/stability.md.
-    const EXPECTED_COMMUNITY_LINKS: usize = 174;
+    // 174 -> 175 (WCA-SCORECARD-BRANCH-PROTECTION): SECURITY.md's secrets
+    // table links docs/internals/build-ci-release.md#scorecard-token.
+    // 175 -> 176 (security.txt): SECURITY.md links
+    // docs/install.md#report-a-security-problem.
+    // 176 -> 177 (no address in a trailer): CONTRIBUTING.md's "Signing off
+    // commits" links #never-publish-a-machine-an-account-or-a-network.
+    const EXPECTED_COMMUNITY_LINKS: usize = 177;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

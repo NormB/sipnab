@@ -105,6 +105,35 @@ That is exactly why CI has a feature matrix.
 | `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
 | `rerun-not-acquired.yml` | when a `CI` or `Release` run completes without success; manual, which prints the decision for one run and re-runs nothing | Re-runs the failed jobs of a run in which every job that did not succeed has the conclusion `skipped` or never started, because no hosted runner took it. See [A job no runner took](#a-job-no-runner-took). |
 
+### Scorecard token
+
+Scorecard's Branch-Protection check reads the classic branch protection rules of `main`.
+The workflow's default `GITHUB_TOKEN` cannot read them, so with it alone the check scores -1
+and reports that the token cannot read classic branch protection rules.
+
+- `scorecard.yml` passes `repo_token: ${{ secrets.SCORECARD_TOKEN || github.token }}`.
+- `SCORECARD_TOKEN` is a repository secret holding a fine-grained personal access token.
+  - Repository access: `NormB/sipnab` only.
+  - Permission: Administration: Read-only. GitHub adds Metadata: Read-only by itself.
+    The token holds no other permission.
+  - The owner creates it at <https://github.com/settings/personal-access-tokens/new>, as the
+    scorecard-action document
+    [Authentication with Fine-grained PAT](https://github.com/ossf/scorecard-action/blob/main/docs/authentication/fine-grained-auth-token.md)
+    describes.
+- The token expires one year after its owner makes it, the longest expiry that document gives.
+  - GitHub emails the owner before the expiry date.
+  - To renew it, regenerate the token with a new one-year expiry and paste the new value
+    into the same secret, under Settings, Secrets and variables, Actions.
+- When the secret is absent, the expression yields the default `GITHUB_TOKEN`, so the
+  workflow still runs and only Branch-Protection goes back to -1.
+  - An expired token is not absent: the secret still holds it and the fallback does not
+    apply. Renew it, or delete the secret.
+- Every workflow of the repository can read a repository secret. `scorecard.yml` is the only
+  one that names it, and it has no `pull_request_target` trigger.
+  [`tests/workflow_supply_chain_test.rs`](../../tests/workflow_supply_chain_test.rs) fails if
+  either stops being true, if the step loses the fallback, or if this section stops stating
+  the scope and the renewal.
+
 ### ThreadSanitizer
 
 `sanitizers.yml` runs the threaded integration suites under
@@ -126,7 +155,7 @@ It also runs on a push to `main` that changes a file those suites compile.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 160 `unsafe` blocks are libc FFI.
+- Most of this crate's 161 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -899,6 +928,11 @@ gate every commit, from any worktree.
   on the commit message.
 - That script runs the private-identity rules of
   [`tests/private_identity_test.rs`](../../tests/private_identity_test.rs) over each line.
+- It also refuses an email address in a trailer (class I).
+  - The trailers are the lines `git interpret-trailers --parse --no-divider` reads as trailers.
+  - The test runs that command with no git configuration, outside any repository.
+  - A GitHub noreply alias and the GitHub support address Dependabot signs with name no person, so a trailer may carry them.
+  - The noreply rule is `_NOREPLY` in [`scripts/check-dco.py`](../../scripts/check-dco.py), read by the test, so the trailer rule and the `DCO` check accept the same addresses.
 - It skips with `NOT CHECKED` on a branch that does not carry the script.
 - [CONTRIBUTING.md](../../CONTRIBUTING.md#git-hooks) describes:
   - what it checks

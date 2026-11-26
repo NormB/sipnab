@@ -211,6 +211,7 @@ unit.
   LimitNOFILE=65535
   Restart=on-failure
   RestartSec=5
+  RestartPreventExitStatus=4
 
   [Install]
   WantedBy=multi-user.target
@@ -466,17 +467,94 @@ soon as sipnab starts. [Send us a crash
 report](troubleshooting.md#send-us-a-crash-report) says what the report holds
 and where to send it.
 
+### How many crash reports sipnab keeps
+
+A service that crashes and restarts writes one report per crash. Each time
+sipnab writes a report, it removes its own older reports from the report
+directory so that the newest 20 remain, the new one among them. The number is
+`MAX_CRASH_REPORTS` (20) in the source, and no setting changes it. The
+project chose 20, and a later release can change the number.
+
+What sipnab removes, and what it leaves:
+
+- It removes only regular files whose names have the exact form
+  `sipnab-crash-YYYYMMDD-HHMMSS-<pid>-<n>.log`, the names it writes.
+- It leaves every other file, every subdirectory and its contents, and any
+  symbolic link, even one with a report's name.
+- It keeps the newest by modification time. For reports with the same time,
+  it compares the date, time, number and pid in their names.
+- It never removes the report it just wrote, even when older reports carry a
+  later time.
+
+Prerequisites: a sipnab binary newer than 0.5.272. Nothing changes on other
+systems.
+
+Steps:
+
+1. Copy a report you want to keep longer out of the report directory, for
+   example into the issue you open for it.
+2. Nothing else: the bound applies with no configuration, under the packaged
+   unit and outside it.
+
+Verify: put 25 old reports into an empty directory, crash sipnab into it with
+`--panic-selftest`, and count what remains. This run used a temporary
+directory, shown here as `DIR`:
+
+```bash
+# Run all of these, in order.
+mkdir DIR/reports
+for i in $(seq -w 1 25); do
+  touch -d "2020-01-01 00:00:$i" DIR/reports/sipnab-crash-20200101-0000$i-100-0.log
+done
+printf '[crash]\nreport_dir = "DIR/reports"\n' > DIR/crash.toml
+sipnab -f DIR/crash.toml --panic-selftest
+ls DIR/reports | wc -l
+ls -t DIR/reports | tail -1
+```
+
+```text
+sipnab panicked at src/main.rs:387:9:
+panic-selftest: intentional panic to verify crash handling
+crash report written to DIR/reports/sipnab-crash-20261125-203707-2042329-0.log
+20
+sipnab-crash-20200101-000007-100-0.log
+```
+
+The `--panic-selftest` run exits 101. The 25 old reports and the new one made
+26. sipnab removed the six oldest, seconds 01 to 06, and kept the new report
+among the 20.
+
+Troubleshoot:
+
+- **More than 20 files remain.** The others do not have sipnab's report name
+  form, for example a compressed `.log.gz` copy, or they are not regular
+  files. sipnab does not remove them. Remove them yourself.
+- **sipnab removed a report before you read it.** The directory held 20 newer
+  ones. Copy a report elsewhere as soon as sipnab writes it.
+- **sipnab removed no report.** sipnab did not write the new report: look for
+  `failed to write crash report:` in the journal. sipnab prunes only after it
+  writes a report, and it refuses a report directory that is a symbolic link
+  or is world-writable without the sticky bit.
+
 ## Rotate the audit and provenance files
 
-Three flags append one JSON line per event to a file and never truncate it:
+Four flags append one JSON line per event to a file and never truncate it:
 
 - `--mcp-audit-file`: every MCP tool call;
 - `--tui-audit-file`: every operator action in the terminal interface;
+- `--evidence-out PATH`: every security finding that names a source;
 - `--run-provenance-file`: one line per run, at startup.
 
-The two audit files stay open for the whole run. Rename one, and sipnab keeps
-writing to the renamed file until it restarts. Rotate them with
-`copytruncate`, which copies the file and then empties it in place:
+The first three stay open for the whole run. Before each line, sipnab checks
+that the path still names the file it holds open. When a rotation renamed or
+deleted the file, sipnab opens the path again, creates the file if it is missing,
+and writes the line there. It logs one line at `info`:
+`reopened /var/log/sipnab/mcp-audit.jsonl after rotation`.
+
+Prerequisites: `logrotate`, and a directory the service can write (below).
+
+Rotate the files with the default `create` mode of `logrotate`, which renames the file
+and lets the next line create a new one:
 
 ```text
 /var/log/sipnab/*.jsonl {
@@ -486,7 +564,7 @@ writing to the renamed file until it restarts. Rotate them with
     delaycompress
     missingok
     notifempty
-    copytruncate
+    create 0600 sipnab sipnab
 }
 ```
 
@@ -500,16 +578,26 @@ status 2:
 --mcp-audit-file /var/log/sipnab2/mcp-audit.jsonl: Read-only file system (os error 30). sipnab refuses to serve MCP without the audit trail it was asked for
 ```
 
-This run used the unit from [Write a unit of your own](#write-a-unit-of-your-own)
-with a drop-in adding `LogsDirectory=sipnab` and
-`--mcp-audit-file /var/log/sipnab/mcp-audit.jsonl`. After one tool call,
-`logrotate -f /etc/logrotate.d/sipnab`, and a second tool call, the second
-record landed in the emptied file as a complete line:
+To verify, make one tool call, rotate, and make a second call. This run was
+`sipnab -N --mcp -I capture.pcap --mcp-audit-file DIR/mcp-audit.jsonl` over
+stdio as an ordinary user, with the stanza above pointed at `DIR/*.jsonl` and
+`create 0600` (an ordinary user cannot give the file to another owner). Between
+the two calls it ran `logrotate -f -s DIR/state DIR/sipnab.logrotate`. `DIR`
+stands for the test directory:
 
 ```text
--rw------- 1 sipnab sipnab 195 Nov  3 14:43 mcp-audit.jsonl
--rw------- 1 sipnab sipnab 195 Nov  3 14:43 mcp-audit.jsonl.1
-{"args":"{}","caller":"127.0.0.1:38978 bearer-verified scope=full","elapsed_ms":0,"error":null,"id":"2","outcome":"ok","seq":2,"tool":"capture_status","ts":"2026-11-03T14:43:22.918525017+00:00"}
+-rw------- 158 mcp-audit.jsonl
+-rw------- 158 mcp-audit.jsonl.1
+--- mcp-audit.jsonl.1
+{"args":"{}","caller":"stdio","elapsed_ms":0,"error":null,"id":"2","outcome":"ok","seq":1,"tool":"capture_status","ts":"2026-11-25T02:48:14.667077241+00:00"}
+--- mcp-audit.jsonl
+{"args":"{}","caller":"stdio","elapsed_ms":2,"error":null,"id":"3","outcome":"ok","seq":2,"tool":"capture_status","ts":"2026-11-25T02:48:14.804894064+00:00"}
+```
+
+With `SIPNAB_LOG=info` the same run logged the reopen:
+
+```text
+INFO serve_inner: sipnab::append_file: reopened DIR/mcp-audit.jsonl after rotation
 ```
 
 - `seq` continues across the rotation, so the new file starts at `seq` 2 here,
@@ -519,6 +607,103 @@ record landed in the emptied file as a complete line:
   truncation. The window is the time `logrotate` takes to copy the file.
 - sipnab writes the provenance file once per run, at startup, so any rotation
   method works for it.
+
+Troubleshoot:
+
+- **New records still go to the rotated file.** The sipnab binary is older
+  than this release; `sipnab --version` names it.
+- **sipnab refuses a tool call after rotation.** The error names the path:
+  `<path>: the file was rotated away and cannot be opened again: <error>`. The
+  rotation removed the directory, or the service cannot write it; check `LogsDirectory=` and
+  the directory's owner. The refused call still used its `seq`, so the trail
+  shows the gap. The terminal interface keeps running and reports
+  `AUDIT TRAIL INCOMPLETE: '<action>' was not recorded to <path> (<error>)`.
+- **The new file has the wrong owner or mode.** `logrotate` made it from the
+  `create` line; sipnab appends to that file and leaves its mode alone.
+
+## Stop a capture before the disk fills
+
+A capture that runs for days fills its disk one record at a time. When the
+disk is full, every output fails at once: `-O`, the vCon files and the audit
+trail. `--min-free-disk SIZE` stops the capture while there is still room, with
+its files closed, and exits 4.
+
+What sipnab watches: the directory of `-O` (every `--split` file sits beside
+it), of `--mcp-audit-file`, `--tui-audit-file` and `--evidence-out`, and of
+each vCon rule. For a rule directory that does not exist yet, sipnab watches
+the nearest directory above it that does. sipnab reads the free space before
+the capture opens and then every 5 seconds, never per packet.
+
+- **Without the flag**, a directory under 1 GiB free gets one warning when it
+  crosses under, and the run goes on. The floor is `DEFAULT_WARN_FLOOR`
+  (1,073,741,824) bytes. A second warning comes only after the directory has
+  recovered to the floor plus a tenth.
+- **With `--min-free-disk SIZE`**, a directory under SIZE stops the run. Under
+  SIZE before the capture opens, the run does not start.
+- **With `--min-free-disk 0`**, sipnab reads nothing and prints no warning.
+
+Prerequisites:
+
+- A sipnab binary with `--min-free-disk` in `sipnab --help`.
+- On systemd, a unit with `RestartPreventExitStatus=4`. The packaged unit has
+  it, and so does the unit in [Write a unit of your own](#write-a-unit-of-your-own).
+  Without it, `Restart=on-failure` starts sipnab again after `RestartSec=`,
+  into the same full disk.
+
+Steps:
+
+1. Pick the floor: what the outputs need between the stop and someone freeing
+   space, plus what other programs on that file system need. Units are
+   binary: `2G` is 2048 MiB.
+2. Add the flag to `ExecStart=` with a drop-in
+   ([Change the packaged unit with a drop-in](#change-the-packaged-unit-with-a-drop-in)
+   shows how):
+
+   ```ini
+   [Service]
+   ExecStart=
+   ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog -O /var/lib/sipnab/sip.pcapng --pcapng --split filesize:100 --split-keep 48 --min-free-disk 2G
+   ```
+
+3. Reload and restart: `sudo systemctl daemon-reload` and then
+   `sudo systemctl restart sipnab`.
+
+Verify: give the run a floor no disk can meet, and check that it does not
+start. `16777215T` is the largest value the flag takes. This run read a
+capture file into a temporary directory, shown here as `DIR`:
+
+```bash
+sipnab -N -I capture.pcap -O DIR/out.pcap --min-free-disk 16777215T
+```
+
+```text
+WARN sipnab::disk_floor: stopping the capture: free disk space under DIR is 1626433282048 bytes (1.5 TiB), below --min-free-disk 18446742974197923840 bytes (16777215.0 TiB)
+sipnab stopped: free disk space under DIR is 1626433282048 bytes (1.5 TiB), below --min-free-disk 18446742974197923840 bytes (16777215.0 TiB); exit 4
+```
+
+`echo $?` right after it printed `4`. `DIR` holds no `out.pcap`: the capture
+never opened. The same command with
+`--min-free-disk 1G` read the file, wrote `out.pcap` and exited 0. The
+`sipnab stopped:` line goes to stderr even with `SIPNAB_LOG=off`.
+
+After a stop under systemd, `systemctl status sipnab` shows
+`status=4/NOPERMISSION` (systemd's name for status 4), and the service stays
+stopped.
+
+Troubleshoot:
+
+- **`invalid value '500' for '--min-free-disk <SIZE>'`.** A number needs a
+  unit: `500M`. sipnab refuses `MB` and `GB` because the units are binary; write
+  `M` or `MiB`.
+- **The service starts again after a disk stop.** The unit has no
+  `RestartPreventExitStatus=4`; add it in a drop-in.
+- **`cannot read the free disk space under DIR`.** sipnab could not open the
+  directory before the capture opened. That directory is not checked; the
+  others still are.
+- **A `--cores` run does not stop mid-read.** sipnab checks a multi-core file
+  read only before it starts, not every 5 seconds.
+- **The warning appears and nothing stops.** That is the 1 GiB default
+  warning. It stops nothing; pass `--min-free-disk SIZE` to stop.
 
 ## When the service does not start
 

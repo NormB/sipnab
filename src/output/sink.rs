@@ -43,7 +43,14 @@ pub struct BatchSink<W: Write> {
     /// First non-`BrokenPipe` write/flush error, if any. Kept rather than
     /// returned so the hot per-message path stays infallible.
     hard_error: Option<std::io::Error>,
+    /// Called once, with the first non-`BrokenPipe` error, when it happens
+    /// (FILE-2 d): the batch loop prints a line at once instead of only at
+    /// the end of the run, which for a live capture can be days later.
+    on_first_failure: Option<FirstFailure>,
 }
+
+/// What [`BatchSink`] calls with its first hard error.
+pub type FirstFailure = Box<dyn FnMut(&std::io::Error) + Send>;
 
 impl BatchSink<std::io::BufWriter<std::io::Stdout>> {
     /// Production sink: a 64 KiB buffer in front of stdout. Stdout's own
@@ -64,7 +71,16 @@ impl<W: Write> BatchSink<W> {
             w,
             line_buffer,
             hard_error: None,
+            on_first_failure: None,
         }
+    }
+
+    /// Call `f` once, with the first non-`BrokenPipe` error, at the moment
+    /// [`BatchSink::record`] keeps it.
+    #[must_use]
+    pub fn on_first_failure(mut self, f: FirstFailure) -> Self {
+        self.on_first_failure = Some(f);
+        self
     }
 
     /// Record `r` unless it succeeded or failed with `BrokenPipe`.
@@ -76,6 +92,9 @@ impl<W: Write> BatchSink<W> {
             && e.kind() != std::io::ErrorKind::BrokenPipe
             && self.hard_error.is_none()
         {
+            if let Some(f) = self.on_first_failure.as_mut() {
+                f(&e);
+            }
             self.hard_error = Some(e);
         }
     }
@@ -242,6 +261,447 @@ mod tests {
         sink.end_message();
         sink.flush();
         assert!(sink.get_ref().buf.is_empty());
+    }
+
+    // ── FILE-2 (d): the first hard failure is reported when it happens ──
+    //
+    // `u_s_` success, `u_f_` no call expected, `u_e_` edge. The binary's line
+    // is tested in tests/stdout_first_failure_test.rs.
+
+    use std::collections::VecDeque;
+    use std::io::ErrorKind;
+    use std::sync::mpsc;
+
+    /// A writer whose writes and flushes fail as scripted.
+    #[derive(Default)]
+    struct Failing {
+        /// Bytes written.
+        buf: Vec<u8>,
+        /// The outcome of each next write: `Some(kind)` fails with `kind`,
+        /// `None` succeeds. When empty, `then` applies.
+        script: VecDeque<Option<ErrorKind>>,
+        /// The outcome of every write after the script.
+        then: Option<ErrorKind>,
+        /// When set, every flush fails with it.
+        flush_err: Option<ErrorKind>,
+    }
+
+    impl Failing {
+        /// Every write and flush fails with `kind`.
+        fn always(kind: ErrorKind) -> Self {
+            Self {
+                then: Some(kind),
+                flush_err: Some(kind),
+                ..Self::default()
+            }
+        }
+
+        /// Writes succeed and every flush fails with `kind`.
+        fn flush_fails(kind: ErrorKind) -> Self {
+            Self {
+                flush_err: Some(kind),
+                ..Self::default()
+            }
+        }
+
+        /// The writes fail in the order of `script`, then succeed.
+        fn scripted(script: &[Option<ErrorKind>]) -> Self {
+            Self {
+                script: script.iter().copied().collect(),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Write for Failing {
+        /// Fail as scripted, or append `data`.
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            match self.script.pop_front().unwrap_or(self.then) {
+                Some(kind) => Err(std::io::Error::new(kind, format!("scripted {kind:?}"))),
+                None => {
+                    self.buf.extend_from_slice(data);
+                    Ok(data.len())
+                }
+            }
+        }
+        /// Fail with `flush_err` when set.
+        fn flush(&mut self) -> std::io::Result<()> {
+            match self.flush_err {
+                Some(kind) => Err(std::io::Error::new(kind, format!("scripted {kind:?}"))),
+                None => Ok(()),
+            }
+        }
+    }
+
+    /// A callback that sends each call's error kind and text, and the
+    /// receiver that collects them.
+    fn recorder() -> (FirstFailure, mpsc::Receiver<(ErrorKind, String)>) {
+        let (tx, rx) = mpsc::channel();
+        let f: FirstFailure = Box::new(move |e: &std::io::Error| {
+            let _ = tx.send((e.kind(), e.to_string()));
+        });
+        (f, rx)
+    }
+
+    /// The calls received so far.
+    fn calls(rx: &mpsc::Receiver<(ErrorKind, String)>) -> Vec<(ErrorKind, String)> {
+        rx.try_iter().collect()
+    }
+
+    /// A sink over `w` with a recorder.
+    fn sink_with(
+        w: Failing,
+        line_buffer: bool,
+    ) -> (BatchSink<Failing>, mpsc::Receiver<(ErrorKind, String)>) {
+        let (f, rx) = recorder();
+        (BatchSink::new(w, line_buffer).on_first_failure(f), rx)
+    }
+
+    /// The first hard error calls the callback once, with that error.
+    #[test]
+    fn u_s_the_first_hard_error_is_reported_once() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::StorageFull), false);
+        sink.write_str("x");
+        let got = calls(&rx);
+        assert_eq!(got.len(), 1, "one call: {got:?}");
+        assert_eq!(got[0].0, ErrorKind::StorageFull, "with the error: {got:?}");
+    }
+
+    /// A failing flush is reported.
+    #[test]
+    fn u_s_a_failing_flush_is_reported() {
+        let w = Failing::flush_fails(ErrorKind::StorageFull);
+        let (mut sink, rx) = sink_with(w, false);
+        sink.write_str("x");
+        assert!(calls(&rx).is_empty(), "the write itself succeeded");
+        sink.flush();
+        assert_eq!(calls(&rx).len(), 1, "the flush failure is reported");
+    }
+
+    /// A failing `write!` is reported.
+    #[test]
+    fn u_s_a_failing_write_fmt_is_reported() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::StorageFull), false);
+        write!(sink, "{}", 42);
+        assert_eq!(calls(&rx).len(), 1, "write! failure reported");
+    }
+
+    /// A failing `write_str` is reported.
+    #[test]
+    fn u_s_a_failing_write_str_is_reported() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::PermissionDenied), false);
+        sink.write_str("line\n");
+        let got = calls(&rx);
+        assert_eq!(got.len(), 1, "one call: {got:?}");
+        assert_eq!(got[0].0, ErrorKind::PermissionDenied, "its kind: {got:?}");
+    }
+
+    /// Under `--line-buffer`, the flush at the end of a message reports.
+    #[test]
+    fn u_s_a_line_buffered_message_end_is_reported() {
+        let w = Failing::flush_fails(ErrorKind::StorageFull);
+        let (mut sink, rx) = sink_with(w, true);
+        sink.write_str("x");
+        sink.end_message();
+        assert_eq!(calls(&rx).len(), 1, "the per-message flush reports");
+    }
+
+    /// An error fed back through `record` (the zero-copy writer path) is
+    /// reported.
+    #[test]
+    fn u_s_an_error_fed_back_through_record_is_reported() {
+        let (mut sink, rx) = sink_with(Failing::default(), false);
+        let r = sink
+            .writer()
+            .write_all(b"x")
+            .and(Err(std::io::Error::from(ErrorKind::StorageFull)));
+        sink.record(r);
+        assert_eq!(calls(&rx).len(), 1, "record reports");
+    }
+
+    /// The callback gets the error's own text.
+    #[test]
+    fn u_s_the_error_text_reaches_the_callback() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::StorageFull), false);
+        sink.write_str("x");
+        let got = calls(&rx);
+        assert_eq!(
+            got.first().map(|c| c.1.as_str()),
+            Some("scripted StorageFull"),
+            "the text: {got:?}"
+        );
+    }
+
+    /// The error is still kept for the end of the run.
+    #[test]
+    fn u_s_the_error_is_still_kept() {
+        let (mut sink, _rx) = sink_with(Failing::always(ErrorKind::StorageFull), false);
+        sink.write_str("x");
+        assert_eq!(
+            sink.hard_error().map(std::io::Error::kind),
+            Some(ErrorKind::StorageFull),
+            "hard_error keeps it"
+        );
+    }
+
+    /// The call happens at the failing write, before any flush.
+    #[test]
+    fn u_s_the_call_happens_at_the_failure() {
+        let (mut sink, rx) = sink_with(
+            Failing::scripted(&[None, Some(ErrorKind::StorageFull)]),
+            false,
+        );
+        sink.write_str("a");
+        assert!(calls(&rx).is_empty(), "no call after the good write");
+        sink.write_str("b");
+        assert_eq!(calls(&rx).len(), 1, "the call at the failing write");
+    }
+
+    /// The sink stays usable after a failure.
+    #[test]
+    fn u_s_the_sink_goes_on_after_the_failure() {
+        let (mut sink, rx) = sink_with(Failing::scripted(&[Some(ErrorKind::StorageFull)]), false);
+        sink.write_str("lost");
+        sink.write_str("kept");
+        assert_eq!(sink.get_ref().buf, b"kept", "later writes still go through");
+        assert_eq!(calls(&rx).len(), 1, "one call");
+    }
+
+    /// The production constructor takes the callback.
+    #[test]
+    fn u_s_the_stdout_sink_takes_a_callback() {
+        let (f, rx) = recorder();
+        let sink = BatchSink::stdout(false).on_first_failure(f);
+        assert!(sink.hard_error().is_none(), "nothing failed");
+        assert!(calls(&rx).is_empty(), "no call without a failure");
+    }
+
+    /// Writes that succeed never call.
+    #[test]
+    fn u_f_good_writes_never_call() {
+        let (mut sink, rx) = sink_with(Failing::default(), true);
+        for _ in 0..100 {
+            sink.write_str("x");
+            sink.end_message();
+        }
+        sink.flush();
+        assert!(calls(&rx).is_empty(), "no failure, no call");
+    }
+
+    /// A closed pipe on write never calls.
+    #[test]
+    fn u_f_a_closed_pipe_on_write_never_calls() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::BrokenPipe), false);
+        sink.write_str("x");
+        assert!(calls(&rx).is_empty(), "EPIPE is not reported");
+    }
+
+    /// A closed pipe on flush never calls.
+    #[test]
+    fn u_f_a_closed_pipe_on_flush_never_calls() {
+        let w = Failing::flush_fails(ErrorKind::BrokenPipe);
+        let (mut sink, rx) = sink_with(w, true);
+        sink.write_str("x");
+        sink.end_message();
+        sink.flush();
+        assert!(calls(&rx).is_empty(), "EPIPE on flush is not reported");
+    }
+
+    /// Many closed-pipe errors never call.
+    #[test]
+    fn u_f_many_closed_pipe_errors_never_call() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::BrokenPipe), true);
+        for _ in 0..1000 {
+            sink.write_str("x");
+            sink.end_message();
+        }
+        assert!(calls(&rx).is_empty(), "no call for EPIPE");
+    }
+
+    /// `record(Ok)` never calls.
+    #[test]
+    fn u_f_record_ok_never_calls() {
+        let (mut sink, rx) = sink_with(Failing::default(), false);
+        sink.record(Ok(()));
+        assert!(calls(&rx).is_empty(), "Ok is not a failure");
+    }
+
+    /// After a closed pipe there is nothing kept and nothing called.
+    #[test]
+    fn u_f_a_closed_pipe_keeps_nothing() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::BrokenPipe), false);
+        sink.write_str("x");
+        assert!(sink.hard_error().is_none(), "EPIPE is not kept");
+        assert!(calls(&rx).is_empty(), "and not reported");
+    }
+
+    /// A second hard error does not call again.
+    #[test]
+    fn u_f_a_second_hard_error_does_not_call_again() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::StorageFull), false);
+        sink.write_str("a");
+        sink.write_str("b");
+        assert_eq!(calls(&rx).len(), 1, "one call for two failures");
+    }
+
+    /// Without a callback the first error is still kept.
+    #[test]
+    fn u_f_without_a_callback_the_error_is_kept() {
+        let mut sink = BatchSink::new(Failing::always(ErrorKind::StorageFull), false);
+        sink.write_str("x");
+        assert!(sink.hard_error().is_some(), "kept with no callback");
+    }
+
+    /// A closed pipe through `write!` never calls.
+    #[test]
+    fn u_f_a_closed_pipe_through_write_fmt_never_calls() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::BrokenPipe), false);
+        write!(sink, "{}", 1);
+        assert!(
+            calls(&rx).is_empty(),
+            "EPIPE through write! is not reported"
+        );
+    }
+
+    /// A closed pipe and then a hard error: one call, with the hard error.
+    #[test]
+    fn u_e_a_closed_pipe_then_a_hard_error_reports_the_hard_one() {
+        let (mut sink, rx) = sink_with(
+            Failing::scripted(&[Some(ErrorKind::BrokenPipe), Some(ErrorKind::StorageFull)]),
+            false,
+        );
+        sink.write_str("a");
+        sink.write_str("b");
+        let got = calls(&rx);
+        assert_eq!(got.len(), 1, "one call: {got:?}");
+        assert_eq!(got[0].0, ErrorKind::StorageFull, "the hard one: {got:?}");
+    }
+
+    /// Ten thousand failing writes: one call.
+    #[test]
+    fn u_e_ten_thousand_failures_make_one_call() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::StorageFull), true);
+        for _ in 0..10_000 {
+            sink.write_str("x");
+            sink.end_message();
+        }
+        assert_eq!(calls(&rx).len(), 1, "one call");
+    }
+
+    /// Two kinds of hard error: the call carries the first.
+    #[test]
+    fn u_e_the_first_of_two_kinds_is_reported() {
+        let (mut sink, rx) = sink_with(
+            Failing::scripted(&[
+                Some(ErrorKind::PermissionDenied),
+                Some(ErrorKind::StorageFull),
+            ]),
+            false,
+        );
+        sink.write_str("a");
+        sink.write_str("b");
+        let got = calls(&rx);
+        assert_eq!(got.len(), 1, "one call: {got:?}");
+        assert_eq!(got[0].0, ErrorKind::PermissionDenied, "the first: {got:?}");
+    }
+
+    /// `WriteZero` (a writer that takes nothing) is a hard error.
+    #[test]
+    fn u_e_write_zero_is_reported() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::WriteZero), false);
+        sink.write_str("x");
+        assert_eq!(calls(&rx).len(), 1, "WriteZero reported");
+    }
+
+    /// An error of kind `Other` carries its own message to the callback.
+    #[test]
+    fn u_e_an_other_error_keeps_its_message() {
+        let (mut sink, rx) = sink_with(Failing::default(), false);
+        sink.record(Err(std::io::Error::other("disk went away")));
+        let got = calls(&rx);
+        assert_eq!(
+            got.first().map(|c| c.1.as_str()),
+            Some("disk went away"),
+            "the message: {got:?}"
+        );
+    }
+
+    /// A failure after good output: one call, the earlier bytes intact.
+    #[test]
+    fn u_e_a_failure_after_good_output_keeps_the_earlier_bytes() {
+        let (mut sink, rx) = sink_with(
+            Failing::scripted(&[None, None, Some(ErrorKind::StorageFull)]),
+            false,
+        );
+        sink.write_str("a");
+        sink.write_str("b");
+        sink.write_str("c");
+        assert_eq!(sink.get_ref().buf, b"ab", "the bytes before the failure");
+        assert_eq!(calls(&rx).len(), 1, "one call");
+    }
+
+    /// An empty write to a failing writer writes nothing and calls nothing.
+    #[test]
+    fn u_e_an_empty_write_calls_nothing() {
+        let w = Failing {
+            then: Some(ErrorKind::StorageFull),
+            ..Failing::default()
+        };
+        let (mut sink, rx) = sink_with(w, false);
+        sink.write_str("");
+        assert!(calls(&rx).is_empty(), "write_all of nothing does not write");
+    }
+
+    /// A second callback replaces the first: only it is called.
+    #[test]
+    fn u_e_a_second_callback_replaces_the_first() {
+        let (first, rx1) = recorder();
+        let (second, rx2) = recorder();
+        let mut sink = BatchSink::new(Failing::always(ErrorKind::StorageFull), false)
+            .on_first_failure(first)
+            .on_first_failure(second);
+        sink.write_str("x");
+        assert!(calls(&rx1).is_empty(), "the replaced one is not called");
+        assert_eq!(calls(&rx2).len(), 1, "the last one is");
+    }
+
+    /// Without `--line-buffer`, the end of a message does not flush, so a
+    /// failing flush is not reached and not reported.
+    #[test]
+    fn u_e_no_flush_no_report_without_line_buffer() {
+        let w = Failing::flush_fails(ErrorKind::StorageFull);
+        let (mut sink, rx) = sink_with(w, false);
+        sink.write_str("x");
+        sink.end_message();
+        assert!(calls(&rx).is_empty(), "the flush was not reached");
+    }
+
+    /// A failure on the very first write of the run is reported.
+    #[test]
+    fn u_e_a_failure_on_the_first_write_is_reported() {
+        let (mut sink, rx) = sink_with(Failing::scripted(&[Some(ErrorKind::StorageFull)]), false);
+        sink.write_str("first");
+        assert_eq!(calls(&rx).len(), 1, "reported at once");
+    }
+
+    /// A failing write then a failing flush: still one call.
+    #[test]
+    fn u_e_a_failing_write_then_flush_make_one_call() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::StorageFull), false);
+        sink.write_str("x");
+        sink.flush();
+        assert_eq!(calls(&rx).len(), 1, "one call");
+    }
+
+    /// An error recorded directly, then failing writes: one call.
+    #[test]
+    fn u_e_a_recorded_error_then_failing_writes_make_one_call() {
+        let (mut sink, rx) = sink_with(Failing::always(ErrorKind::StorageFull), false);
+        sink.record(Err(std::io::Error::from(ErrorKind::TimedOut)));
+        sink.write_str("x");
+        let got = calls(&rx);
+        assert_eq!(got.len(), 1, "one call: {got:?}");
+        assert_eq!(got[0].0, ErrorKind::TimedOut, "the recorded one: {got:?}");
     }
 
     /// Empty writes and NUL/backslash/multi-byte UTF-8 pass through intact.
