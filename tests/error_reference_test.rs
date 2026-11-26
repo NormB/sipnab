@@ -1065,7 +1065,9 @@ const EXPECTED_UNRESOLVED: usize = 86;
 // 691 -> 693 (`--drop-method` / `--only-method` names): +1 in src/config.rs,
 // an unknown method in `[capture] drop_methods` / `only_methods`; +1 in
 // src/cli.rs, the same refusal from the flags' parser.
-const EXPECTED_TEMPLATES: usize = 693;
+// 693 -> 694 (FILE-2 d): +1 in src/app/batch.rs, the line the first failed
+// write to standard output prints while the run goes on.
+const EXPECTED_TEMPLATES: usize = 694;
 
 // ---------------------------------------------------------------------------
 // The page gates

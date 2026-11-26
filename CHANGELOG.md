@@ -30,6 +30,11 @@ entry that carries them.
   - Effect: After writing a report, sipnab removes its own older reports so the newest 20 remain; other files stay.
   - Limit: The number is fixed; copy a report elsewhere to keep it longer.
   - Docs: [Keep crash reports](docs/run-as-a-service.md#keep-crash-reports)
+- **A failed write to standard output is reported when it happens.**
+  - Was: With `--json > file` on a full disk, sipnab said so only at the end of the run, days later for a live capture.
+  - Effect: The first failed write prints `Writing standard output failed:` on stderr at once; the run goes on and exits `1`.
+  - Limit: A closed pipe, such as `| head`, is not a failure and prints nothing.
+  - Docs: [Notice when sipnab cannot write the NDJSON file](docs/output-formats.md#notice-when-sipnab-cannot-write-the-ndjson-file)
 
 ## [0.5.272] - 2026-11-25
 

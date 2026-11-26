@@ -5665,7 +5665,8 @@ impl ReceiveLoop {
             #[cfg(feature = "tls")]
             keylog_poll_clock: std::time::Instant::now(),
             security_max_age: cli.security_sweep_max_age(&runner.config),
-            sink: output::BatchSink::stdout(cli.output_args.line_buffer),
+            sink: output::BatchSink::stdout(cli.output_args.line_buffer)
+                .on_first_failure(Box::new(report_first_output_failure)),
             effects,
             start: std::time::Instant::now(),
             total_count: 0,
@@ -5682,6 +5683,16 @@ impl ReceiveLoop {
             },
         }
     }
+}
+
+/// Say on stderr, when it happens, that the per-message output to standard
+/// output failed (FILE-2 d). The end of the run says it again with
+/// `Failed to write output:` and exits 1; this line is the one a live
+/// capture's operator sees while the run goes on.
+fn report_first_output_failure(e: &std::io::Error) {
+    stderr_line!(
+        "Writing standard output failed: {e}. The run continues; its per-message output is incomplete, and it exits 1."
+    );
 }
 
 /// Log a failed `-O` packet write, with the reason the output could not be

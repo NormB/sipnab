@@ -2685,6 +2685,18 @@ Writing the per-message output to standard output failed, for a reason other tha
 
 **Exit code:** 1.
 
+### `Writing standard output failed: {e}. The run continues; its per-message output is incomplete, and it exits 1.`
+
+The first write of the per-message output to standard output failed, for a reason other than a closed pipe. sipnab prints this line when the write fails, once per run, so a live capture shows it while it runs. The `Failed to write output: {e}` line repeats the error at the end of the run.
+
+- `{e}` is the error, for example `No space left on device (os error 28)`.
+- The run goes on: `-O`, the vCon files and the reports are still written.
+- sipnab does not count a closed pipe, such as `| head`, as an error.
+
+**What to do:** Free space on, or fix write access to, the file or disk standard output goes to. To keep the output, stop the run and start it again with standard output somewhere that has space.
+
+**Exit code:** 1, at the end of the run.
+
 ### `Failed to write packet: {}`
 
 sipnab could not write a packet to the `-O` capture file. `{}` is the writer's error. When the cause is a permission refusal after sipnab dropped privileges, the message adds the user name and the remedies. In a headless run the capture loop stops, sipnab prints the reports, and the run exits 1. In the TUI the packet-processing thread stops.
